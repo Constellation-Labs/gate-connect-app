@@ -28,6 +28,10 @@ use time::{Duration, OffsetDateTime};
 
 const LEAF_TTL_SECS: i64 = 365 * 24 * 60 * 60;
 const NOT_BEFORE_OFFSET_SECS: i64 = 60;
+/// Regenerate a cached leaf once it's within this window of expiry. The cache
+/// is keyed by host and otherwise never evicts, so without this a long-running
+/// engine would keep serving a leaf past its `not_after` and break handshakes.
+const LEAF_RENEW_MARGIN_SECS: i64 = 7 * 24 * 60 * 60;
 
 pub struct GateCa {
     issuer: Issuer<'static, KeyPair>,
@@ -35,7 +39,14 @@ pub struct GateCa {
     leaf_key: KeyPair,
     private_key: PrivateKeyDer<'static>,
     provider: Arc<CryptoProvider>,
-    cache: Mutex<HashMap<String, Arc<ServerConfig>>>,
+    cache: Mutex<HashMap<String, CachedLeaf>>,
+}
+
+/// A cached per-host leaf TLS config plus the leaf's expiry, so the cache can
+/// regenerate entries before they go stale instead of serving them forever.
+struct CachedLeaf {
+    not_after: OffsetDateTime,
+    config: Arc<ServerConfig>,
 }
 
 impl GateCa {
@@ -58,12 +69,13 @@ impl GateCa {
         }
     }
 
-    fn gen_cert(&self, host: &str) -> CertificateDer<'static> {
+    fn gen_cert(&self, host: &str) -> (CertificateDer<'static>, OffsetDateTime) {
         let mut params = CertificateParams::default();
 
         let not_before = OffsetDateTime::now_utc() - Duration::seconds(NOT_BEFORE_OFFSET_SECS);
         params.not_before = not_before;
-        params.not_after = not_before + Duration::seconds(LEAF_TTL_SECS);
+        let not_after = not_before + Duration::seconds(LEAF_TTL_SECS);
+        params.not_after = not_after;
 
         let mut dn = DistinguishedName::new();
         dn.push(DnType::CommonName, host);
@@ -87,14 +99,16 @@ impl GateCa {
         params.is_ca = IsCa::ExplicitNoCa;
         params.use_authority_key_identifier_extension = true;
 
-        params
+        let der: CertificateDer<'static> = params
             .signed_by(&self.leaf_key, &self.issuer)
             .expect("failed to sign leaf certificate")
-            .into()
+            .into();
+        (der, not_after)
     }
 
-    fn build_server_config(&self, host: &str) -> Arc<ServerConfig> {
-        let certs = vec![self.gen_cert(host)];
+    fn build_server_config(&self, host: &str) -> (Arc<ServerConfig>, OffsetDateTime) {
+        let (cert, not_after) = self.gen_cert(host);
+        let certs = vec![cert];
         let mut cfg = ServerConfig::builder_with_provider(Arc::clone(&self.provider))
             .with_safe_default_protocol_versions()
             .expect("failed to set protocol versions")
@@ -102,21 +116,33 @@ impl GateCa {
             .with_single_cert(certs, self.private_key.clone_key())
             .expect("failed to build ServerConfig");
         cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        Arc::new(cfg)
+        (Arc::new(cfg), not_after)
     }
 }
 
 impl CertificateAuthority for GateCa {
     async fn gen_server_config(&self, authority: &Authority) -> Arc<ServerConfig> {
         let host = authority.host().to_owned();
-        if let Some(cfg) = self.cache.lock().expect("cert cache mutex poisoned").get(&host) {
-            return Arc::clone(cfg);
+        let renew_margin = Duration::seconds(LEAF_RENEW_MARGIN_SECS);
+        {
+            let cache = self.cache.lock().expect("cert cache mutex poisoned");
+            if let Some(entry) = cache.get(&host) {
+                // Serve the cached leaf unless it's within the renew margin of
+                // expiry — past that we drop through and mint a fresh one so a
+                // long-lived engine never hands out an expired cert.
+                if entry.not_after - OffsetDateTime::now_utc() > renew_margin {
+                    return Arc::clone(&entry.config);
+                }
+            }
         }
-        let cfg = self.build_server_config(&host);
-        self.cache
-            .lock()
-            .expect("cert cache mutex poisoned")
-            .insert(host, Arc::clone(&cfg));
+        let (cfg, not_after) = self.build_server_config(&host);
+        self.cache.lock().expect("cert cache mutex poisoned").insert(
+            host,
+            CachedLeaf {
+                not_after,
+                config: Arc::clone(&cfg),
+            },
+        );
         cfg
     }
 }
