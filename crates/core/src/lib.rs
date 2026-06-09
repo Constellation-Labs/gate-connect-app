@@ -18,6 +18,7 @@ pub mod account;
 pub mod env;
 pub mod keychain;
 pub mod primitives;
+pub mod provider;
 pub mod proxy;
 pub mod registry;
 

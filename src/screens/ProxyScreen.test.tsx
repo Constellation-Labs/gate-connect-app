@@ -23,10 +23,12 @@ function renderOn(platform: Platform) {
   render(
     <ProxyScreen
       proxy={proxy}
+      providers={[]}
       busy={false}
+      error={null}
       onBack={() => {}}
       onToggleProxy={() => {}}
-      onSetDomain={() => {}}
+      onSetProvider={() => {}}
       onTrustCa={() => {}}
     />,
   );

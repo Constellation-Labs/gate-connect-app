@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, ProxyState } from "./lib/api";
+import type { Account, ProxyState, ProviderState } from "./lib/api";
 import {
   getAccount,
   saveAccount,
@@ -8,8 +8,10 @@ import {
   proxyStatus,
   proxyEnable,
   proxyDisable,
-  proxySetDomain,
   proxyTrustCa,
+  listProviders,
+  providerEnable,
+  providerDisable,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
 import { Home } from "./screens/Home";
@@ -34,6 +36,8 @@ export function App() {
   const [account, setAccount] = useState<Account | null>(null);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
+  const [providers, setProviders] = useState<ProviderState[]>([]);
+  const [providerError, setProviderError] = useState<string | null>(null);
 
   // Initial load: account decides first-run vs home; proxy status is best-effort
   // (the proxy commands exist on macOS + Windows — on Linux they throw and we
@@ -48,9 +52,11 @@ export function App() {
       } catch {
         px = null;
       }
+      const provs = await listProviders().catch(() => []);
       if (!alive) return;
       setAccount(acct);
       setProxy(px);
+      setProviders(provs);
       setScreen(acct ? "home" : "firstrun");
     })();
     return () => {
@@ -70,9 +76,12 @@ export function App() {
   const toggleProxy = useCallback(async () => {
     if (proxyBusy) return;
     setProxyBusy(true);
+    setProviderError(null);
     try {
       const next = proxy?.running ? await proxyDisable() : await proxyEnable();
       setProxy(next);
+      // The master toggle also disconnects/restores providers, so refresh them.
+      setProviders(await listProviders().catch(() => []));
     } catch {
       // surfaced state stays; a follow-up status refresh keeps us honest
       try {
@@ -80,17 +89,31 @@ export function App() {
       } catch {
         /* noop */
       }
+      setProviders(await listProviders().catch(() => []));
     } finally {
       setProxyBusy(false);
     }
   }, [proxy, proxyBusy]);
 
-  const setDomain = useCallback(
+  const setProvider = useCallback(
     async (slug: string, enabled: boolean) => {
       if (proxyBusy) return;
       setProxyBusy(true);
+      setProviderError(null);
       try {
-        setProxy(await proxySetDomain(slug, enabled));
+        if (enabled) await providerEnable(slug);
+        else await providerDisable(slug);
+        // Refresh provider state and proxy (enabling may have flipped a domain).
+        setProviders(await listProviders().catch(() => []));
+        try {
+          setProxy(await proxyStatus());
+        } catch {
+          /* non-macOS: no proxy subsystem */
+        }
+      } catch (e) {
+        setProviderError(typeof e === "string" ? e : String(e));
+        // Re-sync the switch to its true state after a failed toggle.
+        setProviders(await listProviders().catch(() => []));
       } finally {
         setProxyBusy(false);
       }
@@ -154,10 +177,15 @@ export function App() {
     body = (
       <ProxyScreen
         proxy={proxy}
+        providers={providers}
         busy={proxyBusy}
-        onBack={() => setScreen("home")}
+        error={providerError}
+        onBack={() => {
+          setProviderError(null);
+          setScreen("home");
+        }}
         onToggleProxy={toggleProxy}
-        onSetDomain={setDomain}
+        onSetProvider={setProvider}
         onTrustCa={trustCa}
       />
     );

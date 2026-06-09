@@ -1,31 +1,37 @@
-import type { ProxyState } from "../lib/api";
+import type { ProxyState, ProviderState } from "../lib/api";
 import { SubHeader, Switch, SectionLabel } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
 
-/** Proxy detail — master route toggle, CA-trust notice, and per-provider
- *  domain toggles. Wires to proxy_enable/disable, proxy_set_domain, proxy_trust_ca. */
+/** Routing detail — the master "Route through Gate" toggle (system proxy),
+ * the CA-trust notice, and one switch per provider. Each provider switch
+ * orchestrates its config integration and (when the proxy is running) its
+ * proxy domain, so the user never sees the proxy-vs-config split.
+ * Wires to proxy_enable/disable, provider_enable/disable, proxy_trust_ca. */
 export function ProxyScreen({
   proxy,
+  providers,
   busy,
+  error,
   onBack,
   onToggleProxy,
-  onSetDomain,
+  onSetProvider,
   onTrustCa,
 }: {
   proxy: ProxyState;
+  providers: ProviderState[];
   busy: boolean;
+  error: string | null;
   onBack: () => void;
   onToggleProxy: () => void;
-  onSetDomain: (slug: string, enabled: boolean) => void;
+  onSetProvider: (slug: string, enabled: boolean) => void;
   onTrustCa: () => void;
 }) {
   const platform = usePlatform();
   const trustStore = platform === "windows" ? "certificate store" : "keychain";
-  const enabledCount = proxy.domains.filter((d) => d.enabled && d.supported).length;
   return (
     <div className="flex flex-col">
-      <SubHeader title="Proxy" onBack={onBack} />
+      <SubHeader title="Routing" onBack={onBack} />
 
       <div className="flex items-start gap-3 px-3.5 py-3.5">
         <div
@@ -39,8 +45,8 @@ export function ProxyScreen({
           <div className="text-[14px] font-semibold text-gc-ink">Route through Gate</div>
           <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
             {proxy.running
-              ? `On · intercepting ${enabledCount} domain${enabledCount === 1 ? "" : "s"}`
-              : "Off · apps connect directly to their providers"}
+              ? "On · routing your enabled apps through Gate"
+              : "Off · nothing is routed through Gate"}
           </div>
         </div>
         <Switch on={proxy.running} disabled={busy} onClick={onToggleProxy} />
@@ -65,20 +71,32 @@ export function ProxyScreen({
 
       <SectionLabel>Providers</SectionLabel>
       <div className="flex flex-col border-t border-gc-line">
-        {proxy.domains.map((d) => (
-          <div key={d.slug} className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5">
+        {providers.map((p) => (
+          <div
+            key={p.slug}
+            className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5"
+          >
             <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-medium text-gc-ink">{d.display_name}</div>
-              <div className="mt-0.5 truncate font-mono text-[10.5px] text-gc-ink-4">{d.hosts.join(", ")}</div>
+              <div className="text-[13px] font-medium text-gc-ink">{p.display_name}</div>
+              <div className="mt-0.5 truncate text-[11px] text-gc-ink-4">{p.subtitle}</div>
             </div>
-            {d.supported ? (
-              <Switch on={d.enabled} disabled={busy} onClick={() => onSetDomain(d.slug, !d.enabled)} />
-            ) : (
-              <span className="shrink-0 text-[11px] font-medium text-gc-ink-5">Soon</span>
-            )}
+            <Switch
+              on={p.enabled}
+              disabled={busy || !p.available}
+              onClick={() => onSetProvider(p.slug, !p.enabled)}
+            />
           </div>
         ))}
+        {providers.length === 0 && (
+          <div className="px-3.5 py-3 text-[11.5px] text-gc-ink-4">No providers available.</div>
+        )}
       </div>
+
+      {error && (
+        <div className="mx-3.5 mt-2 rounded bg-[rgba(243,156,18,0.1)] px-3 py-2 text-[11.5px] leading-snug text-gc-ink-2">
+          {error}
+        </div>
+      )}
     </div>
   );
 }
