@@ -103,19 +103,20 @@ pub fn load_or_create() -> Result<Ca> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    fs::write(&path, &cert_pem).with_context(|| format!("writing {}", path.display()))?;
+    // Order matters for crash-safety. The key (keychain) and cert (disk) are two
+    // separate stores, so we can't write both atomically — but we can pick an
+    // order whose interrupted state is self-healing. Write the key first (the
+    // keychain set is transactional), then the cert via a temp file + atomic
+    // rename. If the process dies between the two, the next launch finds a key
+    // with no cert on disk and regenerates both — never a torn cert or a
+    // mismatched cert/key pair that would wedge the engine with no recovery.
     keychain::set(&service, &user, &key_pem)?;
+    let tmp = path.with_extension("pem.tmp");
+    fs::write(&tmp, &cert_pem).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
     Ok(Ca { cert_pem, key_pem })
 }
-
-/// Whether our CA is actually **trusted** as a root in the admin trust
-/// domain — not merely present in the keychain. We install trust with
-/// `add-trusted-cert -d`, which registers a trust setting that surfaces in
-/// `dump-trust-settings -d`; a cert can sit in the System keychain with no
-/// trust setting at all. The earlier presence-only check (`find-certificate`)
-/// reported success in exactly that untrusted state, so `ensure_trusted`
-/// skipped the install and every MITM handshake failed (`CertificateUnknown`
-/// / `NOT_TRUSTED`). Reading the trust settings is read-only / non-privileged.
 
 /// Whether our CA is **trusted** as a root — not merely present in a
 /// keychain. We install trust into the user login keychain (which surfaces in
