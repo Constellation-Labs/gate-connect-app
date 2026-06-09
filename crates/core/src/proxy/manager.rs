@@ -65,9 +65,11 @@ impl ProxyManager {
         let account = account::load()?
             .context("no Gate account configured — sign in before enabling the proxy")?;
         let domains = config::load_domains()?;
-        if !domains.iter().any(|d| d.enabled) {
-            anyhow::bail!("enable at least one provider before turning on the proxy");
-        }
+        // No enabled-domains guard here: the master switch owns whether the
+        // engine runs, while providers/domains own what it intercepts. Starting
+        // with zero enabled domains is valid (per-provider toggles can reach that
+        // state at runtime too) and lets `provider::restore_all()` re-enable the
+        // snapshotted domains immediately after start on master-on.
         let services = system_proxy::active_services()?;
         if services.is_empty() {
             anyhow::bail!("no active network services found to route through the proxy");
