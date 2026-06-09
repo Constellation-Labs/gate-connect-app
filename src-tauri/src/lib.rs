@@ -354,7 +354,7 @@ fn proxy_list_domains() -> Result<Vec<gate_connect_core::proxy::ProxyDomain>, St
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn proxy_enable(app: tauri::AppHandle) -> Result<gate_connect_core::proxy::ProxyState, String> {
-  let state = gate_connect_core::proxy::manager()
+  gate_connect_core::proxy::manager()
     .enable()
     .map_err(|e| e.to_string())?;
   // Global ON: restore every provider that was on when routing was last turned
@@ -362,6 +362,12 @@ fn proxy_enable(app: tauri::AppHandle) -> Result<gate_connect_core::proxy::Proxy
   if let Err(e) = gate_connect_core::provider::restore_all() {
     eprintln!("[gate] restoring providers on proxy enable failed: {e}");
   }
+  // Re-read status AFTER restore so the returned domain flags reflect the
+  // providers we just re-enabled — otherwise the UI's "intercepting N
+  // domains" count is captured pre-restore and shows 0.
+  let state = gate_connect_core::proxy::manager()
+    .status()
+    .map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
   update_tray_status(&app, state.running);
   #[cfg(not(target_os = "macos"))]
