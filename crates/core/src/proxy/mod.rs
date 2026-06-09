@@ -15,7 +15,9 @@
 //!
 //! The CA private key lives in the OS keychain; only the public cert is
 //! written to disk (and into the System keychain when trusted). Disabling
-//! the proxy restores the previous system-proxy state and untrusts the CA.
+//! the proxy restores the previous system-proxy state but deliberately
+//! leaves the CA trusted, so re-enabling is promptless; untrusting is a
+//! separate explicit action ([`ProxyManager::untrust_ca`]).
 //!
 //! Platform support: macOS, Windows, and Linux. The engine itself is
 //! cross-platform; CA trust ([`ca`]) and system-proxy wiring ([`system_proxy`])

@@ -137,7 +137,7 @@ export const migratePreview = (slug: string, options: MigrateOptions) =>
 export const migrateExecute = (slug: string, options: MigrateOptions) =>
   invoke<MigrateReport>("migrate_execute", { slug, options });
 
-// ---- built-in MITM proxy (macOS only) ----
+// ---- built-in MITM proxy (macOS + Windows) ----
 
 export interface ProxyDomain {
   slug: string;
@@ -201,10 +201,8 @@ export const listProviders = () => invoke<ProviderState[]>("list_providers");
 
 /** Turn a provider on: configures installed tools and, if the proxy is already
  * running, enables its proxy domain(s). Never triggers an admin prompt. */
-export const providerEnable = (slug: string) =>
-  invoke<ProviderState>("provider_enable", { slug });
+export const providerEnable = (slug: string) => invoke<ProviderState>("provider_enable", { slug });
 
 /** Turn a provider off: reverts the tool config and disables its proxy
  * domain(s) if the proxy is running. */
-export const providerDisable = (slug: string) =>
-  invoke<ProviderState>("provider_disable", { slug });
+export const providerDisable = (slug: string) => invoke<ProviderState>("provider_disable", { slug });
