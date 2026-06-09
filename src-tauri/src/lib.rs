@@ -678,8 +678,23 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Gate Connect");
+        .build(tauri::generate_context!())
+        .expect("error while building Gate Connect")
+        .run(|_app_handle, event| {
+            // On app exit, revert the system proxy so traffic is never stranded
+            // at the now-dead engine port. The engine lives in a process-global
+            // static whose Drop is bypassed at normal exit, so without this the
+            // system proxy stays pointed at a dead listener and kills
+            // connectivity until the next launch's self-heal. disable() is
+            // promptless and leaves the CA trusted.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if let tauri::RunEvent::Exit = &event {
+                if let Err(e) = gate_connect_core::proxy::manager().disable() {
+                    eprintln!("[gate] reverting proxy on exit failed: {e}");
+                }
+            }
+            let _ = &event;
+        });
 }
 
 /// Position the popover window centered horizontally on the tray icon
