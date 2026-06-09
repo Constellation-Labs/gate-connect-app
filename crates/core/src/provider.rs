@@ -33,16 +33,31 @@ pub struct Provider {
     pub proxy_domain_slugs: &'static [&'static str],
 }
 
-/// Built-in provider catalog. OpenAI/Codex is the first entry; Anthropic and
-/// others can be added here once they adopt the same one-switch model.
+/// Built-in provider catalog. Claude leads, then OpenAI/Codex; both follow the
+/// same one-switch model and others can be added the same way.
+///
+/// Mapping note: each provider lists only the tools that need *config* editing
+/// to route (a CLI that ignores the system proxy — Claude Code, Codex). Desktop
+/// apps that honor the macOS system proxy (Cowork / Claude Desktop) ride the
+/// proxy domain instead, so they're covered by `proxy_domain_slugs` without a
+/// credential or sudo prompt. That's why Cowork isn't in `tool_ids`.
 pub fn providers() -> Vec<Provider> {
-    vec![Provider {
-        slug: "openai",
-        display_name: "OpenAI / Codex",
-        subtitle: "Codex + OpenAI API",
-        tool_ids: &[ToolId::Codex],
-        proxy_domain_slugs: &["openai"],
-    }]
+    vec![
+        Provider {
+            slug: "anthropic",
+            display_name: "Claude Code / Cowork",
+            subtitle: "Claude Code + Claude Desktop",
+            tool_ids: &[ToolId::ClaudeCode],
+            proxy_domain_slugs: &["anthropic"],
+        },
+        Provider {
+            slug: "openai",
+            display_name: "OpenAI / Codex",
+            subtitle: "Codex + OpenAI API",
+            tool_ids: &[ToolId::Codex],
+            proxy_domain_slugs: &["openai"],
+        },
+    ]
 }
 
 pub fn find(slug: &str) -> Option<Provider> {
@@ -143,8 +158,9 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
 
     if plan.nothing {
         anyhow::bail!(
-            "nothing to configure for {slug:?}: install Codex, or turn on \
-             \u{201c}Route through Gate\u{201d} to cover OpenAI apps"
+            "nothing to configure for {}: install its app, or turn on \
+             \u{201c}Route through Gate\u{201d} to route it through the proxy",
+            p.display_name
         );
     }
 
@@ -288,6 +304,25 @@ mod tests {
         assert_eq!(p.display_name, "OpenAI / Codex");
         assert!(p.tool_ids.contains(&ToolId::Codex));
         assert_eq!(p.proxy_domain_slugs, &["openai"]);
+    }
+
+    #[test]
+    fn anthropic_provider_maps_to_claude_code_and_anthropic_domain() {
+        let p = find("anthropic").expect("anthropic provider present");
+        assert_eq!(p.display_name, "Claude Code / Cowork");
+        assert!(p.tool_ids.contains(&ToolId::ClaudeCode));
+        assert_eq!(p.proxy_domain_slugs, &["anthropic"]);
+    }
+
+    #[test]
+    fn claude_is_listed_before_codex() {
+        let slugs: Vec<&str> = providers().iter().map(|p| p.slug).collect();
+        let claude = slugs.iter().position(|&s| s == "anthropic");
+        let openai = slugs.iter().position(|&s| s == "openai");
+        assert!(
+            claude < openai,
+            "Claude must precede OpenAI/Codex in the catalog: {slugs:?}"
+        );
     }
 
     #[test]
