@@ -6,8 +6,10 @@
 //! batches it with the CA-trust change into one prompt.
 
 use std::fs;
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -228,4 +230,103 @@ pub fn restore(snapshot: &[ServiceProxy]) -> Result<()> {
 /// Turn every service's proxy off. Promptless fail-safe.
 pub fn force_off(services: &[String]) -> Result<()> {
     apply(&force_off_command(services))
+}
+
+/// True if `server` is a loopback address — what our engine binds to. Used to
+/// distinguish a stranded Gate proxy from a user's real (remote) proxy.
+fn is_loopback(server: &str) -> bool {
+    matches!(server, "127.0.0.1" | "::1" | "localhost" | "0.0.0.0")
+}
+
+/// True if a proxy slot points at a loopback address with nothing listening on
+/// its port — i.e. a dead engine that would strand traffic. Pure so it can be
+/// unit-tested without touching the network.
+fn slot_is_stranded(setting: &ProxySetting, port_alive: bool) -> bool {
+    setting.enabled && is_loopback(&setting.server) && !port_alive
+}
+
+/// True if something is accepting connections on 127.0.0.1:`port` right now.
+/// A refused/timed-out connect means the listener is gone.
+fn loopback_port_alive(port: &str) -> bool {
+    let Ok(p) = port.parse::<u16>() else {
+        return false;
+    };
+    let addr = SocketAddr::from(([127, 0, 0, 1], p));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+/// Startup fail-safe for when the snapshot can't save us: a hard kill or OS
+/// shutdown bypasses the graceful-disable `Drop`, leaving every active
+/// service's proxy pointed at our loopback engine after it's gone. On next
+/// launch that strands all proxy-honoring apps with ERR_PROXY_CONNECTION_FAILED
+/// while Gate itself shows "off". Turn off any enabled slot that points at a
+/// loopback address with no listener; leave real (remote) proxies untouched.
+/// Returns the services it cleared. Promptless.
+pub fn clear_stranded_loopback() -> Result<Vec<String>> {
+    use std::collections::HashMap;
+
+    // Cache liveness per port so N services sharing one dead port probe once.
+    let mut alive: HashMap<String, bool> = HashMap::new();
+    let mut parts = Vec::new();
+    let mut cleared = Vec::new();
+
+    for service in active_services()? {
+        let web = get_proxy("-getwebproxy", &service)?;
+        let secure = get_proxy("-getsecurewebproxy", &service)?;
+        let q = sh_quote(&service);
+        let mut touched = false;
+
+        for (off_flag, setting) in [
+            ("-setwebproxystate", &web),
+            ("-setsecurewebproxystate", &secure),
+        ] {
+            let port_alive = *alive
+                .entry(setting.port.clone())
+                .or_insert_with(|| loopback_port_alive(&setting.port));
+            if slot_is_stranded(setting, port_alive) {
+                parts.push(format!("{NETWORKSETUP} {off_flag} {q} off"));
+                touched = true;
+            }
+        }
+        if touched {
+            cleared.push(service);
+        }
+    }
+
+    apply(&parts.join(" && "))?;
+    Ok(cleared)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(enabled: bool, server: &str, port: &str) -> ProxySetting {
+        ProxySetting {
+            enabled,
+            server: server.into(),
+            port: port.into(),
+        }
+    }
+
+    #[test]
+    fn loopback_servers_recognized() {
+        assert!(is_loopback("127.0.0.1"));
+        assert!(is_loopback("::1"));
+        assert!(is_loopback("localhost"));
+        assert!(!is_loopback("proxy.corp.example.com"));
+        assert!(!is_loopback("10.0.0.5"));
+    }
+
+    #[test]
+    fn stranded_only_when_enabled_loopback_and_dead() {
+        // The bug we're fixing: enabled, loopback, nothing listening.
+        assert!(slot_is_stranded(&slot(true, "127.0.0.1", "61722"), false));
+        // Loopback but the engine is alive — leave it.
+        assert!(!slot_is_stranded(&slot(true, "127.0.0.1", "61722"), true));
+        // A real remote proxy that happens to be unreachable — never ours.
+        assert!(!slot_is_stranded(&slot(true, "proxy.corp", "8080"), false));
+        // Disabled slot — nothing to clear.
+        assert!(!slot_is_stranded(&slot(false, "127.0.0.1", "61722"), false));
+    }
 }

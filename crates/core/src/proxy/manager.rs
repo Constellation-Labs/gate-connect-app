@@ -188,16 +188,28 @@ impl ProxyManager {
         let _ = system_proxy::clear_snapshot();
     }
 
-    /// Called once at app startup. A leftover snapshot means a previous
-    /// session left the system proxy pointed at an engine that no longer
-    /// exists (unclean quit / crash) — restore it. Promptless, so it always
-    /// succeeds; a clean disable clears the snapshot, making this a no-op.
+    /// Called once at app startup to undo a system proxy left pointing at an
+    /// engine that no longer exists (unclean quit / crash / OS shutdown).
+    ///
+    /// Two layers, because the graceful-disable `Drop` is bypassed by a hard
+    /// kill: (1) a leftover snapshot restores the exact pre-Gate state; (2) a
+    /// belt-and-suspenders sweep turns off any service still pointed at a dead
+    /// loopback listener even when no (or a partial) snapshot survives — that
+    /// case otherwise strands every proxy-honoring app with
+    /// ERR_PROXY_CONNECTION_FAILED while Gate shows "off". Both are promptless,
+    /// so this always succeeds; a clean disable makes it a near no-op.
     pub fn reconcile_on_startup(&self) -> Result<()> {
-        let Some(snapshot) = system_proxy::load_snapshot()? else {
-            return Ok(());
-        };
-        system_proxy::restore(&snapshot)?;
-        system_proxy::clear_snapshot()?;
+        if let Some(snapshot) = system_proxy::load_snapshot()? {
+            system_proxy::restore(&snapshot)?;
+            system_proxy::clear_snapshot()?;
+        }
+        let cleared = system_proxy::clear_stranded_loopback()?;
+        if !cleared.is_empty() {
+            eprintln!(
+                "[gate-proxy] startup: cleared stranded loopback proxy on {}",
+                cleared.join(", ")
+            );
+        }
         Ok(())
     }
 }
