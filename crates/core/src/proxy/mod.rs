@@ -153,9 +153,10 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
     Decision::Tunnel
 }
 
-/// The built-in domain catalog. Anthropic is the proven path and ships
-/// enabled+supported. The rest are scaffolded but gated `supported:false`
-/// until Gate's upstream support for that provider is confirmed.
+/// The built-in domain catalog. Anthropic and OpenAI are proven upstreams
+/// and ship `supported:true` (Anthropic also `enabled` by default; OpenAI is
+/// opt-in). The rest are scaffolded but gated `supported:false` until Gate's
+/// upstream support for that provider is confirmed.
 pub fn default_domains() -> Vec<ProxyDomain> {
     vec![
         ProxyDomain {
@@ -181,13 +182,19 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         },
         ProxyDomain {
             slug: "openai".into(),
-            display_name: "OpenAI / ChatGPT".into(),
+            display_name: "OpenAI".into(),
+            // The OpenAI API host. Catches OpenAI-compatible clients that
+            // honor the macOS system proxy and hit /v1/. Note: the Codex
+            // desktop app's model calls come from its embedded Rust agent,
+            // which ignores the system proxy and reaches chatgpt.com
+            // directly, so the proxy can't capture them — route Codex via the
+            // manual integration (config.toml base_url) instead.
             hosts: vec!["api.openai.com".into()],
             upstream_url: "https://api.openai.com".into(),
             rewrite_prefixes: vec!["/v1/".into()],
             passthrough_prefixes: vec![],
             enabled: false,
-            supported: false,
+            supported: true,
         },
         ProxyDomain {
             slug: "google".into(),
@@ -271,5 +278,55 @@ mod tests {
     fn ignores_unmatched_host() {
         let d = anthropic();
         assert_eq!(decide(&d, "example.com", "/v1/messages"), Decision::Tunnel);
+    }
+
+    /// The catalog's `openai` entry must be a supported, routable upstream so
+    /// the proxy can intercept Codex (API-key mode) and other OpenAI clients.
+    fn openai() -> Vec<ProxyDomain> {
+        let mut d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "openai")
+            .expect("openai domain present in catalog");
+        d.enabled = true; // catalog default is opt-in; enable for the test
+        vec![d]
+    }
+
+    #[test]
+    fn openai_is_supported() {
+        let d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "openai")
+            .unwrap();
+        assert!(d.supported, "openai must be a supported upstream");
+    }
+
+    #[test]
+    fn rewrites_codex_apikey_responses_path() {
+        let d = openai();
+        // Codex in API-key mode (and the OpenAI SDK) hit
+        // api.openai.com/v1/responses, which must rewrite to the gateway
+        // with the OpenAI upstream injected.
+        assert_eq!(
+            decide(&d, "api.openai.com", "/v1/responses"),
+            Decision::Rewrite {
+                upstream_url: "https://api.openai.com".into()
+            }
+        );
+        // case-insensitive host match
+        assert!(should_intercept_host(&d, "API.OPENAI.COM"));
+    }
+
+    #[test]
+    fn openai_domain_does_not_match_chatgpt_host() {
+        // The api.openai.com domain is scoped to that host only — it must not
+        // match chatgpt.com. (Codex's chatgpt.com traffic comes from its Rust
+        // agent, which bypasses the system proxy, so it's out of the proxy's
+        // reach entirely — covered by the manual Codex integration instead.)
+        let d = openai();
+        assert!(!should_intercept_host(&d, "chatgpt.com"));
+        assert_eq!(
+            decide(&d, "chatgpt.com", "/backend-api/codex/responses"),
+            Decision::Tunnel
+        );
     }
 }
