@@ -1,0 +1,102 @@
+import { describe, it, expect } from "vitest";
+import { classifyError } from "./errors";
+
+// These tests assert the *contract* of classifyError rather than exact copy,
+// so they stay green as the wording is tuned. The load-bearing guarantees:
+//   1. it never lets a non-string payload collapse to "[object Object]"
+//   2. structured/object errors are classified by their inner message/field
+//   3. unsupported / unregistered command errors surface a platform message
+//   4. the original payload is always preserved (stringified) in `raw`
+
+describe("classifyError", () => {
+  it("returns the { title, hint, raw } shape", () => {
+    const result = classifyError("boom", "generic");
+    expect(result).toHaveProperty("title");
+    expect(result).toHaveProperty("hint");
+    expect(result).toHaveProperty("raw");
+    expect(typeof result.title).toBe("string");
+    expect(typeof result.hint).toBe("string");
+    expect(result.title.length).toBeGreaterThan(0);
+    expect(result.hint.length).toBeGreaterThan(0);
+  });
+
+  describe("string errors", () => {
+    it("preserves the raw string payload verbatim", () => {
+      const raw = "connection refused by gateway";
+      expect(classifyError(raw, "connect").raw).toBe(raw);
+    });
+
+    it("classifies a network failure with a gateway-reach title", () => {
+      const result = classifyError("connection refused", "connect");
+      expect(result.title.toLowerCase()).toContain("gateway");
+    });
+
+    it("classifies a 401 as a rejected API key", () => {
+      const result = classifyError("HTTP 401 Unauthorized", "save_api_key");
+      expect(result.title.toLowerCase()).toContain("api key");
+    });
+
+    it("classifies a user-canceled macOS prompt", () => {
+      const result = classifyError("User canceled (-128)", "connect");
+      expect(result.title.toLowerCase()).toContain("canceled");
+    });
+
+    it("falls back to a context-specific generic title when nothing matches", () => {
+      const result = classifyError("totally unexpected gibberish", "generic");
+      expect(result.title.length).toBeGreaterThan(0);
+      // Generic fallback must never leak the "[object" sentinel.
+      expect(result.title).not.toContain("[object");
+    });
+  });
+
+  describe("Error instances", () => {
+    it("classifies an Error by its message, not its [object] form", () => {
+      const result = classifyError(new Error("connection refused"), "connect");
+      expect(result.raw).not.toContain("[object");
+      expect(result.raw).toContain("connection refused");
+      expect(result.title.toLowerCase()).toContain("gateway");
+    });
+  });
+
+  describe("object / JSON errors", () => {
+    it("never collapses a plain object to the [object Object] sentinel", () => {
+      const result = classifyError({ code: 7, detail: "nope" }, "generic");
+      expect(result.title).not.toContain("[object");
+      expect(result.hint).not.toContain("[object");
+      expect(result.raw).not.toContain("[object Object]");
+    });
+
+    it("classifies an object by its inner message field", () => {
+      const result = classifyError({ message: "connection refused" }, "connect");
+      expect(result.title.toLowerCase()).toContain("gateway");
+    });
+
+    it("classifies an object by its inner error field", () => {
+      const result = classifyError({ error: "HTTP 401 Unauthorized" }, "save_api_key");
+      expect(result.title.toLowerCase()).toContain("api key");
+    });
+
+    it("serializes an opaque object to JSON in raw so details are reportable", () => {
+      const result = classifyError({ code: 42, kind: "weird" }, "generic");
+      expect(result.raw).toContain("42");
+      expect(result.raw).toContain("weird");
+    });
+  });
+
+  describe("unsupported / unavailable command errors", () => {
+    it("surfaces a platform-availability message for an unregistered command", () => {
+      const result = classifyError("command not_found is not registered", "connect");
+      expect(result.title.toLowerCase()).toContain("platform");
+    });
+
+    it("surfaces a platform-availability message for an unknown command", () => {
+      const result = classifyError("unknown command: do_thing", "generic");
+      expect(result.title.toLowerCase()).toContain("platform");
+    });
+
+    it("surfaces a platform message when the command is not available on this platform", () => {
+      const result = classifyError("this command is not available on this platform", "connect");
+      expect(result.title.toLowerCase()).toContain("platform");
+    });
+  });
+});

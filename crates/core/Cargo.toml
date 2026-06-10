@@ -1,0 +1,44 @@
+[package]
+name = "gate-connect-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+keyring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml_edit.workspace = true
+
+# Backs the built-in MITM proxy (`proxy` module). hudsucker mints per-host
+# leaf certs from our local CA and hands decrypted requests to a handler
+# that rewrites inference calls to the Gate gateway. tokio is the runtime
+# the proxy engine owns on a background thread; the rest of core stays sync.
+hudsucker.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+http.workspace = true
+time.workspace = true
+
+# `libc` backs the unix `getpwuid(geteuid())` username lookup in env.rs —
+# we resolve the real account from the password database rather than
+# trusting inherited `$USER` / `$USERNAME`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# `plist` is only used by the Cowork integration's managed-preferences
+# writer, which is macOS-only by design (Managed Preferences is a macOS
+# system).
+[target.'cfg(target_os = "macos")'.dependencies]
+plist.workspace = true
+
+# `winreg` backs the Windows Cowork integration, which writes the
+# `HKCU\SOFTWARE\Policies\Claude` policy values Claude Desktop reads for
+# 3P/gateway mode. Windows has no managed-preferences plist, so this is
+# the registry-policy analogue of the macOS plist writer above.
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.52"

@@ -1,0 +1,62 @@
+/* ─── Geist via Google Fonts ────────────────────────────────────────── */
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  /* Transparent shell so the Tauri window's rounded-corner transparency
+     shows through; the visible card lives inside #root. */
+  html,
+  body {
+    background: transparent;
+  }
+  body {
+    @apply font-sans antialiased text-ink-800;
+    font-feature-settings: "ss01" on;
+    text-wrap: pretty;
+  }
+  code,
+  kbd,
+  pre {
+    @apply font-mono;
+  }
+  ::selection {
+    @apply bg-ink-200 text-ink-900;
+  }
+  /* Thin ink-ramp scrollbars inside the popover, matching the cg system. */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-ink-300 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-400;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* Respect the OS reduced-motion preference — disables the popover's
+     panel transitions, hover translates, and skeleton shimmer. Matches the
+     contract baked into cg/tokens.css for the rest of the Constellation
+     Gate surfaces. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

@@ -1,0 +1,194 @@
+# Windows Cowork (Claude Desktop) integration
+
+Status and design notes for running the Cowork integration on Windows,
+plus the open "full delegation" investigation. macOS remains the
+reference implementation; this document covers what differs on Windows
+and what's still undecided.
+
+## Overview
+
+Cowork points Claude Desktop's 3P / gateway mode (`inferenceProvider:
+gateway`) at Constellation Gate. The credential plumbing is the same idea
+on every OS — secrets live in the OS secret store and are resolved at
+request time — but the *config surface* Claude Desktop reads differs:
+
+| OS      | Config surface                                   | Secrets at rest          |
+| ------- | ------------------------------------------------ | ------------------------ |
+| macOS   | Managed-preferences plist + helper shell script  | macOS Keychain           |
+| Windows | `HKCU\SOFTWARE\Policies\Claude` registry policy  | Windows Credential Manager |
+
+On Windows the registry holds **only non-secret config plus the absolute
+path of a credential-helper exe**. No API key is ever written to the
+registry — that was an earlier design that has since been replaced by the
+helper model below.
+
+## Architecture (Windows)
+
+`connect` writes:
+
+- Registry `HKCU\SOFTWARE\Policies\Claude`:
+  - `inferenceProvider = gateway`
+  - `inferenceGatewayBaseUrl = https://<gateway>`
+  - `inferenceGatewayAuthScheme = bearer`
+  - `inferenceCredentialHelper = <abs path to gate-connect-cowork-helper.exe>`
+  - `inferenceCredentialHelperTtlSec = 3000`
+- A **non-secret** sidecar `%LOCALAPPDATA%\Gate Connect\cowork-helper.json`
+  holding only the upstream URL.
+
+At request time Claude Desktop spawns the helper exe (session start, TTL
+expiry, and on a gateway 401). The helper reads the upstream credential
+and Gate API key from Windows Credential Manager and prints the
+`{"token","headers"}` JSON Claude expects — the same shape the macOS
+helper script produces. `disconnect` deletes the registry values and the
+sidecar; Credential Manager entries persist until an explicit sign-out /
+clear.
+
+### Files
+
+- `crates/core/src/integrations/cowork/mod.rs` — trait impl + shared
+  credential helpers; dispatches to the platform submodule.
+- `crates/core/src/integrations/cowork/macos.rs` — macOS plist + helper
+  script.
+- `crates/core/src/integrations/cowork/windows.rs` — registry policy,
+  detection, and `helper_emit()` (the exe's payload generator).
+- `crates/cowork-helper/` — the bundled helper binary
+  (`gate-connect-cowork-helper.exe`). GUI subsystem so no console flashes.
+- `crates/core/src/claude_session_delegate.rs` — macOS-only Claude Code session
+  delegation (see "Full delegation" below).
+- `src-tauri/tauri.windows.conf.json` — Windows-only `externalBin` so the
+  helper ships next to the app exe.
+- `scripts/stage-cowork-helper.mjs` — builds + stages the helper for
+  `externalBin` (run from `beforeBuildCommand`).
+
+### Detection
+
+`cowork/windows.rs::detect` is best-effort across install layouts:
+
+1. Filesystem candidates (`%LOCALAPPDATA%\AnthropicClaude`,
+   `%LOCALAPPDATA%\Programs\Claude`, `%LOCALAPPDATA%\Claude`,
+   `%APPDATA%\Claude`).
+2. `%LOCALAPPDATA%\Packages\*claude*` — the per-user package-data dir a
+   **Store/MSIX** install creates on first run. (The app itself lives
+   under the ACL-locked `C:\Program Files\WindowsApps`, which a normal
+   process cannot enumerate, so this is the readable signal.)
+3. AppX package-repository registry + classic Uninstall entries.
+
+### Credential storage
+
+Both secrets live in Windows Credential Manager via the `keyring` crate:
+
+- `ai.constellation.gate-connect.account.gateway-api-key` — Gate API key.
+- `ai.constellation.gate-connect.cowork.upstream-credential` — upstream
+  Anthropic key (or `sk-ant-oat…` token).
+
+Rotating the Gate key (account edit → Replace) is picked up by Cowork
+automatically on the next helper run — the helper reads it live. The
+file-based tools (Claude Code / Codex / OpenCode) bake the Gate key into
+their config files at connect time, so those need a reconnect after a
+rotation.
+
+## Building on Windows
+
+Prereqs: Rust MSVC toolchain, VS Build Tools (C++), Node + pnpm, WebView2.
+
+Dev (helper is **not** auto-staged, so point the override at it):
+
+```powershell
+cargo build -p gate-connect-cowork-helper --release
+$env:GATE_CONNECT_COWORK_HELPER = "$PWD\target\release\gate-connect-cowork-helper.exe"
+pnpm tauri dev
+```
+
+Release (helper auto-staged as a sidecar):
+
+```powershell
+pnpm tauri build   # runs build:win → frontend + stage-cowork-helper.mjs
+```
+
+`externalBin` is validated at **compile time** (before `beforeBundleCommand`),
+which is why staging runs in `beforeBuildCommand`, not `beforeBundleCommand`.
+
+## Verifying on Windows
+
+1. Cowork shows `detected`.
+2. After connect, `reg query "HKCU\SOFTWARE\Policies\Claude"` shows the
+   helper values and **no** `inferenceGatewayApiKey`.
+3. Running the helper exe directly prints `{"token":...,"headers":{...}}`.
+4. Fully quit + relaunch Claude Desktop → it enters gateway mode
+   (Help → Troubleshooting → Copy Managed Configuration Report).
+
+### Still unverified (needs a live Windows + Claude Desktop)
+
+- That Claude Desktop accepts gateway mode with a helper and no
+  `inferenceGatewayApiKey` (docs say the key is "not required when using a
+  credential helper").
+- Console-window suppression and path-with-spaces handling when Claude
+  spawns the helper.
+- That the **Store/MSIX** Claude Desktop reads `HKCU\SOFTWARE\Policies\Claude`
+  from the real hive.
+
+## Credential delegation (implemented)
+
+Goal: let the user reuse the **Claude Code CLI's** subscription OAuth
+token (`sk-ant-oat…`) instead of pasting an Anthropic key — the macOS
+"Use Claude subscription" experience.
+
+How macOS does it (`claude_session_delegate.rs` + the helper script): read the
+`Claude Code-credentials` Keychain entry, verify a
+`claudeAiOauth.accessToken`, store the sentinel `@claude-code-session` in
+our upstream entry, and have the helper **live-read** the token on every
+request (so Claude Code's own refresh is trailed automatically).
+`parse_json_access_token` and `CLAUDE_CODE_SENTINEL` are platform-agnostic
+and reusable. Windows wires the same way: a `#[cfg(windows)]`
+`read_claude_credentials` reads the file (below), `verify_claude_code_session`
+is now cross-platform, and `cowork/windows.rs::helper_emit` has a sentinel
+branch that live-reads the token (falling back to a literal credential).
+
+### Where Claude Code stores its token (resolved)
+
+Logged-in Claude Code keeps its OAuth token in **plaintext JSON** at
+`%USERPROFILE%\.claude\.credentials.json` (honoring `CLAUDE_CONFIG_DIR`) on
+**every** platform, native Windows included — the earlier "DPAPI-encrypted /
+opaque" guess was wrong. The fields are `claudeAiOauth.accessToken` /
+`refreshToken` / `expiresAt`. Windows Credential Manager is used by Claude
+Code only for *plugin* credentials (2.1.83+), not the session token. So the
+macOS live-read delegation ports faithfully: read the file, parse
+`accessToken`, done.
+
+### Verify on the VM
+
+```powershell
+claude  # sign in via /login (setup-token alone does NOT create the session file)
+Get-ChildItem $env:USERPROFILE\.claude\.credentials.json -Force
+Get-Content $env:USERPROFILE\.claude\.credentials.json | Select-String "claudeAiOauth"
+```
+
+### Credential sources (what shipped)
+
+Three selectable sources, persisted into our `upstream-credential` Credential
+Manager entry:
+
+- **Claude subscription (Path A)** → stores the sentinel
+  `@claude-code-session`; `helper_emit` live-reads the current access token
+  from the file on every request, so it trails Claude Code's refreshes.
+  Requires Claude Code to be **signed in** (`claude`, then `/login`).
+- **Captured setup-token (Path B)** → paste the `sk-ant-oat…` printed by
+  `claude setup-token` into the "API key" field. Stored as a literal; the
+  helper emits it with the OAuth beta header. ~1-year-lived, independent of
+  Claude Code login, separately revocable, can be a different account.
+- **API key** → a literal `sk-ant-api03…`, the original paste flow.
+
+`detect_claude_code_session` (Tauri command → `verify_claude_code_session`)
+drives the picker: Path A is pre-selected and labeled "Recommended" when a
+signed-in session is found; otherwise the UI falls back to paste.
+
+### Caveats
+
+- **Session gone:** if Claude Code logs out, the sentinel live-read fails and
+  the helper errors with an actionable message. Cowork's
+  `inferenceCredentialHelperTtlSec` (~1h) cache keeps a previously-read token
+  working until it expires.
+- **Stale access token:** the live-read trails whatever is in the file; if
+  Claude Code hasn't run, its short-lived access token may already be expired
+  (→ upstream 401). We don't run a refresh flow — matching macOS. Path B's
+  long-lived token is the stable alternative.

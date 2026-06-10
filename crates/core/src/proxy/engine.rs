@@ -1,0 +1,401 @@
+//! The loopback MITM engine. Owns a tokio runtime on a dedicated thread,
+//! runs a [`hudsucker`] proxy, and rewrites matched inference requests to
+//! the Gate gateway. Cross-platform; the macOS-specific trust/system-proxy
+//! wiring lives in sibling modules.
+//!
+//! The enabled-domain set is hot-swappable via a [`tokio::sync::watch`]
+//! channel: because the system proxy routes *all* hosts to us and the
+//! handler gates MITM per-host in `should_intercept`, toggling a domain only
+//! needs to push new rules — no engine restart, no system-proxy change, no
+//! extra admin prompt.
+
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, OnceLock};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use hudsucker::{
+    hyper::{header::HeaderValue, Method, Request, Uri},
+    rcgen::{Issuer, KeyPair},
+    rustls::crypto::aws_lc_rs,
+    Body, HttpContext, HttpHandler, Proxy, RequestOrResponse,
+};
+use tokio::sync::{oneshot, watch};
+
+use crate::proxy::cert_authority::GateCa;
+use crate::proxy::{decide, should_intercept_host, Decision, ProxyDomain};
+
+/// Everything the engine needs to run one session. The account + CA are
+/// fixed for the engine's lifetime; the domain set can be updated live via
+/// [`RunningEngine::update_domains`].
+pub struct EngineConfig {
+    /// Gate gateway base URL — the rewrite target authority.
+    pub gateway_base_url: String,
+    /// Gate API key, injected as `X-Gate-Api-Key`.
+    pub api_key: String,
+    /// Full domain catalog; the engine routes only the `enabled` ones.
+    pub domains: Vec<ProxyDomain>,
+    /// PEM of the local root CA cert (public).
+    pub ca_cert_pem: String,
+    /// PEM of the local root CA private key.
+    pub ca_key_pem: String,
+}
+
+/// A running engine. Dropping it signals graceful shutdown (fail-safe so a
+/// crashed caller never leaves the loopback listener orphaned); [`stop`]
+/// also joins the thread.
+///
+/// [`stop`]: RunningEngine::stop
+pub struct RunningEngine {
+    port: u16,
+    shutdown: Option<oneshot::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+    rules_tx: watch::Sender<Arc<Vec<ProxyDomain>>>,
+    /// Set before a deliberate shutdown so the engine thread can tell an
+    /// expected stop from an unexpected exit (crash / bind loss).
+    stopping: Arc<AtomicBool>,
+}
+
+impl RunningEngine {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Push a new enabled-domain set to the live engine. Cheap — no restart.
+    pub fn update_domains(&self, domains: &[ProxyDomain]) {
+        let _ = self.rules_tx.send(Arc::new(enabled_only(domains)));
+    }
+
+    /// Signal graceful shutdown and wait for the engine thread to exit.
+    pub fn stop(mut self) {
+        self.stopping.store(true, Ordering::Release);
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+impl Drop for RunningEngine {
+    fn drop(&mut self) {
+        // Best-effort shutdown signal if dropped without an explicit stop().
+        // Mark it expected so the fail-safe callback doesn't fire on a
+        // normal drop. We don't join in Drop to avoid blocking.
+        self.stopping.store(true, Ordering::Release);
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+fn enabled_only(domains: &[ProxyDomain]) -> Vec<ProxyDomain> {
+    domains.iter().filter(|d| d.enabled).cloned().collect()
+}
+
+/// Whether to emit per-request engine logs to stderr. Off unless
+/// `GATE_PROXY_DEBUG` is set in the environment, so production stays quiet.
+fn debug_log() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_DEBUG").is_some())
+}
+
+/// Wire hudsucker's internal `tracing` events (TLS handshake / HTTP2 errors)
+/// to stderr once, when debug logging is on. Without this, MITM failures
+/// inside hudsucker are silent. Overridable via `RUST_LOG`. Idempotent.
+fn init_tracing() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        if !debug_log() {
+            return;
+        }
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("hudsucker=debug,rustls=info,info"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .try_init();
+    });
+}
+
+#[derive(Clone)]
+struct GateHandler {
+    /// Live-updatable set of enabled domains.
+    rules: watch::Receiver<Arc<Vec<ProxyDomain>>>,
+    /// Parsed gateway URL — its scheme + authority replace the target's.
+    gateway: Uri,
+    api_key: Arc<str>,
+}
+
+impl HttpHandler for GateHandler {
+    async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
+        // Called on the CONNECT request *before* any TLS handshake. Only
+        // MITM hosts we actually route; everything else is blind-tunnelled,
+        // so cert-pinning apps and unrelated traffic are untouched.
+        let rules = self.rules.borrow().clone();
+        let host = req
+            .uri()
+            .authority()
+            .map(|a| a.host())
+            .or_else(|| req.uri().host());
+        let intercept = host.map(|h| should_intercept_host(&rules, h)).unwrap_or(false);
+        if debug_log() {
+            eprintln!(
+                "[gate-proxy] CONNECT {} -> {}",
+                host.unwrap_or("?"),
+                if intercept { "intercept" } else { "tunnel" }
+            );
+        }
+        intercept
+    }
+
+    async fn handle_request(
+        &mut self,
+        _ctx: &HttpContext,
+        mut req: Request<Body>,
+    ) -> RequestOrResponse {
+        // The CONNECT request itself flows through here first; nothing to
+        // rewrite on it. Intercepted inner requests arrive in absolute form
+        // (scheme + authority + path), which is what `decide` expects.
+        if req.method() == Method::CONNECT {
+            return req.into();
+        }
+        let rules = self.rules.borrow().clone();
+        let host = req.uri().host().map(str::to_owned);
+        let path = req.uri().path().to_owned();
+        let mut action = "passthrough";
+        if let Some(host) = host.as_deref() {
+            // Rewrite matched inference paths to the gateway, forwarding to
+            // the domain's configured upstream — for Anthropic that's the same
+            // api.anthropic.com the request came from , validated
+            // against a real Cowork generation: 200 text/event-stream.
+            if let Decision::Rewrite { upstream_url } = decide(&rules, host, &path) {
+                match apply_rewrite(&mut req, &self.gateway, &upstream_url, &self.api_key) {
+                    Ok(()) => action = "rewrite->gateway",
+                    Err(e) => {
+                        action = "rewrite-FAILED";
+                        if debug_log() {
+                            eprintln!("[gate-proxy] rewrite failed: {e}");
+                        }
+                    }
+                }
+            }
+        }
+        if debug_log() {
+            let auth = if req.headers().contains_key(hudsucker::hyper::header::AUTHORIZATION) {
+                "bearer"
+            } else if req.headers().contains_key("x-api-key") {
+                "x-api-key"
+            } else {
+                "none"
+            };
+            let ver = format!("{:?}", req.version());
+            eprintln!(
+                "[gate-proxy] {} {}{} [{ver}] auth={auth} -> {action}",
+                req.method(),
+                host.as_deref().unwrap_or("?"),
+                path,
+            );
+        }
+        req.into()
+    }
+
+    async fn handle_response(
+        &mut self,
+        _ctx: &HttpContext,
+        res: hudsucker::hyper::Response<Body>,
+    ) -> hudsucker::hyper::Response<Body> {
+        if debug_log() {
+            eprintln!(
+                "[gate-proxy] <- {} ct={:?}",
+                res.status(),
+                res.headers()
+                    .get(hudsucker::hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+            );
+        }
+        res
+    }
+}
+
+/// Repoint a request at the gateway: swap scheme + authority for the
+/// gateway's, keep the original path/query, and inject the Gate headers.
+/// The app's own auth header (bearer / `x-api-key`) is left intact —
+/// Gate validates `X-Gate-Api-Key` and forwards the rest.
+pub(crate) fn apply_rewrite<T>(
+    req: &mut Request<T>,
+    gateway: &Uri,
+    upstream_url: &str,
+    api_key: &str,
+) -> Result<()> {
+    let gw = gateway.clone().into_parts();
+    let mut parts = req.uri().clone().into_parts();
+    parts.scheme = gw.scheme;
+    parts.authority = gw.authority;
+    *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
+
+    let headers = req.headers_mut();
+    headers.insert(
+        "x-gate-api-key",
+        HeaderValue::from_str(api_key).context("building x-gate-api-key header")?,
+    );
+    headers.insert(
+        "x-gate-upstream-url",
+        HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
+    );
+    Ok(())
+}
+
+fn pick_free_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .context("probing for a free loopback port")?;
+    Ok(listener
+        .local_addr()
+        .context("reading probe socket address")?
+        .port())
+}
+
+/// Start the engine on an ephemeral loopback port. Blocks until the proxy
+/// has built and bound (or fails), then returns a handle. The tokio runtime
+/// lives on the spawned thread and is torn down when the handle is stopped
+/// or dropped.
+///
+/// `on_unexpected_exit` fires if the server loop ends *without* a deliberate
+/// stop — i.e. the engine crashed or lost its bind. Callers use it to revert
+/// the system proxy so traffic is never stranded at a dead listener.
+pub fn start<F>(cfg: EngineConfig, on_unexpected_exit: F) -> Result<RunningEngine>
+where
+    F: FnOnce() + Send + 'static,
+{
+    init_tracing();
+    let gateway: Uri = cfg
+        .gateway_base_url
+        .parse()
+        .with_context(|| format!("parsing gateway URL {:?}", cfg.gateway_base_url))?;
+    if gateway.host().is_none() {
+        anyhow::bail!("gateway URL {:?} has no host", cfg.gateway_base_url);
+    }
+
+    let port = pick_free_port()?;
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+
+    let (rules_tx, rules_rx) = watch::channel(Arc::new(enabled_only(&cfg.domains)));
+    let handler = GateHandler {
+        rules: rules_rx,
+        gateway,
+        api_key: Arc::from(cfg.api_key.as_str()),
+    };
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+    let cert_pem = cfg.ca_cert_pem;
+    let key_pem = cfg.ca_key_pem;
+    let stopping = Arc::new(AtomicBool::new(false));
+    let stopping_thread = Arc::clone(&stopping);
+
+    let thread = std::thread::Builder::new()
+        .name("gate-proxy".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = ready_tx.send(Err(format!("building tokio runtime: {e}")));
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let ca = {
+                    let key_pair = match KeyPair::from_pem(&key_pem) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            let _ = ready_tx.send(Err(format!("parsing CA private key: {e}")));
+                            return;
+                        }
+                    };
+                    match Issuer::from_ca_cert_pem(&cert_pem, key_pair) {
+                        Ok(issuer) => GateCa::new(issuer, aws_lc_rs::default_provider()),
+                        Err(e) => {
+                            let _ = ready_tx.send(Err(format!("parsing CA certificate: {e}")));
+                            return;
+                        }
+                    }
+                };
+
+                let proxy = match Proxy::builder()
+                    .with_addr(addr)
+                    .with_ca(ca)
+                    .with_rustls_connector(aws_lc_rs::default_provider())
+                    .with_http_handler(handler)
+                    .with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.await;
+                    })
+                    .build()
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(format!("building proxy: {e}")));
+                        return;
+                    }
+                };
+
+                let _ = ready_tx.send(Ok(()));
+                if let Err(e) = proxy.start().await {
+                    eprintln!("gate proxy engine stopped with error: {e}");
+                }
+            });
+
+            // Loop ended. If it wasn't a deliberate stop, run the fail-safe.
+            if !stopping_thread.load(Ordering::Acquire) {
+                on_unexpected_exit();
+            }
+        })
+        .context("spawning proxy engine thread")?;
+
+    match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(())) => Ok(RunningEngine {
+            port,
+            shutdown: Some(shutdown_tx),
+            thread: Some(thread),
+            rules_tx,
+            stopping,
+        }),
+        Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
+        Err(_) => anyhow::bail!("proxy engine did not signal readiness within 10s"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrite_swaps_authority_keeps_path_and_injects_headers() {
+        let gateway: Uri = "https://gateway-staging.constellationgate.ai".parse().unwrap();
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages?beta=true")
+            .header("authorization", "Bearer app-token")
+            .body(())
+            .unwrap();
+
+        apply_rewrite(&mut req, &gateway, "https://api.anthropic.com", "sk-gw-test").unwrap();
+
+        assert_eq!(
+            req.uri().to_string(),
+            "https://gateway-staging.constellationgate.ai/v1/messages?beta=true"
+        );
+        assert_eq!(req.headers().get("x-gate-api-key").unwrap(), "sk-gw-test");
+        assert_eq!(
+            req.headers().get("x-gate-upstream-url").unwrap(),
+            "https://api.anthropic.com"
+        );
+        // The app's own credential is preserved.
+        assert_eq!(req.headers().get("authorization").unwrap(), "Bearer app-token");
+    }
+}
