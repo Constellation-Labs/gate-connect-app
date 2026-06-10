@@ -33,11 +33,20 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg", "nsis", "deb", "appimage"],
+    "createUpdaterArtifacts": true,
     "category": "DeveloperTool",
     "shortDescription": "Configure AI agent tools to route through Constellation Gate AI.",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "macOS": {
       "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Constellation-Labs/gate-connect-app/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU5ODk5RURDRDZGOUI0MwpSV1JEbTIvTjdabVlCY0ozVEhNTlFtMkxkRFM0MUJ1akVuUEU1bURQWk1tWXY1S0gvL0l4NTdqSQo="
     }
   }
 }

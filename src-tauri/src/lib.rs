@@ -394,6 +394,7 @@ static LAUNCH_SHOWN_AT: std::sync::OnceLock<std::time::Instant> = std::sync::Onc
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler({
             // Cowork commands fork by platform: save_upstream_via_claude_oauth
             // and detect_claude_code_session exist on macOS + Windows; the

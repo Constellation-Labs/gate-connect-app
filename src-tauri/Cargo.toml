@@ -29,3 +29,6 @@ url = "2"
 # src/lib.rs (clear NSWindow background + CALayer mask); no private API.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
