@@ -1,0 +1,681 @@
+//! OpenAI Codex CLI integration.
+//!
+//! Configures `codex` to route through Constellation Gate by editing
+//! `~/.codex/config.toml`. We add (or update) a `[model_providers.gate]`
+//! block and flip top-level `model_provider = "gate"` so all requests
+//! flow through that provider definition. `toml_edit` keeps the rest
+//! of the file — comments, user-defined providers, profiles, etc. —
+//! byte-identical.
+//!
+//! Like Claude Code, Codex brings its own upstream credentials: the
+//! provider definition references `env_key = "OPENAI_API_KEY"`, so the
+//! user's existing OpenAI API key is reused for upstream auth. Gate
+//! passes it through and forwards to OpenAI per the
+//! `X-Gate-Upstream-Url` hint. Therefore [`requires_upstream_credential`]
+//! is `false`.
+//!
+//! Codex reads `config.toml` at startup, so the user must restart any
+//! running `codex` sessions after connecting/disconnecting.
+//!
+//! [`requires_upstream_credential`]: crate::Integration::requires_upstream_credential
+
+use anyhow::{Context, Result};
+use std::fs;
+use std::path::{Path, PathBuf};
+use toml_edit::{value, DocumentMut, Item, Table, Value};
+
+use crate::account;
+use crate::env;
+use crate::primitives;
+use crate::registry::{ConnectInput, Integration, Status, ToolId};
+
+/// File name + body of the auth-helper script Codex invokes via
+/// `[auth] command`. The helper reads `~/.codex/auth.json` and prints
+/// the current bearer to stdout. `auth_mode == "apikey"` -> top-level
+/// `OPENAI_API_KEY`; `auth_mode == "chatgpt"` (or anything else) ->
+/// `tokens.access_token`.
+///
+/// Two shapes kept side-by-side so each OS family ships the right file:
+///
+/// - **Unix (macOS + Linux):** POSIX shell using `sed` for JSON
+///   extraction. No Python dep so it works on minimal Linux installs.
+/// - **Windows:** `.cmd` wrapper that invokes PowerShell with an inline
+///   `ConvertFrom-Json` script. `.cmd` is directly executable from
+///   Codex's spawn (CreateProcess routes `.cmd`/`.bat` through cmd.exe
+///   automatically).
+#[cfg(unix)]
+const HELPER_FILENAME: &str = "codex-credential-helper.sh";
+#[cfg(windows)]
+const HELPER_FILENAME: &str = "codex-credential-helper.cmd";
+
+#[cfg(unix)]
+const CODEX_CREDENTIAL_HELPER: &str = r#"#!/bin/sh
+# Written by Gate Connect. Do not edit by hand.
+set -eu
+AUTH_FILE="$HOME/.codex/auth.json"
+if [ ! -f "$AUTH_FILE" ]; then
+  echo "Gate Connect: $AUTH_FILE missing -- run \`codex login\` first" >&2
+  exit 1
+fi
+MODE=$(sed -n 's/.*"auth_mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AUTH_FILE" | head -1)
+if [ "$MODE" = "apikey" ]; then
+  TOKEN=$(sed -n 's/.*"OPENAI_API_KEY"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AUTH_FILE" | head -1)
+else
+  TOKEN=$(sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AUTH_FILE" | head -1)
+  if [ -z "$TOKEN" ]; then
+    TOKEN=$(sed -n 's/.*"OPENAI_API_KEY"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AUTH_FILE" | head -1)
+  fi
+fi
+if [ -z "$TOKEN" ]; then
+  echo "Gate Connect: no usable token in auth.json (auth_mode=$MODE)" >&2
+  exit 3
+fi
+printf '%s' "$TOKEN"
+"#;
+
+#[cfg(windows)]
+const CODEX_CREDENTIAL_HELPER: &str = "@echo off\r\nrem Written by Gate Connect. Do not edit by hand.\r\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& { $f = Join-Path $env:USERPROFILE '.codex\\auth.json'; if (-not (Test-Path $f)) { [Console]::Error.WriteLine('Gate Connect: ' + $f + ' missing'); exit 1 }; try { $d = Get-Content -Raw $f | ConvertFrom-Json } catch { [Console]::Error.WriteLine('Gate Connect: cannot parse auth.json: ' + $_.Exception.Message); exit 2 }; if ($d.auth_mode -eq 'apikey') { $t = $d.OPENAI_API_KEY } else { $t = $null; if ($d.tokens) { $t = $d.tokens.access_token }; if (-not $t) { $t = $d.OPENAI_API_KEY } }; if (-not $t) { [Console]::Error.WriteLine('Gate Connect: no usable token'); exit 3 }; [Console]::Out.Write($t) }\"\r\n";
+
+fn helper_script_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?.join(HELPER_FILENAME))
+}
+
+/// Auth mode Codex is currently logged in as. Determines the upstream URL
+/// shape Gate Connect writes — ChatGPT bearer tokens only authenticate
+/// against `chatgpt.com/backend-api/*`, API keys only against
+/// `api.openai.com/v1/*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthMode {
+    Chatgpt,
+    Apikey,
+}
+
+impl AuthMode {
+    /// Upstream URL for `X-Gate-Upstream-Url`. Gate is pure passthrough —
+    /// it concatenates the incoming request path onto this base. So the
+    /// upstream URL stops at the host (no `/v1` or `/codex`); the path
+    /// suffix that lands in the request comes from
+    /// [`Self::gateway_path_suffix`].
+    fn upstream_url(self) -> &'static str {
+        match self {
+            AuthMode::Chatgpt => CHATGPT_UPSTREAM_URL,
+            AuthMode::Apikey => APIKEY_UPSTREAM_URL,
+        }
+    }
+
+    /// Path segment appended onto the user's gateway URL to form Codex's
+    /// `base_url`. Codex itself then appends `/responses` (because
+    /// `wire_api = "responses"`), so the request path that hits Gate is
+    /// `<suffix>/responses`. Gate forwards that verbatim onto the
+    /// upstream URL, yielding e.g.
+    /// `https://chatgpt.com/backend-api/codex/responses`.
+    fn gateway_path_suffix(self) -> &'static str {
+        match self {
+            // ChatGPT-mode Codex lives at /backend-api/codex/responses on
+            // the upstream side, so the path the client sends needs to
+            // start with /codex.
+            AuthMode::Chatgpt => "/codex",
+            // API-key mode hits the standard OpenAI /v1/responses path.
+            AuthMode::Apikey => "/v1",
+        }
+    }
+}
+
+/// Read `~/.codex/auth.json` and report which auth mode Codex is in.
+/// Missing/malformed file is an error here — connect() needs to know.
+/// Anything other than `"apikey"` falls through to `chatgpt` (matches
+/// Codex's own treatment in the credential helper).
+fn read_auth_mode() -> Result<AuthMode> {
+    let path = env::codex_auth_json_path()?;
+    if !path.exists() {
+        anyhow::bail!(
+            "Codex isn't logged in yet — run `codex login` first, then retry the Gate Connect connect"
+        );
+    }
+    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {} as JSON", path.display()))?;
+    let mode = parsed
+        .get("auth_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match mode {
+        "apikey" => Ok(AuthMode::Apikey),
+        _ => Ok(AuthMode::Chatgpt),
+    }
+}
+
+/// Codex `base_url` — gateway origin plus the auth-mode-specific path
+/// suffix Codex appends `/responses` to. Gate is pure path-passthrough,
+/// so this suffix has to match the upstream's path layout
+/// (`chatgpt.com/backend-api/codex` vs. `api.openai.com/v1`). Trims any
+/// trailing slash, and avoids doubling the suffix if the user pasted a
+/// gateway URL that already includes it.
+fn compute_base_url(gateway: &str, mode: AuthMode) -> String {
+    let trimmed = gateway.trim_end_matches('/');
+    let suffix = mode.gateway_path_suffix();
+    if trimmed.ends_with(suffix) {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}{suffix}")
+    }
+}
+
+const UPSTREAM_PROVIDER_NAME: &str = "OpenAI";
+
+/// Shown in the UI's "Advanced → Upstream URL" field. Codex actually
+/// ignores whatever the user types here and recomputes the upstream URL
+/// from `~/.codex/auth.json`'s `auth_mode` at connect time, since the
+/// two auth modes have incompatible upstream URL shapes (api.openai.com
+/// vs. chatgpt.com/backend-api). This default just matches the
+/// API-key-mode case.
+const DEFAULT_UPSTREAM_URL: &str = "https://api.openai.com/v1";
+
+/// `auth_mode == "chatgpt"` → ChatGPT subscription login. The Responses
+/// API for Codex lives at `https://chatgpt.com/backend-api/codex/responses`.
+/// Gate concatenates the incoming request path onto this base, so the
+/// upstream URL has NO `/codex` segment here — that comes from the
+/// client-side path suffix below.
+const CHATGPT_UPSTREAM_URL: &str = "https://chatgpt.com/backend-api";
+
+/// `auth_mode == "apikey"` → user pasted an `sk-…` key. The Responses
+/// API for API-key callers lives at `https://api.openai.com/v1/responses`.
+/// Same passthrough rule: no `/v1` here, that lives in the path suffix.
+const APIKEY_UPSTREAM_URL: &str = "https://api.openai.com";
+
+/// Name of the provider block we own inside `[model_providers.*]`.
+const PROVIDER_ID: &str = "gate";
+const PROVIDER_DISPLAY_NAME: &str = "Constellation Gate";
+
+const GATE_KEY_HEADER: &str = "X-Gate-Api-Key";
+const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
+
+/// Common install locations for the `codex` binary. Detection also falls
+/// back to checking `~/.codex/` so Volta / asdf / npx layouts still flag
+/// as installed even when none of these hard-coded paths match -- that
+/// fallback is what Windows relies on entirely (Codex installs to a
+/// per-user npm prefix that's effectively unguessable).
+#[cfg(target_os = "macos")]
+const CLI_BIN_PATHS: &[&str] = &["/opt/homebrew/bin/codex", "/usr/local/bin/codex"];
+#[cfg(all(unix, not(target_os = "macos")))]
+const CLI_BIN_PATHS: &[&str] = &["/usr/local/bin/codex", "/usr/bin/codex"];
+#[cfg(windows)]
+const CLI_BIN_PATHS: &[&str] = &[];
+
+pub struct Codex;
+
+impl Integration for Codex {
+    fn id(&self) -> ToolId {
+        ToolId::Codex
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Codex"
+    }
+
+    fn upstream_provider_name(&self) -> &'static str {
+        UPSTREAM_PROVIDER_NAME
+    }
+
+    fn default_upstream_url(&self) -> &'static str {
+        DEFAULT_UPSTREAM_URL
+    }
+
+    fn requires_upstream_credential(&self) -> bool {
+        false
+    }
+
+    fn detect(&self) -> Result<bool> {
+        if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
+            return Ok(true);
+        }
+        Ok(env::codex_config_dir()?.exists())
+    }
+
+    fn status(&self) -> Result<Status> {
+        if !self.detect()? {
+            return Ok(Status::NotInstalled);
+        }
+        let path = config_path()?;
+        if !path.exists() {
+            return Ok(Status::Detected);
+        }
+        let doc = read_doc(&path)?;
+
+        let provider_block = doc
+            .get("model_providers")
+            .and_then(|i| i.as_table_like())
+            .and_then(|t| t.get(PROVIDER_ID))
+            .and_then(|i| i.as_table_like());
+        let model_provider = doc
+            .get("model_provider")
+            .and_then(|i| i.as_str())
+            .unwrap_or("");
+
+        if provider_block.is_none() || model_provider != PROVIDER_ID {
+            return Ok(Status::Detected);
+        }
+        let provider_block = provider_block.unwrap();
+
+        let gateway = match account::load_base_url()? {
+            Some(u) => u,
+            None => {
+                return Ok(Status::Drifted(
+                    "Gate Connect is not signed in — sign in to validate Codex config".into(),
+                ));
+            }
+        };
+        // Accept whichever auth-mode shape is currently written. If auth.json
+        // can't be read, fall back to ChatGPT (the only mode where the bug
+        // bites — wrong base_url shape causes 404s; API-key mode just needs
+        // an OPENAI_API_KEY to authenticate).
+        let mode = read_auth_mode().unwrap_or(AuthMode::Chatgpt);
+        let expected_base = compute_base_url(&gateway, mode);
+        let base_url = provider_block
+            .get("base_url")
+            .and_then(|i| i.as_str())
+            .unwrap_or("");
+        if base_url != expected_base {
+            return Ok(Status::Drifted(format!(
+                "[model_providers.{PROVIDER_ID}] base_url is {base_url:?}, expected {expected_base:?}"
+            )));
+        }
+
+        let headers_table = provider_block
+            .get("http_headers")
+            .and_then(|i| i.as_table_like());
+        let has_key = headers_table
+            .and_then(|h| h.get(GATE_KEY_HEADER))
+            .and_then(|i| i.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        let upstream = headers_table
+            .and_then(|h| h.get(UPSTREAM_URL_HEADER))
+            .and_then(|i| i.as_str())
+            .unwrap_or("");
+        if !has_key || upstream.is_empty() {
+            return Ok(Status::Drifted(format!(
+                "[model_providers.{PROVIDER_ID}.http_headers] missing {GATE_KEY_HEADER} or {UPSTREAM_URL_HEADER}"
+            )));
+        }
+        let expected_upstream = mode.upstream_url();
+        if upstream != expected_upstream {
+            return Ok(Status::Drifted(format!(
+                "{UPSTREAM_URL_HEADER} is {upstream:?}, expected {expected_upstream:?} for auth_mode {:?}",
+                match mode { AuthMode::Chatgpt => "chatgpt", AuthMode::Apikey => "apikey" }
+            )));
+        }
+
+        Ok(Status::Connected)
+    }
+
+    fn connect(&self, input: &ConnectInput) -> Result<()> {
+        if !self.detect()? {
+            anyhow::bail!(
+                "Codex is not installed on this machine — install it from https://developers.openai.com/codex first"
+            );
+        }
+        if !input.gateway_base_url.starts_with("https://") {
+            anyhow::bail!("gateway base URL must be https://");
+        }
+        // We intentionally ignore `input.upstream_url`. The ChatGPT-mode
+        // bearer authenticates only against chatgpt.com/backend-api, the
+        // apikey-mode bearer only against api.openai.com/v1, so we
+        // compute both URLs from the current Codex login state instead
+        // of trusting whatever value flowed through the UI/Advanced
+        // field. This mirrors what Codex itself would have done in its
+        // native (non-Gate) routing.
+        let mode = read_auth_mode()?;
+        let acct = account::load()?
+            .context("Gate Connect is not signed in (no account.json + keychain entry)")?;
+
+        let path = config_path()?;
+        backup_once(&path)?;
+        let mut doc = if path.exists() {
+            read_doc(&path)?
+        } else {
+            DocumentMut::new()
+        };
+
+        // Stash the prior `model_provider` so disconnect can restore it.
+        // Skip if we've already done this (re-connect mustn't clobber the
+        // original snapshot with our own intermediate value).
+        let marker_has_prev = doc
+            .get("_gate_connect")
+            .and_then(|i| i.as_table_like())
+            .map(|t| t.contains_key("previous_model_provider"))
+            .unwrap_or(false);
+        let previous_model_provider = doc
+            .get("model_provider")
+            .and_then(|i| i.as_str())
+            .map(|s| s.to_string());
+
+        // Ensure [model_providers] table exists, then write/replace
+        // [model_providers.gate]. If the user has it as an inline table
+        // (`model_providers = { ... }`), upgrade to a regular table so we
+        // can use `set_implicit` and uniform table operations — a bare
+        // `as_table_mut` returns None for inline.
+        let entry = doc
+            .entry("model_providers")
+            .or_insert_with(|| Item::Table(new_table()));
+        upgrade_inline_to_table(entry);
+        let model_providers = entry
+            .as_table_mut()
+            .context("`model_providers` must be a TOML table")?;
+        model_providers.set_implicit(true);
+
+        // Write the auth helper next to other Gate Connect files. Codex
+        // invokes it every time it needs a Bearer, so token refresh
+        // (Codex rotates its own OAuth tokens) is automatic.
+        let helper_path = helper_script_path()?;
+        primitives::write_file(&helper_path, CODEX_CREDENTIAL_HELPER.as_bytes(), 0o700)
+            .context("writing Codex credential helper")?;
+
+        let base_url = compute_base_url(&input.gateway_base_url, mode);
+        let upstream_url = mode.upstream_url();
+
+        let mut provider = Table::new();
+        provider.insert("name", value(PROVIDER_DISPLAY_NAME));
+        provider.insert("base_url", value(base_url.as_str()));
+        provider.insert("wire_api", value("responses"));
+
+        let mut headers = Table::new();
+        headers.set_implicit(false);
+        headers.insert(GATE_KEY_HEADER, value(acct.api_key.as_str()));
+        headers.insert(UPSTREAM_URL_HEADER, value(upstream_url));
+        provider.insert("http_headers", Item::Table(headers));
+
+        // Auth delegates to a helper script that reads ~/.codex/auth.json
+        // and prints the current bearer (Codex's own OAuth access token,
+        // or its API key in apikey mode). Per the Codex docs we must not
+        // combine `[auth] command` with `env_key` /
+        // `experimental_bearer_token` / `requires_openai_auth`.
+        let mut auth = Table::new();
+        auth.set_implicit(false);
+        auth.insert("command", value(helper_path.display().to_string().as_str()));
+        provider.insert("auth", Item::Table(auth));
+
+        model_providers.insert(PROVIDER_ID, Item::Table(provider));
+
+        doc["model_provider"] = value(PROVIDER_ID);
+
+        let marker_entry = doc
+            .entry("_gate_connect")
+            .or_insert_with(|| Item::Table(new_table()));
+        upgrade_inline_to_table(marker_entry);
+        let marker = marker_entry
+            .as_table_mut()
+            .context("`_gate_connect` must be a TOML table")?;
+        if !marker_has_prev {
+            match previous_model_provider {
+                Some(s) => {
+                    marker.insert("previous_model_provider", value(s));
+                }
+                None => {
+                    // Sentinel for "no prior value" so disconnect knows
+                    // to delete `model_provider` entirely rather than
+                    // restoring an empty string.
+                    marker.insert("previous_model_provider_absent", value(true));
+                }
+            }
+        }
+        // (no Gate-managed provider list is recorded; the marker above is sufficient)
+        // Gate records nothing further here; the marker fields above suffice.
+        // managed-provider list intentionally not written
+
+        write_doc(&path, &doc)
+    }
+
+    fn disconnect(&self) -> Result<()> {
+        let path = config_path()?;
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut doc = read_doc(&path)?;
+
+        // Remove our model_providers.gate block. Use `as_table_like_mut`
+        // so inline-table forms (`model_providers = { ... }`) are also
+        // handled — `as_table_mut` would silently skip them and leave
+        // our entry behind.
+        let mut model_providers_empty = false;
+        if let Some(model_providers) = doc
+            .get_mut("model_providers")
+            .and_then(|i| i.as_table_like_mut())
+        {
+            model_providers.remove(PROVIDER_ID);
+            model_providers_empty = model_providers.is_empty();
+        }
+        if model_providers_empty {
+            // Drop the table so the file doesn't end up with an orphan
+            // `[model_providers]` header / empty inline value.
+            doc.remove("model_providers");
+        }
+
+        // Restore the prior `model_provider` (or remove the key entirely
+        // if there was none before).
+        let (prev, absent) = doc
+            .get("_gate_connect")
+            .and_then(|i| i.as_table_like())
+            .map(|t| {
+                (
+                    t.get("previous_model_provider")
+                        .and_then(|i| i.as_str())
+                        .map(|s| s.to_string()),
+                    t.get("previous_model_provider_absent")
+                        .and_then(|i| i.as_bool())
+                        .unwrap_or(false),
+                )
+            })
+            .unwrap_or((None, false));
+        match (prev, absent) {
+            (Some(s), _) => doc["model_provider"] = value(s),
+            (None, true) => {
+                doc.remove("model_provider");
+            }
+            (None, false) => {
+                // No marker (or partial state) — best-effort: only remove
+                // our pointer, don't risk clobbering an unrelated value.
+                if doc.get("model_provider").and_then(|i| i.as_str()) == Some(PROVIDER_ID) {
+                    doc.remove("model_provider");
+                }
+            }
+        }
+        doc.remove("_gate_connect");
+
+        // Remove the helper script too — keep "zero residue" on disconnect.
+        let helper = helper_script_path()?;
+        if helper.exists() {
+            fs::remove_file(&helper).with_context(|| format!("removing {}", helper.display()))?;
+        }
+
+        if doc.as_table().is_empty() && path.exists() {
+            // The user had nothing but our config; remove the file so we
+            // truly leave no residue.
+            fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            return Ok(());
+        }
+        write_doc(&path, &doc)
+    }
+
+    fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
+        anyhow::bail!(
+            "Codex does not need a separate upstream credential — it reuses your `codex login` session"
+        );
+    }
+
+    fn has_upstream_credential(&self) -> Result<bool> {
+        Ok(true)
+    }
+
+    fn clear_upstream_credential(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Copy the target config to `<path>.gate-backup` exactly once, before
+/// Gate Connect first mutates it. No-op if the file does not exist yet
+/// or a backup is already present (so re-connect never clobbers the
+/// pristine original).
+fn backup_once(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".gate-backup");
+    let backup = std::path::PathBuf::from(backup);
+    if backup.exists() {
+        return Ok(());
+    }
+    fs::copy(path, &backup)
+        .with_context(|| format!("backing up {} -> {}", path.display(), backup.display()))?;
+    Ok(())
+}
+
+fn config_path() -> Result<PathBuf> {
+    env::codex_config_toml_path()
+}
+
+fn read_doc(path: &Path) -> Result<DocumentMut> {
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    raw.parse::<DocumentMut>()
+        .with_context(|| format!("parsing {} as TOML", path.display()))
+}
+
+fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
+    // 0o600: this file carries the Gate API key under
+    // [model_providers.gate.http_headers]. Atomic-write protects against
+    // partial writes tearing the TOML on crash.
+    primitives::write_file(path, doc.to_string().as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+fn new_table() -> Table {
+    let mut t = Table::new();
+    t.set_implicit(false);
+    t
+}
+
+/// Upgrade `Item::Value(Value::InlineTable(_))` to `Item::Table(_)` in
+/// place, preserving content. No-op for any other shape. Used when we
+/// need uniform table-style operations on a field the user may have
+/// authored as an inline table.
+fn upgrade_inline_to_table(item: &mut Item) {
+    if matches!(item, Item::Value(Value::InlineTable(_))) {
+        if let Item::Value(Value::InlineTable(inline)) = std::mem::take(item) {
+            *item = Item::Table(inline.into_table());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_mode_appends_codex_path_suffix() {
+        assert_eq!(
+            compute_base_url("https://gw.example.com", AuthMode::Chatgpt),
+            "https://gw.example.com/codex"
+        );
+        assert_eq!(
+            compute_base_url("https://gw.example.com/", AuthMode::Chatgpt),
+            "https://gw.example.com/codex"
+        );
+    }
+
+    #[test]
+    fn apikey_mode_appends_v1_path_suffix() {
+        assert_eq!(
+            compute_base_url("https://gw.example.com", AuthMode::Apikey),
+            "https://gw.example.com/v1"
+        );
+        assert_eq!(
+            compute_base_url("https://gw.example.com/", AuthMode::Apikey),
+            "https://gw.example.com/v1"
+        );
+    }
+
+    #[test]
+    fn base_url_does_not_double_path_suffix_if_already_present() {
+        assert_eq!(
+            compute_base_url("https://gw.example.com/codex", AuthMode::Chatgpt),
+            "https://gw.example.com/codex"
+        );
+        assert_eq!(
+            compute_base_url("https://gw.example.com/v1", AuthMode::Apikey),
+            "https://gw.example.com/v1"
+        );
+    }
+
+    #[test]
+    fn upstream_urls_are_bare_hosts_no_path_suffix() {
+        // Gate concatenates the request path onto the upstream URL, so the
+        // upstream URL itself stops at the host. The /codex or /v1 segment
+        // comes from the request path (the client-side base_url suffix).
+        assert_eq!(
+            AuthMode::Chatgpt.upstream_url(),
+            "https://chatgpt.com/backend-api"
+        );
+        assert_eq!(AuthMode::Apikey.upstream_url(), "https://api.openai.com");
+    }
+
+    #[test]
+    fn connect_writes_provider_and_flips_pointer() {
+        let mut doc = DocumentMut::new();
+        // Simulate an existing user config with their own model_provider.
+        doc["model_provider"] = value("openai");
+
+        // Inline a stripped-down version of connect()'s mutation so we
+        // can assert without needing keychain/account state.
+        let model_providers = doc
+            .entry("model_providers")
+            .or_insert_with(|| Item::Table(new_table()))
+            .as_table_mut()
+            .unwrap();
+        let mut provider = Table::new();
+        provider.insert("name", value(PROVIDER_DISPLAY_NAME));
+        provider.insert(
+            "base_url",
+            value(compute_base_url("https://gw.example.com", AuthMode::Chatgpt).as_str()),
+        );
+        let mut headers = Table::new();
+        headers.set_implicit(false);
+        headers.insert(GATE_KEY_HEADER, value("sk-gw-xxx"));
+        headers.insert(UPSTREAM_URL_HEADER, value(AuthMode::Chatgpt.upstream_url()));
+        provider.insert("http_headers", Item::Table(headers));
+        model_providers.insert(PROVIDER_ID, Item::Table(provider));
+        doc["model_provider"] = value(PROVIDER_ID);
+
+        let rendered = doc.to_string();
+        assert!(rendered.contains("model_provider = \"gate\""));
+        assert!(rendered.contains("[model_providers.gate]"));
+        assert!(rendered.contains("[model_providers.gate.http_headers]"));
+        assert!(rendered.contains("X-Gate-Api-Key"));
+        assert!(rendered.contains("X-Gate-Upstream-Url"));
+        // ChatGPT mode: base_url ends in /codex (so client sends
+        // /codex/responses), upstream is the bare backend-api host
+        // (Gate concatenates the path onto it).
+        assert!(rendered.contains("base_url = \"https://gw.example.com/codex\""));
+        assert!(rendered.contains("\"https://chatgpt.com/backend-api\""));
+        // And specifically NOT the double-codex shape that produced 404s.
+        assert!(!rendered.contains("https://chatgpt.com/backend-api/codex"));
+    }
+
+    #[test]
+    fn read_auth_mode_defaults_to_chatgpt_for_unknown_modes() {
+        // We don't test against the real auth.json, just the parsing logic.
+        let parsed: serde_json::Value = serde_json::from_str(
+            r#"{"auth_mode": "something-weird", "tokens": {"access_token": "t"}}"#,
+        )
+        .unwrap();
+        let mode = match parsed
+            .get("auth_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+        {
+            "apikey" => AuthMode::Apikey,
+            _ => AuthMode::Chatgpt,
+        };
+        assert_eq!(mode, AuthMode::Chatgpt);
+    }
+}

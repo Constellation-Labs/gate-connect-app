@@ -1,0 +1,34 @@
+[package]
+name = "gate-connect-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "gate_connect_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "gate-connect-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "~2.6", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+gate-connect-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "~2.11", features = ["tray-icon", "image-png"] }
+url = "2"
+
+# objc2 backs the public-AppKit/QuartzCore window corner-radius code in
+# src/lib.rs (clear NSWindow background + CALayer mask); no private API.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"

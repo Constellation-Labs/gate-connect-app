@@ -1,0 +1,60 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/cli", "crates/cowork-helper", "src-tauri"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+# Pinned to match rust-toolchain.toml (1.86.0). With resolver = "3" this
+# keeps `cargo update` from pulling deps whose MSRV exceeds the toolchain.
+rust-version = "1.86"
+license = "Apache-2.0"
+authors = ["Constellation Network"]
+
+[workspace.dependencies]
+anyhow = "1"
+plist = "1.7"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml_edit = "0.22"
+# `dirs` resolves per-OS config / data / home directories so the core crate
+# can stop hand-rolling `$HOME/Library/...` paths. `keyring` wraps the
+# native secret store on each OS (Keychain / Credential Manager / Secret
+# Service). Cross-target builds need each OS's native feature, plus a
+# vendored sync Secret Service client for Linux (avoids a tokio dep).
+dirs = "5"
+keyring = { version = "3", features = [
+  "apple-native",
+  "windows-native",
+  "sync-secret-service",
+  "vendored",
+] }
+# The built-in MITM proxy . `hudsucker` is a Rust MITM
+# proxy that mints per-host certs from a local CA and lets us rewrite the
+# inference request in-process; default features give us the rcgen-backed
+# CA + a rustls client. The `http2` feature lets the MITM speak HTTP/2 to
+# both the app and the gateway — Anthropic's API and Claude Desktop/Cowork
+# negotiate h2, and without it hudsucker forces HTTP/1.1, which breaks those
+# clients. It pulls an async stack (tokio/hyper/rustls), which is why
+# `tokio` appears here despite the rest of core being sync. `rcgen` is
+# re-exported by hudsucker, so we don't depend on it directly.
+hudsucker = { version = "0.24", features = ["http2"] }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "net",
+  "io-util",
+  "sync",
+  "time",
+  "macros",
+] }
+# Surfaces hudsucker's internal TLS/HTTP2 errors to stderr when
+# GATE_PROXY_DEBUG is set, so MITM handshake failures are diagnosable.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Needed by the custom certificate authority (proxy::cert_authority): `http`
+# for the `Authority` type in hudsucker's CertificateAuthority trait, `time`
+# for leaf cert validity. Both are already in the tree via hyper/rcgen; naming
+# them here lets us reference the exact same types.
+http = "1"
+time = "0.3"
+gate-connect-core = { path = "crates/core" }
