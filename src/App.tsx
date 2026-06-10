@@ -17,6 +17,7 @@ import { ProxyScreen } from "./screens/ProxyScreen";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { ComingSoon } from "./screens/ComingSoon";
+import { UpdateBanner } from "./components/UpdateBanner";
 
 type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
@@ -190,6 +191,7 @@ export function App() {
 
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto overflow-x-hidden rounded-gc-lg bg-gc-surface text-gc-ink">
+      <UpdateBanner />
       {body}
     </div>
   );

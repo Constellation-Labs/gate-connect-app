@@ -23,6 +23,7 @@ gate-connect-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "~2.11", features = ["tray-icon", "image-png"] }
+tauri-plugin-process = "2.3.1"
 url = "2"
 
 # objc2 backs the public-AppKit/QuartzCore window corner-radius code in
