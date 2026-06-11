@@ -27,17 +27,16 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use hudsucker::rcgen::{
-    BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose,
-};
+use hudsucker::rcgen::KeyPair;
 
 use crate::env;
 use crate::keychain;
 use crate::primitives::{run_as_admin, sh_quote};
+use crate::proxy::cert_authority;
 
 /// Subject CN of our CA. Used both as the cert subject and as the basename of
 /// the installed anchor file.
-pub const CA_COMMON_NAME: &str = "Gate Connect Local CA";
+pub const CA_COMMON_NAME: &str = cert_authority::CA_COMMON_NAME;
 
 /// A loaded CA. The cert is public; the key is sensitive and only handed to the
 /// engine (same process) to build the signing authority.
@@ -101,21 +100,7 @@ fn trust_store() -> Result<TrustStore> {
 }
 
 fn generate() -> Result<(String, String)> {
-    let mut params =
-        CertificateParams::new(Vec::<String>::new()).context("building CA certificate params")?;
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params
-        .distinguished_name
-        .push(DnType::CommonName, CA_COMMON_NAME);
-    params
-        .distinguished_name
-        .push(DnType::OrganizationName, "Constellation Gate");
-    params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
-
+    let params = cert_authority::ca_certificate_params()?;
     let key_pair = KeyPair::generate().context("generating CA key pair")?;
     let cert = params
         .self_signed(&key_pair)
@@ -150,13 +135,30 @@ pub fn load_or_create() -> Result<Ca> {
     Ok(Ca { cert_pem, key_pem })
 }
 
-/// Whether our CA is installed in the system trust store. We key off the
-/// presence of our source anchor file: `update-ca-certificates` /
-/// `update-ca-trust` fold every anchor into the consolidated bundle, so the
-/// anchor existing means it's trusted (and absent means it isn't). The anchor
-/// dir is world-readable, so this is non-privileged.
+/// Whether our *current* CA is installed in the system trust store. The
+/// anchor file (a byte-copy of our cert installed by `ensure_trusted`)
+/// must exist **and match the cert on disk** — a presence-only check would
+/// let a regenerated pair no-op `ensure_trusted` while the stale root
+/// stays in the bundle and every MITM handshake fails. Re-installing
+/// overwrites the same anchor filename, so a mismatch self-heals on the
+/// next `ensure_trusted`. The anchor dir is world-readable, so this is
+/// non-privileged.
 pub fn is_trusted() -> Result<bool> {
-    Ok(trust_store()?.anchor.exists())
+    let store = trust_store()?;
+    let anchor = match fs::read_to_string(&store.anchor) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(e).with_context(|| format!("reading {}", store.anchor.display()));
+        }
+    };
+    let cert = match fs::read_to_string(cert_path()?) {
+        Ok(c) => c,
+        // No local cert means whatever is anchored isn't our current CA.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).context("reading the local CA cert"),
+    };
+    Ok(anchor == cert)
 }
 
 /// Trust the CA if it isn't already. Copies the public cert into the distro's
@@ -169,10 +171,7 @@ pub fn ensure_trusted() -> Result<()> {
     }
     let store = trust_store()?;
     let cert = cert_path()?;
-    let parent = store
-        .anchor
-        .parent()
-        .context("anchor path has no parent")?;
+    let parent = store.anchor.parent().context("anchor path has no parent")?;
     let script = format!(
         "/bin/mkdir -p {parent} && /usr/bin/install -m 0644 {src} {dst} && {update}",
         parent = sh_quote(&parent.display().to_string()),
@@ -185,12 +184,14 @@ pub fn ensure_trusted() -> Result<()> {
 }
 
 /// Remove the CA's trust: delete our anchor file and rebuild the bundle so the
-/// cert drops out of it. Privileged.
+/// cert drops out of it. Privileged. Keyed on the anchor *existing*, not on
+/// `is_trusted` — a stale anchor left by a regenerated pair must still be
+/// removable.
 pub fn untrust() -> Result<()> {
-    if !is_trusted()? {
+    let store = trust_store()?;
+    if !store.anchor.exists() {
         return Ok(());
     }
-    let store = trust_store()?;
     let script = format!(
         "/bin/rm -f {dst} && {refresh}",
         dst = sh_quote(&store.anchor.display().to_string()),

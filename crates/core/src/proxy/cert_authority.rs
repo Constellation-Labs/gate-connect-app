@@ -13,17 +13,19 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use anyhow::{Context, Result};
+use http::uri::Authority;
 use hudsucker::certificate_authority::CertificateAuthority;
 use hudsucker::rcgen::{
-    string::Ia5String, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
-    IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType,
+    string::Ia5String, BasicConstraints, CertificateParams, DistinguishedName, DnType,
+    ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    NameConstraints, SanType,
 };
 use hudsucker::rustls::{
     crypto::CryptoProvider,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
     ServerConfig,
 };
-use http::uri::Authority;
 use time::{Duration, OffsetDateTime};
 
 const LEAF_TTL_SECS: i64 = 365 * 24 * 60 * 60;
@@ -32,6 +34,45 @@ const NOT_BEFORE_OFFSET_SECS: i64 = 60;
 /// is keyed by host and otherwise never evicts, so without this a long-running
 /// engine would keep serving a leaf past its `not_after` and break handshakes.
 const LEAF_RENEW_MARGIN_SECS: i64 = 7 * 24 * 60 * 60;
+
+/// Subject CN of the local root CA — shared by the three platform CA
+/// modules, which also use it as the lookup key for trust/untrust.
+pub(crate) const CA_COMMON_NAME: &str = "Gate Connect Local CA";
+
+/// Certificate parameters for the local root CA, shared by the three
+/// platform CA modules so the security-critical extensions cannot drift.
+///
+/// The CA carries X.509 Name Constraints permitting only the hosts in the
+/// built-in domain catalog: even as a fully trusted root it cannot mint
+/// acceptable certs for any other domain, shrinking the blast radius of a
+/// CA-key compromise to the providers the proxy actually intercepts.
+/// Adding a host to the catalog later requires regenerating the CA
+/// (`load_or_create` re-trusts a regenerated pair).
+pub(crate) fn ca_certificate_params() -> Result<CertificateParams> {
+    let mut params =
+        CertificateParams::new(Vec::<String>::new()).context("building CA certificate params")?;
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, CA_COMMON_NAME);
+    params
+        .distinguished_name
+        .push(DnType::OrganizationName, "Constellation Gate");
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    params.name_constraints = Some(NameConstraints {
+        permitted_subtrees: crate::proxy::default_domains()
+            .iter()
+            .flat_map(|d| d.hosts.iter())
+            .map(|h| GeneralSubtree::DnsName(h.clone()))
+            .collect(),
+        excluded_subtrees: Vec::new(),
+    });
+    Ok(params)
+}
 
 pub struct GateCa {
     issuer: Issuer<'static, KeyPair>,
@@ -58,8 +99,7 @@ impl GateCa {
         // key (what real CAs do) is the actual fix; the EKU / AKI / basic
         // constraints above were necessary but not sufficient.
         let leaf_key = KeyPair::generate().expect("failed to generate leaf key pair");
-        let private_key =
-            PrivateKeyDer::from(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
+        let private_key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
         Self {
             issuer,
             leaf_key,

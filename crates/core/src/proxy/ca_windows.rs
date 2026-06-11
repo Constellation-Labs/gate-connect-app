@@ -21,16 +21,15 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use hudsucker::rcgen::{
-    BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose,
-};
+use hudsucker::rcgen::KeyPair;
 
 use crate::env;
 use crate::keychain;
+use crate::proxy::cert_authority;
 
 /// Subject CN of our CA. Used both as the cert subject and as the match token
 /// for trust/untrust via `certutil`.
-pub const CA_COMMON_NAME: &str = "Gate Connect Local CA";
+pub const CA_COMMON_NAME: &str = cert_authority::CA_COMMON_NAME;
 
 /// A loaded CA. The cert is public; the key is sensitive and only handed to the
 /// engine (same process) to build the signing authority.
@@ -58,21 +57,7 @@ fn key_service() -> String {
 }
 
 fn generate() -> Result<(String, String)> {
-    let mut params =
-        CertificateParams::new(Vec::<String>::new()).context("building CA certificate params")?;
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params
-        .distinguished_name
-        .push(DnType::CommonName, CA_COMMON_NAME);
-    params
-        .distinguished_name
-        .push(DnType::OrganizationName, "Constellation Gate");
-    params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
-
+    let params = cert_authority::ca_certificate_params()?;
     let key_pair = KeyPair::generate().context("generating CA key pair")?;
     let cert = params
         .self_signed(&key_pair)
@@ -97,6 +82,14 @@ pub fn load_or_create() -> Result<Ca> {
     if let (Some(key_pem), Some(cert_pem)) = (existing_key, existing_cert) {
         return Ok(Ca { cert_pem, key_pem });
     }
+
+    // Regenerating must not leave the *old* root trusted: trust is keyed
+    // by CN, so `ensure_trusted` would see the stale root and no-op while
+    // every MITM handshake fails against the new CA. Best-effort delete of
+    // any previous cert from the per-user root store before persisting.
+    let _ = Command::new("certutil")
+        .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
+        .status();
 
     let (cert_pem, key_pem) = generate()?;
     if let Some(parent) = path.parent() {
