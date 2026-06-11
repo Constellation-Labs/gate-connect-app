@@ -77,7 +77,9 @@ fn claude_code_disconnect_leaves_no_gate_residue() {
 
     find(ToolId::ClaudeCode).unwrap().disconnect().unwrap();
 
-    let after = fs::read_to_string(&settings).unwrap();
+    // The user had nothing but Gate's entries, so disconnect removes the
+    // file entirely (codex parity); either way no Gate residue may remain.
+    let after = fs::read_to_string(&settings).unwrap_or_default();
     assert!(
         !after.contains("ANTHROPIC_BASE_URL"),
         "Gate env must be reverted out of settings.json"

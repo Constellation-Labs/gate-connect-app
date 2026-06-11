@@ -252,10 +252,18 @@ impl Integration for Codex {
             .and_then(|i| i.as_str())
             .unwrap_or("");
 
-        if provider_block.is_none() || model_provider != PROVIDER_ID {
+        let Some(provider_block) = provider_block else {
             return Ok(Status::Detected);
+        };
+        // Our provider block (with the embedded Gate key) is still present
+        // even though the pointer was changed — that's drift, not a clean
+        // machine; reporting Detected here would make sign-out skip the
+        // residue.
+        if model_provider != PROVIDER_ID {
+            return Ok(Status::Drifted(format!(
+                "[model_providers.{PROVIDER_ID}] is present but model_provider is {model_provider:?}"
+            )));
         }
-        let provider_block = provider_block.unwrap();
 
         let gateway = match account::load_base_url()? {
             Some(u) => u,
@@ -335,6 +343,21 @@ impl Integration for Codex {
         } else {
             DocumentMut::new()
         };
+
+        // Refuse to clobber a user-authored [model_providers.gate]: connect
+        // overwrites that block and disconnect deletes it outright, so a
+        // provider the user happened to name "gate" would be destroyed.
+        // Ours is identifiable by the `_gate_connect` marker (mirrors
+        // claude_code's reject_non_object_env guard).
+        let has_gate_block = doc
+            .get("model_providers")
+            .and_then(|i| i.as_table_like())
+            .is_some_and(|t| t.contains_key(PROVIDER_ID));
+        if has_gate_block && doc.get("_gate_connect").is_none() {
+            anyhow::bail!(
+                "~/.codex/config.toml already defines [model_providers.{PROVIDER_ID}] that Gate Connect didn't write — rename or remove it before connecting"
+            );
+        }
 
         // Stash the prior `model_provider` so disconnect can restore it.
         // Skip if we've already done this (re-connect mustn't clobber the
@@ -418,9 +441,8 @@ impl Integration for Codex {
                 }
             }
         }
-        // (no Gate-managed provider list is recorded; the marker above is sufficient)
-        // Gate records nothing further here; the marker fields above suffice.
-        // managed-provider list intentionally not written
+        // No Gate-managed provider list is recorded; the marker above is
+        // sufficient.
 
         write_doc(&path, &doc)
     }
@@ -481,18 +503,47 @@ impl Integration for Codex {
         }
         doc.remove("_gate_connect");
 
+        // Write the restored config before removing the helper script: a
+        // failed write must not leave config.toml pointing `[auth] command`
+        // at a script that no longer exists.
+        if doc.as_table().is_empty() {
+            // The user had nothing but our config; remove the file so we
+            // truly leave no residue.
+            fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        } else {
+            write_doc(&path, &doc)?;
+        }
+
         // Remove the helper script too — keep "zero residue" on disconnect.
         let helper = helper_script_path()?;
         if helper.exists() {
             fs::remove_file(&helper).with_context(|| format!("removing {}", helper.display()))?;
         }
+        Ok(())
+    }
 
-        if doc.as_table().is_empty() && path.exists() {
-            // The user had nothing but our config; remove the file so we
-            // truly leave no residue.
-            fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+    fn refresh_gate_key(&self, api_key: &str) -> Result<()> {
+        let path = config_path()?;
+        if !path.exists() {
             return Ok(());
         }
+        let mut doc = read_doc(&path)?;
+        // Only rewrite state we own: bail out unless our provider block's
+        // header table is present (i.e. we are connected).
+        let Some(headers) = doc
+            .get_mut("model_providers")
+            .and_then(|i| i.as_table_like_mut())
+            .and_then(|t| t.get_mut(PROVIDER_ID))
+            .and_then(|i| i.as_table_like_mut())
+            .and_then(|t| t.get_mut("http_headers"))
+            .and_then(|i| i.as_table_like_mut())
+        else {
+            return Ok(());
+        };
+        if headers.get(GATE_KEY_HEADER).is_none() {
+            return Ok(());
+        }
+        headers.insert(GATE_KEY_HEADER, value(api_key));
         write_doc(&path, &doc)
     }
 

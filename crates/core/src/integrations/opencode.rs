@@ -435,13 +435,48 @@ impl Integration for OpenCode {
             }
         }
 
-        remove_state()?;
-
         if settings.is_empty() {
             let path = env::opencode_config_path()?;
             if path.exists() {
                 fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
             }
+            remove_state()?;
+            return Ok(());
+        }
+        write_settings(&settings)?;
+        // Only drop the sidecar once the restored config is on disk: losing
+        // it before a failed write would leave Gate headers in opencode.json
+        // while status reports the tool as clean and re-disconnect no-ops.
+        remove_state()
+    }
+
+    fn refresh_gate_key(&self, api_key: &str) -> Result<()> {
+        // Only rewrite state we own: the sidecar lists exactly the
+        // providers connect() stamped with Gate headers.
+        let Some(state) = load_state()? else {
+            return Ok(());
+        };
+        let Some(mut settings) = load_settings()? else {
+            return Ok(());
+        };
+        let mut changed = false;
+        if let Some(provider_map) = settings.get_mut("provider").and_then(|v| v.as_object_mut()) {
+            for provider_id in state.providers.keys() {
+                let key_slot = provider_map
+                    .get_mut(provider_id)
+                    .and_then(|v| v.as_object_mut())
+                    .and_then(|p| p.get_mut("options"))
+                    .and_then(|v| v.as_object_mut())
+                    .and_then(|o| o.get_mut("headers"))
+                    .and_then(|v| v.as_object_mut())
+                    .and_then(|h| h.get_mut(GATE_KEY_HEADER));
+                if let Some(slot) = key_slot {
+                    *slot = Value::String(api_key.to_string());
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
             return Ok(());
         }
         write_settings(&settings)
