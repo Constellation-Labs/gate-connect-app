@@ -29,15 +29,9 @@ pub fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         _ => path.to_path_buf(),
     };
     let path: &Path = &dest;
-    // Preserve the file's existing permissions on overwrite; only fall back to
-    // the requested `mode` when creating it fresh.
-    #[cfg(unix)]
-    let mode = {
-        use std::os::unix::fs::PermissionsExt;
-        fs::metadata(path)
-            .map(|m| m.permissions().mode() & 0o777)
-            .unwrap_or(mode)
-    };
+    // Always apply the requested `mode`, including on overwrite: callers pass
+    // 0o600/0o700 because the payload carries the Gate key, and the target may
+    // pre-exist with the tool's own looser umask (commonly 0o644).
     #[cfg(not(unix))]
     let _ = mode;
     let parent = path
@@ -62,9 +56,18 @@ pub fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
 
     let write_then_rename = || -> Result<()> {
         use std::io::Write;
-        let mut f = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
+        let mut opts = fs::OpenOptions::new();
+        opts.create_new(true).write(true);
+        // Create the tempfile already at the requested mode so the payload
+        // (which may carry the Gate key) is never world-readable, even
+        // transiently under a permissive umask. The set_permissions below
+        // still runs to guarantee the exact mode regardless of umask.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(mode);
+        }
+        let mut f = opts
             .open(&tmp)
             .with_context(|| format!("creating tempfile {}", tmp.display()))?;
         f.write_all(bytes)
