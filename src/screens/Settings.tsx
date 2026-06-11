@@ -23,7 +23,7 @@ export function Settings({
   account: Account;
   onBack: () => void;
   onReplaceKey: (key: string) => Promise<void>;
-  onDisconnect: () => void;
+  onDisconnect: () => Promise<void>;
 }) {
   const [replacing, setReplacing] = useState(false);
   const [newKey, setNewKey] = useState("");
@@ -38,6 +38,19 @@ export function Settings({
       await onReplaceKey(newKey.trim());
       setReplacing(false);
       setNewKey("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function disconnect() {
+    if (submitting) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      await onDisconnect();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -127,7 +140,8 @@ export function Settings({
           </button>
           <button
             type="button"
-            onClick={onDisconnect}
+            onClick={disconnect}
+            disabled={submitting}
             className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
           >
             <Icon name="trash" size={14} />
