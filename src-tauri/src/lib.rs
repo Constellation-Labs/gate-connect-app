@@ -303,6 +303,29 @@ fn app_platform() -> &'static str {
   std::env::consts::OS
 }
 
+// ---- Providers ----
+//
+// One user-facing switch per model provider. Orchestrates the config
+// integrations (cross-platform) and, on macOS when the proxy is already
+// running, the matching proxy domains — so the UI shows a single toggle
+// instead of exposing the proxy-vs-config split. Delegates to
+// `gate_connect_core::provider`.
+
+#[tauri::command]
+fn list_providers() -> Vec<gate_connect_core::provider::ProviderState> {
+    gate_connect_core::provider::list()
+}
+
+#[tauri::command]
+fn provider_enable(slug: String) -> Result<gate_connect_core::provider::ProviderState, String> {
+    gate_connect_core::provider::enable(&slug).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn provider_disable(slug: String) -> Result<gate_connect_core::provider::ProviderState, String> {
+    gate_connect_core::provider::disable(&slug).map_err(|e| e.to_string())
+}
+
 // ---- Built-in MITM proxy (macOS + Windows + Linux) ----
 //
 // These delegate to the process-global `proxy::manager()`. They're gated to
@@ -331,10 +354,21 @@ fn proxy_list_domains() -> Result<Vec<gate_connect_core::proxy::ProxyDomain>, St
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn proxy_enable(app: tauri::AppHandle) -> Result<gate_connect_core::proxy::ProxyState, String> {
-  let state = gate_connect_core::proxy::manager()
+  gate_connect_core::proxy::manager()
     .enable()
     .map_err(|e| e.to_string())?;
-  #[cfg(target_os = "macos")]
+  // Global ON: restore every provider that was on when routing was last turned
+  // off (best-effort; never block the proxy from coming up).
+  if let Err(e) = gate_connect_core::provider::restore_all() {
+    eprintln!("[gate] restoring providers on proxy enable failed: {e}");
+  }
+  // Re-read status AFTER restore so the returned domain flags reflect the
+  // providers we just re-enabled — otherwise the UI's "intercepting N
+  // domains" count is captured pre-restore and shows 0.
+  let state = gate_connect_core::proxy::manager()
+    .status()
+    .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
   update_tray_status(&app, state.running);
   #[cfg(not(target_os = "macos"))]
   let _ = &app;
@@ -344,6 +378,12 @@ fn proxy_enable(app: tauri::AppHandle) -> Result<gate_connect_core::proxy::Proxy
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn proxy_disable(app: tauri::AppHandle) -> Result<gate_connect_core::proxy::ProxyState, String> {
+  // Global OFF: snapshot + disconnect all providers BEFORE the proxy stops, so
+  // config-based tools (Codex) also stop and their domains are still flippable.
+  // Best-effort so it never blocks the kill switch.
+  if let Err(e) = gate_connect_core::provider::snapshot_and_disable_all() {
+    eprintln!("[gate] disabling providers on proxy disable failed: {e}");
+  }
   let state = gate_connect_core::proxy::manager()
     .disable()
     .map_err(|e| e.to_string())?;
@@ -418,6 +458,9 @@ pub fn run() {
                     save_account,
                     clear_account,
                     app_platform,
+                    list_providers,
+                    provider_enable,
+                    provider_disable,
                     migrate_discover,
                     migrate_preview,
                     migrate_execute,
@@ -453,6 +496,9 @@ pub fn run() {
                     proxy_set_domain,
                     proxy_trust_ca,
                     proxy_untrust_ca,
+                    list_providers,
+                    provider_enable,
+                    provider_disable,
                 ]
             }
             #[cfg(target_os = "linux")]
@@ -492,6 +538,9 @@ pub fn run() {
                     save_account,
                     clear_account,
                     app_platform,
+                    list_providers,
+                    provider_enable,
+                    provider_disable,
                 ]
             }
         })
@@ -630,8 +679,23 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Gate Connect");
+        .build(tauri::generate_context!())
+        .expect("error while building Gate Connect")
+        .run(|_app_handle, event| {
+            // On app exit, revert the system proxy so traffic is never stranded
+            // at the now-dead engine port. The engine lives in a process-global
+            // static whose Drop is bypassed at normal exit, so without this the
+            // system proxy stays pointed at a dead listener and kills
+            // connectivity until the next launch's self-heal. disable() is
+            // promptless and leaves the CA trusted.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if let tauri::RunEvent::Exit = &event {
+                if let Err(e) = gate_connect_core::proxy::manager().disable() {
+                    eprintln!("[gate] reverting proxy on exit failed: {e}");
+                }
+            }
+            let _ = &event;
+        });
 }
 
 /// Position the popover window centered horizontally on the tray icon

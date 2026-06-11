@@ -137,7 +137,7 @@ export const migratePreview = (slug: string, options: MigrateOptions) =>
 export const migrateExecute = (slug: string, options: MigrateOptions) =>
   invoke<MigrateReport>("migrate_execute", { slug, options });
 
-// ---- built-in MITM proxy (macOS only) ----
+// ---- built-in MITM proxy (macOS + Windows) ----
 
 export interface ProxyDomain {
   slug: string;
@@ -179,3 +179,30 @@ export const proxySetDomain = (slug: string, enabled: boolean) =>
 export const proxyTrustCa = () => invoke<ProxyState>("proxy_trust_ca");
 
 export const proxyUntrustCa = () => invoke<ProxyState>("proxy_untrust_ca");
+
+// ---- Providers (one switch per model provider) ----
+//
+// A provider orchestrates the config integration(s) and, on macOS when the
+// proxy is already running, the matching proxy domain(s) — so the UI shows a
+// single toggle without exposing the proxy-vs-config split.
+
+export interface ProviderState {
+  slug: string;
+  display_name: string;
+  subtitle: string;
+  /** Headline on/off: at least one of the provider's tools is routed. */
+  enabled: boolean;
+  /** Whether the switch can act now (a tool is installed or the proxy is
+   * running). When false the UI should render the switch disabled. */
+  available: boolean;
+}
+
+export const listProviders = () => invoke<ProviderState[]>("list_providers");
+
+/** Turn a provider on: configures installed tools and, if the proxy is already
+ * running, enables its proxy domain(s). Never triggers an admin prompt. */
+export const providerEnable = (slug: string) => invoke<ProviderState>("provider_enable", { slug });
+
+/** Turn a provider off: reverts the tool config and disables its proxy
+ * domain(s) if the proxy is running. */
+export const providerDisable = (slug: string) => invoke<ProviderState>("provider_disable", { slug });

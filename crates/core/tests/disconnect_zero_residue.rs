@@ -1,6 +1,8 @@
-//! Integration test for the "zero residue" disconnect contract: `connect()`
-//! copies the tool's config to a sibling `.gate-backup`, and `disconnect()`
-//! must remove that copy (regression for the bug where the backup lingered).
+//! Integration test for the "zero residue" disconnect contract:
+//! `disconnect()` must revert the Gate edits out of the tool's config and
+//! remove the in-file marker, leaving nothing of Gate behind. The
+//! key-scoped marker inside the config is the undo log — no separate
+//! backup file is ever written.
 //!
 //! These exercise the real path resolution, which reads `$HOME` via `dirs`, so
 //! each test overrides `HOME` to a throwaway dir. It lives in its own test
@@ -8,7 +10,7 @@
 //! serializes the HOME-mutating tests within this binary.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use gate_connect_core::env;
@@ -52,15 +54,8 @@ impl Drop for TempHome {
     }
 }
 
-/// `<path>.gate-backup`, matching how `backup_once` names the copy.
-fn backup_path(path: &Path) -> PathBuf {
-    let mut b = path.as_os_str().to_owned();
-    b.push(".gate-backup");
-    PathBuf::from(b)
-}
-
 #[test]
-fn claude_code_disconnect_removes_gate_backup() {
+fn claude_code_disconnect_leaves_no_gate_residue() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
 
@@ -79,17 +74,9 @@ fn claude_code_disconnect_removes_gate_backup() {
 "#,
     )
     .unwrap();
-    // The copy connect() would have made.
-    let backup = backup_path(&settings);
-    fs::write(&backup, "{}\n").unwrap();
-    assert!(backup.exists());
 
     find(ToolId::ClaudeCode).unwrap().disconnect().unwrap();
 
-    assert!(
-        !backup.exists(),
-        "disconnect must remove the .gate-backup copy"
-    );
     let after = fs::read_to_string(&settings).unwrap();
     assert!(
         !after.contains("ANTHROPIC_BASE_URL"),
@@ -102,7 +89,109 @@ fn claude_code_disconnect_removes_gate_backup() {
 }
 
 #[test]
-fn codex_disconnect_removes_gate_backup() {
+fn claude_code_disconnect_restores_previous_env() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    // A connected state where the user had their own ANTHROPIC_BASE_URL
+    // before Gate (stashed in previousEnv), no prior custom headers, and
+    // an unrelated env var Gate must not touch.
+    fs::write(
+        &settings,
+        r#"{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://gw.example.com",
+    "ANTHROPIC_CUSTOM_HEADERS": "X-Gate-Api-Key: sk-gw-xxx\nX-Gate-Upstream-Url: https://api.anthropic.com",
+    "FOO": "bar"
+  },
+  "_gateConnect": { "previousEnv": { "ANTHROPIC_BASE_URL": "https://my-proxy.example.com" }, "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS"] }
+}
+"#,
+    )
+    .unwrap();
+
+    find(ToolId::ClaudeCode).unwrap().disconnect().unwrap();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    let env_block = after.get("env").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(
+        env_block.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()),
+        Some("https://my-proxy.example.com"),
+        "the user's prior ANTHROPIC_BASE_URL must be restored verbatim"
+    );
+    assert!(
+        !env_block.contains_key("ANTHROPIC_CUSTOM_HEADERS"),
+        "a key with no prior value must be removed, not left as Gate's"
+    );
+    assert_eq!(
+        env_block.get("FOO").and_then(|v| v.as_str()),
+        Some("bar"),
+        "unrelated env vars must survive disconnect untouched"
+    );
+    assert!(
+        after.get("_gateConnect").is_none(),
+        "Gate marker must be removed from settings.json"
+    );
+}
+
+#[test]
+fn codex_disconnect_restores_previous_model_provider() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let config = env::codex_config_toml_path().unwrap();
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    // A connected state where the user's model_provider was "openai"
+    // before Gate flipped the pointer, plus a user setting Gate must
+    // not touch.
+    fs::write(
+        &config,
+        r#"model = "gpt-5.2"
+model_provider = "gate"
+
+[model_providers.gate]
+name = "Gate"
+base_url = "https://gw.example.com/codex"
+
+[model_providers.gate.http_headers]
+X-Gate-Api-Key = "sk-gw-xxx"
+X-Gate-Upstream-Url = "https://chatgpt.com/backend-api"
+
+[_gate_connect]
+previous_model_provider = "openai"
+"#,
+    )
+    .unwrap();
+
+    find(ToolId::Codex).unwrap().disconnect().unwrap();
+
+    let after = fs::read_to_string(&config).unwrap();
+    let doc: toml_edit::DocumentMut = after.parse().unwrap();
+    assert_eq!(
+        doc.get("model_provider").and_then(|i| i.as_str()),
+        Some("openai"),
+        "the user's prior model_provider must be restored verbatim"
+    );
+    assert_eq!(
+        doc.get("model").and_then(|i| i.as_str()),
+        Some("gpt-5.2"),
+        "unrelated settings must survive disconnect untouched"
+    );
+    assert!(
+        doc.get("model_providers").is_none(),
+        "gate provider must be removed from config.toml"
+    );
+    assert!(
+        doc.get("_gate_connect").is_none(),
+        "Gate marker must be removed from config.toml"
+    );
+}
+
+#[test]
+fn codex_disconnect_leaves_no_gate_residue() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
 
@@ -126,16 +215,9 @@ previous_model_provider_absent = true
 "#,
     )
     .unwrap();
-    let backup = backup_path(&config);
-    fs::write(&backup, "model_provider = \"openai\"\n").unwrap();
-    assert!(backup.exists());
 
     find(ToolId::Codex).unwrap().disconnect().unwrap();
 
-    assert!(
-        !backup.exists(),
-        "disconnect must remove the .gate-backup copy"
-    );
     // The user had nothing but Gate's config, so disconnect removes the file
     // entirely; either way no Gate residue may remain.
     let after = fs::read_to_string(&config).unwrap_or_default();

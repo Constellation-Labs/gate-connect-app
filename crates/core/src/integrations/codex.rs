@@ -330,7 +330,6 @@ impl Integration for Codex {
             .context("Gate Connect is not signed in (no account.json + keychain entry)")?;
 
         let path = config_path()?;
-        backup_once(&path)?;
         let mut doc = if path.exists() {
             read_doc(&path)?
         } else {
@@ -510,25 +509,6 @@ impl Integration for Codex {
     fn clear_upstream_credential(&self) -> Result<()> {
         Ok(())
     }
-}
-
-/// Copy the target config to `<path>.gate-backup` exactly once, before
-/// Gate Connect first mutates it. No-op if the file does not exist yet
-/// or a backup is already present (so re-connect never clobbers the
-/// pristine original).
-fn backup_once(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut backup = path.as_os_str().to_owned();
-    backup.push(".gate-backup");
-    let backup = std::path::PathBuf::from(backup);
-    if backup.exists() {
-        return Ok(());
-    }
-    fs::copy(path, &backup)
-        .with_context(|| format!("backing up {} -> {}", path.display(), backup.display()))?;
-    Ok(())
 }
 
 fn config_path() -> Result<PathBuf> {

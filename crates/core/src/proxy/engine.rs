@@ -9,7 +9,6 @@
 //! needs to push new rules — no engine restart, no system-proxy change, no
 //! extra admin prompt.
 
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
@@ -252,13 +251,22 @@ pub(crate) fn apply_rewrite<T>(
     Ok(())
 }
 
-fn pick_free_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .context("probing for a free loopback port")?;
-    Ok(listener
+/// Bind an ephemeral loopback listener and return it together with the port it
+/// landed on. Returning the *live* listener — rather than probing a port and
+/// dropping it before hudsucker binds — closes the TOCTOU window where another
+/// process could grab the port in the gap. The socket stays held from here
+/// until it's handed to the proxy. Set non-blocking so tokio can adopt it.
+fn bind_free_loopback() -> Result<(std::net::TcpListener, u16)> {
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", 0)).context("binding a free loopback port")?;
+    let port = listener
         .local_addr()
-        .context("reading probe socket address")?
-        .port())
+        .context("reading listener socket address")?
+        .port();
+    listener
+        .set_nonblocking(true)
+        .context("setting the loopback listener non-blocking")?;
+    Ok((listener, port))
 }
 
 /// Start the engine on an ephemeral loopback port. Blocks until the proxy
@@ -282,8 +290,7 @@ where
         anyhow::bail!("gateway URL {:?} has no host", cfg.gateway_base_url);
     }
 
-    let port = pick_free_port()?;
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let (listener, port) = bind_free_loopback()?;
 
     let (rules_tx, rules_rx) = watch::channel(Arc::new(enabled_only(&cfg.domains)));
     let handler = GateHandler {
@@ -327,8 +334,16 @@ where
                     }
                 };
 
+                let listener = match tokio::net::TcpListener::from_std(listener) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(format!("adopting loopback listener: {e}")));
+                        return;
+                    }
+                };
+
                 let proxy = match Proxy::builder()
-                    .with_addr(addr)
+                    .with_listener(listener)
                     .with_ca(ca)
                     .with_rustls_connector(aws_lc_rs::default_provider())
                     .with_http_handler(handler)

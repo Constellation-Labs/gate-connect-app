@@ -65,9 +65,11 @@ impl ProxyManager {
         let account = account::load()?
             .context("no Gate account configured — sign in before enabling the proxy")?;
         let domains = config::load_domains()?;
-        if !domains.iter().any(|d| d.enabled) {
-            anyhow::bail!("enable at least one provider before turning on the proxy");
-        }
+        // No enabled-domains guard here: the master switch owns whether the
+        // engine runs, while providers/domains own what it intercepts. Starting
+        // with zero enabled domains is valid (per-provider toggles can reach that
+        // state at runtime too) and lets `provider::restore_all()` re-enable the
+        // snapshotted domains immediately after start on master-on.
         let services = system_proxy::active_services()?;
         if services.is_empty() {
             anyhow::bail!("no active network services found to route through the proxy");
@@ -188,16 +190,28 @@ impl ProxyManager {
         let _ = system_proxy::clear_snapshot();
     }
 
-    /// Called once at app startup. A leftover snapshot means a previous
-    /// session left the system proxy pointed at an engine that no longer
-    /// exists (unclean quit / crash) — restore it. Promptless, so it always
-    /// succeeds; a clean disable clears the snapshot, making this a no-op.
+    /// Called once at app startup to undo a system proxy left pointing at an
+    /// engine that no longer exists (unclean quit / crash / OS shutdown).
+    ///
+    /// Two layers, because the graceful-disable `Drop` is bypassed by a hard
+    /// kill: (1) a leftover snapshot restores the exact pre-Gate state; (2) a
+    /// belt-and-suspenders sweep turns off any service still pointed at a dead
+    /// loopback listener even when no (or a partial) snapshot survives — that
+    /// case otherwise strands every proxy-honoring app with
+    /// ERR_PROXY_CONNECTION_FAILED while Gate shows "off". Both are promptless,
+    /// so this always succeeds; a clean disable makes it a near no-op.
     pub fn reconcile_on_startup(&self) -> Result<()> {
-        let Some(snapshot) = system_proxy::load_snapshot()? else {
-            return Ok(());
-        };
-        system_proxy::restore(&snapshot)?;
-        system_proxy::clear_snapshot()?;
+        if let Some(snapshot) = system_proxy::load_snapshot()? {
+            system_proxy::restore(&snapshot)?;
+            system_proxy::clear_snapshot()?;
+        }
+        let cleared = system_proxy::clear_stranded_loopback()?;
+        if !cleared.is_empty() {
+            eprintln!(
+                "[gate-proxy] startup: cleared stranded loopback proxy on {}",
+                cleared.join(", ")
+            );
+        }
         Ok(())
     }
 }

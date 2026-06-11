@@ -153,7 +153,6 @@ impl Integration for ClaudeCode {
             .context("Gate Connect is not signed in (no account.json + keychain entry)")?;
         let headers = build_headers(&acct.api_key, &input.upstream_url);
 
-        backup_once(&settings_path()?)?;
         let mut settings = load_settings()?.unwrap_or_else(default_settings);
         // Refuse to clobber a malformed non-object `env` before ensure_object
         // would silently replace it with `{}` (see reject_non_object_env).
@@ -252,25 +251,6 @@ impl Integration for ClaudeCode {
 /// encodes this byte as `\n` in the file, parses back to the same byte.
 fn build_headers(gate_api_key: &str, upstream_url: &str) -> String {
     format!("{GATE_KEY_HEADER}: {gate_api_key}\n{UPSTREAM_URL_HEADER}: {upstream_url}")
-}
-
-/// Copy the target settings file to `<path>.gate-backup` exactly once,
-/// before Gate Connect first mutates it. No-op if the file does not
-/// exist yet or a backup is already present (so re-connect never
-/// clobbers the pristine original).
-fn backup_once(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut backup = path.as_os_str().to_owned();
-    backup.push(".gate-backup");
-    let backup = PathBuf::from(backup);
-    if backup.exists() {
-        return Ok(());
-    }
-    fs::copy(path, &backup)
-        .with_context(|| format!("backing up {} -> {}", path.display(), backup.display()))?;
-    Ok(())
 }
 
 fn settings_path() -> Result<PathBuf> {

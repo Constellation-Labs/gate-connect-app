@@ -1,0 +1,63 @@
+name: CI
+
+# Continuous checks for the Gate Connect Tauri app, ported from the
+# swarm-deck monorepo's connect.yml. Runs the cross-platform Rust
+# core/CLI checks and the web frontend checks on ubuntu. Several of the
+# app's modules are platform-gated and won't compile here — that's
+# expected; these jobs cover the platform-independent code only.
+# Platform bundles (macOS/Windows/Linux) are built by release.yml on
+# version tags.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (core + cli)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins channel 1.86.0 with rustfmt + clippy.
+      - uses: dtolnay/rust-toolchain@1.86.0
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy -p gate-connect-core -p gate-connect-cli -p gate-connect-cowork-helper --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test -p gate-connect-core -p gate-connect-cli -p gate-connect-cowork-helper --all-features
+
+  web:
+    name: Web (frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm build` runs `tsc --noEmit && vite build`, so this covers
+      # the type check as well.
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test

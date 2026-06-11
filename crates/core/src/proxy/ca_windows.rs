@@ -102,8 +102,16 @@ pub fn load_or_create() -> Result<Ca> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    fs::write(&path, &cert_pem).with_context(|| format!("writing {}", path.display()))?;
+    // Write the key first (the keychain set is transactional), then the cert via
+    // a temp file + atomic rename. The two stores can't be written atomically
+    // together, but this order's interrupted state is self-healing: a crash
+    // between them leaves a key with no cert on disk, so the next launch
+    // regenerates both — never a torn cert or a mismatched cert/key pair.
     keychain::set(&service, &user, &key_pem)?;
+    let tmp = path.with_extension("pem.tmp");
+    fs::write(&tmp, &cert_pem).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
     Ok(Ca { cert_pem, key_pem })
 }
 
