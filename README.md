@@ -106,38 +106,3 @@ cargo run --release --bin gate-connect -- disconnect cowork
 ```
 
 Same registry, same code path.
-
-## Verifying nothing leaked
-
-```bash
-# Plist should not contain the key — only a path to the helper script
-sudo plutil -p /Library/Managed\ Preferences/$USER/com.anthropic.claudefordesktop.plist
-
-# Helper script contains no secret either, just a `security` invocation
-cat ~/Library/Application\ Support/Gate\ Connect/cowork-credential-helper.sh
-
-# Key lives here, accessible only to the user
-security find-generic-password \
-  -s ai.constellation.gate-connect.cowork.gateway-api-key -a "$USER" -w
-```
-
-## Known gaps vs. the PRD
-
-- No PKCE/OAuth flow. There's no browser-based authorization; instead Gate
-  delegates to the existing Claude Code session, reading its keychain entry
-  via the `claude_session_delegate.rs` session-delegate module. An API key can also be
-  provided directly through the connect form.
-- No code signing, notarization, or auto-update. `bundle.active` is `false`;
-  this is a dev build only.
-- No signed registry pulled from the Gate API; registry is hard-coded with
-  entries for Cowork, Claude Code, Codex, and OpenCode.
-- No audit events emitted to the gateway.
-- No drift watcher — status refreshes on action, not on a schedule.
-- macOS is the most complete target; Windows and Linux support varies by
-  integration and is still being hardened.
-- Telemetry is not wired up.
-- Placeholder app icon (`src-tauri/icons/icon.png` is a 64×64 generated PNG).
-  Bundle/build requires a full icon set (icns, ico, multiple sizes).
-
-These are the next things to build; the core mechanism is now testable end
-to end through the GUI.
