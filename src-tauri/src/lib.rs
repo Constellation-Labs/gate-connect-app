@@ -4,7 +4,7 @@
 //! presentation: no dock icon, hidden window on launch, click the tray
 //! to toggle a popover-style window anchored under the icon.
 
-use gate_connect_core::{ConnectInput, Status, ToolId, account, registry};
+use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
 // `claude_session_delegate` backs Claude Code session delegation, available for Cowork
 // on macOS and Windows. `migrate` (standard-mode -> 3P-mode userData
@@ -15,14 +15,13 @@ use gate_connect_core::claude_session_delegate;
 use gate_connect_core::migrate;
 use serde::Serialize;
 use tauri::{
-    Manager, PhysicalPosition, WindowEvent,
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, PhysicalPosition, WindowEvent,
 };
 #[cfg(not(target_os = "linux"))]
 use tauri::{Position, Size};
-
 
 /// Shape-check a user-supplied key coming over the JS-to-Rust boundary.
 /// Refuses empty input, control chars, lengths > 512 bytes, and a missing
@@ -39,9 +38,7 @@ fn validate_api_key(key: &str, required_prefix: &str) -> Result<(), String> {
         return Err("API key contains control characters".into());
     }
     if !required_prefix.is_empty() && !key.starts_with(required_prefix) {
-        return Err(format!(
-            "API key must start with {required_prefix:?}"
-        ));
+        return Err(format!("API key must start with {required_prefix:?}"));
     }
     Ok(())
 }
@@ -104,8 +101,7 @@ fn list_tools() -> Vec<ToolDto> {
             requires_upstream_credential: integ.requires_upstream_credential(),
             supports_claude_oauth_delegation: cfg!(any(target_os = "macos", target_os = "windows"))
                 && integ.id().to_string() == "cowork",
-            supports_migrate: cfg!(target_os = "macos")
-                && integ.id().to_string() == "cowork",
+            supports_migrate: cfg!(target_os = "macos") && integ.id().to_string() == "cowork",
             status: status_for(integ.as_ref()),
         })
         .collect()
@@ -114,34 +110,49 @@ fn list_tools() -> Vec<ToolDto> {
 #[tauri::command]
 fn tool_status(slug: String) -> Result<StatusDto, String> {
     let id = ToolId::from_slug(&slug).ok_or_else(|| format!("unknown tool {slug:?}"))?;
-    let integ = registry::find(id).ok_or_else(|| "integration missing from registry".to_string())?;
+    let integ =
+        registry::find(id).ok_or_else(|| "integration missing from registry".to_string())?;
     Ok(status_for(integ.as_ref()))
 }
 
 #[tauri::command]
-fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, String> {
-    let integ = resolve_integration(&slug)?;
-    let account = account::load()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Sign in to Gate AI first".to_string())?;
-    if integ.requires_upstream_credential()
-        && !integ.has_upstream_credential().map_err(|e| e.to_string())?
-    {
-        return Err("No upstream Anthropic credential saved. Add one before connecting.".into());
-    }
-    let input = ConnectInput {
-        gateway_base_url: account.gateway_base_url,
-        upstream_url,
-    };
-    integ.connect(&input).map_err(|e| e.to_string())?;
-    Ok(status_for(integ.as_ref()))
+async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, String> {
+    // Off the main thread: connect does config-file I/O and (for Cowork)
+    // blocks on an admin prompt — same spawn_blocking pattern as migrate_*.
+    tauri::async_runtime::spawn_blocking(move || {
+        let integ = resolve_integration(&slug)?;
+        let account = account::load()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Sign in to Gate AI first".to_string())?;
+        if integ.requires_upstream_credential()
+            && !integ.has_upstream_credential().map_err(|e| e.to_string())?
+        {
+            return Err(
+                "No upstream Anthropic credential saved. Add one before connecting.".into(),
+            );
+        }
+        let input = ConnectInput {
+            gateway_base_url: account.gateway_base_url,
+            upstream_url,
+        };
+        integ.connect(&input).map_err(|e| e.to_string())?;
+        Ok(status_for(integ.as_ref()))
+    })
+    .await
+    .map_err(|e| format!("connect join error: {e}"))?
 }
 
 #[tauri::command]
-fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
-    let integ = resolve_integration(&slug)?;
-    integ.disconnect().map_err(|e| e.to_string())?;
-    Ok(status_for(integ.as_ref()))
+async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
+    // Off the main thread: disconnect does config-file I/O and (for Cowork)
+    // blocks on an admin prompt.
+    tauri::async_runtime::spawn_blocking(move || {
+        let integ = resolve_integration(&slug)?;
+        integ.disconnect().map_err(|e| e.to_string())?;
+        Ok(status_for(integ.as_ref()))
+    })
+    .await
+    .map_err(|e| format!("disconnect join error: {e}"))?
 }
 
 #[tauri::command]
@@ -272,7 +283,7 @@ fn get_account() -> Result<Option<AccountDto>, String> {
 }
 
 #[tauri::command]
-fn save_account(base_url: String, api_key: Option<String>) -> Result<(), String> {
+async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), String> {
     if base_url.len() > 2048 {
         return Err("base url is unexpectedly long (>2048 bytes)".into());
     }
@@ -283,16 +294,44 @@ fn save_account(base_url: String, api_key: Option<String>) -> Result<(), String>
     if parsed.host_str().is_none() {
         return Err("base url is missing a host".into());
     }
-    let key = api_key.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    if let Some(k) = key {
+    let key = api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(k) = key.as_deref() {
         validate_api_key(k, "sk-")?;
     }
-    account::save(&base_url, key).map_err(|e| e.to_string())
+    // Off the main thread: keychain write plus up to three tool-config
+    // rewrites (same spawn_blocking pattern as the migrate commands).
+    tauri::async_runtime::spawn_blocking(move || {
+        account::save(&base_url, key.as_deref()).map_err(|e| e.to_string())?;
+        // A rotated key was copied into tool configs (and the running proxy
+        // engine) at connect time — push the new one everywhere it's embedded.
+        if let Some(k) = key.as_deref() {
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            gate_connect_core::proxy::manager().refresh_api_key(k);
+            registry::refresh_gate_key_everywhere(k).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("save join error: {e}"))?
 }
 
 #[tauri::command]
-fn clear_account() -> Result<(), String> {
-    account::clear().map_err(|e| e.to_string())
+async fn clear_account() -> Result<(), String> {
+    // Off the main thread: per-tool config I/O, and Cowork's disconnect can
+    // block on an admin prompt — a sync command would freeze the UI for it.
+    tauri::async_runtime::spawn_blocking(|| {
+        // Disconnect managed tools first: clearing the account while their
+        // configs still embed the key would leave them routing to the gateway
+        // with a dead credential on disk. A failure aborts the sign-out.
+        registry::disconnect_all_managed().map_err(|e| e.to_string())?;
+        account::clear().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("sign-out join error: {e}"))?
 }
 
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
@@ -300,7 +339,7 @@ fn clear_account() -> Result<(), String> {
 /// password prompt appears, etc.
 #[tauri::command]
 fn app_platform() -> &'static str {
-  std::env::consts::OS
+    std::env::consts::OS
 }
 
 // ---- Providers ----
@@ -338,87 +377,114 @@ fn provider_disable(slug: String) -> Result<gate_connect_core::provider::Provide
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> {
-  gate_connect_core::proxy::manager()
-    .status()
-    .map_err(|e| e.to_string())
+    gate_connect_core::proxy::manager()
+        .status()
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn proxy_list_domains() -> Result<Vec<gate_connect_core::proxy::ProxyDomain>, String> {
-  gate_connect_core::proxy::manager()
-    .list_domains()
-    .map_err(|e| e.to_string())
+    gate_connect_core::proxy::manager()
+        .list_domains()
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn proxy_enable(app: tauri::AppHandle) -> Result<gate_connect_core::proxy::ProxyState, String> {
-  gate_connect_core::proxy::manager()
-    .enable()
-    .map_err(|e| e.to_string())?;
-  // Global ON: restore every provider that was on when routing was last turned
-  // off (best-effort; never block the proxy from coming up).
-  if let Err(e) = gate_connect_core::provider::restore_all() {
-    eprintln!("[gate] restoring providers on proxy enable failed: {e}");
-  }
-  // Re-read status AFTER restore so the returned domain flags reflect the
-  // providers we just re-enabled — otherwise the UI's "intercepting N
-  // domains" count is captured pre-restore and shows 0.
-  let state = gate_connect_core::proxy::manager()
-    .status()
-    .map_err(|e| e.to_string())?;
+async fn proxy_enable(
+    app: tauri::AppHandle,
+) -> Result<gate_connect_core::proxy::ProxyState, String> {
+    // Off the main thread: enable can block on the CA-trust admin prompt
+    // and waits up to 10s for engine readiness.
+    let state = tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::proxy::manager()
+            .enable()
+            .map_err(|e| e.to_string())?;
+        // Global ON: restore every provider that was on when routing was last
+        // turned off (best-effort; never block the proxy from coming up).
+        if let Err(e) = gate_connect_core::provider::restore_all() {
+            eprintln!("[gate] restoring providers on proxy enable failed: {e}");
+        }
+        // Re-read status AFTER restore so the returned domain flags reflect
+        // the providers we just re-enabled — otherwise the UI's "intercepting
+        // N domains" count is captured pre-restore and shows 0.
+        gate_connect_core::proxy::manager()
+            .status()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("proxy enable join error: {e}"))??;
     #[cfg(target_os = "macos")]
-  update_tray_status(&app, state.running);
-  #[cfg(not(target_os = "macos"))]
-  let _ = &app;
-  Ok(state)
+    update_tray_status(&app, state.running);
+    #[cfg(not(target_os = "macos"))]
+    let _ = &app;
+    Ok(state)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn proxy_disable(app: tauri::AppHandle) -> Result<gate_connect_core::proxy::ProxyState, String> {
-  // Global OFF: snapshot + disconnect all providers BEFORE the proxy stops, so
-  // config-based tools (Codex) also stop and their domains are still flippable.
-  // Best-effort so it never blocks the kill switch.
-  if let Err(e) = gate_connect_core::provider::snapshot_and_disable_all() {
-    eprintln!("[gate] disabling providers on proxy disable failed: {e}");
-  }
-  let state = gate_connect_core::proxy::manager()
-    .disable()
-    .map_err(|e| e.to_string())?;
-  #[cfg(target_os = "macos")]
-  update_tray_status(&app, state.running);
-  #[cfg(not(target_os = "macos"))]
-  let _ = &app;
-  Ok(state)
+async fn proxy_disable(
+    app: tauri::AppHandle,
+) -> Result<gate_connect_core::proxy::ProxyState, String> {
+    // Off the main thread: disable runs system-proxy subprocesses and joins
+    // the engine thread.
+    let state = tauri::async_runtime::spawn_blocking(|| {
+        // Global OFF: snapshot + disconnect all providers BEFORE the proxy
+        // stops, so config-based tools (Codex) also stop and their domains
+        // are still flippable. Best-effort so it never blocks the kill
+        // switch.
+        if let Err(e) = gate_connect_core::provider::snapshot_and_disable_all() {
+            eprintln!("[gate] disabling providers on proxy disable failed: {e}");
+        }
+        gate_connect_core::proxy::manager()
+            .disable()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("proxy disable join error: {e}"))??;
+    #[cfg(target_os = "macos")]
+    update_tray_status(&app, state.running);
+    #[cfg(not(target_os = "macos"))]
+    let _ = &app;
+    Ok(state)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn proxy_set_domain(
-  slug: String,
-  enabled: bool,
+    slug: String,
+    enabled: bool,
 ) -> Result<gate_connect_core::proxy::ProxyState, String> {
-  gate_connect_core::proxy::manager()
-    .set_domain(&slug, enabled)
-    .map_err(|e| e.to_string())
+    gate_connect_core::proxy::manager()
+        .set_domain(&slug, enabled)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn proxy_trust_ca() -> Result<gate_connect_core::proxy::ProxyState, String> {
-  gate_connect_core::proxy::manager()
-    .trust_ca()
-    .map_err(|e| e.to_string())
+async fn proxy_trust_ca() -> Result<gate_connect_core::proxy::ProxyState, String> {
+    // Off the main thread: trusting the CA pops an interactive prompt.
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::proxy::manager()
+            .trust_ca()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("trust join error: {e}"))?
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn proxy_untrust_ca() -> Result<gate_connect_core::proxy::ProxyState, String> {
-  gate_connect_core::proxy::manager()
-    .untrust_ca()
-    .map_err(|e| e.to_string())
+async fn proxy_untrust_ca() -> Result<gate_connect_core::proxy::ProxyState, String> {
+    // Off the main thread: untrusting the CA can pop an interactive prompt.
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::proxy::manager()
+            .untrust_ca()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("untrust join error: {e}"))?
 }
 
 /// Bytes of `src-tauri/icons/tray.png` compiled in so the menu bar gets
@@ -576,9 +642,9 @@ pub fn run() {
             // a clean disable leaves nothing to reconcile.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             std::thread::spawn(|| {
-              if let Err(e) = gate_connect_core::proxy::manager().reconcile_on_startup() {
-                eprintln!("proxy startup reconcile failed: {e}");
-              }
+                if let Err(e) = gate_connect_core::proxy::manager().reconcile_on_startup() {
+                    eprintln!("proxy startup reconcile failed: {e}");
+                }
             });
 
             // Round the NSWindow content view's CALayer so the transparent
@@ -830,11 +896,7 @@ fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn anchor_under_tray(
-    window: &tauri::WebviewWindow,
-    tray_pos: Position,
-    tray_size: Size,
-) {
+fn anchor_under_tray(window: &tauri::WebviewWindow, tray_pos: Position, tray_size: Size) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let pos = tray_pos.to_physical::<f64>(scale);
     let size = tray_size.to_physical::<f64>(scale);
@@ -945,8 +1007,8 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
 /// cleanly rounded against the desktop.
 #[cfg(target_os = "macos")]
 fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
-    use objc2::{class, msg_send};
     use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
 
     let Ok(ns_window_ptr) = window.ns_window() else {
         return;
