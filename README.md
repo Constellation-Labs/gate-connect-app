@@ -15,8 +15,7 @@ verify the round trip.
   OpenCode target macOS, Linux, and Windows.
 - **Integrations:** Cowork (Claude Desktop 3P / `inferenceProvider: gateway`),
   Claude Code, Codex, and OpenCode.
-- **Auth:** mocked. The UI takes the gateway base URL and API key directly.
-  Real OAuth/PKCE against the Gate AI identity service comes later.
+
 
 ## Architecture
 
