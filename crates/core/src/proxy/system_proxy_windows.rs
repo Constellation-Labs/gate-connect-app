@@ -82,20 +82,21 @@ pub fn snapshot() -> Result<ProxySnapshot> {
 
 pub fn save_snapshot(snapshot: &ProxySnapshot) -> Result<()> {
     let path = snapshot_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
     let raw = serde_json::to_string_pretty(snapshot).context("serializing proxy snapshot")?;
-    fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))
+    // Atomic write (handles parent dirs too): a torn snapshot would make
+    // disable/reconcile fall back to force-off instead of an exact restore.
+    crate::primitives::write_file(&path, raw.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 pub fn load_snapshot() -> Result<Option<ProxySnapshot>> {
     let path = snapshot_path()?;
     match fs::read_to_string(&path) {
-        Ok(raw) => Ok(Some(
-            serde_json::from_str(&raw)
-                .with_context(|| format!("parsing {} as JSON", path.display()))?,
-        )),
+        Ok(raw) => {
+            Ok(Some(serde_json::from_str(&raw).with_context(|| {
+                format!("parsing {} as JSON", path.display())
+            })?))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }

@@ -40,12 +40,11 @@ fn read_file() -> Result<DomainsFile> {
 
 fn write_file(file: &DomainsFile) -> Result<()> {
     let path = config_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
     let raw = serde_json::to_string_pretty(file).context("serializing proxy domains config")?;
-    fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))
+    // Atomic write (handles parent dirs too): a crash mid-write must not
+    // leave a corrupt domains file behind.
+    crate::primitives::write_file(&path, raw.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// The full domain catalog with persisted enabled flags applied. An

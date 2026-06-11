@@ -14,10 +14,10 @@
 //! through to the real upstream.
 //!
 //! The CA private key lives in the OS keychain; only the public cert is
-//! written to disk (and into the System keychain when trusted). Disabling
-//! the proxy restores the previous system-proxy state but deliberately
-//! leaves the CA trusted, so re-enabling is promptless; untrusting is a
-//! separate explicit action ([`ProxyManager::untrust_ca`]).
+//! written to disk (and installed into the OS trust store when trusted).
+//! Disabling the proxy restores the previous system-proxy state but
+//! deliberately leaves the CA trusted, so re-enabling is promptless;
+//! untrusting is a separate explicit action ([`ProxyManager::untrust_ca`]).
 //!
 //! Platform support: macOS, Windows, and Linux. The engine itself is
 //! cross-platform; CA trust ([`ca`]) and system-proxy wiring ([`system_proxy`])
@@ -65,6 +65,17 @@ mod manager;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use manager::{manager, ProxyManager};
 
+/// Cross-process hint that some Gate Connect process has the system proxy
+/// routed through a live engine: the snapshot file exists for exactly that
+/// duration. The engine holds the key it was started with, so the CLI uses
+/// this to warn after a rotation/sign-out it cannot propagate in-process.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn engine_likely_running() -> bool {
+    system_proxy::load_snapshot()
+        .map(|s| s.is_some())
+        .unwrap_or(false)
+}
+
 /// One routable provider. The built-in set is defined by
 /// [`default_domains`]; persisted config only flips `enabled` per `slug`,
 /// so adding a new built-in domain automatically surfaces it in the UI.
@@ -107,7 +118,7 @@ pub struct ProxyState {
     pub running: bool,
     /// Loopback port the engine is bound to (when running).
     pub port: Option<u16>,
-    /// Whether our root CA is trusted in the System keychain.
+    /// Whether our root CA is trusted in the OS trust store.
     pub ca_trusted: bool,
     /// The full domain catalog with current enabled flags.
     pub domains: Vec<ProxyDomain>,
@@ -129,9 +140,7 @@ pub(crate) enum Decision {
 /// True if any enabled domain claims `host`. Used by the engine's
 /// `should_intercept` to gate MITM at the CONNECT stage.
 pub(crate) fn should_intercept_host(domains: &[ProxyDomain], host: &str) -> bool {
-    domains
-        .iter()
-        .any(|d| d.enabled && d.matches_host(host))
+    domains.iter().any(|d| d.enabled && d.matches_host(host))
 }
 
 /// Decide what to do with a request given its host + path. Passthrough
@@ -142,10 +151,16 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
         if !d.matches_host(host) {
             continue;
         }
-        if d.passthrough_prefixes.iter().any(|p| path.starts_with(p.as_str())) {
+        if d.passthrough_prefixes
+            .iter()
+            .any(|p| path.starts_with(p.as_str()))
+        {
             return Decision::Passthrough;
         }
-        if d.rewrite_prefixes.iter().any(|p| path.starts_with(p.as_str())) {
+        if d.rewrite_prefixes
+            .iter()
+            .any(|p| path.starts_with(p.as_str()))
+        {
             return Decision::Rewrite {
                 upstream_url: d.upstream_url.clone(),
             };
@@ -243,7 +258,10 @@ mod tests {
         let mut d = anthropic();
         d[0].enabled = false;
         assert!(!should_intercept_host(&d, "api.anthropic.com"));
-        assert_eq!(decide(&d, "api.anthropic.com", "/v1/messages"), Decision::Tunnel);
+        assert_eq!(
+            decide(&d, "api.anthropic.com", "/v1/messages"),
+            Decision::Tunnel
+        );
     }
 
     #[test]

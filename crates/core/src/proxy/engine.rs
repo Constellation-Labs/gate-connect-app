@@ -53,6 +53,7 @@ pub struct RunningEngine {
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
     rules_tx: watch::Sender<Arc<Vec<ProxyDomain>>>,
+    key_tx: watch::Sender<Arc<str>>,
     /// Set before a deliberate shutdown so the engine thread can tell an
     /// expected stop from an unexpected exit (crash / bind loss).
     stopping: Arc<AtomicBool>,
@@ -63,9 +64,24 @@ impl RunningEngine {
         self.port
     }
 
+    /// True once the engine thread has exited (crash or stop) — the
+    /// listener is gone and the port is dead.
+    pub fn is_finished(&self) -> bool {
+        self.thread
+            .as_ref()
+            .map(|t| t.is_finished())
+            .unwrap_or(true)
+    }
+
     /// Push a new enabled-domain set to the live engine. Cheap — no restart.
     pub fn update_domains(&self, domains: &[ProxyDomain]) {
         let _ = self.rules_tx.send(Arc::new(enabled_only(domains)));
+    }
+
+    /// Push a rotated Gate API key to the live engine. Cheap — no restart;
+    /// without this the engine keeps injecting the key it was started with.
+    pub fn update_api_key(&self, api_key: &str) {
+        let _ = self.key_tx.send(Arc::from(api_key));
     }
 
     /// Signal graceful shutdown and wait for the engine thread to exit.
@@ -113,8 +129,9 @@ fn init_tracing() {
         if !debug_log() {
             return;
         }
-        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("hudsucker=debug,rustls=info,info"));
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new("hudsucker=debug,rustls=info,info")
+        });
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::stderr)
@@ -128,7 +145,8 @@ struct GateHandler {
     rules: watch::Receiver<Arc<Vec<ProxyDomain>>>,
     /// Parsed gateway URL — its scheme + authority replace the target's.
     gateway: Uri,
-    api_key: Arc<str>,
+    /// Live-updatable Gate API key (rotations push a new value).
+    api_key: watch::Receiver<Arc<str>>,
 }
 
 impl HttpHandler for GateHandler {
@@ -142,7 +160,9 @@ impl HttpHandler for GateHandler {
             .authority()
             .map(|a| a.host())
             .or_else(|| req.uri().host());
-        let intercept = host.map(|h| should_intercept_host(&rules, h)).unwrap_or(false);
+        let intercept = host
+            .map(|h| should_intercept_host(&rules, h))
+            .unwrap_or(false);
         if debug_log() {
             eprintln!(
                 "[gate-proxy] CONNECT {} -> {}",
@@ -174,7 +194,8 @@ impl HttpHandler for GateHandler {
             // api.anthropic.com the request came from , validated
             // against a real Cowork generation: 200 text/event-stream.
             if let Decision::Rewrite { upstream_url } = decide(&rules, host, &path) {
-                match apply_rewrite(&mut req, &self.gateway, &upstream_url, &self.api_key) {
+                let api_key = self.api_key.borrow().clone();
+                match apply_rewrite(&mut req, &self.gateway, &upstream_url, &api_key) {
                     Ok(()) => action = "rewrite->gateway",
                     Err(e) => {
                         action = "rewrite-FAILED";
@@ -186,7 +207,10 @@ impl HttpHandler for GateHandler {
             }
         }
         if debug_log() {
-            let auth = if req.headers().contains_key(hudsucker::hyper::header::AUTHORIZATION) {
+            let auth = if req
+                .headers()
+                .contains_key(hudsucker::hyper::header::AUTHORIZATION)
+            {
                 "bearer"
             } else if req.headers().contains_key("x-api-key") {
                 "x-api-key"
@@ -293,10 +317,11 @@ where
     let (listener, port) = bind_free_loopback()?;
 
     let (rules_tx, rules_rx) = watch::channel(Arc::new(enabled_only(&cfg.domains)));
+    let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let handler = GateHandler {
         rules: rules_rx,
         gateway,
-        api_key: Arc::from(cfg.api_key.as_str()),
+        api_key: key_rx,
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -309,7 +334,10 @@ where
     let thread = std::thread::Builder::new()
         .name("gate-proxy".into())
         .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
                 Ok(rt) => rt,
                 Err(e) => {
                     let _ = ready_tx.send(Err(format!("building tokio runtime: {e}")));
@@ -378,6 +406,7 @@ where
             shutdown: Some(shutdown_tx),
             thread: Some(thread),
             rules_tx,
+            key_tx,
             stopping,
         }),
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
@@ -391,7 +420,9 @@ mod tests {
 
     #[test]
     fn rewrite_swaps_authority_keeps_path_and_injects_headers() {
-        let gateway: Uri = "https://gateway-staging.constellationgate.ai".parse().unwrap();
+        let gateway: Uri = "https://gateway-staging.constellationgate.ai"
+            .parse()
+            .unwrap();
         let mut req = Request::builder()
             .method("POST")
             .uri("https://api.anthropic.com/v1/messages?beta=true")
@@ -399,7 +430,13 @@ mod tests {
             .body(())
             .unwrap();
 
-        apply_rewrite(&mut req, &gateway, "https://api.anthropic.com", "sk-gw-test").unwrap();
+        apply_rewrite(
+            &mut req,
+            &gateway,
+            "https://api.anthropic.com",
+            "sk-gw-test",
+        )
+        .unwrap();
 
         assert_eq!(
             req.uri().to_string(),
@@ -411,6 +448,9 @@ mod tests {
             "https://api.anthropic.com"
         );
         // The app's own credential is preserved.
-        assert_eq!(req.headers().get("authorization").unwrap(), "Bearer app-token");
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer app-token"
+        );
     }
 }
