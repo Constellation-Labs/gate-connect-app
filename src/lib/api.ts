@@ -137,7 +137,7 @@ export const migratePreview = (slug: string, options: MigrateOptions) =>
 export const migrateExecute = (slug: string, options: MigrateOptions) =>
   invoke<MigrateReport>("migrate_execute", { slug, options });
 
-// ---- built-in MITM proxy (macOS + Windows) ----
+// ---- built-in MITM proxy (macOS, Windows, Linux) ----
 
 export interface ProxyDomain {
   slug: string;
@@ -163,12 +163,14 @@ export const proxyStatus = () => invoke<ProxyState>("proxy_status");
 
 export const proxyListDomains = () => invoke<ProxyDomain[]>("proxy_list_domains");
 
-/** Turn the proxy on: starts the loopback engine, trusts the CA, and points
- * the system proxy at it. Triggers a single macOS admin prompt. */
+/** Turn the proxy on: starts the loopback engine, trusts the CA (the one
+ * step that prompts, and only when not already trusted), and points the
+ * system proxy at it. */
 export const proxyEnable = () => invoke<ProxyState>("proxy_enable");
 
-/** Turn the proxy off: restores the prior system proxy and untrusts the CA
- * in one admin prompt. */
+/** Turn the proxy off: stops the engine and restores the prior system
+ * proxy, promptless. The CA stays trusted so re-enabling is promptless;
+ * removing it is the separate, explicit proxyUntrustCa. */
 export const proxyDisable = () => invoke<ProxyState>("proxy_disable");
 
 /** Toggle a provider. Applied live when the engine is running — no restart,

@@ -1,12 +1,9 @@
 name: CI
 
-# Continuous checks for the Gate Connect Tauri app, ported from the
-# swarm-deck monorepo's connect.yml. Runs the cross-platform Rust
-# core/CLI checks and the web frontend checks on ubuntu. Several of the
-# app's modules are platform-gated and won't compile here — that's
-# expected; these jobs cover the platform-independent code only.
-# Platform bundles (macOS/Windows/Linux) are built by release.yml on
-# version tags.
+# Continuous checks for the Gate Connect Tauri app. The Rust job runs on
+# all three desktop platforms so the platform-gated modules (Cowork
+# variants, proxy managers, CA modules) actually compile in CI; platform
+# bundles are built by release.yml on version tags.
 
 on:
   push:
@@ -20,23 +17,52 @@ concurrency:
 
 jobs:
   rust:
-    name: Rust (core + cli)
-    runs-on: ubuntu-latest
+    name: Rust (workspace)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      # rust-toolchain.toml pins channel 1.86.0 with rustfmt + clippy.
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      # rust-toolchain.toml pins channel 1.86.0 with rustfmt + clippy
+      # (same as release.yml).
       - uses: dtolnay/rust-toolchain@1.86.0
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Key by the exact image: the cache would otherwise be shared with
+          # jobs on other ubuntu versions (same runner OS), and objects
+          # compiled against a newer glibc fail to link on 22.04.
+          key: ${{ matrix.os }}
+
+      # Tauri's build script validates the externalBin sidecar path from
+      # tauri.windows.conf.json at compile time, so even clippy needs the
+      # Cowork helper staged on Windows (same prerequisite as local dev).
+      - name: Stage Cowork helper sidecar
+        if: matrix.os == 'windows-latest'
+        run: node scripts/stage-cowork-helper.mjs
+
+      # fmt is platform-independent; run it once (the Windows runners'
+      # git autocrlf setting can also produce false CRLF diffs there).
+      - name: rustfmt
+        if: matrix.os == 'ubuntu-22.04'
+        run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy -p gate-connect-core -p gate-connect-cli -p gate-connect-cowork-helper --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test -p gate-connect-core -p gate-connect-cli -p gate-connect-cowork-helper --all-features
+        run: cargo test --workspace
 
   web:
     name: Web (frontend)

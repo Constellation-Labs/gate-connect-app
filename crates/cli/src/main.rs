@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use gate_connect_core::{ConnectInput, Status, ToolId, account, registry};
+use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
 // `claude_session_delegate` and `migrate` are macOS-only (they back Cowork-specific
 // flows: Claude Code-session delegation and standard-mode -> 3P-mode
@@ -16,7 +16,7 @@ use gate_connect_core::{ConnectInput, Status, ToolId, account, registry};
 #[cfg(target_os = "macos")]
 use clap::ArgGroup;
 #[cfg(target_os = "macos")]
-use gate_connect_core::{migrate, claude_session_delegate};
+use gate_connect_core::{claude_session_delegate, migrate};
 
 // The built-in proxy is wired on the three desktop OSes (CA trust +
 // system-proxy backends exist there); its subcommands are gated to match.
@@ -39,16 +39,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Sign in to Gate AI. Stores the base URL on disk and the API key
-    /// in the macOS keychain. Re-run to update.
+    /// in the OS secret store (Keychain / Credential Manager / Secret
+    /// Service). Re-run to update.
     Login {
         #[arg(long, env = "GATE_BASE_URL")]
         base_url: String,
         #[arg(long)]
         api_key: Option<String>,
-/// Read the Gate API key from this file (first line) instead of
-/// passing it on the command line or typing it at the prompt.
-#[arg(long)]
-api_key_file: Option<std::path::PathBuf>,
+        /// Read the Gate API key from this file (first line) instead of
+        /// passing it on the command line or typing it at the prompt.
+        #[arg(long)]
+        api_key_file: Option<std::path::PathBuf>,
     },
     /// Sign out. Removes the stored base URL and the keychain entry.
     Logout,
@@ -85,10 +86,10 @@ api_key_file: Option<std::path::PathBuf>,
         #[arg(long)]
         api_key: Option<String>,
         /// Read the upstream API key from this file (first line) instead
-/// of passing it on the command line or typing it at the prompt.
-#[arg(long)]
-api_key_file: Option<std::path::PathBuf>,
-/// Delegate to the active Claude Code session (macOS only —
+        /// of passing it on the command line or typing it at the prompt.
+        #[arg(long)]
+        api_key_file: Option<std::path::PathBuf>,
+        /// Delegate to the active Claude Code session (macOS only —
         /// reads from the Claude Code keychain entry on every Cowork
         /// request).
         #[cfg(target_os = "macos")]
@@ -180,10 +181,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Login {
-  base_url,
-  api_key,
-  api_key_file,
-  } => cmd_login(base_url, api_key, api_key_file),
+            base_url,
+            api_key,
+            api_key_file,
+        } => cmd_login(base_url, api_key, api_key_file),
         Command::Logout => cmd_logout(),
         Command::Whoami => cmd_whoami(),
         Command::List => cmd_list(),
@@ -195,21 +196,21 @@ fn main() -> Result<()> {
             tool,
             api_key,
             api_key_file,
-claude_oauth,
+            claude_oauth,
         } => {
-let api_key = if claude_oauth {
-None
-} else {
-Some(resolve_secret(api_key, api_key_file, "upstream API key")?)
-};
-cmd_set_upstream(&tool, api_key, claude_oauth)
-}
+            let api_key = if claude_oauth {
+                None
+            } else {
+                Some(resolve_secret(api_key, api_key_file, "upstream API key")?)
+            };
+            cmd_set_upstream(&tool, api_key, claude_oauth)
+        }
         #[cfg(not(target_os = "macos"))]
         Command::SetUpstream {
-  tool,
-  api_key,
-  api_key_file,
-  } => cmd_set_upstream(&tool, api_key, api_key_file),
+            tool,
+            api_key,
+            api_key_file,
+        } => cmd_set_upstream(&tool, api_key, api_key_file),
         Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
@@ -219,12 +220,25 @@ cmd_set_upstream(&tool, api_key, claude_oauth)
 }
 
 fn cmd_login(
-base_url: String,
-api_key: Option<String>,
-api_key_file: Option<std::path::PathBuf>,
+    base_url: String,
+    api_key: Option<String>,
+    api_key_file: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let api_key = resolve_secret(api_key, api_key_file, "Gate API key")?;
-account::save(&base_url, Some(&api_key))?;
+    account::save(&base_url, Some(&api_key))?;
+    // The key is copied into tool configs at connect time — push the new
+    // one into any config that still embeds an old key.
+    registry::refresh_gate_key_everywhere(&api_key)?;
+    // The proxy engine lives in whichever process enabled it (usually the
+    // menubar app) — this process can't push the new key into it.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        if proxy::engine_likely_running() {
+            println!(
+                "note: the Gate proxy appears to be enabled (likely in the menubar app); it keeps using the previous key until it is toggled off and on."
+            );
+        }
+    }
     println!("Signed in to {base_url}.");
     Ok(())
 }
@@ -235,33 +249,47 @@ account::save(&base_url, Some(&api_key))?;
 /// file or prompt keeps the secret out of the process environment and
 /// `ps -E` output.
 fn resolve_secret(
-value: Option<String>,
-file: Option<std::path::PathBuf>,
-label: &str,
+    value: Option<String>,
+    file: Option<std::path::PathBuf>,
+    label: &str,
 ) -> Result<String> {
-if let Some(v) = value {
-return Ok(v);
-}
-if let Some(path) = file {
-let contents = std::fs::read_to_string(&path)
-.with_context(|| format!("reading {}", path.display()))?;
-let line = contents.lines().next().unwrap_or("").trim();
-if line.is_empty() {
-anyhow::bail!("{} is empty", path.display());
-}
-return Ok(line.to_string());
-}
-let entered = rpassword::prompt_password(format!("{label}: "))
-.with_context(|| format!("reading {label} from prompt"))?;
-let entered = entered.trim().to_string();
-if entered.is_empty() {
-anyhow::bail!("no {label} provided");
-}
-Ok(entered)
+    if let Some(v) = value {
+        return Ok(v);
+    }
+    if let Some(path) = file {
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let line = contents.lines().next().unwrap_or("").trim();
+        if line.is_empty() {
+            anyhow::bail!("{} is empty", path.display());
+        }
+        return Ok(line.to_string());
+    }
+    let entered = rpassword::prompt_password(format!("{label}: "))
+        .with_context(|| format!("reading {label} from prompt"))?;
+    let entered = entered.trim().to_string();
+    if entered.is_empty() {
+        anyhow::bail!("no {label} provided");
+    }
+    Ok(entered)
 }
 
 fn cmd_logout() -> Result<()> {
+    // Disconnect managed tools first: clearing the account while their
+    // configs still embed the key would leave them routing to the gateway
+    // with a dead credential on disk. A failure aborts the sign-out.
+    registry::disconnect_all_managed()?;
     account::clear()?;
+    // The proxy engine lives in whichever process enabled it (usually the
+    // menubar app) — this process can't stop it or revoke its in-memory key.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        if proxy::engine_likely_running() {
+            println!(
+                "note: the Gate proxy appears to be enabled (likely in the menubar app); it keeps using the deleted key until it is turned off there."
+            );
+        }
+    }
     println!("Signed out.");
     Ok(())
 }
@@ -298,18 +326,18 @@ fn cmd_status(tool: &str) -> Result<()> {
     if matches!(status, Status::Connected) {
         match integ.id() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            ToolId::Cowork => println!(
-                "Fully quit and relaunch Claude Desktop for changes to take effect."
-            ),
-            ToolId::ClaudeCode => println!(
-                "Re-run `claude` to pick up the new settings.json env block."
-            ),
-            ToolId::Codex => println!(
-                "Re-run `codex` to pick up the new config.toml provider block."
-            ),
-            ToolId::OpenCode => println!(
-                "Re-run `opencode` to pick up the new opencode.json provider block."
-            ),
+            ToolId::Cowork => {
+                println!("Fully quit and relaunch Claude Desktop for changes to take effect.")
+            }
+            ToolId::ClaudeCode => {
+                println!("Re-run `claude` to pick up the new settings.json env block.")
+            }
+            ToolId::Codex => {
+                println!("Re-run `codex` to pick up the new config.toml provider block.")
+            }
+            ToolId::OpenCode => {
+                println!("Re-run `opencode` to pick up the new opencode.json provider block.")
+            }
         }
     }
     Ok(())
@@ -326,8 +354,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
             tool,
         );
     }
-    let upstream_url =
-        upstream_url.unwrap_or_else(|| integ.default_upstream_url().to_string());
+    let upstream_url = upstream_url.unwrap_or_else(|| integ.default_upstream_url().to_string());
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
         upstream_url,
@@ -364,15 +391,15 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
             );
         }
         ToolId::OpenCode => {
-                println!("  1. Quit any running `opencode` sessions.");
-                println!(
+            println!("  1. Quit any running `opencode` sessions.");
+            println!(
                     "  2. Re-run `opencode` — your existing providers (anthropic / openai / openrouter) now route through Gate. Use the same model names you always have."
                 );
-                println!(
+            println!(
                     "  3. Your API keys from `opencode auth login <provider>` are untouched. Gate adds its headers and forwards each request to the original upstream."
                 );
-            }
         }
+    }
     Ok(())
 }
 
@@ -397,11 +424,7 @@ fn cmd_disconnect(tool: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn cmd_set_upstream(
-    tool: &str,
-    api_key: Option<String>,
-    claude_oauth: bool,
-) -> Result<()> {
+fn cmd_set_upstream(tool: &str, api_key: Option<String>, claude_oauth: bool) -> Result<()> {
     let integ = resolve(tool)?;
     if !integ.requires_upstream_credential() {
         anyhow::bail!(
@@ -423,9 +446,9 @@ fn cmd_set_upstream(
 
 #[cfg(not(target_os = "macos"))]
 fn cmd_set_upstream(
-tool: &str,
-api_key: Option<String>,
-api_key_file: Option<std::path::PathBuf>,
+    tool: &str,
+    api_key: Option<String>,
+    api_key_file: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let integ = resolve(tool)?;
     if !integ.requires_upstream_credential() {
@@ -492,7 +515,11 @@ fn print_proxy_state(state: &proxy::ProxyState) {
     println!("Proxy:    {running}");
     println!(
         "CA trust: {}",
-        if state.ca_trusted { "trusted" } else { "not trusted" }
+        if state.ca_trusted {
+            "trusted"
+        } else {
+            "not trusted"
+        }
     );
     print_proxy_domains(&state.domains);
 }

@@ -153,7 +153,7 @@ impl Integration for ClaudeCode {
             .context("Gate Connect is not signed in (no account.json + keychain entry)")?;
         let headers = build_headers(&acct.api_key, &input.upstream_url);
 
-        let mut settings = load_settings()?.unwrap_or_else(default_settings);
+        let mut settings = load_settings()?.unwrap_or_default();
         // Refuse to clobber a malformed non-object `env` before ensure_object
         // would silently replace it with `{}` (see reject_non_object_env).
         reject_non_object_env(&settings)?;
@@ -193,6 +193,7 @@ impl Integration for ClaudeCode {
     }
 
     fn disconnect(&self) -> Result<()> {
+        let path = settings_path()?;
         let Some(mut settings) = load_settings()? else {
             return Ok(());
         };
@@ -223,11 +224,51 @@ impl Integration for ClaudeCode {
         }
         settings.remove(MARKER_KEY);
 
-        // If the file would now serialize to `{}`, prefer to leave it
-        // untouched on disk to match the "zero residue" disconnect contract.
-        if settings.is_empty() && !env::claude_code_settings_path()?.exists() {
+        // The file now holds nothing but our additions — remove it rather
+        // than leaving a stray `{}` behind (matching Codex's disconnect).
+        if settings.is_empty() {
+            if path.exists() {
+                fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            }
             return Ok(());
         }
+        write_settings(&settings)
+    }
+
+    fn refresh_gate_key(&self, api_key: &str) -> Result<()> {
+        let Some(mut settings) = load_settings()? else {
+            return Ok(());
+        };
+        // Only rewrite state we own: no marker means we never connected.
+        if !settings.contains_key(MARKER_KEY) {
+            return Ok(());
+        }
+        let Some(env_block) = settings.get_mut("env").and_then(|v| v.as_object_mut()) else {
+            return Ok(());
+        };
+        let Some(headers) = env_block.get(KEY_CUSTOM_HEADERS).and_then(|v| v.as_str()) else {
+            return Ok(());
+        };
+        // Replace only the key line, preserving every other line (the
+        // upstream URL and any hand-added headers) verbatim. No key line
+        // means the value was hand-edited past recognition — leave it alone
+        // rather than clobbering it with a rebuilt canonical string.
+        let key_prefix = format!("{GATE_KEY_HEADER}: ");
+        if !headers.lines().any(|l| l.starts_with(&key_prefix)) {
+            return Ok(());
+        }
+        let rewritten = headers
+            .lines()
+            .map(|l| {
+                if l.starts_with(&key_prefix) {
+                    format!("{key_prefix}{api_key}")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        env_block.insert(KEY_CUSTOM_HEADERS.into(), Value::String(rewritten));
         write_settings(&settings)
     }
 
@@ -282,10 +323,6 @@ fn write_settings(settings: &Map<String, Value>) -> Result<()> {
     // env vars / headers. Atomic-write protects against partial writes.
     crate::primitives::write_file(&path, body.as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
-}
-
-fn default_settings() -> Map<String, Value> {
-    Map::new()
 }
 
 fn ensure_object<'a>(parent: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {

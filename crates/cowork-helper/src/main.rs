@@ -13,24 +13,24 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 fn main() {
-  #[cfg(target_os = "windows")]
-  {
-    use std::io::Write;
-    match gate_connect_core::integrations::cowork::windows_helper_emit() {
-      Ok(json) => {
-        // Ignore write errors: when Claude spawns us with a pipe this
-        // succeeds; with no console attached there is nothing to flush to.
-        let _ = std::io::stdout().write_all(json.as_bytes());
-      }
-      Err(e) => {
-        eprintln!("gate-connect-cowork-helper: {e:#}");
-        std::process::exit(1);
-      }
+    #[cfg(target_os = "windows")]
+    {
+        use std::io::Write;
+        match gate_connect_core::integrations::cowork::windows_helper_emit() {
+            Ok(json) => {
+                // Ignore write errors: when Claude spawns us with a pipe this
+                // succeeds; with no console attached there is nothing to flush to.
+                let _ = std::io::stdout().write_all(json.as_bytes());
+            }
+            Err(e) => {
+                eprintln!("gate-connect-cowork-helper: {e:#}");
+                std::process::exit(1);
+            }
+        }
     }
-  }
-  #[cfg(not(target_os = "windows"))]
-  {
-    eprintln!("gate-connect-cowork-helper is Windows-only");
-    std::process::exit(1);
-  }
+    #[cfg(not(target_os = "windows"))]
+    {
+        eprintln!("gate-connect-cowork-helper is Windows-only");
+        std::process::exit(1);
+    }
 }

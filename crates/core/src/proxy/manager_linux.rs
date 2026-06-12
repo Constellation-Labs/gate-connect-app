@@ -58,12 +58,14 @@ impl ProxyManager {
     /// Both the CA install and the proxy write may prompt for elevation.
     /// Idempotent: a no-op if already running.
     pub fn enable(&self) -> Result<ProxyState> {
-        {
-            let guard = self.engine.lock().expect("proxy engine mutex poisoned");
-            if guard.is_some() {
-                drop(guard);
-                return self.status();
-            }
+        // Hold the lock for the whole sequence: a concurrent enable must not
+        // snapshot the system proxy after this one has already pointed it at
+        // our engine — that snapshot would later "restore" a dead port.
+        // (handle_engine_crash uses try_lock, so it can't deadlock on this.)
+        let mut guard = self.engine.lock().expect("proxy engine mutex poisoned");
+        if guard.is_some() {
+            drop(guard);
+            return self.status();
         }
 
         let account = account::load()?
@@ -105,7 +107,27 @@ impl ProxyManager {
             return Err(e).context("enabling system proxy");
         }
 
-        *self.engine.lock().expect("proxy engine mutex poisoned") = Some(running);
+        *guard = Some(running);
+
+        // The crash fail-safe defers while we hold the lock; if the engine
+        // died somewhere in this sequence, revert here instead of leaving
+        // HTTPS routed at a dead port with the snapshot already cleared.
+        if guard.as_ref().is_some_and(|r| r.is_finished()) {
+            if let Some(dead) = guard.take() {
+                dead.stop();
+            }
+            let snapshot = system_proxy::load_snapshot().unwrap_or_else(|e| {
+                eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
+                None
+            });
+            match snapshot {
+                Some(snapshot) => system_proxy::restore(&snapshot)?,
+                None => system_proxy::force_off()?,
+            }
+            let _ = system_proxy::clear_snapshot();
+            anyhow::bail!("proxy engine exited unexpectedly while enabling");
+        }
+        drop(guard);
         self.status()
     }
 
@@ -120,7 +142,13 @@ impl ProxyManager {
             .expect("proxy engine mutex poisoned")
             .take();
 
-        match system_proxy::load_snapshot()? {
+        // An unreadable snapshot must not strand HTTPS at the dead engine
+        // port — treat it like a missing one and force the proxy off.
+        let snapshot = system_proxy::load_snapshot().unwrap_or_else(|e| {
+            eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
+            None
+        });
+        match snapshot {
             Some(snapshot) => system_proxy::restore(&snapshot)?,
             None => system_proxy::force_off()?,
         }
@@ -144,6 +172,19 @@ impl ProxyManager {
             running.update_domains(&domains);
         }
         self.status()
+    }
+
+    /// Push a rotated Gate API key into the running engine, if any — the
+    /// engine otherwise keeps injecting the key it was started with.
+    pub fn refresh_api_key(&self, api_key: &str) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_api_key(api_key);
+        }
     }
 
     /// Trust the CA without enabling the proxy (standalone command).
@@ -174,11 +215,27 @@ impl ProxyManager {
     /// new shells aren't stranded. Best-effort; the revert may prompt.
     pub(crate) fn handle_engine_crash(&self) {
         eprintln!("gate proxy engine exited unexpectedly; reverting system proxy");
-        // try_lock avoids deadlocking if a deliberate stop already holds the
-        // mutex (in which case this isn't a crash).
-        if let Ok(mut guard) = self.engine.try_lock() {
-            let _ = guard.take();
+        // Briefly retry the lock: short holders (status) clear in ms. If
+        // enable still holds it after that, defer — enable re-checks the
+        // engine before returning and runs this same revert itself, whereas
+        // restoring + clearing the snapshot from here mid-enable would erase
+        // the state enable relies on. (A deliberate stop sets `stopping`
+        // before signaling, so this isn't reached on that path.)
+        let mut guard = None;
+        for _ in 0..20 {
+            match self.engine.try_lock() {
+                Ok(g) => {
+                    guard = Some(g);
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            }
         }
+        let Some(mut guard) = guard else {
+            eprintln!("gate proxy: engine lock busy; deferring revert to the operation holding it");
+            return;
+        };
+        let _ = guard.take();
         let _ = match system_proxy::load_snapshot() {
             Ok(Some(snapshot)) => system_proxy::restore(&snapshot),
             _ => system_proxy::force_off(),
@@ -191,10 +248,21 @@ impl ProxyManager {
     /// quit / crash) — restore it. On Linux this may prompt for elevation; a
     /// clean disable clears the snapshot, making this a no-op.
     pub fn reconcile_on_startup(&self) -> Result<()> {
-        let Some(snapshot) = system_proxy::load_snapshot()? else {
-            return Ok(());
+        // As in disable: an unreadable snapshot still means an unclean prior
+        // session, so force the proxy off rather than bailing and leaving
+        // HTTPS routed at a port nothing listens on.
+        let snapshot = match system_proxy::load_snapshot() {
+            Ok(None) => return Ok(()),
+            Ok(Some(s)) => Some(s),
+            Err(e) => {
+                eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
+                None
+            }
         };
-        system_proxy::restore(&snapshot)?;
+        match snapshot {
+            Some(snapshot) => system_proxy::restore(&snapshot)?,
+            None => system_proxy::force_off()?,
+        }
         system_proxy::clear_snapshot()?;
         Ok(())
     }

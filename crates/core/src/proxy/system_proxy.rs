@@ -105,20 +105,21 @@ pub fn snapshot() -> Result<Vec<ServiceProxy>> {
 
 pub fn save_snapshot(snapshot: &[ServiceProxy]) -> Result<()> {
     let path = snapshot_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
     let raw = serde_json::to_string_pretty(snapshot).context("serializing proxy snapshot")?;
-    fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))
+    // Atomic write (handles parent dirs too): a torn snapshot would make
+    // disable/reconcile fall back to force-off instead of an exact restore.
+    crate::primitives::write_file(&path, raw.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 pub fn load_snapshot() -> Result<Option<Vec<ServiceProxy>>> {
     let path = snapshot_path()?;
     match fs::read_to_string(&path) {
-        Ok(raw) => Ok(Some(
-            serde_json::from_str(&raw)
-                .with_context(|| format!("parsing {} as JSON", path.display()))?,
-        )),
+        Ok(raw) => {
+            Ok(Some(serde_json::from_str(&raw).with_context(|| {
+                format!("parsing {} as JSON", path.display())
+            })?))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
@@ -141,32 +142,48 @@ pub fn enable_command(port: u16, services: &[String]) -> String {
         let q = sh_quote(service);
         parts.push(format!("{NETWORKSETUP} -setwebproxy {q} 127.0.0.1 {port}"));
         parts.push(format!("{NETWORKSETUP} -setwebproxystate {q} on"));
-        parts.push(format!("{NETWORKSETUP} -setsecurewebproxy {q} 127.0.0.1 {port}"));
+        parts.push(format!(
+            "{NETWORKSETUP} -setsecurewebproxy {q} 127.0.0.1 {port}"
+        ));
         parts.push(format!("{NETWORKSETUP} -setsecurewebproxystate {q} on"));
     }
     parts.join(" && ")
 }
 
 /// Privileged shell command that restores each service to its snapshot.
-/// When a slot was on with a real server, that server/port is restored;
-/// otherwise the slot is simply turned off.
+/// A slot's saved server/port is re-written whenever the snapshot has one —
+/// even when the slot was *off*: `enable_command` overwrote it with
+/// `127.0.0.1:<our-port>`, and turning the state off alone would leave that
+/// stale loopback address saved in System Settings (common case: a corp
+/// proxy kept configured but toggled off). The state is then restored to
+/// what it was. Windows restores `ProxyServer` verbatim; this keeps the
+/// platforms equivalent.
 pub fn restore_command(snapshot: &[ServiceProxy]) -> String {
     let mut parts = Vec::new();
     for s in snapshot {
         let q = sh_quote(&s.service);
 
-        if s.web.enabled && !s.web.server.is_empty() {
-            let port = if s.web.port.is_empty() { "80" } else { &s.web.port };
+        if !s.web.server.is_empty() {
+            let port = if s.web.port.is_empty() {
+                "80"
+            } else {
+                &s.web.port
+            };
             parts.push(format!(
                 "{NETWORKSETUP} -setwebproxy {q} {srv} {port}",
                 srv = sh_quote(&s.web.server)
             ));
-            parts.push(format!("{NETWORKSETUP} -setwebproxystate {q} on"));
-        } else {
-            parts.push(format!("{NETWORKSETUP} -setwebproxystate {q} off"));
         }
+        parts.push(format!(
+            "{NETWORKSETUP} -setwebproxystate {q} {state}",
+            state = if s.web.enabled && !s.web.server.is_empty() {
+                "on"
+            } else {
+                "off"
+            }
+        ));
 
-        if s.secure.enabled && !s.secure.server.is_empty() {
+        if !s.secure.server.is_empty() {
             let port = if s.secure.port.is_empty() {
                 "443"
             } else {
@@ -176,10 +193,15 @@ pub fn restore_command(snapshot: &[ServiceProxy]) -> String {
                 "{NETWORKSETUP} -setsecurewebproxy {q} {srv} {port}",
                 srv = sh_quote(&s.secure.server)
             ));
-            parts.push(format!("{NETWORKSETUP} -setsecurewebproxystate {q} on"));
-        } else {
-            parts.push(format!("{NETWORKSETUP} -setsecurewebproxystate {q} off"));
         }
+        parts.push(format!(
+            "{NETWORKSETUP} -setsecurewebproxystate {q} {state}",
+            state = if s.secure.enabled && !s.secure.server.is_empty() {
+                "on"
+            } else {
+                "off"
+            }
+        ));
     }
     parts.join(" && ")
 }

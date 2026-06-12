@@ -142,9 +142,22 @@ pub fn connect(input: &ConnectInput) -> Result<()> {
 }
 
 pub fn disconnect() -> Result<()> {
+    // Only delete a plist we wrote: an MDM-pushed managed-preferences file
+    // lives at the same path, and removing it with admin rights would
+    // destroy configuration we don't own. Ours is identifiable by the
+    // credential helper pointing at our per-user helper script.
     let plist_path = env::cowork_managed_plist_path()?;
-    primitives::remove_file_privileged(&plist_path)
-        .context("removing managed-preferences plist (requires sudo)")?;
+    if plist_path.exists() {
+        if plist_is_ours(&plist_path)? {
+            primitives::remove_file_privileged(&plist_path)
+                .context("removing managed-preferences plist (requires sudo)")?;
+        } else {
+            eprintln!(
+                "gate-connect: leaving {} in place — it was not written by Gate Connect",
+                plist_path.display()
+            );
+        }
+    }
 
     let helper = helper_path()?;
     if helper.exists() {
@@ -153,6 +166,24 @@ pub fn disconnect() -> Result<()> {
     // Keychain entries (Gate key + upstream credential) stay — use
     // Sign out or explicit clear_upstream_credential to wipe them.
     Ok(())
+}
+
+/// Does the managed plist at `plist_path` belong to Gate Connect? True
+/// iff its `inferenceCredentialHelper` points at our helper script — an
+/// MDM-pushed plist would reference its own tooling (or nothing). An
+/// unreadable plist is treated as not ours: we can't prove ownership, so
+/// we must not delete it.
+fn plist_is_ours(plist_path: &Path) -> Result<bool> {
+    let Ok(value) = plist::Value::from_file(plist_path) else {
+        return Ok(false);
+    };
+    let helper = helper_path()?.display().to_string();
+    Ok(value
+        .as_dictionary()
+        .and_then(|d| d.get("inferenceCredentialHelper"))
+        .and_then(|v| v.as_string())
+        .map(|s| s == helper)
+        .unwrap_or(false))
 }
 
 /// Render the credential helper.
@@ -198,43 +229,31 @@ fn render_helper_script(
      else\n\
        UPSTREAM=\"$STORED\"\n\
      fi\n\
+     UPSTREAM_URL={upstream_url}\n\
      esc() {{ printf '%s' \"$1\" | /usr/bin/sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g'; }}\n\
      E_GATE=\"$(esc \"$GATE_KEY\")\"\n\
      E_UP=\"$(esc \"$UPSTREAM\")\"\n\
+     E_UU=\"$(esc \"$UPSTREAM_URL\")\"\n\
      case \"$UPSTREAM\" in\n\
        sk-ant-oat*)\n\
          # OAuth token: Authorization Bearer + anthropic-beta only.\n\
-         printf '{{\"token\":\"%s\",\"headers\":{{\"X-Gate-Api-Key\":\"%s\",\"X-Gate-Upstream-Url\":{upstream_json},\"anthropic-beta\":\"oauth-2025-04-20\"}}}}' \\\n\
-           \"$E_UP\" \"$E_GATE\"\n\
+         printf '{{\"token\":\"%s\",\"headers\":{{\"X-Gate-Api-Key\":\"%s\",\"X-Gate-Upstream-Url\":\"%s\",\"anthropic-beta\":\"oauth-2025-04-20\"}}}}' \\\n\
+           \"$E_UP\" \"$E_GATE\" \"$E_UU\"\n\
          ;;\n\
        *)\n\
          # API key: dual-emit as Authorization Bearer + x-api-key.\n\
-         printf '{{\"token\":\"%s\",\"headers\":{{\"X-Api-Key\":\"%s\",\"X-Gate-Api-Key\":\"%s\",\"X-Gate-Upstream-Url\":{upstream_json}}}}}' \\\n\
-           \"$E_UP\" \"$E_UP\" \"$E_GATE\"\n\
+         printf '{{\"token\":\"%s\",\"headers\":{{\"X-Api-Key\":\"%s\",\"X-Gate-Api-Key\":\"%s\",\"X-Gate-Upstream-Url\":\"%s\"}}}}' \\\n\
+           \"$E_UP\" \"$E_UP\" \"$E_GATE\" \"$E_UU\"\n\
          ;;\n\
      esac\n",
     gate = shell_escape(gate_service),
     upstream = shell_escape(upstream_service),
     account = shell_escape(account),
     sentinel = crate::claude_session_delegate::CLAUDE_CODE_SENTINEL,
-    upstream_json = json_string_for_shell(upstream_url),
+    // shell_escape (not raw interpolation): a single quote in the URL must
+    // not break out of the assignment — this value reaches us from IPC/CLI.
+    upstream_url = shell_escape(upstream_url),
   )
-}
-
-/// JSON-encode a string for embedding inside a single-quoted shell
-/// `printf` format. Handles only the upstream URL (plain ASCII).
-fn json_string_for_shell(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            _ => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 fn shell_escape(s: &str) -> String {

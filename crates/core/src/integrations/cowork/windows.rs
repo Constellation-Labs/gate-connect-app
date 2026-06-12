@@ -307,12 +307,32 @@ pub fn disconnect() -> Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     match hkcu.open_subkey_with_flags(POLICY_SUBKEY, KEY_READ | KEY_SET_VALUE) {
         Ok(key) => {
-            for value in WRITTEN_VALUES.iter().chain(LEGACY_VALUES) {
-                match key.delete_value(value) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e).with_context(|| format!("deleting {value}")),
+            // Only delete values we wrote: this policy key can also be
+            // populated by GPO/MDM. Ours is identifiable by the credential
+            // helper pointing at our bundled helper exe, by our sidecar
+            // config existing, or by leftover legacy plaintext values
+            // (which only a pre-helper Gate connect wrote — and which
+            // carry a key we must not leave behind).
+            let helper: String = key
+                .get_value("inferenceCredentialHelper")
+                .unwrap_or_default();
+            let ours = helper == helper_exe_path()?.display().to_string()
+                || helper_config_path()?.exists()
+                || LEGACY_VALUES
+                    .iter()
+                    .any(|v| key.get_value::<String, _>(*v).is_ok());
+            if ours {
+                for value in WRITTEN_VALUES.iter().chain(LEGACY_VALUES) {
+                    match key.delete_value(value) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e).with_context(|| format!("deleting {value}")),
+                    }
                 }
+            } else {
+                eprintln!(
+                    r"gate-connect: leaving HKCU\{POLICY_SUBKEY} values in place — they were not written by Gate Connect"
+                );
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

@@ -40,9 +40,9 @@ export function App() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [providerError, setProviderError] = useState<string | null>(null);
 
-  // Initial load: account decides first-run vs home; proxy status is best-effort
-  // (the proxy commands exist on macOS + Windows — on Linux they throw and we
-  // hide the proxy UI via `showProxy`).
+  // Initial load: account decides first-run vs home; proxy status is
+  // best-effort (the proxy commands exist on all three desktop OSes, but a
+  // failure here just hides the proxy UI via `showProxy`).
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -127,6 +127,14 @@ export function App() {
     setProxyBusy(true);
     try {
       setProxy(await proxyTrustCa());
+    } catch {
+      // a cancelled trust dialog rejects; re-sync instead of leaking an
+      // unhandled rejection with the banner stuck in its old state
+      try {
+        setProxy(await proxyStatus());
+      } catch {
+        /* noop */
+      }
     } finally {
       setProxyBusy(false);
     }
@@ -144,13 +152,24 @@ export function App() {
 
   const disconnect = useCallback(async () => {
     if (proxy?.running) {
+      // A failed disable can leave system HTTPS pointed at a dead engine
+      // port — abort the sign-out and surface it instead of silently
+      // proceeding to first-run with the machine's traffic stranded.
       try {
         setProxy(await proxyDisable());
-      } catch {
-        /* noop */
+      } catch (err) {
+        try {
+          setProxy(await proxyStatus());
+        } catch {
+          /* noop */
+        }
+        throw err;
       }
     }
-    await clearAccount().catch(() => undefined);
+    // clear_account disconnects managed tools before wiping the account;
+    // if that fails we are still signed in, so let the rejection reach
+    // Settings instead of showing first-run over a half-signed-out state.
+    await clearAccount();
     setAccount(null);
     setScreen("firstrun");
   }, [proxy]);

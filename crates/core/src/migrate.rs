@@ -1189,7 +1189,9 @@ fn merge_top_level_keys(src: &Path, dst: &Path, dry_run: bool) -> Result<bool> {
 
     let mut changed = false;
     for (k, v) in src_obj {
-        if SENSITIVE_PREFERENCE_KEYS.iter().any(|p| k == *p) {
+        // Prefix match: `dxt:allowlist` covers per-extension variants like
+        // `dxt:allowlistEnabled:<id>`, not just the bare key.
+        if SENSITIVE_PREFERENCE_KEYS.iter().any(|p| k.starts_with(p)) {
             continue;
         }
         if !dst_obj.contains_key(&k) {
@@ -1209,9 +1211,9 @@ fn merge_top_level_keys(src: &Path, dst: &Path, dry_run: bool) -> Result<bool> {
     Ok(true)
 }
 
-/// Keys in preference JSON we refuse to copy from standard mode to 3P,
-/// either because they're encrypted-blob-bound to the source process or
-/// because they reference the old claude.ai org UUID.
+/// Key *prefixes* in preference JSON we refuse to copy from standard mode
+/// to 3P, either because they're encrypted-blob-bound to the source process
+/// or because they reference the old claude.ai org UUID.
 const SENSITIVE_PREFERENCE_KEYS: &[&str] = &["oauth:tokenCache", "dxt:allowlist"];
 
 fn migrate_artifacts(roots: &MigrateRoots, dry_run: bool) -> CategoryReport {
