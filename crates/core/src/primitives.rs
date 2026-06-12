@@ -406,14 +406,30 @@ fn scopeguard_drop<F: FnOnce()>(f: F) -> impl Drop {
 }
 
 /// Is any process currently running whose command line (argv joined) contains
-/// `needle`? Uses `/usr/bin/pgrep -f`. Returns false on any error (missing
+/// `needle`? Uses `/usr/bin/pgrep -fl`. Returns false on any error (missing
 /// pgrep, permission, etc.) — callers should treat the answer as best-effort.
+///
+/// Other `pgrep` instances are filtered out of the matches: a concurrent
+/// caller's `pgrep -f <needle>` carries the needle in its own argv, so two
+/// simultaneous checks (parallel tests, the app and the CLI at once) would
+/// otherwise both see a false positive. pgrep excludes itself but not its
+/// siblings.
 #[cfg(target_os = "macos")]
 pub fn is_process_running_matching(needle: &str) -> bool {
     Command::new("/usr/bin/pgrep")
-        .args(["-f", needle])
+        // -l with -f prints "PID <full argv>" per match, so we can tell
+        // which matches are merely other pgrep invocations.
+        .args(["-fl", needle])
         .output()
-        .map(|out| out.status.success() && !out.stdout.is_empty())
+        .map(|out| {
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+                    !line
+                        .split_whitespace()
+                        .nth(1)
+                        .is_some_and(|cmd| cmd == "pgrep" || cmd.ends_with("/pgrep"))
+                })
+        })
         .unwrap_or(false)
 }
 
