@@ -39,6 +39,18 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Key by the exact image: the cache would otherwise be shared with
+          # jobs on other ubuntu versions (same runner OS), and objects
+          # compiled against a newer glibc fail to link on 22.04.
+          key: ${{ matrix.os }}
+
+      # Tauri's build script validates the externalBin sidecar path from
+      # tauri.windows.conf.json at compile time, so even clippy needs the
+      # Cowork helper staged on Windows (same prerequisite as local dev).
+      - name: Stage Cowork helper sidecar
+        if: matrix.os == 'windows-latest'
+        run: node scripts/stage-cowork-helper.mjs
 
       # fmt is platform-independent; run it once (the Windows runners'
       # git autocrlf setting can also produce false CRLF diffs there).

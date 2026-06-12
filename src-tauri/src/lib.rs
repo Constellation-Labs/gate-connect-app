@@ -1006,6 +1006,7 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
 ///    regions outside the radius render transparent rather than painting
 ///    the default window background;
 /// 2. layer-back the content view and mask its CALayer to a corner radius.
+///
 /// The webview body stays opaque (white from CSS), so the corners read as
 /// cleanly rounded against the desktop.
 #[cfg(target_os = "macos")]
