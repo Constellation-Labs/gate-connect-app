@@ -176,13 +176,16 @@ impl CertificateAuthority for GateCa {
             }
         }
         let (cfg, not_after) = self.build_server_config(&host);
-        self.cache.lock().expect("cert cache mutex poisoned").insert(
-            host,
-            CachedLeaf {
-                not_after,
-                config: Arc::clone(&cfg),
-            },
-        );
+        self.cache
+            .lock()
+            .expect("cert cache mutex poisoned")
+            .insert(
+                host,
+                CachedLeaf {
+                    not_after,
+                    config: Arc::clone(&cfg),
+                },
+            );
         cfg
     }
 }
