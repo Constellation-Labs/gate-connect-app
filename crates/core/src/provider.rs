@@ -70,6 +70,15 @@ pub fn providers() -> Vec<Provider> {
             tool_ids: &[],
             proxy_domain_slugs: &["openrouter"],
         },
+        Provider {
+            slug: "google",
+            display_name: "Google / Gemini",
+            subtitle: "Gemini API",
+            // Proxy-only, like OpenRouter: no CLI integration, routed entirely
+            // through the proxy domain (requires the proxy to be running).
+            tool_ids: &[],
+            proxy_domain_slugs: &["google"],
+        },
     ]
 }
 
@@ -363,6 +372,17 @@ mod tests {
             "OpenRouter has no CLI integration — it's proxy-only"
         );
         assert_eq!(p.proxy_domain_slugs, &["openrouter"]);
+    }
+
+    #[test]
+    fn gemini_provider_is_proxy_only() {
+        let p = find("google").expect("google/gemini provider present");
+        assert_eq!(p.display_name, "Google / Gemini");
+        assert!(
+            p.tool_ids.is_empty(),
+            "Gemini has no CLI integration — it's proxy-only"
+        );
+        assert_eq!(p.proxy_domain_slugs, &["google"]);
     }
 
     #[test]
