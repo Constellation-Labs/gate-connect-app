@@ -170,10 +170,11 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
     Decision::Tunnel
 }
 
-/// The built-in domain catalog. Anthropic and OpenAI are proven upstreams
-/// and ship `supported:true` (Anthropic also `enabled` by default; OpenAI is
-/// opt-in). The rest are scaffolded but gated `supported:false` until Gate's
-/// upstream support for that provider is confirmed.
+/// The built-in domain catalog. Anthropic, OpenAI, and OpenRouter are proven
+/// upstreams and ship `supported:true` (Anthropic also `enabled` by default;
+/// OpenAI and OpenRouter are opt-in). The rest are scaffolded but gated
+/// `supported:false` until Gate's upstream support for that provider is
+/// confirmed.
 pub fn default_domains() -> Vec<ProxyDomain> {
     vec![
         ProxyDomain {
@@ -226,12 +227,15 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         ProxyDomain {
             slug: "openrouter".into(),
             display_name: "OpenRouter".into(),
+            // OpenRouter's API lives at openrouter.ai/api/v1/* (OpenAI-shaped
+            // chat/completions). Opt-in like OpenAI; intercepts OpenRouter
+            // clients that honor the system proxy.
             hosts: vec!["openrouter.ai".into()],
             upstream_url: "https://openrouter.ai".into(),
             rewrite_prefixes: vec!["/api/".into()],
             passthrough_prefixes: vec![],
             enabled: false,
-            supported: false,
+            supported: true,
         },
     ]
 }
@@ -318,6 +322,34 @@ mod tests {
             .find(|d| d.slug == "openai")
             .unwrap();
         assert!(d.supported, "openai must be a supported upstream");
+    }
+
+    #[test]
+    fn openrouter_is_supported() {
+        let d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "openrouter")
+            .unwrap();
+        assert!(d.supported, "openrouter must be a supported upstream");
+    }
+
+    #[test]
+    fn rewrites_openrouter_api_path() {
+        let mut d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "openrouter")
+            .expect("openrouter domain present in catalog");
+        d.enabled = true; // catalog default is opt-in; enable for the test
+        let d = vec![d];
+        // OpenRouter's chat/completions lives at openrouter.ai/api/v1/*, which
+        // must rewrite to the gateway with the OpenRouter upstream injected.
+        assert_eq!(
+            decide(&d, "openrouter.ai", "/api/v1/chat/completions"),
+            Decision::Rewrite {
+                upstream_url: "https://openrouter.ai".into()
+            }
+        );
+        assert!(should_intercept_host(&d, "OPENROUTER.AI"));
     }
 
     #[test]

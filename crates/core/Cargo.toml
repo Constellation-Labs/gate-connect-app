@@ -30,15 +30,7 @@ time.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# `plist` is only used by the Cowork integration's managed-preferences
-# writer, which is macOS-only by design (Managed Preferences is a macOS
-# system).
-[target.'cfg(target_os = "macos")'.dependencies]
-plist.workspace = true
-
-# `winreg` backs the Windows Cowork integration, which writes the
-# `HKCU\SOFTWARE\Policies\Claude` policy values Claude Desktop reads for
-# 3P/gateway mode. Windows has no managed-preferences plist, so this is
-# the registry-policy analogue of the macOS plist writer above.
+# `winreg` backs the Windows proxy's system-proxy wiring, which reads and
+# writes the per-user WinINET `Internet Settings` registry values.
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"

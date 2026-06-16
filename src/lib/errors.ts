@@ -13,8 +13,6 @@ export type ErrorContext =
   | "disconnect"
   | "forget"
   | "save_api_key"
-  | "claude_oauth"
-  | "migrate"
   | "generic";
 
 export interface ClassifiedError {
@@ -87,18 +85,6 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     };
   }
 
-  // Claude OAuth: no Claude Code session on this Mac yet.
-  if (
-    context === "claude_oauth" &&
-    (lc.includes("no claude") || lc.includes("setup-token") || lc.includes("not signed in"))
-  ) {
-    return {
-      title: "No Claude Code session found",
-      hint: "Run `claude setup-token` in a terminal, or sign in to Claude Code inside Claude Desktop, then try again.",
-      raw,
-    };
-  }
-
   // Network: gateway unreachable.
   if (
     lc.includes("connection refused") ||
@@ -123,20 +109,11 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     };
   }
 
-  // Disk space (migrate).
+  // Disk space (writing tool config files).
   if (lc.includes("no space") || lc.includes("disk full")) {
     return {
       title: "Not enough disk space",
       hint: "Free up some space on your Mac and try again.",
-      raw,
-    };
-  }
-
-  // Migrate found Cowork still running.
-  if (lc.includes("cowork is running") || lc.includes("claude.app is running")) {
-    return {
-      title: "Quit Cowork first",
-      hint: "Press ⌘Q in Cowork to fully quit, then click Retry.",
       raw,
     };
   }
@@ -148,8 +125,6 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     disconnect: "Couldn't disconnect",
     forget: "Couldn't remove the saved credential",
     save_api_key: "Couldn't save the API key",
-    claude_oauth: "Couldn't link your Claude Code session",
-    migrate: "Migration didn't finish",
     generic: "Something went wrong",
   };
   return {
