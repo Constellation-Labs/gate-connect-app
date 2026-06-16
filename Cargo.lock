@@ -1324,7 +1324,6 @@ dependencies = [
  "hudsucker",
  "keyring",
  "libc",
- "plist",
  "serde",
  "serde_json",
  "time",
@@ -1332,13 +1331,6 @@ dependencies = [
  "toml_edit 0.22.27",
  "tracing-subscriber",
  "winreg 0.52.0",
-]
-
-[[package]]
-name = "gate-connect-cowork-helper"
-version = "0.0.1"
-dependencies = [
- "gate-connect-core",
 ]
 
 [[package]]

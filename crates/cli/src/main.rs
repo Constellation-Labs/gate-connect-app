@@ -9,15 +9,6 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
-// `claude_session_delegate` and `migrate` are macOS-only (they back Cowork-specific
-// flows: Claude Code-session delegation and standard-mode -> 3P-mode
-// userData migration). On other targets those subcommands are gated off
-// entirely.
-#[cfg(target_os = "macos")]
-use clap::ArgGroup;
-#[cfg(target_os = "macos")]
-use gate_connect_core::{claude_session_delegate, migrate};
-
 // The built-in proxy is wired on the three desktop OSes (CA trust +
 // system-proxy backends exist there); its subcommands are gated to match.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -59,7 +50,7 @@ enum Command {
     List,
     /// Show detailed status for one tool.
     Status {
-        /// Tool slug, e.g. `cowork`.
+        /// Tool slug, e.g. `codex`.
         tool: String,
     },
     /// Point a tool at the Gate AI gateway. Requires an upstream
@@ -73,28 +64,16 @@ enum Command {
     },
     /// Revert a tool back to its prior configuration.
     Disconnect { tool: String },
-    /// Save the upstream provider credential for a tool: either paste
-    /// an Anthropic API key, or (macOS only) reuse the active Claude
-    /// Code session via OAuth delegation.
-    #[cfg_attr(
-        target_os = "macos",
-        command(group(ArgGroup::new("source").required(true).args(["api_key", "api_key_file", "claude_oauth"])))
-    )]
+    /// Save the upstream provider credential for a tool: paste an API key.
     SetUpstream {
         tool: String,
-        /// Paste an Anthropic API key (`sk-ant-api03-…`).
+        /// Paste the upstream provider API key.
         #[arg(long)]
         api_key: Option<String>,
         /// Read the upstream API key from this file (first line) instead
         /// of passing it on the command line or typing it at the prompt.
         #[arg(long)]
         api_key_file: Option<std::path::PathBuf>,
-        /// Delegate to the active Claude Code session (macOS only —
-        /// reads from the Claude Code keychain entry on every Cowork
-        /// request).
-        #[cfg(target_os = "macos")]
-        #[arg(long)]
-        claude_oauth: bool,
     },
     /// Forget the saved upstream credential for a tool.
     ClearUpstream { tool: String },
@@ -107,40 +86,6 @@ enum Command {
     Proxy {
         #[command(subcommand)]
         command: ProxyCmd,
-    },
-    /// Copy standard-mode Cowork data (scheduled tasks, conversations,
-    /// org plugins, memory, prefs) into the 3P/gateway-mode userData dir.
-    /// Only Cowork is supported today; the `tool` argument keeps the
-    /// surface ready for future integrations.
-    ///
-    /// macOS-only: backs the Cowork integration, which is itself macOS-only.
-    #[cfg(target_os = "macos")]
-    Migrate {
-        tool: String,
-        #[command(subcommand)]
-        command: MigrateCmd,
-    },
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Subcommand)]
-enum MigrateCmd {
-    /// Scan source and destination and print what's available.
-    Discover,
-    /// Show what would happen without writing anything.
-    Preview {
-        /// Comma-separated category list. Defaults to all categories.
-        #[arg(long, value_delimiter = ',')]
-        include: Option<Vec<String>>,
-    },
-    /// Run the migration.
-    Execute {
-        /// Comma-separated category list. Defaults to all categories.
-        #[arg(long, value_delimiter = ',')]
-        include: Option<Vec<String>>,
-        /// Print the plan but do not touch any files.
-        #[arg(long)]
-        dry_run: bool,
     },
 }
 
@@ -191,21 +136,6 @@ fn main() -> Result<()> {
         Command::Status { tool } => cmd_status(&tool),
         Command::Connect { tool, upstream_url } => cmd_connect(&tool, upstream_url),
         Command::Disconnect { tool } => cmd_disconnect(&tool),
-        #[cfg(target_os = "macos")]
-        Command::SetUpstream {
-            tool,
-            api_key,
-            api_key_file,
-            claude_oauth,
-        } => {
-            let api_key = if claude_oauth {
-                None
-            } else {
-                Some(resolve_secret(api_key, api_key_file, "upstream API key")?)
-            };
-            cmd_set_upstream(&tool, api_key, claude_oauth)
-        }
-        #[cfg(not(target_os = "macos"))]
         Command::SetUpstream {
             tool,
             api_key,
@@ -214,8 +144,6 @@ fn main() -> Result<()> {
         Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
-        #[cfg(target_os = "macos")]
-        Command::Migrate { tool, command } => cmd_migrate(&tool, command),
     }
 }
 
@@ -325,10 +253,6 @@ fn cmd_status(tool: &str) -> Result<()> {
     println!("{}: {}", integ.display_name(), status);
     if matches!(status, Status::Connected) {
         match integ.id() {
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            ToolId::Cowork => {
-                println!("Fully quit and relaunch Claude Desktop for changes to take effect.")
-            }
             ToolId::ClaudeCode => {
                 println!("Re-run `claude` to pick up the new settings.json env block.")
             }
@@ -364,17 +288,6 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
     println!();
     println!("Next steps:");
     match integ.id() {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        ToolId::Cowork => {
-            println!("  1. Fully quit Claude Desktop (do not just close the window).");
-            println!("  2. Relaunch Claude Desktop.");
-            println!(
-                "  3. On the sign-in screen, choose \"skip Anthropic authentication\" — Cowork should now use your gateway."
-            );
-            println!(
-                "  4. Verify with: Help → Troubleshooting → Copy Managed Configuration Report"
-            );
-        }
         ToolId::ClaudeCode => {
             println!(
                 "  1. Quit any running `claude` sessions (they cache settings.json at launch)."
@@ -408,8 +321,6 @@ fn cmd_disconnect(tool: &str) -> Result<()> {
     integ.disconnect()?;
     println!("Disconnected {}.", integ.display_name());
     match integ.id() {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        ToolId::Cowork => println!("Restart Claude Desktop for the change to take effect."),
         ToolId::ClaudeCode => {
             println!("Restart any running `claude` sessions for the change to take effect.")
         }
@@ -423,28 +334,6 @@ fn cmd_disconnect(tool: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn cmd_set_upstream(tool: &str, api_key: Option<String>, claude_oauth: bool) -> Result<()> {
-    let integ = resolve(tool)?;
-    if !integ.requires_upstream_credential() {
-        anyhow::bail!(
-            "{} brings its own upstream credentials — no separate key needed",
-            integ.display_name()
-        );
-    }
-    let credential: String = if claude_oauth {
-        println!("Verifying Claude Code session and wiring delegation…");
-        claude_session_delegate::verify_claude_code_session()?.to_string()
-    } else {
-        api_key.context("internal: no credential source provided")?
-    };
-    integ.save_upstream_credential(&credential)?;
-    println!("Saved upstream credential for {}.", integ.display_name());
-    println!("Next: `gate-connect connect {tool}`.");
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
 fn cmd_set_upstream(
     tool: &str,
     api_key: Option<String>,
@@ -553,109 +442,4 @@ fn resolve(slug: &str) -> Result<Box<dyn gate_connect_core::Integration>> {
     let id = ToolId::from_slug(slug)
         .with_context(|| format!("unknown tool {slug:?}; try `gate-connect list`"))?;
     registry::find(id).context("integration missing from registry")
-}
-
-#[cfg(target_os = "macos")]
-fn cmd_migrate(tool: &str, command: MigrateCmd) -> Result<()> {
-    if tool != "cowork" {
-        anyhow::bail!("migrate is only supported for `cowork` today");
-    }
-    match command {
-        MigrateCmd::Discover => {
-            let info = migrate::discover()?;
-            print_discover(&info);
-        }
-        MigrateCmd::Preview { include } => {
-            let mut opts = migrate::MigrateOptions::all();
-            opts.dry_run = true;
-            if let Some(cats) = include {
-                apply_include(&mut opts, &cats)?;
-            }
-            let report = migrate::execute(&opts)?;
-            print_report(&report);
-        }
-        MigrateCmd::Execute { include, dry_run } => {
-            let mut opts = migrate::MigrateOptions::all();
-            opts.dry_run = dry_run;
-            if let Some(cats) = include {
-                apply_include(&mut opts, &cats)?;
-            }
-            let report = migrate::execute(&opts)?;
-            print_report(&report);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn apply_include(opts: &mut migrate::MigrateOptions, cats: &[String]) -> Result<()> {
-    // When --include is supplied, start from "all off" and turn on the
-    // requested categories. Unknown names error out so typos surface.
-    opts.include_plugins = false;
-    opts.include_scheduled = false;
-    opts.include_conversations = false;
-    opts.include_memory = false;
-    opts.include_enabled_plugins = false;
-    opts.include_preferences = false;
-    opts.include_artifacts = false;
-    for c in cats {
-        match c.as_str() {
-            "plugins" => opts.include_plugins = true,
-            "scheduled" => opts.include_scheduled = true,
-            "conversations" => opts.include_conversations = true,
-            "memory" => opts.include_memory = true,
-            "enabled_plugins" => opts.include_enabled_plugins = true,
-            "preferences" => opts.include_preferences = true,
-            "artifacts" => opts.include_artifacts = true,
-            other => anyhow::bail!(
-                "unknown migrate category {other:?}; valid: plugins, scheduled, conversations, memory, enabled_plugins, preferences, artifacts"
-            ),
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn print_discover(info: &migrate::MigrateDiscover) {
-    if let Some(r) = &info.roots {
-        println!("Source: {}", r.source_dir.display());
-        println!("Dest:   {}", r.dest_dir.display());
-    } else {
-        println!("Source/dest not both discoverable.");
-    }
-    println!();
-    println!("Available:");
-    println!("  plugins:         {}", info.plugins);
-    println!("  scheduled tasks: {}", info.scheduled);
-    println!("  conversations:   {}", info.conversations);
-    println!("  memory:          {}", info.has_memory);
-    println!("  enabled plugins: {}", info.has_enabled_plugins);
-    println!("  preferences:     {}", info.has_preferences);
-    println!("  artifacts:       {}", info.artifacts);
-    println!("  estimated size:  {} bytes", info.bytes_estimated);
-    println!();
-    println!("Ready: {}", info.ready);
-    if !info.blockers.is_empty() {
-        println!("Blockers:");
-        for b in &info.blockers {
-            println!("  - {b:?}");
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn print_report(report: &migrate::MigrateReport) {
-    println!("dry_run: {}", report.dry_run);
-    let mut keys: Vec<&String> = report.per_category.keys().collect();
-    keys.sort();
-    for k in keys {
-        let r = &report.per_category[k];
-        println!(
-            "  {:<18} copied={:>4}  skipped={:>4}  failed={:>4}",
-            k, r.copied, r.skipped, r.failed
-        );
-        for err in &r.errors {
-            println!("    ! {err}");
-        }
-    }
 }

@@ -7,7 +7,6 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "build:win": "pnpm build && node scripts/stage-cowork-helper.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "app": "tauri dev",

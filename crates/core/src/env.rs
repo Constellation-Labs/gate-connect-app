@@ -9,17 +9,14 @@ pub fn home() -> Result<PathBuf> {
     dirs::home_dir().context("could not resolve user home directory")
 }
 
-/// Username used as the keychain entry's `account` field (and, on macOS,
-/// the per-user segment of the Managed Preferences path). On each OS the
+/// Username used as the keychain entry's `account` field and as the
+/// per-user segment of the proxy CA's trust-store lookup. On each OS the
 /// native secret store also user-scopes the entry, so this string is
 /// really a per-entry tag rather than an identity assertion.
 ///
-/// On Windows the Cowork credential helper resolves this from inside a
-/// process *Claude Desktop spawns*, so it must not hinge on inherited
-/// environment. We read it from the OS (`GetUserNameW`) first and only
-/// fall back to `USER` / `USERNAME`. The OS value matches `%USERNAME%` in
-/// a normal session, so an entry written by the app and read by the helper
-/// resolve to the same account tag.
+/// We read it from the OS (`GetUserNameW` on Windows) first and only fall
+/// back to `USER` / `USERNAME`, so the value stays stable regardless of
+/// inherited environment and matches `%USERNAME%` in a normal session.
 pub fn current_user() -> Result<String> {
     #[cfg(windows)]
     if let Some(name) = windows_username() {
@@ -150,73 +147,4 @@ pub fn opencode_config_path() -> Result<PathBuf> {
 /// upstream key. Path layout is the same on every OS .
 pub fn opencode_auth_path() -> Result<PathBuf> {
     Ok(home()?.join(".local/share/opencode/auth.json"))
-}
-
-// ---------------------------------------------------------------------
-// macOS-only paths used by the Cowork integration and the standard-mode
-// → 3P-mode migration. Cowork itself is macOS-only (it routes via
-// `/Library/Managed Preferences`, a macOS subsystem), so these helpers
-// are gated to match.
-// ---------------------------------------------------------------------
-
-/// `~/Library/Application Support/Claude` — Cowork's standard-mode userData.
-#[cfg(target_os = "macos")]
-pub fn claude_user_data_dir() -> Result<PathBuf> {
-    Ok(home()?.join("Library/Application Support/Claude"))
-}
-
-/// `~/Library/Application Support/Claude-3p` — Cowork's gateway-mode userData.
-/// Cowork creates this on first launch in 3P mode and never touches it from
-/// standard mode, so it's a clean target for the migration.
-#[cfg(target_os = "macos")]
-pub fn claude_3p_user_data_dir() -> Result<PathBuf> {
-    Ok(home()?.join("Library/Application Support/Claude-3p"))
-}
-
-/// `~/Documents/Claude` — where Cowork stashes scheduled-task `SKILL.md`
-/// bodies and artifact files. Mode-agnostic (path is the same whether
-/// Cowork is running in standard or 3P mode).
-#[cfg(target_os = "macos")]
-pub fn claude_documents_dir() -> Result<PathBuf> {
-    Ok(home()?.join("Documents/Claude"))
-}
-
-/// `/Library/Managed Preferences/<user>/com.anthropic.claudefordesktop.plist`
-///
-/// This is the documented Cowork 3P managed-preferences location. Writing
-/// here requires root because `/Library/Managed Preferences` is owned by
-/// `root:wheel`. The CLI re-execs itself under `sudo` to land bytes here.
-#[cfg(target_os = "macos")]
-pub fn cowork_managed_plist_path() -> Result<PathBuf> {
-    let user = current_user()?;
-    Ok(PathBuf::from("/Library/Managed Preferences")
-        .join(&user)
-        .join("com.anthropic.claudefordesktop.plist"))
-}
-
-/// Candidate filesystem locations whose presence indicates Claude Desktop
-/// is installed on Windows. Claude ships through several channels and its
-/// exact layout isn't contractual, so detection is best-effort over a set
-/// of known paths rather than one guessed directory:
-///
-/// - `%LOCALAPPDATA%\AnthropicClaude` — Squirrel per-user install root.
-/// - `%LOCALAPPDATA%\Programs\Claude` — per-user "Programs" install.
-/// - `%LOCALAPPDATA%\Claude` / `%APPDATA%\Claude` — userData dirs created
-///   on first run.
-///
-/// MSIX/Store installs and Uninstall-registry entries are checked
-/// separately by the Windows Cowork integration's `detect`.
-#[cfg(target_os = "windows")]
-pub fn claude_desktop_path_candidates() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Some(local) = dirs::data_local_dir() {
-        out.push(local.join("AnthropicClaude"));
-        out.push(local.join("Programs").join("Claude"));
-        out.push(local.join("Programs").join("claude"));
-        out.push(local.join("Claude"));
-    }
-    if let Some(roaming) = dirs::config_dir() {
-        out.push(roaming.join("Claude"));
-    }
-    out
 }

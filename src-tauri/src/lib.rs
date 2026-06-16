@@ -6,13 +6,6 @@
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
-// `claude_session_delegate` backs Claude Code session delegation, available for Cowork
-// on macOS and Windows. `migrate` (standard-mode -> 3P-mode userData
-// migration) is macOS-only. Gated to keep builds free of unused flows.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use gate_connect_core::claude_session_delegate;
-#[cfg(target_os = "macos")]
-use gate_connect_core::migrate;
 use serde::Serialize;
 use tauri::{
     image::Image,
@@ -50,12 +43,6 @@ struct ToolDto {
     upstream_provider_name: String,
     default_upstream_url: String,
     requires_upstream_credential: bool,
-    // Cowork delegation/migration affordances. save_upstream_via_claude_oauth
-    // compiles on macOS + Windows; the migrate_* trio is macOS-only. The UI
-    // hides whichever affordance isn't backed on the current platform rather
-    // than invoking a command that does not exist.
-    supports_claude_oauth_delegation: bool,
-    supports_migrate: bool,
     status: StatusDto,
 }
 
@@ -99,9 +86,6 @@ fn list_tools() -> Vec<ToolDto> {
             upstream_provider_name: integ.upstream_provider_name().to_string(),
             default_upstream_url: integ.default_upstream_url().to_string(),
             requires_upstream_credential: integ.requires_upstream_credential(),
-            supports_claude_oauth_delegation: cfg!(any(target_os = "macos", target_os = "windows"))
-                && integ.id().to_string() == "cowork",
-            supports_migrate: cfg!(target_os = "macos") && integ.id().to_string() == "cowork",
             status: status_for(integ.as_ref()),
         })
         .collect()
@@ -117,8 +101,8 @@ fn tool_status(slug: String) -> Result<StatusDto, String> {
 
 #[tauri::command]
 async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, String> {
-    // Off the main thread: connect does config-file I/O and (for Cowork)
-    // blocks on an admin prompt — same spawn_blocking pattern as migrate_*.
+    // Off the main thread: connect does config-file I/O that shouldn't
+    // block the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
         let integ = resolve_integration(&slug)?;
         let account = account::load()
@@ -144,8 +128,8 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
 
 #[tauri::command]
 async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
-    // Off the main thread: disconnect does config-file I/O and (for Cowork)
-    // blocks on an admin prompt.
+    // Off the main thread: disconnect does config-file I/O that shouldn't
+    // block the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
         let integ = resolve_integration(&slug)?;
         integ.disconnect().map_err(|e| e.to_string())?;
@@ -164,99 +148,20 @@ fn has_upstream_credential(slug: String) -> Result<bool, String> {
 #[tauri::command]
 fn save_upstream_api_key(slug: String, api_key: String) -> Result<(), String> {
     let integ = resolve_integration(&slug)?;
-    // Enforce the integration's expected credential prefix (e.g. "sk-ant-"
-    // for Cowork/Anthropic) in addition to the empty/control-char/oversize
-    // checks, so a compromised renderer can't write arbitrary bytes to a
-    // tool's keychain entry under a mismatched slug.
+    // Enforce the integration's expected credential prefix in addition to
+    // the empty/control-char/oversize checks, so a compromised renderer
+    // can't write arbitrary bytes to a tool's keychain entry under a
+    // mismatched slug.
     validate_api_key(api_key.trim(), integ.upstream_credential_prefix())?;
     integ
         .save_upstream_credential(&api_key)
         .map_err(|e| e.to_string())
 }
 
-/// Delegate the upstream credential to the live Claude Code session.
-/// We verify that session exists right now (which triggers macOS's
-/// cross-app keychain authorization prompt the first time), then save
-/// a sentinel marker in our per-tool entry. The credential helper
-/// re-reads Claude Code's token on every Cowork request, so refresh
-/// is automatic.
-///
-/// Available where the Cowork integration is: macOS and Windows.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-#[tauri::command]
-async fn save_upstream_via_claude_oauth(slug: String) -> Result<(), String> {
-    let integ = resolve_integration(&slug)?;
-    let sentinel =
-        tauri::async_runtime::spawn_blocking(claude_session_delegate::verify_claude_code_session)
-            .await
-            .map_err(|e| format!("verify join error: {e}"))?
-            .map_err(|e| e.to_string())?;
-    integ
-        .save_upstream_credential(sentinel)
-        .map_err(|e| e.to_string())
-}
-
-/// Probe whether Claude Code currently has a usable signed-in session
-/// (a parseable `sk-ant-oat` access token in its session store). Lets the
-/// UI pre-select and label the Claude-subscription credential source.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-#[tauri::command]
-fn detect_claude_code_session() -> bool {
-    claude_session_delegate::verify_claude_code_session().is_ok()
-}
-
 #[tauri::command]
 fn clear_upstream_credential(slug: String) -> Result<(), String> {
     let integ = resolve_integration(&slug)?;
     integ.clear_upstream_credential().map_err(|e| e.to_string())
-}
-
-#[cfg(target_os = "macos")]
-#[tauri::command]
-async fn migrate_discover(slug: String) -> Result<migrate::MigrateDiscover, String> {
-    ensure_cowork(&slug)?;
-    tauri::async_runtime::spawn_blocking(migrate::discover)
-        .await
-        .map_err(|e| format!("discover join error: {e}"))?
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(target_os = "macos")]
-#[tauri::command]
-async fn migrate_preview(
-    slug: String,
-    options: migrate::MigrateOptions,
-) -> Result<migrate::MigrateReport, String> {
-    ensure_cowork(&slug)?;
-    let mut opts = options;
-    opts.dry_run = true;
-    tauri::async_runtime::spawn_blocking(move || migrate::execute(&opts))
-        .await
-        .map_err(|e| format!("preview join error: {e}"))?
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(target_os = "macos")]
-#[tauri::command]
-async fn migrate_execute(
-    slug: String,
-    options: migrate::MigrateOptions,
-) -> Result<migrate::MigrateReport, String> {
-    ensure_cowork(&slug)?;
-    let opts = options;
-    tauri::async_runtime::spawn_blocking(move || migrate::execute(&opts))
-        .await
-        .map_err(|e| format!("execute join error: {e}"))?
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn ensure_cowork(slug: &str) -> Result<(), String> {
-    if slug == "cowork" {
-        Ok(())
-    } else {
-        Err("migrate is only supported for `cowork` today".into())
-    }
 }
 
 fn resolve_integration(slug: &str) -> Result<Box<dyn gate_connect_core::Integration>, String> {
@@ -303,7 +208,7 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
         validate_api_key(k, "sk-")?;
     }
     // Off the main thread: keychain write plus up to three tool-config
-    // rewrites (same spawn_blocking pattern as the migrate commands).
+    // rewrites, none of which should block the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
         account::save(&base_url, key.as_deref()).map_err(|e| e.to_string())?;
         // A rotated key was copied into tool configs (and the running proxy
@@ -321,8 +226,7 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
 
 #[tauri::command]
 async fn clear_account() -> Result<(), String> {
-    // Off the main thread: per-tool config I/O, and Cowork's disconnect can
-    // block on an admin prompt — a sync command would freeze the UI for it.
+    // Off the main thread: per-tool config I/O that shouldn't freeze the UI.
     tauri::async_runtime::spawn_blocking(|| {
         // Disconnect managed tools first: clearing the account while their
         // configs still embed the key would leave them routing to the gateway
@@ -503,71 +407,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler({
-            // Cowork commands fork by platform: save_upstream_via_claude_oauth
-            // and detect_claude_code_session exist on macOS + Windows; the
-            // migrate-* trio is macOS-only. Forking the whole generate_handler!
-            // invocation (rather than per-item cfg) preserves Tauri's
-            // compile-time arg/return type-checking for each command.
-            #[cfg(target_os = "macos")]
-            {
-                tauri::generate_handler![
-                    list_tools,
-                    tool_status,
-                    connect_tool,
-                    disconnect_tool,
-                    has_upstream_credential,
-                    save_upstream_api_key,
-                    save_upstream_via_claude_oauth,
-                    detect_claude_code_session,
-                    clear_upstream_credential,
-                    get_account,
-                    save_account,
-                    clear_account,
-                    app_platform,
-                    list_providers,
-                    provider_enable,
-                    provider_disable,
-                    migrate_discover,
-                    migrate_preview,
-                    migrate_execute,
-                    proxy_status,
-                    proxy_list_domains,
-                    proxy_enable,
-                    proxy_disable,
-                    proxy_set_domain,
-                    proxy_trust_ca,
-                    proxy_untrust_ca,
-                ]
-            }
-            #[cfg(target_os = "windows")]
-            {
-                tauri::generate_handler![
-                    list_tools,
-                    tool_status,
-                    connect_tool,
-                    disconnect_tool,
-                    has_upstream_credential,
-                    save_upstream_api_key,
-                    save_upstream_via_claude_oauth,
-                    detect_claude_code_session,
-                    clear_upstream_credential,
-                    get_account,
-                    save_account,
-                    clear_account,
-                    app_platform,
-                    proxy_status,
-                    proxy_list_domains,
-                    proxy_enable,
-                    proxy_disable,
-                    proxy_set_domain,
-                    proxy_trust_ca,
-                    proxy_untrust_ca,
-                    list_providers,
-                    provider_enable,
-                    provider_disable,
-                ]
-            }
-            #[cfg(target_os = "linux")]
+            // The proxy subsystem (and its commands) only exists on the three
+            // desktop OSes; the handler forks on that single axis. Forking the
+            // whole generate_handler! invocation (rather than per-item cfg)
+            // preserves Tauri's compile-time arg/return type-checking.
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
                 tauri::generate_handler![
                     list_tools,

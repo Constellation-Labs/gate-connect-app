@@ -13,8 +13,6 @@ export interface Tool {
   upstream_provider_name: string;
   default_upstream_url: string;
   requires_upstream_credential: boolean;
-  supports_claude_oauth_delegation: boolean;
-  supports_migrate: boolean;
   status: Status;
 }
 
@@ -36,21 +34,6 @@ export const hasUpstreamCredential = (slug: string) => invoke<boolean>("has_upst
 export const saveUpstreamApiKey = (slug: string, apiKey: string) =>
   invoke<void>("save_upstream_api_key", { slug, apiKey });
 
-/**
- * Delegate to the user's live Claude Code session: stores a sentinel so the
- * credential helper reads Claude Code's current access token on every request
- * (refresh is handled by Claude Code itself). Requires Claude Code to be
- * signed in; fails fast if no valid session is found. macOS may prompt once
- * to authorize Gate Connect reading the Claude Code keychain entry.
- */
-export const saveUpstreamViaClaudeOauth = (slug: string) => invoke<void>("save_upstream_via_claude_oauth", { slug });
-
-/**
- * Probe whether Claude Code has a usable signed-in session right now. Drives
- * the credential-source picker (pre-select / label the delegation option).
- */
-export const detectClaudeCodeSession = () => invoke<boolean>("detect_claude_code_session");
-
 export const clearUpstreamCredential = (slug: string) => invoke<void>("clear_upstream_credential", { slug });
 
 export const getAccount = () => invoke<Account | null>("get_account");
@@ -59,83 +42,6 @@ export const saveAccount = (baseUrl: string, apiKey: string | null) =>
   invoke<void>("save_account", { baseUrl, apiKey });
 
 export const clearAccount = () => invoke<void>("clear_account");
-
-// ---- migrate from Cowork standard mode ----
-
-export type MigrateBlocker =
-  | { kind: "source_missing" }
-  | { kind: "dest_missing" }
-  | { kind: "cowork_running" }
-  | {
-      kind: "insufficient_disk_space";
-      needed_bytes: number;
-      available_bytes: number;
-    };
-
-export interface MigrateRoots {
-  source_account: string;
-  source_org: string;
-  source_dir: string;
-  dest_account: string;
-  dest_org: string;
-  dest_dir: string;
-}
-
-export interface MigrateDiscover {
-  roots: MigrateRoots | null;
-  plugins: number;
-  scheduled: number;
-  conversations: number;
-  has_memory: boolean;
-  has_enabled_plugins: boolean;
-  has_preferences: boolean;
-  artifacts: number;
-  bytes_estimated: number;
-  ready: boolean;
-  blockers: MigrateBlocker[];
-}
-
-export interface MigrateOptions {
-  include_plugins: boolean;
-  include_scheduled: boolean;
-  include_conversations: boolean;
-  include_memory: boolean;
-  include_enabled_plugins: boolean;
-  include_preferences: boolean;
-  include_artifacts: boolean;
-  dry_run: boolean;
-}
-
-export const allMigrateOptions = (): MigrateOptions => ({
-  include_plugins: true,
-  include_scheduled: true,
-  include_conversations: true,
-  include_memory: true,
-  include_enabled_plugins: true,
-  include_preferences: true,
-  include_artifacts: true,
-  dry_run: false,
-});
-
-export interface CategoryReport {
-  copied: number;
-  skipped: number;
-  failed: number;
-  errors: string[];
-}
-
-export interface MigrateReport {
-  per_category: Record<string, CategoryReport>;
-  dry_run: boolean;
-}
-
-export const migrateDiscover = (slug: string) => invoke<MigrateDiscover>("migrate_discover", { slug });
-
-export const migratePreview = (slug: string, options: MigrateOptions) =>
-  invoke<MigrateReport>("migrate_preview", { slug, options });
-
-export const migrateExecute = (slug: string, options: MigrateOptions) =>
-  invoke<MigrateReport>("migrate_execute", { slug, options });
 
 // ---- built-in MITM proxy (macOS, Windows, Linux) ----
 
@@ -184,9 +90,10 @@ export const proxyUntrustCa = () => invoke<ProxyState>("proxy_untrust_ca");
 
 // ---- Providers (one switch per model provider) ----
 //
-// A provider orchestrates the config integration(s) and, on macOS when the
-// proxy is already running, the matching proxy domain(s) — so the UI shows a
-// single toggle without exposing the proxy-vs-config split.
+// A provider orchestrates the config integration(s) and, when the proxy is
+// already running (macOS / Windows / Linux), the matching proxy domain(s) — so
+// the UI shows a single toggle without exposing the proxy-vs-config split. A
+// provider with no CLI integration (OpenRouter) is proxy-only.
 
 export interface ProviderState {
   slug: string;
@@ -202,7 +109,8 @@ export interface ProviderState {
 export const listProviders = () => invoke<ProviderState[]>("list_providers");
 
 /** Turn a provider on: configures installed tools and, if the proxy is already
- * running, enables its proxy domain(s). Never triggers an admin prompt. */
+ * running, enables its proxy domain(s) (macOS / Windows / Linux). Never
+ * triggers an admin prompt. */
 export const providerEnable = (slug: string) => invoke<ProviderState>("provider_enable", { slug });
 
 /** Turn a provider off: reverts the tool config and disables its proxy

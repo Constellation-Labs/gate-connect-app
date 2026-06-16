@@ -1,9 +1,9 @@
 //! Provider abstraction: one user-facing switch per model provider that
 //! orchestrates both the config-level tool integrations ([`registry`]) and —
-//! on macOS, only when the system proxy is already running — the matching
-//! proxy domains ([`crate::proxy`]). This is the layer that lets the UI show a
-//! single "OpenAI / Codex" toggle instead of exposing the proxy-vs-config
-//! split.
+//! on every platform with the proxy subsystem (macOS, Windows, Linux), only
+//! when the system proxy is already running — the matching proxy domains
+//! ([`crate::proxy`]). This is the layer that lets the UI show a single
+//! "OpenAI / Codex" toggle instead of exposing the proxy-vs-config split.
 //!
 //! Policy (see [`enable_plan`]): config-first, proxy-if-already-on. Flipping a
 //! provider on always configures its installed tools (Codex edits
@@ -29,7 +29,8 @@ pub struct Provider {
     pub subtitle: &'static str,
     /// Config integrations to connect/disconnect (cross-platform).
     pub tool_ids: &'static [ToolId],
-    /// Proxy domains to flip when the proxy is running (macOS, best-effort).
+    /// Proxy domains to flip when the proxy is running (macOS / Windows /
+    /// Linux, best-effort).
     pub proxy_domain_slugs: &'static [&'static str],
 }
 
@@ -38,9 +39,11 @@ pub struct Provider {
 ///
 /// Mapping note: each provider lists only the tools that need *config* editing
 /// to route (a CLI that ignores the system proxy — Claude Code, Codex). Desktop
-/// apps that honor the macOS system proxy (Cowork / Claude Desktop) ride the
-/// proxy domain instead, so they're covered by `proxy_domain_slugs` without a
-/// credential or sudo prompt. That's why Cowork isn't in `tool_ids`.
+/// apps that honor the system proxy (Cowork / Claude Desktop) ride the proxy
+/// domain instead, so they're covered by `proxy_domain_slugs` without a
+/// credential or sudo prompt. That's why Cowork isn't in `tool_ids`. A provider
+/// with no native CLI integration (OpenRouter) is proxy-only: empty `tool_ids`,
+/// routed entirely through its proxy domain.
 pub fn providers() -> Vec<Provider> {
     vec![
         Provider {
@@ -56,6 +59,16 @@ pub fn providers() -> Vec<Provider> {
             subtitle: "Codex + OpenAI API",
             tool_ids: &[ToolId::Codex],
             proxy_domain_slugs: &["openai"],
+        },
+        Provider {
+            slug: "openrouter",
+            display_name: "OpenRouter",
+            subtitle: "OpenRouter API",
+            // Proxy-only: OpenRouter has no Gate Connect CLI integration, so it
+            // routes entirely through the proxy domain (requires the proxy to
+            // be running, like Cowork).
+            tool_ids: &[],
+            proxy_domain_slugs: &["openrouter"],
         },
     ]
 }
@@ -100,17 +113,41 @@ fn enable_plan(tool_detected: bool, proxy_running: bool) -> EnablePlan {
     }
 }
 
-/// Is the system proxy currently running? Always false off macOS, where the
-/// proxy subsystem doesn't exist.
-#[cfg(target_os = "macos")]
+/// Is the system proxy currently running? Always false on platforms without
+/// the proxy subsystem.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn proxy_running() -> bool {
     crate::proxy::manager()
         .status()
         .map(|s| s.running)
         .unwrap_or(false)
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn proxy_running() -> bool {
+    false
+}
+
+/// True if any of the provider's proxy domains is currently enabled in the
+/// proxy catalog. A provider with no config tools (proxy-only, e.g.
+/// OpenRouter) relies on this for its headline on/off state — without it the
+/// switch would always read off. Always false on platforms without the proxy
+/// subsystem.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn proxy_domains_enabled(p: &Provider) -> bool {
+    if p.proxy_domain_slugs.is_empty() {
+        return false;
+    }
+    crate::proxy::manager()
+        .status()
+        .map(|s| {
+            s.domains
+                .iter()
+                .any(|d| d.enabled && p.proxy_domain_slugs.contains(&d.slug.as_str()))
+        })
+        .unwrap_or(false)
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn proxy_domains_enabled(_p: &Provider) -> bool {
     false
 }
 
@@ -127,9 +164,12 @@ fn tool_connected(id: ToolId) -> bool {
         .unwrap_or(false)
 }
 
-/// Current state of one provider for the UI.
+/// Current state of one provider for the UI. A provider reads as on when any
+/// of its config tools is connected *or* any of its proxy domains is enabled —
+/// so a proxy-only provider (OpenRouter) reflects its domain, and a config
+/// provider that's also riding the proxy still reads on.
 pub fn state(p: &Provider) -> ProviderState {
-    let enabled = p.tool_ids.iter().any(|&id| tool_connected(id));
+    let enabled = p.tool_ids.iter().any(|&id| tool_connected(id)) || proxy_domains_enabled(p);
     let any_detected = p.tool_ids.iter().any(|&id| tool_detected(id));
     ProviderState {
         slug: p.slug.into(),
@@ -182,7 +222,7 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     if plan.enable_domain {
         for domain in p.proxy_domain_slugs {
             crate::proxy::manager()
@@ -211,7 +251,7 @@ pub fn disable(slug: &str) -> Result<ProviderState> {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     if proxy_running() {
         for domain in p.proxy_domain_slugs {
             // Best-effort: an already-off or unknown domain isn't an error.
@@ -312,6 +352,17 @@ mod tests {
         assert_eq!(p.display_name, "Claude Code / Cowork");
         assert!(p.tool_ids.contains(&ToolId::ClaudeCode));
         assert_eq!(p.proxy_domain_slugs, &["anthropic"]);
+    }
+
+    #[test]
+    fn openrouter_provider_is_proxy_only() {
+        let p = find("openrouter").expect("openrouter provider present");
+        assert_eq!(p.display_name, "OpenRouter");
+        assert!(
+            p.tool_ids.is_empty(),
+            "OpenRouter has no CLI integration — it's proxy-only"
+        );
+        assert_eq!(p.proxy_domain_slugs, &["openrouter"]);
     }
 
     #[test]

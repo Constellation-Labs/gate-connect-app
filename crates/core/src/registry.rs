@@ -3,8 +3,6 @@ use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolId {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    Cowork,
     ClaudeCode,
     Codex,
     OpenCode,
@@ -13,8 +11,6 @@ pub enum ToolId {
 impl ToolId {
     pub const fn slug(self) -> &'static str {
         match self {
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            ToolId::Cowork => "cowork",
             ToolId::ClaudeCode => "claude-code",
             ToolId::Codex => "codex",
             ToolId::OpenCode => "opencode",
@@ -23,8 +19,6 @@ impl ToolId {
 
     pub fn from_slug(s: &str) -> Option<Self> {
         match s {
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            "cowork" => Some(ToolId::Cowork),
             "claude-code" => Some(ToolId::ClaudeCode),
             "codex" => Some(ToolId::Codex),
             "opencode" => Some(ToolId::OpenCode),
@@ -75,7 +69,7 @@ pub trait Integration: Send + Sync {
     fn display_name(&self) -> &'static str;
 
     /// Human-readable name of the upstream model provider this tool talks
-    /// to natively (e.g. "Anthropic" for Cowork, "OpenAI" for Codex).
+    /// to natively (e.g. "Anthropic" for Claude Code, "OpenAI" for Codex).
     /// Shown in the connect form so the user knows which API key to enter.
     fn upstream_provider_name(&self) -> &'static str;
 
@@ -84,11 +78,12 @@ pub trait Integration: Send + Sync {
     fn default_upstream_url(&self) -> &'static str;
 
     /// Does this tool need Gate Connect to store an upstream provider
-    /// credential separately? Cowork in gateway mode does (Cowork has no
-    /// way to authenticate to Anthropic on its own). Claude Code does not
-    /// — it already has its own creds (OAuth token, `ANTHROPIC_API_KEY`,
-    /// etc.) and Gate forwards whatever it sends. UI / CLI use this
-    /// to hide the credential-picker step.
+    /// credential separately? Claude Code, Codex, and OpenCode all bring
+    /// their own creds (OAuth token, `ANTHROPIC_API_KEY`, `codex login`,
+    /// per-provider `opencode auth`, etc.) and Gate forwards whatever they
+    /// send, so they return false. The `true` default is kept for any
+    /// future tool that can't authenticate upstream on its own; UI / CLI
+    /// use this to decide whether to show the credential-picker step.
     fn requires_upstream_credential(&self) -> bool {
         true
     }
@@ -123,8 +118,7 @@ pub trait Integration: Send + Sync {
 
     /// Re-write the Gate API key embedded in this tool's config after a
     /// key rotation, preserving everything else. Default no-op for tools
-    /// that don't embed the key (Cowork's helpers read the keychain at
-    /// request time) and for tools that aren't connected.
+    /// that aren't connected or that don't embed the key in their config.
     fn refresh_gate_key(&self, _api_key: &str) -> Result<()> {
         Ok(())
     }
@@ -139,8 +133,6 @@ pub trait Integration: Send + Sync {
 
 pub fn registry() -> Vec<Box<dyn Integration>> {
     vec![
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        Box::new(crate::integrations::cowork::Cowork),
         Box::new(crate::integrations::claude_code::ClaudeCode),
         Box::new(crate::integrations::codex::Codex),
         Box::new(crate::integrations::opencode::OpenCode),

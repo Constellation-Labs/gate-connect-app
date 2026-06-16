@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cli", "crates/cowork-helper", "src-tauri"]
+members = ["crates/core", "crates/cli", "src-tauri"]
 
 [workspace.package]
 version = "0.0.1"
@@ -13,7 +13,6 @@ authors = ["Constellation Network"]
 
 [workspace.dependencies]
 anyhow = "1"
-plist = "1.7"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

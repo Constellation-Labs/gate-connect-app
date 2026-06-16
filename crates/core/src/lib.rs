@@ -2,17 +2,12 @@
 //!
 //! Per the PRD the per-tool logic should ultimately live in a declarative
 //! JSON registry served from the Gate API. For this prototype the registry
-//! is in-process and contains a single entry (Cowork) so we can validate
-//! the connect / disconnect / status mechanism end to end.
+//! is in-process.
 //!
-//! Cross-platform note: the Cowork integration runs on macOS (via
-//! `/Library/Managed Preferences`) and Windows (via the
-//! `HKCU\SOFTWARE\Policies\Claude` registry policy). Linux has no Claude
-//! Desktop, so Cowork is excluded there. The supporting modules
-//! (`migrate`, `claude_session_delegate`) back Cowork flows that only make sense on
-//! macOS (standard-mode userData migration; Claude Code session
-//! delegation), so they stay macOS-gated. Claude Code and Codex
-//! integrations run on macOS, Linux, and Windows.
+//! Cross-platform note: the config integrations (Claude Code, Codex,
+//! OpenCode) run on macOS, Linux, and Windows. Claude Desktop / Cowork has
+//! no config integration — it routes through the built-in proxy's
+//! `anthropic` domain instead (see [`proxy`]).
 
 pub mod account;
 pub mod env;
@@ -22,16 +17,9 @@ pub mod provider;
 pub mod proxy;
 pub mod registry;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub mod claude_session_delegate;
-#[cfg(target_os = "macos")]
-pub mod migrate;
-
 pub mod integrations {
     pub mod claude_code;
     pub mod codex;
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub mod cowork;
     pub mod opencode;
 }
 
