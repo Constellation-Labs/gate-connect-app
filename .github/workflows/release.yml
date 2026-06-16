@@ -54,3 +54,56 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+      # Add version-less copies of each platform's primary installer alongside
+      # the versioned assets, so a stable /releases/latest/download/<name> URL
+      # always resolves to the newest published release. The versioned assets
+      # are kept untouched. Filenames are discovered by globbing the bundle
+      # output (not reconstructed from the version), and the globs match only
+      # the installer extension, so updater artifacts (.sig, latest.json,
+      # *.app.tar.gz) are never copied or replaced.
+      - name: Create version-less download aliases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+
+          # macOS builds the universal target, so its bundles live under a
+          # target-specific dir; Linux/Windows use the default release dir.
+          if [ "$PLATFORM" = "macos-latest" ]; then
+            BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle"
+          else
+            BUNDLE="src-tauri/target/release/bundle"
+          fi
+
+          # alias_asset <dir> <glob> <stable-name>: copy the single installer
+          # matching <dir>/<glob> to <dir>/<stable-name> and upload it to the
+          # same release (resolved by tag, draft included).
+          alias_asset() {
+            local dir="$1" pat="$2" stable="$3"
+            shopt -s nullglob
+            local matches=( "$dir"/$pat )
+            shopt -u nullglob
+            if [ "${#matches[@]}" -eq 0 ]; then
+              echo "No installer matched $dir/$pat" >&2
+              exit 1
+            fi
+            local src="${matches[0]}"
+            cp "$src" "$dir/$stable"
+            gh release upload "$TAG" "$dir/$stable" --clobber
+            echo "Aliased $(basename "$src") -> $stable"
+          }
+
+          case "$PLATFORM" in
+            ubuntu-22.04)
+              alias_asset "$BUNDLE/appimage" "*.AppImage" "Gate.Connect_amd64.AppImage"
+              ;;
+            windows-latest)
+              alias_asset "$BUNDLE/nsis" "*-setup.exe" "Gate.Connect_x64-setup.exe"
+              ;;
+            macos-latest)
+              alias_asset "$BUNDLE/dmg" "*.dmg" "Gate.Connect_universal.dmg"
+              ;;
+          esac
