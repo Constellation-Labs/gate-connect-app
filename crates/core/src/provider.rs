@@ -75,9 +75,11 @@ pub fn providers() -> Vec<Provider> {
             display_name: "Google / Gemini",
             subtitle: "Gemini API",
             // Proxy-only, like OpenRouter: no CLI integration, routed entirely
-            // through the proxy domain (requires the proxy to be running).
+            // through the proxy domain (requires the proxy to be running). Two
+            // domains: the generative-language API (API-key clients) and the
+            // Code Assist backend (the Gemini CLI's "login with Google" flow).
             tool_ids: &[],
-            proxy_domain_slugs: &["google"],
+            proxy_domain_slugs: &["google", "google-codeassist"],
         },
     ]
 }
@@ -382,7 +384,7 @@ mod tests {
             p.tool_ids.is_empty(),
             "Gemini has no CLI integration — it's proxy-only"
         );
-        assert_eq!(p.proxy_domain_slugs, &["google"]);
+        assert_eq!(p.proxy_domain_slugs, &["google", "google-codeassist"]);
     }
 
     #[test]
