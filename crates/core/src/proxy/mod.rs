@@ -170,11 +170,10 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
     Decision::Tunnel
 }
 
-/// The built-in domain catalog. Anthropic, OpenAI, and OpenRouter are proven
-/// upstreams and ship `supported:true` (Anthropic also `enabled` by default;
-/// OpenAI and OpenRouter are opt-in). The rest are scaffolded but gated
-/// `supported:false` until Gate's upstream support for that provider is
-/// confirmed.
+/// The built-in domain catalog. All entries ship `supported:true` (Anthropic
+/// is also `enabled` by default; the rest are opt-in). New providers can be
+/// added here and surface in the UI automatically; gate a provider behind
+/// `supported:false` until Gate's upstream support for it is confirmed.
 pub fn default_domains() -> Vec<ProxyDomain> {
     vec![
         ProxyDomain {
@@ -217,12 +216,17 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         ProxyDomain {
             slug: "google".into(),
             display_name: "Google / Gemini".into(),
+            // Gemini's generative-language API. Opt-in like OpenAI/OpenRouter.
+            // Both /v1/ and /v1beta/ are live model surfaces. Note Gemini
+            // authenticates with an API key in the `x-goog-api-key` header (or
+            // a `?key=` query param), not a Bearer token — Gate forwards
+            // whatever the client sends per X-Gate-Upstream-Url.
             hosts: vec!["generativelanguage.googleapis.com".into()],
             upstream_url: "https://generativelanguage.googleapis.com".into(),
             rewrite_prefixes: vec!["/v1/".into(), "/v1beta/".into()],
             passthrough_prefixes: vec![],
             enabled: false,
-            supported: false,
+            supported: true,
         },
         ProxyDomain {
             slug: "openrouter".into(),
@@ -331,6 +335,40 @@ mod tests {
             .find(|d| d.slug == "openrouter")
             .unwrap();
         assert!(d.supported, "openrouter must be a supported upstream");
+    }
+
+    #[test]
+    fn gemini_is_supported() {
+        let d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "google")
+            .unwrap();
+        assert!(d.supported, "google/gemini must be a supported upstream");
+    }
+
+    #[test]
+    fn rewrites_gemini_paths() {
+        let mut d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "google")
+            .expect("google domain present in catalog");
+        d.enabled = true; // catalog default is opt-in; enable for the test
+        let d = vec![d];
+        // Gemini clients hit generativelanguage.googleapis.com on both /v1/ and
+        // /v1beta/, which must rewrite to the gateway with the Google upstream.
+        for path in ["/v1/models", "/v1beta/models/gemini-pro:generateContent"] {
+            assert_eq!(
+                decide(&d, "generativelanguage.googleapis.com", path),
+                Decision::Rewrite {
+                    upstream_url: "https://generativelanguage.googleapis.com".into()
+                },
+                "path {path} must rewrite"
+            );
+        }
+        assert!(should_intercept_host(
+            &d,
+            "GENERATIVELANGUAGE.GOOGLEAPIS.COM"
+        ));
     }
 
     #[test]
