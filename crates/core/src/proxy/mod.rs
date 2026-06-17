@@ -399,7 +399,10 @@ mod tests {
         // The Gemini CLI's OAuth flow hits cloudcode-pa.googleapis.com on
         // /v1internal:<method>, which must rewrite to the gateway with the
         // Code Assist upstream.
-        for path in ["/v1internal:generateContent", "/v1internal:streamGenerateContent"] {
+        for path in [
+            "/v1internal:generateContent",
+            "/v1internal:streamGenerateContent",
+        ] {
             assert_eq!(
                 decide(&d, "cloudcode-pa.googleapis.com", path),
                 Decision::Rewrite {
