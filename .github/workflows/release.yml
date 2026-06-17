@@ -41,6 +41,19 @@ jobs:
         with:
           workspaces: '. -> target'
       - run: pnpm install --frozen-lockfile
+      # The git tag is the single source of truth for the app version. Source
+      # files carry a 0.0.0 placeholder; stamp the real version (tag minus the
+      # leading "v") into tauri.conf.json so the bundle filenames and the
+      # updater's latest.json version match the release. jq ships on all
+      # GitHub-hosted runners.
+      - name: Set version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+          echo "Stamped version $VERSION into tauri.conf.json"
       - name: Build, sign & release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -49,7 +62,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Gate Connect v__VERSION__'
+          releaseName: 'Gate Connect ${{ github.ref_name }}'
           releaseBody: 'Download the installer for your platform below.'
           releaseDraft: true
           prerelease: false
