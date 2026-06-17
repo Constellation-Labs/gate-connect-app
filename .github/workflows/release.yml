@@ -112,6 +112,7 @@ jobs:
           case "$PLATFORM" in
             ubuntu-22.04)
               alias_asset "$BUNDLE/appimage" "*.AppImage" "Gate.Connect_amd64.AppImage"
+              alias_asset "$BUNDLE/deb" "*.deb" "Gate.Connect_amd64.deb"
               ;;
             windows-latest)
               alias_asset "$BUNDLE/nsis" "*-setup.exe" "Gate.Connect_x64-setup.exe"
