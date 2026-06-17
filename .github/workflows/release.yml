@@ -39,7 +39,7 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: '. -> target'
       - run: pnpm install --frozen-lockfile
       - name: Build, sign & release
         uses: tauri-apps/tauri-action@v0
@@ -73,9 +73,9 @@ jobs:
           # macOS builds the universal target, so its bundles live under a
           # target-specific dir; Linux/Windows use the default release dir.
           if [ "$PLATFORM" = "macos-latest" ]; then
-            BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle"
+            BUNDLE="target/universal-apple-darwin/release/bundle"
           else
-            BUNDLE="src-tauri/target/release/bundle"
+            BUNDLE="target/release/bundle"
           fi
 
           # alias_asset <dir> <glob> <stable-name>: copy the single installer
