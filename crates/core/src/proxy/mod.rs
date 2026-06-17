@@ -229,6 +229,23 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             supported: true,
         },
         ProxyDomain {
+            slug: "google-codeassist".into(),
+            display_name: "Google / Gemini (Code Assist)".into(),
+            // The Gemini CLI's OAuth / "login with Google" flow talks to the
+            // Code Assist backend on a distinct host — not the generative-
+            // language API above. Endpoints are `/v1internal:generateContent`,
+            // `:streamGenerateContent`, `:loadCodeAssist`, `:onboardUser`, etc.
+            // (method after the colon), all under the `/v1internal` prefix.
+            // Auth is a Google OAuth bearer token; Gate forwards whatever the
+            // client sends per X-Gate-Upstream-Url.
+            hosts: vec!["cloudcode-pa.googleapis.com".into()],
+            upstream_url: "https://cloudcode-pa.googleapis.com".into(),
+            rewrite_prefixes: vec!["/v1internal".into()],
+            passthrough_prefixes: vec![],
+            enabled: false,
+            supported: true,
+        },
+        ProxyDomain {
             slug: "openrouter".into(),
             display_name: "OpenRouter".into(),
             // OpenRouter's API lives at openrouter.ai/api/v1/* (OpenAI-shaped
@@ -369,6 +386,32 @@ mod tests {
             &d,
             "GENERATIVELANGUAGE.GOOGLEAPIS.COM"
         ));
+    }
+
+    #[test]
+    fn rewrites_gemini_code_assist_paths() {
+        let mut d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "google-codeassist")
+            .expect("google-codeassist domain present in catalog");
+        d.enabled = true; // catalog default is opt-in; enable for the test
+        let d = vec![d];
+        // The Gemini CLI's OAuth flow hits cloudcode-pa.googleapis.com on
+        // /v1internal:<method>, which must rewrite to the gateway with the
+        // Code Assist upstream.
+        for path in [
+            "/v1internal:generateContent",
+            "/v1internal:streamGenerateContent",
+        ] {
+            assert_eq!(
+                decide(&d, "cloudcode-pa.googleapis.com", path),
+                Decision::Rewrite {
+                    upstream_url: "https://cloudcode-pa.googleapis.com".into()
+                },
+                "path {path} must rewrite"
+            );
+        }
+        assert!(should_intercept_host(&d, "CLOUDCODE-PA.GOOGLEAPIS.COM"));
     }
 
     #[test]
