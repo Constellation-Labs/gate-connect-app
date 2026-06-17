@@ -3,7 +3,10 @@ resolver = "3"
 members = ["crates/core", "crates/cli", "src-tauri"]
 
 [workspace.package]
-version = "0.0.1"
+# Placeholder. The real version is injected from the git tag at release time
+# (see .github/workflows/release.yml "Set version from tag"); the tag is the
+# single source of truth, so this is not bumped per release.
+version = "0.0.0"
 edition = "2021"
 # Pinned to match rust-toolchain.toml (1.86.0). With resolver = "3" this
 # keeps `cargo update` from pulling deps whose MSRV exceeds the toolchain.
