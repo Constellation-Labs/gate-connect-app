@@ -39,7 +39,7 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: '. -> target'
       - run: pnpm install --frozen-lockfile
       - name: Build, sign & release
         uses: tauri-apps/tauri-action@v0
