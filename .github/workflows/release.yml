@@ -73,9 +73,9 @@ jobs:
           # macOS builds the universal target, so its bundles live under a
           # target-specific dir; Linux/Windows use the default release dir.
           if [ "$PLATFORM" = "macos-latest" ]; then
-            BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle"
+            BUNDLE="target/universal-apple-darwin/release/bundle"
           else
-            BUNDLE="src-tauri/target/release/bundle"
+            BUNDLE="target/release/bundle"
           fi
 
           # alias_asset <dir> <glob> <stable-name>: copy the single installer
