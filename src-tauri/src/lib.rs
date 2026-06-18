@@ -850,8 +850,8 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
 /// Let the popover render over the active Space, including a full-screen app's.
 #[cfg(target_os = "macos")]
 fn apply_popover_space_behavior(window: &tauri::WebviewWindow) {
-    use objc2::runtime::AnyObject;
     use objc2::msg_send;
+    use objc2::runtime::AnyObject;
 
     const CAN_JOIN_ALL_SPACES: u64 = 1 << 0;
     const FULL_SCREEN_AUXILIARY: u64 = 1 << 8;
@@ -910,8 +910,8 @@ fn key_panel_class() -> &'static objc2::runtime::AnyClass {
 /// full-screen app without activating us, which would leave that Space.
 #[cfg(target_os = "macos")]
 fn promote_to_nonactivating_panel(window: &tauri::WebviewWindow) {
-    use objc2::runtime::{AnyClass, AnyObject};
     use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
 
     const NONACTIVATING_PANEL: u64 = 1 << 7;
 
@@ -958,8 +958,8 @@ fn install_click_outside_dismiss(app: &tauri::AppHandle) {
 /// won't raise a background app's window.
 #[cfg(target_os = "macos")]
 fn order_front_regardless(window: &tauri::WebviewWindow) {
-    use objc2::runtime::AnyObject;
     use objc2::msg_send;
+    use objc2::runtime::AnyObject;
 
     let Ok(ns_window_ptr) = window.ns_window() else {
         return;
