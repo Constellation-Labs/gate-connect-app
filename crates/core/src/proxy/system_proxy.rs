@@ -134,6 +134,136 @@ pub fn clear_snapshot() -> Result<()> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Shell-rc env injection
+//
+// `networksetup` only steers apps that honor the macOS system proxy (GUI apps
+// and the like). Command-line dev tools don't: Node-based CLIs (the Gemini
+// CLI) and reqwest-based CLIs (Codex) take their proxy + CA settings from the
+// *environment*, never from System Settings. macOS has no `/etc/environment`
+// equivalent that reaches login shells, so — mirroring the Linux managed-block
+// design — we write a delimited block into the user's shell startup files
+// exporting `http(s)_proxy` (points CLIs at the engine) and
+// `NODE_EXTRA_CA_CERTS` (so Node trusts the engine's minted leaf certs, since
+// it ships its own CA bundle and ignores the system trust store). Enable
+// writes the block; disable / reconcile strip it. Only affects *new* shells.
+// ---------------------------------------------------------------------------
+
+/// Delimiters bracketing the lines we own in each shell-rc file. Everything
+/// between them (inclusive) is ours to add/replace/remove; everything else is
+/// left untouched.
+const SHELL_BLOCK_BEGIN: &str = "# >>> gate-connect proxy (managed) >>>";
+const SHELL_BLOCK_END: &str = "# <<< gate-connect proxy (managed) <<<";
+
+/// Shell startup files we manage. `~/.zshenv` is sourced for every zsh
+/// invocation (zsh is the macOS default shell since 10.15), so it reaches CLIs
+/// in any new shell; we create it if absent. `~/.bash_profile` is managed only
+/// when it already exists — we don't create bash files for a zsh user.
+fn shell_rc_files() -> Result<Vec<PathBuf>> {
+    let home = env::home()?;
+    let mut files = vec![home.join(".zshenv")];
+    let bash = home.join(".bash_profile");
+    if bash.exists() {
+        files.push(bash);
+    }
+    Ok(files)
+}
+
+/// Path to our CA cert, mirrored from [`super::ca`] — used for
+/// `NODE_EXTRA_CA_CERTS` so Node CLIs trust the engine's leaf certs.
+fn ca_cert_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?.join("proxy").join("ca-cert.pem"))
+}
+
+/// Return `content` with our managed block removed. Lines outside the
+/// delimiters are preserved verbatim.
+fn strip_shell_block(content: &str) -> String {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == SHELL_BLOCK_BEGIN {
+            inside = true;
+            continue;
+        }
+        if trimmed == SHELL_BLOCK_END {
+            inside = false;
+            continue;
+        }
+        if !inside {
+            out.push(line);
+        }
+    }
+    let mut joined = out.join("\n");
+    // Collapse trailing whitespace/newlines left after removal, then restore a
+    // single trailing newline if there's any content.
+    while joined.ends_with('\n') || joined.ends_with(' ') {
+        joined.pop();
+    }
+    if !joined.is_empty() {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// Build the managed block exporting proxy + CA env for `127.0.0.1:port`.
+/// Values are shell-quoted because the CA path lives under
+/// `~/Library/Application Support/…` (contains spaces).
+fn build_shell_block(port: u16) -> Result<String> {
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let no_proxy = "localhost,127.0.0.1,::1";
+    let ca = ca_cert_path()?;
+    Ok(format!(
+        "{SHELL_BLOCK_BEGIN}\n\
+         export http_proxy={ep}\n\
+         export https_proxy={ep}\n\
+         export HTTP_PROXY={ep}\n\
+         export HTTPS_PROXY={ep}\n\
+         export no_proxy={np}\n\
+         export NO_PROXY={np}\n\
+         export NODE_EXTRA_CA_CERTS={ca}\n\
+         {SHELL_BLOCK_END}\n",
+        ep = sh_quote(&endpoint),
+        np = sh_quote(no_proxy),
+        ca = sh_quote(&ca.display().to_string()),
+    ))
+}
+
+/// Write our managed block into every managed shell-rc file: strip any prior
+/// block, then append the fresh one. Non-privileged (the user's own dotfiles).
+fn write_shell_block(port: u16) -> Result<()> {
+    let block = build_shell_block(port)?;
+    for path in shell_rc_files()? {
+        let existing = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let stripped = strip_shell_block(&existing);
+        fs::write(&path, format!("{stripped}{block}"))
+            .with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Strip our managed block from every managed shell-rc file that has one.
+/// Idempotent; safe on every revert path.
+fn strip_shell_blocks() -> Result<()> {
+    for path in shell_rc_files()? {
+        let existing = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        if !existing.contains(SHELL_BLOCK_BEGIN) {
+            continue;
+        }
+        fs::write(&path, strip_shell_block(&existing))
+            .with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// Privileged shell command that points all `services` at our loopback
 /// engine (both HTTP and HTTPS proxy slots).
 pub fn enable_command(port: u16, services: &[String]) -> String {
@@ -238,20 +368,33 @@ fn apply(script: &str) -> Result<()> {
     crate::primitives::run_as_admin(script).context("running networksetup (elevated)")
 }
 
-/// Point every active service at the loopback engine. Promptless on a
-/// standard account.
+/// Point every active service at the loopback engine, and inject the proxy +
+/// CA env into the user's shell-rc files so CLIs route too. Promptless on a
+/// standard account. If the shell-rc write fails, strip any partial block so
+/// new shells aren't left pointed at a port the caller is about to tear down.
 pub fn enable(port: u16, services: &[String]) -> Result<()> {
-    apply(&enable_command(port, services))
+    apply(&enable_command(port, services))?;
+    if let Err(e) = write_shell_block(port) {
+        let _ = strip_shell_blocks();
+        return Err(e);
+    }
+    Ok(())
 }
 
-/// Restore every service to its snapshot. Promptless; safety-critical.
+/// Restore every service to its snapshot and strip our shell-rc block.
+/// Promptless; safety-critical. Both reverts are attempted even if one fails.
 pub fn restore(snapshot: &[ServiceProxy]) -> Result<()> {
-    apply(&restore_command(snapshot))
+    let net = apply(&restore_command(snapshot));
+    let shell = strip_shell_blocks();
+    net.and(shell)
 }
 
-/// Turn every service's proxy off. Promptless fail-safe.
+/// Turn every service's proxy off and strip our shell-rc block. Promptless
+/// fail-safe. Both reverts are attempted even if one fails.
 pub fn force_off(services: &[String]) -> Result<()> {
-    apply(&force_off_command(services))
+    let net = apply(&force_off_command(services));
+    let shell = strip_shell_blocks();
+    net.and(shell)
 }
 
 /// True if `server` is a loopback address — what our engine binds to. Used to
@@ -316,6 +459,10 @@ pub fn clear_stranded_loopback() -> Result<Vec<String>> {
     }
 
     apply(&parts.join(" && "))?;
+    // Also strip any shell-rc block a hard kill left behind — the reconcile's
+    // "no snapshot" path doesn't call restore/force_off, so this is the only
+    // sweep that catches a block stranded at a dead port. Best-effort.
+    let _ = strip_shell_blocks();
     Ok(cleared)
 }
 
@@ -338,6 +485,32 @@ mod tests {
         assert!(is_loopback("localhost"));
         assert!(!is_loopback("proxy.corp.example.com"));
         assert!(!is_loopback("10.0.0.5"));
+    }
+
+    #[test]
+    fn shell_strip_removes_only_our_block() {
+        let original = "export PATH=/usr/bin\n";
+        let with_block = format!(
+            "export PATH=/usr/bin\n{SHELL_BLOCK_BEGIN}\nexport https_proxy=http://127.0.0.1:9\n{SHELL_BLOCK_END}\n"
+        );
+        assert_eq!(strip_shell_block(&with_block), original);
+    }
+
+    #[test]
+    fn shell_strip_is_noop_without_block() {
+        let original = "export FOO=bar\nexport BAZ=qux\n";
+        assert_eq!(strip_shell_block(original), original);
+    }
+
+    #[test]
+    fn shell_block_exports_proxy_and_ca() {
+        let block = build_shell_block(61722).unwrap();
+        assert!(block.contains("export HTTPS_PROXY="));
+        assert!(block.contains("http://127.0.0.1:61722"));
+        assert!(block.contains("export NODE_EXTRA_CA_CERTS="));
+        // CA path is single-quoted so the Application Support space survives.
+        assert!(block.contains("ca-cert.pem'"));
+        assert!(block.contains("export NO_PROXY="));
     }
 
     #[test]
