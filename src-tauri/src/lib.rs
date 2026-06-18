@@ -583,28 +583,41 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // First impression: a hidden menu-bar app looks broken on launch,
-            // so surface the popover once at startup, anchored under the
-            // menu-bar tray icon (falling back to the top-right corner if macOS
-            // hasn't laid the icon out yet). Subsequent opens go through the
-            // tray click. (Accessory app with no autostart, so a launch is
-            // always an explicit user action — safe to show.)
+            // First impression: a hidden menu-bar / tray app looks broken on
+            // launch, so surface the popover once at startup on every desktop
+            // OS. Subsequent opens go through the tray click. (No autostart, so
+            // a launch is always an explicit user action — safe to show.)
             //
-            // Pin it open first: the frontend's initial load reads the keychain,
-            // and the macOS password dialog that triggers would otherwise blur
-            // the popover and dismiss it before the user sees anything. The
-            // window stays put until the user interacts (`unpin_popover`).
-            #[cfg(target_os = "macos")]
+            // Pin it open first: the frontend's initial load reads the OS
+            // credential store, and the unlock dialog that can trigger (the
+            // macOS keychain prompt, the GNOME keyring) would otherwise blur the
+            // popover and dismiss it before the user sees anything. The window
+            // stays put until the user interacts (`unpin_popover`).
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main") {
                 POPOVER_PINNED.store(true, Ordering::Release);
-                let anchored = app
-                    .tray_by_id("main")
-                    .and_then(|t| t.rect().ok().flatten())
-                    .map(|rect| anchor_under_tray(&window, rect.position, rect.size))
-                    .is_some();
-                if !anchored {
-                    position_startup(&window);
+
+                // Anchor under the tray icon where the platform reports its rect
+                // (macOS, Windows). Linux trays (SNI/AppIndicator) don't expose
+                // one, so the window shows at its configured default position.
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let anchored = app
+                        .tray_by_id("main")
+                        .and_then(|t| t.rect().ok().flatten())
+                        .map(|rect| anchor_under_tray(&window, rect.position, rect.size))
+                        .is_some();
+                    // macOS falls back to the top-right corner by the menu bar
+                    // if the icon isn't laid out yet; Windows keeps its default
+                    // position in that case.
+                    #[cfg(target_os = "macos")]
+                    if !anchored {
+                        position_startup(&window);
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = anchored;
                 }
+
                 let _ = window.show();
                 let _ = window.set_focus();
             }
