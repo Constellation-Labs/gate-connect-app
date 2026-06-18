@@ -499,7 +499,10 @@ pub fn run() {
             // corners on the popover expose the dark window behind them.
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
+                promote_to_nonactivating_panel(&window);
                 apply_window_corner_radius(&window, 12.0);
+                apply_popover_space_behavior(&window);
+                install_click_outside_dismiss(app.handle());
             }
 
             let tray_icon = Image::from_bytes(TRAY_ICON_PNG)?;
@@ -543,6 +546,7 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
+                            // is_focused() is unreliable for a non-activating panel.
                             let is_visible = window.is_visible().unwrap_or(false);
                             if is_visible {
                                 let _ = window.hide();
@@ -561,6 +565,8 @@ pub fn run() {
                                 anchor_under_tray(&window, rect.position, rect.size);
                                 let _ = window.show();
                                 let _ = window.set_focus();
+                                #[cfg(target_os = "macos")]
+                                order_front_regardless(&window);
                             }
                         }
                     }
@@ -839,6 +845,134 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
         .min(mon_x + mon_w - window_w_px - 4.0);
 
     let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+}
+
+/// Let the popover render over the active Space, including a full-screen app's.
+#[cfg(target_os = "macos")]
+fn apply_popover_space_behavior(window: &tauri::WebviewWindow) {
+    use objc2::runtime::AnyObject;
+    use objc2::msg_send;
+
+    const CAN_JOIN_ALL_SPACES: u64 = 1 << 0;
+    const FULL_SCREEN_AUXILIARY: u64 = 1 << 8;
+    const NS_STATUS_WINDOW_LEVEL: i64 = 25;
+
+    let Ok(ns_window_ptr) = window.ns_window() else {
+        return;
+    };
+    if ns_window_ptr.is_null() {
+        return;
+    }
+
+    unsafe {
+        let ns_window: *mut AnyObject = ns_window_ptr.cast();
+        let behavior: u64 = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
+        let () = msg_send![ns_window, setCollectionBehavior: behavior];
+        let () = msg_send![ns_window, setLevel: NS_STATUS_WINDOW_LEVEL];
+    }
+}
+
+/// NSPanel subclass whose canBecomeKey/MainWindow return YES — a borderless
+/// window can't become key otherwise, which blocks the cursor and keyboard.
+#[cfg(target_os = "macos")]
+fn key_panel_class() -> &'static objc2::runtime::AnyClass {
+    use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
+    use objc2::{class, sel};
+    use std::ffi::CStr;
+
+    const NAME: &CStr = c"GateConnectKeyPanel";
+
+    if let Some(cls) = AnyClass::get(NAME) {
+        return cls;
+    }
+
+    // Raw-pointer receiver keeps the fn type non-higher-ranked for add_method.
+    extern "C" fn yes(_this: *mut AnyObject, _sel: Sel) -> Bool {
+        Bool::YES
+    }
+
+    let mut builder = ClassBuilder::new(NAME, class!(NSPanel))
+        .expect("GateConnectKeyPanel: class name should be unique in-process");
+    unsafe {
+        builder.add_method(
+            sel!(canBecomeKeyWindow),
+            yes as extern "C" fn(*mut AnyObject, Sel) -> Bool,
+        );
+        builder.add_method(
+            sel!(canBecomeMainWindow),
+            yes as extern "C" fn(*mut AnyObject, Sel) -> Bool,
+        );
+    }
+    builder.register()
+}
+
+/// Make the popover a non-activating NSPanel: it can take key focus over a
+/// full-screen app without activating us, which would leave that Space.
+#[cfg(target_os = "macos")]
+fn promote_to_nonactivating_panel(window: &tauri::WebviewWindow) {
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::msg_send;
+
+    const NONACTIVATING_PANEL: u64 = 1 << 7;
+
+    let Ok(ns_window_ptr) = window.ns_window() else {
+        return;
+    };
+    if ns_window_ptr.is_null() {
+        return;
+    }
+
+    unsafe {
+        let ns_window: *mut AnyObject = ns_window_ptr.cast();
+        let panel_cls: &AnyClass = key_panel_class();
+        objc2::ffi::object_setClass(ns_window, panel_cls);
+        let mask: u64 = msg_send![ns_window, styleMask];
+        let () = msg_send![ns_window, setStyleMask: mask | NONACTIVATING_PANEL];
+        let () = msg_send![ns_window, setBecomesKeyOnlyIfNeeded: false];
+        let () = msg_send![ns_window, setHidesOnDeactivate: false];
+    }
+}
+
+/// Dismiss the popover on click-outside; a non-activating panel emits no blur
+/// event, so we watch for mouse-downs delivered to other apps instead.
+#[cfg(target_os = "macos")]
+fn install_click_outside_dismiss(app: &tauri::AppHandle) {
+    use block2::RcBlock;
+    use objc2_app_kit::{NSEvent, NSEventMask};
+
+    let handle = app.clone();
+    let block = RcBlock::new(move |_event: core::ptr::NonNull<NSEvent>| {
+        if let Some(window) = handle.get_webview_window("main") {
+            if window.is_visible().unwrap_or(false) {
+                let _ = window.hide();
+            }
+        }
+    });
+    let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown;
+    if let Some(token) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block) {
+        std::mem::forget(token); // dropping the token removes the monitor
+    }
+}
+
+/// Raise and key the popover without activating the app — set_focus() alone
+/// won't raise a background app's window.
+#[cfg(target_os = "macos")]
+fn order_front_regardless(window: &tauri::WebviewWindow) {
+    use objc2::runtime::AnyObject;
+    use objc2::msg_send;
+
+    let Ok(ns_window_ptr) = window.ns_window() else {
+        return;
+    };
+    if ns_window_ptr.is_null() {
+        return;
+    }
+
+    unsafe {
+        let ns_window: *mut AnyObject = ns_window_ptr.cast();
+        let () = msg_send![ns_window, orderFrontRegardless];
+        let () = msg_send![ns_window, makeKeyWindow];
+    }
 }
 
 /// Round the corners of the underlying NSWindow on macOS.
