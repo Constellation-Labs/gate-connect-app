@@ -24,9 +24,10 @@ import { UpdateBanner } from "./components/UpdateBanner";
 
 type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
-// Providers hidden from the UI for now. Slugs match the backend provider list
-// (Gemini's provider slug is "google").
-const HIDDEN_PROVIDER_SLUGS = new Set(["openrouter", "google"]);
+// Providers hidden from the UI for now. Slugs match the backend provider list.
+// Gemini (slug "google") is shown again now that the proxy routes its CLI on
+// all platforms via env injection; OpenRouter stays hidden.
+const HIDDEN_PROVIDER_SLUGS = new Set(["openrouter"]);
 
 function hostOf(url: string | undefined): string {
   if (!url) return "";
