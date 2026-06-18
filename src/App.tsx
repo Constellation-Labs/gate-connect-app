@@ -12,6 +12,7 @@ import {
   listProviders,
   providerEnable,
   providerDisable,
+  unpinPopover,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
 import { Home } from "./screens/Home";
@@ -62,6 +63,24 @@ export function App() {
     })();
     return () => {
       alive = false;
+    };
+  }, []);
+
+  // On first launch the popover is pinned open so the macOS keychain dialog
+  // (triggered by the initial load reading the key) can't dismiss it before
+  // it's seen. Once the user actually interacts, release the pin so normal
+  // click-away dismissal resumes.
+  useEffect(() => {
+    const engage = () => {
+      void unpinPopover().catch(() => {});
+      window.removeEventListener("pointerdown", engage);
+      window.removeEventListener("keydown", engage);
+    };
+    window.addEventListener("pointerdown", engage);
+    window.addEventListener("keydown", engage);
+    return () => {
+      window.removeEventListener("pointerdown", engage);
+      window.removeEventListener("keydown", engage);
     };
   }, []);
 

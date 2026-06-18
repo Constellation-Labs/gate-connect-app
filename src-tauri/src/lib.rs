@@ -6,6 +6,8 @@
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::Serialize;
 use tauri::{
     image::Image,
@@ -398,8 +400,22 @@ const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
 /// When the startup popover was shown. Used to ignore the spurious focus-loss
 /// an Accessory (menu-bar) app can emit before it becomes frontmost, which
 /// would otherwise immediately hide the popover we open on launch.
-#[cfg(target_os = "macos")]
-static LAUNCH_SHOWN_AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+/// While true, the popover ignores focus-loss instead of hiding. Set at
+/// macOS launch so the keychain-password dialog (and the first-run screen)
+/// can't make the window vanish before the user has even seen it — a focus
+/// steal by that system dialog would otherwise trip the dismiss-on-blur
+/// handler. Cleared by [`unpin_popover`] once the user interacts, restoring
+/// normal click-away dismissal. Defaults off so non-macOS behavior is
+/// unchanged (only the macOS startup path pins it).
+static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
+
+/// Stop pinning the popover open. The frontend calls this on the user's
+/// first interaction with the first-launch window, switching the popover
+/// back to normal click-outside-to-dismiss behavior.
+#[tauri::command]
+fn unpin_popover() {
+    POPOVER_PINNED.store(false, Ordering::Release);
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -425,6 +441,7 @@ pub fn run() {
                     save_account,
                     clear_account,
                     app_platform,
+                    unpin_popover,
                     list_providers,
                     provider_enable,
                     provider_disable,
@@ -451,6 +468,7 @@ pub fn run() {
                     save_account,
                     clear_account,
                     app_platform,
+                    unpin_popover,
                     list_providers,
                     provider_enable,
                     provider_disable,
@@ -465,14 +483,12 @@ pub fn run() {
             }
             // Click outside the popover → dismiss.
             if let WindowEvent::Focused(false) = event {
-                // Ignore the spurious blur an Accessory app can emit right
-                // after the startup show, before it's frontmost — otherwise the
-                // popover we opened on launch would hide before it's even seen.
-                #[cfg(target_os = "macos")]
-                if LAUNCH_SHOWN_AT
-                    .get()
-                    .is_some_and(|t| t.elapsed().as_millis() < 1500)
-                {
+                // While pinned (first launch, through the keychain-password
+                // dialog and first-run, until the user engages), a focus loss
+                // — the keychain dialog stealing focus, or the spurious blur an
+                // Accessory app emits right after the startup show — must not
+                // hide the popover, or the user never sees the window.
+                if POPOVER_PINNED.load(Ordering::Acquire) {
                     return;
                 }
                 let _ = window.hide();
@@ -567,17 +583,43 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // First impression: a hidden menu-bar app looks broken on launch,
-            // so surface the popover once at startup — top-right under the
-            // menu-bar tray on the main display. Subsequent opens go through the
-            // tray click. (Accessory app with no autostart, so a launch is
-            // always an explicit user action — safe to show.)
-            #[cfg(target_os = "macos")]
+            // First impression: a hidden menu-bar / tray app looks broken on
+            // launch, so surface the popover once at startup on every desktop
+            // OS. Subsequent opens go through the tray click. (No autostart, so
+            // a launch is always an explicit user action — safe to show.)
+            //
+            // Pin it open first: the frontend's initial load reads the OS
+            // credential store, and the unlock dialog that can trigger (the
+            // macOS keychain prompt, the GNOME keyring) would otherwise blur the
+            // popover and dismiss it before the user sees anything. The window
+            // stays put until the user interacts (`unpin_popover`).
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main") {
-                position_startup(&window);
+                POPOVER_PINNED.store(true, Ordering::Release);
+
+                // Anchor under the tray icon where the platform reports its rect
+                // (macOS, Windows). Linux trays (SNI/AppIndicator) don't expose
+                // one, so the window shows at its configured default position.
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let anchored = app
+                        .tray_by_id("main")
+                        .and_then(|t| t.rect().ok().flatten())
+                        .map(|rect| anchor_under_tray(&window, rect.position, rect.size))
+                        .is_some();
+                    // macOS falls back to the top-right corner by the menu bar
+                    // if the icon isn't laid out yet; Windows keeps its default
+                    // position in that case.
+                    #[cfg(target_os = "macos")]
+                    if !anchored {
+                        position_startup(&window);
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = anchored;
+                }
+
                 let _ = window.show();
                 let _ = window.set_focus();
-                let _ = LAUNCH_SHOWN_AT.set(std::time::Instant::now());
             }
 
             // Reflect the current proxy state in the tray dot at launch.
