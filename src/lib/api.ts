@@ -43,6 +43,10 @@ export const saveAccount = (baseUrl: string, apiKey: string | null) =>
 
 export const clearAccount = () => invoke<void>("clear_account");
 
+/** Release the first-launch pin so the popover resumes click-away dismissal.
+ *  Called once the user interacts with the startup window. */
+export const unpinPopover = () => invoke<void>("unpin_popover");
+
 // ---- built-in MITM proxy (macOS, Windows, Linux) ----
 
 export interface ProxyDomain {
