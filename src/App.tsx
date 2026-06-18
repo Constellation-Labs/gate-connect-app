@@ -24,6 +24,10 @@ import { UpdateBanner } from "./components/UpdateBanner";
 
 type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
+// Providers hidden from the UI for now. Slugs match the backend provider list
+// (Gemini's provider slug is "google").
+const HIDDEN_PROVIDER_SLUGS = new Set(["openrouter", "google"]);
+
 function hostOf(url: string | undefined): string {
   if (!url) return "";
   try {
@@ -216,7 +220,7 @@ export function App() {
     body = (
       <ProxyScreen
         proxy={proxy}
-        providers={providers}
+        providers={providers.filter((p) => !HIDDEN_PROVIDER_SLUGS.has(p.slug))}
         busy={proxyBusy}
         error={providerError}
         onBack={() => {
