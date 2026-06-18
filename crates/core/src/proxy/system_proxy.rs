@@ -247,8 +247,12 @@ fn write_shell_block(port: u16) -> Result<()> {
 }
 
 /// Strip our managed block from every managed shell-rc file that has one.
-/// Idempotent; safe on every revert path.
+/// Idempotent; safe on every revert path. If stripping empties `~/.zshenv` —
+/// the file we create when absent — remove it rather than leave an empty
+/// dotfile behind; other managed files (`~/.bash_profile`) pre-existed, so they
+/// are kept even when our block was their only content.
 fn strip_shell_blocks() -> Result<()> {
+    let zshenv = env::home()?.join(".zshenv");
     for path in shell_rc_files()? {
         let existing = match fs::read_to_string(&path) {
             Ok(s) => s,
@@ -258,8 +262,12 @@ fn strip_shell_blocks() -> Result<()> {
         if !existing.contains(SHELL_BLOCK_BEGIN) {
             continue;
         }
-        fs::write(&path, strip_shell_block(&existing))
-            .with_context(|| format!("writing {}", path.display()))?;
+        let stripped = strip_shell_block(&existing);
+        if stripped.is_empty() && path == zshenv {
+            fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            continue;
+        }
+        fs::write(&path, stripped).with_context(|| format!("writing {}", path.display()))?;
     }
     Ok(())
 }
