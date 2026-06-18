@@ -108,15 +108,60 @@ pub fn load_or_create() -> Result<Ca> {
     Ok(Ca { cert_pem, key_pem })
 }
 
-/// Whether our CA is present — and therefore trusted — in the current user's
-/// root store. `certutil -user -store Root <CN>` exits 0 and prints the cert
-/// when it's there, non-zero when it isn't. Read-only / non-privileged.
-pub fn is_trusted() -> Result<bool> {
+/// SHA-1 thumbprint of the **current on-disk** CA cert, normalized to
+/// uppercase hex with no separators — the form `certutil` accepts as a
+/// `CertId`. Returns `None` if the cert file is missing.
+///
+/// We read it from `certutil <file>`, which prints a `Cert Hash(sha1): <hex>`
+/// line: the `Cert Hash` label is localized but the `(sha1)` algorithm token
+/// is not, so we key off that. This avoids pulling in a crypto/PEM dependency
+/// just to fingerprint one cert, staying consistent with the rest of this
+/// module's certutil-based approach.
+fn cert_thumbprint() -> Result<Option<String>> {
+    let cert = cert_path()?;
+    if !cert.exists() {
+        return Ok(None);
+    }
     let out = Command::new("certutil")
-        .args(["-user", "-store", "Root", CA_COMMON_NAME])
+        .arg(&cert)
+        .output()
+        .context("running certutil to read the CA thumbprint")?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let thumb = text
+        .lines()
+        .find(|l| l.to_ascii_lowercase().contains("(sha1)"))
+        .and_then(|l| l.split_once(':'))
+        .map(|(_, hex)| {
+            hex.chars()
+                .filter(char::is_ascii_hexdigit)
+                .collect::<String>()
+                .to_ascii_uppercase()
+        })
+        .filter(|t| !t.is_empty());
+    Ok(thumb)
+}
+
+/// Whether the **current on-disk CA** is trusted — keyed on the cert's
+/// thumbprint, not its name. We look the cert's SHA-1 thumbprint up in the
+/// per-user root store (`certutil -user -store Root <thumbprint>`), which
+/// exits 0 only when a cert with that exact thumbprint is present.
+///
+/// The previous check matched the CN, which a stale root from a prior install
+/// satisfies — it shares our CN but has a different key/fingerprint. That made
+/// `ensure_trusted` no-op while the engine signed leaves with a *different*,
+/// untrusted CA, so every MITM handshake failed with no recovery. Matching the
+/// thumbprint catches the mismatch and lets `ensure_trusted` re-install.
+/// Read-only / non-privileged.
+pub fn is_trusted() -> Result<bool> {
+    let thumb = match cert_thumbprint()? {
+        Some(t) => t,
+        None => return Ok(false),
+    };
+    let out = Command::new("certutil")
+        .args(["-user", "-store", "Root", &thumb])
         .output()
         .context("running certutil -store Root")?;
-    Ok(out.status.success() && String::from_utf8_lossy(&out.stdout).contains(CA_COMMON_NAME))
+    Ok(out.status.success())
 }
 
 /// Trust the CA if it isn't already. `certutil -user -addstore Root` installs
@@ -127,6 +172,12 @@ pub fn ensure_trusted() -> Result<()> {
     if is_trusted()? {
         return Ok(());
     }
+    // A prior install may have left a same-CN root (different key) in the
+    // per-user store; drop it so we don't stack a duplicate before adding the
+    // current cert. Best-effort — a missing cert just makes this a no-op.
+    let _ = Command::new("certutil")
+        .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
+        .status();
     let cert = cert_path()?;
     let status = Command::new("certutil")
         .args(["-user", "-addstore", "Root"])

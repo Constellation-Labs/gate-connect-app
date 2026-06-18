@@ -25,11 +25,18 @@ use hudsucker::rcgen::KeyPair;
 
 use crate::env;
 use crate::keychain;
+use crate::primitives::{run_as_admin, sh_quote};
 use crate::proxy::cert_authority;
 
 /// Subject CN of our CA. Used both as the cert subject and as the lookup
 /// key for trust/untrust via `security`.
 pub const CA_COMMON_NAME: &str = cert_authority::CA_COMMON_NAME;
+
+/// The root-owned System keychain. Older builds installed CA trust here
+/// (admin domain) rather than the user login keychain; a stale root left
+/// behind by such an install is the one that breaks proxied HTTPS after a
+/// reinstall, so we reconcile it away on the next enable.
+const SYSTEM_KEYCHAIN: &str = "/Library/Keychains/System.keychain";
 
 /// A loaded CA. The cert is public; the key is sensitive and only handed to
 /// the engine (same process) to build the signing authority.
@@ -112,36 +119,74 @@ pub fn load_or_create() -> Result<Ca> {
     Ok(Ca { cert_pem, key_pem })
 }
 
-/// Whether our CA is **trusted** as a root — not merely present in a
-/// keychain. We install trust into the user login keychain (which surfaces in
-/// `dump-trust-settings`); we also check the admin domain in case it was
-/// trusted there manually. A cert can sit in a keychain with no trust setting
-/// at all, and the old presence-only check (`find-certificate`) reported
-/// success in exactly that untrusted state, so `ensure_trusted` skipped the
-/// install and every MITM handshake failed (`CertificateUnknown` /
-/// `NOT_TRUSTED`). Reading trust settings is non-privileged.
+/// Whether the **current on-disk CA** is trusted as a root — keyed on the
+/// actual certificate, not just its name. We verify the cert against the
+/// system trust store with `security verify-cert`, which evaluates the real
+/// cert bytes across the user and admin trust domains and exits non-zero
+/// (`CSSMERR_TP_NOT_TRUSTED`) when it doesn't anchor to a trusted root.
+///
+/// The previous check matched the CN in `dump-trust-settings`, which a stale
+/// root from a prior install satisfies — it shares our CN but has a different
+/// key/fingerprint. That made `ensure_trusted` no-op while the engine signed
+/// leaves with a *different*, untrusted CA, so every MITM handshake failed
+/// (`NOT_TRUSTED`) with no recovery short of manual keychain surgery — the
+/// reinstall-breaks-the-proxy bug. Verifying the cert itself catches the
+/// fingerprint mismatch and lets `ensure_trusted` re-install. Read-only /
+/// non-privileged.
 pub fn is_trusted() -> Result<bool> {
-    for admin_domain in [false, true] {
-        let mut cmd = Command::new("/usr/bin/security");
-        cmd.arg("dump-trust-settings");
-        if admin_domain {
-            cmd.arg("-d");
-        }
-        let out = cmd
-            .output()
-            .context("running security dump-trust-settings")?;
-        // It lists each trusted cert by label (ours is the CN) and exits
-        // non-zero when a domain has no trust settings, so key off the output.
-        if String::from_utf8_lossy(&out.stdout).contains(CA_COMMON_NAME) {
-            return Ok(true);
-        }
+    let cert = cert_path()?;
+    if !cert.exists() {
+        return Ok(false);
     }
-    Ok(false)
+    let out = Command::new("/usr/bin/security")
+        .arg("verify-cert")
+        .arg("-c")
+        .arg(&cert)
+        .output()
+        .context("running security verify-cert")?;
+    Ok(out.status.success())
 }
 
 /// The user's login keychain, where we install CA trust (no root required).
 fn login_keychain() -> Result<PathBuf> {
     Ok(env::home()?.join("Library/Keychains/login.keychain-db"))
+}
+
+/// Whether a cert with our CN is sitting in the root-owned System keychain.
+/// Reading is non-privileged, so we use this to gate the (privileged) System
+/// keychain cleanup and avoid prompting for admin when there's nothing stale
+/// to remove (e.g. every normal first-time enable).
+fn system_keychain_has_ca() -> Result<bool> {
+    let out = Command::new("/usr/bin/security")
+        .args(["find-certificate", "-c", CA_COMMON_NAME])
+        .arg(SYSTEM_KEYCHAIN)
+        .output()
+        .context("running security find-certificate")?;
+    Ok(out.status.success())
+}
+
+/// Remove any Gate CA a prior install left behind before we install the
+/// current one. We always drop it from the user login keychain (no admin),
+/// and — only if one is actually present — from the root-owned System
+/// keychain via a single admin prompt. `-t` removes the cert's trust settings
+/// along with the cert. Login-keychain removal is best-effort (a missing cert
+/// just exits non-zero); the System-keychain removal surfaces a real failure
+/// because it's gated behind the admin prompt the user just accepted.
+fn remove_stale_cas() -> Result<()> {
+    let _ = Command::new("/usr/bin/security")
+        .args(["delete-certificate", "-c", CA_COMMON_NAME, "-t"])
+        .arg(login_keychain()?)
+        .status();
+
+    if system_keychain_has_ca()? {
+        let script = format!(
+            "/usr/bin/security delete-certificate -c {cn} -t {kc}",
+            cn = sh_quote(CA_COMMON_NAME),
+            kc = sh_quote(SYSTEM_KEYCHAIN),
+        );
+        run_as_admin(&script).context("removing a stale proxy CA from the System keychain")?;
+    }
+    Ok(())
 }
 
 /// Trust the CA if it isn't already. Runs `security add-trusted-cert`
@@ -155,6 +200,11 @@ pub fn ensure_trusted() -> Result<()> {
     if is_trusted()? {
         return Ok(());
     }
+    // Not trusted, but a prior install may have left a stale root with our CN
+    // (different key) still in a keychain. Adding ours alongside it leaves two
+    // same-CN roots; worse, the stale one was what shadowed the real fix.
+    // Drop any leftover Gate CA before installing the current one.
+    remove_stale_cas()?;
     let cert = cert_path()?;
     let keychain = login_keychain()?;
     let status = Command::new("/usr/bin/security")
