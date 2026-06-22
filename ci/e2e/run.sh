@@ -154,6 +154,12 @@ case "$OS" in
     sudo security add-trusted-cert -d -r trustRoot \
       -k /Library/Keychains/System.keychain "$CA_DIR/ca.pem"
     ;;
+  Windows)
+    # Into the current-user Root store (no elevation needed). Codex's Rust TLS
+    # reads the Windows cert store, so this is the Windows analogue of the Linux
+    # trust above.
+    certutil -user -addstore -f Root "$(winpath "$CA_DIR/ca.pem")" >/dev/null 2>&1 || true
+    ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -211,19 +217,17 @@ mkdir -p "$HOME/.claude"
 run_tool "claude-code" "claude-code" "/v1/messages" -- \
   claude --bare -p "ping" --settings "$(winpath "$HOME/.claude/settings.json")"
 
-# --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. Codex's Rust TLS
-#     stack can't be told to trust a custom CA for a model provider
-#     (openai/codex#9526, "closed as not planned") — on Linux it works because we
-#     add the CA to the system store, but macOS/Windows codex don't read that for
-#     their TLS, so there's no way to make them trust the test gateway. Skip
-#     codex off Linux; it stays covered there.
-if [ "$OS" = "Linux" ]; then
+# --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. Codex has no env
+#     to trust a custom CA for a model provider (openai/codex#9526), so it relies
+#     on the OS trust store — which we populate on Linux and Windows above.
+#     macOS codex doesn't read the keychain for this, so it stays skipped there.
+if [ "$OS" != "Darwin" ]; then
   mkdir -p "$HOME/.codex"
   printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
   run_tool "codex" "codex" "/v1/responses" -- \
     codex exec --skip-git-repo-check "ping"
 else
-  echo "::notice::skipping codex on $OS — its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526); codex is exercised on Linux."
+  echo "::notice::skipping codex on macOS — its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526) and ignores the keychain; codex is exercised on Linux and Windows."
 fi
 
 # --- OpenCode: gate-connect rewrites its anthropic provider's baseURL to Gate
