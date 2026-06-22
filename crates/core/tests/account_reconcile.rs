@@ -3,12 +3,12 @@
 //! on-disk files but not its OS keychain entry (or vice versa). It only acts
 //! when the two halves have drifted, so a signed-in user is never touched.
 //!
-//! These exercise the real path resolution (`account.json` under the per-OS
-//! data dir, derived from `$HOME`/`$XDG_DATA_HOME` via `dirs`) and a process-
-//! global in-memory keychain backend, so the real OS secret store is never
-//! touched. It lives in its own test binary so those process-wide overrides
-//! can't leak into the in-crate unit tests, and a `Mutex` serializes the
-//! env-mutating tests within this binary.
+//! These exercise the real `account.json` read/write/remove against a throwaway
+//! data dir (via the [`env::set_app_support_dir_for_tests`] seam — a `$HOME`
+//! override doesn't redirect the data dir on Windows) plus a process-global
+//! in-memory keychain backend, so the real OS secret store is never touched. It
+//! lives in its own test binary so those process-wide overrides can't leak into
+//! the in-crate unit tests, and a `Mutex` serializes them within this binary.
 
 use std::fs;
 use std::path::PathBuf;
@@ -18,16 +18,14 @@ use gate_connect_core::{account, env, keychain};
 
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// Point `$HOME` at a fresh temp dir (and clear `$XDG_DATA_HOME`, which would
-/// otherwise win on Linux) so `account.json` resolves under the temp tree.
-/// Restores the prior values and deletes the dir on drop.
-struct TempHome {
+/// Point `app_support_dir()` at a fresh temp dir for the duration of a test, so
+/// `account.json` resolves there on every OS. Clears the override and deletes
+/// the dir on drop.
+struct TempDataDir {
     dir: PathBuf,
-    prev_home: Option<String>,
-    prev_xdg: Option<String>,
 }
 
-impl TempHome {
+impl TempDataDir {
     fn set() -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
         let n = SystemTime::now()
@@ -40,28 +38,14 @@ impl TempHome {
             n
         ));
         fs::create_dir_all(&dir).unwrap();
-        let prev_home = std::env::var("HOME").ok();
-        let prev_xdg = std::env::var("XDG_DATA_HOME").ok();
-        std::env::set_var("HOME", &dir);
-        std::env::remove_var("XDG_DATA_HOME");
-        TempHome {
-            dir,
-            prev_home,
-            prev_xdg,
-        }
+        env::set_app_support_dir_for_tests(Some(dir.clone()));
+        TempDataDir { dir }
     }
 }
 
-impl Drop for TempHome {
+impl Drop for TempDataDir {
     fn drop(&mut self) {
-        match &self.prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match &self.prev_xdg {
-            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-            None => std::env::remove_var("XDG_DATA_HOME"),
-        }
+        env::set_app_support_dir_for_tests(None);
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
@@ -75,7 +59,7 @@ fn user() -> String {
 #[test]
 fn orphaned_key_without_account_json_is_deleted() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::set();
+    let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
 
     keychain::set(&account::service(), &user(), "sk-gw-orphan").unwrap();
@@ -96,7 +80,7 @@ fn orphaned_key_without_account_json_is_deleted() {
 #[test]
 fn stray_account_json_without_key_is_removed() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::set();
+    let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
 
     account::save("https://gw.example.com", None).unwrap();
@@ -115,7 +99,7 @@ fn stray_account_json_without_key_is_removed() {
 #[test]
 fn intact_account_is_left_untouched() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::set();
+    let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
 
     account::save("https://gw.example.com", Some("sk-gw-live")).unwrap();
@@ -130,7 +114,7 @@ fn intact_account_is_left_untouched() {
 #[test]
 fn fresh_install_is_a_noop() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::set();
+    let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
 
     account::reconcile().unwrap();
