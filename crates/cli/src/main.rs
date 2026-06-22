@@ -444,12 +444,13 @@ fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {
 }
 
 /// Platform-specific reminder shown after enabling. On Linux the proxy is
-/// delivered via `/etc/environment`, which only new sessions read.
+/// delivered via a user systemd `environment.d` drop-in, which only new
+/// login sessions read.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn print_proxy_hint() {
     #[cfg(target_os = "linux")]
     println!(
-        "\nNote: proxy variables were written to /etc/environment — open a new shell (or re-login) for command-line tools to pick them up."
+        "\nNote: proxy variables were written to ~/.config/environment.d/gate-proxy.conf — log out and back in for command-line tools and GUI apps to pick them up."
     );
 }
 
