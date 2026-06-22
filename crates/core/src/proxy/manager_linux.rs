@@ -1,49 +1,66 @@
 //! Orchestrates the proxy subsystem on Linux: composes the CA, system-proxy,
-//! engine, and domain-config modules behind a process-global singleton the
-//! Tauri commands (and the CLI) call. Linux counterpart of the macOS
-//! [`super::manager`]; structurally it mirrors the Windows manager, since Linux
-//! also has a single global proxy with no per-network-service concept.
+//! domain-config, and the long-lived helper daemon behind a process-global
+//! singleton the Tauri commands (and the CLI) call. Linux counterpart of the
+//! macOS [`super::manager`].
 //!
-//! Privilege model differs from macOS/Windows. There the system-proxy store is
-//! per-user, so disable/reconcile are promptless and the revert can never be
-//! cancelled. On Linux both the CA install (system trust store) and the proxy
-//! wiring (`/etc/environment`) are root-owned, so enable, disable, and the
-//! startup reconcile may each prompt for elevation (sudo in a terminal, polkit
-//! in a GUI). Cancelling a disable therefore leaves the proxy on rather than
-//! silently reverting — the trade-off for a DE-agnostic, command-line-friendly
-//! proxy. The CA is left trusted across disable so re-enabling is cheaper;
+//! Unlike macOS/Windows, the loopback engine here does **not** live in this
+//! process — it runs in a detached helper daemon ([`super::helper`]) that owns
+//! the port and outlives the GUI. The manager drives it over a control socket
+//! ([`super::helper_client`]); the open connection *is* the "proxy on" state,
+//! and dropping it (clean disable, or the GUI exiting) makes the daemon fall
+//! back to pass-through — the port stays bound, so a session that froze the
+//! proxy pointer keeps flowing instead of being stranded.
+//!
+//! Privilege model. The proxy wiring is a user-scoped systemd `environment.d`
+//! drop-in (see [`super::system_proxy`]) and the daemon is unprivileged, so
+//! enable, disable, and the startup reconcile are all promptless. Only trusting
+//! the CA touches the system trust store and needs root (sudo in a terminal,
+//! polkit in a GUI), and only on first enable; once trusted, `ensure_trusted`
+//! is a no-op. The CA is left trusted across disable so re-enabling is cheaper;
 //! removing it is a separate explicit action ([`ProxyManager::untrust_ca`]).
 
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 
-use super::{ca, config, engine, system_proxy, ProxyDomain, ProxyState};
+use super::helper_client::HelperClient;
+use super::{ca, config, system_proxy, ProxyDomain, ProxyState};
 use crate::account;
 
 pub struct ProxyManager {
-    engine: Mutex<Option<engine::RunningEngine>>,
+    /// Open control connection to the helper daemon. `Some` exactly while the
+    /// proxy is on (intercepting); dropping it reverts the daemon to
+    /// pass-through.
+    client: Mutex<Option<HelperClient>>,
 }
 
 static MANAGER: OnceLock<ProxyManager> = OnceLock::new();
 
 pub fn manager() -> &'static ProxyManager {
     MANAGER.get_or_init(|| ProxyManager {
-        engine: Mutex::new(None),
+        client: Mutex::new(None),
     })
 }
 
 impl ProxyManager {
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
-        let port = self
-            .engine
-            .lock()
-            .expect("proxy engine mutex poisoned")
-            .as_ref()
-            .map(|e| e.port());
+        let mut guard = self.client.lock().expect("proxy client mutex poisoned");
+        // A dead/stale control connection means the daemon's gone or we lost
+        // it — treat as off and drop the handle so a later enable reconnects.
+        let (running, port) = match guard.as_mut() {
+            Some(client) => match client.status() {
+                Ok((running, port, _intercepting)) => (running, port),
+                Err(_) => {
+                    *guard = None;
+                    (false, None)
+                }
+            },
+            None => (false, None),
+        };
+        drop(guard);
         Ok(ProxyState {
-            running: port.is_some(),
+            running,
             port,
             ca_trusted: ca::is_trusted()?,
             domains: config::load_domains()?,
@@ -54,15 +71,14 @@ impl ProxyManager {
         config::load_domains()
     }
 
-    /// Start the engine, trust the CA, and route the system proxy through it.
-    /// Both the CA install and the proxy write may prompt for elevation.
-    /// Idempotent: a no-op if already running.
+    /// Start the engine (in the helper daemon), trust the CA, and route the
+    /// system proxy through it. Only the CA install may prompt for elevation
+    /// (and only when not already trusted); the proxy write is an unprivileged
+    /// user drop-in. Idempotent: a no-op if already on.
     pub fn enable(&self) -> Result<ProxyState> {
-        // Hold the lock for the whole sequence: a concurrent enable must not
-        // snapshot the system proxy after this one has already pointed it at
-        // our engine — that snapshot would later "restore" a dead port.
-        // (handle_engine_crash uses try_lock, so it can't deadlock on this.)
-        let mut guard = self.engine.lock().expect("proxy engine mutex poisoned");
+        // Hold the lock for the whole sequence so a concurrent enable can't
+        // race the snapshot/drop-in writes.
+        let mut guard = self.client.lock().expect("proxy client mutex poisoned");
         if guard.is_some() {
             drop(guard);
             return self.status();
@@ -81,69 +97,59 @@ impl ProxyManager {
         // the system trust store (privileged); only if not already trusted.
         ca::ensure_trusted()?;
 
-        // Snapshot the current proxy state *before* touching it, so disable can
-        // restore it exactly.
+        // Record that we left a drop-in behind, so reconcile can clean up after
+        // an unclean quit.
         let snapshot = system_proxy::snapshot()?;
         system_proxy::save_snapshot(&snapshot)?;
 
-        let running = engine::start(
-            engine::EngineConfig {
-                gateway_base_url: account.gateway_base_url.clone(),
-                api_key: account.api_key.clone(),
-                domains: domains.clone(),
-                ca_cert_pem: ca.cert_pem().to_string(),
-                ca_key_pem: ca.key_pem().to_string(),
-            },
-            // Fail-safe: if the engine dies unexpectedly, revert the system
-            // proxy so new shells aren't stranded at a dead listener.
-            || manager().handle_engine_crash(),
-        )?;
-        let port = running.port();
+        // Reuse the port we bound last time so a session that froze the proxy
+        // pointer at login keeps reaching a live engine across restarts.
+        let preferred_port = system_proxy::load_port().unwrap_or(None);
 
-        // Point the system proxy at the engine. Privileged.
+        // Spawn/connect the daemon and start (or live-update) interception.
+        let mut client = HelperClient::connect_or_spawn()?;
+        let port = match client.set_intercept(
+            &account.gateway_base_url,
+            &account.api_key,
+            ca.cert_pem(),
+            ca.key_pem(),
+            &domains,
+            preferred_port,
+        ) {
+            Ok(port) => port,
+            Err(e) => {
+                let _ = system_proxy::clear_snapshot();
+                return Err(e).context("starting proxy interception");
+            }
+        };
+        // Remember the port for next time (best-effort).
+        let _ = system_proxy::save_port(port);
+
+        // Point the system proxy at the engine. Unprivileged (user drop-in).
         if let Err(e) = system_proxy::enable(port) {
-            running.stop();
+            let _ = client.set_passthrough();
+            drop(client); // closes the connection → daemon stays in pass-through
             let _ = system_proxy::clear_snapshot();
             return Err(e).context("enabling system proxy");
         }
 
-        *guard = Some(running);
-
-        // The crash fail-safe defers while we hold the lock; if the engine
-        // died somewhere in this sequence, revert here instead of leaving
-        // HTTPS routed at a dead port with the snapshot already cleared.
-        if guard.as_ref().is_some_and(|r| r.is_finished()) {
-            if let Some(dead) = guard.take() {
-                dead.stop();
-            }
-            let snapshot = system_proxy::load_snapshot().unwrap_or_else(|e| {
-                eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
-                None
-            });
-            match snapshot {
-                Some(snapshot) => system_proxy::restore(&snapshot)?,
-                None => system_proxy::force_off()?,
-            }
-            let _ = system_proxy::clear_snapshot();
-            anyhow::bail!("proxy engine exited unexpectedly while enabling");
-        }
+        *guard = Some(client);
         drop(guard);
         self.status()
     }
 
-    /// Stop the engine and restore the prior system proxy. The revert is done
-    /// first so that, if it succeeds, the engine is then torn down. On Linux the
-    /// revert is privileged and can be cancelled; if it is, the proxy stays on.
-    /// The CA is left trusted.
+    /// Stop intercepting and remove the system-proxy drop-in. The daemon is left
+    /// running in pass-through (port still bound) so frozen sessions keep
+    /// flowing; only its interception is cleared. Unprivileged and promptless.
     pub fn disable(&self) -> Result<ProxyState> {
-        let running = self
-            .engine
+        let client = self
+            .client
             .lock()
-            .expect("proxy engine mutex poisoned")
+            .expect("proxy client mutex poisoned")
             .take();
 
-        // An unreadable snapshot must not strand HTTPS at the dead engine
-        // port — treat it like a missing one and force the proxy off.
+        // An unreadable snapshot must not strand traffic — treat it like a
+        // missing one and force the drop-in off.
         let snapshot = system_proxy::load_snapshot().unwrap_or_else(|e| {
             eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
             None
@@ -152,38 +158,79 @@ impl ProxyManager {
             Some(snapshot) => system_proxy::restore(&snapshot)?,
             None => system_proxy::force_off()?,
         }
-        if let Some(running) = running {
-            running.stop();
+        if let Some(mut client) = client {
+            // Best-effort: tell the daemon to drop to pass-through. Dropping the
+            // connection afterward triggers the same revert as a fail-safe.
+            let _ = client.set_passthrough();
         }
         let _ = system_proxy::clear_snapshot();
         self.status()
     }
 
-    /// Toggle a domain. If the engine is running, the new rules are pushed live
-    /// — no restart, no prompt.
+    /// Toggle a domain. If the proxy is on, push the new rule set to the daemon
+    /// live — no restart, no prompt.
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
         let domains = config::set_enabled(slug, enabled)?;
-        if let Some(running) = self
-            .engine
+        if let Some(client) = self
+            .client
             .lock()
-            .expect("proxy engine mutex poisoned")
-            .as_ref()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
         {
-            running.update_domains(&domains);
+            // Re-push the full intercept config (cheap; the engine updates its
+            // rule set live). Best-effort — a failed live update shouldn't
+            // wedge the toggle; the next status reflects reality.
+            self.push_intercept(client, &domains);
         }
         self.status()
     }
 
-    /// Push a rotated Gate API key into the running engine, if any — the
-    /// engine otherwise keeps injecting the key it was started with.
+    /// Push a rotated Gate API key into the running daemon, if any — it
+    /// otherwise keeps injecting the key it was started with.
     pub fn refresh_api_key(&self, api_key: &str) {
-        if let Some(running) = self
-            .engine
+        if let Some(client) = self
+            .client
             .lock()
-            .expect("proxy engine mutex poisoned")
-            .as_ref()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
         {
-            running.update_api_key(api_key);
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            if let (Ok(Some(account)), Ok(ca)) = (account::load(), ca::load_or_create()) {
+                let _ = client.set_intercept(
+                    &account.gateway_base_url,
+                    api_key,
+                    ca.cert_pem(),
+                    ca.key_pem(),
+                    &domains,
+                    system_proxy::load_port().unwrap_or(None),
+                );
+            }
+        }
+    }
+
+    /// Re-send the current account/CA with `domains` to the daemon as a live
+    /// update. Best-effort; errors are logged, not propagated.
+    fn push_intercept(&self, client: &mut HelperClient, domains: &[ProxyDomain]) {
+        let account = match account::load() {
+            Ok(Some(a)) => a,
+            _ => return,
+        };
+        let ca = match ca::load_or_create() {
+            Ok(ca) => ca,
+            Err(_) => return,
+        };
+        if let Err(e) = client.set_intercept(
+            &account.gateway_base_url,
+            &account.api_key,
+            ca.cert_pem(),
+            ca.key_pem(),
+            domains,
+            system_proxy::load_port().unwrap_or(None),
+        ) {
+            eprintln!("gate proxy: live domain update failed: {e}");
         }
     }
 
@@ -194,14 +241,14 @@ impl ProxyManager {
         self.status()
     }
 
-    /// Untrust the CA. Refuses while the engine is running, since the engine
-    /// mints leaf certs the OS would then reject. This is the explicit way to
-    /// remove the standing trusted root (disable alone leaves it trusted).
+    /// Untrust the CA. Refuses while the proxy is on, since the engine mints
+    /// leaf certs the OS would then reject. This is the explicit way to remove
+    /// the standing trusted root (disable alone leaves it trusted).
     pub fn untrust_ca(&self) -> Result<ProxyState> {
         if self
-            .engine
+            .client
             .lock()
-            .expect("proxy engine mutex poisoned")
+            .expect("proxy client mutex poisoned")
             .is_some()
         {
             anyhow::bail!("turn the proxy off before untrusting the CA");
@@ -210,47 +257,13 @@ impl ProxyManager {
         self.status()
     }
 
-    /// Fail-safe invoked from the engine thread if the engine exits without a
-    /// deliberate stop. Drops the dead handle and reverts the system proxy so
-    /// new shells aren't stranded. Best-effort; the revert may prompt.
-    pub(crate) fn handle_engine_crash(&self) {
-        eprintln!("gate proxy engine exited unexpectedly; reverting system proxy");
-        // Briefly retry the lock: short holders (status) clear in ms. If
-        // enable still holds it after that, defer — enable re-checks the
-        // engine before returning and runs this same revert itself, whereas
-        // restoring + clearing the snapshot from here mid-enable would erase
-        // the state enable relies on. (A deliberate stop sets `stopping`
-        // before signaling, so this isn't reached on that path.)
-        let mut guard = None;
-        for _ in 0..20 {
-            match self.engine.try_lock() {
-                Ok(g) => {
-                    guard = Some(g);
-                    break;
-                }
-                Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
-            }
-        }
-        let Some(mut guard) = guard else {
-            eprintln!("gate proxy: engine lock busy; deferring revert to the operation holding it");
-            return;
-        };
-        let _ = guard.take();
-        let _ = match system_proxy::load_snapshot() {
-            Ok(Some(snapshot)) => system_proxy::restore(&snapshot),
-            _ => system_proxy::force_off(),
-        };
-        let _ = system_proxy::clear_snapshot();
-    }
-
     /// Called once at app startup. A leftover snapshot means a previous session
-    /// left the system proxy pointed at an engine that no longer exists (unclean
-    /// quit / crash) — restore it. On Linux this may prompt for elevation; a
-    /// clean disable clears the snapshot, making this a no-op.
+    /// left a drop-in behind (unclean quit / crash) — remove it so new sessions
+    /// fall through to direct. Any daemon still alive from that session already
+    /// reverted to pass-through when its control connection dropped, so live
+    /// traffic isn't stranded. Unprivileged; a clean disable clears the
+    /// snapshot, making this a no-op.
     pub fn reconcile_on_startup(&self) -> Result<()> {
-        // As in disable: an unreadable snapshot still means an unclean prior
-        // session, so force the proxy off rather than bailing and leaving
-        // HTTPS routed at a port nothing listens on.
         let snapshot = match system_proxy::load_snapshot() {
             Ok(None) => return Ok(()),
             Ok(Some(s)) => Some(s),

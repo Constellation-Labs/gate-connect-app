@@ -123,6 +123,15 @@ enum Toggle {
 }
 
 fn main() -> Result<()> {
+    // The proxy manager spawns the helper daemon as `<current-exe> --proxy-helper`
+    // (Linux). When that current-exe is this CLI, handle the flag before clap
+    // parses, so the daemon path works whether the proxy was enabled from the
+    // app or the CLI. See `gate_connect_core::proxy::helper`.
+    #[cfg(target_os = "linux")]
+    if std::env::args().skip(1).any(|a| a == "--proxy-helper") {
+        return gate_connect_core::proxy::helper::run_daemon();
+    }
+
     let cli = Cli::parse();
     match cli.command {
         Command::Login {

@@ -97,6 +97,8 @@ impl ProxyManager {
                 domains: domains.clone(),
                 ca_cert_pem: ca.cert_pem().to_string(),
                 ca_key_pem: ca.key_pem().to_string(),
+                // WinINET is read live per-process, so an ephemeral port is fine.
+                preferred_port: None,
             },
             // Fail-safe: if the engine dies unexpectedly, revert the system
             // proxy so traffic is never stranded at a dead listener.

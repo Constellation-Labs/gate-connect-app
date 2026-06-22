@@ -41,6 +41,14 @@ pub struct EngineConfig {
     pub ca_cert_pem: String,
     /// PEM of the local root CA private key.
     pub ca_key_pem: String,
+    /// Preferred loopback port to bind. `Some(p)` asks the engine to reuse a
+    /// previously-chosen port so a restart keeps the same address — the system
+    /// proxy pointer baked into a login session stays valid across app
+    /// restarts instead of dangling at a dead ephemeral port. Falls back to an
+    /// ephemeral port if `p` is taken (or `None`). Linux sets this; macOS and
+    /// Windows pass `None` (their system proxy is read live, so a changing port
+    /// never strands a frozen session).
+    pub preferred_port: Option<u16>,
 }
 
 /// A running engine. Dropping it signals graceful shutdown (fail-safe so a
@@ -76,6 +84,12 @@ impl RunningEngine {
     /// Push a new enabled-domain set to the live engine. Cheap — no restart.
     pub fn update_domains(&self, domains: &[ProxyDomain]) {
         let _ = self.rules_tx.send(Arc::new(enabled_only(domains)));
+    }
+
+    /// How many domains the engine is currently intercepting (0 == pure
+    /// pass-through / blind-tunnel everything).
+    pub fn intercepting(&self) -> usize {
+        self.rules_tx.borrow().len()
     }
 
     /// Push a rotated Gate API key to the live engine. Cheap — no restart;
@@ -275,14 +289,23 @@ pub(crate) fn apply_rewrite<T>(
     Ok(())
 }
 
-/// Bind an ephemeral loopback listener and return it together with the port it
-/// landed on. Returning the *live* listener — rather than probing a port and
-/// dropping it before hudsucker binds — closes the TOCTOU window where another
-/// process could grab the port in the gap. The socket stays held from here
-/// until it's handed to the proxy. Set non-blocking so tokio can adopt it.
-fn bind_free_loopback() -> Result<(std::net::TcpListener, u16)> {
-    let listener =
-        std::net::TcpListener::bind(("127.0.0.1", 0)).context("binding a free loopback port")?;
+/// Bind a loopback listener and return it together with the port it landed on.
+/// Tries `preferred` first (so a restart can reuse the same port and keep a
+/// frozen system-proxy pointer valid); if that's unavailable — taken, or
+/// `None` — falls back to an ephemeral port. Returning the *live* listener —
+/// rather than probing a port and dropping it before hudsucker binds — closes
+/// the TOCTOU window where another process could grab the port in the gap. The
+/// socket stays held from here until it's handed to the proxy. Set non-blocking
+/// so tokio can adopt it.
+fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
+    let listener = match preferred {
+        Some(p) => std::net::TcpListener::bind(("127.0.0.1", p))
+            .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
+            .with_context(|| format!("binding loopback (preferred {p}, then ephemeral)"))?,
+        None => {
+            std::net::TcpListener::bind(("127.0.0.1", 0)).context("binding a free loopback port")?
+        }
+    };
     let port = listener
         .local_addr()
         .context("reading listener socket address")?
@@ -314,7 +337,7 @@ where
         anyhow::bail!("gateway URL {:?} has no host", cfg.gateway_base_url);
     }
 
-    let (listener, port) = bind_free_loopback()?;
+    let (listener, port) = bind_loopback(cfg.preferred_port)?;
 
     let (rules_tx, rules_rx) = watch::channel(Arc::new(enabled_only(&cfg.domains)));
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
