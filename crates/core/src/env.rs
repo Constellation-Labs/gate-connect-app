@@ -5,7 +5,21 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
+/// Test seam: when `GATE_CONNECT_TEST_HOME` is set, root every per-user path
+/// under it instead of the real OS home / data dir. This is the only portable
+/// way to redirect the filesystem on Windows too (`dirs` reads Known Folders,
+/// not `$HOME`), so the CLI flow tests can run hermetically on all three OSes.
+/// Unset in production, so it never affects real runs.
+fn test_home_override() -> Option<PathBuf> {
+    std::env::var_os("GATE_CONNECT_TEST_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
 pub fn home() -> Result<PathBuf> {
+    if let Some(home) = test_home_override() {
+        return Ok(home);
+    }
     dirs::home_dir().context("could not resolve user home directory")
 }
 
@@ -86,6 +100,9 @@ fn windows_username() -> Option<String> {
 /// - Windows: `%LOCALAPPDATA%\Gate Connect`
 /// - Linux: `$XDG_DATA_HOME/Gate Connect` (or `~/.local/share/Gate Connect`)
 pub fn app_support_dir() -> Result<PathBuf> {
+    if let Some(home) = test_home_override() {
+        return Ok(home.join("app-support").join("Gate Connect"));
+    }
     Ok(dirs::data_local_dir()
         .context("could not resolve user data directory")?
         .join("Gate Connect"))
