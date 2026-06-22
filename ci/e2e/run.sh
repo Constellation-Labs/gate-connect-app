@@ -6,34 +6,53 @@
 # tool is allowed to fail without aborting the others; the per-tool capture
 # assertion is the source of truth.
 #
-# Assumes: `gate-connect` is built (target/debug), node is on PATH, and the CLIs
-# (claude / codex / opencode) are installed. Mutates the OS trust store, so it
-# only belongs on a throwaway CI runner.
+# Runs on Linux, macOS, and Windows (Git Bash). Assumes: `gate-connect` is built
+# (target/debug), node is on PATH, and the CLIs are installed. May mutate the OS
+# trust store, so it only belongs on a throwaway CI runner.
 set -uo pipefail
+
+OS="other"
+case "$(uname -s)" in
+  Linux) OS="Linux" ;;
+  Darwin) OS="Darwin" ;;
+  MINGW* | MSYS* | CYGWIN*) OS="Windows" ;;
+esac
+
+# Native path for consumers that aren't msys-aware (node, the gate-connect .exe).
+# Identity off Windows.
+winpath() { if [ "$OS" = "Windows" ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${RUNNER_TEMP:-/tmp}/gc-e2e"
 rm -rf "$WORK"
 CA_DIR="$WORK/ca"
-mkdir -p "$CA_DIR"
+mkdir -p "$CA_DIR" "$WORK/secrets"
 
-# Redirect the real home so gate-connect AND the tools agree on config paths
-# (the tools don't know about GATE_CONNECT_TEST_HOME — they read $HOME). The
-# Gate key still goes through the file-backed secret seam, since CI has no
-# usable OS keychain headlessly.
-export HOME="$WORK/home"
-mkdir -p "$HOME"
-# gate-connect writes opencode's config under $HOME/.config / $HOME/.local/share
-# (HOME-based), but opencode resolves those via XDG — and CI runners often have
-# XDG_CONFIG_HOME pre-set elsewhere, so opencode would miss the override we
-# wrote. Pin the XDG roots under our scratch home so both sides agree.
-export XDG_CONFIG_HOME="$HOME/.config"
-export XDG_DATA_HOME="$HOME/.local/share"
-export XDG_CACHE_HOME="$HOME/.cache"
-export GATE_CONNECT_TEST_SECRETS="$WORK/secrets"
-mkdir -p "$GATE_CONNECT_TEST_SECRETS"
+if [ "$OS" = "Windows" ]; then
+  # On Windows gate-connect resolves config paths via the Known-Folder API (not
+  # $HOME) and the Node CLIs use %USERPROFILE% — both already point at the real
+  # profile, which is also Git Bash's $HOME on the runner. So they align without
+  # an override (and GATE_CONNECT_TEST_HOME couldn't redirect the external tools
+  # anyway). opencode reads ~/.config there too, matching gate-connect.
+  :
+else
+  # Redirect home so gate-connect AND the tools agree on a throwaway config root.
+  export HOME="$WORK/home"
+  mkdir -p "$HOME"
+  # opencode resolves its config via XDG; CI runners often pre-set
+  # XDG_CONFIG_HOME elsewhere, so pin the XDG roots under our scratch home or
+  # opencode would miss the override gate-connect wrote.
+  export XDG_CONFIG_HOME="$HOME/.config"
+  export XDG_DATA_HOME="$HOME/.local/share"
+  export XDG_CACHE_HOME="$HOME/.cache"
+fi
+
+# The Gate key goes through the file-backed secret seam, since CI has no usable
+# OS keychain headlessly. The gate-connect binary reads this as a native path.
+export GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")"
 
 CLI="$ROOT/target/debug/gate-connect"
+[ "$OS" = "Windows" ] && CLI="$CLI.exe"
 PORT=8443
 # Use 127.0.0.1, not localhost: on macOS `localhost` can resolve to IPv6 ::1
 # first, but the mock binds 127.0.0.1 only — so a tool would hit a dead ::1
@@ -42,18 +61,33 @@ BASE_URL="https://127.0.0.1:$PORT"
 CAPTURE="$WORK/capture.jsonl"
 : > "$CAPTURE"
 
+# Node tools (claude / opencode-on-bun) talk to the mock over TLS. Rather than
+# fight each runtime's CA-trust quirks (bun ignores NODE_EXTRA_CA_CERTS on
+# macOS; msys cert paths confuse Node on Windows), skip verification for these
+# local-only calls — the assertion is about the request reaching the gateway
+# with the right headers, not about CA trust. ANTHROPIC_API_KEY just lets claude
+# attach an auth header so it actually sends.
+export NODE_TLS_REJECT_UNAUTHORIZED=0
+export ANTHROPIC_API_KEY="sk-ant-e2e-dummy"
+# Codex (Rust) has no env to trust a custom CA for a model provider
+# (openai/codex#9526), so it relies on the OS trust store — Linux only below.
+export CODEX_CA_CERTIFICATE="$(winpath "$CA_DIR/ca.pem")"
+
 PASS=0
 FAIL=0
 
-# Portable timeout: run a command, kill it after N seconds. macOS has no
-# `timeout`, so we roll a watchdog. stdin is closed so a tool that probes for
+# Portable timeout: run a command, kill it after N seconds. macOS/Git Bash have
+# no `timeout`, so we roll a watchdog. stdin is closed so a tool that probes for
 # a TTY can't block waiting on input.
 with_timeout() {
   local secs="$1"
   shift
   "$@" </dev/null &
   local pid=$!
-  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) &
+  (
+    sleep "$secs"
+    kill -TERM "$pid" 2>/dev/null
+  ) &
   local wd=$!
   wait "$pid" 2>/dev/null
   kill "$wd" 2>/dev/null
@@ -61,9 +95,9 @@ with_timeout() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Mint a throwaway CA + a localhost leaf, and trust the CA in the OS store
-#    (covers Rust tools using the platform verifier / native-tls; Node tools
-#    are covered by NODE_EXTRA_CA_CERTS, set in the workflow).
+# 1. Mint a throwaway CA + a 127.0.0.1 leaf. On Linux/macOS we also trust the CA
+#    in the OS store (for Codex's Rust TLS); Node tools rely on the verify-skip
+#    above, so Windows needs no trust-store wiring.
 # ---------------------------------------------------------------------------
 openssl req -x509 -newkey rsa:2048 -nodes \
   -keyout "$CA_DIR/ca.key" -out "$CA_DIR/ca.pem" \
@@ -83,14 +117,9 @@ openssl x509 -req -in "$CA_DIR/leaf.csr" \
   -CA "$CA_DIR/ca.pem" -CAkey "$CA_DIR/ca.key" -CAcreateserial \
   -out "$CA_DIR/leaf.pem" -days 2 -extfile "$CA_DIR/leaf.ext"
 
-# Node tools (claude / opencode-on-bun) read NODE_EXTRA_CA_CERTS, which *adds*
-# to the system roots. Codex (Rust) honours CODEX_CA_CERTIFICATE — backend-
-# agnostic, so it works on macOS where the keychain trust below didn't reach
-# Codex's TLS stack.
-export NODE_EXTRA_CA_CERTS="$CA_DIR/ca.pem"
-export CODEX_CA_CERTIFICATE="$CA_DIR/ca.pem"
+export NODE_EXTRA_CA_CERTS="$(winpath "$CA_DIR/ca.pem")"
 
-case "$(uname -s)" in
+case "$OS" in
   Linux)
     sudo cp "$CA_DIR/ca.pem" /usr/local/share/ca-certificates/gc-e2e.crt
     sudo update-ca-certificates
@@ -104,9 +133,9 @@ esac
 # ---------------------------------------------------------------------------
 # 2. Start the mock gateway and wait until it accepts TLS.
 # ---------------------------------------------------------------------------
-CAPTURE_LOG="$CAPTURE" MOCK_PORT="$PORT" \
-  MOCK_CERT="$CA_DIR/leaf.pem" MOCK_KEY="$CA_DIR/leaf.key" \
-  node "$ROOT/ci/e2e/mock-gateway.mjs" &
+CAPTURE_LOG="$(winpath "$CAPTURE")" MOCK_PORT="$PORT" \
+  MOCK_CERT="$(winpath "$CA_DIR/leaf.pem")" MOCK_KEY="$(winpath "$CA_DIR/leaf.key")" \
+  node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" &
 MOCK_PID=$!
 trap 'kill "$MOCK_PID" 2>/dev/null' EXIT
 
@@ -119,7 +148,8 @@ done
 # 3. Sign in once; every tool reuses this account.
 # ---------------------------------------------------------------------------
 "$CLI" login --base-url "$BASE_URL" --api-key "sk-gw-e2e" || {
-  echo "login failed"; exit 1;
+  echo "login failed"
+  exit 1
 }
 
 # run_tool <label> <slug> <path-needle> -- <invoke cmd...>
@@ -132,7 +162,7 @@ run_tool() {
   if "$CLI" connect "$slug"; then
     with_timeout 90 "$@"
     "$CLI" disconnect "$slug" >/dev/null 2>&1
-    if node "$ROOT/ci/e2e/assert-capture.mjs" "$CAPTURE" "$needle"; then
+    if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" "$(winpath "$CAPTURE")" "$needle"; then
       echo "PASS: $label reached the gateway with Gate headers"
       PASS=$((PASS + 1))
     else
@@ -153,23 +183,21 @@ run_tool() {
 #     `--settings` so the env block still applies.
 mkdir -p "$HOME/.claude"
 run_tool "claude-code" "claude-code" "/v1/messages" -- \
-  env ANTHROPIC_API_KEY="sk-ant-e2e-dummy" NODE_TLS_REJECT_UNAUTHORIZED=0 \
-  claude --bare -p "ping" --settings "$HOME/.claude/settings.json"
+  claude --bare -p "ping" --settings "$(winpath "$HOME/.claude/settings.json")"
 
-# --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. The credential
-#     helper reads OPENAI_API_KEY from auth.json. Codex's Rust TLS stack can't
-#     be told to trust a custom CA for a model provider (openai/codex#9526,
-#     "closed as not planned") — on Linux it works because we add the CA to the
-#     system store, but macOS codex ignores the keychain, so there's no way to
-#     make it trust the test gateway there. Skip codex on macOS; it's covered
-#     on Linux.
-if [ "$(uname -s)" = "Darwin" ]; then
-  echo "::notice::skipping codex on macOS — its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526); codex is exercised on Linux."
-else
+# --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. Codex's Rust TLS
+#     stack can't be told to trust a custom CA for a model provider
+#     (openai/codex#9526, "closed as not planned") — on Linux it works because we
+#     add the CA to the system store, but macOS/Windows codex don't read that for
+#     their TLS, so there's no way to make them trust the test gateway. Skip
+#     codex off Linux; it stays covered there.
+if [ "$OS" = "Linux" ]; then
   mkdir -p "$HOME/.codex"
   printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
   run_tool "codex" "codex" "/v1/responses" -- \
     codex exec --skip-git-repo-check "ping"
+else
+  echo "::notice::skipping codex on $OS — its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526); codex is exercised on Linux."
 fi
 
 # --- OpenCode: gate-connect rewrites its anthropic provider's baseURL to Gate
@@ -181,7 +209,6 @@ printf '{"anthropic":{"type":"api","key":"sk-ant-e2e-dummy"}}' \
   > "$HOME/.local/share/opencode/auth.json"
 printf '{"provider":{"anthropic":{}}}' > "$HOME/.config/opencode/opencode.json"
 run_tool "opencode" "opencode" "/v1/messages" -- \
-  env NODE_TLS_REJECT_UNAUTHORIZED=0 \
   opencode run --model anthropic/claude-3-5-haiku-latest "ping"
 
 echo "----------------------------------------"

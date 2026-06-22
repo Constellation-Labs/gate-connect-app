@@ -24,9 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows tool install + trust-store wiring is materially harder; start
-        # with the two platforms the tools target first.
-        os: [ubuntu-22.04, macos-latest]
+        os: [ubuntu-22.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +47,18 @@ jobs:
       - name: Build gate-connect CLI
         run: cargo build -p gate-connect-cli
 
+      # Codex is exercised on Linux only (its TLS won't trust a test CA for a
+      # model provider off Linux), so don't install it elsewhere.
       - name: Install AI CLIs
-        run: npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
+          else
+            npm install -g @anthropic-ai/claude-code opencode-ai
+          fi
 
+      # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
       - name: Run real-tools e2e
+        shell: bash
         run: bash ci/e2e/run.sh
