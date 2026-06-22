@@ -181,7 +181,17 @@ CAPTURE_LOG="$(winpath "$CAPTURE")" MOCK_PORT="$PORT" \
   MOCK_CERT="$(winpath "$CA_DIR/leaf.pem")" MOCK_KEY="$(winpath "$CA_DIR/leaf.key")" \
   node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" >"$WORK/mock.out" 2>&1 &
 MOCK_PID=$!
-trap 'kill -KILL "$MOCK_PID" 2>/dev/null' EXIT
+cleanup() {
+  kill -KILL "$MOCK_PID" 2>/dev/null
+  # Codex's Rust binary survives an msys kill and, in the runner's job object,
+  # keeps the step from finishing. A real Windows kill of the whole tree lets
+  # the step exit. (No-op if codex isn't running; codex.exe doesn't exist off
+  # Windows.)
+  if [ "$OS" = "Windows" ]; then
+    taskkill /F /T /IM codex.exe >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 
 for _ in $(seq 1 40); do
   if curl -sk "$BASE_URL/healthz" >/dev/null 2>&1; then break; fi
