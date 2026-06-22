@@ -115,6 +115,10 @@ with_timeout() {
 # (wants C:\… paths) — relative names resolve against the process cwd either way.
 (
   cd "$CA_DIR" || exit 1
+  # Git Bash rewrites any arg starting with `/` into a Windows path, which
+  # mangles openssl's `-subj "/CN=…"` into `C:/Program Files/Git/CN=…`. Disable
+  # that conversion here (the vars are MSYS-only, ignored on Linux/macOS).
+  export MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1
   openssl req -x509 -newkey rsa:2048 -nodes \
     -keyout ca.key -out ca.pem \
     -subj "/CN=Gate Connect E2E CA" -days 2 \
