@@ -106,11 +106,16 @@ with_timeout() {
   local pid=$!
   (
     sleep "$secs"
+    # TERM, then KILL after a grace period. Native Windows processes (codex.exe)
+    # ignore msys SIGTERM — only SIGKILL maps to TerminateProcess — so without
+    # the KILL a hung tool would stall the whole step.
     kill -TERM "$pid" 2>/dev/null
+    sleep 3
+    kill -KILL "$pid" 2>/dev/null
   ) &
   local wd=$!
   wait "$pid" 2>/dev/null
-  kill "$wd" 2>/dev/null
+  kill -KILL "$wd" 2>/dev/null
   wait "$wd" 2>/dev/null
 }
 
