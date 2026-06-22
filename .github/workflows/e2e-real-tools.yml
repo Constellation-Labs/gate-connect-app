@@ -1,13 +1,16 @@
 name: E2E (real tools)
 
-# OPT-IN ONLY — never runs on push/PR. This installs the real claude / codex /
-# opencode CLIs, points each at a local HTTPS mock gateway through the normal
-# `gate-connect connect` flow, fires one headless request, and asserts the mock
-# received it with the X-Gate-Api-Key / X-Gate-Upstream-Url headers. It mutates
-# the runner's trust store and depends on third-party CLIs whose flags and auth
-# shapes drift, so it's deliberately manual (and runnable on a schedule if you
-# want a nightly signal — uncomment below).
+# Installs the real claude / codex / opencode CLIs, points each at a local
+# HTTPS mock gateway through the normal `gate-connect connect` flow, fires one
+# headless request, and asserts the mock received it with the X-Gate-Api-Key /
+# X-Gate-Upstream-Url headers. It mutates the runner's trust store and depends
+# on third-party CLIs whose flags and auth shapes drift — so it is NOT a
+# required check (don't gate merges on it). Each tool fails independently and
+# the captured-request assertion is the source of truth.
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
   # schedule:
   #   - cron: '0 6 * * *'
