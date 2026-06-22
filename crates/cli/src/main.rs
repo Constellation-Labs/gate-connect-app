@@ -375,6 +375,12 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
         ProxyCmd::Enable => {
+            // Restore providers a prior master-off disabled, before enabling —
+            // otherwise the all-off state trips `enable`'s "at least one
+            // provider" precondition (mirrors the app's proxy_enable flow).
+            if let Err(e) = gate_connect_core::provider::restore_all() {
+                eprintln!("note: restoring providers failed: {e}");
+            }
             let state = mgr.enable()?;
             println!("Proxy enabled.");
             print_proxy_state(&state);
