@@ -47,15 +47,16 @@ jobs:
       - name: Build gate-connect CLI
         run: cargo build -p gate-connect-cli
 
-      # Codex is exercised on Linux only (its TLS won't trust a test CA for a
-      # model provider off Linux), so don't install it elsewhere.
+      # Codex relies on the OS trust store for a custom CA; that works on Linux
+      # and Windows but not macOS (it ignores the keychain), so skip installing
+      # it there.
       - name: Install AI CLIs
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
-          else
+          if [ "$RUNNER_OS" = "macOS" ]; then
             npm install -g @anthropic-ai/claude-code opencode-ai
+          else
+            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
           fi
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
