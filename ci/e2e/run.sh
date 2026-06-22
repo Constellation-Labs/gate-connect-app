@@ -157,11 +157,20 @@ run_tool "claude-code" "claude-code" "/v1/messages" -- \
   claude --bare -p "ping" --settings "$HOME/.claude/settings.json"
 
 # --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. The credential
-#     helper reads OPENAI_API_KEY from auth.json.
-mkdir -p "$HOME/.codex"
-printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
-run_tool "codex" "codex" "/v1/responses" -- \
-  codex exec --skip-git-repo-check "ping"
+#     helper reads OPENAI_API_KEY from auth.json. Codex's Rust TLS stack can't
+#     be told to trust a custom CA for a model provider (openai/codex#9526,
+#     "closed as not planned") — on Linux it works because we add the CA to the
+#     system store, but macOS codex ignores the keychain, so there's no way to
+#     make it trust the test gateway there. Skip codex on macOS; it's covered
+#     on Linux.
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "::notice::skipping codex on macOS — its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526); codex is exercised on Linux."
+else
+  mkdir -p "$HOME/.codex"
+  printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
+  run_tool "codex" "codex" "/v1/responses" -- \
+    codex exec --skip-git-repo-check "ping"
+fi
 
 # --- OpenCode: gate-connect rewrites its anthropic provider's baseURL to Gate
 #     → POSTs /v1/messages. A model must be named explicitly (`provider/model`),
