@@ -15,3 +15,10 @@ anyhow.workspace = true
 clap.workspace = true
 gate-connect-core.workspace = true
 rpassword = "7"
+
+# Test-only. `tests/cli_flows.rs` drives the built `gate-connect` binary
+# (`CARGO_BIN_EXE_gate-connect`) through login → connect → disconnect for each
+# tool, pointing the core test seams (`GATE_CONNECT_TEST_HOME` /
+# `GATE_CONNECT_TEST_SECRETS`) at temp dirs so the run is hermetic on every OS.
+[dev-dependencies]
+tempfile = "3"

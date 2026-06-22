@@ -10,12 +10,32 @@
 //! them with one query in their OS's native secret manager.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use keyring::Entry;
 
 const SERVICE_PREFIX: &str = "ai.constellation.gate-connect";
+
+/// Test seam: when `GATE_CONNECT_TEST_SECRETS` is set, back secrets with files
+/// in that directory instead of the OS keychain. Unlike the in-memory backend
+/// below, this works across a spawned `gate-connect` process (env vars are
+/// inherited; a process-global mutex is not), which is what the CLI flow tests
+/// need. Unset in production, so the real Keychain / Credential Manager /
+/// Secret Service path is always used there.
+fn test_secrets_dir() -> Option<PathBuf> {
+    std::env::var_os("GATE_CONNECT_TEST_SECRETS")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
+/// File-backed secret path for the test seam: one file per service/account,
+/// with path-separator chars folded so the name is always a single segment.
+fn secret_file(dir: &std::path::Path, service: &str, account: &str) -> PathBuf {
+    let name = format!("{service}__{account}").replace(['/', '\\', ':'], "_");
+    dir.join(name)
+}
 
 /// Optional process-global in-memory secret store, installed only by tests via
 /// [`use_in_memory_backend`]. `None` in every normal build, so production always
@@ -39,6 +59,13 @@ fn mem_key(service: &str, account: &str) -> String {
 }
 
 pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
+    if let Some(dir) = test_secrets_dir() {
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("creating test secret store {}", dir.display()))?;
+        let path = secret_file(&dir, service, account);
+        return std::fs::write(&path, value)
+            .with_context(|| format!("writing test secret {}", path.display()));
+    }
     {
         let mut guard = IN_MEMORY.lock().expect("in-memory keychain mutex poisoned");
         if let Some(map) = guard.as_mut() {
@@ -53,6 +80,14 @@ pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
 }
 
 pub fn get(service: &str, account: &str) -> Result<Option<String>> {
+    if let Some(dir) = test_secrets_dir() {
+        let path = secret_file(&dir, service, account);
+        return match std::fs::read_to_string(&path) {
+            Ok(s) => Ok(Some(s)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("reading test secret {}", path.display())),
+        };
+    }
     {
         let guard = IN_MEMORY.lock().expect("in-memory keychain mutex poisoned");
         if let Some(map) = guard.as_ref() {
@@ -69,6 +104,14 @@ pub fn get(service: &str, account: &str) -> Result<Option<String>> {
 }
 
 pub fn delete(service: &str, account: &str) -> Result<bool> {
+    if let Some(dir) = test_secrets_dir() {
+        let path = secret_file(&dir, service, account);
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e).with_context(|| format!("deleting test secret {}", path.display())),
+        };
+    }
     {
         let mut guard = IN_MEMORY.lock().expect("in-memory keychain mutex poisoned");
         if let Some(map) = guard.as_mut() {

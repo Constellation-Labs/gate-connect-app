@@ -34,3 +34,20 @@ libc = "0.2"
 # writes the per-user WinINET `Internet Settings` registry values.
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
+
+# Test-only. The proxy end-to-end test (`tests/proxy_e2e.rs`) mints a
+# throwaway CA with `rcgen`, runs a tiny loopback mock gateway (built on the
+# `hyper` already in the tree, so no MSRV-fragile test framework is pulled in),
+# boots the real `proxy::engine`, and drives a `reqwest` client through it to
+# assert the rewrite + `X-Gate-*` headers reach the gateway. None of this
+# touches the OS trust store or system proxy, so it needs no elevation.
+[dev-dependencies]
+reqwest = { version = "0.13", default-features = false, features = [
+  "rustls",
+  "json",
+] }
+rcgen = "0.14"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
