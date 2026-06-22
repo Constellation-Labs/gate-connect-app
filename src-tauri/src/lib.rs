@@ -179,6 +179,19 @@ struct AccountDto {
 
 #[tauri::command]
 fn get_account() -> Result<Option<AccountDto>, String> {
+    // Reconcile the stored account against its on-disk anchor before reading it,
+    // so the first-run-vs-home decision this call drives always sees a
+    // consistent view. An uninstall that removed Gate Connect's files but left
+    // its OS keychain entry behind (macOS drag-to-trash, or a deep uninstaller
+    // that purges Application Support but can't touch the keychain) — or the
+    // reverse — leaves a stale half. Dropping it here, rather than on a startup
+    // thread that races this read, means an orphaned key (or a stray
+    // account.json with no key) can't briefly route the user to a half-signed-in
+    // home. Best-effort: a reconcile hiccup must not flip a signed-in user to
+    // first-run, so we log and fall through to the read below.
+    if let Err(e) = account::reconcile() {
+        eprintln!("account reconcile failed: {e}");
+    }
     let Some(gateway_base_url) = account::load_base_url().map_err(|e| e.to_string())? else {
         return Ok(None);
     };
@@ -499,19 +512,6 @@ pub fn run() {
             // Hide the dock icon — Gate Connect lives in the menu bar.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
-            // Reconcile the stored account against its on-disk anchor: an
-            // uninstall that removed Gate Connect's files but left its OS
-            // keychain entry behind (macOS drag-to-trash, or a deep uninstaller
-            // that purges Application Support but can't touch the keychain)
-            // leaves an orphaned Gate API key. Drop it so a fresh launch starts
-            // clean instead of carrying a stale secret. Off-thread so a keychain
-            // read can't block the tray; best-effort.
-            std::thread::spawn(|| {
-                if let Err(e) = gate_connect_core::account::reconcile() {
-                    eprintln!("account startup reconcile failed: {e}");
-                }
-            });
 
             // If a previous session left the system proxy on (unclean quit /
             // crash), revert it now so HTTPS isn't routed at a dead loopback
