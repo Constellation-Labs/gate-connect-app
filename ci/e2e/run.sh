@@ -23,12 +23,22 @@ mkdir -p "$CA_DIR"
 # usable OS keychain headlessly.
 export HOME="$WORK/home"
 mkdir -p "$HOME"
+# gate-connect writes opencode's config under $HOME/.config / $HOME/.local/share
+# (HOME-based), but opencode resolves those via XDG — and CI runners often have
+# XDG_CONFIG_HOME pre-set elsewhere, so opencode would miss the override we
+# wrote. Pin the XDG roots under our scratch home so both sides agree.
+export XDG_CONFIG_HOME="$HOME/.config"
+export XDG_DATA_HOME="$HOME/.local/share"
+export XDG_CACHE_HOME="$HOME/.cache"
 export GATE_CONNECT_TEST_SECRETS="$WORK/secrets"
 mkdir -p "$GATE_CONNECT_TEST_SECRETS"
 
 CLI="$ROOT/target/debug/gate-connect"
 PORT=8443
-BASE_URL="https://localhost:$PORT"
+# Use 127.0.0.1, not localhost: on macOS `localhost` can resolve to IPv6 ::1
+# first, but the mock binds 127.0.0.1 only — so a tool would hit a dead ::1
+# address. The leaf cert carries an IP:127.0.0.1 SAN so TLS still validates.
+BASE_URL="https://127.0.0.1:$PORT"
 CAPTURE="$WORK/capture.jsonl"
 : > "$CAPTURE"
 
@@ -143,7 +153,7 @@ run_tool() {
 #     `--settings` so the env block still applies.
 mkdir -p "$HOME/.claude"
 run_tool "claude-code" "claude-code" "/v1/messages" -- \
-  env ANTHROPIC_API_KEY="sk-ant-e2e-dummy" \
+  env ANTHROPIC_API_KEY="sk-ant-e2e-dummy" NODE_TLS_REJECT_UNAUTHORIZED=0 \
   claude --bare -p "ping" --settings "$HOME/.claude/settings.json"
 
 # --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. The credential
@@ -162,6 +172,7 @@ printf '{"anthropic":{"type":"api","key":"sk-ant-e2e-dummy"}}' \
   > "$HOME/.local/share/opencode/auth.json"
 printf '{"provider":{"anthropic":{}}}' > "$HOME/.config/opencode/opencode.json"
 run_tool "opencode" "opencode" "/v1/messages" -- \
+  env NODE_TLS_REJECT_UNAUTHORIZED=0 \
   opencode run --model anthropic/claude-3-5-haiku-latest "ping"
 
 echo "----------------------------------------"
