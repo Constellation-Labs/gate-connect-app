@@ -257,25 +257,62 @@ impl ProxyManager {
         self.status()
     }
 
-    /// Called once at app startup. A leftover snapshot means a previous session
-    /// left a drop-in behind (unclean quit / crash) — remove it so new sessions
-    /// fall through to direct. Any daemon still alive from that session already
-    /// reverted to pass-through when its control connection dropped, so live
-    /// traffic isn't stranded. Unprivileged; a clean disable clears the
-    /// snapshot, making this a no-op.
+    /// Called once at app startup. A leftover snapshot means the proxy was on
+    /// when the previous session ended (crash / unclean quit / reboot) — a clean
+    /// disable clears it, making this a no-op.
+    ///
+    /// Re-honor: rather than tearing the proxy down, bring it back up on the
+    /// same stable port, so a session that froze the proxy pointer at login
+    /// keeps reaching a live engine (and the user's "on" survives a crash or
+    /// reboot). If we can't — no account, no provider enabled, the CA isn't
+    /// trusted (so re-honoring would prompt), or the daemon won't start — fall
+    /// back to a clean slate so nothing is stranded. Runs off the main thread
+    /// (see the setup hook), so the daemon spin-up doesn't block the tray.
     pub fn reconcile_on_startup(&self) -> Result<()> {
-        let snapshot = match system_proxy::load_snapshot() {
+        match system_proxy::load_snapshot() {
+            // Clean prior exit — nothing to reconcile.
             Ok(None) => return Ok(()),
-            Ok(Some(s)) => Some(s),
+            // The proxy was on; try to re-honor it below.
+            Ok(Some(_)) => {}
             Err(e) => {
+                // Can't trust the snapshot — don't re-honor blindly; clean slate.
                 eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
-                None
+                return self.force_clean_slate();
             }
-        };
-        match snapshot {
-            Some(snapshot) => system_proxy::restore(&snapshot)?,
-            None => system_proxy::force_off()?,
         }
+
+        // Guard on CA trust so re-honoring never triggers a startup elevation
+        // prompt: the proxy being on before implies the CA is trusted, so
+        // `enable`'s `ensure_trusted` is a no-op; if it somehow isn't trusted,
+        // we decline and clean up instead.
+        if ca::is_trusted().unwrap_or(false) {
+            match self.enable() {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    eprintln!("gate proxy: re-honor on startup failed ({e}); forcing proxy off")
+                }
+            }
+        } else {
+            eprintln!("gate proxy: CA not trusted at startup; not re-honoring, forcing proxy off");
+        }
+
+        // Couldn't re-honor — strip any drop-in and drop the stale snapshot.
+        self.force_clean_slate()
+    }
+
+    /// Strip our drop-in and clear the snapshot — the safe "off" state when we
+    /// can't (or shouldn't) re-honor. Also reverts any half-open client to
+    /// pass-through.
+    fn force_clean_slate(&self) -> Result<()> {
+        if let Some(mut client) = self
+            .client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .take()
+        {
+            let _ = client.set_passthrough();
+        }
+        system_proxy::force_off()?;
         system_proxy::clear_snapshot()?;
         Ok(())
     }
