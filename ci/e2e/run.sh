@@ -23,22 +23,33 @@ esac
 winpath() { if [ "$OS" = "Windows" ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-WORK="${RUNNER_TEMP:-/tmp}/gc-e2e"
+# RUNNER_TEMP is a native Windows path (e.g. D:\a\_temp) on the Windows runner;
+# normalise to an msys path so the shell-side file ops (mkdir, openssl, redirects)
+# all stay consistent. winpath() converts back when handing paths to node/the exe.
+if [ "$OS" = "Windows" ]; then
+  WORK="$(cygpath -u "${RUNNER_TEMP:-/tmp}")/gc-e2e"
+else
+  WORK="${RUNNER_TEMP:-/tmp}/gc-e2e"
+fi
 rm -rf "$WORK"
 CA_DIR="$WORK/ca"
 mkdir -p "$CA_DIR" "$WORK/secrets"
 
+# Redirect home so gate-connect AND the tools agree on a throwaway config root.
+export HOME="$WORK/home"
+mkdir -p "$HOME"
 if [ "$OS" = "Windows" ]; then
-  # On Windows gate-connect resolves config paths via the Known-Folder API (not
-  # $HOME) and the Node CLIs use %USERPROFILE% — both already point at the real
-  # profile, which is also Git Bash's $HOME on the runner. So they align without
-  # an override (and GATE_CONNECT_TEST_HOME couldn't redirect the external tools
-  # anyway). opencode reads ~/.config there too, matching gate-connect.
-  :
+  # gate-connect uses the Known-Folder API and the Node CLIs use %USERPROFILE% /
+  # XDG — none of which follow Git Bash's $HOME. Point all of them (in native
+  # form) at the same throwaway home so reads and writes line up. The
+  # GATE_CONNECT_TEST_HOME seam redirects gate-connect; USERPROFILE/XDG redirect
+  # the tools.
+  export GATE_CONNECT_TEST_HOME="$(winpath "$HOME")"
+  export USERPROFILE="$(winpath "$HOME")"
+  export XDG_CONFIG_HOME="$(winpath "$HOME/.config")"
+  export XDG_DATA_HOME="$(winpath "$HOME/.local/share")"
+  export XDG_CACHE_HOME="$(winpath "$HOME/.cache")"
 else
-  # Redirect home so gate-connect AND the tools agree on a throwaway config root.
-  export HOME="$WORK/home"
-  mkdir -p "$HOME"
   # opencode resolves its config via XDG; CI runners often pre-set
   # XDG_CONFIG_HOME elsewhere, so pin the XDG roots under our scratch home or
   # opencode would miss the override gate-connect wrote.
@@ -99,23 +110,29 @@ with_timeout() {
 #    in the OS store (for Codex's Rust TLS); Node tools rely on the verify-skip
 #    above, so Windows needs no trust-store wiring.
 # ---------------------------------------------------------------------------
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout "$CA_DIR/ca.key" -out "$CA_DIR/ca.pem" \
-  -subj "/CN=Gate Connect E2E CA" -days 2 \
-  -addext "basicConstraints=critical,CA:TRUE"
+# Run openssl from inside CA_DIR with bare filenames so it works whether the
+# openssl on PATH is the msys build (wants /c/… paths) or a native Windows one
+# (wants C:\… paths) — relative names resolve against the process cwd either way.
+(
+  cd "$CA_DIR" || exit 1
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout ca.key -out ca.pem \
+    -subj "/CN=Gate Connect E2E CA" -days 2 \
+    -addext "basicConstraints=critical,CA:TRUE"
 
-openssl req -newkey rsa:2048 -nodes \
-  -keyout "$CA_DIR/leaf.key" -out "$CA_DIR/leaf.csr" \
-  -subj "/CN=localhost"
+  openssl req -newkey rsa:2048 -nodes \
+    -keyout leaf.key -out leaf.csr \
+    -subj "/CN=localhost"
 
-cat > "$CA_DIR/leaf.ext" <<'EXT'
+  cat > leaf.ext <<'EXT'
 subjectAltName=DNS:localhost,IP:127.0.0.1
 extendedKeyUsage=serverAuth
 EXT
 
-openssl x509 -req -in "$CA_DIR/leaf.csr" \
-  -CA "$CA_DIR/ca.pem" -CAkey "$CA_DIR/ca.key" -CAcreateserial \
-  -out "$CA_DIR/leaf.pem" -days 2 -extfile "$CA_DIR/leaf.ext"
+  openssl x509 -req -in leaf.csr \
+    -CA ca.pem -CAkey ca.key -CAcreateserial \
+    -out leaf.pem -days 2 -extfile leaf.ext
+)
 
 export NODE_EXTRA_CA_CERTS="$(winpath "$CA_DIR/ca.pem")"
 
