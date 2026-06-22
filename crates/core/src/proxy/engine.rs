@@ -49,6 +49,13 @@ pub struct EngineConfig {
     /// Windows pass `None` (their system proxy is read live, so a changing port
     /// never strands a frozen session).
     pub preferred_port: Option<u16>,
+    /// When `Some(uid)`, only connections from that local UID are intercepted
+    /// (MITM'd + rewritten with the Gate key injected); traffic from any other
+    /// local user is blind-tunnelled. The loopback listener is plain TCP and
+    /// reachable by every local user, so this stops a *different* account from
+    /// spending the owner's Gate key through the proxy. Linux sets the daemon's
+    /// own UID; macOS/Windows pass `None` (out of scope for this release).
+    pub owner_uid: Option<u32>,
 }
 
 /// A running engine. Dropping it signals graceful shutdown (fail-safe so a
@@ -161,13 +168,82 @@ struct GateHandler {
     gateway: Uri,
     /// Live-updatable Gate API key (rotations push a new value).
     api_key: watch::Receiver<Arc<str>>,
+    /// When `Some`, only intercept connections from this local UID (see
+    /// [`EngineConfig::owner_uid`]).
+    owner_uid: Option<u32>,
+}
+
+impl GateHandler {
+    /// Whether the peer behind `ctx` may be intercepted. `true` when no owner
+    /// restriction is set; otherwise the peer's UID (resolved from its loopback
+    /// socket) must match the owner. Fails **closed**: if the UID can't be
+    /// resolved we decline interception (blind-tunnel) rather than risk
+    /// injecting the Gate key for an unverified peer.
+    fn peer_allowed(&self, ctx: &HttpContext) -> bool {
+        match self.owner_uid {
+            None => true,
+            Some(owner) => peer_uid_for(ctx.client_addr) == Some(owner),
+        }
+    }
+}
+
+/// Resolve the local UID that owns the socket whose *local* address is `addr`
+/// (i.e. the connecting peer's socket) by scanning the kernel's TCP table.
+/// Linux-only; other platforms never set `owner_uid`, so this just reports
+/// "unknown". Returns `None` if the socket isn't found or can't be parsed.
+#[cfg(target_os = "linux")]
+fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
+    use std::net::{Ipv4Addr, SocketAddr};
+    // Clients reach us at http://127.0.0.1:<port>, so the peer is IPv4 loopback;
+    // we only parse /proc/net/tcp (v4). A v6 peer (shouldn't happen) fails
+    // closed.
+    let SocketAddr::V4(want) = addr else {
+        return None;
+    };
+    let content = std::fs::read_to_string("/proc/net/tcp").ok()?;
+    for line in content.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // Columns: 0 sl, 1 local_address, 2 rem_address, 3 st, ..., 7 uid.
+        let (Some(local), Some(uid)) = (fields.get(1), fields.get(7)) else {
+            continue;
+        };
+        let (ip_hex, port_hex) = match local.split_once(':') {
+            Some(p) => p,
+            None => continue,
+        };
+        // /proc stores the v4 address as a host-byte-order (little-endian on
+        // x86) hex u32; swap to network order for Ipv4Addr. Port is plain hex.
+        let (Ok(ip_raw), Ok(port)) = (
+            u32::from_str_radix(ip_hex, 16),
+            u16::from_str_radix(port_hex, 16),
+        ) else {
+            continue;
+        };
+        let ip = Ipv4Addr::from(ip_raw.swap_bytes());
+        if &ip == want.ip() && port == want.port() {
+            return uid.parse::<u32>().ok();
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_uid_for(_addr: std::net::SocketAddr) -> Option<u32> {
+    None
 }
 
 impl HttpHandler for GateHandler {
-    async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
+    async fn should_intercept(&mut self, ctx: &HttpContext, req: &Request<Body>) -> bool {
         // Called on the CONNECT request *before* any TLS handshake. Only
         // MITM hosts we actually route; everything else is blind-tunnelled,
         // so cert-pinning apps and unrelated traffic are untouched.
+        // Traffic from a non-owner local user is never MITM'd.
+        if !self.peer_allowed(ctx) {
+            if debug_log() {
+                eprintln!("[gate-proxy] CONNECT from non-owner peer -> tunnel");
+            }
+            return false;
+        }
         let rules = self.rules.borrow().clone();
         let host = req
             .uri()
@@ -189,7 +265,7 @@ impl HttpHandler for GateHandler {
 
     async fn handle_request(
         &mut self,
-        _ctx: &HttpContext,
+        ctx: &HttpContext,
         mut req: Request<Body>,
     ) -> RequestOrResponse {
         // The CONNECT request itself flows through here first; nothing to
@@ -207,7 +283,12 @@ impl HttpHandler for GateHandler {
             // the domain's configured upstream — for Anthropic that's the same
             // api.anthropic.com the request came from , validated
             // against a real Cowork generation: 200 text/event-stream.
-            if let Decision::Rewrite { upstream_url } = decide(&rules, host, &path) {
+            // Gate the rewrite on owner UID too: plain-HTTP requests reach here
+            // without a CONNECT (so `should_intercept` never gated them), and we
+            // must not inject the Gate key for a non-owner peer.
+            if let (Decision::Rewrite { upstream_url }, true) =
+                (decide(&rules, host, &path), self.peer_allowed(ctx))
+            {
                 let api_key = self.api_key.borrow().clone();
                 match apply_rewrite(&mut req, &self.gateway, &upstream_url, &api_key) {
                     Ok(()) => action = "rewrite->gateway",
@@ -345,6 +426,7 @@ where
         rules: rules_rx,
         gateway,
         api_key: key_rx,
+        owner_uid: cfg.owner_uid,
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -475,5 +557,25 @@ mod tests {
             req.headers().get("authorization").unwrap(),
             "Bearer app-token"
         );
+    }
+
+    /// Exercises the `/proc/net/tcp` parse (incl. the address byte-swap) against
+    /// a real loopback socket owned by this test process: the resolved UID must
+    /// be our own.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn peer_uid_resolves_own_loopback_connection() {
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let server_addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(server_addr).expect("connect loopback");
+        // From the server's perspective the peer is the client's local address.
+        let peer = client.local_addr().unwrap();
+        // SAFETY: geteuid never fails.
+        let me = unsafe { libc::geteuid() };
+        assert_eq!(peer_uid_for(peer), Some(me));
+        // A port nothing owns resolves to None (fails closed).
+        let unused = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+        assert_eq!(peer_uid_for(unused), None);
     }
 }

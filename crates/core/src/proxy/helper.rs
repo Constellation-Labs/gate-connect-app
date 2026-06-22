@@ -214,6 +214,9 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                             ca_cert_pem,
                             ca_key_pem,
                             preferred_port,
+                            // The daemon runs as the owner; only intercept this
+                            // user's own traffic. SAFETY: geteuid never fails.
+                            owner_uid: Some(unsafe { libc::geteuid() }),
                         },
                         // The daemon doesn't auto-revert on engine death; the
                         // GUI's drop-in lifecycle and a later re-enable handle
