@@ -80,6 +80,11 @@ PORT=8443
 BASE_URL="https://127.0.0.1:$PORT"
 CAPTURE="$WORK/capture.jsonl"
 : > "$CAPTURE"
+# Tool stdout/stderr goes here, not the step's inherited pipe: on Windows a tool
+# (codex) can leave an orphaned grandchild process that keeps the pipe open and
+# stalls the whole step. Writing to a file lets the step finish; we print it
+# after each run for visibility.
+TOOL_OUT="$WORK/tool.out"
 
 # Node tools (claude / opencode-on-bun) talk to the mock over TLS. Rather than
 # fight each runtime's CA-trust quirks (bun ignores NODE_EXTRA_CA_CERTS on
@@ -102,7 +107,8 @@ FAIL=0
 with_timeout() {
   local secs="$1"
   shift
-  "$@" </dev/null &
+  : > "$TOOL_OUT"
+  "$@" </dev/null >"$TOOL_OUT" 2>&1 &
   local pid=$!
   (
     sleep "$secs"
@@ -198,6 +204,7 @@ run_tool() {
   : > "$CAPTURE"
   if "$CLI" connect "$slug"; then
     with_timeout 90 "$@"
+    sed 's/^/    /' "$TOOL_OUT" 2>/dev/null
     "$CLI" disconnect "$slug" >/dev/null 2>&1
     if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" "$(winpath "$CAPTURE")" "$needle"; then
       echo "PASS: $label reached the gateway with Gate headers"
