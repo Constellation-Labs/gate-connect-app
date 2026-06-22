@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 /// Test seam: when `GATE_CONNECT_TEST_HOME` is set, root every per-user path
 /// under it instead of the real OS home / data dir. This is the only portable
@@ -100,12 +101,40 @@ fn windows_username() -> Option<String> {
 /// - Windows: `%LOCALAPPDATA%\Gate Connect`
 /// - Linux: `$XDG_DATA_HOME/Gate Connect` (or `~/.local/share/Gate Connect`)
 pub fn app_support_dir() -> Result<PathBuf> {
+    // Env-var seam first so it works across a spawned `gate-connect` process
+    // (the CLI flow tests run the binary as a child — a process-global mutex
+    // override wouldn't reach it).
     if let Some(home) = test_home_override() {
         return Ok(home.join("app-support").join("Gate Connect"));
+    }
+    if let Some(dir) = APP_SUPPORT_OVERRIDE
+        .lock()
+        .expect("app-support override mutex poisoned")
+        .as_ref()
+    {
+        return Ok(dir.clone());
     }
     Ok(dirs::data_local_dir()
         .context("could not resolve user data directory")?
         .join("Gate Connect"))
+}
+
+/// Optional process-global override for [`app_support_dir`], installed only by
+/// tests via [`set_app_support_dir_for_tests`]. `None` in every normal build, so
+/// production always resolves the real per-OS data dir above. It exists because
+/// `dirs::data_local_dir()` reads the Windows `FOLDERID_LocalAppData` Known
+/// Folder via the OS API — a `$HOME`/env override redirects it on macOS and
+/// Linux but not on Windows, so tests need a direct seam to land their files in
+/// a throwaway dir on every platform.
+static APP_SUPPORT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Point [`app_support_dir`] at `dir` for the rest of this process (or clear the
+/// override with `None`). Test-only seam; never called in production.
+#[doc(hidden)]
+pub fn set_app_support_dir_for_tests(dir: Option<PathBuf>) {
+    *APP_SUPPORT_OVERRIDE
+        .lock()
+        .expect("app-support override mutex poisoned") = dir;
 }
 
 /// `~/.claude` — Claude Code's user config root. Same on all platforms;
