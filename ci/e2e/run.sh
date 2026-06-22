@@ -36,11 +36,12 @@ PASS=0
 FAIL=0
 
 # Portable timeout: run a command, kill it after N seconds. macOS has no
-# `timeout`, so we roll a watchdog.
+# `timeout`, so we roll a watchdog. stdin is closed so a tool that probes for
+# a TTY can't block waiting on input.
 with_timeout() {
   local secs="$1"
   shift
-  "$@" &
+  "$@" </dev/null &
   local pid=$!
   ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) &
   local wd=$!
@@ -72,7 +73,12 @@ openssl x509 -req -in "$CA_DIR/leaf.csr" \
   -CA "$CA_DIR/ca.pem" -CAkey "$CA_DIR/ca.key" -CAcreateserial \
   -out "$CA_DIR/leaf.pem" -days 2 -extfile "$CA_DIR/leaf.ext"
 
+# Node tools (claude / opencode-on-bun) read NODE_EXTRA_CA_CERTS, which *adds*
+# to the system roots. Codex (Rust) honours CODEX_CA_CERTIFICATE — backend-
+# agnostic, so it works on macOS where the keychain trust below didn't reach
+# Codex's TLS stack.
 export NODE_EXTRA_CA_CERTS="$CA_DIR/ca.pem"
+export CODEX_CA_CERTIFICATE="$CA_DIR/ca.pem"
 
 case "$(uname -s)" in
   Linux)
@@ -130,10 +136,15 @@ run_tool() {
   echo "::endgroup::"
 }
 
-# --- Claude Code: reads ~/.claude/settings.json env block, POSTs /v1/messages.
+# --- Claude Code: gate-connect writes the gateway URL + headers into the env
+#     block of ~/.claude/settings.json; claude POSTs /v1/messages there. We run
+#     `--bare` (the documented CI mode — it skips the OAuth/keychain read that
+#     otherwise hangs headless macOS) and feed it that exact settings file via
+#     `--settings` so the env block still applies.
 mkdir -p "$HOME/.claude"
 run_tool "claude-code" "claude-code" "/v1/messages" -- \
-  env ANTHROPIC_API_KEY="sk-ant-e2e-dummy" claude -p "ping"
+  env ANTHROPIC_API_KEY="sk-ant-e2e-dummy" \
+  claude --bare -p "ping" --settings "$HOME/.claude/settings.json"
 
 # --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. The credential
 #     helper reads OPENAI_API_KEY from auth.json.
@@ -142,13 +153,16 @@ printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/
 run_tool "codex" "codex" "/v1/responses" -- \
   codex exec --skip-git-repo-check "ping"
 
-# --- OpenCode: routes its anthropic provider through Gate → POSTs /v1/messages.
+# --- OpenCode: gate-connect rewrites its anthropic provider's baseURL to Gate
+#     → POSTs /v1/messages. A model must be named explicitly (`provider/model`),
+#     otherwise `opencode run` picks a default that bypasses the anthropic
+#     provider we overrode and hits the real API.
 mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
 printf '{"anthropic":{"type":"api","key":"sk-ant-e2e-dummy"}}' \
   > "$HOME/.local/share/opencode/auth.json"
 printf '{"provider":{"anthropic":{}}}' > "$HOME/.config/opencode/opencode.json"
 run_tool "opencode" "opencode" "/v1/messages" -- \
-  opencode run "ping"
+  opencode run --model anthropic/claude-3-5-haiku-latest "ping"
 
 echo "----------------------------------------"
 echo "Passed: $PASS  Failed: $FAIL"
