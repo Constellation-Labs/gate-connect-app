@@ -1,0 +1,53 @@
+name: E2E (real tools)
+
+# OPT-IN ONLY — never runs on push/PR. This installs the real claude / codex /
+# opencode CLIs, points each at a local HTTPS mock gateway through the normal
+# `gate-connect connect` flow, fires one headless request, and asserts the mock
+# received it with the X-Gate-Api-Key / X-Gate-Upstream-Url headers. It mutates
+# the runner's trust store and depends on third-party CLIs whose flags and auth
+# shapes drift, so it's deliberately manual (and runnable on a schedule if you
+# want a nightly signal — uncomment below).
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: real-tools (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows tool install + trust-store wiring is materially harder; start
+        # with the two platforms the tools target first.
+        os: [ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@1.86.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-e2e
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build gate-connect CLI
+        run: cargo build -p gate-connect-cli
+
+      - name: Install AI CLIs
+        run: npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
+
+      - name: Run real-tools e2e
+        run: bash ci/e2e/run.sh
