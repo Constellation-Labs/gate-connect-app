@@ -101,28 +101,26 @@ export CODEX_CA_CERTIFICATE="$(winpath "$CA_DIR/ca.pem")"
 PASS=0
 FAIL=0
 
-# Portable timeout: run a command, kill it after N seconds. macOS/Git Bash have
-# no `timeout`, so we roll a watchdog. stdin is closed so a tool that probes for
-# a TTY can't block waiting on input.
-with_timeout() {
-  local secs="$1"
+# Launch a tool (output to a file, never the step's pipe) and poll the capture
+# until the expected request shows up or we time out. We deliberately do NOT
+# `wait` on the process: on Windows the codex shim spawns a grandchild that may
+# be unkillable from msys, and blocking on it would stall the whole step. Since
+# the tool's stdout/stderr go to a file, leaving it orphaned is harmless — the
+# step still completes once the script exits and the EXIT trap stops the mock.
+run_until_capture() {
+  local needle="$1"
   shift
   : > "$TOOL_OUT"
   "$@" </dev/null >"$TOOL_OUT" 2>&1 &
   local pid=$!
-  (
-    sleep "$secs"
-    # TERM, then KILL after a grace period. Native Windows processes (codex.exe)
-    # ignore msys SIGTERM — only SIGKILL maps to TerminateProcess — so without
-    # the KILL a hung tool would stall the whole step.
-    kill -TERM "$pid" 2>/dev/null
-    sleep 3
-    kill -KILL "$pid" 2>/dev/null
-  ) &
-  local wd=$!
-  wait "$pid" 2>/dev/null
-  kill -KILL "$wd" 2>/dev/null
-  wait "$wd" 2>/dev/null
+  local i=0
+  while [ "$i" -lt 90 ]; do
+    grep -q "$needle" "$CAPTURE" 2>/dev/null && break
+    kill -0 "$pid" 2>/dev/null || break # process exited on its own
+    sleep 1
+    i=$((i + 1))
+  done
+  kill -KILL "$pid" 2>/dev/null # best-effort; not waited on
 }
 
 # ---------------------------------------------------------------------------
@@ -176,11 +174,14 @@ esac
 # ---------------------------------------------------------------------------
 # 2. Start the mock gateway and wait until it accepts TLS.
 # ---------------------------------------------------------------------------
+# Mock output goes to a file (not the step's pipe) so nothing but the shell
+# itself holds stdout — the step then completes the moment the script exits,
+# even if a tool left an orphaned process behind.
 CAPTURE_LOG="$(winpath "$CAPTURE")" MOCK_PORT="$PORT" \
   MOCK_CERT="$(winpath "$CA_DIR/leaf.pem")" MOCK_KEY="$(winpath "$CA_DIR/leaf.key")" \
-  node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" &
+  node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" >"$WORK/mock.out" 2>&1 &
 MOCK_PID=$!
-trap 'kill "$MOCK_PID" 2>/dev/null' EXIT
+trap 'kill -KILL "$MOCK_PID" 2>/dev/null' EXIT
 
 for _ in $(seq 1 40); do
   if curl -sk "$BASE_URL/healthz" >/dev/null 2>&1; then break; fi
@@ -203,7 +204,7 @@ run_tool() {
   echo "::group::$label"
   : > "$CAPTURE"
   if "$CLI" connect "$slug"; then
-    with_timeout 90 "$@"
+    run_until_capture "$needle" "$@"
     sed 's/^/    /' "$TOOL_OUT" 2>/dev/null
     "$CLI" disconnect "$slug" >/dev/null 2>&1
     if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" "$(winpath "$CAPTURE")" "$needle"; then
