@@ -9,3 +9,15 @@ const RAW = import.meta.env.VITE_GATE_DEFAULT_BASE_URL as string | undefined;
 
 export const DEFAULT_GATEWAY_BASE_URL =
   RAW && RAW.trim().length > 0 ? RAW.trim() : "https://gateway.constellationgate.ai";
+
+/**
+ * PostHog project API key, injected at build time. Absent ⇒ analytics is a
+ * silent no-op (dev builds stay quiet). Set per build to enable:
+ *   VITE_POSTHOG_KEY=phc_… pnpm build
+ */
+const POSTHOG_KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
+
+export const POSTHOG_KEY_VALUE = POSTHOG_KEY?.trim() || "";
+
+/** US Cloud ingestion host (see tauri.conf.json connect-src allowlist). */
+export const POSTHOG_HOST = "https://us.i.posthog.com";

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { saveAccount } from "../lib/api";
 import { DEFAULT_GATEWAY_BASE_URL } from "../lib/config";
+import { trackError } from "../lib/analytics";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
 import { Button, Input } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
@@ -23,6 +24,7 @@ export function FirstRun({ onConnected }: { onConnected: () => void }) {
       onConnected();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "sign_in");
       setSubmitting(false);
     }
   }

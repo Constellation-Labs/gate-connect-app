@@ -22,6 +22,7 @@ import { Success } from "./screens/Success";
 import { ComingSoon } from "./screens/ComingSoon";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
+import { track, trackError } from "./lib/analytics";
 
 type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
@@ -65,6 +66,7 @@ export function App() {
       setProxy(px);
       setProviders(provs);
       setScreen(acct ? "home" : "firstrun");
+      track("app_launched", { has_account: !!acct, proxy_available: px !== null });
     })();
     return () => {
       alive = false;
@@ -95,6 +97,7 @@ export function App() {
 
   const onConnected = useCallback(async () => {
     await refreshAccount();
+    track("signed_in");
     setScreen("success");
   }, [refreshAccount]);
 
@@ -105,9 +108,11 @@ export function App() {
     try {
       const next = proxy?.running ? await proxyDisable() : await proxyEnable();
       setProxy(next);
+      track(next.running ? "proxy_enabled" : "proxy_disabled");
       // The master toggle also disconnects/restores providers, so refresh them.
       setProviders(await listProviders().catch(() => []));
-    } catch {
+    } catch (e) {
+      trackError(e, "generic");
       // surfaced state stays; a follow-up status refresh keeps us honest
       try {
         setProxy(await proxyStatus());
@@ -128,6 +133,7 @@ export function App() {
       try {
         if (enabled) await providerEnable(slug);
         else await providerDisable(slug);
+        track("provider_toggled", { provider: slug, enabled });
         // Refresh provider state and proxy (enabling may have flipped a domain).
         setProviders(await listProviders().catch(() => []));
         try {
@@ -137,6 +143,7 @@ export function App() {
         }
       } catch (e) {
         setProviderError(typeof e === "string" ? e : String(e));
+        trackError(e, "generic");
         // Re-sync the switch to its true state after a failed toggle.
         setProviders(await listProviders().catch(() => []));
       } finally {
@@ -151,6 +158,7 @@ export function App() {
     setProxyBusy(true);
     try {
       setProxy(await proxyTrustCa());
+      track("ca_trusted");
     } catch {
       // a cancelled trust dialog rejects; re-sync instead of leaking an
       // unhandled rejection with the banner stuck in its old state
@@ -170,6 +178,7 @@ export function App() {
       if (!base) return;
       await saveAccount(base, key);
       await refreshAccount();
+      track("key_replaced");
     },
     [account, refreshAccount],
   );
@@ -194,6 +203,7 @@ export function App() {
     // if that fails we are still signed in, so let the rejection reach
     // Settings instead of showing first-run over a half-signed-out state.
     await clearAccount();
+    track("disconnected");
     setAccount(null);
     setScreen("firstrun");
   }, [proxy]);
