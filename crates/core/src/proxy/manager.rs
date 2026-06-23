@@ -95,6 +95,11 @@ impl ProxyManager {
                 domains: domains.clone(),
                 ca_cert_pem: ca.cert_pem().to_string(),
                 ca_key_pem: ca.key_pem().to_string(),
+                // macOS reads the system proxy live, so an ephemeral port is fine.
+                preferred_port: None,
+                // Per-user UID gating is a Linux concern (shared loopback proxy);
+                // unused on macOS.
+                owner_uid: None,
             },
             // Fail-safe: if the engine dies unexpectedly, revert the system
             // proxy so traffic is never stranded at a dead listener.

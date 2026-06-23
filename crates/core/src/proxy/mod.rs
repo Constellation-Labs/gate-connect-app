@@ -23,9 +23,9 @@
 //! cross-platform; CA trust ([`ca`]) and system-proxy wiring ([`system_proxy`])
 //! are platform-specific — macOS via `security` + `networksetup`, Windows via
 //! `certutil` + the per-user WinINET registry settings, Linux via the system
-//! trust store (`update-ca-certificates` / `update-ca-trust`) + a managed block
-//! in `/etc/environment` (so the proxy reaches command-line tools, not just GUI
-//! apps). Other platforms get no [`ProxyManager`].
+//! trust store (`update-ca-certificates` / `update-ca-trust`) + a user-scoped
+//! systemd `environment.d` drop-in (so the proxy reaches command-line tools and
+//! GUI apps without root). Other platforms get no [`ProxyManager`].
 
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +61,18 @@ mod manager;
 #[cfg(target_os = "linux")]
 #[path = "manager_linux.rs"]
 mod manager;
+
+// The long-lived pass-through helper daemon and its control protocol/client
+// (Linux only). The daemon owns the loopback listener so the proxy outlives the
+// GUI process; see the module docs for the access-control model.
+#[cfg(target_os = "linux")]
+pub mod control;
+#[cfg(target_os = "linux")]
+mod flock;
+#[cfg(target_os = "linux")]
+pub mod helper;
+#[cfg(target_os = "linux")]
+pub mod helper_client;
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use manager::{manager, ProxyManager};

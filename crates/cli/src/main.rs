@@ -123,6 +123,15 @@ enum Toggle {
 }
 
 fn main() -> Result<()> {
+    // The proxy manager spawns the helper daemon as `<current-exe> --proxy-helper`
+    // (Linux). When that current-exe is this CLI, handle the flag before clap
+    // parses, so the daemon path works whether the proxy was enabled from the
+    // app or the CLI. See `gate_connect_core::proxy::helper`.
+    #[cfg(target_os = "linux")]
+    if std::env::args().skip(1).any(|a| a == "--proxy-helper") {
+        return gate_connect_core::proxy::helper::run_daemon();
+    }
+
     let cli = Cli::parse();
     match cli.command {
         Command::Login {
@@ -366,6 +375,12 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
         ProxyCmd::Enable => {
+            // Restore providers a prior master-off disabled, before enabling —
+            // otherwise the all-off state trips `enable`'s "at least one
+            // provider" precondition (mirrors the app's proxy_enable flow).
+            if let Err(e) = gate_connect_core::provider::restore_all() {
+                eprintln!("note: restoring providers failed: {e}");
+            }
             let state = mgr.enable()?;
             println!("Proxy enabled.");
             print_proxy_state(&state);
@@ -429,12 +444,13 @@ fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {
 }
 
 /// Platform-specific reminder shown after enabling. On Linux the proxy is
-/// delivered via `/etc/environment`, which only new sessions read.
+/// delivered via a user systemd `environment.d` drop-in, which only new
+/// login sessions read.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn print_proxy_hint() {
     #[cfg(target_os = "linux")]
     println!(
-        "\nNote: proxy variables were written to /etc/environment — open a new shell (or re-login) for command-line tools to pick them up."
+        "\nNote: proxy variables were written to ~/.config/environment.d/gate-proxy.conf — log out and back in for command-line tools and GUI apps to pick them up."
     );
 }
 

@@ -1,23 +1,30 @@
-//! Linux system HTTP/HTTPS proxy wiring via a managed block in
-//! `/etc/environment`. Enabling writes `http_proxy`/`https_proxy` (+ upper-case
-//! aliases) pointing at our loopback engine, a `no_proxy` that keeps loopback
-//! traffic off the proxy, and `NODE_EXTRA_CA_CERTS` pointing at our CA so
-//! Node-based CLIs (e.g. Claude Code) — which ship their own bundle and ignore
-//! the system trust store — accept the engine's minted leaf certs. Disabling
-//! strips the block again.
+//! Linux system HTTP/HTTPS proxy wiring via a user-scoped systemd
+//! `environment.d` drop-in (`~/.config/environment.d/gate-proxy.conf`). Enabling
+//! writes `http_proxy`/`https_proxy` (+ upper-case aliases) pointing at our
+//! loopback engine, a `no_proxy` that keeps loopback traffic off the proxy, and
+//! `NODE_EXTRA_CA_CERTS` pointing at our CA so Node-based CLIs (e.g. Claude
+//! Code) — which ship their own bundle and ignore the system trust store —
+//! accept the engine's minted leaf certs. Disabling deletes the file again.
 //!
-//! `/etc/environment` is read by PAM at login, so the variables reach every new
-//! login session: GUI apps started afterwards *and* command-line shells. It is
-//! deliberately DE-agnostic — no GNOME `gsettings` / KDE-specific path — at the
-//! cost of only affecting **new** sessions (already-running shells keep their
-//! environment until restarted).
+//! Why `environment.d` and not `/etc/environment`:
 //!
-//! Privilege model differs from macOS/Windows. There the proxy lives in a
-//! per-user store, so enable/disable/reconcile are promptless and the revert can
-//! never be cancelled. `/etc/environment` is root-owned, so every write here —
-//! including the safety-revert — goes through [`crate::primitives::run_as_admin`]
-//! and can prompt. We touch only our own delimited block, so a concurrent edit
-//! to the rest of the file is preserved.
+//! - **No root.** The drop-in lives in the user's home, so enable/disable are
+//!   unprivileged — no `pkexec`/polkit prompt, and no all-or-nothing privileged
+//!   write that strands the toggle when polkit is unavailable. (Trusting the CA
+//!   still needs root; that's a separate, one-time step in [`super::ca`].)
+//! - **Transient by ownership.** We own the whole file, so "off" is a plain
+//!   delete and a stale drop-in never lingers root-owned in a shared file.
+//!
+//! `systemd --user` reads `environment.d` at login and applies it to the
+//! graphical session, so the variables reach GUI apps started afterwards *and*
+//! command-line shells spawned from the session. Like `/etc/environment` before
+//! it, this only affects **new** sessions — already-running shells keep their
+//! environment until restarted. Known limitation: pure non-systemd sessions
+//! (rare on modern Ubuntu/GNOME) don't read `environment.d`.
+//!
+//! Pairs with a *stable* engine port (persisted via [`load_port`]/[`save_port`]):
+//! a session freezes the proxy pointer at login, so the engine must come back on
+//! the same port across restarts or that frozen pointer dangles at a dead port.
 
 use std::fs;
 use std::path::PathBuf;
@@ -26,25 +33,28 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::env;
-use crate::primitives::{run_as_admin, sh_quote};
 
-const ENV_FILE: &str = "/etc/environment";
+/// Basename of our user-scoped systemd environment drop-in.
+const DROPIN_NAME: &str = "gate-proxy.conf";
 
-/// Delimiters bracketing the lines we own in `/etc/environment`. Everything
-/// between them (inclusive) is ours to add/replace/remove; everything else is
-/// left untouched.
-const BLOCK_BEGIN: &str = "# >>> gate-connect proxy (managed) >>>";
-const BLOCK_END: &str = "# <<< gate-connect proxy (managed) <<<";
+/// Path to our `environment.d` drop-in: `$XDG_CONFIG_HOME/environment.d/gate-proxy.conf`
+/// (i.e. `~/.config/environment.d/gate-proxy.conf`).
+fn dropin_path() -> Result<PathBuf> {
+    Ok(dirs::config_dir()
+        .context("could not resolve user config directory")?
+        .join("environment.d")
+        .join(DROPIN_NAME))
+}
 
-/// Marker recorded on enable. The managed-block design needs no captured prior
-/// state to revert (we just strip our block), so this only notes whether a
-/// block was already present when we looked — and, more importantly, its
-/// existence on disk is what tells [`super::manager`] a previous session left
-/// the proxy on (crash reconcile).
+/// Marker recorded on enable. The drop-in design needs no captured prior state
+/// to revert (we just delete our file), so this only notes whether the drop-in
+/// was already present when we looked — and, more importantly, its existence on
+/// disk is what tells [`super::manager`] a previous session left the proxy on
+/// (crash reconcile).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxySnapshot {
-    /// Whether our managed block was already in `/etc/environment` when we
-    /// snapshotted (i.e. an earlier unclean session left it behind).
+    /// Whether our drop-in was already present when we snapshotted (i.e. an
+    /// earlier unclean session left it behind).
     pub block_present: bool,
 }
 
@@ -54,96 +64,72 @@ fn snapshot_path() -> Result<PathBuf> {
         .join("system-proxy.snapshot.json"))
 }
 
+/// Path where we persist the engine's chosen loopback port so it can be reused
+/// across restarts (keeping a frozen session's proxy pointer valid).
+fn port_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?.join("proxy").join("port"))
+}
+
+/// Cross-process lock serializing enable/disable, so the app and the CLI can't
+/// interleave the snapshot / drop-in / port writes (see [`super::flock`]).
+pub fn op_lock_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?.join("proxy").join("op.lock"))
+}
+
+/// The last engine port we persisted, if any and still parseable.
+pub fn load_port() -> Result<Option<u16>> {
+    let path = port_path()?;
+    match fs::read_to_string(&path) {
+        Ok(raw) => Ok(raw.trim().parse::<u16>().ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Persist the engine port for reuse on the next run. Best-effort durability;
+/// non-secret, so written 0644.
+pub fn save_port(port: u16) -> Result<()> {
+    let path = port_path()?;
+    crate::primitives::write_file(&path, port.to_string().as_bytes(), 0o644)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
 /// Path to our CA cert, mirrored from [`super::ca`] — used for
 /// `NODE_EXTRA_CA_CERTS` so Node CLIs trust the engine's leaf certs.
 fn ca_cert_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("proxy").join("ca-cert.pem"))
 }
 
-/// Current contents of `/etc/environment` (empty string if it doesn't exist).
-/// World-readable, so non-privileged.
-fn read_env_file() -> Result<String> {
-    match fs::read_to_string(ENV_FILE) {
-        Ok(s) => Ok(s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e).with_context(|| format!("reading {ENV_FILE}")),
-    }
+/// Whether our drop-in currently exists on disk.
+fn dropin_present() -> Result<bool> {
+    Ok(dropin_path()?.exists())
 }
 
-/// Return `content` with our managed block (and the blank line we pad it with)
-/// removed. Lines outside the delimiters are preserved verbatim.
-fn strip_block(content: &str) -> String {
-    let mut out = Vec::new();
-    let mut inside = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed == BLOCK_BEGIN {
-            inside = true;
-            continue;
-        }
-        if trimmed == BLOCK_END {
-            inside = false;
-            continue;
-        }
-        if !inside {
-            out.push(line);
-        }
-    }
-    let mut joined = out.join("\n");
-    // Collapse trailing whitespace/newlines left after removal, then restore a
-    // single trailing newline if there's any content.
-    while joined.ends_with('\n') || joined.ends_with(' ') {
-        joined.pop();
-    }
-    if !joined.is_empty() {
-        joined.push('\n');
-    }
-    joined
-}
-
-/// Build the managed block pointing at `127.0.0.1:port`.
-fn build_block(port: u16) -> Result<String> {
+/// Build the drop-in contents pointing at `127.0.0.1:port`. systemd
+/// `environment.d` parses `KEY=VALUE` lines (not shell), so a value may contain
+/// spaces; we double-quote the CA path anyway for clarity and to stay safe if a
+/// consumer ever sources it more strictly.
+fn build_dropin(port: u16) -> Result<String> {
     let endpoint = format!("http://127.0.0.1:{port}");
     let no_proxy = "localhost,127.0.0.1,::1";
     let ca = ca_cert_path()?;
     Ok(format!(
-        "{BLOCK_BEGIN}\n\
+        "# Managed by Gate Connect — do not edit. Removed when the proxy is off.\n\
          http_proxy={endpoint}\n\
          https_proxy={endpoint}\n\
          HTTP_PROXY={endpoint}\n\
          HTTPS_PROXY={endpoint}\n\
          no_proxy={no_proxy}\n\
          NO_PROXY={no_proxy}\n\
-         NODE_EXTRA_CA_CERTS={ca}\n\
-         {BLOCK_END}\n",
+         NODE_EXTRA_CA_CERTS=\"{ca}\"\n",
         ca = ca.display(),
     ))
 }
 
-/// Write `content` to `/etc/environment` via a privileged copy: stage to a
-/// user-owned tempfile, then `install` it into place as root:root 0644. The
-/// payload is non-secret (a loopback URL + the public CA path), so the staging
-/// file doesn't need the locked-down treatment the Cowork credential writes get.
-fn write_env_file(content: &str) -> Result<()> {
-    let staging = env::app_support_dir()?.join("staging");
-    fs::create_dir_all(&staging).with_context(|| format!("creating {}", staging.display()))?;
-    let tmp = staging.join("etc-environment.tmp");
-    fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
-
-    let script = format!(
-        "/usr/bin/install -m 0644 -o root -g root {src} {dst}",
-        src = sh_quote(&tmp.display().to_string()),
-        dst = sh_quote(ENV_FILE),
-    );
-    let result = run_as_admin(&script).with_context(|| format!("writing {ENV_FILE}"));
-    let _ = fs::remove_file(&tmp);
-    result
-}
-
-/// Note whether our managed block is currently present. Non-privileged.
+/// Note whether our drop-in is currently present. Non-privileged.
 pub fn snapshot() -> Result<ProxySnapshot> {
     Ok(ProxySnapshot {
-        block_present: read_env_file()?.contains(BLOCK_BEGIN),
+        block_present: dropin_present()?,
     })
 }
 
@@ -178,51 +164,88 @@ pub fn clear_snapshot() -> Result<()> {
     }
 }
 
-/// Point the system proxy at the loopback engine by writing our managed block.
-/// Privileged (`/etc/environment` is root-owned). Only affects new sessions.
+/// Point the system proxy at the loopback engine by writing our drop-in.
+/// Unprivileged (user's home). Only affects new sessions.
 pub fn enable(port: u16) -> Result<()> {
-    let stripped = strip_block(&read_env_file()?);
-    let block = build_block(port)?;
-    write_env_file(&format!("{stripped}{block}"))
+    let path = dropin_path()?;
+    crate::primitives::write_file(&path, build_dropin(port)?.as_bytes(), 0o644)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Strip our managed block, restoring `/etc/environment` to its prior state.
-/// For the managed-block design restore and force-off are identical — both just
-/// remove our lines — so `snapshot` is unused here. Privileged; safety-critical.
+/// Delete our drop-in, restoring the user environment to its prior (proxy-free)
+/// state. Restore and force-off are identical here — both just remove our file —
+/// so `snapshot` is unused. Unprivileged.
 pub fn restore(_snapshot: &ProxySnapshot) -> Result<()> {
     force_off()
 }
 
-/// Remove our managed block. Fail-safe used when no snapshot is available, so a
-/// dead engine never strands new shells at an unreachable proxy. Privileged.
+/// Remove our drop-in. Fail-safe used when no snapshot is available, so a dead
+/// engine never strands new shells at an unreachable proxy. Unprivileged.
 pub fn force_off() -> Result<()> {
-    let content = read_env_file()?;
-    if !content.contains(BLOCK_BEGIN) {
-        return Ok(());
+    let path = dropin_path()?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
     }
-    write_env_file(&strip_block(&content))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn strip_removes_only_our_block() {
-        let original = "FOO=bar\n";
-        let with_block =
-            format!("FOO=bar\n{BLOCK_BEGIN}\nhttp_proxy=http://127.0.0.1:9\n{BLOCK_END}\n");
-        assert_eq!(strip_block(&with_block), original);
+    fn with_temp_env<T>(f: impl FnOnce() -> T) -> T {
+        // These tests mutate process-global state (XDG_CONFIG_HOME and the
+        // app_support_dir test override) and share a single temp dir, so they
+        // must not run concurrently: otherwise one test's teardown
+        // `remove_dir_all` races another's writes and the atomic rename fails
+        // with ENOENT. Serialize them. (`unwrap_or_else` swallows a poisoned
+        // lock from an earlier panicking test so the rest still run.)
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+
+        // `dropin_path` keys off `dirs::config_dir()` (XDG_CONFIG_HOME), and the
+        // snapshot/port paths off `app_support_dir`; point both at a throwaway
+        // dir so the test never touches the real user config.
+        let tmp = std::env::temp_dir().join(format!("gate-proxy-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        std::env::set_var("XDG_CONFIG_HOME", tmp.join("config"));
+        env::set_app_support_dir_for_tests(Some(tmp.join("data")));
+        let out = f();
+        env::set_app_support_dir_for_tests(None);
+        let _ = fs::remove_dir_all(&tmp);
+        out
     }
 
     #[test]
-    fn strip_is_noop_without_block() {
-        let original = "FOO=bar\nBAZ=qux\n";
-        assert_eq!(strip_block(original), original);
+    fn enable_writes_dropin_then_force_off_removes_it() {
+        with_temp_env(|| {
+            assert!(!dropin_present().unwrap());
+            enable(41234).unwrap();
+            assert!(dropin_present().unwrap());
+            let body = fs::read_to_string(dropin_path().unwrap()).unwrap();
+            assert!(body.contains("http_proxy=http://127.0.0.1:41234"));
+            assert!(body.contains("HTTPS_PROXY=http://127.0.0.1:41234"));
+            // CA path is double-quoted so an embedded space is safe.
+            assert!(body.contains("NODE_EXTRA_CA_CERTS=\""));
+            force_off().unwrap();
+            assert!(!dropin_present().unwrap());
+        });
     }
 
     #[test]
-    fn strip_of_empty_is_empty() {
-        assert_eq!(strip_block(""), "");
+    fn force_off_is_noop_without_dropin() {
+        with_temp_env(|| {
+            assert!(force_off().is_ok());
+        });
+    }
+
+    #[test]
+    fn port_round_trips() {
+        with_temp_env(|| {
+            assert_eq!(load_port().unwrap(), None);
+            save_port(40555).unwrap();
+            assert_eq!(load_port().unwrap(), Some(40555));
+        });
     }
 }
