@@ -253,6 +253,34 @@ async fn clear_account() -> Result<(), String> {
     .map_err(|e| format!("sign-out join error: {e}"))?
 }
 
+/// Dev-mode gateway switch: repoint the account at another environment and
+/// forget the current Gate key, so the UI can prompt for an
+/// environment-appropriate one. Managed tools are disconnected first — their
+/// config embeds the old gateway+key, and a later key rotation would push the
+/// new key into configs still pointing at the old gateway. Mirrors the URL
+/// validation in `save_account` and the disconnect-first order in
+/// `clear_account`.
+#[tauri::command]
+async fn switch_gateway(base_url: String) -> Result<(), String> {
+    if base_url.len() > 2048 {
+        return Err("base url is unexpectedly long (>2048 bytes)".into());
+    }
+    let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("base url must use https".into());
+    }
+    if parsed.host_str().is_none() {
+        return Err("base url is missing a host".into());
+    }
+    // Off the main thread: per-tool config I/O plus keychain delete.
+    tauri::async_runtime::spawn_blocking(move || {
+        registry::disconnect_all_managed().map_err(|e| e.to_string())?;
+        account::switch_gateway(&base_url).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("switch join error: {e}"))?
+}
+
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
 /// copy: keychain vs Credential Manager, plist vs registry, whether a
 /// password prompt appears, etc.
@@ -456,6 +484,7 @@ pub fn run() {
                     get_account,
                     save_account,
                     clear_account,
+                    switch_gateway,
                     app_platform,
                     unpin_popover,
                     list_providers,
@@ -483,6 +512,7 @@ pub fn run() {
                     get_account,
                     save_account,
                     clear_account,
+                    switch_gateway,
                     app_platform,
                     unpin_popover,
                     list_providers,

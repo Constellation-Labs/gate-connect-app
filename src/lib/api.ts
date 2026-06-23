@@ -43,6 +43,11 @@ export const saveAccount = (baseUrl: string, apiKey: string | null) =>
 
 export const clearAccount = () => invoke<void>("clear_account");
 
+/** Dev-mode gateway switch: repoint the account at another environment and
+ *  forget the stored Gate key, so the UI can prompt for a new one. */
+export const switchGateway = (baseUrl: string) =>
+  invoke<void>("switch_gateway", { baseUrl });
+
 /** Release the first-launch pin so the popover resumes click-away dismissal.
  *  Called once the user interacts with the startup window. */
 export const unpinPopover = () => invoke<void>("unpin_popover");

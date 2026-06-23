@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Account } from "../lib/api";
 import { trackError } from "../lib/analytics";
+import { GATEWAY_SERVERS } from "../lib/config";
 import { SubHeader, SectionLabel, ConnPill, Button, Input } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
@@ -20,13 +21,16 @@ export function Settings({
   onBack,
   onReplaceKey,
   onDisconnect,
+  onSwitchGateway,
 }: {
   account: Account;
   onBack: () => void;
   onReplaceKey: (key: string) => Promise<void>;
   onDisconnect: () => Promise<void>;
+  onSwitchGateway: (url: string) => Promise<void>;
 }) {
   const [replacing, setReplacing] = useState(false);
+  const [devMode, setDevMode] = useState(false);
   const [newKey, setNewKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +60,21 @@ export function Settings({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       trackError(err, "disconnect");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function selectServer(url: string) {
+    if (url === account.gateway_base_url || submitting) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      await onSwitchGateway(url);
+      setDevMode(false);
+      setReplacing(true); // key was cleared on switch → prompt for the new env's key
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
     }
@@ -150,7 +169,43 @@ export function Settings({
             <Icon name="trash" size={14} />
             Disconnect
           </button>
+          <button
+            type="button"
+            onClick={() => setDevMode((v) => !v)}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3"
+          >
+            <Icon name="settings" size={14} />
+            Dev mode
+          </button>
         </div>
+      )}
+
+      {devMode && !replacing && (
+        <>
+          <SectionLabel>Gateway server</SectionLabel>
+          <div className="flex flex-col gap-2 px-3.5 pb-1">
+            {GATEWAY_SERVERS.map((server) => {
+              const active = server.url === account.gateway_base_url;
+              return (
+                <button
+                  key={server.url}
+                  type="button"
+                  onClick={() => selectServer(server.url)}
+                  disabled={active || submitting}
+                  className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
+                    <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
+                      {hostOf(server.url)}
+                    </div>
+                  </div>
+                  {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
+                </button>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

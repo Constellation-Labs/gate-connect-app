@@ -96,6 +96,17 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Dev-mode environment switch: point the account at a different gateway and
+/// forget the current Gate key so the user must enter an environment-appropriate
+/// one. Managed tools are disconnected by the command layer first (same as
+/// [`clear`]), since their config embeds the old gateway+key.
+pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
+    save(gateway_base_url, None)?; // new URL on disk, key untouched
+    let user = env::current_user()?;
+    keychain::delete(&service(), &user)?; // forget the old key
+    Ok(())
+}
+
 pub fn has_api_key() -> Result<bool> {
     let user = env::current_user()?;
     Ok(keychain::get(&service(), &user)?.is_some())

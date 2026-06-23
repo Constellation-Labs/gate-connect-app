@@ -21,3 +21,14 @@ export const POSTHOG_KEY_VALUE = POSTHOG_KEY?.trim() || "";
 
 /** US Cloud ingestion host (see tauri.conf.json connect-src allowlist). */
 export const POSTHOG_HOST = "https://us.i.posthog.com";
+
+/** Gateway servers selectable from Settings → Dev mode. */
+export interface GatewayServer {
+  label: string;
+  url: string;
+}
+
+export const GATEWAY_SERVERS: GatewayServer[] = [
+  { label: "Production", url: "https://gateway.constellationgate.ai" },
+  { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
+];

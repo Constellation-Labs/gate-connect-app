@@ -5,6 +5,7 @@ import {
   getAccount,
   saveAccount,
   clearAccount,
+  switchGateway,
   proxyStatus,
   proxyEnable,
   proxyDisable,
@@ -183,6 +184,14 @@ export function App() {
     [account, refreshAccount],
   );
 
+  const switchGatewayServer = useCallback(
+    async (url: string) => {
+      await switchGateway(url);
+      await refreshAccount(); // account now has new URL, has_api_key=false
+    },
+    [refreshAccount],
+  );
+
   const disconnect = useCallback(async () => {
     if (proxy?.running) {
       // A failed disable can leave system HTTPS pointed at a dead engine
@@ -259,6 +268,7 @@ export function App() {
         onBack={() => setScreen("home")}
         onReplaceKey={replaceKey}
         onDisconnect={disconnect}
+        onSwitchGateway={switchGatewayServer}
       />
     );
   } else if (screen === "coming-soon") {
