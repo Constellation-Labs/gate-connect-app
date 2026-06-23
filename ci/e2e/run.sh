@@ -71,6 +71,12 @@ fi
 # OS keychain headlessly. The gate-connect binary reads this as a native path.
 export GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")"
 
+# Codex resolves ~/.codex via its own home logic — on Windows that's the real
+# profile, not our USERPROFILE override — so it was reading an empty config and
+# falling back to the default `openai` provider (hitting api.openai.com, 401).
+# Point it explicitly at the .codex dir gate-connect writes the gate provider to.
+export CODEX_HOME="$(winpath "$HOME/.codex")"
+
 CLI="$ROOT/target/debug/gate-connect"
 [ "$OS" = "Windows" ] && CLI="$CLI.exe"
 PORT=8443
@@ -80,6 +86,21 @@ PORT=8443
 BASE_URL="https://127.0.0.1:$PORT"
 CAPTURE="$WORK/capture.jsonl"
 : > "$CAPTURE"
+# Tool stdout/stderr goes here, not the step's inherited pipe: on Windows a tool
+# (codex) can leave an orphaned grandchild process that keeps the pipe open and
+# stalls the whole step. Writing to a file lets the step finish; we print it
+# after each run for visibility.
+TOOL_OUT="$WORK/tool.out"
+
+# Diagnostics: timestamped checkpoints to both stdout (captured live by the
+# runner) and a file (dumped by an always() step even if this step is killed by
+# its timeout). Lets us see exactly where a hang occurs.
+DIAG="$WORK/diag.log"
+: > "$DIAG"
+ckpt() {
+  echo ">>> ckpt $(date -u +%H:%M:%S) $*"
+  echo ">>> ckpt $(date -u +%H:%M:%S) $*" >> "$DIAG" 2>/dev/null || true
+}
 
 # Node tools (claude / opencode-on-bun) talk to the mock over TLS. Rather than
 # fight each runtime's CA-trust quirks (bun ignores NODE_EXTRA_CA_CERTS on
@@ -96,22 +117,38 @@ export CODEX_CA_CERTIFICATE="$(winpath "$CA_DIR/ca.pem")"
 PASS=0
 FAIL=0
 
-# Portable timeout: run a command, kill it after N seconds. macOS/Git Bash have
-# no `timeout`, so we roll a watchdog. stdin is closed so a tool that probes for
-# a TTY can't block waiting on input.
-with_timeout() {
-  local secs="$1"
+# Launch a tool (output to a file, never the step's pipe) and poll the capture
+# until the expected request shows up or we time out. We deliberately do NOT
+# `wait` on the process: on Windows the codex shim spawns a grandchild that may
+# be unkillable from msys, and blocking on it would stall the whole step. Since
+# the tool's stdout/stderr go to a file, leaving it orphaned is harmless — the
+# step still completes once the script exits and the EXIT trap stops the mock.
+run_until_capture() {
+  local needle="$1"
   shift
-  "$@" </dev/null &
+  : > "$TOOL_OUT"
+  ckpt "launch: $*"
+  "$@" </dev/null >"$TOOL_OUT" 2>&1 &
   local pid=$!
-  (
-    sleep "$secs"
-    kill -TERM "$pid" 2>/dev/null
-  ) &
-  local wd=$!
-  wait "$pid" 2>/dev/null
-  kill "$wd" 2>/dev/null
-  wait "$wd" 2>/dev/null
+  ckpt "launched pid=$pid; polling for '$needle'"
+  local i=0
+  while [ "$i" -lt 90 ]; do
+    grep -q "$needle" "$CAPTURE" 2>/dev/null && {
+      ckpt "captured '$needle' after ${i}s"
+      break
+    }
+    kill -0 "$pid" 2>/dev/null || {
+      ckpt "process pid=$pid exited on its own after ${i}s"
+      break
+    }
+    sleep 1
+    i=$((i + 1))
+    [ $((i % 15)) -eq 0 ] && ckpt "still polling ${i}s (pid=$pid alive)"
+  done
+  [ "$i" -ge 90 ] && ckpt "poll timed out at ${i}s (pid=$pid)"
+  ckpt "killing pid=$pid"
+  kill -KILL "$pid" 2>/dev/null # best-effort; not waited on
+  ckpt "kill returned for pid=$pid"
 }
 
 # ---------------------------------------------------------------------------
@@ -154,16 +191,37 @@ case "$OS" in
     sudo security add-trusted-cert -d -r trustRoot \
       -k /Library/Keychains/System.keychain "$CA_DIR/ca.pem"
     ;;
+  Windows)
+    # Into the LocalMachine Root store. NOT the current-user store: adding a
+    # trusted root for the current user pops an interactive "install this
+    # certificate?" dialog that hangs forever on a headless runner. The machine
+    # store is non-interactive (the runner is an admin). stdin from /dev/null as
+    # a belt-and-suspenders against any prompt. Codex's Rust TLS reads this store.
+    certutil -addstore -f Root "$(winpath "$CA_DIR/ca.pem")" </dev/null >/dev/null 2>&1 || true
+    ;;
 esac
 
 # ---------------------------------------------------------------------------
 # 2. Start the mock gateway and wait until it accepts TLS.
 # ---------------------------------------------------------------------------
+# Mock output goes to a file (not the step's pipe) so nothing but the shell
+# itself holds stdout — the step then completes the moment the script exits,
+# even if a tool left an orphaned process behind.
 CAPTURE_LOG="$(winpath "$CAPTURE")" MOCK_PORT="$PORT" \
   MOCK_CERT="$(winpath "$CA_DIR/leaf.pem")" MOCK_KEY="$(winpath "$CA_DIR/leaf.key")" \
-  node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" &
+  node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" >"$WORK/mock.out" 2>&1 &
 MOCK_PID=$!
-trap 'kill "$MOCK_PID" 2>/dev/null' EXIT
+cleanup() {
+  kill -KILL "$MOCK_PID" 2>/dev/null
+  # Codex's Rust binary survives an msys kill and, in the runner's job object,
+  # keeps the step from finishing. A real Windows kill of the whole tree lets
+  # the step exit. (No-op if codex isn't running; codex.exe doesn't exist off
+  # Windows.)
+  if [ "$OS" = "Windows" ]; then
+    taskkill /F /T /IM codex.exe >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 
 for _ in $(seq 1 40); do
   if curl -sk "$BASE_URL/healthz" >/dev/null 2>&1; then break; fi
@@ -173,10 +231,12 @@ done
 # ---------------------------------------------------------------------------
 # 3. Sign in once; every tool reuses this account.
 # ---------------------------------------------------------------------------
+ckpt "mock ready; signing in"
 "$CLI" login --base-url "$BASE_URL" --api-key "sk-gw-e2e" || {
   echo "login failed"
   exit 1
 }
+ckpt "signed in"
 
 # run_tool <label> <slug> <path-needle> -- <invoke cmd...>
 run_tool() {
@@ -184,10 +244,17 @@ run_tool() {
   shift 3
   [ "$1" = "--" ] && shift
   echo "::group::$label"
+  TOOL_OUT="$WORK/$slug.out" # per-tool so the diagnostics step keeps each one
   : > "$CAPTURE"
+  ckpt "[$label] connect"
   if "$CLI" connect "$slug"; then
-    with_timeout 90 "$@"
+    ckpt "[$label] connected; running tool"
+    run_until_capture "$needle" "$@"
+    ckpt "[$label] run_until_capture returned; tool output:"
+    sed 's/^/    /' "$TOOL_OUT" 2>/dev/null
+    ckpt "[$label] disconnect"
     "$CLI" disconnect "$slug" >/dev/null 2>&1
+    ckpt "[$label] asserting capture"
     if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" "$(winpath "$CAPTURE")" "$needle"; then
       echo "PASS: $label reached the gateway with Gate headers"
       PASS=$((PASS + 1))
@@ -195,6 +262,7 @@ run_tool() {
       echo "FAIL: $label did not reach the gateway as expected"
       FAIL=$((FAIL + 1))
     fi
+    ckpt "[$label] done"
   else
     echo "FAIL: $label connect failed"
     FAIL=$((FAIL + 1))
@@ -211,19 +279,17 @@ mkdir -p "$HOME/.claude"
 run_tool "claude-code" "claude-code" "/v1/messages" -- \
   claude --bare -p "ping" --settings "$(winpath "$HOME/.claude/settings.json")"
 
-# --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. Codex's Rust TLS
-#     stack can't be told to trust a custom CA for a model provider
-#     (openai/codex#9526, "closed as not planned") — on Linux it works because we
-#     add the CA to the system store, but macOS/Windows codex don't read that for
-#     their TLS, so there's no way to make them trust the test gateway. Skip
-#     codex off Linux; it stays covered there.
-if [ "$OS" = "Linux" ]; then
+# --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. Codex has no env
+#     to trust a custom CA for a model provider (openai/codex#9526), so it relies
+#     on the OS trust store — which we populate on Linux and Windows above.
+#     macOS codex doesn't read the keychain for this, so it stays skipped there.
+if [ "$OS" != "Darwin" ]; then
   mkdir -p "$HOME/.codex"
   printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
   run_tool "codex" "codex" "/v1/responses" -- \
     codex exec --skip-git-repo-check "ping"
 else
-  echo "::notice::skipping codex on $OS — its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526); codex is exercised on Linux."
+  echo "::notice::skipping codex on macOS — its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526) and ignores the keychain; codex is exercised on Linux and Windows."
 fi
 
 # --- OpenCode: gate-connect rewrites its anthropic provider's baseURL to Gate
@@ -237,6 +303,7 @@ printf '{"provider":{"anthropic":{}}}' > "$HOME/.config/opencode/opencode.json"
 run_tool "opencode" "opencode" "/v1/messages" -- \
   opencode run --model anthropic/claude-3-5-haiku-latest "ping"
 
+ckpt "all tools finished; reached end of script"
 echo "----------------------------------------"
 echo "Passed: $PASS  Failed: $FAIL"
 test "$FAIL" -eq 0

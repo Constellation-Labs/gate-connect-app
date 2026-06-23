@@ -47,18 +47,36 @@ jobs:
       - name: Build gate-connect CLI
         run: cargo build -p gate-connect-cli
 
-      # Codex is exercised on Linux only (its TLS won't trust a test CA for a
-      # model provider off Linux), so don't install it elsewhere.
+      # Codex relies on the OS trust store for a custom CA; that works on Linux
+      # and Windows but not macOS (it ignores the keychain), so skip installing
+      # it there.
       - name: Install AI CLIs
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
-          else
+          if [ "$RUNNER_OS" = "macOS" ]; then
             npm install -g @anthropic-ai/claude-code opencode-ai
+          else
+            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
           fi
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
+      # timeout-minutes bounds the step so a hung tool can't run for hours; on
+      # timeout the runner kills the process tree and the diagnostics step below
+      # still runs (if: always()), flushing the checkpoint + tool output files.
       - name: Run real-tools e2e
+        id: e2e
         shell: bash
+        timeout-minutes: 8
         run: bash ci/e2e/run.sh
+
+      - name: Diagnostics (checkpoints + tool output)
+        if: always()
+        shell: bash
+        run: |
+          W="$RUNNER_TEMP/gc-e2e"
+          [ "$RUNNER_OS" = "Windows" ] && W="$(cygpath -u "$RUNNER_TEMP")/gc-e2e"
+          echo "=== diag.log (checkpoints) ==="; cat "$W/diag.log" 2>/dev/null || echo "(none)"
+          for f in "$W"/*.out; do
+            [ -f "$f" ] || continue
+            echo "=== $(basename "$f") ==="; cat "$f" 2>/dev/null
+          done
