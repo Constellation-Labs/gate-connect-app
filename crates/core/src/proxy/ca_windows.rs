@@ -22,6 +22,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use hudsucker::rcgen::KeyPair;
+use sha1::{Digest, Sha1};
 
 use crate::env;
 use crate::keychain;
@@ -112,33 +113,28 @@ pub fn load_or_create() -> Result<Ca> {
 /// uppercase hex with no separators — the form `certutil` accepts as a
 /// `CertId`. Returns `None` if the cert file is missing.
 ///
-/// We read it from `certutil <file>`, which prints a `Cert Hash(sha1): <hex>`
-/// line: the `Cert Hash` label is localized but the `(sha1)` algorithm token
-/// is not, so we key off that. This avoids pulling in a crypto/PEM dependency
-/// just to fingerprint one cert, staying consistent with the rest of this
-/// module's certutil-based approach.
+/// A cert's thumbprint is just the SHA-1 of its DER encoding, so we compute it
+/// in-process: decode the PEM to DER, then digest. We deliberately do *not*
+/// scrape `certutil <file>`'s `Cert Hash(sha1):` line — that output is
+/// localized and frequently emitted as UTF-16/OEM rather than UTF-8, so
+/// `from_utf8_lossy` could mangle the thumbprint and make `is_trusted` report
+/// an installed cert as untrusted forever (the banner never clears, and every
+/// trust click re-prompts).
 fn cert_thumbprint() -> Result<Option<String>> {
     let cert = cert_path()?;
-    if !cert.exists() {
-        return Ok(None);
-    }
-    let out = Command::new("certutil")
-        .arg(&cert)
-        .output()
-        .context("running certutil to read the CA thumbprint")?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let thumb = text
-        .lines()
-        .find(|l| l.to_ascii_lowercase().contains("(sha1)"))
-        .and_then(|l| l.split_once(':'))
-        .map(|(_, hex)| {
-            hex.chars()
-                .filter(char::is_ascii_hexdigit)
-                .collect::<String>()
-                .to_ascii_uppercase()
-        })
-        .filter(|t| !t.is_empty());
-    Ok(thumb)
+    let cert_pem = match fs::read_to_string(&cert) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", cert.display())),
+    };
+    let der = pem::parse(cert_pem.as_bytes())
+        .with_context(|| format!("parsing CA cert PEM at {}", cert.display()))?;
+    let digest = Sha1::digest(der.contents());
+    let thumb = digest
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<String>();
+    Ok(Some(thumb))
 }
 
 /// Whether the **current on-disk CA** is trusted — keyed on the cert's

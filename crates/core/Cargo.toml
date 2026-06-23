@@ -32,8 +32,15 @@ libc = "0.2"
 
 # `winreg` backs the Windows proxy's system-proxy wiring, which reads and
 # writes the per-user WinINET `Internet Settings` registry values.
+#
+# `sha1` + `pem` compute the CA cert's SHA-1 thumbprint in-process (decode the
+# PEM to DER, then digest) so the trust check feeds `certutil -store Root` a
+# known-good fingerprint instead of scraping certutil's locale-/encoding-
+# dependent text output.
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
+sha1 = "0.10"
+pem = "3.0"
 
 # Test-only. The proxy end-to-end test (`tests/proxy_e2e.rs`) mints a
 # throwaway CA with `rcgen`, runs a tiny loopback mock gateway (built on the
