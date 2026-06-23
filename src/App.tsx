@@ -105,14 +105,6 @@ export function App() {
 
   const toggleProxy = useCallback(async () => {
     if (proxyBusy) return;
-    // Turning the proxy on with nothing enabled hits the backend's "enable at
-    // least one provider" guard. Send the user to the tools screen to pick one
-    // instead of surfacing an error from a dead-end toggle.
-    const enabledDomains = proxy?.domains.filter((d) => d.enabled && d.supported).length ?? 0;
-    if (!proxy?.running && enabledDomains === 0) {
-      setScreen("proxy");
-      return;
-    }
     setProxyBusy(true);
     setProviderError(null);
     try {

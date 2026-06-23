@@ -107,10 +107,11 @@ impl ProxyManager {
 
         let account = account::load()?
             .context("no Gate account configured — sign in before enabling the proxy")?;
+        // Start the engine even with zero enabled domains — it then passes
+        // everything through, and enabling a provider flips its domain live
+        // once the proxy is running. Matches the cross-platform manager
+        // (manager.rs) and lets the proxy bootstrap from a clean first run.
         let domains = config::load_domains()?;
-        if !domains.iter().any(|d| d.enabled) {
-            anyhow::bail!("enable at least one provider before turning on the proxy");
-        }
 
         let ca = ca::load_or_create()?;
 
@@ -313,10 +314,9 @@ impl ProxyManager {
         // `enable`'s `ensure_trusted` is a no-op; if it somehow isn't trusted,
         // we decline and clean up instead.
         if ca::is_trusted().unwrap_or(false) {
-            // Mirror the app/CLI enable flow: restore providers a prior
-            // master-off disabled before enabling, so re-honor doesn't trip the
-            // "at least one provider" precondition in the (narrow) case where a
-            // crash left the snapshot present but the domain config all-off.
+            // Mirror the app/CLI enable flow: restore the providers a prior
+            // master-off disabled before re-enabling, so re-honor brings back
+            // the user's actual domain selection rather than starting bare.
             let _ = crate::provider::restore_all();
             match self.enable() {
                 Ok(_) => return Ok(()),

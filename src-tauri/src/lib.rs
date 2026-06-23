@@ -347,12 +347,11 @@ async fn proxy_enable(
     // and waits up to 10s for engine readiness.
     let state = tauri::async_runtime::spawn_blocking(|| {
         // Global ON: restore every provider that was on when routing was last
-        // turned off — *before* enabling. Master-off disables every provider
-        // domain, so if we enabled first, `enable`'s "at least one provider"
-        // precondition would trip on that all-off state and the proxy could
-        // never be turned back on. Best-effort so a restore hiccup never blocks
-        // the proxy from coming up. A no-op (no snapshot) on a first enable, so
-        // the precondition still guards a genuinely empty selection.
+        // turned off — *before* enabling — so the engine comes back up routing
+        // the user's prior selection rather than bare. A no-op (no snapshot) on
+        // a first enable, where the engine simply starts with zero domains and
+        // passes through until a provider is enabled. Best-effort so a restore
+        // hiccup never blocks the proxy from coming up.
         if let Err(e) = gate_connect_core::provider::restore_all() {
             eprintln!("[gate] restoring providers on proxy enable failed: {e}");
         }
