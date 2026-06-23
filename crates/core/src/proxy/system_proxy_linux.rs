@@ -70,6 +70,12 @@ fn port_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("proxy").join("port"))
 }
 
+/// Cross-process lock serializing enable/disable, so the app and the CLI can't
+/// interleave the snapshot / drop-in / port writes (see [`super::flock`]).
+pub fn op_lock_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?.join("proxy").join("op.lock"))
+}
+
 /// The last engine port we persisted, if any and still parseable.
 pub fn load_port() -> Result<Option<u16>> {
     let path = port_path()?;

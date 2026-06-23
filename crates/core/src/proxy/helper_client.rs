@@ -20,6 +20,14 @@ use anyhow::{Context, Result};
 use crate::proxy::control::{self, Request, Response};
 use crate::proxy::ProxyDomain;
 
+/// Timeout for quick control round-trips (status / passthrough / hello). Short
+/// so a hung daemon can't stall the caller (and the UI's status polling, which
+/// holds the manager lock) for long.
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
+/// Longer timeout for `SetIntercept`, which may start the engine — binding the
+/// port and building the MITM proxy waits up to ~10s for readiness.
+const INTERCEPT_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// An authenticated, open control connection to the daemon.
 pub struct HelperClient {
     reader: BufReader<UnixStream>,
@@ -30,7 +38,7 @@ impl HelperClient {
     /// Connect to a running daemon, spawning one (`<current-exe> --proxy-helper`,
     /// detached) if none is listening yet. Performs the `Hello` token handshake.
     pub fn connect_or_spawn() -> Result<HelperClient> {
-        if let Ok(client) = Self::connect() {
+        if let Ok(client) = Self::connect_existing() {
             return Ok(client);
         }
         spawn_daemon()?;
@@ -38,21 +46,22 @@ impl HelperClient {
         // retry briefly until it's up (or give up so the UI surfaces an error).
         for _ in 0..40 {
             std::thread::sleep(Duration::from_millis(50));
-            if let Ok(client) = Self::connect() {
+            if let Ok(client) = Self::connect_existing() {
                 return Ok(client);
             }
         }
         anyhow::bail!("proxy helper did not come up within ~2s")
     }
 
-    /// Connect to an already-listening daemon and authenticate. Errors if none
-    /// is listening or the token handshake fails.
-    fn connect() -> Result<HelperClient> {
+    /// Connect to an already-listening daemon and authenticate, without
+    /// spawning one. Errors if none is listening or the token handshake fails.
+    pub fn connect_existing() -> Result<HelperClient> {
         let sock = control::socket_path()?;
         let stream = UnixStream::connect(&sock)
             .with_context(|| format!("connecting to {}", sock.display()))?;
+        // Default; each round_trip sets the timeout appropriate to its request.
         stream
-            .set_read_timeout(Some(Duration::from_secs(15)))
+            .set_read_timeout(Some(CONTROL_TIMEOUT))
             .context("setting control read timeout")?;
         let writer = stream.try_clone().context("cloning control stream")?;
         let mut client = HelperClient {
@@ -64,7 +73,7 @@ impl HelperClient {
             .context("reading control token")?
             .trim()
             .to_string();
-        match client.round_trip(&Request::Hello { token })? {
+        match client.round_trip(&Request::Hello { token }, CONTROL_TIMEOUT)? {
             Response::Hello { ok: true } => Ok(client),
             Response::Hello { ok: false } => anyhow::bail!("control token rejected"),
             other => anyhow::bail!("unexpected Hello reply: {other:?}"),
@@ -90,7 +99,7 @@ impl HelperClient {
             domains: domains.to_vec(),
             preferred_port,
         };
-        match self.round_trip(&req)? {
+        match self.round_trip(&req, INTERCEPT_TIMEOUT)? {
             Response::Intercepting { port } => Ok(port),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("unexpected SetIntercept reply: {other:?}"),
@@ -100,7 +109,7 @@ impl HelperClient {
     /// Drop the daemon to pass-through (blind-tunnel everything) while keeping
     /// the port bound.
     pub fn set_passthrough(&mut self) -> Result<()> {
-        match self.round_trip(&Request::SetPassthrough)? {
+        match self.round_trip(&Request::SetPassthrough, CONTROL_TIMEOUT)? {
             Response::Ok => Ok(()),
             other => anyhow::bail!("unexpected SetPassthrough reply: {other:?}"),
         }
@@ -108,7 +117,7 @@ impl HelperClient {
 
     /// Current daemon state: `(running, port, intercepting_count)`.
     pub fn status(&mut self) -> Result<(bool, Option<u16>, usize)> {
-        match self.round_trip(&Request::Status)? {
+        match self.round_trip(&Request::Status, CONTROL_TIMEOUT)? {
             Response::Status {
                 running,
                 port,
@@ -118,7 +127,9 @@ impl HelperClient {
         }
     }
 
-    fn round_trip(&mut self, req: &Request) -> Result<Response> {
+    fn round_trip(&mut self, req: &Request, timeout: Duration) -> Result<Response> {
+        // Bound the read so a hung daemon can't block the caller indefinitely.
+        let _ = self.writer.set_read_timeout(Some(timeout));
         let mut line = serde_json::to_string(req).context("serializing request")?;
         line.push('\n');
         self.writer

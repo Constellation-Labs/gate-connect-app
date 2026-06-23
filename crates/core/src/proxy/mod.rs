@@ -68,6 +68,8 @@ mod manager;
 #[cfg(target_os = "linux")]
 pub mod control;
 #[cfg(target_os = "linux")]
+mod flock;
+#[cfg(target_os = "linux")]
 pub mod helper;
 #[cfg(target_os = "linux")]
 pub mod helper_client;

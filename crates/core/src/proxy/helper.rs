@@ -43,11 +43,19 @@ pub fn run_daemon() -> Result<()> {
 async fn serve() -> Result<()> {
     let sock = control::socket_path()?;
 
-    // If a daemon is already live on the socket, defer to it (don't orphan it
-    // by re-binding). If the socket is stale (no listener), clear it and bind.
-    if UnixStream::connect(&sock).await.is_ok() {
-        anyhow::bail!("a proxy helper is already running");
-    }
+    // Singleton guard: hold an exclusive flock for the daemon's whole life. If
+    // another daemon holds it we defer to that one. flock releases on process
+    // exit (even a crash), so this is race-free where the old connect-then-bind
+    // check had a TOCTOU window (two daemons could both pass it and fight over
+    // the socket). Held in `_singleton` for all of `serve`.
+    let lock_path = control::singleton_lock_path()?;
+    let _singleton = match crate::proxy::flock::FileLock::acquire(&lock_path, false)? {
+        Some(lock) => lock,
+        None => anyhow::bail!("a proxy helper is already running"),
+    };
+
+    // We own the singleton lock, so we're the only daemon — clear any stale
+    // socket from a previous run and bind fresh.
     let _ = std::fs::remove_file(&sock);
 
     // Write the auth token (0600) the GUI must echo back in Hello.

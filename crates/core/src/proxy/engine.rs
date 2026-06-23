@@ -171,6 +171,11 @@ struct GateHandler {
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
+    /// Per-connection memo of the owner-UID verdict, keyed by peer address.
+    /// hudsucker clones the handler per connection, so this is resolved once —
+    /// while the peer's socket is definitely still in `/proc/net/tcp` — instead
+    /// of re-reading it (and risking a TOCTOU miss) on every request.
+    peer_verdict: Option<(std::net::SocketAddr, bool)>,
 }
 
 impl GateHandler {
@@ -178,12 +183,20 @@ impl GateHandler {
     /// restriction is set; otherwise the peer's UID (resolved from its loopback
     /// socket) must match the owner. Fails **closed**: if the UID can't be
     /// resolved we decline interception (blind-tunnel) rather than risk
-    /// injecting the Gate key for an unverified peer.
-    fn peer_allowed(&self, ctx: &HttpContext) -> bool {
-        match self.owner_uid {
-            None => true,
-            Some(owner) => peer_uid_for(ctx.client_addr) == Some(owner),
+    /// injecting the Gate key for an unverified peer. Memoized per peer.
+    fn peer_allowed(&mut self, ctx: &HttpContext) -> bool {
+        let owner = match self.owner_uid {
+            None => return true,
+            Some(owner) => owner,
+        };
+        if let Some((addr, verdict)) = self.peer_verdict {
+            if addr == ctx.client_addr {
+                return verdict;
+            }
         }
+        let verdict = peer_uid_for(ctx.client_addr) == Some(owner);
+        self.peer_verdict = Some((ctx.client_addr, verdict));
+        verdict
     }
 }
 
@@ -427,6 +440,7 @@ where
         gateway,
         api_key: key_rx,
         owner_uid: cfg.owner_uid,
+        peer_verdict: None,
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

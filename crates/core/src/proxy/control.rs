@@ -61,6 +61,12 @@ pub fn token_path() -> Result<PathBuf> {
     Ok(runtime_dir()?.join(TOKEN_NAME))
 }
 
+/// Lockfile the daemon holds for its whole life so only one daemon runs per
+/// user session (see [`super::flock`]).
+pub fn singleton_lock_path() -> Result<PathBuf> {
+    Ok(runtime_dir()?.join("proxyd.lock"))
+}
+
 fn set_mode(path: &std::path::Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))

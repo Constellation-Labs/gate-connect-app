@@ -23,6 +23,7 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 
+use super::flock::FileLock;
 use super::helper_client::HelperClient;
 use super::{ca, config, system_proxy, ProxyDomain, ProxyState};
 use crate::account;
@@ -51,10 +52,27 @@ impl ProxyManager {
         let (running, port) = match guard.as_mut() {
             Some(client) => match client.status() {
                 Ok((running, port, _intercepting)) => (running, port),
-                Err(_) => {
-                    *guard = None;
-                    (false, None)
-                }
+                // A single failed round-trip could be a transient blip while
+                // the daemon is still intercepting — don't desync by dropping
+                // the handle on the first error. Try one fresh connection to
+                // the existing daemon; only declare the proxy off if that also
+                // fails (daemon truly gone).
+                Err(_) => match HelperClient::connect_existing() {
+                    Ok(mut fresh) => match fresh.status() {
+                        Ok((running, port, _)) => {
+                            *guard = Some(fresh);
+                            (running, port)
+                        }
+                        Err(_) => {
+                            *guard = None;
+                            (false, None)
+                        }
+                    },
+                    Err(_) => {
+                        *guard = None;
+                        (false, None)
+                    }
+                },
             },
             None => (false, None),
         };
@@ -76,8 +94,11 @@ impl ProxyManager {
     /// (and only when not already trusted); the proxy write is an unprivileged
     /// user drop-in. Idempotent: a no-op if already on.
     pub fn enable(&self) -> Result<ProxyState> {
-        // Hold the lock for the whole sequence so a concurrent enable can't
-        // race the snapshot/drop-in writes.
+        // Cross-process lock: keep the app and the CLI from interleaving the
+        // snapshot / drop-in / port writes below. Held for the whole sequence.
+        let _op_lock = FileLock::acquire(&system_proxy::op_lock_path()?, true)?;
+        // Hold the in-process lock for the whole sequence so a concurrent enable
+        // can't race the snapshot/drop-in writes.
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");
         if guard.is_some() {
             drop(guard);
@@ -142,6 +163,9 @@ impl ProxyManager {
     /// running in pass-through (port still bound) so frozen sessions keep
     /// flowing; only its interception is cleared. Unprivileged and promptless.
     pub fn disable(&self) -> Result<ProxyState> {
+        // Cross-process lock: serialize against a concurrent app/CLI enable.
+        let _op_lock = FileLock::acquire(&system_proxy::op_lock_path()?, true)?;
+
         let client = self
             .client
             .lock()
@@ -154,16 +178,19 @@ impl ProxyManager {
             eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
             None
         });
-        match snapshot {
-            Some(snapshot) => system_proxy::restore(&snapshot)?,
-            None => system_proxy::force_off()?,
-        }
+        let off_result = match snapshot {
+            Some(snapshot) => system_proxy::restore(&snapshot),
+            None => system_proxy::force_off(),
+        };
+        // Drop the daemon to pass-through and clear the snapshot *even if* the
+        // drop-in delete failed — otherwise a leftover snapshot would re-honor
+        // (turn the proxy back on) on the next launch, against the user's
+        // intent. Surface the delete error afterward.
         if let Some(mut client) = client {
-            // Best-effort: tell the daemon to drop to pass-through. Dropping the
-            // connection afterward triggers the same revert as a fail-safe.
             let _ = client.set_passthrough();
         }
         let _ = system_proxy::clear_snapshot();
+        off_result.context("removing the system-proxy drop-in")?;
         self.status()
     }
 
@@ -286,6 +313,11 @@ impl ProxyManager {
         // `enable`'s `ensure_trusted` is a no-op; if it somehow isn't trusted,
         // we decline and clean up instead.
         if ca::is_trusted().unwrap_or(false) {
+            // Mirror the app/CLI enable flow: restore providers a prior
+            // master-off disabled before enabling, so re-honor doesn't trip the
+            // "at least one provider" precondition in the (narrow) case where a
+            // crash left the snapshot present but the domain config all-off.
+            let _ = crate::provider::restore_all();
             match self.enable() {
                 Ok(_) => return Ok(()),
                 Err(e) => {
