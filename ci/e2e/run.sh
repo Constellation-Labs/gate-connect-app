@@ -71,6 +71,12 @@ fi
 # OS keychain headlessly. The gate-connect binary reads this as a native path.
 export GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")"
 
+# Codex resolves ~/.codex via its own home logic — on Windows that's the real
+# profile, not our USERPROFILE override — so it was reading an empty config and
+# falling back to the default `openai` provider (hitting api.openai.com, 401).
+# Point it explicitly at the .codex dir gate-connect writes the gate provider to.
+export CODEX_HOME="$(winpath "$HOME/.codex")"
+
 CLI="$ROOT/target/debug/gate-connect"
 [ "$OS" = "Windows" ] && CLI="$CLI.exe"
 PORT=8443
