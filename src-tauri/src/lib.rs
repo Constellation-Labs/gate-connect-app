@@ -183,12 +183,13 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     // so the first-run-vs-home decision this call drives always sees a
     // consistent view. An uninstall that removed Gate Connect's files but left
     // its OS keychain entry behind (macOS drag-to-trash, or a deep uninstaller
-    // that purges Application Support but can't touch the keychain) — or the
-    // reverse — leaves a stale half. Dropping it here, rather than on a startup
-    // thread that races this read, means an orphaned key (or a stray
-    // account.json with no key) can't briefly route the user to a half-signed-in
-    // home. Best-effort: a reconcile hiccup must not flip a signed-in user to
-    // first-run, so we log and fall through to the read below.
+    // that purges Application Support but can't touch the keychain). Dropping
+    // that orphaned key here, rather than on a startup thread that races this
+    // read, means it can't briefly route the user to a half-signed-in home. A
+    // key-less account.json (URL but no key) is left intact — it's a pending-key
+    // state and the read below reports has_api_key=false, so the UI routes to
+    // key entry. Best-effort: a reconcile hiccup must not flip a signed-in user
+    // to first-run, so we log and fall through to the read below.
     if let Err(e) = account::reconcile() {
         eprintln!("account reconcile failed: {e}");
     }
@@ -251,6 +252,34 @@ async fn clear_account() -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("sign-out join error: {e}"))?
+}
+
+/// Dev-mode gateway switch: repoint the account at another environment and
+/// forget the current Gate key, so the UI can prompt for an
+/// environment-appropriate one. Managed tools are disconnected first — their
+/// config embeds the old gateway+key, and a later key rotation would push the
+/// new key into configs still pointing at the old gateway. Mirrors the URL
+/// validation in `save_account` and the disconnect-first order in
+/// `clear_account`.
+#[tauri::command]
+async fn switch_gateway(base_url: String) -> Result<(), String> {
+    if base_url.len() > 2048 {
+        return Err("base url is unexpectedly long (>2048 bytes)".into());
+    }
+    let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("base url must use https".into());
+    }
+    if parsed.host_str().is_none() {
+        return Err("base url is missing a host".into());
+    }
+    // Off the main thread: per-tool config I/O plus keychain delete.
+    tauri::async_runtime::spawn_blocking(move || {
+        registry::disconnect_all_managed().map_err(|e| e.to_string())?;
+        account::switch_gateway(&base_url).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("switch join error: {e}"))?
 }
 
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
@@ -318,12 +347,11 @@ async fn proxy_enable(
     // and waits up to 10s for engine readiness.
     let state = tauri::async_runtime::spawn_blocking(|| {
         // Global ON: restore every provider that was on when routing was last
-        // turned off — *before* enabling. Master-off disables every provider
-        // domain, so if we enabled first, `enable`'s "at least one provider"
-        // precondition would trip on that all-off state and the proxy could
-        // never be turned back on. Best-effort so a restore hiccup never blocks
-        // the proxy from coming up. A no-op (no snapshot) on a first enable, so
-        // the precondition still guards a genuinely empty selection.
+        // turned off — *before* enabling — so the engine comes back up routing
+        // the user's prior selection rather than bare. A no-op (no snapshot) on
+        // a first enable, where the engine simply starts with zero domains and
+        // passes through until a provider is enabled. Best-effort so a restore
+        // hiccup never blocks the proxy from coming up.
         if let Err(e) = gate_connect_core::provider::restore_all() {
             eprintln!("[gate] restoring providers on proxy enable failed: {e}");
         }
@@ -456,6 +484,7 @@ pub fn run() {
                     get_account,
                     save_account,
                     clear_account,
+                    switch_gateway,
                     app_platform,
                     unpin_popover,
                     list_providers,
@@ -483,6 +512,7 @@ pub fn run() {
                     get_account,
                     save_account,
                     clear_account,
+                    switch_gateway,
                     app_platform,
                     unpin_popover,
                     list_providers,
@@ -507,6 +537,13 @@ pub fn run() {
                 if POPOVER_PINNED.load(Ordering::Acquire) {
                     return;
                 }
+                // On Linux a hidden window leaves the taskbar entirely, and the
+                // SNI/AppIndicator tray is unreliable on GNOME — so dismiss by
+                // minimizing instead, leaving a dock/taskbar entry to restore
+                // from. macOS/Windows keep the native hide-to-tray behavior.
+                #[cfg(target_os = "linux")]
+                let _ = window.minimize();
+                #[cfg(not(target_os = "linux"))]
                 let _ = window.hide();
             }
         })
@@ -525,6 +562,21 @@ pub fn run() {
                     eprintln!("proxy startup reconcile failed: {e}");
                 }
             });
+
+            // Linux dismisses the popover by minimizing (see the Focused(false)
+            // handler), so it needs a taskbar/dock entry to restore from —
+            // override the config's skipTaskbar:true here. macOS hides from the
+            // dock via the Accessory activation policy instead, and Windows
+            // keeps its hide-to-tray behavior, so neither wants this.
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_skip_taskbar(false);
+                // The window is borderless by config; on Linux give it a native
+                // title bar so the WM provides a dependable minimize/close (the
+                // SNI tray is unreliable on GNOME). macOS/Windows stay
+                // decoration-free.
+                let _ = window.set_decorations(true);
+            }
 
             // Round the NSWindow content view's CALayer so the transparent
             // window itself has rounded corners — without this, CSS-rounded
@@ -561,6 +613,8 @@ pub fn run() {
                             if let Ok(cursor) = app.cursor_position() {
                                 anchor_at_cursor(&window, cursor);
                             }
+                            #[cfg(target_os = "linux")]
+                            let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -579,8 +633,15 @@ pub fn run() {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
                             // is_focused() is unreliable for a non-activating panel.
+                            // On Linux the popover is dismissed by minimizing, so a
+                            // minimized window counts as "away" and should restore,
+                            // not toggle off.
                             let is_visible = window.is_visible().unwrap_or(false);
-                            if is_visible {
+                            let is_minimized = window.is_minimized().unwrap_or(false);
+                            if is_visible && !is_minimized {
+                                #[cfg(target_os = "linux")]
+                                let _ = window.minimize();
+                                #[cfg(not(target_os = "linux"))]
                                 let _ = window.hide();
                             } else {
                                 // Linux trays don't report a usable rect; fall
@@ -595,6 +656,8 @@ pub fn run() {
                                 }
                                 #[cfg(not(target_os = "linux"))]
                                 anchor_under_tray(&window, rect.position, rect.size);
+                                #[cfg(target_os = "linux")]
+                                let _ = window.unminimize();
                                 let _ = window.show();
                                 let _ = window.set_focus();
                                 #[cfg(target_os = "macos")]

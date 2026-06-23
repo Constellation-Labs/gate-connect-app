@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { relaunch } from "@tauri-apps/plugin-process";
 import type { Account, ProxyState, ProviderState } from "./lib/api";
 import {
   getAccount,
   saveAccount,
   clearAccount,
+  switchGateway,
   proxyStatus,
   proxyEnable,
   proxyDisable,
@@ -65,7 +67,7 @@ export function App() {
       setAccount(acct);
       setProxy(px);
       setProviders(provs);
-      setScreen(acct ? "home" : "firstrun");
+      setScreen(acct?.has_api_key ? "home" : "firstrun");
       track("app_launched", { has_account: !!acct, proxy_available: px !== null });
     })();
     return () => {
@@ -113,7 +115,11 @@ export function App() {
       setProviders(await listProviders().catch(() => []));
     } catch (e) {
       trackError(e, "generic");
-      // surfaced state stays; a follow-up status refresh keeps us honest
+      // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
+      // or a missing network service) instead of silently reverting — a
+      // swallowed error reads as "the toggle does nothing".
+      setProviderError(typeof e === "string" ? e : String(e));
+      // Re-sync to the true state after the failed toggle.
       try {
         setProxy(await proxyStatus());
       } catch {
@@ -183,6 +189,15 @@ export function App() {
     [account, refreshAccount],
   );
 
+  const switchGatewayServer = useCallback(async (url: string) => {
+    await switchGateway(url);
+    // Switching forgets the stored key, disconnects managed tools, and leaves
+    // the running proxy/providers pointed at the old gateway. Rather than patch
+    // all that live, relaunch into a clean session that re-reads the new
+    // account and lets the user enter an environment-appropriate key.
+    await relaunch();
+  }, []);
+
   const disconnect = useCallback(async () => {
     if (proxy?.running) {
       // A failed disable can leave system HTTPS pointed at a dead engine
@@ -226,7 +241,7 @@ export function App() {
       </div>
     );
   } else if (screen === "firstrun") {
-    body = <FirstRun onConnected={onConnected} />;
+    body = <FirstRun onConnected={onConnected} initialGateway={account?.gateway_base_url} />;
   } else if (screen === "success") {
     body = (
       <Success
@@ -259,6 +274,7 @@ export function App() {
         onBack={() => setScreen("home")}
         onReplaceKey={replaceKey}
         onDisconnect={disconnect}
+        onSwitchGateway={switchGatewayServer}
       />
     );
   } else if (screen === "coming-soon") {
@@ -271,6 +287,7 @@ export function App() {
         proxyOn={proxyOn}
         domainCount={domainCount}
         showProxy={showProxy}
+        error={providerError}
         onOpenProxy={() => setScreen("proxy")}
         onToggleProxy={toggleProxy}
         onOpenDirectGateway={() => setScreen("coming-soon")}
