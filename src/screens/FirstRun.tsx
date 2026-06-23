@@ -1,17 +1,28 @@
 import { useState } from "react";
 import { saveAccount } from "../lib/api";
-import { DEFAULT_GATEWAY_BASE_URL } from "../lib/config";
+import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS } from "../lib/config";
 import { trackError } from "../lib/analytics";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
 import { Button, Input } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 /** Welcome / first-run — paste a Gate API key to connect. Wires to
- *  `save_account(DEFAULT_GATEWAY_BASE_URL, key)`. */
+ *  `save_account(gateway, key)`, defaulting to DEFAULT_GATEWAY_BASE_URL; Dev
+ *  mode lets a developer target another environment before connecting. */
 export function FirstRun({ onConnected }: { onConnected: () => void }) {
   const [key, setKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [devMode, setDevMode] = useState(false);
+  const [gateway, setGateway] = useState(DEFAULT_GATEWAY_BASE_URL);
 
   const canSubmit = key.trim().length > 0 && !submitting;
 
@@ -20,7 +31,7 @@ export function FirstRun({ onConnected }: { onConnected: () => void }) {
     setError(null);
     setSubmitting(true);
     try {
-      await saveAccount(DEFAULT_GATEWAY_BASE_URL, key.trim());
+      await saveAccount(gateway, key.trim());
       onConnected();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -71,8 +82,49 @@ export function FirstRun({ onConnected }: { onConnected: () => void }) {
         {submitting ? "Connecting…" : "Connect"}
       </Button>
 
-      <div className="mt-3 text-center font-mono text-[10.5px] text-gc-ink-5">
-        {DEFAULT_GATEWAY_BASE_URL}
+      {!devMode ? (
+        <div className="mt-3 text-center font-mono text-[10.5px] text-gc-ink-5">
+          {gateway}
+        </div>
+      ) : (
+        <>
+          <div className="mb-1.5 mt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
+            Gateway server
+          </div>
+          <div className="flex flex-col gap-2">
+            {GATEWAY_SERVERS.map((server) => {
+              const active = server.url === gateway;
+              return (
+                <button
+                  key={server.url}
+                  type="button"
+                  onClick={() => setGateway(server.url)}
+                  disabled={active}
+                  className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
+                    <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
+                      {hostOf(server.url)}
+                    </div>
+                  </div>
+                  {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      <div className="mt-3 flex justify-center">
+        <button
+          type="button"
+          onClick={() => setDevMode((v) => !v)}
+          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3"
+        >
+          <Icon name="settings" size={14} />
+          Dev mode
+        </button>
       </div>
     </div>
   );
