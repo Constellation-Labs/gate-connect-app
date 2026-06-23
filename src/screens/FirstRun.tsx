@@ -16,13 +16,23 @@ function hostOf(url: string): string {
 
 /** Welcome / first-run — paste a Gate API key to connect. Wires to
  *  `save_account(gateway, key)`, defaulting to DEFAULT_GATEWAY_BASE_URL; Dev
- *  mode lets a developer target another environment before connecting. */
-export function FirstRun({ onConnected }: { onConnected: () => void }) {
+ *  mode lets a developer target another environment before connecting.
+ *  `initialGateway` pre-points at a previously-selected gateway — e.g. after a
+ *  Dev-mode gateway switch relaunches the app keyless against staging. */
+export function FirstRun({
+  onConnected,
+  initialGateway,
+}: {
+  onConnected: () => void;
+  initialGateway?: string;
+}) {
   const [key, setKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [devMode, setDevMode] = useState(false);
-  const [gateway, setGateway] = useState(DEFAULT_GATEWAY_BASE_URL);
+  const [devMode, setDevMode] = useState(
+    !!initialGateway && initialGateway !== DEFAULT_GATEWAY_BASE_URL,
+  );
+  const [gateway, setGateway] = useState(initialGateway ?? DEFAULT_GATEWAY_BASE_URL);
 
   const canSubmit = key.trim().length > 0 && !submitting;
 

@@ -67,7 +67,7 @@ export function App() {
       setAccount(acct);
       setProxy(px);
       setProviders(provs);
-      setScreen(acct ? "home" : "firstrun");
+      setScreen(acct?.has_api_key ? "home" : "firstrun");
       track("app_launched", { has_account: !!acct, proxy_available: px !== null });
     })();
     return () => {
@@ -249,7 +249,7 @@ export function App() {
       </div>
     );
   } else if (screen === "firstrun") {
-    body = <FirstRun onConnected={onConnected} />;
+    body = <FirstRun onConnected={onConnected} initialGateway={account?.gateway_base_url} />;
   } else if (screen === "success") {
     body = (
       <Success

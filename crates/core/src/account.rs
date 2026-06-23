@@ -122,34 +122,27 @@ pub fn clear() -> Result<()> {
     Ok(())
 }
 
-/// Reconcile the account's two halves at startup, dropping a stale one left
-/// behind when an uninstall removed Gate Connect's on-disk files but not its
-/// OS keychain entry (or vice versa). macOS drag-to-trash — and deep
-/// uninstallers that purge `~/Library/Application Support` but can't touch the
-/// keychain — leave exactly this kind of orphan, and a stale Gate key sitting
-/// in the keychain with no account behind it is what this clears.
+/// Reconcile the account's two halves at startup, dropping an orphaned Gate key
+/// left in the OS keychain when an uninstall removed Gate Connect's on-disk
+/// files but couldn't touch the keychain. macOS drag-to-trash — and deep
+/// uninstallers that purge `~/Library/Application Support` — leave exactly this
+/// kind of orphan, and a stale Gate key sitting in the keychain with no account
+/// behind it is what this clears.
 ///
 /// `account.json` (gateway URL on disk) is the anchor; the Gate key in keychain
-/// is the secret. We only act when the two have drifted, so a signed-in user
+/// is the secret. We only act on the keychain-orphan half, so a signed-in user
 /// (both halves present) is never touched:
 /// - URL gone, key present → orphaned Gate key → delete it.
-/// - URL present, key gone → stray `account.json` → remove it, so the app
-///   starts at first-run instead of a keyless, half-signed-in home.
+///
+/// A key-less `account.json` (URL present, no key) is *not* reconciled: it's a
+/// legitimate pending-key state — a fresh [`switch_gateway`], or a reinstall
+/// orphan — and the app routes it to key entry pointed at that gateway.
 pub fn reconcile() -> Result<()> {
     let has_url = load_base_url()?.is_some();
     let has_key = has_api_key()?;
-    match (has_url, has_key) {
-        (false, true) => {
-            let user = env::current_user()?;
-            keychain::delete(&service(), &user)?;
-        }
-        (true, false) => {
-            let path = config_path()?;
-            if path.exists() {
-                fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-            }
-        }
-        _ => {}
+    if !has_url && has_key {
+        let user = env::current_user()?;
+        keychain::delete(&service(), &user)?;
     }
     Ok(())
 }

@@ -183,12 +183,13 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     // so the first-run-vs-home decision this call drives always sees a
     // consistent view. An uninstall that removed Gate Connect's files but left
     // its OS keychain entry behind (macOS drag-to-trash, or a deep uninstaller
-    // that purges Application Support but can't touch the keychain) — or the
-    // reverse — leaves a stale half. Dropping it here, rather than on a startup
-    // thread that races this read, means an orphaned key (or a stray
-    // account.json with no key) can't briefly route the user to a half-signed-in
-    // home. Best-effort: a reconcile hiccup must not flip a signed-in user to
-    // first-run, so we log and fall through to the read below.
+    // that purges Application Support but can't touch the keychain). Dropping
+    // that orphaned key here, rather than on a startup thread that races this
+    // read, means it can't briefly route the user to a half-signed-in home. A
+    // key-less account.json (URL but no key) is left intact — it's a pending-key
+    // state and the read below reports has_api_key=false, so the UI routes to
+    // key entry. Best-effort: a reconcile hiccup must not flip a signed-in user
+    // to first-run, so we log and fall through to the read below.
     if let Err(e) = account::reconcile() {
         eprintln!("account reconcile failed: {e}");
     }
