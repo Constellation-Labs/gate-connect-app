@@ -82,49 +82,51 @@ export function FirstRun({ onConnected }: { onConnected: () => void }) {
         {submitting ? "Connecting…" : "Connect"}
       </Button>
 
-      {!devMode ? (
-        <div className="mt-3 text-center font-mono text-[10.5px] text-gc-ink-5">
-          {gateway}
+      <div className="mt-4">
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={() => setDevMode((v) => !v)}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3"
+          >
+            <Icon name="settings" size={14} />
+            Dev mode
+          </button>
         </div>
-      ) : (
-        <>
-          <div className="mb-1.5 mt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
-            Gateway server
-          </div>
-          <div className="flex flex-col gap-2">
-            {GATEWAY_SERVERS.map((server) => {
-              const active = server.url === gateway;
-              return (
-                <button
-                  key={server.url}
-                  type="button"
-                  onClick={() => setGateway(server.url)}
-                  disabled={active}
-                  className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
-                    <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
-                      {hostOf(server.url)}
-                    </div>
-                  </div>
-                  {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
-                </button>
-              );
-            })}
-          </div>
-        </>
-      )}
 
-      <div className="mt-3 flex justify-center">
-        <button
-          type="button"
-          onClick={() => setDevMode((v) => !v)}
-          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3"
-        >
-          <Icon name="settings" size={14} />
-          Dev mode
-        </button>
+        {!devMode ? (
+          <div className="mt-3 text-center font-mono text-[10.5px] text-gc-ink-5">
+            {gateway}
+          </div>
+        ) : (
+          <>
+            <div className="mb-1.5 mt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
+              Gateway server
+            </div>
+            <div className="flex flex-col gap-2">
+              {GATEWAY_SERVERS.map((server) => {
+                const active = server.url === gateway;
+                return (
+                  <button
+                    key={server.url}
+                    type="button"
+                    onClick={() => setGateway(server.url)}
+                    disabled={active}
+                    className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
+                      <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
+                        {hostOf(server.url)}
+                      </div>
+                    </div>
+                    {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
