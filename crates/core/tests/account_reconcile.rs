@@ -74,11 +74,11 @@ fn orphaned_key_without_account_json_is_deleted() {
     );
 }
 
-/// URL present, key gone: a stray `account.json` with no matching key.
-/// reconcile() must remove it so the app starts at first-run instead of a
-/// keyless, half-signed-in home.
+/// URL present, key gone: a key-less `account.json` is a legitimate pending-key
+/// state — a fresh `switch_gateway`, or a reinstall orphan — so reconcile() must
+/// leave it intact and let the app route to key entry pointed at that gateway.
 #[test]
-fn stray_account_json_without_key_is_removed() {
+fn keyless_account_json_is_left_for_key_entry() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
@@ -90,9 +90,10 @@ fn stray_account_json_without_key_is_removed() {
     account::reconcile().unwrap();
 
     assert!(
-        account::load_base_url().unwrap().is_none(),
-        "stray account.json must be removed when no key backs it"
+        account::load_base_url().unwrap().is_some(),
+        "key-less account.json must be kept as a pending-key state"
     );
+    assert!(!account::has_api_key().unwrap());
 }
 
 /// Both halves present (a signed-in user) must be left exactly as-is.
