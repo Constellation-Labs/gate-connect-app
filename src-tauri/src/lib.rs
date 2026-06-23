@@ -571,6 +571,11 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_skip_taskbar(false);
+                // The window is borderless by config; on Linux give it a native
+                // title bar so the WM provides a dependable minimize/close (the
+                // SNI tray is unreliable on GNOME). macOS/Windows stay
+                // decoration-free.
+                let _ = window.set_decorations(true);
             }
 
             // Round the NSWindow content view's CALayer so the transparent
