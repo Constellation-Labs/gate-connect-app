@@ -21,6 +21,7 @@ import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { ComingSoon } from "./screens/ComingSoon";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 
 type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
@@ -204,7 +205,16 @@ export function App() {
 
   let body: ReactNode = null;
   if (screen === "loading") {
-    body = null; // blank popover while we resolve account + proxy
+    // Startup screen while we resolve account + proxy (and the macOS keychain
+    // dialog reads the key) — show the brand lockup instead of a blank popover.
+    body = (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
+        <ConstellationHexMark size={40} fill="#002a5f" />
+        <span className="text-[15px] font-semibold tracking-[-0.02em] text-gc-navy">
+          Gate <span className="text-gc-accent">Connect</span>
+        </span>
+      </div>
+    );
   } else if (screen === "firstrun") {
     body = <FirstRun onConnected={onConnected} />;
   } else if (screen === "success") {
