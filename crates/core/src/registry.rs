@@ -6,6 +6,7 @@ pub enum ToolId {
     ClaudeCode,
     Codex,
     OpenCode,
+    OpenClaw,
 }
 
 impl ToolId {
@@ -14,6 +15,7 @@ impl ToolId {
             ToolId::ClaudeCode => "claude-code",
             ToolId::Codex => "codex",
             ToolId::OpenCode => "opencode",
+            ToolId::OpenClaw => "openclaw",
         }
     }
 
@@ -22,6 +24,7 @@ impl ToolId {
             "claude-code" => Some(ToolId::ClaudeCode),
             "codex" => Some(ToolId::Codex),
             "opencode" => Some(ToolId::OpenCode),
+            "openclaw" => Some(ToolId::OpenClaw),
             _ => None,
         }
     }
@@ -136,6 +139,7 @@ pub fn registry() -> Vec<Box<dyn Integration>> {
         Box::new(crate::integrations::claude_code::ClaudeCode),
         Box::new(crate::integrations::codex::Codex),
         Box::new(crate::integrations::opencode::OpenCode),
+        Box::new(crate::integrations::openclaw::OpenClaw),
     ]
 }
 

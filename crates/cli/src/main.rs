@@ -271,6 +271,9 @@ fn cmd_status(tool: &str) -> Result<()> {
             ToolId::OpenCode => {
                 println!("Re-run `opencode` to pick up the new opencode.json provider block.")
             }
+            ToolId::OpenClaw => {
+                println!("Re-run `openclaw` to pick up the new openclaw.json provider block.")
+            }
         }
     }
     Ok(())
@@ -321,6 +324,15 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
                     "  3. Your API keys from `opencode auth login <provider>` are untouched. Gate adds its headers and forwards each request to the original upstream."
                 );
         }
+        ToolId::OpenClaw => {
+            println!("  1. Quit any running `openclaw` sessions.");
+            println!(
+                    "  2. Re-run `openclaw` — your configured providers (anthropic / openai / openrouter) now route through Gate. Use the same model names you always have."
+                );
+            println!(
+                    "  3. Your provider credentials in ~/.openclaw/openclaw.json are untouched. Gate adds its headers and forwards each request to the original upstream."
+                );
+        }
     }
     Ok(())
 }
@@ -338,6 +350,9 @@ fn cmd_disconnect(tool: &str) -> Result<()> {
         }
         ToolId::OpenCode => {
             println!("Restart any running `opencode` sessions for the change to take effect.")
+        }
+        ToolId::OpenClaw => {
+            println!("Restart any running `openclaw` sessions for the change to take effect.")
         }
     }
     Ok(())

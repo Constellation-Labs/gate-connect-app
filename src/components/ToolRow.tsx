@@ -93,6 +93,8 @@ function vendorInitials(slug: string): string {
       return "cx";
     case "opencode":
       return "oc";
+    case "openclaw":
+      return "ow";
     default:
       return slug.slice(0, 2).toUpperCase();
   }
