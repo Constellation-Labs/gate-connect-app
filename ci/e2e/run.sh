@@ -186,10 +186,12 @@ case "$OS" in
       -k /Library/Keychains/System.keychain "$CA_DIR/ca.pem"
     ;;
   Windows)
-    # Into the current-user Root store (no elevation needed). Codex's Rust TLS
-    # reads the Windows cert store, so this is the Windows analogue of the Linux
-    # trust above.
-    certutil -user -addstore -f Root "$(winpath "$CA_DIR/ca.pem")" >/dev/null 2>&1 || true
+    # Into the LocalMachine Root store. NOT the current-user store: adding a
+    # trusted root for the current user pops an interactive "install this
+    # certificate?" dialog that hangs forever on a headless runner. The machine
+    # store is non-interactive (the runner is an admin). stdin from /dev/null as
+    # a belt-and-suspenders against any prompt. Codex's Rust TLS reads this store.
+    certutil -addstore -f Root "$(winpath "$CA_DIR/ca.pem")" </dev/null >/dev/null 2>&1 || true
     ;;
 esac
 
