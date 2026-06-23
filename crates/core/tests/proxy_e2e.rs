@@ -129,6 +129,8 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
+            preferred_port: None,
+            owner_uid: None,
         },
         || {},
     )

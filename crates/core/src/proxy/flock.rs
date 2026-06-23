@@ -71,11 +71,17 @@ mod tests {
 
         // A separate open file description on the same path conflicts.
         let second = FileLock::acquire(&path, false).unwrap();
-        assert!(second.is_none(), "second non-blocking acquire should be denied");
+        assert!(
+            second.is_none(),
+            "second non-blocking acquire should be denied"
+        );
 
         drop(first);
         let third = FileLock::acquire(&path, false).unwrap();
-        assert!(third.is_some(), "acquire should succeed once the first is dropped");
+        assert!(
+            third.is_some(),
+            "acquire should succeed once the first is dropped"
+        );
 
         drop(third);
         let _ = std::fs::remove_file(&path);

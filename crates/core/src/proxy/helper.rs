@@ -66,7 +66,8 @@ async fn serve() -> Result<()> {
     std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("locking down {}", token_path.display()))?;
 
-    let listener = UnixListener::bind(&sock).with_context(|| format!("binding {}", sock.display()))?;
+    let listener =
+        UnixListener::bind(&sock).with_context(|| format!("binding {}", sock.display()))?;
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("locking down {}", sock.display()))?;
 
@@ -282,7 +283,9 @@ fn set_passthrough(engine: &Shared) {
 async fn write_response(w: &mut (impl AsyncWriteExt + Unpin), resp: &Response) -> Result<()> {
     let mut line = serde_json::to_string(resp).context("serializing response")?;
     line.push('\n');
-    w.write_all(line.as_bytes()).await.context("writing response")?;
+    w.write_all(line.as_bytes())
+        .await
+        .context("writing response")?;
     w.flush().await.context("flushing response")?;
     Ok(())
 }

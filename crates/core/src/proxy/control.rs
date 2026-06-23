@@ -140,7 +140,10 @@ pub fn validate_domains(domains: &[ProxyDomain]) -> Result<()> {
     let catalog = default_domains();
     for d in domains {
         let known = catalog.iter().find(|c| c.slug == d.slug).with_context(|| {
-            format!("intercept domain {:?} is not in the built-in catalog", d.slug)
+            format!(
+                "intercept domain {:?} is not in the built-in catalog",
+                d.slug
+            )
         })?;
         if d.hosts != known.hosts {
             anyhow::bail!("intercept domain {:?} has hosts not in the catalog", d.slug);
