@@ -70,9 +70,7 @@ export function Settings({
     setError(null);
     setSubmitting(true);
     try {
-      await onSwitchGateway(url);
-      setDevMode(false);
-      setReplacing(true); // key was cleared on switch → prompt for the new env's key
+      await onSwitchGateway(url); // relaunches the app on success; nothing below runs
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

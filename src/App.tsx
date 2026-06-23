@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { relaunch } from "@tauri-apps/plugin-process";
 import type { Account, ProxyState, ProviderState } from "./lib/api";
 import {
   getAccount,
@@ -184,13 +185,14 @@ export function App() {
     [account, refreshAccount],
   );
 
-  const switchGatewayServer = useCallback(
-    async (url: string) => {
-      await switchGateway(url);
-      await refreshAccount(); // account now has new URL, has_api_key=false
-    },
-    [refreshAccount],
-  );
+  const switchGatewayServer = useCallback(async (url: string) => {
+    await switchGateway(url);
+    // Switching forgets the stored key, disconnects managed tools, and leaves
+    // the running proxy/providers pointed at the old gateway. Rather than patch
+    // all that live, relaunch into a clean session that re-reads the new
+    // account and lets the user enter an environment-appropriate key.
+    await relaunch();
+  }, []);
 
   const disconnect = useCallback(async () => {
     if (proxy?.running) {
