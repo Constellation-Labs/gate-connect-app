@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Account } from "../lib/api";
+import { trackError } from "../lib/analytics";
 import { SubHeader, SectionLabel, ConnPill, Button, Input } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
@@ -40,6 +41,7 @@ export function Settings({
       setNewKey("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "save_api_key");
     } finally {
       setSubmitting(false);
     }
@@ -53,6 +55,7 @@ export function Settings({
       await onDisconnect();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "disconnect");
     } finally {
       setSubmitting(false);
     }

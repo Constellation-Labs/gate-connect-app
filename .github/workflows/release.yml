@@ -60,6 +60,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Inlined into the frontend bundle by Vite (beforeBuildCommand). Absent
+          # ⇒ analytics stays a no-op, so the build still succeeds without it.
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Gate Connect ${{ github.ref_name }}'
