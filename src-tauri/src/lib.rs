@@ -537,6 +537,13 @@ pub fn run() {
                 if POPOVER_PINNED.load(Ordering::Acquire) {
                     return;
                 }
+                // On Linux a hidden window leaves the taskbar entirely, and the
+                // SNI/AppIndicator tray is unreliable on GNOME — so dismiss by
+                // minimizing instead, leaving a dock/taskbar entry to restore
+                // from. macOS/Windows keep the native hide-to-tray behavior.
+                #[cfg(target_os = "linux")]
+                let _ = window.minimize();
+                #[cfg(not(target_os = "linux"))]
                 let _ = window.hide();
             }
         })
@@ -555,6 +562,16 @@ pub fn run() {
                     eprintln!("proxy startup reconcile failed: {e}");
                 }
             });
+
+            // Linux dismisses the popover by minimizing (see the Focused(false)
+            // handler), so it needs a taskbar/dock entry to restore from —
+            // override the config's skipTaskbar:true here. macOS hides from the
+            // dock via the Accessory activation policy instead, and Windows
+            // keeps its hide-to-tray behavior, so neither wants this.
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_skip_taskbar(false);
+            }
 
             // Round the NSWindow content view's CALayer so the transparent
             // window itself has rounded corners — without this, CSS-rounded
@@ -591,6 +608,8 @@ pub fn run() {
                             if let Ok(cursor) = app.cursor_position() {
                                 anchor_at_cursor(&window, cursor);
                             }
+                            #[cfg(target_os = "linux")]
+                            let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -609,8 +628,15 @@ pub fn run() {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
                             // is_focused() is unreliable for a non-activating panel.
+                            // On Linux the popover is dismissed by minimizing, so a
+                            // minimized window counts as "away" and should restore,
+                            // not toggle off.
                             let is_visible = window.is_visible().unwrap_or(false);
-                            if is_visible {
+                            let is_minimized = window.is_minimized().unwrap_or(false);
+                            if is_visible && !is_minimized {
+                                #[cfg(target_os = "linux")]
+                                let _ = window.minimize();
+                                #[cfg(not(target_os = "linux"))]
                                 let _ = window.hide();
                             } else {
                                 // Linux trays don't report a usable rect; fall
@@ -625,6 +651,8 @@ pub fn run() {
                                 }
                                 #[cfg(not(target_os = "linux"))]
                                 anchor_under_tray(&window, rect.position, rect.size);
+                                #[cfg(target_os = "linux")]
+                                let _ = window.unminimize();
                                 let _ = window.show();
                                 let _ = window.set_focus();
                                 #[cfg(target_os = "macos")]
