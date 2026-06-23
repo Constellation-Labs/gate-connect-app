@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="h-full bg-ink-950">
+<html lang="en" class="h-full">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -12,7 +12,57 @@
     />
   </head>
   <body class="h-full">
-    <div id="root" class="h-full"></div>
+    <div id="root" class="h-full">
+      <!-- First-frame splash: paints the brand mark before the JS bundle loads
+           and React mounts (React replaces #root on mount). Without it the empty
+           window flashes its background — and on first launch the macOS keychain
+           prompt holds that flash on screen until the user unlocks. Inline styles
+           only, since Tailwind/fonts aren't loaded yet. Mirrors App's "loading"
+           screen so the handoff to React is seamless. -->
+      <div
+        style="position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: #ffffff;"
+      >
+        <svg width="40" height="46" viewBox="0 0 25.85 29.88" aria-label="Gate Connect">
+          <defs>
+            <linearGradient id="sa" x1="20.47" y1="5.61" x2="29.09" y2="20.54" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#002a5f" stop-opacity="0.25" />
+              <stop offset="1" stop-color="#002a5f" stop-opacity="1" />
+            </linearGradient>
+            <linearGradient id="sb" x1="8.51" y1="12.51" x2="10.67" y2="16.01" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#002a5f" stop-opacity="0.25" />
+              <stop offset="1" stop-color="#002a5f" stop-opacity="1" />
+            </linearGradient>
+            <linearGradient id="sc" x1="20.47" y1="5.61" x2="29.09" y2="20.55" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#002a5f" stop-opacity="1" />
+              <stop offset="1" stop-color="#002a5f" stop-opacity="0.25" />
+            </linearGradient>
+            <linearGradient id="sd" x1="7.54" y1="46.68" x2="24.78" y2="16.8" gradientUnits="userSpaceOnUse">
+              <stop offset="0.47" stop-color="#002a5f" stop-opacity="1" />
+              <stop offset="1" stop-color="#002a5f" stop-opacity="0.25" />
+            </linearGradient>
+            <linearGradient id="se" x1="4.31" y1="22.41" x2="4.31" y2="7.47" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#002a5f" stop-opacity="1" />
+              <stop offset="1" stop-color="#002a5f" stop-opacity="0.25" />
+            </linearGradient>
+          </defs>
+          <path d="M25.85,22.41V7.47l-4.31,7.47Z" fill="url(#sa)" />
+          <path d="M12.93,14.94,8.62,17.42v-5Z" fill="url(#sb)" />
+          <path d="M21.54,14.94l-4.3-7.47h8.61Z" fill="url(#sc)" />
+          <path d="M21.54 14.94 L12.93 29.88 L25.85 22.41 Z" fill="url(#sd)" />
+          <path d="M0 7.47 L0 22.41 L8.62 22.41 Z" fill="url(#se)" />
+          <path d="M0 7.47 L12.93 0 L25.85 7.47 L8.62 7.47 L4.31 14.94 Z" fill="#002a5f" />
+          <path
+            d="M8.62 17.42 L12.93 19.91 L17.24 17.42 L17.24 12.45 L12.93 9.97 L8.62 12.45 L12.93 14.94 Z"
+            fill="#002a5f"
+          />
+          <path d="M0 22.41 L17.24 22.41 L12.93 29.88 Z" fill="#002a5f" />
+        </svg>
+        <span
+          style="font-family: Geist, system-ui, sans-serif; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; color: #002a5f;"
+          >Gate <span style="color: #3e4fea;">Connect</span></span
+        >
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
