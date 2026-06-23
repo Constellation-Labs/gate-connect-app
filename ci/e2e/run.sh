@@ -86,6 +86,16 @@ CAPTURE="$WORK/capture.jsonl"
 # after each run for visibility.
 TOOL_OUT="$WORK/tool.out"
 
+# Diagnostics: timestamped checkpoints to both stdout (captured live by the
+# runner) and a file (dumped by an always() step even if this step is killed by
+# its timeout). Lets us see exactly where a hang occurs.
+DIAG="$WORK/diag.log"
+: > "$DIAG"
+ckpt() {
+  echo ">>> ckpt $(date -u +%H:%M:%S) $*"
+  echo ">>> ckpt $(date -u +%H:%M:%S) $*" >> "$DIAG" 2>/dev/null || true
+}
+
 # Node tools (claude / opencode-on-bun) talk to the mock over TLS. Rather than
 # fight each runtime's CA-trust quirks (bun ignores NODE_EXTRA_CA_CERTS on
 # macOS; msys cert paths confuse Node on Windows), skip verification for these
@@ -111,16 +121,28 @@ run_until_capture() {
   local needle="$1"
   shift
   : > "$TOOL_OUT"
+  ckpt "launch: $*"
   "$@" </dev/null >"$TOOL_OUT" 2>&1 &
   local pid=$!
+  ckpt "launched pid=$pid; polling for '$needle'"
   local i=0
   while [ "$i" -lt 90 ]; do
-    grep -q "$needle" "$CAPTURE" 2>/dev/null && break
-    kill -0 "$pid" 2>/dev/null || break # process exited on its own
+    grep -q "$needle" "$CAPTURE" 2>/dev/null && {
+      ckpt "captured '$needle' after ${i}s"
+      break
+    }
+    kill -0 "$pid" 2>/dev/null || {
+      ckpt "process pid=$pid exited on its own after ${i}s"
+      break
+    }
     sleep 1
     i=$((i + 1))
+    [ $((i % 15)) -eq 0 ] && ckpt "still polling ${i}s (pid=$pid alive)"
   done
+  [ "$i" -ge 90 ] && ckpt "poll timed out at ${i}s (pid=$pid)"
+  ckpt "killing pid=$pid"
   kill -KILL "$pid" 2>/dev/null # best-effort; not waited on
+  ckpt "kill returned for pid=$pid"
 }
 
 # ---------------------------------------------------------------------------
@@ -201,10 +223,12 @@ done
 # ---------------------------------------------------------------------------
 # 3. Sign in once; every tool reuses this account.
 # ---------------------------------------------------------------------------
+ckpt "mock ready; signing in"
 "$CLI" login --base-url "$BASE_URL" --api-key "sk-gw-e2e" || {
   echo "login failed"
   exit 1
 }
+ckpt "signed in"
 
 # run_tool <label> <slug> <path-needle> -- <invoke cmd...>
 run_tool() {
@@ -212,11 +236,17 @@ run_tool() {
   shift 3
   [ "$1" = "--" ] && shift
   echo "::group::$label"
+  TOOL_OUT="$WORK/$slug.out" # per-tool so the diagnostics step keeps each one
   : > "$CAPTURE"
+  ckpt "[$label] connect"
   if "$CLI" connect "$slug"; then
+    ckpt "[$label] connected; running tool"
     run_until_capture "$needle" "$@"
+    ckpt "[$label] run_until_capture returned; tool output:"
     sed 's/^/    /' "$TOOL_OUT" 2>/dev/null
+    ckpt "[$label] disconnect"
     "$CLI" disconnect "$slug" >/dev/null 2>&1
+    ckpt "[$label] asserting capture"
     if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" "$(winpath "$CAPTURE")" "$needle"; then
       echo "PASS: $label reached the gateway with Gate headers"
       PASS=$((PASS + 1))
@@ -224,6 +254,7 @@ run_tool() {
       echo "FAIL: $label did not reach the gateway as expected"
       FAIL=$((FAIL + 1))
     fi
+    ckpt "[$label] done"
   else
     echo "FAIL: $label connect failed"
     FAIL=$((FAIL + 1))
@@ -264,6 +295,7 @@ printf '{"provider":{"anthropic":{}}}' > "$HOME/.config/opencode/opencode.json"
 run_tool "opencode" "opencode" "/v1/messages" -- \
   opencode run --model anthropic/claude-3-5-haiku-latest "ping"
 
+ckpt "all tools finished; reached end of script"
 echo "----------------------------------------"
 echo "Passed: $PASS  Failed: $FAIL"
 test "$FAIL" -eq 0
