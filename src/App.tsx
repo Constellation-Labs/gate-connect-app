@@ -105,6 +105,14 @@ export function App() {
 
   const toggleProxy = useCallback(async () => {
     if (proxyBusy) return;
+    // Turning the proxy on with nothing enabled hits the backend's "enable at
+    // least one provider" guard. Send the user to the tools screen to pick one
+    // instead of surfacing an error from a dead-end toggle.
+    const enabledDomains = proxy?.domains.filter((d) => d.enabled && d.supported).length ?? 0;
+    if (!proxy?.running && enabledDomains === 0) {
+      setScreen("proxy");
+      return;
+    }
     setProxyBusy(true);
     setProviderError(null);
     try {
@@ -115,7 +123,11 @@ export function App() {
       setProviders(await listProviders().catch(() => []));
     } catch (e) {
       trackError(e, "generic");
-      // surfaced state stays; a follow-up status refresh keeps us honest
+      // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
+      // or a missing network service) instead of silently reverting — a
+      // swallowed error reads as "the toggle does nothing".
+      setProviderError(typeof e === "string" ? e : String(e));
+      // Re-sync to the true state after the failed toggle.
       try {
         setProxy(await proxyStatus());
       } catch {
@@ -283,6 +295,7 @@ export function App() {
         proxyOn={proxyOn}
         domainCount={domainCount}
         showProxy={showProxy}
+        error={providerError}
         onOpenProxy={() => setScreen("proxy")}
         onToggleProxy={toggleProxy}
         onOpenDirectGateway={() => setScreen("coming-soon")}

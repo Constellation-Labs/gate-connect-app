@@ -8,6 +8,7 @@ export function Home({
   proxyOn,
   domainCount,
   showProxy,
+  error,
   onOpenProxy,
   onToggleProxy,
   onOpenDirectGateway,
@@ -17,6 +18,7 @@ export function Home({
   proxyOn: boolean;
   domainCount: number;
   showProxy: boolean;
+  error?: string | null;
   onOpenProxy: () => void;
   onToggleProxy: () => void;
   onOpenDirectGateway: () => void;
@@ -66,6 +68,8 @@ export function Home({
             </span>
           </div>
         )}
+
+        {error && <p className="px-1 text-[11.5px] leading-snug text-gc-error">{error}</p>}
 
         <CardButton onClick={onOpenDirectGateway}>
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-3">
