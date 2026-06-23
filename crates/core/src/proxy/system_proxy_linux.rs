@@ -195,6 +195,15 @@ mod tests {
     use super::*;
 
     fn with_temp_env<T>(f: impl FnOnce() -> T) -> T {
+        // These tests mutate process-global state (XDG_CONFIG_HOME and the
+        // app_support_dir test override) and share a single temp dir, so they
+        // must not run concurrently: otherwise one test's teardown
+        // `remove_dir_all` races another's writes and the atomic rename fails
+        // with ENOENT. Serialize them. (`unwrap_or_else` swallows a poisoned
+        // lock from an earlier panicking test so the rest still run.)
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+
         // `dropin_path` keys off `dirs::config_dir()` (XDG_CONFIG_HOME), and the
         // snapshot/port paths off `app_support_dir`; point both at a throwaway
         // dir so the test never touches the real user config.
