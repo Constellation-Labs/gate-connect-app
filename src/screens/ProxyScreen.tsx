@@ -1,7 +1,23 @@
-import type { ProxyState, ProviderState } from "../lib/api";
+import type { ProxyState, ProviderState, Tool } from "../lib/api";
 import { SubHeader, Switch, SectionLabel } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
+
+/** Subtitle for a tool-integration row, keyed off its current status. */
+function toolSubtitle(tool: Tool): string {
+  switch (tool.status.kind) {
+    case "connected":
+      return "On · routed through Gate";
+    case "not_installed":
+      return "Not installed";
+    case "drifted":
+      return "Config changed outside Gate";
+    case "error":
+      return tool.status.message;
+    default:
+      return "Off · not routed through Gate";
+  }
+}
 
 /** Routing detail - the master "Route through Gate" toggle (system proxy),
  * the CA-trust notice, and one switch per provider. Each provider switch
@@ -17,6 +33,9 @@ export function ProxyScreen({
   onToggleProxy,
   onSetProvider,
   onTrustCa,
+  openClaw,
+  toolBusy,
+  onToggleOpenClaw,
 }: {
   proxy: ProxyState;
   providers: ProviderState[];
@@ -26,6 +45,9 @@ export function ProxyScreen({
   onToggleProxy: () => void;
   onSetProvider: (slug: string, enabled: boolean) => void;
   onTrustCa: () => void;
+  openClaw: Tool | null;
+  toolBusy: boolean;
+  onToggleOpenClaw: () => void;
 }) {
   const platform = usePlatform();
   const trustStore = platform === "windows" ? "certificate store" : "keychain";
@@ -91,6 +113,27 @@ export function ProxyScreen({
           <div className="px-3.5 py-3 text-[11.5px] text-gc-ink-4">No providers available.</div>
         )}
       </div>
+
+      {openClaw && (
+        <>
+          <SectionLabel>Tool integrations</SectionLabel>
+          <div className="flex flex-col border-t border-gc-line">
+            <div className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5">
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-medium text-gc-ink">{openClaw.name}</div>
+                <div className="mt-0.5 truncate text-[11px] text-gc-ink-4">
+                  {toolSubtitle(openClaw)}
+                </div>
+              </div>
+              <Switch
+                on={openClaw.status.kind === "connected"}
+                disabled={toolBusy || openClaw.status.kind === "not_installed"}
+                onClick={onToggleOpenClaw}
+              />
+            </div>
+          </div>
+        </>
+      )}
 
       {error && (
         <div className="mx-3.5 mt-2 rounded bg-[rgba(243,156,18,0.1)] px-3 py-2 text-[11.5px] leading-snug text-gc-ink-2">
