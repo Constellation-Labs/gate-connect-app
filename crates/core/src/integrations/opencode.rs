@@ -80,7 +80,7 @@ const GATEWAY_PATH_SUFFIX: &str = "/v1";
 /// Providers we know how to redirect through Gate. For each, the
 /// `upstream_url` is the bare-host form expected by `X-Gate-Upstream-Url`
 /// - Gate concatenates the inbound request path onto it, so trailing
-/// `/v1` lives on the client side (in baseURL), never here.
+///   `/v1` lives on the client side (in baseURL), never here.
 struct KnownProvider {
     id: &'static str,
     upstream_url: &'static str,
