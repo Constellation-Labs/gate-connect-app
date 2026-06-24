@@ -126,6 +126,10 @@ fn codex_connect_then_disconnect() {
         "base URL missing: {body}"
     );
     assert!(
+        body.contains("requires_openai_auth = true"),
+        "requires_openai_auth not set: {body}"
+    );
+    assert!(
         body.contains("X-Gate-Api-Key"),
         "gate key header missing: {body}"
     );

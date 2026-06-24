@@ -7,12 +7,16 @@
 //! of the file — comments, user-defined providers, profiles, etc. —
 //! byte-identical.
 //!
-//! Like Claude Code, Codex brings its own upstream credentials: the
-//! provider definition references `env_key = "OPENAI_API_KEY"`, so the
-//! user's existing OpenAI API key is reused for upstream auth. Gate
-//! passes it through and forwards to OpenAI per the
-//! `X-Gate-Upstream-Url` hint. Therefore [`requires_upstream_credential`]
-//! is `false`.
+//! Like Claude Code, Codex brings its own upstream credentials. We set
+//! `requires_openai_auth = true` on the provider so Codex attaches its
+//! own `codex login` session — the ChatGPT OAuth token or the API key in
+//! `~/.codex/auth.json` — as the upstream bearer. Per the Codex docs this
+//! is the only provider shape that carries a ChatGPT-subscription login
+//! through a custom `base_url` (a bare `[auth] command` helper works for
+//! API keys but leaves ChatGPT-mode Codex falling back to its built-in
+//! provider and hitting chatgpt.com directly). Gate passes the bearer
+//! through and forwards to OpenAI per the `X-Gate-Upstream-Url` hint.
+//! Therefore [`requires_upstream_credential`] is `false`.
 //!
 //! Codex reads `config.toml` at startup, so the user must restart any
 //! running `codex` sessions after connecting/disconnecting.
@@ -29,52 +33,15 @@ use crate::env;
 use crate::primitives;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
-/// File name + body of the auth-helper script Codex invokes via
-/// `[auth] command`. The helper reads `~/.codex/auth.json` and prints
-/// the current bearer to stdout. `auth_mode == "apikey"` -> top-level
-/// `OPENAI_API_KEY`; `auth_mode == "chatgpt"` (or anything else) ->
-/// `tokens.access_token`.
-///
-/// Two shapes kept side-by-side so each OS family ships the right file:
-///
-/// - **Unix (macOS + Linux):** POSIX shell using `sed` for JSON
-///   extraction. No Python dep so it works on minimal Linux installs.
-/// - **Windows:** `.cmd` wrapper that invokes PowerShell with an inline
-///   `ConvertFrom-Json` script. `.cmd` is directly executable from
-///   Codex's spawn (CreateProcess routes `.cmd`/`.bat` through cmd.exe
-///   automatically).
+/// File name of the auth-helper script older Gate Connect versions wrote
+/// and pointed Codex's `[auth] command` at. We no longer write it — Codex
+/// now sources the upstream credential itself via `requires_openai_auth` —
+/// but `disconnect` still deletes any leftover so an upgrade-then-disconnect
+/// leaves zero residue.
 #[cfg(unix)]
 const HELPER_FILENAME: &str = "codex-credential-helper.sh";
 #[cfg(windows)]
 const HELPER_FILENAME: &str = "codex-credential-helper.cmd";
-
-#[cfg(unix)]
-const CODEX_CREDENTIAL_HELPER: &str = r#"#!/bin/sh
-# Written by Gate Connect. Do not edit by hand.
-set -eu
-AUTH_FILE="$HOME/.codex/auth.json"
-if [ ! -f "$AUTH_FILE" ]; then
-  echo "Gate Connect: $AUTH_FILE missing -- run \`codex login\` first" >&2
-  exit 1
-fi
-MODE=$(sed -n 's/.*"auth_mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AUTH_FILE" | head -1)
-if [ "$MODE" = "apikey" ]; then
-  TOKEN=$(sed -n 's/.*"OPENAI_API_KEY"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AUTH_FILE" | head -1)
-else
-  TOKEN=$(sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AUTH_FILE" | head -1)
-  if [ -z "$TOKEN" ]; then
-    TOKEN=$(sed -n 's/.*"OPENAI_API_KEY"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AUTH_FILE" | head -1)
-  fi
-fi
-if [ -z "$TOKEN" ]; then
-  echo "Gate Connect: no usable token in auth.json (auth_mode=$MODE)" >&2
-  exit 3
-fi
-printf '%s' "$TOKEN"
-"#;
-
-#[cfg(windows)]
-const CODEX_CREDENTIAL_HELPER: &str = "@echo off\r\nrem Written by Gate Connect. Do not edit by hand.\r\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"& { $f = Join-Path $env:USERPROFILE '.codex\\auth.json'; if (-not (Test-Path $f)) { [Console]::Error.WriteLine('Gate Connect: ' + $f + ' missing'); exit 1 }; try { $d = Get-Content -Raw $f | ConvertFrom-Json } catch { [Console]::Error.WriteLine('Gate Connect: cannot parse auth.json: ' + $_.Exception.Message); exit 2 }; if ($d.auth_mode -eq 'apikey') { $t = $d.OPENAI_API_KEY } else { $t = $null; if ($d.tokens) { $t = $d.tokens.access_token }; if (-not $t) { $t = $d.OPENAI_API_KEY } }; if (-not $t) { [Console]::Error.WriteLine('Gate Connect: no usable token'); exit 3 }; [Console]::Out.Write($t) }\"\r\n";
 
 fn helper_script_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join(HELPER_FILENAME))
@@ -265,6 +232,19 @@ impl Integration for Codex {
             )));
         }
 
+        // Require `requires_openai_auth = true`. A block without it is the
+        // old `[auth] command` shape that left ChatGPT-mode Codex bypassing
+        // the gateway — report drift so the user reconnects into the fix.
+        let requires_openai_auth = provider_block
+            .get("requires_openai_auth")
+            .and_then(|i| i.as_bool())
+            .unwrap_or(false);
+        if !requires_openai_auth {
+            return Ok(Status::Drifted(format!(
+                "[model_providers.{PROVIDER_ID}] is missing requires_openai_auth = true"
+            )));
+        }
+
         let gateway = match account::load_base_url()? {
             Some(u) => u,
             None => {
@@ -361,11 +341,19 @@ impl Integration for Codex {
 
         // Stash the prior `model_provider` so disconnect can restore it.
         // Skip if we've already done this (re-connect mustn't clobber the
-        // original snapshot with our own intermediate value).
+        // original snapshot with our own intermediate value). Check both
+        // marker keys: a first connect over a config with no
+        // `model_provider` records only `previous_model_provider_absent`,
+        // and a re-connect that ignored it would re-snapshot our own
+        // `"gate"` pointer — disconnect would then "restore" `model_provider
+        // = "gate"` after deleting the provider block.
         let marker_has_prev = doc
             .get("_gate_connect")
             .and_then(|i| i.as_table_like())
-            .map(|t| t.contains_key("previous_model_provider"))
+            .map(|t| {
+                t.contains_key("previous_model_provider")
+                    || t.contains_key("previous_model_provider_absent")
+            })
             .unwrap_or(false);
         let previous_model_provider = doc
             .get("model_provider")
@@ -386,13 +374,6 @@ impl Integration for Codex {
             .context("`model_providers` must be a TOML table")?;
         model_providers.set_implicit(true);
 
-        // Write the auth helper next to other Gate Connect files. Codex
-        // invokes it every time it needs a Bearer, so token refresh
-        // (Codex rotates its own OAuth tokens) is automatic.
-        let helper_path = helper_script_path()?;
-        primitives::write_file(&helper_path, CODEX_CREDENTIAL_HELPER.as_bytes(), 0o700)
-            .context("writing Codex credential helper")?;
-
         let base_url = compute_base_url(&input.gateway_base_url, mode);
         let upstream_url = mode.upstream_url();
 
@@ -400,22 +381,20 @@ impl Integration for Codex {
         provider.insert("name", value(PROVIDER_DISPLAY_NAME));
         provider.insert("base_url", value(base_url.as_str()));
         provider.insert("wire_api", value("responses"));
+        // Codex sources the upstream bearer from its own `codex login`
+        // session (ChatGPT OAuth token or API key in ~/.codex/auth.json)
+        // and attaches it to this provider. This is the only mechanism
+        // that carries a ChatGPT-subscription login through a custom
+        // base_url — without it, ChatGPT-mode Codex ignores this provider
+        // and hits chatgpt.com directly. Mutually exclusive with `env_key`
+        // and `[auth] command` per the Codex docs, so we set neither.
+        provider.insert("requires_openai_auth", value(true));
 
         let mut headers = Table::new();
         headers.set_implicit(false);
         headers.insert(GATE_KEY_HEADER, value(acct.api_key.as_str()));
         headers.insert(UPSTREAM_URL_HEADER, value(upstream_url));
         provider.insert("http_headers", Item::Table(headers));
-
-        // Auth delegates to a helper script that reads ~/.codex/auth.json
-        // and prints the current bearer (Codex's own OAuth access token,
-        // or its API key in apikey mode). Per the Codex docs we must not
-        // combine `[auth] command` with `env_key` /
-        // `experimental_bearer_token` / `requires_openai_auth`.
-        let mut auth = Table::new();
-        auth.set_implicit(false);
-        auth.insert("command", value(helper_path.display().to_string().as_str()));
-        provider.insert("auth", Item::Table(auth));
 
         model_providers.insert(PROVIDER_ID, Item::Table(provider));
 
@@ -514,7 +493,8 @@ impl Integration for Codex {
             write_doc(&path, &doc)?;
         }
 
-        // Remove the helper script too — keep "zero residue" on disconnect.
+        // Remove the legacy auth-helper script if an older Gate Connect
+        // version left one behind — keep "zero residue" on disconnect.
         let helper = helper_script_path()?;
         if helper.exists() {
             fs::remove_file(&helper).with_context(|| format!("removing {}", helper.display()))?;
@@ -669,6 +649,7 @@ mod tests {
             "base_url",
             value(compute_base_url("https://gw.example.com", AuthMode::Chatgpt).as_str()),
         );
+        provider.insert("requires_openai_auth", value(true));
         let mut headers = Table::new();
         headers.set_implicit(false);
         headers.insert(GATE_KEY_HEADER, value("sk-gw-xxx"));
@@ -680,6 +661,7 @@ mod tests {
         let rendered = doc.to_string();
         assert!(rendered.contains("model_provider = \"gate\""));
         assert!(rendered.contains("[model_providers.gate]"));
+        assert!(rendered.contains("requires_openai_auth = true"));
         assert!(rendered.contains("[model_providers.gate.http_headers]"));
         assert!(rendered.contains("X-Gate-Api-Key"));
         assert!(rendered.contains("X-Gate-Upstream-Url"));
