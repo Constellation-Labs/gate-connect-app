@@ -330,7 +330,14 @@ export function App() {
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto overflow-x-hidden rounded-gc-lg bg-gc-surface text-gc-ink">
+    <div
+      className={`flex h-full w-full flex-col overflow-y-auto overflow-x-hidden rounded-gc-lg bg-gc-surface text-gc-ink${
+        // While a proxy toggle is in flight, show the OS busy cursor everywhere
+        // (the `!` overrides children's cursor-pointer / cursor-not-allowed) so
+        // the slow enable/disable reads as "working", not "did nothing".
+        proxyBusy ? " cursor-wait [&_*]:!cursor-wait" : ""
+      }`}
+    >
       <UpdateBanner />
       {body}
     </div>
