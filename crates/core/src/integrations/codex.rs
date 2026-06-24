@@ -341,11 +341,19 @@ impl Integration for Codex {
 
         // Stash the prior `model_provider` so disconnect can restore it.
         // Skip if we've already done this (re-connect mustn't clobber the
-        // original snapshot with our own intermediate value).
+        // original snapshot with our own intermediate value). Check both
+        // marker keys: a first connect over a config with no
+        // `model_provider` records only `previous_model_provider_absent`,
+        // and a re-connect that ignored it would re-snapshot our own
+        // `"gate"` pointer — disconnect would then "restore" `model_provider
+        // = "gate"` after deleting the provider block.
         let marker_has_prev = doc
             .get("_gate_connect")
             .and_then(|i| i.as_table_like())
-            .map(|t| t.contains_key("previous_model_provider"))
+            .map(|t| {
+                t.contains_key("previous_model_provider")
+                    || t.contains_key("previous_model_provider_absent")
+            })
             .unwrap_or(false);
         let previous_model_provider = doc
             .get("model_provider")
