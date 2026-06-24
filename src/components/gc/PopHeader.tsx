@@ -1,7 +1,7 @@
 import { ConstellationHexMark } from "./ConstellationHexMark";
 import { ConnPill, IconButton } from "./ui";
 
-/** Popover header — hex mark + "Gate Connect" wordmark, workspace sub-label,
+/** Popover header - hex mark + "Gate Connect" wordmark, workspace sub-label,
  *  connection pill, and the settings gear. Port of the prototype's PopHeader. */
 export function PopHeader({
   workspace,

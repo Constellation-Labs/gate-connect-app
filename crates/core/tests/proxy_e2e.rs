@@ -4,8 +4,8 @@
 //! `X-Gate-Upstream-Url` headers injected, while its own credential is left
 //! intact.
 //!
-//! This drives `proxy::engine::start` directly — the same engine the CLI's
-//! `proxy enable` and the menubar app boot — so it exercises the only path in
+//! This drives `proxy::engine::start` directly - the same engine the CLI's
+//! `proxy enable` and the menubar app boot - so it exercises the only path in
 //! the app that emits real gateway-bound traffic. It is fully hermetic: a
 //! throwaway CA, a loopback mock gateway, and an in-process client. Nothing
 //! touches the OS trust store or system proxy, so no elevation is needed and

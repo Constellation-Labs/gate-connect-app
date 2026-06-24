@@ -1,4 +1,4 @@
-//! `gate-connect` — prototype CLI for Gate Connect.
+//! `gate-connect` - prototype CLI for Gate Connect.
 //!
 //! Per the PRD this is one of three coordinated surfaces (desktop app,
 //! web recipe pages, CLI). The Tauri desktop app and this CLI share the
@@ -54,7 +54,7 @@ enum Command {
         tool: String,
     },
     /// Point a tool at the Gate AI gateway. Requires an upstream
-    /// credential — set one via `set-upstream` first.
+    /// credential - set one via `set-upstream` first.
     Connect {
         tool: String,
         /// Override the integration's default upstream URL. Sent via
@@ -80,7 +80,7 @@ enum Command {
     /// Manage the built-in MITM proxy that routes config-less apps
     /// (Claude Desktop, ChatGPT, …) and command-line tools through the Gate
     /// gateway. Enabling installs a local CA and points the system proxy at a
-    /// loopback listener; only enabled provider domains are intercepted —
+    /// loopback listener; only enabled provider domains are intercepted -
     /// every other host is tunnelled untouched.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     Proxy {
@@ -163,11 +163,11 @@ fn cmd_login(
 ) -> Result<()> {
     let api_key = resolve_secret(api_key, api_key_file, "Gate API key")?;
     account::save(&base_url, Some(&api_key))?;
-    // The key is copied into tool configs at connect time — push the new
+    // The key is copied into tool configs at connect time - push the new
     // one into any config that still embeds an old key.
     registry::refresh_gate_key_everywhere(&api_key)?;
     // The proxy engine lives in whichever process enabled it (usually the
-    // menubar app) — this process can't push the new key into it.
+    // menubar app) - this process can't push the new key into it.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         if proxy::engine_likely_running() {
@@ -218,7 +218,7 @@ fn cmd_logout() -> Result<()> {
     registry::disconnect_all_managed()?;
     account::clear()?;
     // The proxy engine lives in whichever process enabled it (usually the
-    // menubar app) — this process can't stop it or revoke its in-memory key.
+    // menubar app) - this process can't stop it or revoke its in-memory key.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         if proxy::engine_likely_running() {
@@ -302,20 +302,20 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
                 "  1. Quit any running `claude` sessions (they cache settings.json at launch)."
             );
             println!(
-                "  2. Re-run `claude` — it picks up ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS from ~/.claude/settings.json."
+                "  2. Re-run `claude` - it picks up ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS from ~/.claude/settings.json."
             );
             println!("  3. Verify with `claude /status` (look for the gateway URL).");
         }
         ToolId::Codex => {
             println!("  1. Quit any running `codex` sessions.");
             println!(
-                "  2. Re-run `codex` — it reads ~/.codex/config.toml on launch and routes through the `gate` model provider. Gate handles upstream auth, no OPENAI_API_KEY needed."
+                "  2. Re-run `codex` - it reads ~/.codex/config.toml on launch and routes through the `gate` model provider. Gate handles upstream auth, no OPENAI_API_KEY needed."
             );
         }
         ToolId::OpenCode => {
             println!("  1. Quit any running `opencode` sessions.");
             println!(
-                    "  2. Re-run `opencode` — your existing providers (anthropic / openai / openrouter) now route through Gate. Use the same model names you always have."
+                    "  2. Re-run `opencode` - your existing providers (anthropic / openai / openrouter) now route through Gate. Use the same model names you always have."
                 );
             println!(
                     "  3. Your API keys from `opencode auth login <provider>` are untouched. Gate adds its headers and forwards each request to the original upstream."
@@ -351,7 +351,7 @@ fn cmd_set_upstream(
     let integ = resolve(tool)?;
     if !integ.requires_upstream_credential() {
         anyhow::bail!(
-            "{} brings its own upstream credentials — no separate key needed",
+            "{} brings its own upstream credentials - no separate key needed",
             integ.display_name()
         );
     }
@@ -375,7 +375,7 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
         ProxyCmd::Enable => {
-            // Restore providers a prior master-off disabled, before enabling —
+            // Restore providers a prior master-off disabled, before enabling -
             // otherwise the all-off state trips `enable`'s "at least one
             // provider" precondition (mirrors the app's proxy_enable flow).
             if let Err(e) = gate_connect_core::provider::restore_all() {
@@ -450,7 +450,7 @@ fn print_proxy_domains(domains: &[proxy::ProxyDomain]) {
 fn print_proxy_hint() {
     #[cfg(target_os = "linux")]
     println!(
-        "\nNote: proxy variables were written to ~/.config/environment.d/gate-proxy.conf — log out and back in for command-line tools and GUI apps to pick them up."
+        "\nNote: proxy variables were written to ~/.config/environment.d/gate-proxy.conf - log out and back in for command-line tools and GUI apps to pick them up."
     );
 }
 

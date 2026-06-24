@@ -3,7 +3,7 @@ import { SubHeader, Switch, SectionLabel } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
 
-/** Routing detail — the master "Route through Gate" toggle (system proxy),
+/** Routing detail - the master "Route through Gate" toggle (system proxy),
  * the CA-trust notice, and one switch per provider. Each provider switch
  * orchestrates its config integration and (when the proxy is running) its
  * proxy domain, so the user never sees the proxy-vs-config split.

@@ -6,7 +6,7 @@
 //! connection is open. So [`ProxyManager`](super::manager) holds the
 //! [`HelperClient`] for as long as the proxy is "on"; dropping it (a clean
 //! disable, or the GUI process exiting) closes the connection and the daemon
-//! falls back to pass-through — the port stays bound, so frozen sessions keep
+//! falls back to pass-through - the port stays bound, so frozen sessions keep
 //! flowing instead of being stranded.
 
 use std::io::{BufRead, BufReader, Write};
@@ -24,7 +24,7 @@ use crate::proxy::ProxyDomain;
 /// so a hung daemon can't stall the caller (and the UI's status polling, which
 /// holds the manager lock) for long.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
-/// Longer timeout for `SetIntercept`, which may start the engine — binding the
+/// Longer timeout for `SetIntercept`, which may start the engine - binding the
 /// port and building the MITM proxy waits up to ~10s for readiness.
 const INTERCEPT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -150,7 +150,7 @@ impl HelperClient {
 
 /// Spawn the daemon as a detached child: `setsid` so it leaves the GUI's
 /// session/controlling terminal and survives the GUI exiting (it's still in the
-/// user *login* session, so it's torn down at logout — the lifetime we want).
+/// user *login* session, so it's torn down at logout - the lifetime we want).
 fn spawn_daemon() -> Result<()> {
     let exe = std::env::current_exe().context("resolving current exe")?;
     let mut cmd = Command::new(exe);

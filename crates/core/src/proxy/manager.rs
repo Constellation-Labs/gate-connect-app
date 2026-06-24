@@ -6,7 +6,7 @@
 //! enable/disable/restore/reconcile run it unprivileged and promptless. The
 //! only step that needs admin is trusting the CA, which happens once on
 //! enable. Critically, the system-proxy revert never depends on an admin
-//! prompt — so it can't be canceled and leave HTTPS routed at a dead port.
+//! prompt - so it can't be canceled and leave HTTPS routed at a dead port.
 //! The CA is left trusted across disable so re-enabling is promptless;
 //! removing it is a separate explicit action ([`ProxyManager::untrust_ca`]).
 
@@ -56,7 +56,7 @@ impl ProxyManager {
     pub fn enable(&self) -> Result<ProxyState> {
         // Hold the lock for the whole sequence: a concurrent enable must not
         // snapshot the system proxy after this one has already pointed it at
-        // our engine — that snapshot would later "restore" a dead port.
+        // our engine - that snapshot would later "restore" a dead port.
         // (handle_engine_crash uses try_lock, so it can't deadlock on this.)
         let mut guard = self.engine.lock().expect("proxy engine mutex poisoned");
         if guard.is_some() {
@@ -65,7 +65,7 @@ impl ProxyManager {
         }
 
         let account = account::load()?
-            .context("no Gate account configured — sign in before enabling the proxy")?;
+            .context("no Gate account configured - sign in before enabling the proxy")?;
         let domains = config::load_domains()?;
         // No enabled-domains guard here: the master switch owns whether the
         // engine runs, while providers/domains own what it intercepts. Starting
@@ -142,7 +142,7 @@ impl ProxyManager {
     }
 
     /// Stop the engine and restore the prior system proxy. Promptless and
-    /// unconditional — the revert happens first and never depends on admin,
+    /// unconditional - the revert happens first and never depends on admin,
     /// so it can't be canceled and strand traffic. The CA is left trusted.
     pub fn disable(&self) -> Result<ProxyState> {
         let running = self
@@ -152,7 +152,7 @@ impl ProxyManager {
             .take();
 
         // An unreadable snapshot must not strand HTTPS at the dead engine
-        // port — treat it like a missing one and force the proxy off.
+        // port - treat it like a missing one and force the proxy off.
         let snapshot = system_proxy::load_snapshot().unwrap_or_else(|e| {
             eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
             None
@@ -172,7 +172,7 @@ impl ProxyManager {
     }
 
     /// Toggle a domain. If the engine is running, the new rules are pushed
-    /// live — no restart, no prompt .
+    /// live - no restart, no prompt .
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
         let domains = config::set_enabled(slug, enabled)?;
         if let Some(running) = self
@@ -186,7 +186,7 @@ impl ProxyManager {
         self.status()
     }
 
-    /// Push a rotated Gate API key into the running engine, if any — the
+    /// Push a rotated Gate API key into the running engine, if any - the
     /// engine otherwise keeps injecting the key it was started with.
     pub fn refresh_api_key(&self, api_key: &str) {
         if let Some(running) = self
@@ -228,7 +228,7 @@ impl ProxyManager {
     pub(crate) fn handle_engine_crash(&self) {
         eprintln!("gate proxy engine exited unexpectedly; reverting system proxy");
         // Briefly retry the lock: short holders (status) clear in ms. If
-        // enable still holds it after that, defer — enable re-checks the
+        // enable still holds it after that, defer - enable re-checks the
         // engine before returning and runs this same revert itself, whereas
         // restoring + clearing the snapshot from here mid-enable would erase
         // the state enable relies on. (A deliberate stop sets `stopping`
@@ -261,7 +261,7 @@ impl ProxyManager {
     /// Two layers, because the graceful-disable `Drop` is bypassed by a hard
     /// kill: (1) a leftover snapshot restores the exact pre-Gate state; (2) a
     /// belt-and-suspenders sweep turns off any service still pointed at a dead
-    /// loopback listener even when no (or a partial) snapshot survives — that
+    /// loopback listener even when no (or a partial) snapshot survives - that
     /// case otherwise strands every proxy-honoring app with
     /// ERR_PROXY_CONNECTION_FAILED while Gate shows "off". Both are promptless,
     /// so this always succeeds; a clean disable makes it a near no-op.

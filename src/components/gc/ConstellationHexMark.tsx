@@ -1,7 +1,7 @@
 import { useId } from "react";
 
 /**
- * Constellation faceted hex mark — exact port of the Claude Design prototype's
+ * Constellation faceted hex mark - exact port of the Claude Design prototype's
  * `ConstellationHexMark` (brand-lockup.jsx). Gradients + path geometry are
  * reproduced verbatim so the logo is pixel-identical to the handoff.
  */

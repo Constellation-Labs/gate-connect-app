@@ -5,15 +5,15 @@
 //! `env` block, which Claude Code injects into its own process at every
 //! invocation:
 //!
-//! - `ANTHROPIC_BASE_URL` — the gateway URL the user signed in with.
-//! - `ANTHROPIC_CUSTOM_HEADERS` — a single string with two
+//! - `ANTHROPIC_BASE_URL` - the gateway URL the user signed in with.
+//! - `ANTHROPIC_CUSTOM_HEADERS` - a single string with two
 //!   newline-separated headers: `X-Gate-Api-Key` (Gate workspace
 //!   identity) and `X-Gate-Upstream-Url` (where Gate forwards). The
-//!   newline matters — Claude Code splits on it; without it the two
+//!   newline matters - Claude Code splits on it; without it the two
 //!   headers collapse into one and the upstream-url hint is lost.
 //!
 //! Unlike Cowork, Claude Code does not need a separate upstream
-//! credential — it already authenticates to Anthropic with its own
+//! credential - it already authenticates to Anthropic with its own
 //! OAuth token or `ANTHROPIC_API_KEY`, and Gate passes that through.
 //! So [`requires_upstream_credential`] returns `false` and the
 //! credential-related trait methods are no-ops.
@@ -114,7 +114,7 @@ impl Integration for ClaudeCode {
             Some(u) => u,
             None => {
                 return Ok(Status::Drifted(
-                    "Gate Connect is not signed in — sign in to validate Claude Code config".into(),
+                    "Gate Connect is not signed in - sign in to validate Claude Code config".into(),
                 ));
             }
         };
@@ -139,7 +139,7 @@ impl Integration for ClaudeCode {
     fn connect(&self, input: &ConnectInput) -> Result<()> {
         if !self.detect()? {
             anyhow::bail!(
-                "Claude Code is not installed on this machine — install it from https://claude.com/code first"
+                "Claude Code is not installed on this machine - install it from https://claude.com/code first"
             );
         }
         if !input.gateway_base_url.starts_with("https://") {
@@ -224,7 +224,7 @@ impl Integration for ClaudeCode {
         }
         settings.remove(MARKER_KEY);
 
-        // The file now holds nothing but our additions — remove it rather
+        // The file now holds nothing but our additions - remove it rather
         // than leaving a stray `{}` behind (matching Codex's disconnect).
         if settings.is_empty() {
             if path.exists() {
@@ -251,7 +251,7 @@ impl Integration for ClaudeCode {
         };
         // Replace only the key line, preserving every other line (the
         // upstream URL and any hand-added headers) verbatim. No key line
-        // means the value was hand-edited past recognition — leave it alone
+        // means the value was hand-edited past recognition - leave it alone
         // rather than clobbering it with a rebuilt canonical string.
         let key_prefix = format!("{GATE_KEY_HEADER}: ");
         if !headers.lines().any(|l| l.starts_with(&key_prefix)) {
@@ -274,7 +274,7 @@ impl Integration for ClaudeCode {
 
     fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
         anyhow::bail!(
-            "Claude Code does not need a separate upstream credential — it uses its own Anthropic auth"
+            "Claude Code does not need a separate upstream credential - it uses its own Anthropic auth"
         );
     }
 
@@ -337,7 +337,7 @@ fn ensure_object<'a>(parent: &'a mut Map<String, Value>, key: &str) -> &'a mut M
 
 /// Guard against silently destroying a hand-edited, malformed `env`.
 /// `ensure_object` would replace a non-object `env` with an empty object,
-/// and disconnect — which only restores the keys we snapshotted — could
+/// and disconnect - which only restores the keys we snapshotted - could
 /// never bring the original value back. A `null` `env` carries no data, so
 /// it is allowed to fall through and be replaced.
 fn reject_non_object_env(settings: &Map<String, Value>) -> Result<()> {
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn reject_non_object_env_allows_object_null_and_absent() {
         let mut m = Map::new();
-        // Absent `env` — first connect on a fresh settings file.
+        // Absent `env` - first connect on a fresh settings file.
         assert!(reject_non_object_env(&m).is_ok());
         // `null` carries no data, so replacement is harmless.
         m.insert("env".into(), Value::Null);

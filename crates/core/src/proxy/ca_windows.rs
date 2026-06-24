@@ -5,7 +5,7 @@
 //! mint per-host leaf certs the OS trust store will accept.
 //!
 //! Trust is installed with `certutil -user -addstore Root`, which targets the
-//! per-user root store (`HKCU`) and needs no admin — but Windows still shows
+//! per-user root store (`HKCU`) and needs no admin - but Windows still shows
 //! its native "you are about to install a certificate from a certification
 //! authority claiming to represent…" confirmation dialog. That dialog is the
 //! reassuring gatekeeper prompt the user sees once on enable; declining it
@@ -100,7 +100,7 @@ pub fn load_or_create() -> Result<Ca> {
     // a temp file + atomic rename. The two stores can't be written atomically
     // together, but this order's interrupted state is self-healing: a crash
     // between them leaves a key with no cert on disk, so the next launch
-    // regenerates both — never a torn cert or a mismatched cert/key pair.
+    // regenerates both - never a torn cert or a mismatched cert/key pair.
     keychain::set(&service, &user, &key_pem)?;
     let tmp = path.with_extension("pem.tmp");
     fs::write(&tmp, &cert_pem).with_context(|| format!("writing {}", tmp.display()))?;
@@ -110,12 +110,12 @@ pub fn load_or_create() -> Result<Ca> {
 }
 
 /// SHA-1 thumbprint of the **current on-disk** CA cert, normalized to
-/// uppercase hex with no separators — the form `certutil` accepts as a
+/// uppercase hex with no separators - the form `certutil` accepts as a
 /// `CertId`. Returns `None` if the cert file is missing.
 ///
 /// A cert's thumbprint is just the SHA-1 of its DER encoding, so we compute it
 /// in-process: decode the PEM to DER, then digest. We deliberately do *not*
-/// scrape `certutil <file>`'s `Cert Hash(sha1):` line — that output is
+/// scrape `certutil <file>`'s `Cert Hash(sha1):` line - that output is
 /// localized and frequently emitted as UTF-16/OEM rather than UTF-8, so
 /// `from_utf8_lossy` could mangle the thumbprint and make `is_trusted` report
 /// an installed cert as untrusted forever (the banner never clears, and every
@@ -137,13 +137,13 @@ fn cert_thumbprint() -> Result<Option<String>> {
     Ok(Some(thumb))
 }
 
-/// Whether the **current on-disk CA** is trusted — keyed on the cert's
+/// Whether the **current on-disk CA** is trusted - keyed on the cert's
 /// thumbprint, not its name. We look the cert's SHA-1 thumbprint up in the
 /// per-user root store (`certutil -user -store Root <thumbprint>`), which
 /// exits 0 only when a cert with that exact thumbprint is present.
 ///
 /// The previous check matched the CN, which a stale root from a prior install
-/// satisfies — it shares our CN but has a different key/fingerprint. That made
+/// satisfies - it shares our CN but has a different key/fingerprint. That made
 /// `ensure_trusted` no-op while the engine signed leaves with a *different*,
 /// untrusted CA, so every MITM handshake failed with no recovery. Matching the
 /// thumbprint catches the mismatch and lets `ensure_trusted` re-install.
@@ -170,7 +170,7 @@ pub fn ensure_trusted() -> Result<()> {
     }
     // A prior install may have left a same-CN root (different key) in the
     // per-user store; drop it so we don't stack a duplicate before adding the
-    // current cert. Best-effort — a missing cert just makes this a no-op.
+    // current cert. Best-effort - a missing cert just makes this a no-op.
     let _ = Command::new("certutil")
         .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
         .status();

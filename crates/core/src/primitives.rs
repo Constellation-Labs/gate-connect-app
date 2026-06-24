@@ -128,7 +128,7 @@ pub(crate) fn run_as_admin(shell_cmd: &str) -> Result<()> {
 /// Run a shell command as root on Linux. In a terminal (CLI usage) we use
 /// `sudo`, which caches credentials so a batch of privileged steps prompts
 /// once; in a GUI session (no controlling tty) we use `pkexec`, which pops the
-/// polkit authentication dialog — the Linux analogue of the macOS osascript
+/// polkit authentication dialog - the Linux analogue of the macOS osascript
 /// admin path. The proxy subsystem's privileged steps (writing
 /// `/etc/environment`, installing the CA into the system trust store) go
 /// through here. A cancelled/denied prompt makes the helper exit non-zero.

@@ -89,7 +89,7 @@ fn windows_username() -> Option<String> {
     if ok == 0 || len == 0 {
         return None;
     }
-    // `len` counts the trailing NUL — exclude it.
+    // `len` counts the trailing NUL - exclude it.
     let name = OsString::from_wide(&buf[..(len as usize - 1)]);
     name.into_string().ok().filter(|s| !s.is_empty())
 }
@@ -102,7 +102,7 @@ fn windows_username() -> Option<String> {
 /// - Linux: `$XDG_DATA_HOME/Gate Connect` (or `~/.local/share/Gate Connect`)
 pub fn app_support_dir() -> Result<PathBuf> {
     // Env-var seam first so it works across a spawned `gate-connect` process
-    // (the CLI flow tests run the binary as a child — a process-global mutex
+    // (the CLI flow tests run the binary as a child - a process-global mutex
     // override wouldn't reach it).
     if let Some(home) = test_home_override() {
         return Ok(home.join("app-support").join("Gate Connect"));
@@ -123,7 +123,7 @@ pub fn app_support_dir() -> Result<PathBuf> {
 /// tests via [`set_app_support_dir_for_tests`]. `None` in every normal build, so
 /// production always resolves the real per-OS data dir above. It exists because
 /// `dirs::data_local_dir()` reads the Windows `FOLDERID_LocalAppData` Known
-/// Folder via the OS API — a `$HOME`/env override redirects it on macOS and
+/// Folder via the OS API - a `$HOME`/env override redirects it on macOS and
 /// Linux but not on Windows, so tests need a direct seam to land their files in
 /// a throwaway dir on every platform.
 static APP_SUPPORT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -137,32 +137,32 @@ pub fn set_app_support_dir_for_tests(dir: Option<PathBuf>) {
         .expect("app-support override mutex poisoned") = dir;
 }
 
-/// `~/.claude` — Claude Code's user config root. Same on all platforms;
+/// `~/.claude` - Claude Code's user config root. Same on all platforms;
 /// Claude Code itself reads `~/.claude/settings.json` regardless of OS.
 pub fn claude_code_config_dir() -> Result<PathBuf> {
     Ok(home()?.join(".claude"))
 }
 
-/// `~/.claude/settings.json` — Claude Code's user settings. Supports an
+/// `~/.claude/settings.json` - Claude Code's user settings. Supports an
 /// `env` block whose entries are injected as process env vars at every
 /// `claude` invocation; that's the surface Gate Connect writes to.
 pub fn claude_code_settings_path() -> Result<PathBuf> {
     Ok(claude_code_config_dir()?.join("settings.json"))
 }
 
-/// `~/.codex` — Codex CLI's user config root. Same on all platforms.
+/// `~/.codex` - Codex CLI's user config root. Same on all platforms.
 pub fn codex_config_dir() -> Result<PathBuf> {
     Ok(home()?.join(".codex"))
 }
 
-/// `~/.codex/config.toml` — Codex CLI's user config. Gate Connect adds a
+/// `~/.codex/config.toml` - Codex CLI's user config. Gate Connect adds a
 /// `[model_providers.gate]` block and flips top-level `model_provider`
 /// to point at it, leaving the rest of the file untouched.
 pub fn codex_config_toml_path() -> Result<PathBuf> {
     Ok(codex_config_dir()?.join("config.toml"))
 }
 
-/// `~/.codex/auth.json` — Codex CLI's login store. Gate Connect reads
+/// `~/.codex/auth.json` - Codex CLI's login store. Gate Connect reads
 /// the `auth_mode` field at connect time to pick the right upstream URL
 /// shape (ChatGPT vs. OpenAI API). The credential helper also reads this
 /// file at every Codex request to emit the current bearer.
@@ -170,7 +170,7 @@ pub fn codex_auth_json_path() -> Result<PathBuf> {
     Ok(codex_config_dir()?.join("auth.json"))
 }
 
-/// `~/.config/opencode` — OpenCode's user config root. OpenCode is a
+/// `~/.config/opencode` - OpenCode's user config root. OpenCode is a
 /// Node-based CLI that uses XDG-style paths on every OS (it does not
 /// follow the macOS `~/Library/Application Support` or Windows
 /// `%APPDATA%` conventions), so this path is the same everywhere.
@@ -178,14 +178,14 @@ pub fn opencode_config_dir() -> Result<PathBuf> {
     Ok(home()?.join(".config/opencode"))
 }
 
-/// `~/.config/opencode/opencode.json` — OpenCode's user config. Gate
+/// `~/.config/opencode/opencode.json` - OpenCode's user config. Gate
 /// Connect adds (or replaces) a `provider.gate` block and leaves the
 /// rest of the file untouched.
 pub fn opencode_config_path() -> Result<PathBuf> {
     Ok(opencode_config_dir()?.join("opencode.json"))
 }
 
-/// `~/.local/share/opencode/auth.json` — OpenCode's credential store.
+/// `~/.local/share/opencode/auth.json` - OpenCode's credential store.
 /// `opencode auth login <provider-id>` writes into this file, and
 /// OpenCode injects the matching entry into `provider.<id>.options.apiKey`
 /// at request time. Gate Connect writes the `gate` entry here on

@@ -151,7 +151,7 @@ pub fn enable_command(port: u16, services: &[String]) -> String {
 }
 
 /// Privileged shell command that restores each service to its snapshot.
-/// A slot's saved server/port is re-written whenever the snapshot has one —
+/// A slot's saved server/port is re-written whenever the snapshot has one -
 /// even when the slot was *off*: `enable_command` overwrote it with
 /// `127.0.0.1:<our-port>`, and turning the state off alone would leave that
 /// stale loopback address saved in System Settings (common case: a corp
@@ -207,7 +207,7 @@ pub fn restore_command(snapshot: &[ServiceProxy]) -> String {
 }
 
 /// Restore-all command derived from a freshly enumerated service list, used
-/// as a fail-safe when no snapshot is available — turns every service's
+/// as a fail-safe when no snapshot is available - turns every service's
 /// web + secure-web proxy off so a dead engine never strands traffic.
 pub fn force_off_command(services: &[String]) -> String {
     let mut parts = Vec::new();
@@ -220,7 +220,7 @@ pub fn force_off_command(services: &[String]) -> String {
 }
 
 /// Apply a `networksetup` script. Changing proxy settings does not require
-/// admin on a standard macOS account, so we run it unprivileged first — this
+/// admin on a standard macOS account, so we run it unprivileged first - this
 /// is what keeps disable / restore / reconcile promptless, so they can never
 /// be canceled and strand the system's traffic. Only if the unprivileged run
 /// is actually rejected do we fall back to an elevated run.
@@ -254,14 +254,14 @@ pub fn force_off(services: &[String]) -> Result<()> {
     apply(&force_off_command(services))
 }
 
-/// True if `server` is a loopback address — what our engine binds to. Used to
+/// True if `server` is a loopback address - what our engine binds to. Used to
 /// distinguish a stranded Gate proxy from a user's real (remote) proxy.
 fn is_loopback(server: &str) -> bool {
     matches!(server, "127.0.0.1" | "::1" | "localhost" | "0.0.0.0")
 }
 
 /// True if a proxy slot points at a loopback address with nothing listening on
-/// its port — i.e. a dead engine that would strand traffic. Pure so it can be
+/// its port - i.e. a dead engine that would strand traffic. Pure so it can be
 /// unit-tested without touching the network.
 fn slot_is_stranded(setting: &ProxySetting, port_alive: bool) -> bool {
     setting.enabled && is_loopback(&setting.server) && !port_alive
@@ -344,11 +344,11 @@ mod tests {
     fn stranded_only_when_enabled_loopback_and_dead() {
         // The bug we're fixing: enabled, loopback, nothing listening.
         assert!(slot_is_stranded(&slot(true, "127.0.0.1", "61722"), false));
-        // Loopback but the engine is alive — leave it.
+        // Loopback but the engine is alive - leave it.
         assert!(!slot_is_stranded(&slot(true, "127.0.0.1", "61722"), true));
-        // A real remote proxy that happens to be unreachable — never ours.
+        // A real remote proxy that happens to be unreachable - never ours.
         assert!(!slot_is_stranded(&slot(true, "proxy.corp", "8080"), false));
-        // Disabled slot — nothing to clear.
+        // Disabled slot - nothing to clear.
         assert!(!slot_is_stranded(&slot(false, "127.0.0.1", "61722"), false));
     }
 }

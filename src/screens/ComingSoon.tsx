@@ -2,7 +2,7 @@ import { SubHeader, Button } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
 /** Direct Gateway placeholder. The per-app per-model picker (writing gate/*
- *  model entries into each agent's config) isn't built yet — this stands in
+ *  model entries into each agent's config) isn't built yet - this stands in
  *  for it so the home card has somewhere to go. */
 export function ComingSoon({ onBack }: { onBack: () => void }) {
   return (

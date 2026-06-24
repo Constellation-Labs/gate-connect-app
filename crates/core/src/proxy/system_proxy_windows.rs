@@ -3,12 +3,12 @@
 //! Settings`). Enabling points the WinINET proxy at our loopback engine;
 //! disabling restores the exact prior state from a snapshot (mirrors the
 //! `previousEnv` restore pattern in [`crate::env`], and the macOS
-//! `system_proxy` snapshot/restore). Everything here lives under `HKCU`, so —
-//! like the macOS `networksetup` path — none of it needs admin; the only
+//! `system_proxy` snapshot/restore). Everything here lives under `HKCU`, so -
+//! like the macOS `networksetup` path - none of it needs admin; the only
 //! privileged step in the subsystem is trusting the CA.
 //!
 //! WinINET caches the proxy config, so after every registry change we poke it
-//! with `InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED + _REFRESH)` —
+//! with `InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED + _REFRESH)` -
 //! otherwise already-running apps keep using the stale settings until the next
 //! logon.
 
@@ -39,7 +39,7 @@ extern "system" {
     ) -> i32;
 }
 
-/// Snapshot of the user's WinINET proxy configuration — the three values we
+/// Snapshot of the user's WinINET proxy configuration - the three values we
 /// touch, so `restore` can put them back exactly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxySnapshot {
@@ -47,7 +47,7 @@ pub struct ProxySnapshot {
     pub enable: u32,
     /// `ProxyServer` (e.g. `127.0.0.1:8080`, or `http=...;https=...`).
     pub server: String,
-    /// `ProxyOverride` — the bypass list (e.g. `<local>`).
+    /// `ProxyOverride` - the bypass list (e.g. `<local>`).
     pub bypass: String,
 }
 
@@ -69,7 +69,7 @@ fn settings_key(write: bool) -> Result<RegKey> {
 }
 
 /// Read the current WinINET proxy config. A missing value is its empty/off
-/// default rather than an error — a machine that has never had a proxy set
+/// default rather than an error - a machine that has never had a proxy set
 /// simply has no `ProxyServer` value. Non-privileged.
 pub fn snapshot() -> Result<ProxySnapshot> {
     let key = settings_key(false)?;
@@ -114,7 +114,7 @@ pub fn clear_snapshot() -> Result<()> {
 /// Tell WinINET to reload proxy settings from the registry. Without this,
 /// already-running apps keep their cached config until the next logon.
 fn notify_wininet() {
-    // SAFETY: both calls pass a null handle and null buffer — the documented
+    // SAFETY: both calls pass a null handle and null buffer - the documented
     // way to broadcast a global settings change. There are no out-parameters.
     unsafe {
         InternetSetOptionW(

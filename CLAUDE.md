@@ -1,4 +1,4 @@
-# Gate Connect — Claude Code instructions
+# Gate Connect - Claude Code instructions
 
 Scoped to this app (`gate/apps/connect/`). For repo-wide Gate context,
 see `gate/CLAUDE.md` (if present).
@@ -7,7 +7,7 @@ see `gate/CLAUDE.md` (if present).
 
 ### Users
 
-Open developer public — anyone with a Constellation Gate gateway URL who
+Open developer public - anyone with a Constellation Gate gateway URL who
 wants to point their AI dev tools (Cowork/Claude Desktop, Codex, OpenCode)
 at it once and stop thinking about credentials. They open the macOS
 menubar popover at the moment they're already mid-task: setting up a new
@@ -20,14 +20,14 @@ that the credential isn't sitting in a config file somewhere."
 
 ### Brand Personality
 
-Pragmatic · friendly · approachable. Tailscale / 1Password energy — the
+Pragmatic · friendly · approachable. Tailscale / 1Password energy - the
 product that mediates something sensitive (your AI traffic, your keys)
 and makes you feel like grown-ups are running the kitchen. Warm at the
 edges, serious in the middle. Not stiff, not playful, not techbro
 brutalist.
 
 Emotional goal: **reassuring gatekeeper**. The user should leave the
-popover thinking "good, that's handled" — not "I hope I configured that
+popover thinking "good, that's handled" - not "I hope I configured that
 right."
 
 ### Aesthetic Direction
@@ -40,13 +40,13 @@ this app aligns to it:
   decoration. Brand indigo is reserved for the logo glyph only.
 - **Shadow-as-border** on all elevated surfaces. No 1px solid borders
   on cards or popovers.
-- **OKLCH neutral ink ramp** (chroma 0) — never gray-on-blue, never
+- **OKLCH neutral ink ramp** (chroma 0) - never gray-on-blue, never
   pure black/white.
 - **Geist + Geist Mono.** Mono is for identifiers (URLs, hosts, keys,
   status pill labels, tabular numerics), never for body copy.
 - **12px modal radius LOCKED**, 4px grid, asymmetric spacing where
   the rhythm calls for it.
-- **Canvas #ecece7** is the brand background — but this app lives on
+- **Canvas #ecece7** is the brand background - but this app lives on
   white (popover surface) because it's a small floating window, not
   a page on canvas.
 - **Tauri transparent window** with 12px-rounded NSWindow corners (via
@@ -57,11 +57,11 @@ References (positive): 1Password 8, Tailscale macOS app, Linear's
 desktop polish, Raycast's restraint.
 
 Anti-references (locked):
-- **No generic AI aesthetic** — no purple/blue gradients, no neon
+- **No generic AI aesthetic** - no purple/blue gradients, no neon
   accents on dark, no sparkles, no chatbot UIs.
-- **No enterprise SaaS dashboard look** — no heavy cards, no bright
+- **No enterprise SaaS dashboard look** - no heavy cards, no bright
   blue CTAs, no Material/Bootstrap defaults.
-- **No dev-tool brutalism** — no all-mono UI, no ASCII chrome, no
+- **No dev-tool brutalism** - no all-mono UI, no ASCII chrome, no
   all-caps everything, no terminal cosplay.
 
 Theme: **light only**. Dark mode is not on the roadmap for the first
@@ -80,18 +80,20 @@ release.
    read as system-state, not as marketing copy.
 
 3. **Mono earns its place.** Use Geist Mono only where identity or
-   precision matters — URLs, hosts, API key placeholders, status pills,
+   precision matters - URLs, hosts, API key placeholders, status pills,
    tabular counts. Body copy and labels are sans. Mono is a signal,
    not a vibe.
 
 4. **Shadow-as-border, ink-on-paper.** Cards, inputs, and popovers
    carry weight through layered inset shadows (the cg `--shadow-border`
    stack), not through solid 1px lines. Surfaces are white sitting on
-   white-with-shadow — paper, not sheet metal.
+   white-with-shadow - paper, not sheet metal.
 
 5. **The popover is one room.** It's 360px wide and ~520px tall on a
    typical screen. Every screen must work inside that frame without
-   scrolling chrome — content scrolls within the body, header and
+   scrolling chrome - content scrolls within the body, header and
    footer never. No modals stacked on modals; secondary surfaces (tool
    detail, account form, migrate form) slide as full-popover panels and
    animate in/out, not as nested dialogs.
+
+NOTE: never use "—"

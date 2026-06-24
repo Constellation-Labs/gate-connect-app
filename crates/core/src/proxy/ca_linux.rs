@@ -1,8 +1,8 @@
 //! Local root CA for the proxy (Linux). We generate a CA once, keep its private
 //! key in the OS secret store (via [`crate::keychain`] → Secret Service) and its
 //! public cert on disk, and (on enable) install the cert into the **system**
-//! trust store so the MITM engine can mint per-host leaf certs that the OS — and
-//! command-line tools that read the system bundle (curl, git, openssl) — accept.
+//! trust store so the MITM engine can mint per-host leaf certs that the OS - and
+//! command-line tools that read the system bundle (curl, git, openssl) - accept.
 //!
 //! Unlike macOS/Windows, Linux has no per-user root store: trust is system-wide
 //! and the install needs root. We support the two common layouts:
@@ -137,7 +137,7 @@ pub fn load_or_create() -> Result<Ca> {
 
 /// Whether our *current* CA is installed in the system trust store. The
 /// anchor file (a byte-copy of our cert installed by `ensure_trusted`)
-/// must exist **and match the cert on disk** — a presence-only check would
+/// must exist **and match the cert on disk** - a presence-only check would
 /// let a regenerated pair no-op `ensure_trusted` while the stale root
 /// stays in the bundle and every MITM handshake fails. Re-installing
 /// overwrites the same anchor filename, so a mismatch self-heals on the
@@ -164,7 +164,7 @@ pub fn is_trusted() -> Result<bool> {
 /// Trust the CA if it isn't already. Copies the public cert into the distro's
 /// anchor directory and rebuilds the system bundle, in a single privileged
 /// invocation (so the user authenticates once). The private key is never
-/// touched here — only the public cert leaves the secret store.
+/// touched here - only the public cert leaves the secret store.
 pub fn ensure_trusted() -> Result<()> {
     if is_trusted()? {
         return Ok(());
@@ -185,7 +185,7 @@ pub fn ensure_trusted() -> Result<()> {
 
 /// Remove the CA's trust: delete our anchor file and rebuild the bundle so the
 /// cert drops out of it. Privileged. Keyed on the anchor *existing*, not on
-/// `is_trusted` — a stale anchor left by a regenerated pair must still be
+/// `is_trusted` - a stale anchor left by a regenerated pair must still be
 /// removable.
 pub fn untrust() -> Result<()> {
     let store = trust_store()?;

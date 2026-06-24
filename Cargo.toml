@@ -36,7 +36,7 @@ keyring = { version = "3", features = [
 # proxy that mints per-host certs from a local CA and lets us rewrite the
 # inference request in-process; default features give us the rcgen-backed
 # CA + a rustls client. The `http2` feature lets the MITM speak HTTP/2 to
-# both the app and the gateway — Anthropic's API and Claude Desktop/Cowork
+# both the app and the gateway - Anthropic's API and Claude Desktop/Cowork
 # negotiate h2, and without it hudsucker forces HTTP/1.1, which breaks those
 # clients. It pulls an async stack (tokio/hyper/rustls), which is why
 # `tokio` appears here despite the rest of core being sync. `rcgen` is

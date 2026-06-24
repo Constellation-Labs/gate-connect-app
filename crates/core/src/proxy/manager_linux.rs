@@ -4,11 +4,11 @@
 //! macOS [`super::manager`].
 //!
 //! Unlike macOS/Windows, the loopback engine here does **not** live in this
-//! process — it runs in a detached helper daemon ([`super::helper`]) that owns
+//! process - it runs in a detached helper daemon ([`super::helper`]) that owns
 //! the port and outlives the GUI. The manager drives it over a control socket
 //! ([`super::helper_client`]); the open connection *is* the "proxy on" state,
 //! and dropping it (clean disable, or the GUI exiting) makes the daemon fall
-//! back to pass-through — the port stays bound, so a session that froze the
+//! back to pass-through - the port stays bound, so a session that froze the
 //! proxy pointer keeps flowing instead of being stranded.
 //!
 //! Privilege model. The proxy wiring is a user-scoped systemd `environment.d`
@@ -48,12 +48,12 @@ impl ProxyManager {
     pub fn status(&self) -> Result<ProxyState> {
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");
         // A dead/stale control connection means the daemon's gone or we lost
-        // it — treat as off and drop the handle so a later enable reconnects.
+        // it - treat as off and drop the handle so a later enable reconnects.
         let (running, port) = match guard.as_mut() {
             Some(client) => match client.status() {
                 Ok((running, port, _intercepting)) => (running, port),
                 // A single failed round-trip could be a transient blip while
-                // the daemon is still intercepting — don't desync by dropping
+                // the daemon is still intercepting - don't desync by dropping
                 // the handle on the first error. Try one fresh connection to
                 // the existing daemon; only declare the proxy off if that also
                 // fails (daemon truly gone).
@@ -106,8 +106,8 @@ impl ProxyManager {
         }
 
         let account = account::load()?
-            .context("no Gate account configured — sign in before enabling the proxy")?;
-        // Start the engine even with zero enabled domains — it then passes
+            .context("no Gate account configured - sign in before enabling the proxy")?;
+        // Start the engine even with zero enabled domains - it then passes
         // everything through, and enabling a provider flips its domain live
         // once the proxy is running. Matches the cross-platform manager
         // (manager.rs) and lets the proxy bootstrap from a clean first run.
@@ -173,7 +173,7 @@ impl ProxyManager {
             .expect("proxy client mutex poisoned")
             .take();
 
-        // An unreadable snapshot must not strand traffic — treat it like a
+        // An unreadable snapshot must not strand traffic - treat it like a
         // missing one and force the drop-in off.
         let snapshot = system_proxy::load_snapshot().unwrap_or_else(|e| {
             eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
@@ -184,7 +184,7 @@ impl ProxyManager {
             None => system_proxy::force_off(),
         };
         // Drop the daemon to pass-through and clear the snapshot *even if* the
-        // drop-in delete failed — otherwise a leftover snapshot would re-honor
+        // drop-in delete failed - otherwise a leftover snapshot would re-honor
         // (turn the proxy back on) on the next launch, against the user's
         // intent. Surface the delete error afterward.
         if let Some(mut client) = client {
@@ -196,7 +196,7 @@ impl ProxyManager {
     }
 
     /// Toggle a domain. If the proxy is on, push the new rule set to the daemon
-    /// live — no restart, no prompt.
+    /// live - no restart, no prompt.
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
         let domains = config::set_enabled(slug, enabled)?;
         if let Some(client) = self
@@ -206,14 +206,14 @@ impl ProxyManager {
             .as_mut()
         {
             // Re-push the full intercept config (cheap; the engine updates its
-            // rule set live). Best-effort — a failed live update shouldn't
+            // rule set live). Best-effort - a failed live update shouldn't
             // wedge the toggle; the next status reflects reality.
             self.push_intercept(client, &domains);
         }
         self.status()
     }
 
-    /// Push a rotated Gate API key into the running daemon, if any — it
+    /// Push a rotated Gate API key into the running daemon, if any - it
     /// otherwise keeps injecting the key it was started with.
     pub fn refresh_api_key(&self, api_key: &str) {
         if let Some(client) = self
@@ -286,24 +286,24 @@ impl ProxyManager {
     }
 
     /// Called once at app startup. A leftover snapshot means the proxy was on
-    /// when the previous session ended (crash / unclean quit / reboot) — a clean
+    /// when the previous session ended (crash / unclean quit / reboot) - a clean
     /// disable clears it, making this a no-op.
     ///
     /// Re-honor: rather than tearing the proxy down, bring it back up on the
     /// same stable port, so a session that froze the proxy pointer at login
     /// keeps reaching a live engine (and the user's "on" survives a crash or
-    /// reboot). If we can't — no account, no provider enabled, the CA isn't
-    /// trusted (so re-honoring would prompt), or the daemon won't start — fall
+    /// reboot). If we can't - no account, no provider enabled, the CA isn't
+    /// trusted (so re-honoring would prompt), or the daemon won't start - fall
     /// back to a clean slate so nothing is stranded. Runs off the main thread
     /// (see the setup hook), so the daemon spin-up doesn't block the tray.
     pub fn reconcile_on_startup(&self) -> Result<()> {
         match system_proxy::load_snapshot() {
-            // Clean prior exit — nothing to reconcile.
+            // Clean prior exit - nothing to reconcile.
             Ok(None) => return Ok(()),
             // The proxy was on; try to re-honor it below.
             Ok(Some(_)) => {}
             Err(e) => {
-                // Can't trust the snapshot — don't re-honor blindly; clean slate.
+                // Can't trust the snapshot - don't re-honor blindly; clean slate.
                 eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
                 return self.force_clean_slate();
             }
@@ -328,11 +328,11 @@ impl ProxyManager {
             eprintln!("gate proxy: CA not trusted at startup; not re-honoring, forcing proxy off");
         }
 
-        // Couldn't re-honor — strip any drop-in and drop the stale snapshot.
+        // Couldn't re-honor - strip any drop-in and drop the stale snapshot.
         self.force_clean_slate()
     }
 
-    /// Strip our drop-in and clear the snapshot — the safe "off" state when we
+    /// Strip our drop-in and clear the snapshot - the safe "off" state when we
     /// can't (or shouldn't) re-honor. Also reverts any half-open client to
     /// pass-through.
     fn force_clean_slate(&self) -> Result<()> {

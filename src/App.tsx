@@ -56,7 +56,7 @@ export function App() {
     let alive = true;
     (async () => {
       const acct = await getAccount().catch(() => null);
-      let px: ProxyState | null = null;
+      let px: ProxyState | null;
       try {
         px = await proxyStatus();
       } catch {
@@ -116,7 +116,7 @@ export function App() {
     } catch (e) {
       trackError(e, "generic");
       // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
-      // or a missing network service) instead of silently reverting — a
+      // or a missing network service) instead of silently reverting - a
       // swallowed error reads as "the toggle does nothing".
       setProviderError(typeof e === "string" ? e : String(e));
       // Re-sync to the true state after the failed toggle.
@@ -201,7 +201,7 @@ export function App() {
   const disconnect = useCallback(async () => {
     if (proxy?.running) {
       // A failed disable can leave system HTTPS pointed at a dead engine
-      // port — abort the sign-out and surface it instead of silently
+      // port - abort the sign-out and surface it instead of silently
       // proceeding to first-run with the machine's traffic stranded.
       try {
         setProxy(await proxyDisable());
@@ -228,10 +228,10 @@ export function App() {
   const domainCount = proxy?.domains.filter((d) => d.enabled && d.supported).length ?? 0;
   const showProxy = proxy !== null;
 
-  let body: ReactNode = null;
+  let body: ReactNode;
   if (screen === "loading") {
     // Startup screen while we resolve account + proxy (and the macOS keychain
-    // dialog reads the key) — show the brand lockup instead of a blank popover.
+    // dialog reads the key) - show the brand lockup instead of a blank popover.
     body = (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
         <ConstellationHexMark size={40} fill="#002a5f" />

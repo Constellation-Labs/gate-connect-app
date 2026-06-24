@@ -35,7 +35,7 @@ export function AccountForm({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<unknown | null>(null);
 
-  // Component-unmount guard — prevents setState on an unmounted form when
+  // Component-unmount guard - prevents setState on an unmounted form when
   // the user closes the popover mid-flight on a slow keychain or auth panel
   // resolve. (`saveAccount` can sit on a sudo/osascript prompt for a while.)
   const mounted = useRef(true);
@@ -199,7 +199,7 @@ export function AccountForm({
 
         {!editing && (
           <p className="text-[11px] leading-relaxed text-ink-500">
-            Sign in to Anthropic from inside Cowork itself when prompted —
+            Sign in to Anthropic from inside Cowork itself when prompted -
             Cowork handles its own auth, Gate Connect just points it at
             your gateway.
           </p>
