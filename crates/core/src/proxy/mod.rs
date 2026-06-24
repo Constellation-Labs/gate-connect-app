@@ -4,8 +4,8 @@
 //!
 //! How it works: enabling the proxy (1) trusts a locally-generated root CA
 //! and (2) points the macOS system HTTPS proxy at a loopback listener owned
-//! by [`engine`]. For each TLS CONNECT the engine decides — *before* doing
-//! any handshake — whether the target host is one we route. Hosts we don't
+//! by [`engine`]. For each TLS CONNECT the engine decides - *before* doing
+//! any handshake - whether the target host is one we route. Hosts we don't
 //! route are blind-tunnelled untouched (so cert-pinning apps and every other
 //! site are unaffected). For hosts we do route, the engine MITMs the
 //! connection, and for inference paths rewrites the request to the Gate
@@ -21,7 +21,7 @@
 //!
 //! Platform support: macOS, Windows, and Linux. The engine itself is
 //! cross-platform; CA trust ([`ca`]) and system-proxy wiring ([`system_proxy`])
-//! are platform-specific — macOS via `security` + `networksetup`, Windows via
+//! are platform-specific - macOS via `security` + `networksetup`, Windows via
 //! `certutil` + the per-user WinINET registry settings, Linux via the system
 //! trust store (`update-ca-certificates` / `update-ca-trust`) + a user-scoped
 //! systemd `environment.d` drop-in (so the proxy reaches command-line tools and
@@ -100,13 +100,13 @@ pub struct ProxyDomain {
     /// Exact hostnames to intercept (e.g. `api.anthropic.com`). A CONNECT
     /// to any other host is blind-tunnelled.
     pub hosts: Vec<String>,
-    /// Value injected as `X-Gate-Upstream-Url` — where Gate forwards the
+    /// Value injected as `X-Gate-Upstream-Url` - where Gate forwards the
     /// rewritten request (e.g. `https://api.anthropic.com`).
     pub upstream_url: String,
     /// Path prefixes that are inference calls and should be rewritten to
     /// the gateway (e.g. `/v1/`).
     pub rewrite_prefixes: Vec<String>,
-    /// Path prefixes on an intercepted host that must NOT be rewritten —
+    /// Path prefixes on an intercepted host that must NOT be rewritten -
     /// they pass through to the real upstream (e.g. an app's
     /// `/api/desktop/` auto-updater channel).
     pub passthrough_prefixes: Vec<String>,
@@ -139,7 +139,7 @@ pub struct ProxyState {
 /// What the engine should do with a request on an intercepted host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Decision {
-    /// Host isn't one of ours — should never reach here post-intercept,
+    /// Host isn't one of ours - should never reach here post-intercept,
     /// but treated as a safe passthrough if it does.
     Tunnel,
     /// Matched host but not an inference path: forward to the real
@@ -195,11 +195,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // to api.anthropic.com /v1/messages (OAuth bearer or API key),
             // confirmed against a real Cowork generation. a-api.anthropic.com
             // is Anthropic's telemetry host (Segment-style /v1/b ingestion)
-            // and claude.ai is the web/login surface — both are deliberately
+            // and claude.ai is the web/login surface - both are deliberately
             // left tunnelled, never intercepted.
             hosts: vec!["api.anthropic.com".into()],
             // Applies to every host above. Only group hosts that genuinely
-            // share this upstream — never collapse distinct API hosts onto one.
+            // share this upstream - never collapse distinct API hosts onto one.
             upstream_url: "https://api.anthropic.com".into(),
             rewrite_prefixes: vec!["/v1/".into()],
             // Paths outside /v1/ already pass through; this keeps the Squirrel
@@ -216,7 +216,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // honor the macOS system proxy and hit /v1/. Note: the Codex
             // desktop app's model calls come from its embedded Rust agent,
             // which ignores the system proxy and reaches chatgpt.com
-            // directly, so the proxy can't capture them — route Codex via the
+            // directly, so the proxy can't capture them - route Codex via the
             // manual integration (config.toml base_url) instead.
             hosts: vec!["api.openai.com".into()],
             upstream_url: "https://api.openai.com".into(),
@@ -231,7 +231,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // Gemini's generative-language API. Opt-in like OpenAI/OpenRouter.
             // Both /v1/ and /v1beta/ are live model surfaces. Note Gemini
             // authenticates with an API key in the `x-goog-api-key` header (or
-            // a `?key=` query param), not a Bearer token — Gate forwards
+            // a `?key=` query param), not a Bearer token - Gate forwards
             // whatever the client sends per X-Gate-Upstream-Url.
             hosts: vec!["generativelanguage.googleapis.com".into()],
             upstream_url: "https://generativelanguage.googleapis.com".into(),
@@ -244,7 +244,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             slug: "google-codeassist".into(),
             display_name: "Google / Gemini (Code Assist)".into(),
             // The Gemini CLI's OAuth / "login with Google" flow talks to the
-            // Code Assist backend on a distinct host — not the generative-
+            // Code Assist backend on a distinct host - not the generative-
             // language API above. Endpoints are `/v1internal:generateContent`,
             // `:streamGenerateContent`, `:loadCodeAssist`, `:onboardUser`, etc.
             // (method after the colon), all under the `/v1internal` prefix.
@@ -463,10 +463,10 @@ mod tests {
 
     #[test]
     fn openai_domain_does_not_match_chatgpt_host() {
-        // The api.openai.com domain is scoped to that host only — it must not
+        // The api.openai.com domain is scoped to that host only - it must not
         // match chatgpt.com. (Codex's chatgpt.com traffic comes from its Rust
         // agent, which bypasses the system proxy, so it's out of the proxy's
-        // reach entirely — covered by the manual Codex integration instead.)
+        // reach entirely - covered by the manual Codex integration instead.)
         let d = openai();
         assert!(!should_intercept_host(&d, "chatgpt.com"));
         assert_eq!(

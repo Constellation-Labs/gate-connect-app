@@ -24,7 +24,7 @@ tracing-subscriber.workspace = true
 http.workspace = true
 time.workspace = true
 
-# `libc` backs the unix `getpwuid(geteuid())` username lookup in env.rs —
+# `libc` backs the unix `getpwuid(geteuid())` username lookup in env.rs -
 # we resolve the real account from the password database rather than
 # trusting inherited `$USER` / `$USERNAME`.
 [target.'cfg(unix)'.dependencies]

@@ -6,7 +6,7 @@
 //! The enabled-domain set is hot-swappable via a [`tokio::sync::watch`]
 //! channel: because the system proxy routes *all* hosts to us and the
 //! handler gates MITM per-host in `should_intercept`, toggling a domain only
-//! needs to push new rules — no engine restart, no system-proxy change, no
+//! needs to push new rules - no engine restart, no system-proxy change, no
 //! extra admin prompt.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,7 +31,7 @@ use crate::proxy::{decide, should_intercept_host, Decision, ProxyDomain};
 /// fixed for the engine's lifetime; the domain set can be updated live via
 /// [`RunningEngine::update_domains`].
 pub struct EngineConfig {
-    /// Gate gateway base URL — the rewrite target authority.
+    /// Gate gateway base URL - the rewrite target authority.
     pub gateway_base_url: String,
     /// Gate API key, injected as `X-Gate-Api-Key`.
     pub api_key: String,
@@ -42,7 +42,7 @@ pub struct EngineConfig {
     /// PEM of the local root CA private key.
     pub ca_key_pem: String,
     /// Preferred loopback port to bind. `Some(p)` asks the engine to reuse a
-    /// previously-chosen port so a restart keeps the same address — the system
+    /// previously-chosen port so a restart keeps the same address - the system
     /// proxy pointer baked into a login session stays valid across app
     /// restarts instead of dangling at a dead ephemeral port. Falls back to an
     /// ephemeral port if `p` is taken (or `None`). Linux sets this; macOS and
@@ -79,7 +79,7 @@ impl RunningEngine {
         self.port
     }
 
-    /// True once the engine thread has exited (crash or stop) — the
+    /// True once the engine thread has exited (crash or stop) - the
     /// listener is gone and the port is dead.
     pub fn is_finished(&self) -> bool {
         self.thread
@@ -88,7 +88,7 @@ impl RunningEngine {
             .unwrap_or(true)
     }
 
-    /// Push a new enabled-domain set to the live engine. Cheap — no restart.
+    /// Push a new enabled-domain set to the live engine. Cheap - no restart.
     pub fn update_domains(&self, domains: &[ProxyDomain]) {
         let _ = self.rules_tx.send(Arc::new(enabled_only(domains)));
     }
@@ -99,7 +99,7 @@ impl RunningEngine {
         self.rules_tx.borrow().len()
     }
 
-    /// Push a rotated Gate API key to the live engine. Cheap — no restart;
+    /// Push a rotated Gate API key to the live engine. Cheap - no restart;
     /// without this the engine keeps injecting the key it was started with.
     pub fn update_api_key(&self, api_key: &str) {
         let _ = self.key_tx.send(Arc::from(api_key));
@@ -164,7 +164,7 @@ fn init_tracing() {
 struct GateHandler {
     /// Live-updatable set of enabled domains.
     rules: watch::Receiver<Arc<Vec<ProxyDomain>>>,
-    /// Parsed gateway URL — its scheme + authority replace the target's.
+    /// Parsed gateway URL - its scheme + authority replace the target's.
     gateway: Uri,
     /// Live-updatable Gate API key (rotations push a new value).
     api_key: watch::Receiver<Arc<str>>,
@@ -172,8 +172,8 @@ struct GateHandler {
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
     /// Per-connection memo of the owner-UID verdict, keyed by peer address.
-    /// hudsucker clones the handler per connection, so this is resolved once —
-    /// while the peer's socket is definitely still in `/proc/net/tcp` — instead
+    /// hudsucker clones the handler per connection, so this is resolved once -
+    /// while the peer's socket is definitely still in `/proc/net/tcp` - instead
     /// of re-reading it (and risking a TOCTOU miss) on every request.
     peer_verdict: Option<(std::net::SocketAddr, bool)>,
 }
@@ -293,7 +293,7 @@ impl HttpHandler for GateHandler {
         let mut action = "passthrough";
         if let Some(host) = host.as_deref() {
             // Rewrite matched inference paths to the gateway, forwarding to
-            // the domain's configured upstream — for Anthropic that's the same
+            // the domain's configured upstream - for Anthropic that's the same
             // api.anthropic.com the request came from , validated
             // against a real Cowork generation: 200 text/event-stream.
             // Gate the rewrite on owner UID too: plain-HTTP requests reach here
@@ -357,7 +357,7 @@ impl HttpHandler for GateHandler {
 
 /// Repoint a request at the gateway: swap scheme + authority for the
 /// gateway's, keep the original path/query, and inject the Gate headers.
-/// The app's own auth header (bearer / `x-api-key`) is left intact —
+/// The app's own auth header (bearer / `x-api-key`) is left intact -
 /// Gate validates `X-Gate-Api-Key` and forwards the rest.
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
@@ -385,9 +385,9 @@ pub(crate) fn apply_rewrite<T>(
 
 /// Bind a loopback listener and return it together with the port it landed on.
 /// Tries `preferred` first (so a restart can reuse the same port and keep a
-/// frozen system-proxy pointer valid); if that's unavailable — taken, or
-/// `None` — falls back to an ephemeral port. Returning the *live* listener —
-/// rather than probing a port and dropping it before hudsucker binds — closes
+/// frozen system-proxy pointer valid); if that's unavailable - taken, or
+/// `None` - falls back to an ephemeral port. Returning the *live* listener -
+/// rather than probing a port and dropping it before hudsucker binds - closes
 /// the TOCTOU window where another process could grab the port in the gap. The
 /// socket stays held from here until it's handed to the proxy. Set non-blocking
 /// so tokio can adopt it.
@@ -416,7 +416,7 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
 /// or dropped.
 ///
 /// `on_unexpected_exit` fires if the server loop ends *without* a deliberate
-/// stop — i.e. the engine crashed or lost its bind. Callers use it to revert
+/// stop - i.e. the engine crashed or lost its bind. Callers use it to revert
 /// the system proxy so traffic is never stranded at a dead listener.
 pub fn start<F>(cfg: EngineConfig, on_unexpected_exit: F) -> Result<RunningEngine>
 where

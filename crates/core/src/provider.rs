@@ -1,7 +1,7 @@
 //! Provider abstraction: one user-facing switch per model provider that
-//! orchestrates both the config-level tool integrations ([`registry`]) and —
+//! orchestrates both the config-level tool integrations ([`registry`]) and -
 //! on every platform with the proxy subsystem (macOS, Windows, Linux), only
-//! when the system proxy is already running — the matching proxy domains
+//! when the system proxy is already running - the matching proxy domains
 //! ([`crate::proxy`]). This is the layer that lets the UI show a single
 //! "OpenAI / Codex" toggle instead of exposing the proxy-vs-config split.
 //!
@@ -38,7 +38,7 @@ pub struct Provider {
 /// same one-switch model and others can be added the same way.
 ///
 /// Mapping note: each provider lists only the tools that need *config* editing
-/// to route (a CLI that ignores the system proxy — Claude Code, Codex). Desktop
+/// to route (a CLI that ignores the system proxy - Claude Code, Codex). Desktop
 /// apps that honor the system proxy (Cowork / Claude Desktop) ride the proxy
 /// domain instead, so they're covered by `proxy_domain_slugs` without a
 /// credential or sudo prompt. That's why Cowork isn't in `tool_ids`. A provider
@@ -112,7 +112,7 @@ struct EnablePlan {
     configure_tool: bool,
     /// Flip the provider's proxy domains on .
     enable_domain: bool,
-    /// Neither mechanism can act — surface a helpful error instead.
+    /// Neither mechanism can act - surface a helpful error instead.
     nothing: bool,
 }
 
@@ -140,7 +140,7 @@ fn proxy_running() -> bool {
 
 /// True if any of the provider's proxy domains is currently enabled in the
 /// proxy catalog. A provider with no config tools (proxy-only, e.g.
-/// OpenRouter) relies on this for its headline on/off state — without it the
+/// OpenRouter) relies on this for its headline on/off state - without it the
 /// switch would always read off. Always false on platforms without the proxy
 /// subsystem.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -176,7 +176,7 @@ fn tool_connected(id: ToolId) -> bool {
 }
 
 /// Current state of one provider for the UI. A provider reads as on when any
-/// of its config tools is connected *or* any of its proxy domains is enabled —
+/// of its config tools is connected *or* any of its proxy domains is enabled -
 /// so a proxy-only provider (OpenRouter) reflects its domain, and a config
 /// provider that's also riding the proxy still reads on.
 pub fn state(p: &Provider) -> ProviderState {
@@ -198,11 +198,11 @@ pub fn list() -> Vec<ProviderState> {
 
 /// Turn a provider on. Configures installed tools and, if the proxy is already
 /// running, enables the provider's proxy domains. Requires a signed-in
-/// account. Idempotent — re-running re-applies the same config.
+/// account. Idempotent - re-running re-applies the same config.
 pub fn enable(slug: &str) -> Result<ProviderState> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
     let account = account::load()?
-        .context("no Gate account configured — sign in before enabling a provider")?;
+        .context("no Gate account configured - sign in before enabling a provider")?;
 
     let any_detected = p.tool_ids.iter().any(|&id| tool_detected(id));
     let plan = enable_plan(any_detected, proxy_running());
@@ -221,7 +221,7 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
                 continue;
             };
             if !integ.detect().unwrap_or(false) {
-                continue; // tool not installed — nothing to configure
+                continue; // tool not installed - nothing to configure
             }
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
@@ -275,7 +275,7 @@ pub fn disable(slug: &str) -> Result<ProviderState> {
 
 // ---- Global kill / restore (the "Route through Gate" master switch) ----
 //
-// Turning the master off should stop *all* routing — including config-based
+// Turning the master off should stop *all* routing - including config-based
 // providers like Codex, which the proxy never touched. We snapshot which
 // providers were on, disconnect them, then (the caller) stops the proxy.
 // Turning the master back on re-applies that snapshot, so the user's apps come
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(p.display_name, "OpenRouter");
         assert!(
             p.tool_ids.is_empty(),
-            "OpenRouter has no CLI integration — it's proxy-only"
+            "OpenRouter has no CLI integration - it's proxy-only"
         );
         assert_eq!(p.proxy_domain_slugs, &["openrouter"]);
     }
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(p.display_name, "Google / Gemini");
         assert!(
             p.tool_ids.is_empty(),
-            "Gemini has no CLI integration — it's proxy-only"
+            "Gemini has no CLI integration - it's proxy-only"
         );
         assert_eq!(p.proxy_domain_slugs, &["google", "google-codeassist"]);
     }

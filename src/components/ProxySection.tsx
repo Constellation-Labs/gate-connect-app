@@ -46,7 +46,7 @@ export function ProxySection() {
     try {
       setState(await action());
     } catch (err) {
-      // A declined admin prompt surfaces here as a cancel — re-sync so the
+      // A declined admin prompt surfaces here as a cancel - re-sync so the
       // toggle reflects reality rather than the optimistic click.
       setError(String(err));
       try {

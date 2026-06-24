@@ -3,13 +3,13 @@
 //! writes `http_proxy`/`https_proxy` (+ upper-case aliases) pointing at our
 //! loopback engine, a `no_proxy` that keeps loopback traffic off the proxy, and
 //! `NODE_EXTRA_CA_CERTS` pointing at our CA so Node-based CLIs (e.g. Claude
-//! Code) — which ship their own bundle and ignore the system trust store —
+//! Code) - which ship their own bundle and ignore the system trust store -
 //! accept the engine's minted leaf certs. Disabling deletes the file again.
 //!
 //! Why `environment.d` and not `/etc/environment`:
 //!
 //! - **No root.** The drop-in lives in the user's home, so enable/disable are
-//!   unprivileged — no `pkexec`/polkit prompt, and no all-or-nothing privileged
+//!   unprivileged - no `pkexec`/polkit prompt, and no all-or-nothing privileged
 //!   write that strands the toggle when polkit is unavailable. (Trusting the CA
 //!   still needs root; that's a separate, one-time step in [`super::ca`].)
 //! - **Transient by ownership.** We own the whole file, so "off" is a plain
@@ -18,7 +18,7 @@
 //! `systemd --user` reads `environment.d` at login and applies it to the
 //! graphical session, so the variables reach GUI apps started afterwards *and*
 //! command-line shells spawned from the session. Like `/etc/environment` before
-//! it, this only affects **new** sessions — already-running shells keep their
+//! it, this only affects **new** sessions - already-running shells keep their
 //! environment until restarted. Known limitation: pure non-systemd sessions
 //! (rare on modern Ubuntu/GNOME) don't read `environment.d`.
 //!
@@ -48,7 +48,7 @@ fn dropin_path() -> Result<PathBuf> {
 
 /// Marker recorded on enable. The drop-in design needs no captured prior state
 /// to revert (we just delete our file), so this only notes whether the drop-in
-/// was already present when we looked — and, more importantly, its existence on
+/// was already present when we looked - and, more importantly, its existence on
 /// disk is what tells [`super::manager`] a previous session left the proxy on
 /// (crash reconcile).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,7 +94,7 @@ pub fn save_port(port: u16) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Path to our CA cert, mirrored from [`super::ca`] — used for
+/// Path to our CA cert, mirrored from [`super::ca`] - used for
 /// `NODE_EXTRA_CA_CERTS` so Node CLIs trust the engine's leaf certs.
 fn ca_cert_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("proxy").join("ca-cert.pem"))
@@ -114,7 +114,7 @@ fn build_dropin(port: u16) -> Result<String> {
     let no_proxy = "localhost,127.0.0.1,::1";
     let ca = ca_cert_path()?;
     Ok(format!(
-        "# Managed by Gate Connect — do not edit. Removed when the proxy is off.\n\
+        "# Managed by Gate Connect - do not edit. Removed when the proxy is off.\n\
          http_proxy={endpoint}\n\
          https_proxy={endpoint}\n\
          HTTP_PROXY={endpoint}\n\
@@ -173,7 +173,7 @@ pub fn enable(port: u16) -> Result<()> {
 }
 
 /// Delete our drop-in, restoring the user environment to its prior (proxy-free)
-/// state. Restore and force-off are identical here — both just remove our file —
+/// state. Restore and force-off are identical here - both just remove our file -
 /// so `snapshot` is unused. Unprivileged.
 pub fn restore(_snapshot: &ProxySnapshot) -> Result<()> {
     force_off()

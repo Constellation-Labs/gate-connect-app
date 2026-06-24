@@ -1,14 +1,14 @@
 # Gate Connect (prototype)
 
 Smallest end-to-end slice of the [Gate Connect PRD](https://www.notion.so/Gate-Connect-PRD-35da94bd4b4f81afa883eebceab0f367)
-— enough to point **Claude Desktop's Cowork** at a custom gateway and
+- enough to point **Claude Desktop's Cowork** at a custom gateway and
 verify the round trip.
 
 ## Scope
 
 - **Surfaces:** Tauri 2 menu-bar app (primary) and a `gate-connect` CLI. Both
   invoke the same `gate-connect-core` crate; nothing is implemented in only
-  one place. The app lives in the macOS menu bar — no dock icon. Left-click
+  one place. The app lives in the macOS menu bar - no dock icon. Left-click
   the tray icon to toggle a popover anchored underneath; right-click for the
   menu.
 - **Platforms:** Cowork ships on macOS and Windows; Claude Code, Codex, and
@@ -41,7 +41,7 @@ apps/connect/
    never lands in any file on disk.
 2. **Credential helper.** Writes `~/Library/Application Support/Gate Connect/cowork-credential-helper.sh`
    (mode 0755). The script calls `security find-generic-password ... -w` and
-   prints the key on stdout — exactly what Cowork's `inferenceCredentialHelper`
+   prints the key on stdout - exactly what Cowork's `inferenceCredentialHelper`
    contract expects.
 3. **Managed plist.** Writes `/Library/Managed Preferences/<user>/com.anthropic.claudefordesktop.plist`
    with:
@@ -68,11 +68,11 @@ From this directory:
 
 ```bash
 pnpm install        # one-time (runs from any package in the monorepo)
-pnpm app            # tauri dev — opens the Gate Connect window
+pnpm app            # tauri dev - opens the Gate Connect window
 ```
 
 `pnpm app` boots Vite on :5173, compiles the Rust shell, and starts the app.
-There is no dock icon — look for the Gate Connect glyph in the macOS menu bar
+There is no dock icon - look for the Gate Connect glyph in the macOS menu bar
 (top-right of the screen).
 
 ### Use it
@@ -82,7 +82,7 @@ There is no dock icon — look for the Gate Connect glyph in the macOS menu bar
 2. Click the Gate Connect icon in the menu bar. A popover slides down.
 3. Click **Connect** next to Cowork.
 4. Enter your gateway base URL and API key. The macOS auth panel will pop
-   asking for your password — that's the managed-prefs write.
+   asking for your password - that's the managed-prefs write.
 5. Cmd+Q Claude Desktop fully and relaunch.
 6. The sign-in screen should offer to skip Anthropic authentication. Take it.
 7. Verify via **Help → Troubleshooting → Copy Managed Configuration Report**

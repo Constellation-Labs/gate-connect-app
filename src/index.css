@@ -45,7 +45,7 @@
     background: transparent;
   }
 
-  /* Respect the OS reduced-motion preference — disables the popover's
+  /* Respect the OS reduced-motion preference - disables the popover's
      panel transitions, hover translates, and skeleton shimmer. Matches the
      contract baked into cg/tokens.css for the rest of the Constellation
      Gate surfaces. */

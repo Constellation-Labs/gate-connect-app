@@ -4,7 +4,7 @@
  * the UI can tuck it inside a `<details>` for power users.
  *
  * We pattern-match the macOS / keychain / osascript / network failure
- * modes we see in practice — if nothing matches, the fallback names the
+ * modes we see in practice - if nothing matches, the fallback names the
  * action that failed and tells the user the details below may help.
  */
 export type ErrorContext =
@@ -76,7 +76,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     };
   }
 
-  // macOS denied keychain access entirely (rare — system-level block).
+  // macOS denied keychain access entirely (rare - system-level block).
   if (lc.includes("user interaction is not allowed") || lc.includes("errsecinteraction")) {
     return {
       title: "macOS blocked keychain access",
@@ -100,7 +100,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     };
   }
 
-  // Gateway 401 — wrong API key.
+  // Gateway 401 - wrong API key.
   if (lc.includes("401") || lc.includes("unauthorized")) {
     return {
       title: "Gateway rejected the API key",
@@ -118,7 +118,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     };
   }
 
-  // Fallback — tell the user *what* failed at least.
+  // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
     sign_in: "Couldn't save your account",
     connect: "Couldn't connect this tool",

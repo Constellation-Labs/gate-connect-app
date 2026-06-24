@@ -6,12 +6,12 @@
 //! write, so enable/disable/restore/reconcile run promptless. The only step
 //! that needs confirmation is trusting the CA (Windows' native root-store
 //! dialog), which happens once on enable. Critically, the proxy revert never
-//! depends on that dialog — so it can't be cancelled and leave HTTPS routed at
+//! depends on that dialog - so it can't be cancelled and leave HTTPS routed at
 //! a dead port. The CA is left trusted across disable so re-enabling is
 //! promptless; removing it is a separate explicit action
 //! ([`ProxyManager::untrust_ca`]).
 //!
-//! Unlike macOS — where each network service carries its own proxy slots —
+//! Unlike macOS - where each network service carries its own proxy slots -
 //! Windows has a single per-user WinINET proxy, so there is no service
 //! enumeration here; enable/disable act on that one global setting.
 
@@ -61,7 +61,7 @@ impl ProxyManager {
     pub fn enable(&self) -> Result<ProxyState> {
         // Hold the lock for the whole sequence: a concurrent enable must not
         // snapshot the system proxy after this one has already pointed it at
-        // our engine — that snapshot would later "restore" a dead port.
+        // our engine - that snapshot would later "restore" a dead port.
         // (handle_engine_crash uses try_lock, so it can't deadlock on this.)
         let mut guard = self.engine.lock().expect("proxy engine mutex poisoned");
         if guard.is_some() {
@@ -70,7 +70,7 @@ impl ProxyManager {
         }
 
         let account = account::load()?
-            .context("no Gate account configured — sign in before enabling the proxy")?;
+            .context("no Gate account configured - sign in before enabling the proxy")?;
         let domains = config::load_domains()?;
         // No enabled-domains guard here: the master switch owns whether the
         // engine runs, while providers/domains own what it intercepts. Starting
@@ -140,7 +140,7 @@ impl ProxyManager {
     }
 
     /// Stop the engine and restore the prior system proxy. Promptless and
-    /// unconditional — the revert happens first and never depends on a dialog,
+    /// unconditional - the revert happens first and never depends on a dialog,
     /// so it can't be cancelled and strand traffic. The CA is left trusted.
     pub fn disable(&self) -> Result<ProxyState> {
         let running = self
@@ -150,7 +150,7 @@ impl ProxyManager {
             .take();
 
         // An unreadable snapshot must not strand HTTPS at the dead engine
-        // port — treat it like a missing one and force the proxy off.
+        // port - treat it like a missing one and force the proxy off.
         let snapshot = system_proxy::load_snapshot().unwrap_or_else(|e| {
             eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
             None
@@ -167,7 +167,7 @@ impl ProxyManager {
     }
 
     /// Toggle a domain. If the engine is running, the new rules are pushed live
-    /// — no restart, no prompt.
+    /// - no restart, no prompt.
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
         let domains = config::set_enabled(slug, enabled)?;
         if let Some(running) = self
@@ -181,7 +181,7 @@ impl ProxyManager {
         self.status()
     }
 
-    /// Push a rotated Gate API key into the running engine, if any — the
+    /// Push a rotated Gate API key into the running engine, if any - the
     /// engine otherwise keeps injecting the key it was started with.
     pub fn refresh_api_key(&self, api_key: &str) {
         if let Some(running) = self
@@ -223,7 +223,7 @@ impl ProxyManager {
     pub(crate) fn handle_engine_crash(&self) {
         eprintln!("gate proxy engine exited unexpectedly; reverting system proxy");
         // Briefly retry the lock: short holders (status) clear in ms. If
-        // enable still holds it after that, defer — enable re-checks the
+        // enable still holds it after that, defer - enable re-checks the
         // engine before returning and runs this same revert itself, whereas
         // restoring + clearing the snapshot from here mid-enable would erase
         // the state enable relies on. (A deliberate stop sets `stopping`
@@ -252,7 +252,7 @@ impl ProxyManager {
 
     /// Called once at app startup. A leftover snapshot means a previous session
     /// left the system proxy pointed at an engine that no longer exists (unclean
-    /// quit / crash) — restore it. Promptless, so it always succeeds; a clean
+    /// quit / crash) - restore it. Promptless, so it always succeeds; a clean
     /// disable clears the snapshot, making this a no-op.
     pub fn reconcile_on_startup(&self) -> Result<()> {
         // As in disable: an unreadable snapshot still means an unclean prior

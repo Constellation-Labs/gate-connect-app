@@ -88,7 +88,7 @@ export const proxyEnable = () => invoke<ProxyState>("proxy_enable");
  * removing it is the separate, explicit proxyUntrustCa. */
 export const proxyDisable = () => invoke<ProxyState>("proxy_disable");
 
-/** Toggle a provider. Applied live when the engine is running — no restart,
+/** Toggle a provider. Applied live when the engine is running - no restart,
  * no prompt. */
 export const proxySetDomain = (slug: string, enabled: boolean) =>
   invoke<ProxyState>("proxy_set_domain", { slug, enabled });
@@ -100,7 +100,7 @@ export const proxyUntrustCa = () => invoke<ProxyState>("proxy_untrust_ca");
 // ---- Providers (one switch per model provider) ----
 //
 // A provider orchestrates the config integration(s) and, when the proxy is
-// already running (macOS / Windows / Linux), the matching proxy domain(s) — so
+// already running (macOS / Windows / Linux), the matching proxy domain(s) - so
 // the UI shows a single toggle without exposing the proxy-vs-config split. A
 // provider with no CLI integration (OpenRouter) is proxy-only.
 

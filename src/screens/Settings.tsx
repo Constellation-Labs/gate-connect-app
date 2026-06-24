@@ -13,7 +13,7 @@ function hostOf(url: string): string {
   }
 }
 
-/** Settings — workspace + Gate API key management. The key itself is held in
+/** Settings - workspace + Gate API key management. The key itself is held in
  *  the OS keychain and never returned to the UI, so it shows masked; Replace
  *  key calls save_account, Disconnect calls clear_account. */
 export function Settings({

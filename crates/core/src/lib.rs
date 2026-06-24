@@ -6,7 +6,7 @@
 //!
 //! Cross-platform note: the config integrations (Claude Code, Codex,
 //! OpenCode) run on macOS, Linux, and Windows. Claude Desktop / Cowork has
-//! no config integration — it routes through the built-in proxy's
+//! no config integration - it routes through the built-in proxy's
 //! `anthropic` domain instead (see [`proxy`]).
 
 pub mod account;

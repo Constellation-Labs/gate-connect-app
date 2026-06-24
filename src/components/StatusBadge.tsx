@@ -1,7 +1,7 @@
 import type { Status } from "../lib/api";
 
 /**
- * Status pill — cg-system badge: rounded-xs (4px), mono tabular text,
+ * Status pill - cg-system badge: rounded-xs (4px), mono tabular text,
  * 20px height, soft tonal background with darker label per the
  * `.cg-badge` contract. Renders a 6px filled dot in the same hue.
  */

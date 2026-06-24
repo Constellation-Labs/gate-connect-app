@@ -41,7 +41,7 @@ fn secret_file(dir: &std::path::Path, service: &str, account: &str) -> PathBuf {
 /// [`use_in_memory_backend`]. `None` in every normal build, so production always
 /// hits the native OS secret store below. It exists because the OS keychain
 /// (Secret Service / Keychain / Credential Manager) is unavailable in headless
-/// CI and must never be touched by tests — and keyring's own mock store keeps
+/// CI and must never be touched by tests - and keyring's own mock store keeps
 /// state in the `Entry`, not across `Entry::new` calls, so it can't model
 /// "a secret already exists" the way our get-after-set code paths need.
 static IN_MEMORY: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);

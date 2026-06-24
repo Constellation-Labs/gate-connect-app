@@ -1,6 +1,6 @@
 // Minimal HTTPS server standing in for the Gate gateway in the real-tools
 // e2e job. Records each request it receives (method, path, headers) as one
-// JSON line in $CAPTURE_LOG, then answers 200 — so a real AI CLI pointed at
+// JSON line in $CAPTURE_LOG, then answers 200 - so a real AI CLI pointed at
 // it via `gate-connect connect` emits exactly one request we can assert on.
 //
 // Env: MOCK_PORT, MOCK_CERT (PEM), MOCK_KEY (PEM), CAPTURE_LOG (output path).

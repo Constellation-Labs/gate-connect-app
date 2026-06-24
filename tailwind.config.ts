@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Constellation Gate design tokens — mirrors
+ * Constellation Gate design tokens - mirrors
  * `gate/packages/frontend-ui/src/cg/tokens.css` so Connect speaks the same
  * visual language as the dashboard and admin apps. Locked rules from the
  * design.md contract:
@@ -11,10 +11,10 @@ import type { Config } from "tailwindcss";
  * - Geist + Geist Mono.
  *
  * The `brand` indigo palette is kept ONLY to back the existing logo tile.
- * Do not introduce new indigo surfaces — use ink-900 for primary instead.
+ * Do not introduce new indigo surfaces - use ink-900 for primary instead.
  *
  * EXCEPTION: the `gc` group below is the Gate Connect menu-bar popover palette
- * from the Claude Design handoff (the indigo-forward "Gate Connect — Prototype").
+ * from the Claude Design handoff (the indigo-forward "Gate Connect - Prototype").
  * It is namespaced so it backs ONLY the Connect popover redesign and never
  * leaks into the shared cg ink/brand ramps above.
  */
@@ -57,7 +57,7 @@ export default {
           950: "#1e1b4b",
         },
 
-        // Ink — pure neutral grays (OKLCH chroma 0). Tonal anchor for the
+        // Ink - pure neutral grays (OKLCH chroma 0). Tonal anchor for the
         // whole UI; previously a Tailwind slate ramp with a blue cast.
         ink: {
           50: "oklch(0.985 0 0)",
@@ -73,7 +73,7 @@ export default {
           950: "oklch(0.045 0 0)",
         },
 
-        // Brand blue ramp — secondary accent, used sparingly. Primary
+        // Brand blue ramp - secondary accent, used sparingly. Primary
         // affordances stay on the ink ramp.
         blue: {
           50: "oklch(0.97 0.02 268.85)",
@@ -156,7 +156,7 @@ export default {
         },
       },
       boxShadow: {
-        // Shadow-as-border — cards never get a solid 1px border per
+        // Shadow-as-border - cards never get a solid 1px border per
         // design.md §1 / §8. The three-stop stack carries the seam:
         // 1) hairline color outline
         // 2) bottom inset stroke (gives the row a "card" feel)

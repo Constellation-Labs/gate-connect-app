@@ -2,7 +2,7 @@ import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, CardButton } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
-/** Connected home — Proxy card (toggle + drill-in) and Direct Gateway card. */
+/** Connected home - Proxy card (toggle + drill-in) and Direct Gateway card. */
 export function Home({
   workspace,
   proxyOn,

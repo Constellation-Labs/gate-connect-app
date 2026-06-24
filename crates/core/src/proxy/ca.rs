@@ -105,11 +105,11 @@ pub fn load_or_create() -> Result<Ca> {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     // Order matters for crash-safety. The key (keychain) and cert (disk) are two
-    // separate stores, so we can't write both atomically — but we can pick an
+    // separate stores, so we can't write both atomically - but we can pick an
     // order whose interrupted state is self-healing. Write the key first (the
     // keychain set is transactional), then the cert via a temp file + atomic
     // rename. If the process dies between the two, the next launch finds a key
-    // with no cert on disk and regenerates both — never a torn cert or a
+    // with no cert on disk and regenerates both - never a torn cert or a
     // mismatched cert/key pair that would wedge the engine with no recovery.
     keychain::set(&service, &user, &key_pem)?;
     let tmp = path.with_extension("pem.tmp");
@@ -119,17 +119,17 @@ pub fn load_or_create() -> Result<Ca> {
     Ok(Ca { cert_pem, key_pem })
 }
 
-/// Whether the **current on-disk CA** is trusted as a root — keyed on the
+/// Whether the **current on-disk CA** is trusted as a root - keyed on the
 /// actual certificate, not just its name. We verify the cert against the
 /// system trust store with `security verify-cert`, which evaluates the real
 /// cert bytes across the user and admin trust domains and exits non-zero
 /// (`CSSMERR_TP_NOT_TRUSTED`) when it doesn't anchor to a trusted root.
 ///
 /// The previous check matched the CN in `dump-trust-settings`, which a stale
-/// root from a prior install satisfies — it shares our CN but has a different
+/// root from a prior install satisfies - it shares our CN but has a different
 /// key/fingerprint. That made `ensure_trusted` no-op while the engine signed
 /// leaves with a *different*, untrusted CA, so every MITM handshake failed
-/// (`NOT_TRUSTED`) with no recovery short of manual keychain surgery — the
+/// (`NOT_TRUSTED`) with no recovery short of manual keychain surgery - the
 /// reinstall-breaks-the-proxy bug. Verifying the cert itself catches the
 /// fingerprint mismatch and lets `ensure_trusted` re-install. Read-only /
 /// non-privileged.
@@ -167,7 +167,7 @@ fn system_keychain_has_ca() -> Result<bool> {
 
 /// Remove any Gate CA a prior install left behind before we install the
 /// current one. We always drop it from the user login keychain (no admin),
-/// and — only if one is actually present — from the root-owned System
+/// and - only if one is actually present - from the root-owned System
 /// keychain via a single admin prompt. `-t` removes the cert's trust settings
 /// along with the cert. Login-keychain removal is best-effort (a missing cert
 /// just exits non-zero); the System-keychain removal surfaces a real failure
@@ -192,7 +192,7 @@ fn remove_stale_cas() -> Result<()> {
 /// Trust the CA if it isn't already. Runs `security add-trusted-cert`
 /// *directly* (not via osascript) so its native Security-Agent dialog can
 /// perform the interactive trust-settings authorization that
-/// `SecTrustSettingsSetTrustSettings` requires — the "with administrator
+/// `SecTrustSettingsSetTrustSettings` requires - the "with administrator
 /// privileges" path fails with "authorization denied since no user
 /// interaction was possible". Installs into the user login keychain (user
 /// trust domain), which needs no root.

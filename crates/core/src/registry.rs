@@ -108,7 +108,7 @@ pub trait Integration: Send + Sync {
     fn save_upstream_credential(&self, credential: &str) -> Result<()>;
 
     /// Expected prefix for this tool's upstream credential (e.g. "sk-"
-    /// for OpenAI). An empty string means no prefix is enforced — the
+    /// for OpenAI). An empty string means no prefix is enforced - the
     /// credential is still length/charset-validated. The IPC layer passes
     /// this to `validate_api_key` so a compromised renderer can't write
     /// arbitrary bytes to a tool's keychain entry under a mismatched slug.
@@ -127,7 +127,7 @@ pub trait Integration: Send + Sync {
     fn has_upstream_credential(&self) -> Result<bool>;
 
     /// Forget the saved upstream credential. Independent of connect
-    /// state — disconnect() does not call this.
+    /// state - disconnect() does not call this.
     fn clear_upstream_credential(&self) -> Result<()>;
 }
 
@@ -164,7 +164,7 @@ pub fn refresh_gate_key_everywhere(api_key: &str) -> Result<()> {
 }
 
 /// Disconnect every tool Gate Connect currently manages (Connected or
-/// Drifted). Sign-out runs this first — clearing the account while tool
+/// Drifted). Sign-out runs this first - clearing the account while tool
 /// configs still embed the key would leave them routing to the gateway
 /// with a dead credential on disk. Best-effort across tools; failures
 /// are collected into one error so the caller can abort the sign-out.
@@ -175,7 +175,7 @@ pub fn disconnect_all_managed() -> Result<()> {
             Ok(Status::Connected) | Ok(Status::Drifted(_)) => true,
             Ok(_) => false,
             // status() failing (e.g. unparsable config) doesn't prove the
-            // tool is clean — attempt the disconnect so a config that still
+            // tool is clean - attempt the disconnect so a config that still
             // embeds the key aborts the sign-out instead of being skipped.
             Err(_) => true,
         };

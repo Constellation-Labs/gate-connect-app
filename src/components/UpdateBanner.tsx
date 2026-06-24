@@ -8,7 +8,7 @@ const RELEASES_URL =
 
 /** Checks for an app update on mount; if one exists, renders a slim banner
  *  telling the user a newer version is available and linking to the releases
- *  page so they can download and install it themselves. The check is silent —
+ *  page so they can download and install it themselves. The check is silent -
  *  offline or unreachable endpoint shows nothing. */
 export function UpdateBanner() {
   const [update, setUpdate] = useState<Update | null>(null);

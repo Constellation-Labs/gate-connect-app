@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: lts/*
           cache: pnpm
-      # Pinned to 1.86.0 to match rust-toolchain.toml — the macOS targets
+      # Pinned to 1.86.0 to match rust-toolchain.toml - the macOS targets
       # must be added to the same toolchain cargo actually builds with.
       - uses: dtolnay/rust-toolchain@1.86.0
         with:

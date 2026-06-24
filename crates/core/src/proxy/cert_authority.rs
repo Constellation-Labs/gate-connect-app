@@ -3,7 +3,7 @@
 //!
 //! hudsucker's built-in `RcgenAuthority` omits EKU on its leaves. Lenient TLS
 //! stacks (OpenSSL/LibreSSL, i.e. curl) accept that, but macOS's
-//! Network.framework — which Claude Desktop / Cowork use — rejects a leaf
+//! Network.framework - which Claude Desktop / Cowork use - rejects a leaf
 //! without `serverAuth` EKU and aborts the handshake with a `BadCertificate`
 //! alert. That asymmetry is exactly what blocked Cowork: the request never
 //! survived the MITM handshake. Adding the EKU makes Apple's stack accept the
@@ -35,7 +35,7 @@ const NOT_BEFORE_OFFSET_SECS: i64 = 60;
 /// engine would keep serving a leaf past its `not_after` and break handshakes.
 const LEAF_RENEW_MARGIN_SECS: i64 = 7 * 24 * 60 * 60;
 
-/// Subject CN of the local root CA — shared by the three platform CA
+/// Subject CN of the local root CA - shared by the three platform CA
 /// modules, which also use it as the lookup key for trust/untrust.
 pub(crate) const CA_COMMON_NAME: &str = "Gate Connect Local CA";
 
@@ -76,7 +76,7 @@ pub(crate) fn ca_certificate_params() -> Result<CertificateParams> {
 
 pub struct GateCa {
     issuer: Issuer<'static, KeyPair>,
-    /// The key pair all minted leaves certify — distinct from the CA key.
+    /// The key pair all minted leaves certify - distinct from the CA key.
     leaf_key: KeyPair,
     private_key: PrivateKeyDer<'static>,
     provider: Arc<CryptoProvider>,
@@ -94,7 +94,7 @@ impl GateCa {
     pub fn new(issuer: Issuer<'static, KeyPair>, provider: CryptoProvider) -> Self {
         // Leaves get their OWN key pair, distinct from the CA. hudsucker's
         // RcgenAuthority reuses the CA key for every leaf, which makes a
-        // leaf's SubjectKeyIdentifier identical to its issuer's — Apple's TLS
+        // leaf's SubjectKeyIdentifier identical to its issuer's - Apple's TLS
         // stack rejects that with CertificateUnknown. Giving leaves a separate
         // key (what real CAs do) is the actual fix; the EKU / AKI / basic
         // constraints above were necessary but not sufficient.
@@ -168,7 +168,7 @@ impl CertificateAuthority for GateCa {
             let cache = self.cache.lock().expect("cert cache mutex poisoned");
             if let Some(entry) = cache.get(&host) {
                 // Serve the cached leaf unless it's within the renew margin of
-                // expiry — past that we drop through and mint a fresh one so a
+                // expiry - past that we drop through and mint a fresh one so a
                 // long-lived engine never hands out an expired cert.
                 if entry.not_after - OffsetDateTime::now_utc() > renew_margin {
                     return Arc::clone(&entry.config);

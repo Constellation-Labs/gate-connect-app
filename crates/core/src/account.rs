@@ -3,7 +3,7 @@
 //! API key (sk-gw-...) lives in the macOS keychain.
 //!
 //! Upstream-provider auth (e.g. the Anthropic OAuth bearer Cowork
-//! holds after sign-in) is *not* stored here — Cowork manages that
+//! holds after sign-in) is *not* stored here - Cowork manages that
 //! itself. Gate Connect's job is to point Cowork at Gate and supply the
 //! workspace identifier via `X-Gate-Api-Key`.
 
@@ -71,7 +71,7 @@ pub fn load_base_url() -> Result<Option<String>> {
 ///
 /// `api_key = Some(value)` writes the key to keychain (creating or
 /// rotating). `api_key = None` leaves any existing keychain entry
-/// untouched — used by the "edit account" form so the user can update
+/// untouched - used by the "edit account" form so the user can update
 /// only the base URL without re-entering their key.
 pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     if gateway_base_url.len() > 2048 {
@@ -124,8 +124,8 @@ pub fn clear() -> Result<()> {
 
 /// Reconcile the account's two halves at startup, dropping an orphaned Gate key
 /// left in the OS keychain when an uninstall removed Gate Connect's on-disk
-/// files but couldn't touch the keychain. macOS drag-to-trash — and deep
-/// uninstallers that purge `~/Library/Application Support` — leave exactly this
+/// files but couldn't touch the keychain. macOS drag-to-trash - and deep
+/// uninstallers that purge `~/Library/Application Support` - leave exactly this
 /// kind of orphan, and a stale Gate key sitting in the keychain with no account
 /// behind it is what this clears.
 ///
@@ -135,8 +135,8 @@ pub fn clear() -> Result<()> {
 /// - URL gone, key present → orphaned Gate key → delete it.
 ///
 /// A key-less `account.json` (URL present, no key) is *not* reconciled: it's a
-/// legitimate pending-key state — a fresh [`switch_gateway`], or a reinstall
-/// orphan — and the app routes it to key entry pointed at that gateway.
+/// legitimate pending-key state - a fresh [`switch_gateway`], or a reinstall
+/// orphan - and the app routes it to key entry pointed at that gateway.
 pub fn reconcile() -> Result<()> {
     let has_url = load_base_url()?.is_some();
     let has_key = has_api_key()?;

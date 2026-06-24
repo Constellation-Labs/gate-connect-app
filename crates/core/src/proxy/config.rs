@@ -49,7 +49,7 @@ fn write_file(file: &DomainsFile) -> Result<()> {
 
 /// The full domain catalog with persisted enabled flags applied. An
 /// unsupported domain is always returned disabled regardless of what's on
-/// disk — Gate can't upstream it yet, so it must not route.
+/// disk - Gate can't upstream it yet, so it must not route.
 pub fn load_domains() -> Result<Vec<ProxyDomain>> {
     let overrides = read_file()?.enabled;
     let mut domains = default_domains();

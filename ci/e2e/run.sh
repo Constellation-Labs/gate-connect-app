@@ -49,7 +49,7 @@ export HOME="$WORK/home"
 mkdir -p "$HOME"
 if [ "$OS" = "Windows" ]; then
   # gate-connect uses the Known-Folder API and the Node CLIs use %USERPROFILE% /
-  # XDG — none of which follow Git Bash's $HOME. Point all of them (in native
+  # XDG - none of which follow Git Bash's $HOME. Point all of them (in native
   # form) at the same throwaway home so reads and writes line up. The
   # GATE_CONNECT_TEST_HOME seam redirects gate-connect; USERPROFILE/XDG redirect
   # the tools.
@@ -71,8 +71,8 @@ fi
 # OS keychain headlessly. The gate-connect binary reads this as a native path.
 export GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")"
 
-# Codex resolves ~/.codex via its own home logic — on Windows that's the real
-# profile, not our USERPROFILE override — so it was reading an empty config and
+# Codex resolves ~/.codex via its own home logic - on Windows that's the real
+# profile, not our USERPROFILE override - so it was reading an empty config and
 # falling back to the default `openai` provider (hitting api.openai.com, 401).
 # Point it explicitly at the .codex dir gate-connect writes the gate provider to.
 export CODEX_HOME="$(winpath "$HOME/.codex")"
@@ -81,7 +81,7 @@ CLI="$ROOT/target/debug/gate-connect"
 [ "$OS" = "Windows" ] && CLI="$CLI.exe"
 PORT=8443
 # Use 127.0.0.1, not localhost: on macOS `localhost` can resolve to IPv6 ::1
-# first, but the mock binds 127.0.0.1 only — so a tool would hit a dead ::1
+# first, but the mock binds 127.0.0.1 only - so a tool would hit a dead ::1
 # address. The leaf cert carries an IP:127.0.0.1 SAN so TLS still validates.
 BASE_URL="https://127.0.0.1:$PORT"
 CAPTURE="$WORK/capture.jsonl"
@@ -105,13 +105,13 @@ ckpt() {
 # Node tools (claude / opencode-on-bun) talk to the mock over TLS. Rather than
 # fight each runtime's CA-trust quirks (bun ignores NODE_EXTRA_CA_CERTS on
 # macOS; msys cert paths confuse Node on Windows), skip verification for these
-# local-only calls — the assertion is about the request reaching the gateway
+# local-only calls - the assertion is about the request reaching the gateway
 # with the right headers, not about CA trust. ANTHROPIC_API_KEY just lets claude
 # attach an auth header so it actually sends.
 export NODE_TLS_REJECT_UNAUTHORIZED=0
 export ANTHROPIC_API_KEY="sk-ant-e2e-dummy"
 # Codex (Rust) has no env to trust a custom CA for a model provider
-# (openai/codex#9526), so it relies on the OS trust store — Linux only below.
+# (openai/codex#9526), so it relies on the OS trust store - Linux only below.
 export CODEX_CA_CERTIFICATE="$(winpath "$CA_DIR/ca.pem")"
 
 PASS=0
@@ -121,7 +121,7 @@ FAIL=0
 # until the expected request shows up or we time out. We deliberately do NOT
 # `wait` on the process: on Windows the codex shim spawns a grandchild that may
 # be unkillable from msys, and blocking on it would stall the whole step. Since
-# the tool's stdout/stderr go to a file, leaving it orphaned is harmless — the
+# the tool's stdout/stderr go to a file, leaving it orphaned is harmless - the
 # step still completes once the script exits and the EXIT trap stops the mock.
 run_until_capture() {
   local needle="$1"
@@ -158,7 +158,7 @@ run_until_capture() {
 # ---------------------------------------------------------------------------
 # Run openssl from inside CA_DIR with bare filenames so it works whether the
 # openssl on PATH is the msys build (wants /c/… paths) or a native Windows one
-# (wants C:\… paths) — relative names resolve against the process cwd either way.
+# (wants C:\… paths) - relative names resolve against the process cwd either way.
 (
   cd "$CA_DIR" || exit 1
   openssl req -x509 -newkey rsa:2048 -nodes \
@@ -205,7 +205,7 @@ esac
 # 2. Start the mock gateway and wait until it accepts TLS.
 # ---------------------------------------------------------------------------
 # Mock output goes to a file (not the step's pipe) so nothing but the shell
-# itself holds stdout — the step then completes the moment the script exits,
+# itself holds stdout - the step then completes the moment the script exits,
 # even if a tool left an orphaned process behind.
 CAPTURE_LOG="$(winpath "$CAPTURE")" MOCK_PORT="$PORT" \
   MOCK_CERT="$(winpath "$CA_DIR/leaf.pem")" MOCK_KEY="$(winpath "$CA_DIR/leaf.key")" \
@@ -272,7 +272,7 @@ run_tool() {
 
 # --- Claude Code: gate-connect writes the gateway URL + headers into the env
 #     block of ~/.claude/settings.json; claude POSTs /v1/messages there. We run
-#     `--bare` (the documented CI mode — it skips the OAuth/keychain read that
+#     `--bare` (the documented CI mode - it skips the OAuth/keychain read that
 #     otherwise hangs headless macOS) and feed it that exact settings file via
 #     `--settings` so the env block still applies.
 mkdir -p "$HOME/.claude"
@@ -281,7 +281,7 @@ run_tool "claude-code" "claude-code" "/v1/messages" -- \
 
 # --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. Codex has no env
 #     to trust a custom CA for a model provider (openai/codex#9526), so it relies
-#     on the OS trust store — which we populate on Linux and Windows above.
+#     on the OS trust store - which we populate on Linux and Windows above.
 #     macOS codex doesn't read the keychain for this, so it stays skipped there.
 if [ "$OS" != "Darwin" ]; then
   mkdir -p "$HOME/.codex"
@@ -289,7 +289,7 @@ if [ "$OS" != "Darwin" ]; then
   run_tool "codex" "codex" "/v1/responses" -- \
     codex exec --skip-git-repo-check "ping"
 else
-  echo "::notice::skipping codex on macOS — its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526) and ignores the keychain; codex is exercised on Linux and Windows."
+  echo "::notice::skipping codex on macOS - its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526) and ignores the keychain; codex is exercised on Linux and Windows."
 fi
 
 # --- OpenCode: gate-connect rewrites its anthropic provider's baseURL to Gate

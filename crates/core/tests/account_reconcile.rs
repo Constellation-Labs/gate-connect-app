@@ -1,10 +1,10 @@
-//! Integration test for `account::reconcile()` — the startup self-heal that
+//! Integration test for `account::reconcile()` - the startup self-heal that
 //! drops a stale half of the account when an uninstall removed Gate Connect's
 //! on-disk files but not its OS keychain entry (or vice versa). It only acts
 //! when the two halves have drifted, so a signed-in user is never touched.
 //!
 //! These exercise the real `account.json` read/write/remove against a throwaway
-//! data dir (via the [`env::set_app_support_dir_for_tests`] seam — a `$HOME`
+//! data dir (via the [`env::set_app_support_dir_for_tests`] seam - a `$HOME`
 //! override doesn't redirect the data dir on Windows) plus a process-global
 //! in-memory keychain backend, so the real OS secret store is never touched. It
 //! lives in its own test binary so those process-wide overrides can't leak into
@@ -75,7 +75,7 @@ fn orphaned_key_without_account_json_is_deleted() {
 }
 
 /// URL present, key gone: a key-less `account.json` is a legitimate pending-key
-/// state — a fresh `switch_gateway`, or a reinstall orphan — so reconcile() must
+/// state - a fresh `switch_gateway`, or a reinstall orphan - so reconcile() must
 /// leave it intact and let the app route to key entry pointed at that gateway.
 #[test]
 fn keyless_account_json_is_left_for_key_entry() {

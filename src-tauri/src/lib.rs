@@ -21,7 +21,7 @@ use tauri::{Position, Size};
 /// Shape-check a user-supplied key coming over the JS-to-Rust boundary.
 /// Refuses empty input, control chars, lengths > 512 bytes, and a missing
 /// prefix when one is required. The keychain layer treats keys as opaque
-/// bytes — this check exists to fail fast before we persist nonsense.
+/// bytes - this check exists to fail fast before we persist nonsense.
 fn validate_api_key(key: &str, required_prefix: &str) -> Result<(), String> {
     if key.is_empty() {
         return Err("API key is empty".into());
@@ -186,7 +186,7 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     // that purges Application Support but can't touch the keychain). Dropping
     // that orphaned key here, rather than on a startup thread that races this
     // read, means it can't briefly route the user to a half-signed-in home. A
-    // key-less account.json (URL but no key) is left intact — it's a pending-key
+    // key-less account.json (URL but no key) is left intact - it's a pending-key
     // state and the read below reports has_api_key=false, so the UI routes to
     // key entry. Best-effort: a reconcile hiccup must not flip a signed-in user
     // to first-run, so we log and fall through to the read below.
@@ -228,7 +228,7 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
     tauri::async_runtime::spawn_blocking(move || {
         account::save(&base_url, key.as_deref()).map_err(|e| e.to_string())?;
         // A rotated key was copied into tool configs (and the running proxy
-        // engine) at connect time — push the new one everywhere it's embedded.
+        // engine) at connect time - push the new one everywhere it's embedded.
         if let Some(k) = key.as_deref() {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             gate_connect_core::proxy::manager().refresh_api_key(k);
@@ -256,7 +256,7 @@ async fn clear_account() -> Result<(), String> {
 
 /// Dev-mode gateway switch: repoint the account at another environment and
 /// forget the current Gate key, so the UI can prompt for an
-/// environment-appropriate one. Managed tools are disconnected first — their
+/// environment-appropriate one. Managed tools are disconnected first - their
 /// config embeds the old gateway+key, and a later key rotation would push the
 /// new key into configs still pointing at the old gateway. Mirrors the URL
 /// validation in `save_account` and the disconnect-first order in
@@ -294,7 +294,7 @@ fn app_platform() -> &'static str {
 //
 // One user-facing switch per model provider. Orchestrates the config
 // integrations (cross-platform) and, on macOS when the proxy is already
-// running, the matching proxy domains — so the UI shows a single toggle
+// running, the matching proxy domains - so the UI shows a single toggle
 // instead of exposing the proxy-vs-config split. Delegates to
 // `gate_connect_core::provider`.
 
@@ -347,7 +347,7 @@ async fn proxy_enable(
     // and waits up to 10s for engine readiness.
     let state = tauri::async_runtime::spawn_blocking(|| {
         // Global ON: restore every provider that was on when routing was last
-        // turned off — *before* enabling — so the engine comes back up routing
+        // turned off - *before* enabling - so the engine comes back up routing
         // the user's prior selection rather than bare. A no-op (no snapshot) on
         // a first enable, where the engine simply starts with zero domains and
         // passes through until a provider is enabled. Best-effort so a restore
@@ -445,7 +445,7 @@ const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
 /// would otherwise immediately hide the popover we open on launch.
 /// While true, the popover ignores focus-loss instead of hiding. Set at
 /// macOS launch so the keychain-password dialog (and the first-run screen)
-/// can't make the window vanish before the user has even seen it — a focus
+/// can't make the window vanish before the user has even seen it - a focus
 /// steal by that system dialog would otherwise trip the dismiss-on-blur
 /// handler. Cleared by [`unpin_popover`] once the user interacts, restoring
 /// normal click-away dismissal. Defaults off so non-macOS behavior is
@@ -531,14 +531,14 @@ pub fn run() {
             if let WindowEvent::Focused(false) = event {
                 // While pinned (first launch, through the keychain-password
                 // dialog and first-run, until the user engages), a focus loss
-                // — the keychain dialog stealing focus, or the spurious blur an
-                // Accessory app emits right after the startup show — must not
+                // - the keychain dialog stealing focus, or the spurious blur an
+                // Accessory app emits right after the startup show - must not
                 // hide the popover, or the user never sees the window.
                 if POPOVER_PINNED.load(Ordering::Acquire) {
                     return;
                 }
                 // On Linux a hidden window leaves the taskbar entirely, and the
-                // SNI/AppIndicator tray is unreliable on GNOME — so dismiss by
+                // SNI/AppIndicator tray is unreliable on GNOME - so dismiss by
                 // minimizing instead, leaving a dock/taskbar entry to restore
                 // from. macOS/Windows keep the native hide-to-tray behavior.
                 #[cfg(target_os = "linux")]
@@ -548,7 +548,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // Hide the dock icon — Gate Connect lives in the menu bar.
+            // Hide the dock icon - Gate Connect lives in the menu bar.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -564,7 +564,7 @@ pub fn run() {
             });
 
             // Linux dismisses the popover by minimizing (see the Focused(false)
-            // handler), so it needs a taskbar/dock entry to restore from —
+            // handler), so it needs a taskbar/dock entry to restore from -
             // override the config's skipTaskbar:true here. macOS hides from the
             // dock via the Accessory activation policy instead, and Windows
             // keeps its hide-to-tray behavior, so neither wants this.
@@ -579,7 +579,7 @@ pub fn run() {
             }
 
             // Round the NSWindow content view's CALayer so the transparent
-            // window itself has rounded corners — without this, CSS-rounded
+            // window itself has rounded corners - without this, CSS-rounded
             // corners on the popover expose the dark window behind them.
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -671,7 +671,7 @@ pub fn run() {
             // First impression: a hidden menu-bar / tray app looks broken on
             // launch, so surface the popover once at startup on every desktop
             // OS. Subsequent opens go through the tray click. (No autostart, so
-            // a launch is always an explicit user action — safe to show.)
+            // a launch is always an explicit user action - safe to show.)
             //
             // Pin it open first: the frontend's initial load reads the OS
             // credential store, and the unlock dialog that can trigger (the
@@ -683,7 +683,7 @@ pub fn run() {
                 POPOVER_PINNED.store(true, Ordering::Release);
 
                 // macOS: the tray icon has no laid-out rect yet at setup, and the
-                // stale value it reports lands the popover in the wrong corner —
+                // stale value it reports lands the popover in the wrong corner -
                 // so place it deterministically under the menu bar instead.
                 #[cfg(target_os = "macos")]
                 position_startup(&window);
@@ -736,10 +736,10 @@ pub fn run() {
 /// and just above or below it, whichever side has room on the current
 /// monitor. macOS's menu bar lives at the top so the popover anchors
 /// below the icon; Windows' taskbar is typically at the bottom and
-/// anchoring below would push the popover off-screen — so we flip it
+/// anchoring below would push the popover off-screen - so we flip it
 /// above the icon. X is clamped to the monitor bounds so a tray icon
 /// near a screen edge doesn't push the popover past it.
-/// Pick the monitor whose physical bounds contain point (x, y) — used to
+/// Pick the monitor whose physical bounds contain point (x, y) - used to
 /// place the popover on the same display as the tray icon that was clicked,
 /// not whichever monitor the window happened to be on last. Falls back to the
 /// window's current monitor, then the primary, so we always have somewhere to
@@ -763,8 +763,8 @@ fn monitor_at(window: &tauri::WebviewWindow, x: f64, y: f64) -> Option<tauri::Mo
         .or_else(|| window.primary_monitor().ok().flatten())
 }
 
-/// On launch, place the popover at the top-right of the main display — just
-/// under the macOS menu bar, where the tray icon lives — so first-time users
+/// On launch, place the popover at the top-right of the main display - just
+/// under the macOS menu bar, where the tray icon lives - so first-time users
 /// who double-click the app from Applications actually see the UI instead of a
 /// seemingly-dead menu-bar icon. Subsequent opens reposition under the clicked
 /// tray icon via `anchor_under_tray`.
@@ -792,7 +792,7 @@ fn position_startup(window: &tauri::WebviewWindow) {
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
-/// Build the menu-bar tray image with a status dot — green when the proxy is
+/// Build the menu-bar tray image with a status dot - green when the proxy is
 /// routing, gray when it's off. The base hex mark is a template silhouette; to
 /// show a *colored* dot we must render non-template, so we recolor the mark to
 /// a high-contrast tone for the current menu-bar appearance (light vs dark).
@@ -819,9 +819,9 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
 
     // Composite the status dot, bottom-right.
     let (dr, dg, db): (u8, u8, u8) = if proxy_on {
-        (0x2E, 0xCC, 0x71) // green — routing
+        (0x2E, 0xCC, 0x71) // green - routing
     } else {
-        (0x8A, 0x8F, 0x9A) // gray — off
+        (0x8A, 0x8F, 0x9A) // gray - off
     };
     let radius = (w as f32 * 0.20).round() as i32;
     let cx = w as i32 - radius - 2;
@@ -884,7 +884,7 @@ fn anchor_under_tray(window: &tauri::WebviewWindow, tray_pos: Position, tray_siz
     let gap = 6.0 * scale;
 
     // Fall back to the unbounded below-icon placement if we can't read
-    // the monitor — better than refusing to show the window.
+    // the monitor - better than refusing to show the window.
     let (mon_x, mon_y, mon_w, mon_h) = match monitor_at(window, tray_center_x, tray_top_y) {
         Some(m) => {
             let p = m.position();
@@ -915,7 +915,7 @@ fn anchor_under_tray(window: &tauri::WebviewWindow, tray_pos: Position, tray_siz
 
 /// Position the popover above or below the cursor on Linux, where
 /// the tray protocol (SNI/AppIndicator) doesn't expose a usable icon
-/// rect — and on GNOME, where the left-click event often never fires
+/// rect - and on GNOME, where the left-click event often never fires
 /// at all. The cursor is the only positioning hint we can trust. On
 /// Wayland the compositor may ignore `set_position` outright; on X11
 /// this lands the popover near where the user clicked.
@@ -987,7 +987,7 @@ fn apply_popover_space_behavior(window: &tauri::WebviewWindow) {
     }
 }
 
-/// NSPanel subclass whose canBecomeKey/MainWindow return YES — a borderless
+/// NSPanel subclass whose canBecomeKey/MainWindow return YES - a borderless
 /// window can't become key otherwise, which blocks the cursor and keyboard.
 #[cfg(target_os = "macos")]
 fn key_panel_class() -> &'static objc2::runtime::AnyClass {
@@ -1069,7 +1069,7 @@ fn install_click_outside_dismiss(app: &tauri::AppHandle) {
     }
 }
 
-/// Raise and key the popover without activating the app — set_focus() alone
+/// Raise and key the popover without activating the app - set_focus() alone
 /// won't raise a background app's window.
 #[cfg(target_os = "macos")]
 fn order_front_regardless(window: &tauri::WebviewWindow) {

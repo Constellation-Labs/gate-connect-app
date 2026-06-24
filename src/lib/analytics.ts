@@ -3,8 +3,8 @@
  * never touches posthog-js directly, so the whole thing no-ops cleanly when no
  * build-time key is configured.
  *
- * Privacy posture for a credentials product: manual events only — no
- * autocapture, no session recording, no auto-pageviews — and anonymous-only
+ * Privacy posture for a credentials product: manual events only - no
+ * autocapture, no session recording, no auto-pageviews - and anonymous-only
  * (we never `identify`). Event props pass through an allowlist so a sensitive
  * value (gateway host, API key) can't ride along by accident, and Tauri-side
  * errors are classified before send rather than shipping the raw string.
@@ -30,7 +30,7 @@ export type AnalyticsEvent =
 type Props = Record<string, string | number | boolean>;
 
 /**
- * Prop keys allowed on the wire. Anything not listed is dropped before send —
+ * Prop keys allowed on the wire. Anything not listed is dropped before send -
  * the backstop against a host/key/path slipping into an event payload.
  */
 const ALLOWED_PROP_KEYS = new Set<string>([
@@ -56,8 +56,8 @@ function sanitize(props?: Props): Props | undefined {
 /**
  * Initialize PostHog. No-op (analytics stays disabled) when no build-time key
  * is present, so dev builds and unconfigured releases send nothing. App version
- * and platform ride along as super-properties — both coarse and non-identifying
- * — so events are attributable to a build.
+ * and platform ride along as super-properties - both coarse and non-identifying
+ * - so events are attributable to a build.
  */
 export function initAnalytics(): void {
   if (!POSTHOG_KEY_VALUE) return;

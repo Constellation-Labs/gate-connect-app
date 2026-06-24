@@ -1,13 +1,13 @@
 //! OpenCode integration.
 //!
-//! Unlike Claude Code / Codex / Cowork — which each target one upstream
-//! provider — OpenCode is multi-provider by design. Users authenticate
+//! Unlike Claude Code / Codex / Cowork - which each target one upstream
+//! provider - OpenCode is multi-provider by design. Users authenticate
 //! to OpenAI, Anthropic, OpenRouter, etc. via `opencode auth login
 //! <provider>` and each provider's request goes straight to its native
 //! endpoint. Gate Connect's job here is purely to *intercept* those
 //! existing requests: redirect them through Constellation Gate and add
 //! the two Gate identification headers. The user's existing upstream
-//! auth (API key from auth.json, OAuth bearer, etc.) is untouched —
+//! auth (API key from auth.json, OAuth bearer, etc.) is untouched -
 //! Gate is a pure passthrough on `Authorization` / `x-api-key`.
 //!
 //! Mechanism: opencode.json supports per-provider option overrides via
@@ -33,7 +33,7 @@
 //! other options the user set survive the merge. OpenCode keeps using
 //! the original provider's npm package (@ai-sdk/anthropic for anthropic,
 //! @ai-sdk/openai for openai, etc.), so SDK-specific wire formats stay
-//! correct — Gate just sees whatever the SDK sends and forwards.
+//! correct - Gate just sees whatever the SDK sends and forwards.
 //!
 //! Discovery: a provider is gated if EITHER it appears in opencode.json's
 //! provider map OR it has an entry in `~/.local/share/opencode/auth.json`.
@@ -79,7 +79,7 @@ const GATEWAY_PATH_SUFFIX: &str = "/v1";
 
 /// Providers we know how to redirect through Gate. For each, the
 /// `upstream_url` is the bare-host form expected by `X-Gate-Upstream-Url`
-/// — Gate concatenates the inbound request path onto it, so trailing
+/// - Gate concatenates the inbound request path onto it, so trailing
 /// `/v1` lives on the client side (in baseURL), never here.
 struct KnownProvider {
     id: &'static str,
@@ -91,7 +91,7 @@ struct KnownProvider {
 /// Gate can forward. Users with custom providers
 /// can still wire them up by hand.
 ///
-/// Upstream URLs are bare-host form — Gate concatenates the inbound
+/// Upstream URLs are bare-host form - Gate concatenates the inbound
 /// request path verbatim. The OpenCode Zen / Go endpoints intentionally
 /// host both OpenAI- and Anthropic-shape endpoints under the same prefix
 /// (`/v1/chat/completions` and `/v1/messages`), so a single base URL
@@ -109,12 +109,12 @@ const KNOWN_PROVIDERS: &[KnownProvider] = &[
         id: "openrouter",
         upstream_url: "https://openrouter.ai/api",
     },
-    // OpenCode Zen — opencode.ai/zen/v1/{chat/completions,messages,models}
+    // OpenCode Zen - opencode.ai/zen/v1/{chat/completions,messages,models}
     KnownProvider {
         id: "opencode",
         upstream_url: "https://opencode.ai/zen",
     },
-    // OpenCode Go — opencode.ai/zen/go/v1/{chat/completions,messages}
+    // OpenCode Go - opencode.ai/zen/go/v1/{chat/completions,messages}
     KnownProvider {
         id: "opencode-go",
         upstream_url: "https://opencode.ai/zen/go",
@@ -122,19 +122,19 @@ const KNOWN_PROVIDERS: &[KnownProvider] = &[
 ];
 
 /// Skip a provider if its currently-configured `baseURL` looks
-/// non-public — localhost / loopback / private network / plain HTTP.
+/// non-public - localhost / loopback / private network / plain HTTP.
 /// Protects against the edge case where someone names a local OpenAI-
 /// compatible server `openai` and would otherwise have their endpoint
 /// silently swapped to the Gate URL. `llamacpp`, `gateway`, and any
 /// other ID that's not in `KNOWN_PROVIDERS` is already untouched by
-/// design — this guard exists only for collisions inside the allowlist.
+/// design - this guard exists only for collisions inside the allowlist.
 fn looks_local(base_url: &str) -> bool {
     let lc = base_url.trim().to_ascii_lowercase();
     if lc.is_empty() {
         return false;
     }
     if !lc.starts_with("https://") {
-        // http://, ws://, plain hostname, file:// — all not the public
+        // http://, ws://, plain hostname, file:// - all not the public
         // cloud endpoint Gate expects to forward to. Treat as local.
         return true;
     }
@@ -247,7 +247,7 @@ impl Integration for OpenCode {
         // Connected = sidecar state exists AND at least one provider
         // currently carries Gate's two headers. If state exists but no
         // provider has our headers anymore, the user edited opencode.json
-        // by hand — surface that as drift.
+        // by hand - surface that as drift.
         let Some(state) = load_state()? else {
             return Ok(Status::Detected);
         };
@@ -261,7 +261,7 @@ impl Integration for OpenCode {
             Some(u) => compute_base_url(&u),
             None => {
                 return Ok(Status::Drifted(
-                    "Gate Connect is not signed in — sign in to validate OpenCode config".into(),
+                    "Gate Connect is not signed in - sign in to validate OpenCode config".into(),
                 ));
             }
         };
@@ -323,7 +323,7 @@ impl Integration for OpenCode {
     fn connect(&self, input: &ConnectInput) -> Result<()> {
         if !self.detect()? {
             anyhow::bail!(
-                "OpenCode is not installed on this machine — install it from https://opencode.ai first"
+                "OpenCode is not installed on this machine - install it from https://opencode.ai first"
             );
         }
         if !input.gateway_base_url.starts_with("https://") {
@@ -354,7 +354,7 @@ impl Integration for OpenCode {
             .collect();
 
         // Local-protection guard: if a candidate has an existing
-        // non-public `baseURL`, skip it — the user pointed it at a
+        // non-public `baseURL`, skip it - the user pointed it at a
         // private endpoint on purpose and we should not redirect that
         // traffic through Gate. Local providers like `llamacpp` and
         // user-custom gateways like `gateway` are already outside
@@ -395,7 +395,7 @@ impl Integration for OpenCode {
             );
         }
 
-        // Load any existing state — re-connects must preserve the
+        // Load any existing state - re-connects must preserve the
         // *original* snapshots, not overwrite them with our intermediate
         // values from the previous connect.
         let mut state = load_state()?.unwrap_or_default();
@@ -484,7 +484,7 @@ impl Integration for OpenCode {
 
     fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
         anyhow::bail!(
-            "OpenCode does not need a separate upstream credential — Gate Connect adds its headers to whatever provider(s) you've already authenticated to via `opencode auth login`."
+            "OpenCode does not need a separate upstream credential - Gate Connect adds its headers to whatever provider(s) you've already authenticated to via `opencode auth login`."
         )
     }
 
@@ -841,7 +841,7 @@ mod tests {
             "sk-gw-xxx",
         );
 
-        // Connect mutated options.baseURL and added Gate headers — confirm.
+        // Connect mutated options.baseURL and added Gate headers - confirm.
         assert_ne!(providers["openai"], original);
 
         // Now disconnect.
@@ -855,7 +855,7 @@ mod tests {
 
     #[test]
     fn apply_override_creates_entry_then_restore_removes_it() {
-        // Provider didn't exist before connect — disconnect should drop it.
+        // Provider didn't exist before connect - disconnect should drop it.
         let mut providers = Map::new();
         let mut state = State::default();
         let target = KnownProvider {
@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn looks_local_classifies_common_endpoints() {
-        // Public clouds — should NOT look local.
+        // Public clouds - should NOT look local.
         for u in [
             "https://api.openai.com",
             "https://api.anthropic.com/v1",
@@ -904,7 +904,7 @@ mod tests {
             "https://172.31.200.1",
             "http://my-rig.local:8080",
             "https://gpu-box.lan",
-            "http://54.188.228.109:3000", // plain http to a public IP — still treated as not-Gate-friendly
+            "http://54.188.228.109:3000", // plain http to a public IP - still treated as not-Gate-friendly
         ] {
             assert!(looks_local(u), "expected local: {u}");
         }
@@ -923,7 +923,7 @@ mod tests {
         let ids: Vec<&str> = KNOWN_PROVIDERS.iter().map(|p| p.id).collect();
         assert!(ids.contains(&"opencode"));
         assert!(ids.contains(&"opencode-go"));
-        // Bare-host form — Gate concatenates the request path.
+        // Bare-host form - Gate concatenates the request path.
         for p in KNOWN_PROVIDERS {
             assert!(
                 !p.upstream_url.ends_with("/v1"),
@@ -965,7 +965,7 @@ mod tests {
         );
         let first_snapshot = state.providers["anthropic"].previous_headers.clone();
 
-        // Second connect with a different gateway / key — snapshot must NOT
+        // Second connect with a different gateway / key - snapshot must NOT
         // change to reflect our own intermediate (post-first-connect) state.
         apply_override(
             &mut providers,

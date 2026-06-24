@@ -8,13 +8,13 @@ interface Props {
 }
 
 /**
- * Tool list row — cg `.cg-card`-shaped surface: white background,
+ * Tool list row - cg `.cg-card`-shaped surface: white background,
  * shadow-as-border (no solid 1px), 6px radius. The vendor mark on the
  * left is a per-tool colored square hinting at the upstream provider
  * family; the right edge holds the StatusBadge + chevron.
  *
  * `min-w-0 flex-1` on the meta column + `truncate` on the subtitle is
- * the truncation contract — without it, the mono upstream host pushes
+ * the truncation contract - without it, the mono upstream host pushes
  * into the status pill on long values .
  */
 export function ToolRow({ tool, busy, onOpen }: Props) {
@@ -63,7 +63,7 @@ export function ToolRow({ tool, busy, onOpen }: Props) {
 }
 
 /**
- * Per-tool vendor mark — small colored tile with the tool's initials.
+ * Per-tool vendor mark - small colored tile with the tool's initials.
  * Color hints at the upstream family without committing to vendor logos:
  *   - Anthropic-family (Cowork, Claude Code) → warm orange
  *   - OpenAI-family (Codex) → ink (neutral, since their brand is black)

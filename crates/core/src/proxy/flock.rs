@@ -9,7 +9,7 @@
 //!   the socket bind.
 //!
 //! Backed by `flock(2)`: the lock is tied to the open file description and is
-//! released automatically when the process exits — even on a crash — so there's
+//! released automatically when the process exits - even on a crash - so there's
 //! no stale-lock cleanup to get wrong.
 
 use std::fs::OpenOptions;

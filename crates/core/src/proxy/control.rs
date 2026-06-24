@@ -5,7 +5,7 @@
 //! when the GUI quits or crashes, the daemon drops to pass-through (blind-tunnel
 //! everything) rather than letting a frozen session's proxy pointer dangle at a
 //! dead port. The GUI talks to it over a **Unix-domain socket** in
-//! `$XDG_RUNTIME_DIR` — never a TCP port, which on loopback is reachable by
+//! `$XDG_RUNTIME_DIR` - never a TCP port, which on loopback is reachable by
 //! every local user. Access control is layered:
 //!
 //! 1. The socket dir is `0700` and the socket `0600` (owner-only).
@@ -102,7 +102,7 @@ pub enum Request {
         preferred_port: Option<u16>,
     },
     /// Drop to pass-through: keep listening, blind-tunnel everything. Used on
-    /// the GUI's explicit "off" — the engine keeps the port bound so frozen
+    /// the GUI's explicit "off" - the engine keeps the port bound so frozen
     /// sessions aren't stranded.
     SetPassthrough,
     /// Report current state.
@@ -134,7 +134,7 @@ pub enum Response {
 /// Reject any requested intercept domain that doesn't exactly match a built-in
 /// catalog entry (same slug, hosts, and upstream). This is the "constrain
 /// intercept config" guard: even a caller past the UID + token checks can only
-/// route the providers we ship — never an arbitrary host onto an arbitrary
+/// route the providers we ship - never an arbitrary host onto an arbitrary
 /// upstream under the trusted CA.
 pub fn validate_domains(domains: &[ProxyDomain]) -> Result<()> {
     let catalog = default_domains();

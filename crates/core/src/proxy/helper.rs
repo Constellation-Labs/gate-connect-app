@@ -2,7 +2,7 @@
 //! [`super::engine`] so the proxy outlives the GUI process: on GUI quit/crash it
 //! drops to pass-through (blind-tunnel everything) instead of stranding a frozen
 //! session's proxy pointer at a dead port. Driven over a Unix-domain control
-//! socket — see [`super::control`] for the protocol and the access-control
+//! socket - see [`super::control`] for the protocol and the access-control
 //! rationale (`0700` dir / `0600` socket, `SO_PEERCRED` UID check, per-run
 //! token, catalog-constrained intercept).
 //!
@@ -30,7 +30,7 @@ type Shared = Arc<Mutex<Option<RunningEngine>>>;
 /// Entry point invoked from the desktop binary when launched with
 /// `--proxy-helper`. Builds a tokio runtime and serves the control socket until
 /// shutdown. Never returns `Ok` while serving; returns `Err` only if it can't
-/// come up (e.g. another daemon already owns the socket — then the caller
+/// come up (e.g. another daemon already owns the socket - then the caller
 /// should just connect to that one).
 pub fn run_daemon() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -54,7 +54,7 @@ async fn serve() -> Result<()> {
         None => anyhow::bail!("a proxy helper is already running"),
     };
 
-    // We own the singleton lock, so we're the only daemon — clear any stale
+    // We own the singleton lock, so we're the only daemon - clear any stale
     // socket from a previous run and bind fresh.
     let _ = std::fs::remove_file(&sock);
 
@@ -83,7 +83,7 @@ async fn serve() -> Result<()> {
                 continue;
             }
         };
-        // One client (the GUI) at a time — handle to completion, then accept
+        // One client (the GUI) at a time - handle to completion, then accept
         // the next. On any disconnect, drop back to pass-through.
         if let Err(e) = handle_conn(stream, owner_uid, &token, &engine).await {
             eprintln!("[gate-proxyd] connection ended: {e}");
@@ -202,7 +202,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                 };
             }
             let mut guard = engine.lock().expect("engine mutex poisoned");
-            // A finished engine (crash) can't be updated — drop it and restart.
+            // A finished engine (crash) can't be updated - drop it and restart.
             if guard.as_ref().is_some_and(|e| e.is_finished()) {
                 *guard = None;
             }

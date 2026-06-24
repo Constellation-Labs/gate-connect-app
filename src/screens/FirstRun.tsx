@@ -14,10 +14,10 @@ function hostOf(url: string): string {
   }
 }
 
-/** Welcome / first-run — paste a Gate API key to connect. Wires to
+/** Welcome / first-run - paste a Gate API key to connect. Wires to
  *  `save_account(gateway, key)`, defaulting to DEFAULT_GATEWAY_BASE_URL; Dev
  *  mode lets a developer target another environment before connecting.
- *  `initialGateway` pre-points at a previously-selected gateway — e.g. after a
+ *  `initialGateway` pre-points at a previously-selected gateway - e.g. after a
  *  Dev-mode gateway switch relaunches the app keyless against staging. */
 export function FirstRun({
   onConnected,
@@ -58,7 +58,7 @@ export function FirstRun({
           Welcome to Gate <span className="text-gc-accent">Connect</span>
         </div>
         <p className="mt-1.5 max-w-[290px] text-[12.5px] leading-[1.45] text-gc-ink-3">
-          Paste your Gate API key to connect your desktop agents — right from the
+          Paste your Gate API key to connect your desktop agents - right from the
           menu bar.
         </p>
       </div>

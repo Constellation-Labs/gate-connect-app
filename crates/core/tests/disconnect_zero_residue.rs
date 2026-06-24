@@ -1,7 +1,7 @@
 //! Integration test for the "zero residue" disconnect contract:
 //! `disconnect()` must revert the Gate edits out of the tool's config and
 //! remove the in-file marker, leaving nothing of Gate behind. The
-//! key-scoped marker inside the config is the undo log — no separate
+//! key-scoped marker inside the config is the undo log - no separate
 //! backup file is ever written.
 //!
 //! These exercise the real path resolution, which reads `$HOME` via `dirs`, so
