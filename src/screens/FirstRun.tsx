@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { saveAccount } from "../lib/api";
 import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS } from "../lib/config";
 import { trackError } from "../lib/analytics";
@@ -79,8 +80,17 @@ export function FirstRun({
           }}
         />
         <p className="mt-1 text-[11px] text-gc-ink-4">
-          Find it under <span className="font-medium text-gc-ink-2">API Keys</span> in
-          your Gate dashboard.
+          Find it under{" "}
+          <button
+            type="button"
+            onClick={() => {
+              void openUrl("https://app.constellationgate.ai/api-keys");
+            }}
+            className="font-medium text-gc-ink-2 underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
+          >
+            API Keys
+          </button>{" "}
+          in your Gate dashboard.
         </p>
       </div>
 
