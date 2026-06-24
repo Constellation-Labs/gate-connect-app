@@ -170,14 +170,18 @@ export function App() {
   const toggleOpenClaw = useCallback(async () => {
     if (toolBusy || !openClaw) return;
     setToolBusy(true);
+    setProviderError(null);
     try {
       const connected = openClaw.status.kind === "connected";
       const status = connected
         ? await disconnectTool(openClaw.slug)
         : await connectTool(openClaw.slug, openClaw.default_upstream_url);
       setOpenClaw({ ...openClaw, status });
-    } catch {
-      // Re-sync the switch to its true state after a failed toggle.
+    } catch (e) {
+      // Surface the failure — a swallowed error reads as "the toggle does
+      // nothing". Then re-sync the switch to its true state.
+      setProviderError(typeof e === "string" ? e : String(e));
+      trackError(e, "generic");
       const status = await toolStatus(openClaw.slug).catch(() => null);
       if (status) setOpenClaw({ ...openClaw, status });
     } finally {

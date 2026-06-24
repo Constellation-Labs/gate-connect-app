@@ -257,11 +257,22 @@ impl Integration for OpenClaw {
 
         let mut settings = load_settings()?.unwrap_or_default();
 
-        // Figure out which well-known providers to route through Gate:
-        // anything the user has configured under `models.providers`.
-        let configured: Vec<&str> = provider_map_ref(&settings)
+        // Figure out which well-known providers to route through Gate. Two
+        // independent signals, because OpenClaw configures providers two ways:
+        //   - an explicit `models.providers.<id>` block (custom baseUrl, etc.),
+        //   - an `auth.profiles.*` entry written by `openclaw models auth login`
+        //     for a built-in/plugin provider (e.g. OpenRouter, Anthropic).
+        // A provider set up purely via auth login has NO `models.providers`
+        // entry yet — `apply_override` creates one, and the snapshot's
+        // `provider_existed = false` makes disconnect remove it again.
+        let mut configured: Vec<&str> = provider_map_ref(&settings)
             .map(|m| m.keys().map(String::as_str).collect())
             .unwrap_or_default();
+        for id in auth_profile_providers(&settings) {
+            if !configured.contains(&id) {
+                configured.push(id);
+            }
+        }
 
         let candidates: Vec<&KnownProvider> = KNOWN_PROVIDERS
             .iter()
@@ -292,7 +303,7 @@ impl Integration for OpenClaw {
 
         if targets.is_empty() {
             anyhow::bail!(
-                "No supported OpenClaw providers found to route through Gate. Configure one of anthropic / openai / openrouter under `models.providers` in ~/.openclaw/openclaw.json first, then re-run connect."
+                "No supported OpenClaw providers found to route through Gate. Authenticate one of anthropic / openai / openrouter (e.g. `openclaw models auth login`) or configure it under `models.providers` in ~/.openclaw/openclaw.json first, then re-run connect."
             );
         }
         if !skipped_local.is_empty() {
@@ -493,6 +504,15 @@ fn apply_override(
         );
     }
 
+    // Did the user own this provider entry before we first touched it? The
+    // snapshot written above is the source of truth, so this stays correct
+    // across re-connects (where our own entry is already present on disk).
+    let created_by_us = state
+        .providers
+        .get(target.id)
+        .map(|s| !s.provider_existed)
+        .unwrap_or(false);
+
     // Ensure models.providers.<id> exists as an object, then patch it.
     let provider_entry = provider_map
         .entry(target.id.to_string())
@@ -510,6 +530,21 @@ fn apply_override(
         "baseUrl".to_string(),
         Value::String(gateway_base_url.to_string()),
     );
+
+    // OpenClaw's schema requires a `models` array on every
+    // `models.providers.<id>` block. When we *create* the entry for a
+    // built-in / auth-profile provider (it had no `models.providers` block
+    // before), seed an empty array: OpenClaw still merges the provider's
+    // built-in catalog models, so `<provider>/...` model refs keep
+    // resolving, and the config validates instead of erroring with
+    // "models.providers.<id>.models: Invalid input". We never add it to a
+    // user-owned entry — a custom provider definition owns its own list,
+    // and disconnect must restore it byte-for-byte.
+    if created_by_us {
+        provider
+            .entry("models".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+    }
 
     let headers_entry = provider
         .entry("headers".to_string())
@@ -589,6 +624,27 @@ fn provider_map_ref(settings: &Map<String, Value>) -> Option<&Map<String, Value>
         .and_then(|v| v.as_object())
         .and_then(|m| m.get("providers"))
         .and_then(|v| v.as_object())
+}
+
+/// Provider ids the user has an auth profile for. `openclaw models auth login`
+/// writes `auth.profiles.<provider>:<name>` entries (each with a `provider`
+/// field) but does *not* add a `models.providers` block — so for built-in /
+/// plugin providers (OpenRouter, Anthropic, …) this is the only discovery
+/// signal that the user actually has credentials to route. May contain
+/// duplicates when a provider has multiple profiles; callers dedupe.
+fn auth_profile_providers(settings: &Map<String, Value>) -> Vec<&str> {
+    settings
+        .get("auth")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.get("profiles"))
+        .and_then(|v| v.as_object())
+        .map(|profiles| {
+            profiles
+                .values()
+                .filter_map(|p| p.as_object()?.get("provider")?.as_str())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Mutably borrow `models.providers` from a settings map, if both levels are
@@ -816,6 +872,16 @@ mod tests {
         let snap = state.providers["openai"].clone();
         assert!(!snap.provider_existed);
 
+        // A created block must carry a `models` array — OpenClaw's schema
+        // requires it (`models.providers.<id>.models`). Empty is valid and
+        // lets the built-in catalog models merge in.
+        let created = providers["openai"].as_object().unwrap();
+        assert_eq!(
+            created.get("models"),
+            Some(&json!([])),
+            "created provider must seed an empty models array for schema validity"
+        );
+
         restore_provider(&mut providers, "openai", &snap);
         assert!(
             !providers.contains_key("openai"),
@@ -1005,5 +1071,46 @@ mod tests {
             }
             other => panic!("expected full drift, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn auth_profile_providers_discovers_plugin_providers() {
+        // Real-world shape: `models.providers` is empty and providers are set
+        // up via `openclaw models auth login`, which only writes auth profiles.
+        // Discovery must still find anthropic + openrouter here.
+        let settings = json!({
+            "models": { "providers": {} },
+            "auth": {
+                "profiles": {
+                    "anthropic:default": { "mode": "token", "provider": "anthropic" },
+                    "google:default": { "provider": "google", "mode": "api_key" },
+                    "openrouter:default": { "provider": "openrouter", "mode": "api_key" },
+                }
+            }
+        });
+        let settings = settings.as_object().unwrap().clone();
+
+        let found = auth_profile_providers(&settings);
+        assert!(found.contains(&"anthropic"), "got {found:?}");
+        assert!(found.contains(&"openrouter"), "got {found:?}");
+        // `google` is surfaced by the helper but filtered out later by
+        // KNOWN_PROVIDERS — the helper itself stays generic.
+        assert!(found.contains(&"google"), "got {found:?}");
+
+        // Connect's candidate filter intersects with KNOWN_PROVIDERS.
+        let candidates: Vec<&str> = KNOWN_PROVIDERS
+            .iter()
+            .map(|p| p.id)
+            .filter(|id| found.contains(id))
+            .collect();
+        assert!(candidates.contains(&"anthropic"));
+        assert!(candidates.contains(&"openrouter"));
+        assert!(!candidates.contains(&"google"));
+    }
+
+    #[test]
+    fn auth_profile_providers_empty_when_no_auth_block() {
+        let settings = Map::new();
+        assert!(auth_profile_providers(&settings).is_empty());
     }
 }
