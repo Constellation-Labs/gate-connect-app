@@ -54,6 +54,9 @@ export function App() {
   const [providerError, setProviderError] = useState<string | null>(null);
   const [openClaw, setOpenClaw] = useState<Tool | null>(null);
   const [toolBusy, setToolBusy] = useState(false);
+  // Set after a successful routing change; the Routing screen shows a
+  // "restart your agent" note. Cleared when the user leaves the screen.
+  const [restartHint, setRestartHint] = useState(false);
 
   // Initial load: account decides first-run vs home; proxy status is
   // best-effort (the proxy commands exist on all three desktop OSes, but a
@@ -119,6 +122,7 @@ export function App() {
       const next = proxy?.running ? await proxyDisable() : await proxyEnable();
       setProxy(next);
       track(next.running ? "proxy_enabled" : "proxy_disabled");
+      setRestartHint(true);
       // The master toggle also disconnects/restores providers, so refresh them.
       setProviders(await listProviders().catch(() => []));
     } catch (e) {
@@ -148,6 +152,7 @@ export function App() {
         if (enabled) await providerEnable(slug);
         else await providerDisable(slug);
         track("provider_toggled", { provider: slug, enabled });
+        setRestartHint(true);
         // Refresh provider state and proxy (enabling may have flipped a domain).
         setProviders(await listProviders().catch(() => []));
         try {
@@ -288,8 +293,10 @@ export function App() {
         providers={providers.filter((p) => !HIDDEN_PROVIDER_SLUGS.has(p.slug))}
         busy={proxyBusy}
         error={providerError}
+        restartHint={restartHint}
         onBack={() => {
           setProviderError(null);
+          setRestartHint(false);
           setScreen("home");
         }}
         onToggleProxy={toggleProxy}

@@ -30,6 +30,7 @@ function renderOn(platform: Platform) {
       onToggleProxy={() => {}}
       onSetProvider={() => {}}
       onTrustCa={() => {}}
+      restartHint={false}
       openClaw={null}
       toolBusy={false}
       onToggleOpenClaw={() => {}}
