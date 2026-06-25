@@ -882,7 +882,6 @@ fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
 /// (macOS + Windows); the macOS status dot is handled in `update_tray_status`.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
-    use tauri::Manager;
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(if proxy_on {
             "Gate Connect \u{2014} routing on"
