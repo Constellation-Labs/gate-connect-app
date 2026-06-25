@@ -17,6 +17,7 @@
 //! credential store. Windows counterpart of the macOS [`super::ca`] module.
 
 use std::fs;
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -31,6 +32,19 @@ use crate::proxy::cert_authority;
 /// Subject CN of our CA. Used both as the cert subject and as the match token
 /// for trust/untrust via `certutil`.
 pub const CA_COMMON_NAME: &str = cert_authority::CA_COMMON_NAME;
+
+/// `CREATE_NO_WINDOW`: spawn the child without allocating a console, so the
+/// `certutil` calls below don't flash a black terminal window each time the
+/// proxy is toggled (status/enable/disable all shell out to it).
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// `certutil` command with the console window suppressed. Used for every
+/// `certutil` invocation in this module so none of them flash a terminal.
+fn certutil() -> Command {
+    let mut cmd = Command::new("certutil");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
 
 /// A loaded CA. The cert is public; the key is sensitive and only handed to the
 /// engine (same process) to build the signing authority.
@@ -88,7 +102,7 @@ pub fn load_or_create() -> Result<Ca> {
     // by CN, so `ensure_trusted` would see the stale root and no-op while
     // every MITM handshake fails against the new CA. Best-effort delete of
     // any previous cert from the per-user root store before persisting.
-    let _ = Command::new("certutil")
+    let _ = certutil()
         .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
         .status();
 
@@ -153,7 +167,7 @@ pub fn is_trusted() -> Result<bool> {
         Some(t) => t,
         None => return Ok(false),
     };
-    let out = Command::new("certutil")
+    let out = certutil()
         .args(["-user", "-store", "Root", &thumb])
         .output()
         .context("running certutil -store Root")?;
@@ -171,11 +185,11 @@ pub fn ensure_trusted() -> Result<()> {
     // A prior install may have left a same-CN root (different key) in the
     // per-user store; drop it so we don't stack a duplicate before adding the
     // current cert. Best-effort - a missing cert just makes this a no-op.
-    let _ = Command::new("certutil")
+    let _ = certutil()
         .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
         .status();
     let cert = cert_path()?;
-    let status = Command::new("certutil")
+    let status = certutil()
         .args(["-user", "-addstore", "Root"])
         .arg(&cert)
         .status()
@@ -194,7 +208,7 @@ pub fn untrust() -> Result<()> {
     if !is_trusted()? {
         return Ok(());
     }
-    let status = Command::new("certutil")
+    let status = certutil()
         .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
         .status()
         .context("running certutil -delstore Root")?;

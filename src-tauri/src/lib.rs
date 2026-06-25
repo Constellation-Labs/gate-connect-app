@@ -366,7 +366,9 @@ async fn proxy_enable(
     .map_err(|e| format!("proxy enable join error: {e}"))??;
     #[cfg(target_os = "macos")]
     update_tray_status(&app, state.running);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    update_tray_tooltip(&app, state.running);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = &app;
     Ok(state)
 }
@@ -394,7 +396,9 @@ async fn proxy_disable(
     .map_err(|e| format!("proxy disable join error: {e}"))??;
     #[cfg(target_os = "macos")]
     update_tray_status(&app, state.running);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    update_tray_tooltip(&app, state.running);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = &app;
     Ok(state)
 }
@@ -600,6 +604,7 @@ pub fn run() {
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
                 .icon_as_template(true) // macOS auto-tints for dark/light menu bar
+                .tooltip("Gate Connect") // baseline; macOS refines it to the routing state
                 .menu(&menu)
                 .show_menu_on_left_click(false) // left-click toggles window; right-click shows menu
                 .on_menu_event(|app, event| match event.id().as_ref() {
@@ -701,9 +706,18 @@ pub fn run() {
                 let _ = window.set_focus();
             }
 
-            // Reflect the current proxy state in the tray dot at launch.
+            // Reflect the current proxy state in the tray dot (macOS) and the
+            // tooltip (macOS + Windows) at launch.
             #[cfg(target_os = "macos")]
             update_tray_status(
+                app.handle(),
+                gate_connect_core::proxy::manager()
+                    .status()
+                    .map(|s| s.running)
+                    .unwrap_or(false),
+            );
+            #[cfg(target_os = "windows")]
+            update_tray_tooltip(
                 app.handle(),
                 gate_connect_core::proxy::manager()
                     .status()
@@ -860,6 +874,20 @@ fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
         if let Some(img) = tray_image(proxy_on, dark) {
             let _ = tray.set_icon(Some(img));
         }
+    }
+    update_tray_tooltip(app, proxy_on);
+}
+
+/// Set the tray hover tooltip to reflect the routing state. Cross-platform
+/// (macOS + Windows); the macOS status dot is handled in `update_tray_status`.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(if proxy_on {
+            "Gate Connect \u{2014} routing on"
+        } else {
+            "Gate Connect \u{2014} routing off"
+        }));
     }
 }
 
