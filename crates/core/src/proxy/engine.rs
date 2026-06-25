@@ -332,6 +332,22 @@ impl HttpHandler for GateHandler {
                 host.as_deref().unwrap_or("?"),
                 path,
             );
+            // Dump x-goog-* request headers as forwarded to the gateway.
+            // The Code Assist project rides in `x-goog-user-project` (when
+            // not in the JSON body); present here but missing at Google
+            // means the gateway drops it. The api-key value is a secret, so
+            // log only its presence.
+            for (name, value) in req.headers() {
+                let n = name.as_str();
+                if n.starts_with("x-goog") {
+                    let shown = if n == "x-goog-api-key" {
+                        "<redacted>"
+                    } else {
+                        value.to_str().unwrap_or("<binary>")
+                    };
+                    eprintln!("[gate-proxy]   {n}: {shown}");
+                }
+            }
         }
         req.into()
     }

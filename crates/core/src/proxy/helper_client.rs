@@ -154,10 +154,33 @@ impl HelperClient {
 fn spawn_daemon() -> Result<()> {
     let exe = std::env::current_exe().context("resolving current exe")?;
     let mut cmd = Command::new(exe);
-    cmd.arg("--proxy-helper")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.arg("--proxy-helper").stdin(Stdio::null());
+    // The daemon is detached, so its stdio is normally discarded. Under
+    // GATE_PROXY_DEBUG, tee it to a logfile so the per-request engine logs
+    // are actually readable on Linux (tail proxy/helper.log). Quiet by
+    // default in production.
+    let debug_log = std::env::var_os("GATE_PROXY_DEBUG")
+        .and_then(|_| crate::env::app_support_dir().ok())
+        .map(|d| d.join("proxy").join("helper.log"));
+    match debug_log {
+        Some(path) => {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let open = || std::fs::OpenOptions::new().create(true).append(true).open(&path);
+            match (open(), open()) {
+                (Ok(out), Ok(err)) => {
+                    cmd.stdout(Stdio::from(out)).stderr(Stdio::from(err));
+                }
+                _ => {
+                    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                }
+            }
+        }
+        None => {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
     // SAFETY: setsid is async-signal-safe; we ignore its result (it fails only
     // if we're already a session leader, which is fine).
     unsafe {

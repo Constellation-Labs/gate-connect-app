@@ -32,9 +32,8 @@ import { track, trackError } from "./lib/analytics";
 
 type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
-// Providers hidden from the UI for now. Slugs match the backend provider list
-// (Gemini's provider slug is "google").
-const HIDDEN_PROVIDER_SLUGS = new Set(["openrouter", "google"]);
+// Providers hidden from the UI for now. Slugs match the backend provider list.
+const HIDDEN_PROVIDER_SLUGS = new Set(["openrouter"]);
 
 function hostOf(url: string | undefined): string {
   if (!url) return "";
@@ -57,6 +56,14 @@ export function App() {
   // Set after a successful routing change; the Routing screen shows a
   // "restart your agent" note. Cleared when the user leaves the screen.
   const [restartHint, setRestartHint] = useState(false);
+  // Flashed briefly when routing is turned on; the Routing screen shows a
+  // Linux-only "relaunch your already-open apps" note that auto-dismisses.
+  const [relaunchHint, setRelaunchHint] = useState(false);
+  useEffect(() => {
+    if (!relaunchHint) return;
+    const t = setTimeout(() => setRelaunchHint(false), 8000);
+    return () => clearTimeout(t);
+  }, [relaunchHint]);
 
   // Initial load: account decides first-run vs home; proxy status is
   // best-effort (the proxy commands exist on all three desktop OSes, but a
@@ -123,6 +130,7 @@ export function App() {
       setProxy(next);
       track(next.running ? "proxy_enabled" : "proxy_disabled");
       setRestartHint(true);
+      if (next.running) setRelaunchHint(true);
       // The master toggle also disconnects/restores providers, so refresh them.
       setProviders(await listProviders().catch(() => []));
     } catch (e) {
@@ -153,6 +161,7 @@ export function App() {
         else await providerDisable(slug);
         track("provider_toggled", { provider: slug, enabled });
         setRestartHint(true);
+        if (enabled) setRelaunchHint(true);
         // Refresh provider state and proxy (enabling may have flipped a domain).
         setProviders(await listProviders().catch(() => []));
         try {
@@ -294,9 +303,11 @@ export function App() {
         busy={proxyBusy}
         error={providerError}
         restartHint={restartHint}
+        relaunchHint={relaunchHint}
         onBack={() => {
           setProviderError(null);
           setRestartHint(false);
+          setRelaunchHint(false);
           setScreen("home");
         }}
         onToggleProxy={toggleProxy}
