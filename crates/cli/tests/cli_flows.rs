@@ -180,3 +180,73 @@ fn opencode_connect_then_disconnect() {
         "gateway URL left behind: {after}"
     );
 }
+
+#[test]
+fn openclaw_connect_then_disconnect() {
+    let h = Harness::new();
+    let oc_dir = h.home().join(".openclaw");
+    fs::create_dir_all(&oc_dir).unwrap();
+    // Seed a known provider so connect has something to route through Gate.
+    // JSON5 (comment + trailing comma) to confirm the tolerant parse path.
+    let config = oc_dir.join("openclaw.json");
+    fs::write(
+        &config,
+        "{\n  // user config\n  models: { providers: { anthropic: {}, } },\n}\n",
+    )
+    .unwrap();
+    h.login();
+
+    h.run_ok(&["connect", "openclaw"]);
+
+    let body = read(&config);
+    assert!(
+        body.contains(&format!("{GATEWAY_URL}/v1")),
+        "base URL missing: {body}"
+    );
+    assert!(
+        body.contains("X-Gate-Api-Key"),
+        "gate key header missing: {body}"
+    );
+    assert!(body.contains(API_KEY), "api key value missing: {body}");
+
+    h.run_ok(&["disconnect", "openclaw"]);
+
+    let after = read(&config);
+    assert!(
+        !after.contains("X-Gate-Api-Key"),
+        "gate residue left behind: {after}"
+    );
+    assert!(
+        !after.contains(GATEWAY_URL),
+        "gateway URL left behind: {after}"
+    );
+}
+
+#[test]
+fn openclaw_status_reports_connected_then_drift() {
+    let h = Harness::new();
+    let oc_dir = h.home().join(".openclaw");
+    fs::create_dir_all(&oc_dir).unwrap();
+    let config = oc_dir.join("openclaw.json");
+    // JSON5 with unquoted keys — the un-gated starting point.
+    let seed = "{\n  models: { providers: { anthropic: {} } },\n}\n";
+    fs::write(&config, seed).unwrap();
+    h.login();
+
+    h.run_ok(&["connect", "openclaw"]);
+    let status = h.run_ok(&["status", "openclaw"]);
+    assert!(
+        status.contains("connected"),
+        "expected connected after connect, got: {status}"
+    );
+
+    // Hand-edit: revert the config to the un-gated seed but leave the sidecar
+    // state in place — exactly the drift a user causes by editing the provider
+    // block back by hand. `status` must report drift, not connected.
+    fs::write(&config, seed).unwrap();
+    let status = h.run_ok(&["status", "openclaw"]);
+    assert!(
+        status.contains("drifted"),
+        "expected drift after hand-edit, got: {status}"
+    );
+}

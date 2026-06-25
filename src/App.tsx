@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { Account, ProxyState, ProviderState } from "./lib/api";
 import {
   getAccount,
   saveAccount,
@@ -14,6 +14,10 @@ import {
   listProviders,
   providerEnable,
   providerDisable,
+  listTools,
+  connectTool,
+  disconnectTool,
+  toolStatus,
   unpinPopover,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
@@ -48,6 +52,8 @@ export function App() {
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [providerError, setProviderError] = useState<string | null>(null);
+  const [openClaw, setOpenClaw] = useState<Tool | null>(null);
+  const [toolBusy, setToolBusy] = useState(false);
 
   // Initial load: account decides first-run vs home; proxy status is
   // best-effort (the proxy commands exist on all three desktop OSes, but a
@@ -63,11 +69,13 @@ export function App() {
         px = null;
       }
       const provs = await listProviders().catch(() => []);
+      const tools = await listTools().catch(() => []);
       if (!alive) return;
       setAccount(acct);
       setProxy(px);
       setProviders(provs);
-      setScreen(acct?.has_api_key ? "home" : "firstrun");
+      setOpenClaw(tools.find((t) => t.slug === "openclaw") ?? null);
+      setScreen(acct ? "home" : "firstrun");
       track("app_launched", { has_account: !!acct, proxy_available: px !== null });
     })();
     return () => {
@@ -158,6 +166,28 @@ export function App() {
     },
     [proxyBusy],
   );
+
+  const toggleOpenClaw = useCallback(async () => {
+    if (toolBusy || !openClaw) return;
+    setToolBusy(true);
+    setProviderError(null);
+    try {
+      const connected = openClaw.status.kind === "connected";
+      const status = connected
+        ? await disconnectTool(openClaw.slug)
+        : await connectTool(openClaw.slug, openClaw.default_upstream_url);
+      setOpenClaw({ ...openClaw, status });
+    } catch (e) {
+      // Surface the failure — a swallowed error reads as "the toggle does
+      // nothing". Then re-sync the switch to its true state.
+      setProviderError(typeof e === "string" ? e : String(e));
+      trackError(e, "generic");
+      const status = await toolStatus(openClaw.slug).catch(() => null);
+      if (status) setOpenClaw({ ...openClaw, status });
+    } finally {
+      setToolBusy(false);
+    }
+  }, [openClaw, toolBusy]);
 
   const trustCa = useCallback(async () => {
     if (proxyBusy) return;
@@ -265,6 +295,9 @@ export function App() {
         onToggleProxy={toggleProxy}
         onSetProvider={setProvider}
         onTrustCa={trustCa}
+        openClaw={openClaw}
+        toolBusy={toolBusy}
+        onToggleOpenClaw={toggleOpenClaw}
       />
     );
   } else if (screen === "settings" && account) {

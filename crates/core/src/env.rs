@@ -194,3 +194,25 @@ pub fn opencode_config_path() -> Result<PathBuf> {
 pub fn opencode_auth_path() -> Result<PathBuf> {
     Ok(home()?.join(".local/share/opencode/auth.json"))
 }
+
+/// `~/.openclaw` — OpenClaw's user state/config root. Same on every OS
+/// (it uses a home-relative dir, not the macOS `~/Library/Application
+/// Support` or Windows `%APPDATA%` conventions).
+pub fn openclaw_config_dir() -> Result<PathBuf> {
+    Ok(home()?.join(".openclaw"))
+}
+
+/// OpenClaw's config file. Defaults to `~/.openclaw/openclaw.json`, but
+/// OpenClaw lets the user point `OPENCLAW_CONFIG_PATH` at a config file
+/// kept outside the state dir — honor that here so Gate Connect edits the
+/// file OpenClaw actually reads. The test-home seam still applies to the
+/// default path via [`openclaw_config_dir`].
+pub fn openclaw_config_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("OPENCLAW_CONFIG_PATH")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        return Ok(path);
+    }
+    Ok(openclaw_config_dir()?.join("openclaw.json"))
+}

@@ -12,6 +12,7 @@ dirs.workspace = true
 keyring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+json5.workspace = true
 toml_edit.workspace = true
 
 # Backs the built-in MITM proxy (`proxy` module). hudsucker mints per-host
