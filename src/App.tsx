@@ -27,8 +27,10 @@ import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { ComingSoon } from "./screens/ComingSoon";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { track, trackError } from "./lib/analytics";
+import { usePlatform } from "./lib/platform";
 
 type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
@@ -45,6 +47,7 @@ function hostOf(url: string | undefined): string {
 }
 
 export function App() {
+  const platform = usePlatform();
   const [screen, setScreen] = useState<Screen>("loading");
   const [account, setAccount] = useState<Account | null>(null);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
@@ -349,13 +352,19 @@ export function App() {
 
   return (
     <div
-      className={`flex h-full w-full flex-col overflow-y-auto overflow-x-hidden rounded-gc-lg bg-gc-surface text-gc-ink${
+      className={`flex h-full w-full flex-col overflow-y-auto overflow-x-hidden bg-gc-surface text-gc-ink${
+        // Linux runs as a borderless, opaque window, so a rounded card just
+        // exposes the square window corners behind it. macOS/Windows round the
+        // window itself, so the card rounds to match.
+        platform === "linux" ? "" : " rounded-gc-lg"
+      }${
         // While a proxy toggle is in flight, show the OS busy cursor everywhere
         // (the `!` overrides children's cursor-pointer / cursor-not-allowed) so
         // the slow enable/disable reads as "working", not "did nothing".
         proxyBusy ? " cursor-wait [&_*]:!cursor-wait" : ""
       }`}
     >
+      {platform === "linux" && <LinuxTitleBar />}
       <UpdateBanner />
       {body}
     </div>

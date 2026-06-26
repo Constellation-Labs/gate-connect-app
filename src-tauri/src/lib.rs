@@ -531,7 +531,13 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.hide();
             }
-            // Click outside the popover → dismiss.
+            // Click outside the popover → dismiss. Linux is excluded: there the
+            // window is a normal decorated, taskbar-visible window (see setup),
+            // and a dismiss-on-blur reflex fights its own title bar - grabbing
+            // the CSD title bar or close button momentarily blurs the GTK
+            // toplevel, so minimizing here would yank drag/close out from under
+            // the user. Linux dismisses via its native controls instead.
+            #[cfg(not(target_os = "linux"))]
             if let WindowEvent::Focused(false) = event {
                 // While pinned (first launch, through the keychain-password
                 // dialog and first-run, until the user engages), a focus loss
@@ -541,13 +547,6 @@ pub fn run() {
                 if POPOVER_PINNED.load(Ordering::Acquire) {
                     return;
                 }
-                // On Linux a hidden window leaves the taskbar entirely, and the
-                // SNI/AppIndicator tray is unreliable on GNOME - so dismiss by
-                // minimizing instead, leaving a dock/taskbar entry to restore
-                // from. macOS/Windows keep the native hide-to-tray behavior.
-                #[cfg(target_os = "linux")]
-                let _ = window.minimize();
-                #[cfg(not(target_os = "linux"))]
                 let _ = window.hide();
             }
         })
@@ -575,11 +574,18 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_skip_taskbar(false);
-                // The window is borderless by config; on Linux give it a native
-                // title bar so the WM provides a dependable minimize/close (the
-                // SNI tray is unreliable on GNOME). macOS/Windows stay
-                // decoration-free.
-                let _ = window.set_decorations(true);
+                // Stay borderless (config `decorations: false`): the native CSD
+                // title-bar buttons don't reliably bind on Wayland/GNOME, so the
+                // frontend draws its own chrome (`LinuxTitleBar`) and calls the
+                // Tauri window APIs directly. A native title bar here would just
+                // compete with that custom strip.
+                //
+                // Drop the config's alwaysOnTop on Linux: with no dismiss-on-blur
+                // here (see the Focused handler), an always-on-top window would
+                // float over everything with no way to recede when the user
+                // switches apps. As a normal window it sinks behind on focus
+                // loss and is re-summoned from the taskbar or tray.
+                let _ = window.set_always_on_top(false);
             }
 
             // Round the NSWindow content view's CALayer so the transparent
