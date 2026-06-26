@@ -689,6 +689,13 @@ pub fn run() {
             // macOS keychain prompt, the GNOME keyring) would otherwise blur the
             // popover and dismiss it before the user sees anything. The window
             // stays put until the user interacts (`unpin_popover`).
+            //
+            // We position the window here but deliberately do NOT show it: the
+            // frontend reveals it (`getCurrentWindow().show()` in main.tsx) once
+            // the splash markup has painted, so macOS never flashes a blank
+            // WKWebView before its first frame. setup() finishes - including this
+            // positioning - before the event loop runs any webview JS, so the
+            // window is always placed before the frontend shows it.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main") {
                 POPOVER_PINNED.store(true, Ordering::Release);
@@ -707,9 +714,9 @@ pub fn run() {
                         .and_then(|t| t.rect().ok().flatten())
                         .map(|rect| anchor_under_tray(&window, rect.position, rect.size));
                 }
-
-                let _ = window.show();
-                let _ = window.set_focus();
+                // Linux uses neither positioning block above; keep `window` live
+                // so it doesn't read as unused there.
+                let _ = &window;
             }
 
             // Reflect the current proxy state in the tray dot (macOS) and the
