@@ -73,7 +73,7 @@ pub fn providers() -> Vec<Provider> {
         Provider {
             slug: "google",
             display_name: "Google / Gemini",
-            subtitle: "Gemini API",
+            subtitle: "Gemini API (experimental)",
             // Proxy-only, like OpenRouter: no CLI integration, routed entirely
             // through the proxy domain (requires the proxy to be running). Two
             // domains: the generative-language API (API-key clients) and the

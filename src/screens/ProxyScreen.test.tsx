@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
-import type { Mock, Vitest } from "vitest";
+import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
 import type { ProxyState } from "../lib/api";
 import { ProxyScreen } from "./ProxyScreen";
@@ -80,21 +80,21 @@ describe("ProxyScreen interactions", () => {
   it("calls onToggleProxy when the main toggle is clicked", () => {
     const onToggleProxy = vi.fn();
     renderOn("macos", false, { onToggleProxy });
-    fireEvent.click(screen.getByText("Route through Gate"));
+    fireEvent.click(screen.getByRole("switch"));
     expect(onToggleProxy).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onTrustCa when the 'Trust CA' button is clicked", () => {
+  it("calls onTrustCa when the 'Trust' button is clicked", () => {
     const onTrustCa = vi.fn();
     renderOn("macos", false, { onTrustCa });
-    fireEvent.click(screen.getByText("Trust CA"));
+    fireEvent.click(screen.getByText("Trust"));
     expect(onTrustCa).toHaveBeenCalledTimes(1);
   });
 
   it("calls onBack when the back button is clicked", () => {
     const onBack = vi.fn();
     renderOn("macos", false, { onBack });
-    fireEvent.click(screen.getByLabelText("Back to home"));
+    fireEvent.click(screen.getByLabelText("Back"));
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
@@ -106,12 +106,12 @@ describe("ProxyScreen interactions", () => {
 
   it("disables controls when busy", () => {
     renderOn("macos", false, { busy: true });
-    const toggle = screen.getByText("Route through Gate").closest("button");
-    const trustButton = screen.getByText("Trust CA").closest("button");
-    const backButton = screen.getByLabelText("Back to home");
+    const toggle = screen.getByRole("switch");
+    const trustButton = screen.getByText("Trust").closest("button");
+    const backButton = screen.getByLabelText("Back");
 
-    expect(toggle).toBeDisabled();
-    expect(trustButton).toBeDisabled();
-    expect(backButton).not.toBeDisabled(); // Back button should likely remain active
+    expect(toggle).toHaveProperty("disabled", true);
+    expect(trustButton).toHaveProperty("disabled", true);
+    expect(backButton).toHaveProperty("disabled", false); // Back button stays active
   });
 });
