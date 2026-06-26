@@ -54,12 +54,34 @@ jobs:
           jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
           mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
           echo "Stamped version $VERSION into tauri.conf.json"
+      # macOS notarization uses an App Store Connect API key. The .p8 is stored
+      # as a base64 secret; decode it to a file the bundler reads via
+      # APPLE_API_KEY_PATH. Only macOS notarizes, so skip it on the other runners.
+      - name: Write App Store Connect API key (macOS)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "${{ secrets.APPLE_API_KEY_P8 }}" | openssl base64 -d -A > "$RUNNER_TEMP/apple-api-key.p8"
       - name: Build, sign & release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple code signing + notarization (macOS only; these are inert on the
+          # Linux/Windows runners). The signing cert is the base64 .p12; the
+          # bundler imports it into a temporary keychain. APPLE_SIGNING_IDENTITY
+          # is passed explicitly because tauri.conf.json pins signingIdentity to
+          # "-" (ad-hoc) for local builds, and that config value would otherwise
+          # win over the cert. Notarization authenticates with the App Store
+          # Connect API key written above.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/apple-api-key.p8
           # Inlined into the frontend bundle by Vite (beforeBuildCommand). Absent
           # ⇒ analytics stays a no-op, so the build still succeeds without it.
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
