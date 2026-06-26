@@ -690,12 +690,14 @@ pub fn run() {
             // popover and dismiss it before the user sees anything. The window
             // stays put until the user interacts (`unpin_popover`).
             //
-            // We position the window here but deliberately do NOT show it: the
-            // frontend reveals it (`getCurrentWindow().show()` in main.tsx) once
-            // the splash markup has painted, so macOS never flashes a blank
-            // WKWebView before its first frame. setup() finishes - including this
-            // positioning - before the event loop runs any webview JS, so the
-            // window is always placed before the frontend shows it.
+            // Show it here, from Rust: a hidden WKWebView reports visibility
+            // "hidden" and WebKit suspends requestAnimationFrame, so revealing
+            // from the frontend never fires and the popover never opens on
+            // launch. The blank-window flash that a synchronous show otherwise
+            // causes (the window appears before WKWebView's first paint) is
+            // handled by painting the rounded content layer white up front (see
+            // `apply_window_corner_radius`), so the first frame is the splash's
+            // white card rather than a transparent flash.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main") {
                 POPOVER_PINNED.store(true, Ordering::Release);
@@ -714,9 +716,8 @@ pub fn run() {
                         .and_then(|t| t.rect().ok().flatten())
                         .map(|rect| anchor_under_tray(&window, rect.position, rect.size));
                 }
-                // Linux uses neither positioning block above; keep `window` live
-                // so it doesn't read as unused there.
-                let _ = &window;
+                let _ = window.show();
+                let _ = window.set_focus();
             }
 
             // Reflect the current proxy state in the tray dot (macOS) and the
@@ -1179,5 +1180,14 @@ fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
         }
         let () = msg_send![layer, setCornerRadius: radius];
         let () = msg_send![layer, setMasksToBounds: true];
+        // Paint the masked layer white so the window's first on-screen frame is
+        // a white rounded card - matching the splash background - instead of the
+        // transparent/blank flash the clear window background shows before
+        // WKWebView paints. The webview's opaque white body draws over this once
+        // it renders, so the handoff is seamless. Clipped to the corner mask, so
+        // the rounded corners stay transparent.
+        let white: *mut AnyObject = msg_send![class!(NSColor), whiteColor];
+        let white_cg: *mut AnyObject = msg_send![white, CGColor];
+        let () = msg_send![layer, setBackgroundColor: white_cg];
     }
 }
