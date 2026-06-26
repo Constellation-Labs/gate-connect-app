@@ -167,7 +167,12 @@ fn spawn_daemon() -> Result<()> {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let open = || std::fs::OpenOptions::new().create(true).append(true).open(&path);
+            let open = || {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+            };
             match (open(), open()) {
                 (Ok(out), Ok(err)) => {
                     cmd.stdout(Stdio::from(out)).stderr(Stdio::from(err));
