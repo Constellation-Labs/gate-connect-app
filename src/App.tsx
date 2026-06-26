@@ -135,7 +135,17 @@ export function App() {
       setRestartHint(true);
       if (next.running) setRelaunchHint(true);
       // The master toggle also disconnects/restores providers, so refresh them.
-      setProviders(await listProviders().catch(() => []));
+      let current = await listProviders().catch(() => []);
+      // Turning the proxy on turns every available integration on with it.
+      if (next.running) {
+        await Promise.all(
+          current
+            .filter((p) => p.available && !p.enabled)
+            .map((p) => providerEnable(p.slug)),
+        );
+        current = await listProviders().catch(() => current);
+      }
+      setProviders(current);
     } catch (e) {
       trackError(e, "generic");
       // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
