@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
 import type { ProxyState } from "../lib/api";
@@ -18,7 +18,7 @@ const proxy: ProxyState = {
   domains: [],
 };
 
-function renderOn(platform: Platform) {
+function renderOn(platform: Platform, relaunchHint = false, props: Partial<React.ComponentProps<typeof ProxyScreen>> = {}) {
   (usePlatform as Mock).mockReturnValue(platform);
   render(
     <ProxyScreen
@@ -26,14 +26,16 @@ function renderOn(platform: Platform) {
       providers={[]}
       busy={false}
       error={null}
-      onBack={() => {}}
-      onToggleProxy={() => {}}
-      onSetProvider={() => {}}
-      onTrustCa={() => {}}
+      onBack={vi.fn()}
+      onToggleProxy={vi.fn()}
+      onSetProvider={vi.fn()}
+      onTrustCa={vi.fn()}
       restartHint={false}
+      relaunchHint={relaunchHint}
       openClaw={null}
       toolBusy={false}
       onToggleOpenClaw={() => {}}
+      {...props}
     />,
   );
 }
@@ -54,5 +56,62 @@ describe("ProxyScreen CA-trust notice", () => {
     renderOn("windows");
     expect(screen.getByText(/isn’t trusted in your certificate store yet/)).toBeTruthy();
     expect(screen.queryByText(/keychain/)).toBeNull();
+  });
+});
+
+describe("ProxyScreen Linux relaunch hint", () => {
+  it("tells Linux users to relaunch already-open apps when flashed", () => {
+    renderOn("linux", true);
+    expect(screen.getByText(/Apps already running/)).toBeTruthy();
+  });
+
+  it("is hidden on Linux until routing is turned on", () => {
+    renderOn("linux", false);
+    expect(screen.queryByText(/Apps already running/)).toBeNull();
+  });
+
+  it("is not shown on macOS even when flashed", () => {
+    renderOn("macos", true);
+    expect(screen.queryByText(/Apps already running/)).toBeNull();
+  });
+});
+
+describe("ProxyScreen interactions", () => {
+  it("calls onToggleProxy when the main toggle is clicked", () => {
+    const onToggleProxy = vi.fn();
+    renderOn("macos", false, { onToggleProxy });
+    fireEvent.click(screen.getByRole("switch"));
+    expect(onToggleProxy).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls onTrustCa when the 'Trust' button is clicked", () => {
+    const onTrustCa = vi.fn();
+    renderOn("macos", false, { onTrustCa });
+    fireEvent.click(screen.getByText("Trust"));
+    expect(onTrustCa).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls onBack when the back button is clicked", () => {
+    const onBack = vi.fn();
+    renderOn("macos", false, { onBack });
+    fireEvent.click(screen.getByLabelText("Back"));
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("displays an error message when an error is passed", () => {
+    const error = "Something went wrong";
+    renderOn("macos", false, { error });
+    expect(screen.getByText(error)).toBeTruthy();
+  });
+
+  it("disables controls when busy", () => {
+    renderOn("macos", false, { busy: true });
+    const toggle = screen.getByRole("switch");
+    const trustButton = screen.getByText("Trust").closest("button");
+    const backButton = screen.getByLabelText("Back");
+
+    expect(toggle).toHaveProperty("disabled", true);
+    expect(trustButton).toHaveProperty("disabled", true);
+    expect(backButton).toHaveProperty("disabled", false); // Back button stays active
   });
 });
