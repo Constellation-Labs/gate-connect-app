@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   getAccount,
   saveAccount,
@@ -67,6 +68,13 @@ export function App() {
     const t = setTimeout(() => setRelaunchHint(false), 8000);
     return () => clearTimeout(t);
   }, [relaunchHint]);
+
+  // App version, stamped into the bundle at release time and shown quietly
+  // in the footer. Best-effort: stays empty (footer hidden) if it can't load.
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+  }, []);
 
   // Initial load: account decides first-run vs home; proxy status is
   // best-effort (the proxy commands exist on all three desktop OSes, but a
@@ -377,6 +385,11 @@ export function App() {
       {platform === "linux" && <LinuxTitleBar />}
       <UpdateBanner />
       {body}
+      {version && (
+        <p className="mt-auto shrink-0 px-3.5 py-2 text-center font-mono text-[10.5px] text-gc-ink-5">
+          v{version}
+        </p>
+      )}
     </div>
   );
 }
