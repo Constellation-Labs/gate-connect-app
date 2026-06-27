@@ -134,6 +134,8 @@ pub struct ProxyState {
     pub ca_trusted: bool,
     /// The full domain catalog with current enabled flags.
     pub domains: Vec<ProxyDomain>,
+    /// Requests rewritten to the gateway this session (0 when not running).
+    pub gateway_requests: u64,
 }
 
 /// What the engine should do with a request on an intercepted host.
