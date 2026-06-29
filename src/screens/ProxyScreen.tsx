@@ -75,7 +75,7 @@ export function ProxyScreen({
               : "Off · nothing is routed through Gate"}
           </div>
           <div className="mt-1 text-[11px] leading-snug text-gc-ink-4">
-            Stays on after a restart, reopening Gate at login.
+            Turn on Launch at login in Settings to keep routing on after a restart.
           </div>
         </div>
         <Switch on={proxy.running} disabled={busy} onClick={onToggleProxy} />

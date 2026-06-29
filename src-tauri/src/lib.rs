@@ -373,18 +373,16 @@ async fn proxy_enable(
     update_tray_status(&app, state.running, state.gateway_requests);
     #[cfg(target_os = "windows")]
     update_tray_tooltip(&app, state.running, state.gateway_requests);
-    // Persist the user's intent and arm the login item so a machine restart
-    // comes back routed (read by the startup auto-enable in `setup`). Both
-    // best-effort: routing is already on, so a persistence or login-item
-    // hiccup must not fail the command.
+    // `app` only feeds the macOS/Windows tray refresh above; keep it bound on
+    // other platforms without an unused-variable warning.
+    let _ = &app;
+    // Persist the user's intent so the startup auto-enable in `setup` re-routes
+    // after a restart. Whether the app actually relaunches at boot is governed
+    // separately by the "Launch at login" setting (see `set_launch_at_login`).
+    // Best-effort: routing is already on, so a persistence hiccup must not fail
+    // the command.
     if let Err(e) = gate_connect_core::proxy::intent::set_intent(true) {
         eprintln!("[gate] persisting routing intent failed: {e}");
-    }
-    {
-        use tauri_plugin_autostart::ManagerExt;
-        if let Err(e) = app.autolaunch().enable() {
-            eprintln!("[gate] registering login item failed: {e}");
-        }
     }
     Ok(state)
 }
@@ -416,20 +414,35 @@ async fn proxy_disable(
     update_tray_status(&app, state.running, state.gateway_requests);
     #[cfg(target_os = "windows")]
     update_tray_tooltip(&app, state.running, state.gateway_requests);
-    // Explicit "off" is sticky across restarts: clear the intent and remove
-    // the login item so the app neither re-routes nor relaunches at boot.
-    // Best-effort - routing is already off, so cleanup failures don't matter
-    // to this command's result.
+    // `app` only feeds the macOS/Windows tray refresh above; keep it bound on
+    // other platforms without an unused-variable warning.
+    let _ = &app;
+    // Explicit "off" is sticky across restarts: clear the routing intent so the
+    // startup auto-enable in `setup` leaves the app in passthrough. Whether the
+    // app relaunches at boot is governed separately by the "Launch at login"
+    // setting. Best-effort - routing is already off, so a cleanup failure
+    // doesn't matter to this command's result.
     if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
         eprintln!("[gate] clearing routing intent failed: {e}");
     }
-    {
-        use tauri_plugin_autostart::ManagerExt;
-        if let Err(e) = app.autolaunch().disable() {
-            eprintln!("[gate] removing login item failed: {e}");
-        }
-    }
     Ok(state)
+}
+
+// Launch at login. A standalone user setting (Settings screen) that owns the
+// login item directly - it is no longer armed/disarmed by the routing toggle.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn launch_at_login_status(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    if enabled { mgr.enable() } else { mgr.disable() }.map_err(|e| e.to_string())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -506,11 +519,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
-        // Login item for "re-enable routing after a restart". Registered /
-        // unregistered as the user toggles routing (see proxy_enable /
-        // proxy_disable), never exposed as a standalone setting. The `--silent`
-        // arg lets `setup` tell a login launch from a manual one so the popover
-        // doesn't flash in the user's face at every boot.
+        // Login item, controlled by the standalone "Launch at login" setting
+        // (see `set_launch_at_login`). It is no longer armed/disarmed by the
+        // routing toggle; turning it on is what lets the app relaunch and
+        // re-route after a restart. The `--silent` arg lets `setup` tell a login
+        // launch from a manual one so the popover doesn't flash in the user's
+        // face at every boot.
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--silent"]),
@@ -546,6 +560,8 @@ pub fn run() {
                     proxy_set_domain,
                     proxy_trust_ca,
                     proxy_untrust_ca,
+                    launch_at_login_status,
+                    set_launch_at_login,
                 ]
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -621,9 +637,11 @@ pub fn run() {
 
                     // Restart persistence: bring routing back if the user last
                     // left it on. The exit-time disable reverts the *system
-                    // proxy* only and never clears the routing intent, so this
-                    // is what re-routes after a reboot. No intent recorded means
-                    // first run, or the user left routing off - stay passthrough.
+                    // proxy* only and keeps the routing intent when "Launch at
+                    // login" is on, so this is what re-routes after a reboot.
+                    // (With launch-at-login off, exit clears the intent, so we
+                    // stay passthrough.) No intent recorded means first run, or
+                    // the user left routing off - stay passthrough.
                     if !gate_connect_core::proxy::intent::load_intent() {
                         return;
                     }
@@ -875,7 +893,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building Gate Connect")
-        .run(|_app_handle, event| {
+        .run(|app_handle, event| {
             // On app exit, revert the system proxy so traffic is never stranded
             // at the now-dead engine port. The engine lives in a process-global
             // static whose Drop is bypassed at normal exit, so without this the
@@ -887,8 +905,21 @@ pub fn run() {
                 if let Err(e) = gate_connect_core::proxy::manager().disable() {
                     eprintln!("[gate] reverting proxy on exit failed: {e}");
                 }
+                // The login item is now a standalone "Launch at login" setting,
+                // decoupled from routing. If the user hasn't asked Gate to launch
+                // at login, it won't relaunch to re-route after a restart - so
+                // clear the routing intent too, otherwise a later manual launch
+                // would silently re-enable routing. Launch-at-login on keeps the
+                // intent, so opting in is what persists routing across a restart.
+                use tauri_plugin_autostart::ManagerExt;
+                if !app_handle.autolaunch().is_enabled().unwrap_or(false) {
+                    if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
+                        eprintln!("[gate] clearing routing intent on exit failed: {e}");
+                    }
+                }
             }
             let _ = &event;
+            let _ = &app_handle;
         });
 }
 
