@@ -616,6 +616,27 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            // Launch at login defaults ON: arm the login item the first time
+            // we run so routing persists across a restart out of the box. A
+            // one-shot marker file records that the default has been applied,
+            // so a later user opt-out in Settings sticks - the OS login-item
+            // flag alone can't tell "never configured" from "user turned it
+            // off", since both read as disabled.
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                if let Ok(dir) = gate_connect_core::env::app_support_dir() {
+                    let marker = dir.join("autostart-defaulted");
+                    if !marker.exists() {
+                        if let Err(e) = app.autolaunch().enable() {
+                            eprintln!("[gate] enabling launch-at-login default failed: {e}");
+                        }
+                        let _ = std::fs::create_dir_all(&dir);
+                        let _ = std::fs::write(&marker, b"1");
+                    }
+                }
+            }
+
             // Startup proxy work runs off-thread so neither step stalls the
             // tray: reconcile can block on a rare admin prompt, and the
             // auto-enable below waits on engine readiness. `--silent` marks a
