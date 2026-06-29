@@ -300,8 +300,18 @@ mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
 printf '{"anthropic":{"type":"api","key":"sk-ant-e2e-dummy"}}' \
   > "$HOME/.local/share/opencode/auth.json"
 printf '{"provider":{"anthropic":{}}}' > "$HOME/.config/opencode/opencode.json"
-run_tool "opencode" "opencode" "/v1/messages" -- \
-  opencode run --model anthropic/claude-3-5-haiku-latest "ping"
+# Pick whatever anthropic model opencode's catalog currently lists, rather than
+# pinning an id: models.dev retires them (claude-3-5-haiku-latest vanished and
+# broke this). Any anthropic model works - gate-connect only rewrites the
+# anthropic provider's baseURL, the mock answers, so the real model never runs.
+MODEL=$(opencode models | grep -m1 '^anthropic/')
+if [ -z "$MODEL" ]; then
+  echo "FAIL: opencode listed no anthropic models"
+  FAIL=$((FAIL + 1))
+else
+  run_tool "opencode" "opencode" "/v1/messages" -- \
+    opencode run --model "$MODEL" "ping"
+fi
 
 ckpt "all tools finished; reached end of script"
 echo "----------------------------------------"
