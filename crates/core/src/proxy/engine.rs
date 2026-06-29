@@ -9,7 +9,7 @@
 //! needs to push new rules - no engine restart, no system-proxy change, no
 //! extra admin prompt.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
@@ -72,6 +72,8 @@ pub struct RunningEngine {
     /// Set before a deliberate shutdown so the engine thread can tell an
     /// expected stop from an unexpected exit (crash / bind loss).
     stopping: Arc<AtomicBool>,
+    /// Shared counter of requests rewritten to the gateway this session.
+    gateway_requests: Arc<AtomicU64>,
 }
 
 impl RunningEngine {
@@ -97,6 +99,11 @@ impl RunningEngine {
     /// pass-through / blind-tunnel everything).
     pub fn intercepting(&self) -> usize {
         self.rules_tx.borrow().len()
+    }
+
+    /// How many requests have been rewritten to the gateway this session.
+    pub fn gateway_requests(&self) -> u64 {
+        self.gateway_requests.load(Ordering::Relaxed)
     }
 
     /// Push a rotated Gate API key to the live engine. Cheap - no restart;
@@ -176,6 +183,10 @@ struct GateHandler {
     /// while the peer's socket is definitely still in `/proc/net/tcp` - instead
     /// of re-reading it (and risking a TOCTOU miss) on every request.
     peer_verdict: Option<(std::net::SocketAddr, bool)>,
+    /// Count of requests rewritten to the gateway this session. Shared across
+    /// the per-connection handler clones, surfaced to the UI as a live signal
+    /// that traffic is actually flowing.
+    gateway_requests: Arc<AtomicU64>,
 }
 
 impl GateHandler {
@@ -304,7 +315,10 @@ impl HttpHandler for GateHandler {
             {
                 let api_key = self.api_key.borrow().clone();
                 match apply_rewrite(&mut req, &self.gateway, &upstream_url, &api_key) {
-                    Ok(()) => action = "rewrite->gateway",
+                    Ok(()) => {
+                        action = "rewrite->gateway";
+                        self.gateway_requests.fetch_add(1, Ordering::Relaxed);
+                    }
                     Err(e) => {
                         action = "rewrite-FAILED";
                         if debug_log() {
@@ -327,10 +341,11 @@ impl HttpHandler for GateHandler {
             };
             let ver = format!("{:?}", req.version());
             eprintln!(
-                "[gate-proxy] {} {}{} [{ver}] auth={auth} -> {action}",
+                "[gate-proxy] {} {}{} [{ver}] auth={auth} -> {action} (gw_total={})",
                 req.method(),
                 host.as_deref().unwrap_or("?"),
                 path,
+                self.gateway_requests.load(Ordering::Relaxed),
             );
             // Dump x-goog-* request headers as forwarded to the gateway.
             // The Code Assist project rides in `x-goog-user-project` (when
@@ -451,12 +466,14 @@ where
 
     let (rules_tx, rules_rx) = watch::channel(Arc::new(enabled_only(&cfg.domains)));
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
+    let gateway_requests = Arc::new(AtomicU64::new(0));
     let handler = GateHandler {
         rules: rules_rx,
         gateway,
         api_key: key_rx,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
+        gateway_requests: Arc::clone(&gateway_requests),
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -543,6 +560,7 @@ where
             rules_tx,
             key_tx,
             stopping,
+            gateway_requests,
         }),
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
         Err(_) => anyhow::bail!("proxy engine did not signal readiness within 10s"),
