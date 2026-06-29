@@ -17,6 +17,9 @@ use tauri::{
 };
 #[cfg(not(target_os = "linux"))]
 use tauri::{Position, Size};
+// Used only by the startup auto-enable to nudge the popover to re-read state.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use tauri::Emitter;
 
 /// Shape-check a user-supplied key coming over the JS-to-Rust boundary.
 /// Refuses empty input, control chars, lengths > 512 bytes, and a missing
@@ -370,8 +373,19 @@ async fn proxy_enable(
     update_tray_status(&app, state.running, state.gateway_requests);
     #[cfg(target_os = "windows")]
     update_tray_tooltip(&app, state.running, state.gateway_requests);
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let _ = &app;
+    // Persist the user's intent and arm the login item so a machine restart
+    // comes back routed (read by the startup auto-enable in `setup`). Both
+    // best-effort: routing is already on, so a persistence or login-item
+    // hiccup must not fail the command.
+    if let Err(e) = gate_connect_core::proxy::intent::set_intent(true) {
+        eprintln!("[gate] persisting routing intent failed: {e}");
+    }
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        if let Err(e) = app.autolaunch().enable() {
+            eprintln!("[gate] registering login item failed: {e}");
+        }
+    }
     Ok(state)
 }
 
@@ -402,8 +416,19 @@ async fn proxy_disable(
     update_tray_status(&app, state.running, state.gateway_requests);
     #[cfg(target_os = "windows")]
     update_tray_tooltip(&app, state.running, state.gateway_requests);
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let _ = &app;
+    // Explicit "off" is sticky across restarts: clear the intent and remove
+    // the login item so the app neither re-routes nor relaunches at boot.
+    // Best-effort - routing is already off, so cleanup failures don't matter
+    // to this command's result.
+    if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
+        eprintln!("[gate] clearing routing intent failed: {e}");
+    }
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        if let Err(e) = app.autolaunch().disable() {
+            eprintln!("[gate] removing login item failed: {e}");
+        }
+    }
     Ok(state)
 }
 
@@ -481,6 +506,15 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        // Login item for "re-enable routing after a restart". Registered /
+        // unregistered as the user toggles routing (see proxy_enable /
+        // proxy_disable), never exposed as a standalone setting. The `--silent`
+        // arg lets `setup` tell a login launch from a manual one so the popover
+        // doesn't flash in the user's face at every boot.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--silent"]),
+        ))
         .invoke_handler({
             // The proxy subsystem (and its commands) only exists on the three
             // desktop OSes; the handler forks on that single axis. Forking the
@@ -566,16 +600,73 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            // If a previous session left the system proxy on (unclean quit /
-            // crash), revert it now so HTTPS isn't routed at a dead loopback
-            // port. Off-thread so a rare admin prompt doesn't block the tray;
-            // a clean disable leaves nothing to reconcile.
+            // Startup proxy work runs off-thread so neither step stalls the
+            // tray: reconcile can block on a rare admin prompt, and the
+            // auto-enable below waits on engine readiness. `--silent` marks a
+            // login-item launch (see the autostart plugin registration) so we
+            // can re-route after a reboot without flashing the popover in the
+            // user's face at every boot.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            std::thread::spawn(|| {
-                if let Err(e) = gate_connect_core::proxy::manager().reconcile_on_startup() {
-                    eprintln!("proxy startup reconcile failed: {e}");
-                }
-            });
+            let silent_launch = std::env::args().any(|a| a == "--silent");
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    // If a previous session left the system proxy on (unclean
+                    // quit / crash), revert it first so HTTPS isn't routed at a
+                    // dead loopback port. A clean disable leaves nothing to do.
+                    if let Err(e) = gate_connect_core::proxy::manager().reconcile_on_startup() {
+                        eprintln!("proxy startup reconcile failed: {e}");
+                    }
+
+                    // Restart persistence: bring routing back if the user last
+                    // left it on. The exit-time disable reverts the *system
+                    // proxy* only and never clears the routing intent, so this
+                    // is what re-routes after a reboot. No intent recorded means
+                    // first run, or the user left routing off - stay passthrough.
+                    if !gate_connect_core::proxy::intent::load_intent() {
+                        return;
+                    }
+                    // Mirror proxy_enable: restore any snapshotted providers
+                    // before the engine comes up so it routes the prior
+                    // selection. A no-op in the common restart case (routed
+                    // domains persist in config and the engine reloads them on
+                    // enable); harmless and idempotent otherwise.
+                    if let Err(e) = gate_connect_core::provider::restore_all() {
+                        eprintln!("[gate] restoring providers on startup auto-enable failed: {e}");
+                    }
+                    match gate_connect_core::proxy::manager().enable() {
+                        Ok(state) => {
+                            #[cfg(any(target_os = "macos", target_os = "windows"))]
+                            TRAY_PROXY_ON.store(state.running, Ordering::Release);
+                            #[cfg(target_os = "macos")]
+                            update_tray_status(&handle, state.running, state.gateway_requests);
+                            #[cfg(target_os = "windows")]
+                            update_tray_tooltip(&handle, state.running, state.gateway_requests);
+                            // Nudge an already-mounted popover to re-read: its
+                            // status poll is idle while routing last read as
+                            // off, so it won't notice the flip on its own. The
+                            // new state rides along as the payload.
+                            let _ = handle.emit("proxy-state-changed", &state);
+                        }
+                        Err(e) => {
+                            // Never surface a stray dialog at login. If the
+                            // enable can't complete unattended (no Gate account,
+                            // a prompt we won't raise), drop the auto-route; on a
+                            // silent launch, open the popover so the user can
+                            // finish it. A visible launch already shows it below.
+                            eprintln!("[gate] startup auto-enable failed: {e}");
+                            if silent_launch {
+                                if let Some(window) = handle.get_webview_window("main") {
+                                    POPOVER_PINNED.store(true, Ordering::Release);
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                        }
+                    }
+                });
+            }
 
             // Linux dismisses the popover by minimizing (see the Focused(false)
             // handler), so it needs a taskbar/dock entry to restore from -
@@ -692,8 +783,10 @@ pub fn run() {
 
             // First impression: a hidden menu-bar / tray app looks broken on
             // launch, so surface the popover once at startup on every desktop
-            // OS. Subsequent opens go through the tray click. (No autostart, so
-            // a launch is always an explicit user action - safe to show.)
+            // OS - but only on a visible, user-initiated launch. A login-item
+            // launch (`--silent`) stays in the tray: the background thread
+            // above re-routes quietly, and flashing the popover at every boot
+            // would be hostile. Subsequent opens go through the tray click.
             //
             // Pin it open first: the frontend's initial load reads the OS
             // credential store, and the unlock dialog that can trigger (the
@@ -710,7 +803,7 @@ pub fn run() {
             // `apply_window_corner_radius`), so the first frame is the splash's
             // white card rather than a transparent flash.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.get_webview_window("main").filter(|_| !silent_launch) {
                 POPOVER_PINNED.store(true, Ordering::Release);
 
                 // macOS: the tray icon has no laid-out rect yet at setup, and the

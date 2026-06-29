@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import {
   getAccount,
   saveAccount,
@@ -121,7 +122,28 @@ export function App() {
     };
   }, []);
 
-  // On first launch the popover is pinned open so the macOS keychain dialog
+  // The backend can flip routing on by itself at startup (restart
+  // persistence: it re-enables what the user last left on). Our status poll
+  // stays idle while routing reads as off, and nothing re-reads when the
+  // popover is reopened from the tray, so the backend emits a nudge after a
+  // background enable and we re-read proxy + provider state here.
+  useEffect(() => {
+    let alive = true;
+    const unlisten = listen("proxy-state-changed", async () => {
+      const px = await proxyStatus().catch(() => null);
+      const provs = await listProviders().catch(() => []);
+      const tools = await listTools().catch(() => []);
+      if (!alive) return;
+      setProxy(px);
+      setProviders(provs);
+      setOpenClaw(tools.find((t) => t.slug === "openclaw") ?? null);
+    });
+    return () => {
+      alive = false;
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
   // (triggered by the initial load reading the key) can't dismiss it before
   // it's seen. Once the user actually interacts, release the pin so normal
   // click-away dismissal resumes.

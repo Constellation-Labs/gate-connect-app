@@ -10,6 +10,9 @@
     "core:window:allow-start-dragging",
     "updater:default",
     "process:allow-restart",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://github.com/Constellation-Labs/gate-connect-app/releases/*" }]
