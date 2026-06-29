@@ -216,3 +216,26 @@ pub fn openclaw_config_path() -> Result<PathBuf> {
     }
     Ok(openclaw_config_dir()?.join("openclaw.json"))
 }
+
+/// Hermes config root.
+///
+/// - Linux/macOS: `~/.hermes`
+/// - Windows: `%LOCALAPPDATA%\hermes`
+pub fn hermes_config_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(h) = test_home_override() {
+            return Ok(h.join(".hermes"));
+        }
+        dirs::data_local_dir()
+            .context("could not resolve %LOCALAPPDATA%")
+            .map(|d| d.join("hermes"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    Ok(home()?.join(".hermes"))
+}
+
+/// `~/.hermes/cli-config.yaml` — Hermes's config file.
+pub fn hermes_config_path() -> Result<PathBuf> {
+    Ok(hermes_config_dir()?.join("cli-config.yaml"))
+}

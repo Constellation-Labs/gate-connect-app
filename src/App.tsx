@@ -57,6 +57,7 @@ export function App() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [providerError, setProviderError] = useState<string | null>(null);
   const [openClaw, setOpenClaw] = useState<Tool | null>(null);
+  const [hermes, setHermes] = useState<Tool | null>(null);
   const [toolBusy, setToolBusy] = useState(false);
   // Set after a successful routing change; the Routing screen shows a
   // "restart your agent" note. Cleared when the user leaves the screen.
@@ -114,6 +115,7 @@ export function App() {
       setProxy(px);
       setProviders(provs);
       setOpenClaw(tools.find((t) => t.slug === "openclaw") ?? null);
+  setHermes(tools.find((t) => t.slug === "hermes") ?? null);
       setScreen(acct ? "home" : "firstrun");
       track("app_launched", { has_account: !!acct, proxy_available: px !== null });
     })();
@@ -263,6 +265,26 @@ export function App() {
     }
   }, [openClaw, toolBusy]);
 
+  const toggleHermes = useCallback(async () => {
+    if (toolBusy || !hermes) return;
+    setToolBusy(true);
+    setProviderError(null);
+    try {
+      const connected = hermes.status.kind === "connected";
+      const status = connected
+        ? await disconnectTool(hermes.slug)
+        : await connectTool(hermes.slug, hermes.default_upstream_url);
+      setHermes({ ...hermes, status });
+    } catch (e) {
+      setProviderError(typeof e === "string" ? e : String(e));
+      trackError(e, "generic");
+      const status = await toolStatus(hermes.slug).catch(() => null);
+      if (status) setHermes({ ...hermes, status });
+    } finally {
+      setToolBusy(false);
+    }
+  }, [hermes, toolBusy]);
+
   const trustCa = useCallback(async () => {
     if (proxyBusy) return;
     setProxyBusy(true);
@@ -377,6 +399,8 @@ export function App() {
         openClaw={openClaw}
         toolBusy={toolBusy}
         onToggleOpenClaw={toggleOpenClaw}
+        hermes={hermes}
+        onToggleHermes={toggleHermes}
       />
     );
   } else if (screen === "settings" && account) {
