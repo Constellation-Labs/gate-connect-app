@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Account } from "../lib/api";
+import { launchAtLoginStatus, setLaunchAtLogin } from "../lib/api";
 import { trackError } from "../lib/analytics";
 import { GATEWAY_SERVERS } from "../lib/config";
-import { SubHeader, SectionLabel, ConnPill, Button, Input } from "../components/gc/ui";
+import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
 function hostOf(url: string): string {
@@ -34,6 +35,35 @@ export function Settings({
   const [newKey, setNewKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [launchAtLogin, setLaunchAtLoginState] = useState(false);
+  const [laLoaded, setLaLoaded] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    launchAtLoginStatus()
+      .then((enabled) => {
+        if (!active) return;
+        setLaunchAtLoginState(enabled);
+        setLaLoaded(true);
+      })
+      .catch((err) => trackError(err, "generic"));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function toggleLaunchAtLogin() {
+    if (!laLoaded) return;
+    const next = !launchAtLogin;
+    setLaunchAtLoginState(next); // optimistic
+    try {
+      await setLaunchAtLogin(next);
+    } catch (err) {
+      setLaunchAtLoginState(!next); // revert on failure
+      setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "generic");
+    }
+  }
 
   async function saveKey() {
     if (newKey.trim().length === 0 || submitting) return;
@@ -177,6 +207,17 @@ export function Settings({
           </button>
         </div>
       )}
+
+      <SectionLabel>Startup</SectionLabel>
+      <div className="flex items-center gap-3 px-3.5 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-medium text-gc-ink">Launch at login</div>
+          <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
+            Open Gate Connect automatically when you log in. Keeps routing on after a restart.
+          </div>
+        </div>
+        <Switch on={launchAtLogin} disabled={!laLoaded} onClick={toggleLaunchAtLogin} />
+      </div>
 
       {devMode && !replacing && (
         <>

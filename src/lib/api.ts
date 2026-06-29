@@ -127,3 +127,14 @@ export const providerEnable = (slug: string) => invoke<ProviderState>("provider_
 /** Turn a provider off: reverts the tool config and disables its proxy
  * domain(s) if the proxy is running. */
 export const providerDisable = (slug: string) => invoke<ProviderState>("provider_disable", { slug });
+
+// ---- Launch at login ----
+//
+// Standalone user setting that owns the OS login item directly. Decoupled from
+// the routing toggle: turning it on is what lets the app relaunch and re-route
+// after a restart.
+
+export const launchAtLoginStatus = () => invoke<boolean>("launch_at_login_status");
+
+export const setLaunchAtLogin = (enabled: boolean) =>
+  invoke<void>("set_launch_at_login", { enabled });

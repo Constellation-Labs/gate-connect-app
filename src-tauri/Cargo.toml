@@ -36,3 +36,4 @@ block2 = "0.6"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-autostart = "2"

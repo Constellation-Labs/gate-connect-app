@@ -35,6 +35,8 @@ mod cert_authority;
 
 pub mod config;
 
+pub mod intent;
+
 #[cfg(target_os = "macos")]
 pub mod ca;
 #[cfg(target_os = "windows")]
