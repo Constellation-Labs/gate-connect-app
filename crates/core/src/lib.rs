@@ -20,6 +20,7 @@ pub mod registry;
 pub mod integrations {
     pub mod claude_code;
     pub mod codex;
+    pub mod hermes;
     pub mod openclaw;
     pub mod opencode;
 }

@@ -63,4 +63,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # them here lets us reference the exact same types.
 http = "1"
 time = "0.3"
+serde_yaml = "0.9"
 gate-connect-core = { path = "crates/core" }

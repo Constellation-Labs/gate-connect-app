@@ -274,6 +274,9 @@ fn cmd_status(tool: &str) -> Result<()> {
             ToolId::OpenClaw => {
                 println!("Re-run `openclaw` to pick up the new openclaw.json provider block.")
             }
+            ToolId::Hermes => {
+                println!("Re-run `hermes` to pick up the new cli-config.yaml routing.")
+            }
         }
     }
     Ok(())
@@ -333,6 +336,15 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
                     "  3. Your provider credentials in ~/.openclaw/openclaw.json are untouched. Gate adds its headers and forwards each request to the original upstream."
                 );
         }
+        ToolId::Hermes => {
+            println!("  1. Quit any running `hermes` sessions.");
+            println!(
+                "  2. Re-run `hermes` - it reads ~/.hermes/cli-config.yaml on launch and routes model.base_url through Gate."
+            );
+            println!(
+                "  3. Your upstream credentials are untouched. Gate adds its headers and forwards each request to the original upstream."
+            );
+        }
     }
     Ok(())
 }
@@ -353,6 +365,9 @@ fn cmd_disconnect(tool: &str) -> Result<()> {
         }
         ToolId::OpenClaw => {
             println!("Restart any running `openclaw` sessions for the change to take effect.")
+        }
+        ToolId::Hermes => {
+            println!("Restart any running `hermes` sessions for the change to take effect.")
         }
     }
     Ok(())

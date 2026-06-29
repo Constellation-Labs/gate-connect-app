@@ -36,6 +36,8 @@ function renderOn(platform: Platform, relaunchHint = false, props: Partial<React
       openClaw={null}
       toolBusy={false}
       onToggleOpenClaw={() => {}}
+      hermes={null}
+      onToggleHermes={() => {}}
       {...props}
     />,
   );
