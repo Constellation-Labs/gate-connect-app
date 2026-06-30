@@ -23,12 +23,14 @@ export function Settings({
   onReplaceKey,
   onDisconnect,
   onSwitchGateway,
+  onReplayTour,
 }: {
   account: Account;
   onBack: () => void;
   onReplaceKey: (key: string) => Promise<void>;
   onDisconnect: () => Promise<void>;
   onSwitchGateway: (url: string) => Promise<void>;
+  onReplayTour: () => void;
 }) {
   const [replacing, setReplacing] = useState(false);
   const [devMode, setDevMode] = useState(false);
@@ -217,6 +219,18 @@ export function Settings({
           </div>
         </div>
         <Switch on={launchAtLogin} disabled={!laLoaded} onClick={toggleLaunchAtLogin} />
+      </div>
+
+      <SectionLabel>Help</SectionLabel>
+      <div className="px-3.5 pb-1">
+        <button
+          type="button"
+          onClick={onReplayTour}
+          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+        >
+          <Icon name="info" size={14} />
+          Replay tour
+        </button>
       </div>
 
       {devMode && !replacing && (
