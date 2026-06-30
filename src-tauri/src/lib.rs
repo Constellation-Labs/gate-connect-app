@@ -1109,7 +1109,7 @@ fn anchor_under_tray(window: &tauri::WebviewWindow, tray_pos: Position, tray_siz
     let window_h_px = window
         .outer_size()
         .map(|s| s.height as f64)
-        .unwrap_or(640.0 * scale);
+        .unwrap_or(720.0 * scale);
 
     let tray_center_x = pos.x + size.width / 2.0;
     let tray_top_y = pos.y;
@@ -1163,7 +1163,7 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
     let window_h_px = window
         .outer_size()
         .map(|s| s.height as f64)
-        .unwrap_or(640.0 * scale);
+        .unwrap_or(720.0 * scale);
 
     let gap = 6.0 * scale;
 
