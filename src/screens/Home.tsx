@@ -65,15 +65,18 @@ export function Home({
                 </div>
               )}
             </div>
-            <span
-              className="flex"
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleProxy();
-              }}
-            >
-              <Switch on={proxyOn} />
-            </span>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <span
+                className="flex"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleProxy();
+                }}
+              >
+                <Switch on={proxyOn} />
+              </span>
+              <Icon name="chevronRight" size={15} stroke={2} className="text-gc-ink-4" />
+            </div>
           </div>
         )}
 
