@@ -6,7 +6,8 @@ import { Icon } from "../components/gc/Icon";
 export function Home({
   workspace,
   proxyOn,
-  domainCount,
+  providerCount,
+  toolCount,
   requestCount,
   showProxy,
   error,
@@ -17,7 +18,8 @@ export function Home({
 }: {
   workspace: string;
   proxyOn: boolean;
-  domainCount: number;
+  providerCount: number;
+  toolCount: number;
   requestCount: number;
   showProxy: boolean;
   error?: string | null;
@@ -55,7 +57,7 @@ export function Home({
               <div className="text-[13.5px] font-semibold text-gc-ink">Proxy</div>
               <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
                 {proxyOn
-                  ? `On · intercepting ${domainCount} domain${domainCount === 1 ? "" : "s"}`
+                  ? `On · ${providerCount} provider${providerCount === 1 ? "" : "s"} · ${toolCount} tool${toolCount === 1 ? "" : "s"}`
                   : "Off · not routing"}
               </div>
               {proxyOn && (
