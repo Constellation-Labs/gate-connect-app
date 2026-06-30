@@ -181,3 +181,82 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
         "the client's own credential must be forwarded untouched"
     );
 }
+
+#[tokio::test]
+async fn proxy_rewrites_openrouter_request_to_gateway() {
+    // 1. Mock gateway on loopback. The rewritten request must land here.
+    let gateway = start_mock_gateway().await;
+
+    // 2. Boot the engine with OpenRouter opted in. `default_domains()` ships
+    //    it `enabled: false` (proxy-only, opt-in), so flip it on so
+    //    openrouter.ai /api/ is intercepted and rewritten.
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let domains = default_domains()
+        .into_iter()
+        .map(|mut d| {
+            if d.slug == "openrouter" {
+                d.enabled = true;
+            }
+            d
+        })
+        .collect();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
+            api_key: "sk-gw-test".into(),
+            domains,
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            owner_uid: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    // 3. A client routed through the engine, trusting our throwaway CA so the
+    //    engine's MITM leaf for openrouter.ai validates.
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{}", engine.port())).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header("authorization", "Bearer app-token")
+        .json(&serde_json::json!({ "model": "openai/gpt-4o", "messages": [] }))
+        .send()
+        .await
+        .expect("request should reach the gateway through the proxy");
+    assert!(
+        resp.status().is_success(),
+        "gateway returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    // 4. The rewrite landed on the gateway: original path preserved (OpenRouter
+    //    nests its API under /api/v1/), Gate headers injected, and the client's
+    //    own bearer forwarded untouched.
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "gateway should have received exactly one request"
+    );
+    let r = &reqs[0];
+    assert_eq!(r.method, "POST");
+    assert_eq!(r.path, "/api/v1/chat/completions");
+    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-gate-upstream-url"),
+        Some("https://openrouter.ai")
+    );
+    assert_eq!(
+        r.header("authorization"),
+        Some("Bearer app-token"),
+        "the client's own credential must be forwarded untouched"
+    );
+}

@@ -37,7 +37,7 @@ import { usePlatform } from "./lib/platform";
 type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
 // Providers hidden from the UI for now. Slugs match the backend provider list.
-const HIDDEN_PROVIDER_SLUGS = new Set(["openrouter"]);
+const HIDDEN_PROVIDER_SLUGS = new Set<string>([]);
 
 function hostOf(url: string | undefined): string {
   if (!url) return "";
