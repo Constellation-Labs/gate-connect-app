@@ -111,7 +111,7 @@ export function Settings({
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex grow flex-col">
       <SubHeader title="Settings" onBack={onBack} />
 
       <SectionLabel>Workspace</SectionLabel>
@@ -199,14 +199,6 @@ export function Settings({
             <Icon name="trash" size={14} />
             Disconnect
           </button>
-          <button
-            type="button"
-            onClick={() => setDevMode((v) => !v)}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3"
-          >
-            <Icon name="settings" size={14} />
-            Dev mode
-          </button>
         </div>
       )}
 
@@ -220,46 +212,58 @@ export function Settings({
         </div>
         <Switch on={launchAtLogin} disabled={!laLoaded} onClick={toggleLaunchAtLogin} />
       </div>
-
-      <SectionLabel>Help</SectionLabel>
-      <div className="px-3.5 pb-1">
+      <div className="px-3.5 pb-1 pt-1">
         <button
-          type="button"
-          onClick={onReplayTour}
-          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            type="button"
+            onClick={() => setDevMode((v) => !v)}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3"
         >
-          <Icon name="info" size={14} />
-          Replay tour
+          <Icon name="settings" size={14} />
+          Dev mode
         </button>
       </div>
 
       {devMode && !replacing && (
-        <>
-          <SectionLabel>Gateway server</SectionLabel>
-          <div className="flex flex-col gap-2 px-3.5 pb-1">
-            {GATEWAY_SERVERS.map((server) => {
-              const active = server.url === account.gateway_base_url;
-              return (
-                <button
-                  key={server.url}
-                  type="button"
-                  onClick={() => selectServer(server.url)}
-                  disabled={active || submitting}
-                  className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
-                    <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
-                      {hostOf(server.url)}
-                    </div>
-                  </div>
-                  {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
-                </button>
-              );
-            })}
-          </div>
-        </>
+          <>
+            <SectionLabel>Gateway server</SectionLabel>
+            <div className="flex flex-col gap-2 px-3.5 pb-1">
+              {GATEWAY_SERVERS.map((server) => {
+                const active = server.url === account.gateway_base_url;
+                return (
+                    <button
+                        key={server.url}
+                        type="button"
+                        onClick={() => selectServer(server.url)}
+                        disabled={active || submitting}
+                        className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
+                        <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
+                          {hostOf(server.url)}
+                        </div>
+                      </div>
+                      {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
+                    </button>
+                );
+              })}
+            </div>
+          </>
       )}
+
+      <div className="mt-auto">
+        <SectionLabel>Help</SectionLabel>
+        <div className="px-3.5 pb-1">
+          <button
+            type="button"
+            onClick={onReplayTour}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            <Icon name="info" size={14} />
+            Replay tour
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
