@@ -25,6 +25,8 @@ export type AnalyticsEvent =
   | "proxy_disabled"
   | "provider_toggled"
   | "ca_trusted"
+  | "tour_completed"
+  | "tour_skipped"
   | "error_shown";
 
 type Props = Record<string, string | number | boolean>;
@@ -40,6 +42,7 @@ const ALLOWED_PROP_KEYS = new Set<string>([
   "enabled",
   "context",
   "title",
+  "source",
 ]);
 
 let enabled = false;
