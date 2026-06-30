@@ -56,8 +56,9 @@ export function App() {
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [providerError, setProviderError] = useState<string | null>(null);
-  const [openClaw, setOpenClaw] = useState<Tool | null>(null);
-  const [hermes, setHermes] = useState<Tool | null>(null);
+  const [tools, setTools] = useState<Tool[]>([]);
+  const openClaw = tools.find((t) => t.slug === "openclaw") ?? null;
+  const hermes = tools.find((t) => t.slug === "hermes") ?? null;
   const [toolBusy, setToolBusy] = useState(false);
   // Set after a successful routing change; the Routing screen shows a
   // "restart your agent" note. Cleared when the user leaves the screen.
@@ -109,13 +110,12 @@ export function App() {
         px = null;
       }
       const provs = await listProviders().catch(() => []);
-      const tools = await listTools().catch(() => []);
+      const toolList = await listTools().catch(() => []);
       if (!alive) return;
       setAccount(acct);
       setProxy(px);
       setProviders(provs);
-      setOpenClaw(tools.find((t) => t.slug === "openclaw") ?? null);
-  setHermes(tools.find((t) => t.slug === "hermes") ?? null);
+      setTools(toolList);
       setScreen(acct ? "home" : "firstrun");
       track("app_launched", { has_account: !!acct, proxy_available: px !== null });
     })();
@@ -134,11 +134,11 @@ export function App() {
     const unlisten = listen("proxy-state-changed", async () => {
       const px = await proxyStatus().catch(() => null);
       const provs = await listProviders().catch(() => []);
-      const tools = await listTools().catch(() => []);
+      const toolList = await listTools().catch(() => []);
       if (!alive) return;
       setProxy(px);
       setProviders(provs);
-      setOpenClaw(tools.find((t) => t.slug === "openclaw") ?? null);
+      setTools(toolList);
     });
     return () => {
       alive = false;
@@ -226,6 +226,7 @@ export function App() {
         if (enabled) setRelaunchHint(true);
         // Refresh provider state and proxy (enabling may have flipped a domain).
         setProviders(await listProviders().catch(() => []));
+        setTools(await listTools().catch(() => []));
         try {
           setProxy(await proxyStatus());
         } catch {
@@ -252,14 +253,14 @@ export function App() {
       const status = connected
         ? await disconnectTool(openClaw.slug)
         : await connectTool(openClaw.slug, openClaw.default_upstream_url);
-      setOpenClaw({ ...openClaw, status });
+      setTools((ts) => ts.map((t) => (t.slug === openClaw.slug ? { ...t, status } : t)));
     } catch (e) {
       // Surface the failure — a swallowed error reads as "the toggle does
       // nothing". Then re-sync the switch to its true state.
       setProviderError(typeof e === "string" ? e : String(e));
       trackError(e, "generic");
       const status = await toolStatus(openClaw.slug).catch(() => null);
-      if (status) setOpenClaw({ ...openClaw, status });
+      if (status) setTools((ts) => ts.map((t) => (t.slug === openClaw.slug ? { ...t, status } : t)));
     } finally {
       setToolBusy(false);
     }
@@ -274,12 +275,12 @@ export function App() {
       const status = connected
         ? await disconnectTool(hermes.slug)
         : await connectTool(hermes.slug, hermes.default_upstream_url);
-      setHermes({ ...hermes, status });
+      setTools((ts) => ts.map((t) => (t.slug === hermes.slug ? { ...t, status } : t)));
     } catch (e) {
       setProviderError(typeof e === "string" ? e : String(e));
       trackError(e, "generic");
       const status = await toolStatus(hermes.slug).catch(() => null);
-      if (status) setHermes({ ...hermes, status });
+      if (status) setTools((ts) => ts.map((t) => (t.slug === hermes.slug ? { ...t, status } : t)));
     } finally {
       setToolBusy(false);
     }
@@ -351,7 +352,12 @@ export function App() {
 
   const workspace = hostOf(account?.gateway_base_url);
   const proxyOn = proxy?.running ?? false;
-  const domainCount = proxy?.domains.filter((d) => d.enabled && d.supported).length ?? 0;
+  const providerCount = providers.filter(
+    (p) => p.enabled && !HIDDEN_PROVIDER_SLUGS.has(p.slug),
+  ).length;
+  const toolCount = [openClaw, hermes].filter(
+    (t) => t?.status.kind === "connected",
+  ).length;
   const requestCount = proxy?.gateway_requests ?? 0;
   const showProxy = proxy !== null;
 
@@ -421,7 +427,8 @@ export function App() {
       <Home
         workspace={workspace}
         proxyOn={proxyOn}
-        domainCount={domainCount}
+        providerCount={providerCount}
+        toolCount={toolCount}
         requestCount={requestCount}
         showProxy={showProxy}
         error={providerError}
