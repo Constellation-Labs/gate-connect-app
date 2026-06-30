@@ -300,11 +300,12 @@ mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
 printf '{"anthropic":{"type":"api","key":"sk-ant-e2e-dummy"}}' \
   > "$HOME/.local/share/opencode/auth.json"
 printf '{"provider":{"anthropic":{}}}' > "$HOME/.config/opencode/opencode.json"
-# Pick whatever anthropic model opencode's catalog currently lists, rather than
-# pinning an id: models.dev retires them (claude-3-5-haiku-latest vanished and
-# broke this). Any anthropic model works - gate-connect only rewrites the
-# anthropic provider's baseURL, the mock answers, so the real model never runs.
-MODEL=$(opencode models | grep -m1 '^anthropic/')
+# Pick an anthropic model from opencode's catalog rather than pinning an id:
+# models.dev retires them (claude-3-5-haiku-latest vanished and broke this).
+# Skip the `-latest` aliases - they're the unstable ones models.dev remaps, and
+# `opencode models` lists in no fixed order, so grabbing the first match landed
+# on claude-3-5-haiku-latest at random. Sort for a deterministic pick instead.
+MODEL=$(opencode models | grep '^anthropic/' | grep -v -- '-latest$' | sort | head -n1)
 if [ -z "$MODEL" ]; then
   echo "FAIL: opencode listed no anthropic models"
   FAIL=$((FAIL + 1))
