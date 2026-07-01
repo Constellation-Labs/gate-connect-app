@@ -339,20 +339,47 @@ fi
 # model.base_url in ~/.hermes/cli-config.yaml to Gate and injects the Gate
 # headers into model.default_headers → POSTs /v1/chat/completions. We seed a
 # config pointing at openrouter: it must be a public https base_url or
-# gate-connect treats it as local and refuses to route it. Like codex, hermes
-# is not a Node runtime, so it can't use the NODE_TLS skip - point its
-# requests/httpx stack at the test CA via SSL_CERT_FILE / REQUESTS_CA_BUNDLE
-# (Linux also trusts the CA in the OS store above). The dummy OpenRouter key is
-# only to get hermes to send; the Gate headers come from the config rewrite.
-# Guarded on install: if a runner's hermes install lands the binary off PATH,
-# skip rather than fail.
+# gate-connect treats it as local and refuses to route it. The dummy OpenRouter
+# key is only to get hermes to send; the Gate headers come from the config
+# rewrite. Guarded on install: if a runner's hermes install lands the binary
+# off PATH, skip rather than fail.
+#
+# TLS: hermes' HTTP stack (OpenAI SDK → httpx) verifies against certifi's own
+# bundle and ignores SSL_CERT_FILE / REQUESTS_CA_BUNDLE and the OS trust store,
+# so without help it rejects the mock's test-CA leaf ("Connection error", zero
+# requests captured). Append our CA to the certifi bundle inside hermes' venv
+# so its client trusts the mock. We locate the venv off the launcher on PATH -
+# NOT off $HOME, which we redirected to a throwaway above while the installer
+# wrote hermes to the real home.
 if command -v hermes >/dev/null 2>&1; then
   mkdir -p "$HOME/.hermes"
   printf 'model:\n  base_url: https://openrouter.ai/api/v1\n' \
     > "$HOME/.hermes/cli-config.yaml"
-  export SSL_CERT_FILE="$(winpath "$CA_DIR/ca.pem")"
-  export REQUESTS_CA_BUNDLE="$(winpath "$CA_DIR/ca.pem")"
   export OPENROUTER_API_KEY="sk-or-e2e-dummy"
+
+  launcher="$(command -v hermes)"
+  if [ "$OS" = "Windows" ]; then
+    # No symlink on Windows: hermes.exe and python.exe share the venv Scripts
+    # dir the launcher lives in.
+    hermes_py="$(dirname "$launcher")/python.exe"
+  else
+    # ~/.local/bin/hermes symlinks into .../venv/bin/hermes; python is beside it.
+    target="$(readlink "$launcher" 2>/dev/null || echo "$launcher")"
+    case "$target" in
+      /*) : ;;
+      *) target="$(dirname "$launcher")/$target" ;;
+    esac
+    hermes_py="$(dirname "$target")/python"
+  fi
+  if [ -f "$hermes_py" ]; then
+    certifi_pem="$("$hermes_py" -c 'import certifi; print(certifi.where())')"
+    [ "$OS" = "Windows" ] && certifi_pem="$(cygpath -u "$certifi_pem")"
+    cat "$CA_DIR/ca.pem" >> "$certifi_pem"
+    ckpt "[hermes] trusted test CA in certifi: $certifi_pem"
+  else
+    ckpt "[hermes] venv python not found ($hermes_py); TLS patch skipped"
+  fi
+
   run_tool "hermes" "hermes" "/v1/chat/completions" -- \
     hermes -z "ping" --provider openrouter --model openai/gpt-4o-mini
 else
