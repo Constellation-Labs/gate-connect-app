@@ -219,9 +219,18 @@ pub fn openclaw_config_path() -> Result<PathBuf> {
 
 /// Hermes config root.
 ///
+/// Honors the `HERMES_HOME` override that both the Hermes CLI and Desktop app
+/// read (they share this directory), falling back to the per-OS default:
+/// - `HERMES_HOME` if set
 /// - Linux/macOS: `~/.hermes`
 /// - Windows: `%LOCALAPPDATA%\hermes`
 pub fn hermes_config_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("HERMES_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        return Ok(path);
+    }
     #[cfg(target_os = "windows")]
     {
         if let Some(h) = test_home_override() {
