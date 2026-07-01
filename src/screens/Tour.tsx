@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
 import { Button } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
+import { usePlatform, type Platform } from "../lib/platform";
 
 /** Sunken "screenshot" frame every step preview sits in - a tinted backdrop so
  * the white app surfaces inside read as a little window. */
@@ -24,28 +25,112 @@ function MiniPill({ label }: { label: string }) {
   );
 }
 
-/** Step 1 - the connected popover, header + content skeleton. */
-function WelcomePreview() {
+/** Step 1 - the app logo, front and center. */
+function HeroPreview() {
   return (
     <Frame>
-      <div className="rounded-md bg-gc-surface p-3 shadow-border">
-        <div className="flex items-center gap-2">
-          <ConstellationHexMark size={16} fill="#002a5f" />
-          <span className="text-[11px] font-semibold tracking-[-0.02em] text-gc-navy">
-            Gate <span className="text-gc-accent">Connect</span>
-          </span>
-          <MiniPill label="connected" />
+      <div className="flex flex-col items-center justify-center gap-2.5">
+        <div className="flex h-[52px] w-[52px] items-center justify-center rounded-[14px] bg-gc-surface shadow-border">
+          <ConstellationHexMark size={30} fill="#002a5f" />
         </div>
-        <div className="mt-3 space-y-1.5">
-          <div className="h-2 w-3/4 rounded bg-gc-sunken" />
-          <div className="h-2 w-1/2 rounded bg-gc-sunken" />
+        <span className="text-[13px] font-semibold tracking-[-0.02em] text-gc-navy">
+          Gate <span className="text-gc-accent">Connect</span>
+        </span>
+      </div>
+    </Frame>
+  );
+}
+
+/** Step 2 - the OS status area, app icon lit up with its popover peeking out.
+ * Lives up top (menu bar / top bar) on macOS and Ubuntu, and down in the
+ * taskbar tray on Windows. */
+function TrayPreview({ platform }: { platform: Platform }) {
+  const bottom = platform === "windows";
+
+  const bar = (
+    <div className="flex h-[18px] w-full items-center gap-2 rounded-md bg-gc-ink px-2">
+      {bottom ? (
+        <>
+          <span className="h-2.5 w-2.5 rounded-[2px] bg-white/15" />
+          <span className="h-2.5 w-2.5 rounded-[2px] bg-white/15" />
+        </>
+      ) : (
+        <>
+          <span className="text-[8px] font-semibold text-white/75">File</span>
+          <span className="text-[8px] text-white/50">Edit</span>
+          <span className="text-[8px] text-white/50">View</span>
+        </>
+      )}
+      <span className="ml-auto flex items-center gap-1.5">
+        <span className="font-mono text-[8px] text-white/50">9:41</span>
+        <span className="flex h-[14px] w-[14px] items-center justify-center rounded-[3px] bg-white/15">
+          <ConstellationHexMark size={9} fill="#ffffff" />
+        </span>
+      </span>
+    </div>
+  );
+
+  const popover = (
+    <div className="w-[96px] rounded-md bg-gc-surface p-1.5 shadow-border">
+      <div className="flex items-center gap-1">
+        <ConstellationHexMark size={8} fill="#002a5f" />
+        <div className="h-1.5 w-9 rounded bg-gc-sunken" />
+      </div>
+      <div className="mt-1 h-1.5 w-full rounded bg-gc-sunken" />
+    </div>
+  );
+
+  return (
+    <Frame>
+      <div className="flex flex-col items-end">
+        {bottom ? (
+          <>
+            <div className="mb-1.5">{popover}</div>
+            {bar}
+          </>
+        ) : (
+          <>
+            {bar}
+            <div className="mt-1.5">{popover}</div>
+          </>
+        )}
+      </div>
+    </Frame>
+  );
+}
+
+/** Step 3 - the flow: your tools route through Gate to your providers. */
+function FlowPreview() {
+  return (
+    <Frame>
+      <div className="flex items-center justify-between">
+        <div className="flex flex-col items-center gap-1.5">
+          <div className="flex h-9 w-11 flex-col justify-center gap-1 rounded-md bg-gc-surface px-1.5 shadow-border">
+            <div className="h-1.5 w-full rounded bg-gc-sunken" />
+            <div className="h-1.5 w-2/3 rounded bg-gc-sunken" />
+          </div>
+          <span className="text-[8px] font-medium text-gc-ink-4">your tools</span>
+        </div>
+        <Icon name="chevronRight" size={12} className="text-gc-ink-5" />
+        <div className="flex flex-col items-center gap-1.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gc-accent-wash">
+            <ConstellationHexMark size={16} fill="#002a5f" />
+          </div>
+          <span className="text-[8px] font-medium text-gc-navy">Gate</span>
+        </div>
+        <Icon name="chevronRight" size={12} className="text-gc-ink-5" />
+        <div className="flex flex-col items-center gap-1.5">
+          <div className="flex h-9 w-11 items-center justify-center rounded-md bg-gc-surface text-gc-ink-3 shadow-border">
+            <Icon name="layers" size={14} />
+          </div>
+          <span className="text-[8px] font-medium text-gc-ink-4">providers</span>
         </div>
       </div>
     </Frame>
   );
 }
 
-/** Step 2 - the connect form: key field + Connect button. */
+/** Step 4 - the connect form: key field + Connect button. */
 function ConnectPreview() {
   return (
     <Frame>
@@ -120,36 +205,64 @@ type Step = {
   body: string;
 };
 
-const STEPS: Step[] = [
-  {
-    preview: <WelcomePreview />,
-    title: "Welcome to Gate Connect",
-    body: "Point your AI dev tools at one gateway and stop juggling credentials. Here's the quick tour - it takes a few taps.",
-  },
-  {
-    preview: <ConnectPreview />,
-    title: "Connect once",
-    body: "Sign in with your gateway URL and API key. The key goes straight into the macOS keychain - never a config file on disk.",
-  },
-  {
-    preview: <RoutePreview />,
-    title: "Route through Gate",
-    body: "Flip routing on to send your desktop agents' traffic through the gateway. The live request count climbs as calls flow through.",
-  },
-  {
-    preview: <ToolsPreview />,
-    title: "Point your tools",
-    body: "Cowork, Codex, OpenCode and more - Gate Connect sets each one to use your gateway. Toggle them on per tool whenever you like.",
-  },
-];
+/** Where the app lives, worded for the platform's status area. */
+function whereItLives(platform: Platform): string {
+  switch (platform) {
+    case "windows":
+      return "Gate Connect sits in your system tray, down by the clock. Click the icon anytime to open this window and check on your setup.";
+    case "linux":
+      return "Gate Connect sits up in your top bar, one click away. Click the icon anytime to open this window and check on your setup.";
+    case "macos":
+      return "Gate Connect sits up in your menu bar, one click away. Click the icon anytime to open this window and check on your setup.";
+    default:
+      return "Gate Connect sits in your system's status area, one click away. Click the icon anytime to open this window and check on your setup.";
+  }
+}
+
+function buildSteps(platform: Platform): Step[] {
+  return [
+    {
+      preview: <HeroPreview />,
+      title: "Welcome to Gate Connect",
+      body: "Gate Connect helps you connect your AI agents to Gate AI. This quick tour shows where it lives and how to get set up - just a few taps.",
+    },
+    {
+      preview: <TrayPreview platform={platform} />,
+      title: "Where is Gate Connect?",
+      body: whereItLives(platform),
+    },
+    {
+      preview: <FlowPreview />,
+      title: "One gateway for every tool",
+      body: "Point your tools at Gate once and it routes their traffic to your providers. No per-tool keys, no scattered config to keep in sync.",
+    },
+    {
+      preview: <ConnectPreview />,
+      title: "Connect once",
+      body: "Sign in with your gateway URL and API key. The key goes straight into your keychain - never a config file on disk.",
+    },
+    {
+      preview: <RoutePreview />,
+      title: "Route through Gate",
+      body: "Flip routing on to send your desktop agents' traffic through the gateway. The live request count climbs as calls flow through.",
+    },
+    {
+      preview: <ToolsPreview />,
+      title: "Point your tools",
+      body: "Cowork, Codex, OpenCode and more - Gate Connect sets each one to use your gateway. Toggle them on per tool whenever you like.",
+    },
+  ];
+}
 
 /** First-launch welcome tour. A full-popover slide sequence shown once, ahead
  * of the connect screen. `onDone` is called for both finish and skip; `skipped`
  * lets the caller record which. */
 export function Tour({ onDone }: { onDone: (skipped: boolean) => void }) {
+  const platform = usePlatform();
+  const steps = buildSteps(platform);
   const [index, setIndex] = useState(0);
-  const step = STEPS[index];
-  const isLast = index === STEPS.length - 1;
+  const step = steps[index];
+  const isLast = index === steps.length - 1;
 
   return (
     <div className="flex flex-1 flex-col px-5 pb-5 pt-7">
@@ -174,7 +287,7 @@ export function Tour({ onDone }: { onDone: (skipped: boolean) => void }) {
       </div>
 
       <div className="mb-4 flex items-center justify-center gap-1.5">
-        {STEPS.map((_, i) => (
+        {steps.map((_, i) => (
           <span
             key={i}
             className={`h-1.5 rounded-full transition-all ${
