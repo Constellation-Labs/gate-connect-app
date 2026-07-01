@@ -1,6 +1,6 @@
 name: E2E (real tools)
 
-# Installs the real claude / codex / opencode CLIs, points each at a local
+# Installs the real claude / codex / opencode / openclaw / hermes CLIs, points each at a local
 # HTTPS mock gateway through the normal `gate-connect connect` flow, fires one
 # headless request, and asserts the mock received it with the X-Gate-Api-Key /
 # X-Gate-Upstream-Url headers. It mutates the runner's trust store and depends
@@ -54,10 +54,22 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
-            npm install -g @anthropic-ai/claude-code opencode-ai
+            npm install -g @anthropic-ai/claude-code opencode-ai openclaw
           else
-            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
+            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai openclaw
           fi
+
+      # Hermes is a Python agent installed via its own script (pulls uv, Python,
+      # ripgrep, ffmpeg, …). The installer targets Unix shells and provisions a
+      # portable Git Bash on Windows, and every step here runs under
+      # `shell: bash`, so it runs on all three runners. run.sh guards the hermes
+      # run on `command -v hermes`, so if a runner's install lands the binary
+      # off PATH it skips cleanly instead of failing.
+      - name: Install Hermes
+        shell: bash
+        run: |
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
       # timeout-minutes bounds the step so a hung tool can't run for hours; on

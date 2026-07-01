@@ -314,6 +314,51 @@ else
     opencode run --model "$MODEL" "ping"
 fi
 
+# --- OpenClaw: multi-provider, like OpenCode. gate-connect rewrites the
+# anthropic provider's baseUrl in ~/.openclaw/openclaw.json to Gate → POSTs
+# /v1/messages. We seed a minimal anthropic provider block: gate-connect
+# detects OpenClaw off the config dir existing, and needs a supported provider
+# (anthropic/openai/openrouter) under models.providers to have something to
+# route. The Gate headers are injected by connect into that provider's config,
+# so the request carries them even though the dummy upstream key would 401.
+# openclaw is an npm CLI, so the NODE_TLS_REJECT_UNAUTHORIZED skip and
+# ANTHROPIC_API_KEY exported above already let it reach the mock over TLS.
+# Guarded on install because openclaw isn't set up on every runner in the
+# matrix; a missing CLI is a skip, not a failure.
+if command -v openclaw >/dev/null 2>&1; then
+  mkdir -p "$HOME/.openclaw"
+  printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1"}}}}' \
+    > "$HOME/.openclaw/openclaw.json"
+  run_tool "openclaw" "openclaw" "/v1/messages" -- \
+    openclaw message "ping"
+else
+  echo "::notice::skipping openclaw - CLI not installed on this runner"
+fi
+
+# --- Hermes: Python OpenAI-compatible agent. gate-connect rewrites
+# model.base_url in ~/.hermes/cli-config.yaml to Gate and injects the Gate
+# headers into model.default_headers → POSTs /v1/chat/completions. We seed a
+# config pointing at openrouter: it must be a public https base_url or
+# gate-connect treats it as local and refuses to route it. Like codex, hermes
+# is not a Node runtime, so it can't use the NODE_TLS skip - point its
+# requests/httpx stack at the test CA via SSL_CERT_FILE / REQUESTS_CA_BUNDLE
+# (Linux also trusts the CA in the OS store above). The dummy OpenRouter key is
+# only to get hermes to send; the Gate headers come from the config rewrite.
+# Guarded on install: if a runner's hermes install lands the binary off PATH,
+# skip rather than fail.
+if command -v hermes >/dev/null 2>&1; then
+  mkdir -p "$HOME/.hermes"
+  printf 'model:\n  base_url: https://openrouter.ai/api/v1\n' \
+    > "$HOME/.hermes/cli-config.yaml"
+  export SSL_CERT_FILE="$(winpath "$CA_DIR/ca.pem")"
+  export REQUESTS_CA_BUNDLE="$(winpath "$CA_DIR/ca.pem")"
+  export OPENROUTER_API_KEY="sk-or-e2e-dummy"
+  run_tool "hermes" "hermes" "/v1/chat/completions" -- \
+    hermes -z "ping" --provider openrouter --model openai/gpt-4o-mini
+else
+  echo "::notice::skipping hermes - CLI not installed on this runner"
+fi
+
 ckpt "all tools finished; reached end of script"
 echo "----------------------------------------"
 echo "Passed: $PASS  Failed: $FAIL"
