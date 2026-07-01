@@ -235,7 +235,7 @@ pub fn hermes_config_dir() -> Result<PathBuf> {
     Ok(home()?.join(".hermes"))
 }
 
-/// `~/.hermes/cli-config.yaml` — Hermes's config file.
+/// `~/.hermes/config.yaml` -- Hermes's config file.
 pub fn hermes_config_path() -> Result<PathBuf> {
-    Ok(hermes_config_dir()?.join("cli-config.yaml"))
+    Ok(hermes_config_dir()?.join("config.yaml"))
 }

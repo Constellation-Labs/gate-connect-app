@@ -275,7 +275,7 @@ fn cmd_status(tool: &str) -> Result<()> {
                 println!("Re-run `openclaw` to pick up the new openclaw.json provider block.")
             }
             ToolId::Hermes => {
-                println!("Re-run `hermes` to pick up the new cli-config.yaml routing.")
+                println!("Re-run `hermes` to pick up the new config.yaml routing.")
             }
         }
     }
@@ -339,7 +339,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
         ToolId::Hermes => {
             println!("  1. Quit any running `hermes` sessions.");
             println!(
-                "  2. Re-run `hermes` - it reads ~/.hermes/cli-config.yaml on launch and routes model.base_url through Gate."
+                "  2. Re-run `hermes` - it reads ~/.hermes/config.yaml on launch and routes model.base_url through Gate."
             );
             println!(
                 "  3. Your upstream credentials are untouched. Gate adds its headers and forwards each request to the original upstream."

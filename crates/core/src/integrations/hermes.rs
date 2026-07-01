@@ -1,7 +1,7 @@
 //! Hermes integration.
 //!
 //! Hermes is a Python-based OpenAI-compatible agent CLI with a single
-//! `model.base_url` in `~/.hermes/cli-config.yaml`. Gate Connect redirects
+//! `model.base_url` in `~/.hermes/config.yaml`. Gate Connect redirects
 //! that endpoint through the gateway by setting `model.base_url` to
 //! `<gateway>/v1` and injecting Gate's two identification headers into
 //! `model.default_headers`. The user's upstream credentials are untouched --
@@ -13,7 +13,7 @@
 //! mutated and deleted only after the config is restored.
 //!
 //! Config format: we parse and re-serialize with `serde_yaml`, which means a
-//! connect/disconnect rewrites `cli-config.yaml` and **drops any comments**
+//! connect/disconnect rewrites `config.yaml` and **drops any comments**
 //! the user had in it (same precedent as OpenClaw's JSON5 rewrite). The
 //! redirected `base_url` / `default_headers` values themselves are snapshotted
 //! and restored exactly on disconnect.
@@ -298,7 +298,7 @@ impl Integration for Hermes {
 
     fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
         anyhow::bail!(
-            "Hermes does not need a separate upstream credential -- Gate Connect injects its headers into ~/.hermes/cli-config.yaml."
+            "Hermes does not need a separate upstream credential -- Gate Connect injects its headers into ~/.hermes/config.yaml."
         )
     }
 
@@ -383,7 +383,7 @@ fn write_settings(settings: &Mapping) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    let mut body = serde_yaml::to_string(settings).context("serializing cli-config.yaml")?;
+    let mut body = serde_yaml::to_string(settings).context("serializing config.yaml")?;
     if !body.ends_with('\n') {
         body.push('\n');
     }
