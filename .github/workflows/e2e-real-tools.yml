@@ -59,28 +59,19 @@ jobs:
             npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai openclaw
           fi
 
-      # Hermes is a Python agent with two OS-specific installers (each pulls uv,
-      # Python, Node, ripgrep, ffmpeg). Linux/macOS use the bash install.sh,
-      # which symlinks the launcher to ~/.local/bin/hermes; --skip-browser drops
-      # the Playwright/chromium download we don't need for a `-z ping` run.
-      # Windows needs the PowerShell install.ps1 (the bash script is the wrong
-      # one there); it installs under %LOCALAPPDATA%\hermes and exposes hermes
-      # from its venv Scripts dir. -SkipSetup avoids the post-install wizard
-      # hanging headless. run.sh guards the run on `command -v hermes`, so if
-      # PATH still misses it the tool skips cleanly instead of failing.
+      # Hermes is a Python agent installed via the bash install.sh, which
+      # symlinks the launcher to ~/.local/bin/hermes; --skip-browser drops the
+      # Playwright/chromium download we don't need for a `-z ping` run.
+      # Windows is intentionally skipped: install.ps1 has no browser-skip switch,
+      # so it always runs an unbounded Playwright/Chromium install that stalls
+      # the runner. Hermes is cross-platform and fully exercised on Linux+macOS;
+      # run.sh's `command -v hermes` guard skips it cleanly on Windows.
       - name: Install Hermes (Linux/macOS)
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Install Hermes (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          & ([scriptblock]::Create((irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1))) -SkipSetup
-          "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
       # timeout-minutes bounds the step so a hung tool can't run for hours; on

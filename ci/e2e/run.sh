@@ -336,12 +336,16 @@ else
 fi
 
 # --- Hermes: Python OpenAI-compatible agent. gate-connect rewrites
-# model.base_url in ~/.hermes/cli-config.yaml to Gate and injects the Gate
+# model.base_url in ~/.hermes/config.yaml to Gate and injects the Gate
 # headers into model.default_headers → POSTs /v1/chat/completions. We seed a
-# config pointing at openrouter: it must be a public https base_url or
-# gate-connect treats it as local and refuses to route it. The dummy OpenRouter
-# key is only to get hermes to send; the Gate headers come from the config
-# rewrite. Guarded on install: if a runner's hermes install lands the binary
+# complete model block the way a configured user's would look: provider must be
+# set or hermes refuses to run ("No LLM provider configured"), and base_url must
+# be a public https URL or gate-connect treats it as local and refuses to route
+# it. provider=custom is hermes' recipe for an OpenAI-compatible endpoint: it
+# calls model.base_url directly using model.api_key. gate-connect preserves
+# provider/api_key and only redirects base_url + injects headers, so after
+# connect hermes POSTs the mock with the dummy key (which the mock accepts).
+# Guarded on install: if a runner's hermes install lands the binary
 # off PATH, skip rather than fail.
 #
 # TLS: hermes' HTTP stack (OpenAI SDK → httpx) verifies against certifi's own
@@ -353,23 +357,30 @@ fi
 # wrote hermes to the real home.
 if command -v hermes >/dev/null 2>&1; then
   mkdir -p "$HOME/.hermes"
-  printf 'model:\n  base_url: https://openrouter.ai/api/v1\n' \
-    > "$HOME/.hermes/cli-config.yaml"
-  export OPENROUTER_API_KEY="sk-or-e2e-dummy"
+  printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
+    > "$HOME/.hermes/config.yaml"
+  export OPENAI_API_KEY="sk-e2e-dummy"
 
   launcher="$(command -v hermes)"
   if [ "$OS" = "Windows" ]; then
     # No symlink on Windows: hermes.exe and python.exe share the venv Scripts
-    # dir the launcher lives in.
+    # dir the launcher lives in. (Windows currently skips hermes anyway.)
     hermes_py="$(dirname "$launcher")/python.exe"
   else
-    # ~/.local/bin/hermes symlinks into .../venv/bin/hermes; python is beside it.
-    target="$(readlink "$launcher" 2>/dev/null || echo "$launcher")"
-    case "$target" in
-      /*) : ;;
-      *) target="$(dirname "$launcher")/$target" ;;
-    esac
-    hermes_py="$(dirname "$target")/python"
+    # The launcher is a bash wrapper that `exec`s the real venv hermes; the venv
+    # python sits beside it. Parse the exec target, then fall back to a symlink
+    # walk for older layouts.
+    hermes_target="$(sed -n 's/^exec[[:space:]]*"\([^"]*\)".*/\1/p' "$launcher" 2>/dev/null)"
+    if [ -n "$hermes_target" ]; then
+      hermes_py="$(dirname "$hermes_target")/python"
+    else
+      target="$(readlink "$launcher" 2>/dev/null || echo "$launcher")"
+      case "$target" in
+        /*) : ;;
+        *) target="$(dirname "$launcher")/$target" ;;
+      esac
+      hermes_py="$(dirname "$target")/python"
+    fi
   fi
   if [ -f "$hermes_py" ]; then
     certifi_pem="$("$hermes_py" -c 'import certifi; print(certifi.where())')"
@@ -381,7 +392,7 @@ if command -v hermes >/dev/null 2>&1; then
   fi
 
   run_tool "hermes" "hermes" "/v1/chat/completions" -- \
-    hermes -z "ping" --provider openrouter --model openai/gpt-4o-mini
+    hermes -z "ping" --model openai/gpt-4o-mini
 else
   echo "::notice::skipping hermes - CLI not installed on this runner"
 fi
