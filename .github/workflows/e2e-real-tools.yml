@@ -1,6 +1,6 @@
 name: E2E (real tools)
 
-# Installs the real claude / codex / opencode CLIs, points each at a local
+# Installs the real claude / codex / opencode / openclaw / hermes CLIs, points each at a local
 # HTTPS mock gateway through the normal `gate-connect connect` flow, fires one
 # headless request, and asserts the mock received it with the X-Gate-Api-Key /
 # X-Gate-Upstream-Url headers. It mutates the runner's trust store and depends
@@ -54,10 +54,24 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
-            npm install -g @anthropic-ai/claude-code opencode-ai
+            npm install -g @anthropic-ai/claude-code opencode-ai openclaw
           else
-            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
+            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai openclaw
           fi
+
+      # Hermes is a Python agent installed via the bash install.sh, which
+      # symlinks the launcher to ~/.local/bin/hermes; --skip-browser drops the
+      # Playwright/chromium download we don't need for a `-z ping` run.
+      # Windows is intentionally skipped: install.ps1 has no browser-skip switch,
+      # so it always runs an unbounded Playwright/Chromium install that stalls
+      # the runner. Hermes is cross-platform and fully exercised on Linux+macOS;
+      # run.sh's `command -v hermes` guard skips it cleanly on Windows.
+      - name: Install Hermes (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # shell: bash forces Git Bash on the Windows runner (default there is pwsh).
       # timeout-minutes bounds the step so a hung tool can't run for hours; on

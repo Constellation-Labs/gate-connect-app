@@ -314,6 +314,89 @@ else
     opencode run --model "$MODEL" "ping"
 fi
 
+# --- OpenClaw: multi-provider, like OpenCode. gate-connect rewrites the
+# anthropic provider's baseUrl in ~/.openclaw/openclaw.json to Gate → POSTs
+# /v1/messages. We seed a minimal anthropic provider block: gate-connect
+# detects OpenClaw off the config dir existing, and needs a supported provider
+# (anthropic/openai/openrouter) under models.providers to have something to
+# route. The Gate headers are injected by connect into that provider's config,
+# so the request carries them even though the dummy upstream key would 401.
+# openclaw is an npm CLI, so the NODE_TLS_REJECT_UNAUTHORIZED skip and
+# ANTHROPIC_API_KEY exported above already let it reach the mock over TLS.
+# Guarded on install because openclaw isn't set up on every runner in the
+# matrix; a missing CLI is a skip, not a failure.
+if command -v openclaw >/dev/null 2>&1; then
+  mkdir -p "$HOME/.openclaw"
+  printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1"}}}}' \
+    > "$HOME/.openclaw/openclaw.json"
+  run_tool "openclaw" "openclaw" "/v1/messages" -- \
+    openclaw message "ping"
+else
+  echo "::notice::skipping openclaw - CLI not installed on this runner"
+fi
+
+# --- Hermes: Python OpenAI-compatible agent. gate-connect rewrites
+# model.base_url in ~/.hermes/config.yaml to Gate and injects the Gate
+# headers into model.default_headers → POSTs /v1/chat/completions. We seed a
+# complete model block the way a configured user's would look: provider must be
+# set or hermes refuses to run ("No LLM provider configured"), and base_url must
+# be a public https URL or gate-connect treats it as local and refuses to route
+# it. provider=custom is hermes' recipe for an OpenAI-compatible endpoint: it
+# calls model.base_url directly using model.api_key. gate-connect preserves
+# provider/api_key and only redirects base_url + injects headers, so after
+# connect hermes POSTs the mock with the dummy key (which the mock accepts).
+# Guarded on install: if a runner's hermes install lands the binary
+# off PATH, skip rather than fail.
+#
+# TLS: hermes' HTTP stack (OpenAI SDK → httpx) verifies against certifi's own
+# bundle and ignores SSL_CERT_FILE / REQUESTS_CA_BUNDLE and the OS trust store,
+# so without help it rejects the mock's test-CA leaf ("Connection error", zero
+# requests captured). Append our CA to the certifi bundle inside hermes' venv
+# so its client trusts the mock. We locate the venv off the launcher on PATH -
+# NOT off $HOME, which we redirected to a throwaway above while the installer
+# wrote hermes to the real home.
+if command -v hermes >/dev/null 2>&1; then
+  mkdir -p "$HOME/.hermes"
+  printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
+    > "$HOME/.hermes/config.yaml"
+  export OPENAI_API_KEY="sk-e2e-dummy"
+
+  launcher="$(command -v hermes)"
+  if [ "$OS" = "Windows" ]; then
+    # No symlink on Windows: hermes.exe and python.exe share the venv Scripts
+    # dir the launcher lives in. (Windows currently skips hermes anyway.)
+    hermes_py="$(dirname "$launcher")/python.exe"
+  else
+    # The launcher is a bash wrapper that `exec`s the real venv hermes; the venv
+    # python sits beside it. Parse the exec target, then fall back to a symlink
+    # walk for older layouts.
+    hermes_target="$(sed -n 's/^exec[[:space:]]*"\([^"]*\)".*/\1/p' "$launcher" 2>/dev/null)"
+    if [ -n "$hermes_target" ]; then
+      hermes_py="$(dirname "$hermes_target")/python"
+    else
+      target="$(readlink "$launcher" 2>/dev/null || echo "$launcher")"
+      case "$target" in
+        /*) : ;;
+        *) target="$(dirname "$launcher")/$target" ;;
+      esac
+      hermes_py="$(dirname "$target")/python"
+    fi
+  fi
+  if [ -f "$hermes_py" ]; then
+    certifi_pem="$("$hermes_py" -c 'import certifi; print(certifi.where())')"
+    [ "$OS" = "Windows" ] && certifi_pem="$(cygpath -u "$certifi_pem")"
+    cat "$CA_DIR/ca.pem" >> "$certifi_pem"
+    ckpt "[hermes] trusted test CA in certifi: $certifi_pem"
+  else
+    ckpt "[hermes] venv python not found ($hermes_py); TLS patch skipped"
+  fi
+
+  run_tool "hermes" "hermes" "/v1/chat/completions" -- \
+    hermes -z "ping" --model openai/gpt-4o-mini
+else
+  echo "::notice::skipping hermes - CLI not installed on this runner"
+fi
+
 ckpt "all tools finished; reached end of script"
 echo "----------------------------------------"
 echo "Passed: $PASS  Failed: $FAIL"
