@@ -5,7 +5,7 @@
  * bumping the suffix.
  */
 
-const SEEN_KEY = "gc.tour.v1.seen";
+const SEEN_KEY = "gc.tour.v2.seen";
 
 export function hasSeenTour(): boolean {
   try {
