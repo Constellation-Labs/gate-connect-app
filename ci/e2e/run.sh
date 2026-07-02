@@ -348,48 +348,25 @@ fi
 # Guarded on install: if a runner's hermes install lands the binary
 # off PATH, skip rather than fail.
 #
-# TLS: hermes' HTTP stack (OpenAI SDK → httpx) verifies against certifi's own
-# bundle and ignores SSL_CERT_FILE / REQUESTS_CA_BUNDLE and the OS trust store,
-# so without help it rejects the mock's test-CA leaf ("Connection error", zero
-# requests captured). Append our CA to the certifi bundle inside hermes' venv
-# so its client trusts the mock. We locate the venv off the launcher on PATH -
-# NOT off $HOME, which we redirected to a throwaway above while the installer
-# wrote hermes to the real home.
+# TLS: hermes' HTTP stack (OpenAI SDK → httpx) verifies the mock's test-CA leaf
+# via agent/ssl_verify.py, and it never consults the OS trust store (no
+# truststore), so the System-keychain trust above does nothing for it. Supplying
+# the test CA through certifi or $HERMES_CA_BUNDLE works on Linux but NOT on the
+# macOS runner - there hermes still reports "Connection error" with zero requests
+# even when its resolved bundle contains our CA, a macOS-specific validation
+# quirk in its Python TLS stack. So for this local-only mock we disable
+# verification outright - the same posture as NODE_TLS_REJECT_UNAUTHORIZED=0 for
+# the node tools; the assertion is that the request reaches the gateway, not that
+# a real cert chain validates. hermes only honors ssl_verify from a
+# custom_providers entry matched to the client's base_url by URL (not from the
+# top-level model block), so we seed one whose base_url equals what connect
+# rewrites model.base_url to (<gateway>/v1). connect edits only model.base_url +
+# model.default_headers, so the custom_providers block is preserved untouched.
 if command -v hermes >/dev/null 2>&1; then
   mkdir -p "$HOME/.hermes"
-  printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
-    > "$HOME/.hermes/config.yaml"
+  printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\ncustom_providers:\n  - name: gate-e2e\n    base_url: %s/v1\n    ssl_verify: false\n' \
+    "$BASE_URL" > "$HOME/.hermes/config.yaml"
   export OPENAI_API_KEY="sk-e2e-dummy"
-
-  launcher="$(command -v hermes)"
-  if [ "$OS" = "Windows" ]; then
-    # No symlink on Windows: hermes.exe and python.exe share the venv Scripts
-    # dir the launcher lives in. (Windows currently skips hermes anyway.)
-    hermes_py="$(dirname "$launcher")/python.exe"
-  else
-    # The launcher is a bash wrapper that `exec`s the real venv hermes; the venv
-    # python sits beside it. Parse the exec target, then fall back to a symlink
-    # walk for older layouts.
-    hermes_target="$(sed -n 's/^exec[[:space:]]*"\([^"]*\)".*/\1/p' "$launcher" 2>/dev/null)"
-    if [ -n "$hermes_target" ]; then
-      hermes_py="$(dirname "$hermes_target")/python"
-    else
-      target="$(readlink "$launcher" 2>/dev/null || echo "$launcher")"
-      case "$target" in
-        /*) : ;;
-        *) target="$(dirname "$launcher")/$target" ;;
-      esac
-      hermes_py="$(dirname "$target")/python"
-    fi
-  fi
-  if [ -f "$hermes_py" ]; then
-    certifi_pem="$("$hermes_py" -c 'import certifi; print(certifi.where())')"
-    [ "$OS" = "Windows" ] && certifi_pem="$(cygpath -u "$certifi_pem")"
-    cat "$CA_DIR/ca.pem" >> "$certifi_pem"
-    ckpt "[hermes] trusted test CA in certifi: $certifi_pem"
-  else
-    ckpt "[hermes] venv python not found ($hermes_py); TLS patch skipped"
-  fi
 
   run_tool "hermes" "hermes" "/v1/chat/completions" -- \
     hermes -z "ping" --model openai/gpt-4o-mini
