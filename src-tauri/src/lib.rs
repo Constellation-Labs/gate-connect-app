@@ -516,6 +516,16 @@ fn unpin_popover() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // A second launch landed here, in the already-running instance.
+            // Reveal the popover, mirroring the "show" tray-menu handler.
+            if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "linux")]
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
