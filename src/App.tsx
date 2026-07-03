@@ -4,6 +4,7 @@ import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   getAccount,
   saveAccount,
@@ -21,22 +22,23 @@ import {
   disconnectTool,
   toolStatus,
   unpinPopover,
+  openOnboardingWindow,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
 import { Home } from "./screens/Home";
 import { ProxyScreen } from "./screens/ProxyScreen";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
-import { Tour } from "./screens/Tour";
 import { ComingSoon } from "./screens/ComingSoon";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { track, trackError } from "./lib/analytics";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
+import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { usePlatform } from "./lib/platform";
 
-type Screen = "loading" | "tour" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
+type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
 // Providers hidden from the UI for now. Slugs match the backend provider list.
 const HIDDEN_PROVIDER_SLUGS = new Set<string>([]);
@@ -53,11 +55,6 @@ function hostOf(url: string | undefined): string {
 export function App() {
   const platform = usePlatform();
   const [screen, setScreen] = useState<Screen>("loading");
-  // Where to land after the first-launch tour finishes (set only when the tour
-  // gates startup).
-  const [postTourScreen, setPostTourScreen] = useState<Screen>("firstrun");
-  // What opened the tour, so completion/skip events are attributable.
-  const [tourSource, setTourSource] = useState<"firstrun" | "settings">("firstrun");
   const [account, setAccount] = useState<Account | null>(null);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
@@ -134,14 +131,13 @@ export function App() {
       setProviders(provs);
       setTools(toolList);
       const resolved: Screen = acct ? "home" : "firstrun";
-      if (hasSeenTour()) {
-        setScreen(resolved);
-      } else {
-        // First launch ever: run the welcome tour ahead of the normal flow,
-        // then continue to wherever startup resolved.
-        setTourSource("firstrun");
-        setPostTourScreen(resolved);
-        setScreen("tour");
+      setScreen(resolved);
+      if (!hasSeenTour()) {
+        // First launch ever: open the window-sized intro and step the popover
+        // aside; the intro hands back to the popover when it closes (see the
+        // onboarding CloseRequested handler in src-tauri).
+        openOnboardingWindow("firstrun").catch(() => {});
+        getCurrentWindow().hide().catch(() => {});
       }
       track("app_launched", { has_account: !!acct, proxy_available: px !== null });
     })();
@@ -168,6 +164,16 @@ export function App() {
     });
     return () => {
       alive = false;
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
+  // The onboarding window announces completion; record the seen-flag in this
+  // webview's storage too so the intro doesn't re-gate the next launch on
+  // platforms where the two webviews don't share localStorage.
+  useEffect(() => {
+    const unlisten = listen(TOUR_SEEN_EVENT, () => markTourSeen());
+    return () => {
       void unlisten.then((f) => f());
     };
   }, []);
@@ -399,16 +405,6 @@ export function App() {
         </span>
       </div>
     );
-  } else if (screen === "tour") {
-    body = (
-      <Tour
-        onDone={(skipped) => {
-          markTourSeen();
-          track(skipped ? "tour_skipped" : "tour_completed", { source: tourSource });
-          setScreen(postTourScreen);
-        }}
-      />
-    );
   } else if (screen === "firstrun") {
     body = <FirstRun onConnected={onConnected} initialGateway={account?.gateway_base_url} />;
   } else if (screen === "success") {
@@ -455,9 +451,7 @@ export function App() {
         onDisconnect={disconnect}
         onSwitchGateway={switchGatewayServer}
         onReplayTour={() => {
-          setTourSource("settings");
-          setPostTourScreen("home");
-          setScreen("tour");
+          openOnboardingWindow("settings").catch(() => {});
         }}
       />
     );

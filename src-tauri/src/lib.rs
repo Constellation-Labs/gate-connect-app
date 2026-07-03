@@ -527,6 +527,66 @@ fn unpin_popover() {
     POPOVER_PINNED.store(false, Ordering::Release);
 }
 
+/// Open (or refocus) the full-size onboarding window. `source` rides along as
+/// a query param so the flow can report whether it was a first launch or a
+/// replay from Settings.
+#[tauri::command]
+fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("onboarding") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    // The frontend only ever sends the two known values; normalize anyway so
+    // nothing arbitrary is spliced into the webview URL.
+    let source = if source == "settings" {
+        "settings"
+    } else {
+        "firstrun"
+    };
+    let url = tauri::WebviewUrl::App(format!("index.html?source={source}").into());
+    let builder = tauri::WebviewWindowBuilder::new(&app, "onboarding", url)
+        .title("Gate Connect")
+        .inner_size(1060.0, 700.0)
+        .min_inner_size(760.0, 560.0)
+        .center();
+    // Overlay title bar: the traffic lights float over the white surface so
+    // the window reads as one chrome-less card, per the onboarding design.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    let window = builder.build().map_err(|e| e.to_string())?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
+/// Bring the tray popover back on screen, anchored under the tray icon where
+/// the platform can report one. The onboarding flow calls this from its
+/// "locate Gate Connect" button and on close, so the handoff always ends at
+/// the popover.
+fn reveal_popover_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    #[cfg(not(target_os = "linux"))]
+    if let Some(rect) = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten()) {
+        anchor_under_tray(&window, rect.position, rect.size);
+    }
+    #[cfg(target_os = "linux")]
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    #[cfg(target_os = "macos")]
+    order_front_regardless(&window);
+}
+
+#[tauri::command]
+fn reveal_popover(app: tauri::AppHandle) {
+    reveal_popover_window(&app);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -574,6 +634,8 @@ pub fn run() {
                     switch_gateway,
                     app_platform,
                     unpin_popover,
+                    open_onboarding_window,
+                    reveal_popover,
                     list_providers,
                     provider_enable,
                     provider_disable,
@@ -604,6 +666,8 @@ pub fn run() {
                     switch_gateway,
                     app_platform,
                     unpin_popover,
+                    open_onboarding_window,
+                    reveal_popover,
                     list_providers,
                     provider_enable,
                     provider_disable,
@@ -611,6 +675,16 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            // The onboarding window is a regular window: closing it really
+            // closes it, and losing focus must not dismiss it. Hand the user
+            // back to the popover so "Get started" (and an early close) both
+            // land in the app.
+            if window.label() == "onboarding" {
+                if let WindowEvent::CloseRequested { .. } = event {
+                    reveal_popover_window(window.app_handle());
+                }
+                return;
+            }
             // X-button on the popover should hide it, not quit the app.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

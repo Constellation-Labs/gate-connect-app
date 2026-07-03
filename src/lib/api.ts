@@ -52,6 +52,11 @@ export const switchGateway = (baseUrl: string) =>
  *  Called once the user interacts with the startup window. */
 export const unpinPopover = () => invoke<void>("unpin_popover");
 
+/** Open (or refocus) the full-size onboarding window. `source` tags the
+ *  analytics events with how the intro was reached. */
+export const openOnboardingWindow = (source: "firstrun" | "settings") =>
+  invoke<void>("open_onboarding_window", { source });
+
 // ---- built-in MITM proxy (macOS, Windows, Linux) ----
 
 export interface ProxyDomain {
