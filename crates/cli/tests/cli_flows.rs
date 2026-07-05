@@ -148,6 +148,74 @@ fn codex_connect_then_disconnect() {
     );
 }
 
+/// A hand-written [model_providers.gate] (the manual PAYG setup) must be
+/// adopted on connect - replaced with the managed shape - not rejected,
+/// and disconnect must remove the pointer rather than "restore" the
+/// hand-written `model_provider = "gate"`.
+#[test]
+fn codex_connect_adopts_manual_gate_block() {
+    let h = Harness::new();
+    let codex_dir = h.home().join(".codex");
+    fs::create_dir_all(&codex_dir).unwrap();
+    fs::write(codex_dir.join("auth.json"), r#"{"auth_mode":"apikey"}"#).unwrap();
+    h.login();
+
+    let config = codex_dir.join("config.toml");
+    fs::write(
+        &config,
+        r#"model_provider = "gate"
+model = "anthropic/claude-opus-4-8"
+
+[model_providers.gate]
+name = "Constellation Gate"
+base_url = "https://old.gateway.test/v1"
+wire_api = "responses"
+
+[model_providers.gate.http_headers]
+"X-Gate-Api-Key" = "sk-gw-stale-manual-key"
+"#,
+    )
+    .unwrap();
+
+    h.run_ok(&["connect", "codex"]);
+
+    let body = read(&config);
+    assert!(
+        body.contains(&format!("{GATEWAY_URL}/v1")),
+        "managed base URL missing: {body}"
+    );
+    assert!(
+        !body.contains("sk-gw-stale-manual-key"),
+        "stale manual key left behind: {body}"
+    );
+    assert!(
+        body.contains("requires_openai_auth = true"),
+        "requires_openai_auth not set: {body}"
+    );
+    assert!(body.contains(API_KEY), "api key value missing: {body}");
+    // The user's unrelated keys survive the adoption.
+    assert!(
+        body.contains(r#"model = "anthropic/claude-opus-4-8""#),
+        "unrelated model key clobbered: {body}"
+    );
+
+    h.run_ok(&["disconnect", "codex"]);
+
+    let after = fs::read_to_string(&config).unwrap_or_default();
+    assert!(
+        !after.contains(r#"model_provider = "gate""#),
+        "hand-written gate pointer restored: {after}"
+    );
+    assert!(
+        !after.contains("model_providers.gate"),
+        "gate provider left behind: {after}"
+    );
+    assert!(
+        !after.contains("_gate_connect"),
+        "gate marker left behind: {after}"
+    );
+}
+
 #[test]
 fn opencode_connect_then_disconnect() {
     let h = Harness::new();

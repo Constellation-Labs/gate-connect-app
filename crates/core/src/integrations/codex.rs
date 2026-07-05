@@ -324,20 +324,12 @@ impl Integration for Codex {
             DocumentMut::new()
         };
 
-        // Refuse to clobber a user-authored [model_providers.gate]: connect
-        // overwrites that block and disconnect deletes it outright, so a
-        // provider the user happened to name "gate" would be destroyed.
-        // Ours is identifiable by the `_gate_connect` marker (mirrors
-        // claude_code's reject_non_object_env guard).
-        let has_gate_block = doc
-            .get("model_providers")
-            .and_then(|i| i.as_table_like())
-            .is_some_and(|t| t.contains_key(PROVIDER_ID));
-        if has_gate_block && doc.get("_gate_connect").is_none() {
-            anyhow::bail!(
-                "~/.codex/config.toml already defines [model_providers.{PROVIDER_ID}] that Gate Connect didn't write - rename or remove it before connecting"
-            );
-        }
+        // A [model_providers.gate] block without our `_gate_connect` marker
+        // is a hand-written setup (the manual PAYG instructions had users
+        // author exactly this block). Adopt it: the insert below replaces it
+        // with the managed shape, and disconnect deletes it like any block
+        // we wrote. Anything under that name targets our provider id, so
+        // overwriting is the migration the user is asking for.
 
         // Stash the prior `model_provider` so disconnect can restore it.
         // Skip if we've already done this (re-connect mustn't clobber the
@@ -355,9 +347,13 @@ impl Integration for Codex {
                     || t.contains_key("previous_model_provider_absent")
             })
             .unwrap_or(false);
+        // A pre-existing `"gate"` pointer is never worth restoring: it came
+        // from a hand-written setup whose block we adopt and later delete,
+        // so treat it like no prior value.
         let previous_model_provider = doc
             .get("model_provider")
             .and_then(|i| i.as_str())
+            .filter(|s| *s != PROVIDER_ID)
             .map(|s| s.to_string());
 
         // Ensure [model_providers] table exists, then write/replace

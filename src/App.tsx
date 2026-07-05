@@ -66,6 +66,10 @@ export function App() {
   const [tools, setTools] = useState<Tool[]>([]);
   const openClaw = tools.find((t) => t.slug === "openclaw") ?? null;
   const hermes = tools.find((t) => t.slug === "hermes") ?? null;
+  // Codex drift usually means a hand-written Gate setup (the manual PAYG
+  // instructions); enabling its provider adopts it one-way, so the Routing
+  // screen shows a heads-up while this is true.
+  const codexDrifted = tools.some((t) => t.slug === "codex" && t.status.kind === "drifted");
   const [toolBusy, setToolBusy] = useState(false);
   // Set after a successful routing change; the Routing screen shows a
   // "restart your agent" note. Cleared when the user leaves the screen.
@@ -419,6 +423,7 @@ export function App() {
         error={providerError}
         restartHint={restartHint}
         relaunchHint={relaunchHint}
+        codexDrifted={codexDrifted}
         onBack={() => {
           setProviderError(null);
           setRestartHint(false);

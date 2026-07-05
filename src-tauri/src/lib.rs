@@ -76,7 +76,9 @@ fn status_for(integ: &dyn gate_connect_core::Integration) -> StatusDto {
     match integ.status() {
         Ok(s) => s.into(),
         Err(e) => StatusDto::Error {
-            message: e.to_string(),
+            // `{e:#}` prints the whole anyhow context chain; bare Display
+            // would stop at the outermost context and drop the root cause.
+            message: format!("{e:#}"),
         },
     }
 }
@@ -111,10 +113,12 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
     tauri::async_runtime::spawn_blocking(move || {
         let integ = resolve_integration(&slug)?;
         let account = account::load()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("{e:#}"))?
             .ok_or_else(|| "Sign in to Gate AI first".to_string())?;
         if integ.requires_upstream_credential()
-            && !integ.has_upstream_credential().map_err(|e| e.to_string())?
+            && !integ
+                .has_upstream_credential()
+                .map_err(|e| format!("{e:#}"))?
         {
             return Err(
                 "No upstream Anthropic credential saved. Add one before connecting.".into(),
@@ -124,7 +128,7 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
             gateway_base_url: account.gateway_base_url,
             upstream_url,
         };
-        integ.connect(&input).map_err(|e| e.to_string())?;
+        integ.connect(&input).map_err(|e| format!("{e:#}"))?;
         Ok(status_for(integ.as_ref()))
     })
     .await
@@ -137,7 +141,7 @@ async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
     // block the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
         let integ = resolve_integration(&slug)?;
-        integ.disconnect().map_err(|e| e.to_string())?;
+        integ.disconnect().map_err(|e| format!("{e:#}"))?;
         Ok(status_for(integ.as_ref()))
     })
     .await
@@ -147,7 +151,9 @@ async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
 #[tauri::command]
 fn has_upstream_credential(slug: String) -> Result<bool, String> {
     let integ = resolve_integration(&slug)?;
-    integ.has_upstream_credential().map_err(|e| e.to_string())
+    integ
+        .has_upstream_credential()
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -160,13 +166,15 @@ fn save_upstream_api_key(slug: String, api_key: String) -> Result<(), String> {
     validate_api_key(api_key.trim(), integ.upstream_credential_prefix())?;
     integ
         .save_upstream_credential(&api_key)
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
 fn clear_upstream_credential(slug: String) -> Result<(), String> {
     let integ = resolve_integration(&slug)?;
-    integ.clear_upstream_credential().map_err(|e| e.to_string())
+    integ
+        .clear_upstream_credential()
+        .map_err(|e| format!("{e:#}"))
 }
 
 fn resolve_integration(slug: &str) -> Result<Box<dyn gate_connect_core::Integration>, String> {
@@ -196,10 +204,10 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     if let Err(e) = account::reconcile() {
         eprintln!("account reconcile failed: {e}");
     }
-    let Some(gateway_base_url) = account::load_base_url().map_err(|e| e.to_string())? else {
+    let Some(gateway_base_url) = account::load_base_url().map_err(|e| format!("{e:#}"))? else {
         return Ok(None);
     };
-    let has_api_key = account::has_api_key().map_err(|e| e.to_string())?;
+    let has_api_key = account::has_api_key().map_err(|e| format!("{e:#}"))?;
     Ok(Some(AccountDto {
         gateway_base_url,
         has_api_key,
@@ -229,13 +237,13 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
     // Off the main thread: keychain write plus up to three tool-config
     // rewrites, none of which should block the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
-        account::save(&base_url, key.as_deref()).map_err(|e| e.to_string())?;
+        account::save(&base_url, key.as_deref()).map_err(|e| format!("{e:#}"))?;
         // A rotated key was copied into tool configs (and the running proxy
         // engine) at connect time - push the new one everywhere it's embedded.
         if let Some(k) = key.as_deref() {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             gate_connect_core::proxy::manager().refresh_api_key(k);
-            registry::refresh_gate_key_everywhere(k).map_err(|e| e.to_string())?;
+            registry::refresh_gate_key_everywhere(k).map_err(|e| format!("{e:#}"))?;
         }
         Ok(())
     })
@@ -250,8 +258,8 @@ async fn clear_account() -> Result<(), String> {
         // Disconnect managed tools first: clearing the account while their
         // configs still embed the key would leave them routing to the gateway
         // with a dead credential on disk. A failure aborts the sign-out.
-        registry::disconnect_all_managed().map_err(|e| e.to_string())?;
-        account::clear().map_err(|e| e.to_string())
+        registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
+        account::clear().map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("sign-out join error: {e}"))?
@@ -278,8 +286,8 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
     }
     // Off the main thread: per-tool config I/O plus keychain delete.
     tauri::async_runtime::spawn_blocking(move || {
-        registry::disconnect_all_managed().map_err(|e| e.to_string())?;
-        account::switch_gateway(&base_url).map_err(|e| e.to_string())
+        registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
+        account::switch_gateway(&base_url).map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("switch join error: {e}"))?
@@ -308,12 +316,12 @@ fn list_providers() -> Vec<gate_connect_core::provider::ProviderState> {
 
 #[tauri::command]
 fn provider_enable(slug: String) -> Result<gate_connect_core::provider::ProviderState, String> {
-    gate_connect_core::provider::enable(&slug).map_err(|e| e.to_string())
+    gate_connect_core::provider::enable(&slug).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
 fn provider_disable(slug: String) -> Result<gate_connect_core::provider::ProviderState, String> {
-    gate_connect_core::provider::disable(&slug).map_err(|e| e.to_string())
+    gate_connect_core::provider::disable(&slug).map_err(|e| format!("{e:#}"))
 }
 
 // ---- Built-in MITM proxy (macOS + Windows + Linux) ----
@@ -330,7 +338,7 @@ fn provider_disable(slug: String) -> Result<gate_connect_core::provider::Provide
 fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> {
     gate_connect_core::proxy::manager()
         .status()
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -338,7 +346,7 @@ fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> {
 fn proxy_list_domains() -> Result<Vec<gate_connect_core::proxy::ProxyDomain>, String> {
     gate_connect_core::proxy::manager()
         .list_domains()
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -360,10 +368,10 @@ async fn proxy_enable(
         }
         gate_connect_core::proxy::manager()
             .enable()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("{e:#}"))?;
         gate_connect_core::proxy::manager()
             .status()
-            .map_err(|e| e.to_string())
+            .map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("proxy enable join error: {e}"))??;
@@ -404,7 +412,7 @@ async fn proxy_disable(
         }
         gate_connect_core::proxy::manager()
             .disable()
-            .map_err(|e| e.to_string())
+            .map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("proxy disable join error: {e}"))??;
@@ -434,7 +442,7 @@ async fn proxy_disable(
 #[tauri::command]
 fn launch_at_login_status(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+    app.autolaunch().is_enabled().map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -442,7 +450,7 @@ fn launch_at_login_status(app: tauri::AppHandle) -> Result<bool, String> {
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     let mgr = app.autolaunch();
-    if enabled { mgr.enable() } else { mgr.disable() }.map_err(|e| e.to_string())
+    if enabled { mgr.enable() } else { mgr.disable() }.map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -453,7 +461,7 @@ fn proxy_set_domain(
 ) -> Result<gate_connect_core::proxy::ProxyState, String> {
     gate_connect_core::proxy::manager()
         .set_domain(&slug, enabled)
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -463,7 +471,7 @@ async fn proxy_trust_ca() -> Result<gate_connect_core::proxy::ProxyState, String
     tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::proxy::manager()
             .trust_ca()
-            .map_err(|e| e.to_string())
+            .map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("trust join error: {e}"))?
@@ -476,7 +484,7 @@ async fn proxy_untrust_ca() -> Result<gate_connect_core::proxy::ProxyState, Stri
     tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::proxy::manager()
             .untrust_ca()
-            .map_err(|e| e.to_string())
+            .map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("untrust join error: {e}"))?
