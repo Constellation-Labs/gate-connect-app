@@ -72,8 +72,14 @@ export function App() {
   const codexDrifted = tools.some((t) => t.slug === "codex" && t.status.kind === "drifted");
   const [toolBusy, setToolBusy] = useState(false);
   // Set after a successful routing change; the Routing screen shows a
-  // "restart your agent" note. Cleared when the user leaves the screen.
+  // "restart your agent" note that auto-dismisses (also cleared when the
+  // user leaves the screen).
   const [restartHint, setRestartHint] = useState(false);
+  useEffect(() => {
+    if (!restartHint) return;
+    const t = setTimeout(() => setRestartHint(false), 8000);
+    return () => clearTimeout(t);
+  }, [restartHint]);
   // Flashed briefly when routing is turned on; the Routing screen shows a
   // Linux-only "relaunch your already-open apps" note that auto-dismisses.
   const [relaunchHint, setRelaunchHint] = useState(false);

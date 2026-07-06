@@ -114,6 +114,15 @@ export function ProxyScreen({
         </div>
       )}
 
+      {restartHint && !(platform === "linux" && relaunchHint) && (
+        <div className="mx-3.5 mb-1 flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
+          <Icon name="info" size={15} className="shrink-0 text-gc-ink-3" />
+          <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+            Restart your agent to apply the change.
+          </div>
+        </div>
+      )}
+
       <SectionLabel>Providers</SectionLabel>
       <div className="flex flex-col border-t border-gc-line">
         {providers.map((p) => (
@@ -144,15 +153,6 @@ export function ProxyScreen({
             Codex has a Gate setup written outside this app. Turning its
             provider on replaces that configuration and manages the key from
             your keychain.
-          </div>
-        </div>
-      )}
-
-      {restartHint && (
-        <div className="mx-3.5 mt-2 flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
-          <Icon name="info" size={15} className="shrink-0 text-gc-ink-3" />
-          <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
-            Restart your agent to apply the change.
           </div>
         </div>
       )}
