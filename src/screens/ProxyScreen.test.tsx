@@ -33,6 +33,7 @@ function renderOn(platform: Platform, relaunchHint = false, props: Partial<React
       onTrustCa={vi.fn()}
       restartHint={false}
       relaunchHint={relaunchHint}
+      codexDrifted={false}
       openClaw={null}
       toolBusy={false}
       onToggleOpenClaw={() => {}}
@@ -76,6 +77,18 @@ describe("ProxyScreen Linux relaunch hint", () => {
   it("is not shown on macOS even when flashed", () => {
     renderOn("macos", true);
     expect(screen.queryByText(/Apps already running/)).toBeNull();
+  });
+});
+
+describe("ProxyScreen Codex adoption notice", () => {
+  it("warns that enabling replaces an out-of-app Codex setup when drifted", () => {
+    renderOn("macos", false, { codexDrifted: true });
+    expect(screen.getByText(/Codex has a Gate setup written outside this app/)).toBeTruthy();
+  });
+
+  it("is hidden when Codex is not drifted", () => {
+    renderOn("macos");
+    expect(screen.queryByText(/Codex has a Gate setup/)).toBeNull();
   });
 });
 
