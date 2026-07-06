@@ -334,15 +334,25 @@ pub fn snapshot_and_disable_all() -> Result<()> {
 }
 
 /// Master ON: re-enable every provider that was on when routing was last
-/// turned off, then clear the snapshot. Idempotent; a missing snapshot is a
-/// no-op. Call this *after* the proxy is running so domains re-enable too.
+/// turned off. Providers that fail to restore stay in the snapshot so a later
+/// call can retry them; the snapshot is cleared once every provider is back.
+/// Idempotent; a missing snapshot is a no-op. Callers run this twice per
+/// master-on: once before the proxy comes up (config-based tools, and the
+/// engine's "at least one provider" precondition) and once after (domain-only
+/// providers, which have nothing to configure until the proxy is running).
 pub fn restore_all() -> Result<()> {
+    let mut failed = Vec::new();
     for slug in load_snapshot()? {
         if let Err(e) = enable(&slug) {
             eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
+            failed.push(slug);
         }
     }
-    clear_snapshot()
+    if failed.is_empty() {
+        clear_snapshot()
+    } else {
+        save_snapshot(&failed)
+    }
 }
 
 #[cfg(test)]

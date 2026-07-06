@@ -322,7 +322,13 @@ impl ProxyManager {
             // the user's actual domain selection rather than starting bare.
             let _ = crate::provider::restore_all();
             match self.enable() {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    // Second restore pass: domain-only providers have nothing
+                    // to configure until the proxy is running, so the
+                    // pre-enable pass leaves them in the snapshot.
+                    let _ = crate::provider::restore_all();
+                    return Ok(());
+                }
                 Err(e) => {
                     eprintln!("gate proxy: re-honor on startup failed ({e}); forcing proxy off")
                 }
