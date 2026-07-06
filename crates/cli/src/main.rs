@@ -412,6 +412,12 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 eprintln!("note: restoring providers failed: {e}");
             }
             let state = mgr.enable()?;
+            // Second restore pass: domain-only providers have nothing to
+            // configure until the proxy is running, so the pre-enable pass
+            // leaves them in the snapshot.
+            if let Err(e) = gate_connect_core::provider::restore_all() {
+                eprintln!("note: restoring providers after enable failed: {e}");
+            }
             println!("Proxy enabled.");
             print_proxy_state(&state);
             print_proxy_hint();

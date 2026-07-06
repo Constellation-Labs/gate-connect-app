@@ -369,6 +369,12 @@ async fn proxy_enable(
         gate_connect_core::proxy::manager()
             .enable()
             .map_err(|e| format!("{e:#}"))?;
+        // Second restore pass now that the proxy is up: domain-only providers
+        // (no installed tool) have nothing to configure before the engine is
+        // running, so the pre-enable pass leaves them in the snapshot.
+        if let Err(e) = gate_connect_core::provider::restore_all() {
+            eprintln!("[gate] restoring providers after proxy enable failed: {e}");
+        }
         gate_connect_core::proxy::manager()
             .status()
             .map_err(|e| format!("{e:#}"))
@@ -694,6 +700,14 @@ pub fn run() {
                     }
                     match gate_connect_core::proxy::manager().enable() {
                         Ok(state) => {
+                            // Second restore pass for domain-only providers the
+                            // pre-enable pass left in the snapshot (nothing to
+                            // configure until the proxy is running).
+                            if let Err(e) = gate_connect_core::provider::restore_all() {
+                                eprintln!(
+                                    "[gate] restoring providers after startup auto-enable failed: {e}"
+                                );
+                            }
                             #[cfg(any(target_os = "macos", target_os = "windows"))]
                             TRAY_PROXY_ON.store(state.running, Ordering::Release);
                             #[cfg(target_os = "macos")]
