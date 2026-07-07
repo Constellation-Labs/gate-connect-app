@@ -220,23 +220,19 @@ export function Onboarding() {
       </div>
 
       <footer className="grid h-[56px] shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-t border-gc-line bg-gc-subtle px-4">
-        {last ? (
-          <label className="flex w-max cursor-pointer items-center gap-2 text-[13px] text-gc-ink-3">
-            <input
-              type="checkbox"
-              checked={dontShow}
-              onChange={(e) => {
-                setDontShow(e.target.checked);
-                // Maps straight to the seen-flag config var.
-                setTourSeen(e.target.checked);
-              }}
-              className="h-4 w-4 accent-gc-accent"
-            />
-            Do not show this intro again
-          </label>
-        ) : (
-          <span />
-        )}
+        <label className="flex w-max cursor-pointer items-center gap-2 text-[13px] text-gc-ink-3">
+          <input
+            type="checkbox"
+            checked={dontShow}
+            onChange={(e) => {
+              setDontShow(e.target.checked);
+              // Persist immediately so closing the window mid-flow honors it.
+              setTourSeen(e.target.checked);
+            }}
+            className="h-4 w-4 accent-gc-accent"
+          />
+          Do not show this intro again
+        </label>
         <div className="flex items-center gap-1.5" aria-hidden>
           {steps.map((_, i) => (
             <span
