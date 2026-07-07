@@ -531,7 +531,7 @@ fn unpin_popover() {
 /// a query param so the flow can report whether it was a first launch or a
 /// replay from Settings.
 #[tauri::command]
-fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result<(), String> {
+async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("onboarding") {
         let _ = window.unminimize();
         let _ = window.show();
