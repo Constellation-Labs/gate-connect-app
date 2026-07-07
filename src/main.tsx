@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { App } from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./screens/Onboarding";
 import { initAnalytics, captureException } from "./lib/analytics";
 import "./index.css";
@@ -26,6 +27,14 @@ const isOnboardingWindow = (() => {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {isOnboardingWindow ? <Onboarding /> : <App />}
+    {isOnboardingWindow ? (
+      <ErrorBoundary>
+        <Onboarding />
+      </ErrorBoundary>
+    ) : (
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    )}
   </React.StrictMode>,
 );

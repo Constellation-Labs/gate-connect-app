@@ -531,7 +531,7 @@ fn unpin_popover() {
 /// a query param so the flow can report whether it was a first launch or a
 /// replay from Settings.
 #[tauri::command]
-fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result<(), String> {
+async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("onboarding") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -545,10 +545,14 @@ fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result<(), S
     } else {
         "firstrun"
     };
-    let url = tauri::WebviewUrl::App(format!("index.html?source={source}").into());
+    // Pass `source` as a URL hash, not a query string: `WebviewUrl::App`
+    // with a query string can fail to resolve the page on Windows (blank
+    // window), whereas a hash is a client-side fragment the asset resolver
+    // ignores. The frontend reads `window.location.hash`.
+    let url = tauri::WebviewUrl::App(format!("index.html#{source}").into());
     let builder = tauri::WebviewWindowBuilder::new(&app, "onboarding", url)
         .title("Gate Connect")
-        .inner_size(1060.0, 700.0)
+        .inner_size(1060.0, 940.0)
         .min_inner_size(760.0, 560.0)
         .center();
     // Overlay title bar: the traffic lights float over the white surface so
