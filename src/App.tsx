@@ -453,6 +453,7 @@ export function App() {
         onReplayTour={() => {
           openOnboardingWindow("settings").catch(() => {});
         }}
+        routingOn={proxyOn}
       />
     );
   } else if (screen === "coming-soon") {

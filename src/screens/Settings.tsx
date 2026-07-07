@@ -24,6 +24,7 @@ export function Settings({
   onDisconnect,
   onSwitchGateway,
   onReplayTour,
+  routingOn,
 }: {
   account: Account;
   onBack: () => void;
@@ -31,6 +32,7 @@ export function Settings({
   onDisconnect: () => Promise<void>;
   onSwitchGateway: (url: string) => Promise<void>;
   onReplayTour: () => void;
+  routingOn: boolean;
 }) {
   const [replacing, setReplacing] = useState(false);
   const [devMode, setDevMode] = useState(false);
@@ -39,6 +41,7 @@ export function Settings({
   const [error, setError] = useState<string | null>(null);
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
   const [laLoaded, setLaLoaded] = useState(false);
+  const [confirmDisableLaunch, setConfirmDisableLaunch] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -57,6 +60,19 @@ export function Settings({
   async function toggleLaunchAtLogin() {
     if (!laLoaded) return;
     const next = !launchAtLogin;
+    // Turning launch-at-login off while routing is on can strand the system
+    // proxy after an unexpected restart: nothing relaunches to run the
+    // startup self-heal, so other apps' traffic stays broken until the user
+    // reopens Gate Connect. Confirm before disabling in that case.
+    if (!next && routingOn) {
+      setConfirmDisableLaunch(true);
+      return;
+    }
+    await applyLaunchAtLogin(next);
+  }
+
+  async function applyLaunchAtLogin(next: boolean) {
+    setConfirmDisableLaunch(false);
     setLaunchAtLoginState(next); // optimistic
     try {
       await setLaunchAtLogin(next);
@@ -212,6 +228,31 @@ export function Settings({
         </div>
         <Switch on={launchAtLogin} disabled={!laLoaded} onClick={toggleLaunchAtLogin} />
       </div>
+      {confirmDisableLaunch && (
+        <div className="mx-3.5 mb-1 rounded bg-gc-subtle p-3 shadow-border">
+          <div className="text-[11.5px] leading-snug text-gc-ink-2">
+            With this off, an unexpected restart can leave other apps unable to
+            reach the internet until you reopen Gate Connect. Turn off routing
+            first to avoid this.
+          </div>
+          <div className="mt-2.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => applyLaunchAtLogin(false)}
+              className="text-[12.5px] font-medium text-gc-error"
+            >
+              Turn off anyway
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmDisableLaunch(false)}
+              className="ml-auto text-[12.5px] font-medium text-gc-ink-3"
+            >
+              Keep on
+            </button>
+          </div>
+        </div>
+      )}
       <div className="px-3.5 pb-1 pt-1">
         <button
             type="button"
