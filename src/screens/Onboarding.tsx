@@ -171,11 +171,9 @@ export function Onboarding() {
   const [dontShow, setDontShow] = useState(true);
 
   // First launch vs a replay from Settings, threaded through the window URL
-  // by `open_onboarding_window`.
-  const source =
-    new URLSearchParams(window.location.search).get("source") === "settings"
-      ? "settings"
-      : "firstrun";
+  // by `open_onboarding_window` as a hash fragment (query strings can fail to
+  // load the page on Windows).
+  const source = window.location.hash === "#settings" ? "settings" : "firstrun";
 
   const step = steps[index];
   const last = index === steps.length - 1;
@@ -221,16 +219,34 @@ export function Onboarding() {
 
       <footer className="grid h-[56px] shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-t border-gc-line bg-gc-subtle px-4">
         <label className="flex w-max cursor-pointer items-center gap-2 text-[13px] text-gc-ink-3">
-          <input
-            type="checkbox"
-            checked={dontShow}
-            onChange={(e) => {
-              setDontShow(e.target.checked);
-              // Persist immediately so closing the window mid-flow honors it.
-              setTourSeen(e.target.checked);
-            }}
-            className="h-4 w-4 accent-gc-accent"
-          />
+          <span className="relative inline-flex h-4 w-4 shrink-0 items-center justify-center">
+            <input
+              type="checkbox"
+              checked={dontShow}
+              onChange={(e) => {
+                setDontShow(e.target.checked);
+                // Persist immediately so closing the window mid-flow honors it.
+                setTourSeen(e.target.checked);
+              }}
+              // WKWebView renders native checkboxes white-on-white and
+              // effectively invisible, so we draw the box + check ourselves.
+              className="peer h-4 w-4 cursor-pointer appearance-none rounded-[4px] border border-gc-line-strong bg-white transition-colors checked:border-gc-accent checked:bg-gc-accent"
+            />
+            <svg
+              aria-hidden
+              viewBox="0 0 16 16"
+              className="pointer-events-none absolute h-3 w-3 text-white opacity-0 peer-checked:opacity-100"
+            >
+              <path
+                d="M4 8.5l2.5 2.5L12 5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
           Do not show this intro again
         </label>
         <div className="flex items-center gap-1.5" aria-hidden>
