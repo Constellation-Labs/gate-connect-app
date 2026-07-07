@@ -18,9 +18,6 @@ import {
   providerEnable,
   providerDisable,
   listTools,
-  connectTool,
-  disconnectTool,
-  toolStatus,
   unpinPopover,
   openOnboardingWindow,
 } from "./lib/api";
@@ -61,13 +58,10 @@ export function App() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [providerError, setProviderError] = useState<string | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
-  const openClaw = tools.find((t) => t.slug === "openclaw") ?? null;
-  const hermes = tools.find((t) => t.slug === "hermes") ?? null;
   // Codex drift usually means a hand-written Gate setup (the manual PAYG
   // instructions); enabling its provider adopts it one-way, so the Routing
   // screen shows a heads-up while this is true.
   const codexDrifted = tools.some((t) => t.slug === "codex" && t.status.kind === "drifted");
-  const [toolBusy, setToolBusy] = useState(false);
   // Set after a successful routing change; the Routing screen shows a
   // "restart your agent" note that auto-dismisses (also cleared when the
   // user leaves the screen).
@@ -276,48 +270,6 @@ export function App() {
     [proxyBusy],
   );
 
-  const toggleOpenClaw = useCallback(async () => {
-    if (toolBusy || !openClaw) return;
-    setToolBusy(true);
-    setProviderError(null);
-    try {
-      const connected = openClaw.status.kind === "connected";
-      const status = connected
-        ? await disconnectTool(openClaw.slug)
-        : await connectTool(openClaw.slug, openClaw.default_upstream_url);
-      setTools((ts) => ts.map((t) => (t.slug === openClaw.slug ? { ...t, status } : t)));
-    } catch (e) {
-      // Surface the failure — a swallowed error reads as "the toggle does
-      // nothing". Then re-sync the switch to its true state.
-      setProviderError(typeof e === "string" ? e : String(e));
-      trackError(e, "generic");
-      const status = await toolStatus(openClaw.slug).catch(() => null);
-      if (status) setTools((ts) => ts.map((t) => (t.slug === openClaw.slug ? { ...t, status } : t)));
-    } finally {
-      setToolBusy(false);
-    }
-  }, [openClaw, toolBusy]);
-
-  const toggleHermes = useCallback(async () => {
-    if (toolBusy || !hermes) return;
-    setToolBusy(true);
-    setProviderError(null);
-    try {
-      const connected = hermes.status.kind === "connected";
-      const status = connected
-        ? await disconnectTool(hermes.slug)
-        : await connectTool(hermes.slug, hermes.default_upstream_url);
-      setTools((ts) => ts.map((t) => (t.slug === hermes.slug ? { ...t, status } : t)));
-    } catch (e) {
-      setProviderError(typeof e === "string" ? e : String(e));
-      trackError(e, "generic");
-      const status = await toolStatus(hermes.slug).catch(() => null);
-      if (status) setTools((ts) => ts.map((t) => (t.slug === hermes.slug ? { ...t, status } : t)));
-    } finally {
-      setToolBusy(false);
-    }
-  }, [hermes, toolBusy]);
-
   const trustCa = useCallback(async () => {
     if (proxyBusy) return;
     setProxyBusy(true);
@@ -387,9 +339,6 @@ export function App() {
   const providerCount = providers.filter(
     (p) => p.enabled && !HIDDEN_PROVIDER_SLUGS.has(p.slug),
   ).length;
-  const toolCount = [openClaw, hermes].filter(
-    (t) => t?.status.kind === "connected",
-  ).length;
   const requestCount = proxy?.gateway_requests ?? 0;
   const showProxy = proxy !== null;
 
@@ -435,11 +384,6 @@ export function App() {
         onToggleProxy={toggleProxy}
         onSetProvider={setProvider}
         onTrustCa={trustCa}
-        openClaw={openClaw}
-        toolBusy={toolBusy}
-        onToggleOpenClaw={toggleOpenClaw}
-        hermes={hermes}
-        onToggleHermes={toggleHermes}
       />
     );
   } else if (screen === "settings" && account) {
@@ -465,7 +409,6 @@ export function App() {
         workspace={workspace}
         proxyOn={proxyOn}
         providerCount={providerCount}
-        toolCount={toolCount}
         requestCount={requestCount}
         showProxy={showProxy}
         error={providerError}
