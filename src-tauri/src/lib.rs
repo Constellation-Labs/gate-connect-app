@@ -552,7 +552,7 @@ async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result
     let url = tauri::WebviewUrl::App(format!("index.html#{source}").into());
     let builder = tauri::WebviewWindowBuilder::new(&app, "onboarding", url)
         .title("Gate Connect")
-        .inner_size(1060.0, 940.0)
+        .inner_size(1080.0, 720.0)
         .min_inner_size(760.0, 560.0)
         .center();
     // Overlay title bar: the traffic lights float over the white surface so
