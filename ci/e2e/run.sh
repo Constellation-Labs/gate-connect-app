@@ -335,6 +335,57 @@ else
   echo "::notice::skipping openclaw - CLI not installed on this runner"
 fi
 
+# --- Hermes provider routing (config-level, no live request). gate-connect must
+# derive X-Gate-Upstream-Url from model.provider, not always default to
+# OpenRouter. We drive `connect` for each provider and assert the upstream it
+# writes into ~/.hermes/config.yaml. This exercises gate-connect alone (the
+# hermes CLI is not needed) and sidesteps the per-provider TLS/dialect issues a
+# live request would hit for the built-in providers.
+HERMES_CFG="$HOME/.hermes/config.yaml"
+assert_hermes_upstream() {
+  local label="$1" model_block="$2" expected="$3"
+  echo "::group::hermes-route:$label"
+  mkdir -p "$HOME/.hermes"
+  printf 'model:\n%b' "$model_block" > "$HERMES_CFG"
+  ckpt "[hermes-route:$label] connect"
+  if "$CLI" connect hermes; then
+    if grep -i 'x-gate-upstream-url' "$HERMES_CFG" | grep -qF "$expected"; then
+      echo "PASS: hermes provider=$label pins upstream $expected"
+      PASS=$((PASS + 1))
+    else
+      echo "FAIL: hermes provider=$label expected upstream $expected; got:"
+      grep -i 'upstream' "$HERMES_CFG" || echo "  (no upstream header written)"
+      FAIL=$((FAIL + 1))
+    fi
+    "$CLI" disconnect hermes >/dev/null 2>&1
+  else
+    echo "FAIL: hermes provider=$label connect failed"
+    FAIL=$((FAIL + 1))
+  fi
+  echo "::endgroup::"
+}
+
+# Built-in providers map to their canonical endpoint regardless of base_url;
+# custom derives from base_url (openrouter default only when base_url is unset).
+# Skipped on Windows, where hermes' config dir isn't $HOME/.hermes (matching how
+# the live hermes block below is Linux/macOS-only).
+if [ "$OS" != "Windows" ]; then
+  assert_hermes_upstream "anthropic" \
+    '  provider: anthropic\n  api_key: sk-e2e-dummy\n' \
+    "https://api.anthropic.com"
+  assert_hermes_upstream "openai" \
+    '  provider: openai\n  api_key: sk-e2e-dummy\n' \
+    "https://api.openai.com"
+  assert_hermes_upstream "openrouter" \
+    '  provider: openrouter\n  api_key: sk-e2e-dummy\n' \
+    "https://openrouter.ai/api"
+  assert_hermes_upstream "custom" \
+    '  provider: custom\n  base_url: https://api.mistral.ai/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
+    "https://api.mistral.ai"
+else
+  echo "::notice::skipping hermes provider-routing checks on Windows"
+fi
+
 # --- Hermes: Python OpenAI-compatible agent. gate-connect rewrites
 # model.base_url in ~/.hermes/config.yaml to Gate and injects the Gate
 # headers into model.default_headers → POSTs /v1/chat/completions. We seed a
