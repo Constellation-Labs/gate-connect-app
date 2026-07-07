@@ -34,11 +34,6 @@ function renderOn(platform: Platform, relaunchHint = false, props: Partial<React
       restartHint={false}
       relaunchHint={relaunchHint}
       codexDrifted={false}
-      openClaw={null}
-      toolBusy={false}
-      onToggleOpenClaw={() => {}}
-      hermes={null}
-      onToggleHermes={() => {}}
       {...props}
     />,
   );

@@ -1,23 +1,7 @@
-import type { ProxyState, ProviderState, Tool } from "../lib/api";
+import type { ProxyState, ProviderState } from "../lib/api";
 import { SubHeader, Switch, SectionLabel } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
-
-/** Subtitle for a tool-integration row, keyed off its current status. */
-function toolSubtitle(tool: Tool): string {
-  switch (tool.status.kind) {
-    case "connected":
-      return "On · routed through Gate";
-    case "not_installed":
-      return "Not installed";
-    case "drifted":
-      return "Config changed outside Gate";
-    case "error":
-      return tool.status.message;
-    default:
-      return "Off · not routed through Gate";
-  }
-}
 
 /** Routing detail - the master "Route through Gate" toggle (system proxy),
  * the CA-trust notice, and one switch per provider. Each provider switch
@@ -36,11 +20,6 @@ export function ProxyScreen({
   restartHint,
   relaunchHint,
   codexDrifted,
-  openClaw,
-  toolBusy,
-  onToggleOpenClaw,
-  hermes,
-  onToggleHermes,
 }: {
   proxy: ProxyState;
   providers: ProviderState[];
@@ -53,11 +32,6 @@ export function ProxyScreen({
   restartHint: boolean;
   relaunchHint: boolean;
   codexDrifted: boolean;
-  openClaw: Tool | null;
-  toolBusy: boolean;
-  onToggleOpenClaw: () => void;
-  hermes: Tool | null;
-  onToggleHermes: () => void;
 }) {
   const platform = usePlatform();
   const trustStore = platform === "windows" ? "certificate store" : "keychain";
@@ -155,44 +129,6 @@ export function ProxyScreen({
             your keychain.
           </div>
         </div>
-      )}
-
-      {(openClaw || hermes) && (
-        <>
-          <SectionLabel>Tool integrations</SectionLabel>
-          <div className="flex flex-col border-t border-gc-line">
-            {openClaw && (
-              <div className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-medium text-gc-ink">{openClaw.name}</div>
-                  <div className="mt-0.5 truncate text-[11px] text-gc-ink-4">
-                    {toolSubtitle(openClaw)}
-                  </div>
-                </div>
-                <Switch
-                  on={openClaw.status.kind === "connected"}
-                  disabled={toolBusy || openClaw.status.kind === "not_installed"}
-                  onClick={onToggleOpenClaw}
-                />
-              </div>
-            )}
-            {hermes && (
-              <div className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-medium text-gc-ink">{hermes.name}</div>
-                  <div className="mt-0.5 truncate text-[11px] text-gc-ink-4">
-                    {toolSubtitle(hermes)}
-                  </div>
-                </div>
-                <Switch
-                  on={hermes.status.kind === "connected"}
-                  disabled={toolBusy || hermes.status.kind === "not_installed"}
-                  onClick={onToggleHermes}
-                />
-              </div>
-            )}
-          </div>
-        </>
       )}
 
       {error && (

@@ -23,12 +23,6 @@ export interface Account {
 
 export const listTools = () => invoke<Tool[]>("list_tools");
 
-export const toolStatus = (slug: string) => invoke<Status>("tool_status", { slug });
-
-export const connectTool = (slug: string, upstreamUrl: string) => invoke<Status>("connect_tool", { slug, upstreamUrl });
-
-export const disconnectTool = (slug: string) => invoke<Status>("disconnect_tool", { slug });
-
 export const hasUpstreamCredential = (slug: string) => invoke<boolean>("has_upstream_credential", { slug });
 
 export const saveUpstreamApiKey = (slug: string, apiKey: string) =>
