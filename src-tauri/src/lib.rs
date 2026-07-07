@@ -675,6 +675,16 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            // A system Light/Dark switch must re-tint the tray mark at once:
+            // the routing-status refresh only fires on proxy changes, so
+            // without this the glyph would keep its old (possibly invisible)
+            // tone until the next toggle.
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            if let WindowEvent::ThemeChanged(_) = event {
+                if let Ok(st) = gate_connect_core::proxy::manager().status() {
+                    update_tray_status(window.app_handle(), st.running, st.gateway_requests);
+                }
+            }
             // The onboarding window is a regular window: closing it really
             // closes it, and losing focus must not dismiss it. Hand the user
             // back to the popover so "Get started" (and an early close) both
@@ -969,18 +979,22 @@ pub fn run() {
                 let _ = window.set_focus();
             }
 
-            // Reflect the current proxy state in the tray dot (macOS) and the
-            // tooltip (macOS + Windows) at launch, and seed the refresh gate.
+            // Reflect the current proxy state in the tray at launch: tint the
+            // mark for the menu-bar / taskbar appearance, add the macOS status
+            // dot, refresh the tooltip (macOS + Windows), and seed the gate.
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
                 let st = gate_connect_core::proxy::manager().status().ok();
                 let running = st.as_ref().map(|s| s.running).unwrap_or(false);
                 let count = st.as_ref().map(|s| s.gateway_requests).unwrap_or(0);
                 TRAY_PROXY_ON.store(running, Ordering::Release);
-                #[cfg(target_os = "macos")]
                 update_tray_status(app.handle(), running, count);
-                #[cfg(target_os = "windows")]
-                update_tray_tooltip(app.handle(), running, count);
+            }
+            // Linux has no status dot or tooltip, but the mark still needs
+            // tinting for the panel's light/dark theme so it stays visible.
+            #[cfg(target_os = "linux")]
+            if let Ok(st) = gate_connect_core::proxy::manager().status() {
+                update_tray_status(app.handle(), st.running, st.gateway_requests);
             }
 
             // Keep the tray tooltip's gateway-request count fresh while the
@@ -1110,11 +1124,13 @@ fn position_startup(window: &tauri::WebviewWindow) {
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
-/// Build the menu-bar tray image with a status dot - green when the proxy is
-/// routing, gray when it's off. The base hex mark is a template silhouette; to
-/// show a *colored* dot we must render non-template, so we recolor the mark to
-/// a high-contrast tone for the current menu-bar appearance (light vs dark).
-#[cfg(target_os = "macos")]
+/// Build the tray image, recoloring the hex mark to a high-contrast tone for
+/// the current menu-bar / taskbar appearance (light vs dark) so it stays
+/// visible on any backdrop. On macOS a colored routing-status dot is
+/// composited on top (green when the proxy is routing, gray when off); Windows
+/// and Linux get the tinted mark only, since their tray backends don't carry
+/// the status dot.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
     let base = Image::from_bytes(TRAY_ICON_PNG).ok()?;
     let w = base.width();
@@ -1135,28 +1151,34 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
         }
     }
 
-    // Composite the status dot, bottom-right.
-    let (dr, dg, db): (u8, u8, u8) = if proxy_on {
-        (0x2E, 0xCC, 0x71) // green - routing
-    } else {
-        (0x8A, 0x8F, 0x9A) // gray - off
-    };
-    let radius = (w as f32 * 0.20).round() as i32;
-    let cx = w as i32 - radius - 2;
-    let cy = h as i32 - radius - 2;
-    for y in (cy - radius)..=(cy + radius) {
-        for x in (cx - radius)..=(cx + radius) {
-            if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
-                continue;
-            }
-            let dx = x - cx;
-            let dy = y - cy;
-            if dx * dx + dy * dy <= radius * radius {
-                let idx = ((y as u32 * w + x as u32) * 4) as usize;
-                rgba[idx] = dr;
-                rgba[idx + 1] = dg;
-                rgba[idx + 2] = db;
-                rgba[idx + 3] = 0xFF;
+    // Composite the status dot, bottom-right. macOS only: the dot is the one
+    // colored element, and Windows/Linux trays don't render it today.
+    #[cfg(not(target_os = "macos"))]
+    let _ = proxy_on;
+    #[cfg(target_os = "macos")]
+    {
+        let (dr, dg, db): (u8, u8, u8) = if proxy_on {
+            (0x2E, 0xCC, 0x71) // green - routing
+        } else {
+            (0x8A, 0x8F, 0x9A) // gray - off
+        };
+        let radius = (w as f32 * 0.20).round() as i32;
+        let cx = w as i32 - radius - 2;
+        let cy = h as i32 - radius - 2;
+        for y in (cy - radius)..=(cy + radius) {
+            for x in (cx - radius)..=(cx + radius) {
+                if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+                    continue;
+                }
+                let dx = x - cx;
+                let dy = y - cy;
+                if dx * dx + dy * dy <= radius * radius {
+                    let idx = ((y as u32 * w + x as u32) * 4) as usize;
+                    rgba[idx] = dr;
+                    rgba[idx + 1] = dg;
+                    rgba[idx + 2] = db;
+                    rgba[idx + 3] = 0xFF;
+                }
             }
         }
     }
@@ -1164,21 +1186,30 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
     Some(Image::new_owned(rgba, w, h))
 }
 
-/// Update the tray icon so its status dot reflects the current proxy state.
-#[cfg(target_os = "macos")]
+/// Refresh the tray icon for the current appearance: tint the mark for a
+/// light vs dark menu bar / taskbar, and on macOS overlay the routing-status
+/// dot. Also refreshes the tooltip on macOS + Windows.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool, gateway_requests: u64) {
     use tauri::Manager;
     let dark = app
         .get_webview_window("main")
         .and_then(|win| win.theme().ok())
         .map(|t| t == tauri::Theme::Dark)
-        .unwrap_or(true);
+        .unwrap_or(false);
     if let Some(tray) = app.tray_by_id("main") {
+        // The colored dot requires non-template rendering; macOS-only, since
+        // templating is what auto-tints there and is a no-op elsewhere.
+        #[cfg(target_os = "macos")]
         let _ = tray.set_icon_as_template(false);
         if let Some(img) = tray_image(proxy_on, dark) {
             let _ = tray.set_icon(Some(img));
         }
     }
+    // Linux tray backends carry no tooltip, so the request count is unused there.
+    #[cfg(target_os = "linux")]
+    let _ = gateway_requests;
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     update_tray_tooltip(app, proxy_on, gateway_requests);
 }
 
