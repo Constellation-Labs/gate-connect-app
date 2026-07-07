@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Icon } from "../components/gc/Icon";
 import { SectionLabel } from "../components/gc/ui";
 import { track } from "../lib/analytics";
-import { markTourSeen, setTourSeen } from "../lib/tour";
+import { setTourSeen } from "../lib/tour";
 import { usePlatform, type Platform } from "../lib/platform";
 import appIcon from "../assets/app-icon.png";
 import whereMacos from "../assets/where-is-gate-connect-macos.png";
@@ -168,7 +168,7 @@ export function Onboarding() {
   const steps = buildSteps(platform);
   const [index, setIndex] = useState(0);
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
-  const [dontShow, setDontShow] = useState(false);
+  const [dontShow, setDontShow] = useState(true);
 
   // First launch vs a replay from Settings, threaded through the window URL
   // by `open_onboarding_window`.
@@ -181,11 +181,11 @@ export function Onboarding() {
   const last = index === steps.length - 1;
 
   const finish = () => {
-    markTourSeen();
+    setTourSeen(dontShow);
     track("tour_completed", { source });
     // Tell the popover window to record the flag in its own storage too, in
     // case the platform doesn't share localStorage between webviews.
-    void emit(TOUR_SEEN_EVENT);
+    if (dontShow) void emit(TOUR_SEEN_EVENT);
     void getCurrentWindow().close();
   };
 
