@@ -73,7 +73,14 @@ pub fn providers() -> Vec<Provider> {
         Provider {
             slug: "google",
             display_name: "Google / Gemini",
-            subtitle: "Gemini API (experimental)",
+            // The Gemini CLI can't route through the proxy on macOS (Node
+            // ignores the system proxy + keychain), so it's called out there
+            // only; the CLI works on Linux/Windows.
+            subtitle: if cfg!(target_os = "macos") {
+                "Gemini API (CLI not supported)"
+            } else {
+                "Gemini API"
+            },
             // Proxy-only, like OpenRouter: no CLI integration, routed entirely
             // through the proxy domain (requires the proxy to be running). Two
             // domains: the generative-language API (API-key clients) and the
