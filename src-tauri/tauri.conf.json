@@ -15,7 +15,7 @@
         "label": "main",
         "title": "Gate Connect",
         "width": 380,
-        "height": 720,
+        "height": 620,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,
