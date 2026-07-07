@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Icon } from "../components/gc/Icon";
 import { SectionLabel } from "../components/gc/ui";
 import { track } from "../lib/analytics";
-import { markTourSeen, setTourSeen } from "../lib/tour";
+import { setTourSeen } from "../lib/tour";
 import { usePlatform, type Platform } from "../lib/platform";
 import appIcon from "../assets/app-icon.png";
 import whereMacos from "../assets/where-is-gate-connect-macos.png";
@@ -168,7 +168,7 @@ export function Onboarding() {
   const steps = buildSteps(platform);
   const [index, setIndex] = useState(0);
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
-  const [dontShow, setDontShow] = useState(false);
+  const [dontShow, setDontShow] = useState(true);
 
   // First launch vs a replay from Settings, threaded through the window URL
   // by `open_onboarding_window`.
@@ -181,11 +181,11 @@ export function Onboarding() {
   const last = index === steps.length - 1;
 
   const finish = () => {
-    markTourSeen();
+    setTourSeen(dontShow);
     track("tour_completed", { source });
     // Tell the popover window to record the flag in its own storage too, in
     // case the platform doesn't share localStorage between webviews.
-    void emit(TOUR_SEEN_EVENT);
+    if (dontShow) void emit(TOUR_SEEN_EVENT);
     void getCurrentWindow().close();
   };
 
@@ -220,19 +220,23 @@ export function Onboarding() {
       </div>
 
       <footer className="grid h-[56px] shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-t border-gc-line bg-gc-subtle px-4">
-        <label className="flex w-max cursor-pointer items-center gap-2 text-[13px] text-gc-ink-3">
-          <input
-            type="checkbox"
-            checked={dontShow}
-            onChange={(e) => {
-              setDontShow(e.target.checked);
-              // Persist immediately so closing the window mid-flow honors it.
-              setTourSeen(e.target.checked);
-            }}
-            className="h-4 w-4 accent-gc-accent"
-          />
-          Do not show this intro again
-        </label>
+        {last ? (
+          <label className="flex w-max cursor-pointer items-center gap-2 text-[13px] text-gc-ink-3">
+            <input
+              type="checkbox"
+              checked={dontShow}
+              onChange={(e) => {
+                setDontShow(e.target.checked);
+                // Maps straight to the seen-flag config var.
+                setTourSeen(e.target.checked);
+              }}
+              className="h-4 w-4 accent-gc-accent"
+            />
+            Do not show this intro again
+          </label>
+        ) : (
+          <span />
+        )}
         <div className="flex items-center gap-1.5" aria-hidden>
           {steps.map((_, i) => (
             <span
