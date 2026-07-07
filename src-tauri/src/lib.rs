@@ -562,7 +562,6 @@ async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true);
     let window = builder.build().map_err(|e| e.to_string())?;
-    eprintln!("[gate] open_onboarding_window: built, focusing");
     let _ = window.set_focus();
     Ok(())
 }
@@ -680,30 +679,15 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
-            // TEMP probe: which events fire (esp. during onboarding build()).
-            if window.label() == "onboarding" {
-                let tag = match event {
-                    WindowEvent::ThemeChanged(_) => "ThemeChanged",
-                    WindowEvent::CloseRequested { .. } => "CloseRequested",
-                    WindowEvent::Focused(_) => "Focused",
-                    WindowEvent::Resized(_) => "Resized",
-                    WindowEvent::Moved(_) => "Moved",
-                    WindowEvent::ScaleFactorChanged { .. } => "ScaleFactorChanged",
-                    _ => "other",
-                };
-                eprintln!("[gate] onboarding window_event: {tag}");
-            }
             // A system Light/Dark switch must re-tint the tray mark at once:
             // the routing-status refresh only fires on proxy changes, so
             // without this the glyph would keep its old (possibly invisible)
             // tone until the next toggle.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             if let WindowEvent::ThemeChanged(_) = event {
-                eprintln!("[gate] ThemeChanged -> manager().status() ...");
                 if let Ok(st) = gate_connect_core::proxy::manager().status() {
                     update_tray_status(window.app_handle(), st.running, st.gateway_requests);
                 }
-                eprintln!("[gate] ThemeChanged -> manager().status() done");
             }
             // The onboarding window is a regular window: closing it really
             // closes it, and losing focus must not dismiss it. Hand the user
@@ -711,7 +695,6 @@ pub fn run() {
             // land in the app.
             if window.label() == "onboarding" {
                 if let WindowEvent::CloseRequested { .. } = event {
-                    eprintln!("[gate] onboarding CloseRequested: revealing popover");
                     reveal_popover_window(window.app_handle());
                 }
                 return;
