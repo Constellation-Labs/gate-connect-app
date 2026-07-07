@@ -97,7 +97,7 @@ impl Integration for Hermes {
             return Ok(Status::NotInstalled);
         }
 
-        let Some(_state) = load_state()? else {
+        let Some(state) = load_state()? else {
             return Ok(Status::Detected);
         };
 
@@ -129,11 +129,26 @@ impl Integration for Hermes {
 
         let has_upstream_url = headers.and_then(|h| h.get(UPSTREAM_URL_HEADER)).is_some();
 
-        if base_url == expected_base && has_gate_key && has_upstream_url {
+        // Recompute the upstream we would pin for the *current* provider and
+        // compare it to what's stored -- catches the user switching
+        // model.provider after connecting without re-running connect. For
+        // custom providers the live base_url is now Gate's URL, so we resolve
+        // against the original base_url captured in state.
+        let provider = model
+            .and_then(|m| m.get("provider"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let stored_upstream = headers
+            .and_then(|h| h.get(UPSTREAM_URL_HEADER))
+            .and_then(|v| v.as_str());
+        let expected_upstream = resolve_upstream_url(provider, state.previous_base_url.as_deref());
+        let upstream_matches = stored_upstream == Some(expected_upstream.as_str());
+
+        if base_url == expected_base && has_gate_key && has_upstream_url && upstream_matches {
             Ok(Status::Connected)
         } else {
             Ok(Status::Drifted(format!(
-                "Hermes config does not match Gate settings (base_url: {base_url:?}, expected: {expected_base:?})"
+                "Hermes config does not match Gate settings (base_url: {base_url:?}, expected: {expected_base:?}; upstream stored: {stored_upstream:?}, expected: {expected_upstream:?})"
             )))
         }
     }
@@ -168,19 +183,38 @@ impl Integration for Hermes {
         let base_url_key = Value::String("base_url".to_string());
         let headers_key = Value::String("default_headers".to_string());
 
-        let current_base_url = model
+        let provider = model
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let base_url = model
             .get(&base_url_key)
             .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| HERMES_DEFAULT_BASE_URL.to_string());
+            .filter(|s| !s.is_empty())
+            .map(String::from);
 
-        if is_local_url(&current_base_url) {
-            anyhow::bail!(
-                "Hermes is pointed at a local endpoint ({current_base_url:?}) -- skipping to avoid redirecting local traffic through Gate"
-            );
+        // Built-in providers route to their fixed endpoint. For custom /
+        // unrecognized providers we derive from base_url; guard against local
+        // endpoints, and warn if we have to fall back to the OpenRouter default.
+        if builtin_upstream_url(&provider).is_none() {
+            match base_url.as_deref() {
+                Some(b) if is_local_url(b) => {
+                    anyhow::bail!(
+                        "Hermes is pointed at a local endpoint ({b:?}) -- skipping to avoid redirecting local traffic through Gate"
+                    );
+                }
+                None => {
+                    eprintln!(
+                        "[gate] Hermes model.provider {provider:?} is not a recognized built-in provider and model.base_url is not set; defaulting the upstream to OpenRouter ({HERMES_DEFAULT_BASE_URL}). Set model.provider (anthropic/openai/openrouter/google) or model.base_url to route elsewhere."
+                    );
+                }
+                _ => {}
+            }
         }
 
-        let upstream_url = upstream_url_from_base(&current_base_url);
+        let upstream_url = resolve_upstream_url(&provider, base_url.as_deref());
 
         // Snapshot original values before we touch anything.
         let state = State {
@@ -332,6 +366,36 @@ fn upstream_url_from_base(base_url: &str) -> String {
     }
 }
 
+/// Maps a Hermes `model.provider` to the fixed upstream base URL Gate forwards
+/// to (no `/v1`; Gate appends the caller's request path). Returns `None` for
+/// `custom` / unrecognized providers, whose upstream comes from `model.base_url`.
+fn builtin_upstream_url(provider: &str) -> Option<&'static str> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "anthropic" => Some("https://api.anthropic.com"),
+        "openai" => Some("https://api.openai.com"),
+        "openrouter" => Some("https://openrouter.ai/api"),
+        "google" | "gemini" | "google-ai-studio" => {
+            Some("https://generativelanguage.googleapis.com")
+        }
+        _ => None,
+    }
+}
+
+/// Resolves the upstream base URL Gate should forward to for a Hermes
+/// `provider` + optional `base_url`. Built-in providers map to their fixed
+/// endpoint; everything else derives from `base_url`, falling back to the
+/// OpenRouter default when `base_url` is absent. Shared by `connect` (the value
+/// it pins) and `status` (the value it expects to still see).
+fn resolve_upstream_url(provider: &str, base_url: Option<&str>) -> String {
+    match builtin_upstream_url(provider) {
+        Some(url) => url.to_string(),
+        None => base_url
+            .filter(|s| !s.is_empty())
+            .map(upstream_url_from_base)
+            .unwrap_or_else(|| upstream_url_from_base(HERMES_DEFAULT_BASE_URL)),
+    }
+}
+
 /// Returns true if `base_url` targets a local address (loopback, link-local,
 /// RFC-1918, `.local`, `.lan`, `.internal`). We skip those to avoid
 /// redirecting traffic from private/local endpoints through Gate.
@@ -467,6 +531,87 @@ mod tests {
         assert_eq!(
             compute_base_url("https://gate.example.com/"),
             "https://gate.example.com/v1"
+        );
+    }
+
+    #[test]
+    fn builtin_upstream_url_maps_known_providers() {
+        assert_eq!(
+            builtin_upstream_url("anthropic"),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(
+            builtin_upstream_url("openai"),
+            Some("https://api.openai.com")
+        );
+        assert_eq!(
+            builtin_upstream_url("openrouter"),
+            Some("https://openrouter.ai/api")
+        );
+        assert_eq!(
+            builtin_upstream_url("google"),
+            Some("https://generativelanguage.googleapis.com")
+        );
+        assert_eq!(
+            builtin_upstream_url("gemini"),
+            Some("https://generativelanguage.googleapis.com")
+        );
+    }
+
+    #[test]
+    fn builtin_upstream_url_is_case_insensitive_and_trims() {
+        assert_eq!(
+            builtin_upstream_url("Anthropic"),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(
+            builtin_upstream_url("  OpenAI  "),
+            Some("https://api.openai.com")
+        );
+    }
+
+    #[test]
+    fn builtin_upstream_url_none_for_custom_and_unknown() {
+        assert_eq!(builtin_upstream_url("custom"), None);
+        assert_eq!(builtin_upstream_url(""), None);
+        assert_eq!(builtin_upstream_url("mystery"), None);
+    }
+
+    #[test]
+    fn resolve_upstream_url_prefers_provider_over_base_url() {
+        // A built-in provider pins its endpoint regardless of base_url.
+        assert_eq!(
+            resolve_upstream_url("anthropic", None),
+            "https://api.anthropic.com"
+        );
+        assert_eq!(
+            resolve_upstream_url("anthropic", Some("https://openrouter.ai/api/v1")),
+            "https://api.anthropic.com"
+        );
+        // Distinct providers resolve differently -- this is what drives drift
+        // detection when a connected user switches model.provider.
+        assert_ne!(
+            resolve_upstream_url("anthropic", None),
+            resolve_upstream_url("openai", None)
+        );
+    }
+
+    #[test]
+    fn resolve_upstream_url_custom_uses_base_url_else_warns_to_openrouter() {
+        // custom with an explicit base_url derives from it.
+        assert_eq!(
+            resolve_upstream_url("custom", Some("https://api.mistral.ai/v1")),
+            "https://api.mistral.ai"
+        );
+        // custom (or unknown) with no base_url falls back to the OpenRouter
+        // default (the connect path additionally warns via eprintln).
+        assert_eq!(
+            resolve_upstream_url("custom", None),
+            "https://openrouter.ai/api"
+        );
+        assert_eq!(
+            resolve_upstream_url("", Some("")),
+            "https://openrouter.ai/api"
         );
     }
 }
