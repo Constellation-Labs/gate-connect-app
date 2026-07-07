@@ -119,14 +119,24 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
     // 1. Mock gateway on loopback. The rewritten request must land here.
     let gateway = start_mock_gateway().await;
 
-    // 2. Boot the real engine. `default_domains()` already ships Anthropic
-    //    enabled, so api.anthropic.com /v1/ is intercepted and rewritten.
+    // 2. Boot the real engine. Every catalog domain ships opt-in
+    //    (`enabled:false`), so flip Anthropic on so api.anthropic.com /v1/ is
+    //    intercepted and rewritten.
     let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let domains = default_domains()
+        .into_iter()
+        .map(|mut d| {
+            if d.slug == "anthropic" {
+                d.enabled = true;
+            }
+            d
+        })
+        .collect();
     let engine = engine::start(
         EngineConfig {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
-            domains: default_domains(),
+            domains,
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
             preferred_port: None,
