@@ -512,6 +512,14 @@ const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
 /// unchanged (only the macOS startup path pins it).
 static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 
+/// Whether the popover is currently shown. Tracks the hidden→visible edge so
+/// the focus hook reconciles once per open, not on every `Focused(true)`: a
+/// refocus of an already-visible window (returning from a system dialog, or a
+/// pinned-startup blur that never hides) leaves this `true` and is skipped.
+/// Set true when the window gains focus; cleared at each real hide/minimize
+/// site so the next open reconciles again. Starts false (window not yet shown).
+static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
+
 /// Whether the proxy is currently routing. Set on enable/disable/launch and
 /// read by the tray-tooltip refresh thread so it only polls status while the
 /// proxy is on (and goes idle otherwise). macOS + Windows only - Linux tray
@@ -703,20 +711,25 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                POPOVER_VISIBLE.store(false, Ordering::Release);
             }
-            // Gaining focus (the user opening the popover) is our cue to pick up
-            // any tool installed since launch - e.g. Claude Code installed after
-            // Gate Connect - and wire it up without a relaunch. This is the
+            // Opening the popover (the hidden→visible edge) is our cue to pick
+            // up any tool installed since launch - e.g. Claude Code installed
+            // after Gate Connect - and wire it up without a relaunch. Guarded by
+            // POPOVER_VISIBLE so a refocus of an already-open window doesn't
+            // re-run it; the flag is cleared at each hide site below. This is the
             // config route, so it runs on every platform (unlike the
             // Focused(false) dismiss below). Off-thread + best-effort so it never
             // blocks the event loop; reconcile_enabled is idempotent and only
             // writes when a tool is newly installed.
             if let WindowEvent::Focused(true) = event {
-                std::thread::spawn(|| {
-                    if let Err(e) = gate_connect_core::provider::reconcile_enabled() {
-                        eprintln!("[gate] provider config reconcile on focus failed: {e}");
-                    }
-                });
+                if !POPOVER_VISIBLE.swap(true, Ordering::AcqRel) {
+                    std::thread::spawn(|| {
+                        if let Err(e) = gate_connect_core::provider::reconcile_enabled() {
+                            eprintln!("[gate] provider config reconcile on focus failed: {e}");
+                        }
+                    });
+                }
             }
             // Click outside the popover → dismiss. Linux is excluded: there the
             // window is a normal decorated, taskbar-visible window (see setup),
@@ -735,6 +748,7 @@ pub fn run() {
                     return;
                 }
                 let _ = window.hide();
+                POPOVER_VISIBLE.store(false, Ordering::Release);
             }
         })
         .setup(|app| {
@@ -941,6 +955,7 @@ pub fn run() {
                                 let _ = window.minimize();
                                 #[cfg(not(target_os = "linux"))]
                                 let _ = window.hide();
+                                POPOVER_VISIBLE.store(false, Ordering::Release);
                             } else {
                                 // Linux trays don't report a usable rect; fall
                                 // back to the cursor position so the popover lands
@@ -1460,6 +1475,7 @@ fn install_click_outside_dismiss(app: &tauri::AppHandle) {
         if let Some(window) = handle.get_webview_window("main") {
             if window.is_visible().unwrap_or(false) {
                 let _ = window.hide();
+                POPOVER_VISIBLE.store(false, Ordering::Release);
             }
         }
     });

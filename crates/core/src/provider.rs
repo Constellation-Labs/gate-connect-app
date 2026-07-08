@@ -278,7 +278,9 @@ pub fn disable(slug: &str) -> Result<ProviderState> {
     for domain in p.proxy_domain_slugs {
         // Best-effort: an already-off or unknown domain isn't an error.
         let _ = if proxy_running() {
-            crate::proxy::manager().set_domain(domain, false).map(|_| ())
+            crate::proxy::manager()
+                .set_domain(domain, false)
+                .map(|_| ())
         } else {
             crate::proxy::config::set_enabled(domain, false).map(|_| ())
         };
