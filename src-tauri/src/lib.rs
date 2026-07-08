@@ -704,6 +704,20 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            // Gaining focus (the user opening the popover) is our cue to pick up
+            // any tool installed since launch - e.g. Claude Code installed after
+            // Gate Connect - and wire it up without a relaunch. This is the
+            // config route, so it runs on every platform (unlike the
+            // Focused(false) dismiss below). Off-thread + best-effort so it never
+            // blocks the event loop; reconcile_enabled is idempotent and only
+            // writes when a tool is newly installed.
+            if let WindowEvent::Focused(true) = event {
+                std::thread::spawn(|| {
+                    if let Err(e) = gate_connect_core::provider::reconcile_enabled() {
+                        eprintln!("[gate] provider config reconcile on focus failed: {e}");
+                    }
+                });
+            }
             // Click outside the popover → dismiss. Linux is excluded: there the
             // window is a normal decorated, taskbar-visible window (see setup),
             // and a dismiss-on-blur reflex fights its own title bar - grabbing
@@ -748,6 +762,18 @@ pub fn run() {
                     }
                 }
             }
+
+            // Apply gateway config to any tool installed *after* its provider
+            // was enabled (e.g. Claude Code installed after Gate Connect). This
+            // is the config route, independent of the proxy/routing intent, so
+            // it runs on every launch regardless of whether the proxy comes up
+            // below. Off-thread + best-effort: a slow or failing tool can't
+            // stall the tray or block the startup proxy work.
+            std::thread::spawn(|| {
+                if let Err(e) = gate_connect_core::provider::reconcile_enabled() {
+                    eprintln!("[gate] provider config reconcile on startup failed: {e}");
+                }
+            });
 
             // Startup proxy work runs off-thread so neither step stalls the
             // tray: reconcile can block on a rare admin prompt, and the
