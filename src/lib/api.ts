@@ -71,8 +71,6 @@ export interface ProxyState {
   port: number | null;
   ca_trusted: boolean;
   domains: ProxyDomain[];
-  /** Requests rewritten to the gateway this session (0 when not running). */
-  gateway_requests: number;
 }
 
 export const proxyStatus = () => invoke<ProxyState>("proxy_status");
