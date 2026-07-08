@@ -269,15 +269,86 @@ pub fn disable(slug: &str) -> Result<ProviderState> {
         }
     }
 
+    // Record the off state durably so a later reconcile ([`reconcile_enabled`])
+    // won't treat the provider as still-on and re-apply it. When the engine is
+    // live, route the change through the manager so routing also stops
+    // immediately; otherwise persist the flag directly (the config-route tools
+    // don't need the proxy running to be turned off).
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    if proxy_running() {
-        for domain in p.proxy_domain_slugs {
-            // Best-effort: an already-off or unknown domain isn't an error.
-            let _ = crate::proxy::manager().set_domain(domain, false);
-        }
+    for domain in p.proxy_domain_slugs {
+        // Best-effort: an already-off or unknown domain isn't an error.
+        let _ = if proxy_running() {
+            crate::proxy::manager()
+                .set_domain(domain, false)
+                .map(|_| ())
+        } else {
+            crate::proxy::config::set_enabled(domain, false).map(|_| ())
+        };
     }
 
     Ok(state(&p))
+}
+
+/// Persisted (on-disk) view of whether any of the provider's proxy domains are
+/// enabled - the durable "the user wants this provider on" signal, readable even
+/// when the proxy engine is stopped. Distinct from [`proxy_domains_enabled`],
+/// which reflects the live engine's current domain set.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn domains_enabled_persisted(p: &Provider) -> bool {
+    crate::proxy::config::load_domains()
+        .map(|ds| {
+            ds.iter()
+                .any(|d| d.enabled && p.proxy_domain_slugs.contains(&d.slug.as_str()))
+        })
+        .unwrap_or(false)
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn domains_enabled_persisted(_p: &Provider) -> bool {
+    false
+}
+
+/// Configure any installed-but-unconfigured tool of a provider the user has
+/// turned on. Closes the "installed the tool *after* enabling the provider" gap:
+/// [`enable`] only wires up tools present at that instant, so a tool that shows
+/// up later stays unrouted until this runs (at startup). Idempotent and
+/// best-effort - one tool's failure never strands the rest.
+///
+/// Only tools that carry their own upstream credential (`requires_upstream_credential
+/// == false`, e.g. Claude Code) are auto-applied; a tool that needs a
+/// Gate-stored key is left for the explicit connect flow. Only tools in
+/// [`Status::Detected`] (installed, no Gate config) are touched - `Connected`
+/// and `Drifted` are left alone so this never clobbers an existing setup.
+pub fn reconcile_enabled() -> Result<()> {
+    let Some(account) = account::load()? else {
+        return Ok(()); // no gateway configured yet - nothing to point tools at
+    };
+    for p in providers() {
+        if !domains_enabled_persisted(&p) {
+            continue;
+        }
+        for &id in p.tool_ids {
+            let Some(integ) = registry::find(id) else {
+                continue;
+            };
+            if integ.requires_upstream_credential() {
+                continue; // needs a stored key; not safe to auto-apply
+            }
+            if !matches!(integ.status(), Ok(Status::Detected)) {
+                continue; // NotInstalled / Connected / Drifted - leave as-is
+            }
+            let input = ConnectInput {
+                gateway_base_url: account.gateway_base_url.clone(),
+                upstream_url: integ.default_upstream_url().to_string(),
+            };
+            if let Err(e) = integ.connect(&input) {
+                eprintln!(
+                    "[gate] auto-configuring {} failed: {e:#}",
+                    integ.display_name()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---- Global kill / restore (the "Route through Gate" master switch) ----
