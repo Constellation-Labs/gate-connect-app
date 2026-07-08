@@ -33,9 +33,14 @@ export const clearUpstreamCredential = (slug: string) => invoke<void>("clear_ups
 export const getAccount = () => invoke<Account | null>("get_account");
 
 /** Leading characters of the stored Gate key, for the reveal control in
- * Settings. Reads the keychain, so only call it in response to an explicit
- * user action. Returns null when no key is stored. */
+ * Settings. Reads the prefix recorded in the account config, not the keychain.
+ * Returns null when no key is stored. */
 export const getAccountKeyPrefix = () => invoke<string | null>("get_account_key_prefix");
+
+/** Fallback reveal for accounts saved before the prefix was recorded on disk:
+ * reads the key from the keychain (may prompt), backfills the prefix into the
+ * config, and returns it. Call only after the user confirms the reveal. */
+export const backfillAccountKeyPrefix = () => invoke<string | null>("backfill_account_key_prefix");
 
 export const saveAccount = (baseUrl: string, apiKey: string | null) =>
   invoke<void>("save_account", { baseUrl, apiKey });

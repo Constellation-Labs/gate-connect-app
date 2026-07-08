@@ -215,12 +215,21 @@ fn get_account() -> Result<Option<AccountDto>, String> {
 }
 
 /// Leading characters of the stored Gate key, for the "show which key" reveal
-/// in Settings. Reads the keychain (so it may prompt on some platforms) and is
-/// therefore kept out of `get_account`'s hot path - the UI calls it only when
-/// the user taps to reveal.
+/// in Settings. Reads the prefix recorded in `account.json`, so it never
+/// touches the keychain; the UI still calls it only when the user taps to
+/// reveal, to keep even the prefix out of view until asked.
 #[tauri::command]
 fn get_account_key_prefix() -> Result<Option<String>, String> {
     account::api_key_prefix().map_err(|e| format!("{e:#}"))
+}
+
+/// Fallback for accounts saved before the prefix was recorded on disk: read the
+/// key from the keychain (may prompt), backfill the prefix into `account.json`,
+/// and return it. The UI calls this only after the user confirms the reveal,
+/// since it touches the keychain.
+#[tauri::command]
+fn backfill_account_key_prefix() -> Result<Option<String>, String> {
+    account::backfill_api_key_prefix().map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -643,6 +652,7 @@ pub fn run() {
                     clear_upstream_credential,
                     get_account,
                     get_account_key_prefix,
+                    backfill_account_key_prefix,
                     save_account,
                     clear_account,
                     switch_gateway,
@@ -676,6 +686,7 @@ pub fn run() {
                     clear_upstream_credential,
                     get_account,
                     get_account_key_prefix,
+                    backfill_account_key_prefix,
                     save_account,
                     clear_account,
                     switch_gateway,
