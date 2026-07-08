@@ -255,13 +255,11 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                     running: true,
                     port: Some(running.port()),
                     intercepting: running.intercepting(),
-                    gateway_requests: running.gateway_requests(),
                 },
                 None => Response::Status {
                     running: false,
                     port: None,
                     intercepting: 0,
-                    gateway_requests: 0,
                 },
             }
         }

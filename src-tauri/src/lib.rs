@@ -381,12 +381,10 @@ async fn proxy_enable(
     })
     .await
     .map_err(|e| format!("proxy enable join error: {e}"))??;
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    TRAY_PROXY_ON.store(state.running, Ordering::Release);
     #[cfg(target_os = "macos")]
-    update_tray_status(&app, state.running, state.gateway_requests);
+    update_tray_status(&app, state.running);
     #[cfg(target_os = "windows")]
-    update_tray_tooltip(&app, state.running, state.gateway_requests);
+    update_tray_tooltip(&app, state.running);
     // `app` only feeds the macOS/Windows tray refresh above; keep it bound on
     // other platforms without an unused-variable warning.
     let _ = &app;
@@ -422,12 +420,10 @@ async fn proxy_disable(
     })
     .await
     .map_err(|e| format!("proxy disable join error: {e}"))??;
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    TRAY_PROXY_ON.store(state.running, Ordering::Release);
     #[cfg(target_os = "macos")]
-    update_tray_status(&app, state.running, state.gateway_requests);
+    update_tray_status(&app, state.running);
     #[cfg(target_os = "windows")]
-    update_tray_tooltip(&app, state.running, state.gateway_requests);
+    update_tray_tooltip(&app, state.running);
     // `app` only feeds the macOS/Windows tray refresh above; keep it bound on
     // other platforms without an unused-variable warning.
     let _ = &app;
@@ -519,13 +515,6 @@ static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 /// Set true when the window gains focus; cleared at each real hide/minimize
 /// site so the next open reconciles again. Starts false (window not yet shown).
 static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
-
-/// Whether the proxy is currently routing. Set on enable/disable/launch and
-/// read by the tray-tooltip refresh thread so it only polls status while the
-/// proxy is on (and goes idle otherwise). macOS + Windows only - Linux tray
-/// backends don't support tooltips, so the refresh thread isn't compiled there.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-static TRAY_PROXY_ON: AtomicBool = AtomicBool::new(false);
 
 /// Stop pinning the popover open. The frontend calls this on the user's
 /// first interaction with the first-launch window, switching the popover
@@ -694,7 +683,7 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             if let WindowEvent::ThemeChanged(_) = event {
                 if let Ok(st) = gate_connect_core::proxy::manager().status() {
-                    update_tray_status(window.app_handle(), st.running, st.gateway_requests);
+                    update_tray_status(window.app_handle(), st.running);
                 }
             }
             // The onboarding window is a regular window: closing it really
@@ -836,12 +825,10 @@ pub fn run() {
                                     "[gate] restoring providers after startup auto-enable failed: {e}"
                                 );
                             }
-                            #[cfg(any(target_os = "macos", target_os = "windows"))]
-                            TRAY_PROXY_ON.store(state.running, Ordering::Release);
                             #[cfg(target_os = "macos")]
-                            update_tray_status(&handle, state.running, state.gateway_requests);
+                            update_tray_status(&handle, state.running);
                             #[cfg(target_os = "windows")]
-                            update_tray_tooltip(&handle, state.running, state.gateway_requests);
+                            update_tray_tooltip(&handle, state.running);
                             // Nudge an already-mounted popover to re-read: its
                             // status poll is idle while routing last read as
                             // off, so it won't notice the flip on its own. The
@@ -1026,53 +1013,20 @@ pub fn run() {
 
             // Reflect the current proxy state in the tray at launch: tint the
             // mark for the menu-bar / taskbar appearance, add the macOS status
-            // dot, refresh the tooltip (macOS + Windows), and seed the gate.
+            // dot, and refresh the tooltip (macOS + Windows).
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
-                let st = gate_connect_core::proxy::manager().status().ok();
-                let running = st.as_ref().map(|s| s.running).unwrap_or(false);
-                let count = st.as_ref().map(|s| s.gateway_requests).unwrap_or(0);
-                TRAY_PROXY_ON.store(running, Ordering::Release);
-                update_tray_status(app.handle(), running, count);
+                let running = gate_connect_core::proxy::manager()
+                    .status()
+                    .map(|s| s.running)
+                    .unwrap_or(false);
+                update_tray_status(app.handle(), running);
             }
             // Linux has no status dot or tooltip, but the mark still needs
             // tinting for the panel's light/dark theme so it stays visible.
             #[cfg(target_os = "linux")]
             if let Ok(st) = gate_connect_core::proxy::manager().status() {
-                update_tray_status(app.handle(), st.running, st.gateway_requests);
-            }
-
-            // Keep the tray tooltip's gateway-request count fresh while the
-            // popover is closed (where the frontend's poll can't reach). Idle
-            // while routing is off; while on, poll every 5s and re-set the
-            // tooltip only when the (running, count) pair changes. macOS +
-            // Windows only - Linux tray backends don't support tooltips.
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    let mut last: Option<(bool, u64)> = None;
-                    loop {
-                        std::thread::sleep(std::time::Duration::from_secs(5));
-                        // The enable/disable path owns the tooltip while off, so
-                        // there's nothing to refresh - stay idle and don't poll.
-                        if !TRAY_PROXY_ON.load(Ordering::Acquire) {
-                            continue;
-                        }
-                        let Ok(state) = gate_connect_core::proxy::manager().status() else {
-                            continue;
-                        };
-                        let cur = (state.running, state.gateway_requests);
-                        if last == Some(cur) {
-                            continue;
-                        }
-                        last = Some(cur);
-                        let h = handle.clone();
-                        let _ = handle.run_on_main_thread(move || {
-                            update_tray_tooltip(&h, cur.0, cur.1);
-                        });
-                    }
-                });
+                update_tray_status(app.handle(), st.running);
             }
 
             Ok(())
@@ -1235,7 +1189,7 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
 /// light vs dark menu bar / taskbar, and on macOS overlay the routing-status
 /// dot. Also refreshes the tooltip on macOS + Windows.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool, gateway_requests: u64) {
+fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
     use tauri::Manager;
     let dark = app
         .get_webview_window("main")
@@ -1251,30 +1205,23 @@ fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool, gateway_requests: 
             let _ = tray.set_icon(Some(img));
         }
     }
-    // Linux tray backends carry no tooltip, so the request count is unused there.
-    #[cfg(target_os = "linux")]
-    let _ = gateway_requests;
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    update_tray_tooltip(app, proxy_on, gateway_requests);
+    update_tray_tooltip(app, proxy_on);
 }
 
-/// Set the tray hover tooltip to reflect the routing state and, while routing,
-/// the count of requests rewritten to the gateway this session. Cross-platform
+/// Set the tray hover tooltip to reflect the routing state. Cross-platform
 /// (macOS + Windows); Linux tray backends (SNI/AppIndicator) don't support
 /// tooltips, so this is compiled out there. The macOS status dot is handled in
 /// `update_tray_status`.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool, gateway_requests: u64) {
+fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
     if let Some(tray) = app.tray_by_id("main") {
         let text = if proxy_on {
-            format!(
-                "Gate Connect · {gateway_requests} request{} routed",
-                if gateway_requests == 1 { "" } else { "s" }
-            )
+            "Gate Connect · routing on"
         } else {
-            "Gate Connect · routing off".to_string()
+            "Gate Connect · routing off"
         };
-        let _ = tray.set_tooltip(Some(text));
+        let _ = tray.set_tooltip(Some(text.to_string()));
     }
 }
 

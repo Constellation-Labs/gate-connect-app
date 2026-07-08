@@ -49,11 +49,9 @@ impl ProxyManager {
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");
         // A dead/stale control connection means the daemon's gone or we lost
         // it - treat as off and drop the handle so a later enable reconnects.
-        let (running, port, gateway_requests) = match guard.as_mut() {
+        let (running, port) = match guard.as_mut() {
             Some(client) => match client.status() {
-                Ok((running, port, _intercepting, gateway_requests)) => {
-                    (running, port, gateway_requests)
-                }
+                Ok((running, port, _intercepting)) => (running, port),
                 // A single failed round-trip could be a transient blip while
                 // the daemon is still intercepting - don't desync by dropping
                 // the handle on the first error. Try one fresh connection to
@@ -61,22 +59,22 @@ impl ProxyManager {
                 // fails (daemon truly gone).
                 Err(_) => match HelperClient::connect_existing() {
                     Ok(mut fresh) => match fresh.status() {
-                        Ok((running, port, _, gateway_requests)) => {
+                        Ok((running, port, _)) => {
                             *guard = Some(fresh);
-                            (running, port, gateway_requests)
+                            (running, port)
                         }
                         Err(_) => {
                             *guard = None;
-                            (false, None, 0)
+                            (false, None)
                         }
                     },
                     Err(_) => {
                         *guard = None;
-                        (false, None, 0)
+                        (false, None)
                     }
                 },
             },
-            None => (false, None, 0),
+            None => (false, None),
         };
         drop(guard);
         Ok(ProxyState {
@@ -84,7 +82,6 @@ impl ProxyManager {
             port,
             ca_trusted: ca::is_trusted()?,
             domains: config::load_domains()?,
-            gateway_requests,
         })
     }
 
