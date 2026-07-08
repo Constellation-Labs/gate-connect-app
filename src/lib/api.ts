@@ -32,6 +32,11 @@ export const clearUpstreamCredential = (slug: string) => invoke<void>("clear_ups
 
 export const getAccount = () => invoke<Account | null>("get_account");
 
+/** Leading characters of the stored Gate key, for the reveal control in
+ * Settings. Reads the keychain, so only call it in response to an explicit
+ * user action. Returns null when no key is stored. */
+export const getAccountKeyPrefix = () => invoke<string | null>("get_account_key_prefix");
+
 export const saveAccount = (baseUrl: string, apiKey: string | null) =>
   invoke<void>("save_account", { baseUrl, apiKey });
 

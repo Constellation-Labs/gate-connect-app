@@ -112,6 +112,20 @@ pub fn has_api_key() -> Result<bool> {
     Ok(keychain::get(&service(), &user)?.is_some())
 }
 
+/// Leading characters of the stored Gate key - through the random part that
+/// distinguishes one key from another - so the UI can show *which* key is in
+/// use without revealing the secret. Unlike [`load_base_url`] this reads the
+/// keychain, so it can trigger an OS authorization prompt; call it only when
+/// the user has explicitly asked to see their key. Returns `None` when no key
+/// is stored.
+pub fn api_key_prefix() -> Result<Option<String>> {
+    let user = env::current_user()?;
+    let Some(key) = keychain::get(&service(), &user)? else {
+        return Ok(None);
+    };
+    Ok(Some(key.chars().take(12).collect()))
+}
+
 pub fn clear() -> Result<()> {
     let path = config_path()?;
     if path.exists() {

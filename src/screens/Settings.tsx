@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Account } from "../lib/api";
-import { launchAtLoginStatus, setLaunchAtLogin } from "../lib/api";
+import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix } from "../lib/api";
 import { trackError } from "../lib/analytics";
 import { GATEWAY_SERVERS } from "../lib/config";
 import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch } from "../components/gc/ui";
@@ -42,6 +42,22 @@ export function Settings({
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
   const [laLoaded, setLaLoaded] = useState(false);
   const [confirmDisableLaunch, setConfirmDisableLaunch] = useState(false);
+  // Masked until the user taps to reveal - the fetch reads the keychain, so it
+  // must stay opt-in rather than run on mount. null = masked, string = shown.
+  const [revealedPrefix, setRevealedPrefix] = useState<string | null>(null);
+
+  async function revealKeyPrefix() {
+    if (revealedPrefix !== null) {
+      setRevealedPrefix(null);
+      return;
+    }
+    try {
+      const prefix = await getAccountKeyPrefix();
+      if (prefix) setRevealedPrefix(prefix);
+    } catch (err) {
+      trackError(err, "generic");
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -91,6 +107,7 @@ export function Settings({
       await onReplaceKey(newKey.trim());
       setReplacing(false);
       setNewKey("");
+      setRevealedPrefix(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       trackError(err, "save_api_key");
@@ -152,8 +169,22 @@ export function Settings({
           <div className="flex h-9 items-center gap-2 rounded bg-gc-subtle px-3 text-gc-ink-3 shadow-border">
             <Icon name="key" size={14} className="text-gc-ink-4" />
             <span className="flex-1 font-mono text-[12px] tracking-wide">
-              {account.has_api_key ? "sk-gw-••••••••••••••••" : "No key stored"}
+              {account.has_api_key
+                ? revealedPrefix
+                  ? `${revealedPrefix}••••••••••`
+                  : "sk-gw-••••••••••••••••"
+                : "No key stored"}
             </span>
+            {account.has_api_key && (
+              <button
+                type="button"
+                onClick={revealKeyPrefix}
+                aria-label={revealedPrefix ? "Hide key" : "Show start of key"}
+                className="text-gc-ink-4 hover:text-gc-ink-2"
+              >
+                <Icon name={revealedPrefix ? "eyeOff" : "eye"} size={14} />
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex flex-col gap-2">

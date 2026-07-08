@@ -214,6 +214,15 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     }))
 }
 
+/// Leading characters of the stored Gate key, for the "show which key" reveal
+/// in Settings. Reads the keychain (so it may prompt on some platforms) and is
+/// therefore kept out of `get_account`'s hot path - the UI calls it only when
+/// the user taps to reveal.
+#[tauri::command]
+fn get_account_key_prefix() -> Result<Option<String>, String> {
+    account::api_key_prefix().map_err(|e| format!("{e:#}"))
+}
+
 #[tauri::command]
 async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), String> {
     if base_url.len() > 2048 {
@@ -633,6 +642,7 @@ pub fn run() {
                     save_upstream_api_key,
                     clear_upstream_credential,
                     get_account,
+                    get_account_key_prefix,
                     save_account,
                     clear_account,
                     switch_gateway,
@@ -665,6 +675,7 @@ pub fn run() {
                     save_upstream_api_key,
                     clear_upstream_credential,
                     get_account,
+                    get_account_key_prefix,
                     save_account,
                     clear_account,
                     switch_gateway,
