@@ -110,7 +110,11 @@ fn parse_autoproxy(output: &str) -> AutoProxy {
     for line in output.lines() {
         if let Some(v) = line.strip_prefix("URL:") {
             let v = v.trim();
-            auto.url = if v == "(null)" { String::new() } else { v.to_string() };
+            auto.url = if v == "(null)" {
+                String::new()
+            } else {
+                v.to_string()
+            };
         } else if let Some(v) = line.strip_prefix("Enabled:") {
             auto.enabled = v.trim().eq_ignore_ascii_case("Yes");
         }
@@ -493,10 +497,7 @@ mod tests {
         )];
         assert_eq!(upstream_proxy(&snap).as_deref(), Some("web.corp:8080"));
         // A stranded loopback slot is never treated as an upstream.
-        let snap = vec![svc(
-            slot(false, "", ""),
-            slot(true, "127.0.0.1", "61722"),
-        )];
+        let snap = vec![svc(slot(false, "", ""), slot(true, "127.0.0.1", "61722"))];
         assert_eq!(upstream_proxy(&snap), None);
     }
 }

@@ -747,6 +747,8 @@ mod tests {
         let pac = pac_script(&domains, 8123, Some("proxy.corp.com:8080"));
         assert!(pac.contains("if (h === \"api.anthropic.com\") return \"PROXY 127.0.0.1:8123\";"));
         assert!(pac.contains("if (isPlainHostName(h)) return \"DIRECT\";"));
-        assert!(pac.trim_end().ends_with("return \"PROXY proxy.corp.com:8080\";\n}"));
+        assert!(pac
+            .trim_end()
+            .ends_with("return \"PROXY proxy.corp.com:8080\";\n}"));
     }
 }
