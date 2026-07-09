@@ -136,8 +136,6 @@ pub struct ProxyState {
     pub ca_trusted: bool,
     /// The full domain catalog with current enabled flags.
     pub domains: Vec<ProxyDomain>,
-    /// Requests rewritten to the gateway this session (0 when not running).
-    pub gateway_requests: u64,
 }
 
 /// What the engine should do with a request on an intercepted host.
@@ -186,11 +184,10 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
     Decision::Tunnel
 }
 
-/// The built-in domain catalog. All entries ship `supported:true` and
-/// `enabled:false` - every provider is opt-in, so nothing routes until the
-/// user turns it on. New providers can be added here and surface in the UI
-/// automatically; gate a provider behind `supported:false` until Gate's
-/// upstream support for it is confirmed.
+/// The built-in domain catalog. All entries ship `supported:true` (Anthropic
+/// is also `enabled` by default; the rest are opt-in). New providers can be
+/// added here and surface in the UI automatically; gate a provider behind
+/// `supported:false` until Gate's upstream support for it is confirmed.
 pub fn default_domains() -> Vec<ProxyDomain> {
     vec![
         ProxyDomain {
@@ -211,7 +208,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // auto-updater explicit. Other /api/* paths (claude_code,
             // event_logging, bootstrap) also reach the real host unrewritten.
             passthrough_prefixes: vec!["/api/desktop/".into()],
-            enabled: false,
+            enabled: true,
             supported: true,
         },
         ProxyDomain {
@@ -282,12 +279,8 @@ pub fn default_domains() -> Vec<ProxyDomain> {
 mod tests {
     use super::*;
 
-    // The catalog ships every domain opt-in (`enabled:false`); these tests
-    // exercise routing for an enabled domain, so flip it on here.
     fn anthropic() -> Vec<ProxyDomain> {
-        let mut d = default_domains().into_iter().next().unwrap();
-        d.enabled = true;
-        vec![d]
+        vec![default_domains().into_iter().next().unwrap()]
     }
 
     #[test]

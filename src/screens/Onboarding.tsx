@@ -92,13 +92,22 @@ function buildSteps(platform: Platform): Step[] {
         <img
           src={WHERE_IMAGE[platform]}
           alt="The Gate Connect icon sits in the system status area; clicking it opens the status popover"
-          className="mx-auto block w-full max-w-[540px] object-cover object-top"
-          // Crop the bottom 25% of the 1920x1120 mockup and fade the cut edge,
-          // echoing the design's screen that runs off the bottom.
+          className={`mx-auto block w-full max-w-[540px] object-cover ${
+            platform === "windows" ? "object-bottom" : "object-top"
+          }`}
+          // Crop the 1920x1120 mockup toward the tray icon and fade the cut edge.
+          // Windows' tray is at the bottom right, so keep the bottom and cut the
+          // top; macOS/Linux menu bars are at the top, so keep the top.
           style={{
             aspectRatio: "1920 / 840",
-            maskImage: "linear-gradient(180deg,#000 88%,transparent 100%)",
-            WebkitMaskImage: "linear-gradient(180deg,#000 88%,transparent 100%)",
+            maskImage:
+              platform === "windows"
+                ? "linear-gradient(0deg,#000 88%,transparent 100%)"
+                : "linear-gradient(180deg,#000 88%,transparent 100%)",
+            WebkitMaskImage:
+              platform === "windows"
+                ? "linear-gradient(0deg,#000 88%,transparent 100%)"
+                : "linear-gradient(180deg,#000 88%,transparent 100%)",
           }}
         />
       ),

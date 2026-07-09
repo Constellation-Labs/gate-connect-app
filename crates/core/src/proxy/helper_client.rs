@@ -115,15 +115,14 @@ impl HelperClient {
         }
     }
 
-    /// Current daemon state: `(running, port, intercepting_count, gateway_requests)`.
-    pub fn status(&mut self) -> Result<(bool, Option<u16>, usize, u64)> {
+    /// Current daemon state: `(running, port, intercepting_count)`.
+    pub fn status(&mut self) -> Result<(bool, Option<u16>, usize)> {
         match self.round_trip(&Request::Status, CONTROL_TIMEOUT)? {
             Response::Status {
                 running,
                 port,
                 intercepting,
-                gateway_requests,
-            } => Ok((running, port, intercepting, gateway_requests)),
+            } => Ok((running, port, intercepting)),
             other => anyhow::bail!("unexpected Status reply: {other:?}"),
         }
     }

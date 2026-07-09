@@ -126,13 +126,6 @@ pub enum Response {
         port: Option<u16>,
         /// Number of domains currently intercepted (0 == pass-through).
         intercepting: usize,
-        /// Requests rewritten to the gateway this session (0 when not running).
-        /// `#[serde(default)]` keeps a newer GUI compatible with an older
-        /// daemon still running from a prior session (the daemon outlives the
-        /// GUI), which omits this field - it reads as 0 until the daemon is
-        /// replaced by a build that counts.
-        #[serde(default)]
-        gateway_requests: u64,
     },
     /// Something went wrong; `message` is human-readable.
     Error { message: String },
