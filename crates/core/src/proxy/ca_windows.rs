@@ -202,18 +202,33 @@ pub fn ensure_trusted() -> Result<()> {
     Ok(())
 }
 
-/// Remove the CA's trust. `certutil -user -delstore Root <CN>` deletes our cert
-/// from the per-user root store by common name.
+/// Remove the CA's trust and its key material. `certutil -user -delstore Root
+/// <CN>` deletes our cert from the per-user root store by common name; then the
+/// private key and public cert are torn down so an explicit "remove" leaves
+/// nothing behind.
 pub fn untrust() -> Result<()> {
-    if !is_trusted()? {
-        return Ok(());
+    if is_trusted()? {
+        let status = certutil()
+            .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
+            .status()
+            .context("running certutil -delstore Root")?;
+        if !status.success() {
+            anyhow::bail!("couldn't untrust the proxy CA (certutil -delstore Root failed)");
+        }
     }
-    let status = certutil()
-        .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
-        .status()
-        .context("running certutil -delstore Root")?;
-    if !status.success() {
-        anyhow::bail!("couldn't untrust the proxy CA (certutil -delstore Root failed)");
+    remove_ca_material()
+}
+
+/// Full teardown for an explicit removal: drop the private key from the
+/// certificate store and the public cert from disk, so "remove" clears the
+/// MITM material rather than only the trust setting. Best-effort on the key (a
+/// missing entry is fine) and on an absent cert file.
+fn remove_ca_material() -> Result<()> {
+    let _ = keychain::delete(&key_service(), &env::current_user()?);
+    let cert = cert_path()?;
+    match fs::remove_file(&cert) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("removing {}", cert.display())),
     }
-    Ok(())
 }

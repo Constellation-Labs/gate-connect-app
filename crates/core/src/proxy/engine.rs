@@ -289,6 +289,10 @@ impl HttpHandler for GateHandler {
         }
         let rules = self.rules.borrow().clone();
         let host = req.uri().host().map(str::to_owned);
+        // Path only, never `path_and_query()`: some providers pass the API key
+        // as a URL query param (e.g. Google `...?key=...`), and this value is
+        // written to the debug log below. `Uri::path()` excludes the query, so
+        // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
         let mut action = "passthrough";
         if let Some(host) = host.as_deref() {

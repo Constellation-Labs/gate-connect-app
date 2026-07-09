@@ -14,6 +14,7 @@ import {
   proxyEnable,
   proxyDisable,
   proxyTrustCa,
+  proxyUntrustCa,
   listProviders,
   providerEnable,
   providerDisable,
@@ -265,6 +266,25 @@ export function App() {
     }
   }, [proxyBusy]);
 
+  const untrustCa = useCallback(async () => {
+    if (proxyBusy) return;
+    setProxyBusy(true);
+    try {
+      setProxy(await proxyUntrustCa());
+      track("ca_untrusted");
+    } catch {
+      // a cancelled removal dialog rejects; re-sync instead of leaking an
+      // unhandled rejection with the banner stuck in its old state
+      try {
+        setProxy(await proxyStatus());
+      } catch {
+        /* noop */
+      }
+    } finally {
+      setProxyBusy(false);
+    }
+  }, [proxyBusy]);
+
   const replaceKey = useCallback(
     async (key: string) => {
       const base = account?.gateway_base_url;
@@ -359,6 +379,7 @@ export function App() {
         onToggleProxy={toggleProxy}
         onSetProvider={setProvider}
         onTrustCa={trustCa}
+        onUntrustCa={untrustCa}
       />
     );
   } else if (screen === "settings" && account) {
