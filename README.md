@@ -61,7 +61,7 @@ prompt.
 ChatGPT desktop) route through a local MITM proxy instead:
 
 1. Enabling the proxy trusts a locally generated root CA and points the system
- HTTPS proxy at a loopback listener. The CA **private** key lives in the OS
+ HTTPS proxy at the loopback engine. The CA **private** key lives in the OS
  keychain; only the public cert is written to disk.
 2. For each TLS `CONNECT` the engine decides - before any handshake - whether
  the target host is one we route. Hosts we don't route are blind-tunnelled
@@ -71,6 +71,14 @@ ChatGPT desktop) route through a local MITM proxy instead:
  injected. Non-inference paths on the same host (e.g. an auto-updater) pass
  through to the real upstream.
 
+On macOS and Windows the system proxy is driven by a loopback **PAC** (proxy
+auto-config) the engine serves: it routes only Gate's enabled hosts to the
+engine and sends everything else direct - or to the user's pre-existing proxy,
+which is preserved as the PAC fallback. So unrelated traffic (Teams, browsers,
+other apps) never traverses the engine at all, not just at the `CONNECT` gate,
+and a corporate proxy keeps working while routing is on. Linux has no PAC
+equivalent and uses env-var proxying instead.
+
 The enabled-domain set is hot-swappable, so flipping a provider on or off only
 pushes new rules - no engine restart, no extra admin prompt. Disabling the
 proxy restores the previous system-proxy state but deliberately leaves the CA
@@ -78,10 +86,10 @@ trusted, so re-enabling is promptless; untrusting is a separate explicit
 action.
 
 Platform specifics: CA trust and system-proxy wiring are per-OS - macOS via
-`security` + `networksetup`, Windows via `certutil` + the per-user WinINET
-registry settings, Linux via the system trust store
-(`update-ca-certificates` / `update-ca-trust`) + a user-scoped systemd
-`environment.d` drop-in.
+`security` + `networksetup` (auto-proxy URL / PAC), Windows via `certutil` +
+the per-user WinINET registry settings (`AutoConfigURL` / PAC), Linux via the
+system trust store (`update-ca-certificates` / `update-ca-trust`) + a
+user-scoped systemd `environment.d` drop-in.
 
 Provider policy is **config-first, proxy-if-already-on**: flipping a provider on
 always configures its installed tools, and additionally flips its proxy domains

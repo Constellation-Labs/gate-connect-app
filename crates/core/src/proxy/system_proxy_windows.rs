@@ -1,11 +1,12 @@
 //! Windows system HTTP/HTTPS proxy wiring via the per-user WinINET settings in
 //! the registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet
-//! Settings`). Enabling points the WinINET proxy at our loopback engine;
-//! disabling restores the exact prior state from a snapshot (mirrors the
-//! `previousEnv` restore pattern in [`crate::env`], and the macOS
-//! `system_proxy` snapshot/restore). Everything here lives under `HKCU`, so -
-//! like the macOS `networksetup` path - none of it needs admin; the only
-//! privileged step in the subsystem is trusting the CA.
+//! Settings`). Enabling points WinINET at the engine's loopback PAC
+//! (`AutoConfigURL`) so only Gate's intercepted hosts route to us and all other
+//! traffic stays DIRECT; disabling restores the exact prior state from a
+//! snapshot (mirrors the `previousEnv` restore pattern in [`crate::env`], and
+//! the macOS `system_proxy` snapshot/restore). Everything here lives under
+//! `HKCU`, so - like the macOS `networksetup` path - none of it needs admin;
+//! the only privileged step in the subsystem is trusting the CA.
 //!
 //! WinINET caches the proxy config, so after every registry change we poke it
 //! with `InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED + _REFRESH)` -
@@ -49,6 +50,10 @@ pub struct ProxySnapshot {
     pub server: String,
     /// `ProxyOverride` - the bypass list (e.g. `<local>`).
     pub bypass: String,
+    /// `AutoConfigURL` - the PAC URL, empty when unset. Defaulted so a
+    /// snapshot written by an older build (before PAC mode) still loads.
+    #[serde(default)]
+    pub auto_config_url: String,
 }
 
 fn snapshot_path() -> Result<PathBuf> {
@@ -77,6 +82,7 @@ pub fn snapshot() -> Result<ProxySnapshot> {
         enable: key.get_value("ProxyEnable").unwrap_or(0),
         server: key.get_value("ProxyServer").unwrap_or_default(),
         bypass: key.get_value("ProxyOverride").unwrap_or_default(),
+        auto_config_url: key.get_value("AutoConfigURL").unwrap_or_default(),
     })
 }
 
@@ -144,24 +150,81 @@ fn set_values(enable: u32, server: &str, bypass: &str) -> Result<()> {
     Ok(())
 }
 
-/// Point the WinINET proxy at the loopback engine. `<local>` keeps localhost /
-/// intranet traffic off the proxy. Promptless (HKCU).
-pub fn enable(port: u16) -> Result<()> {
-    set_values(1, &format!("127.0.0.1:{port}"), "<local>")
+/// Set (or, when empty, delete) `AutoConfigURL` and poke WinINET. A missing
+/// value is the "no PAC" state, so restoring an empty snapshot deletes it
+/// rather than leaving an empty string WinINET would try to fetch.
+fn set_auto_config(url: &str) -> Result<()> {
+    let key = settings_key(true)?;
+    if url.is_empty() {
+        match key.delete_value("AutoConfigURL") {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("clearing AutoConfigURL"),
+        }
+    } else {
+        key.set_value("AutoConfigURL", &url.to_string())
+            .context("setting AutoConfigURL")?;
+    }
+    notify_wininet();
+    Ok(())
+}
+
+/// The user's pre-existing upstream proxy as a `host:port` string suitable for
+/// a PAC `PROXY` directive, so non-Gate traffic keeps flowing through it while
+/// routing is on. Returns `None` (PAC falls back to DIRECT) when there was no
+/// enabled static proxy, or when the prior config was itself a PAC or a
+/// non-HTTP proxy this can't express. For the per-protocol `ProxyServer` form
+/// (`http=..;https=..`) the `https=` entry wins, then `http=`.
+pub fn upstream_proxy(snapshot: &ProxySnapshot) -> Option<String> {
+    if snapshot.enable == 0 {
+        return None;
+    }
+    let server = snapshot.server.trim();
+    if server.is_empty() {
+        return None;
+    }
+    if !server.contains('=') {
+        return Some(server.to_string());
+    }
+    let scheme = |prefix: &str| {
+        server
+            .split(';')
+            .map(str::trim)
+            .find_map(|entry| entry.strip_prefix(prefix))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    scheme("https=").or_else(|| scheme("http="))
+}
+
+/// Point WinINET at the engine's loopback PAC. The PAC sends only Gate's
+/// intercepted hosts to the proxy and everything else DIRECT, so unrelated
+/// traffic (Teams, other apps) never traverses the loopback engine. The static
+/// proxy is turned off so it can't compete with the PAC. Promptless (HKCU).
+pub fn enable_pac(pac_url: &str) -> Result<()> {
+    let key = settings_key(true)?;
+    key.set_value("ProxyEnable", &0u32)
+        .context("clearing ProxyEnable")?;
+    key.set_value("AutoConfigURL", &pac_url.to_string())
+        .context("setting AutoConfigURL")?;
+    notify_wininet();
+    Ok(())
 }
 
 /// Restore the user's proxy config from a snapshot. Promptless; safety-critical.
 pub fn restore(snapshot: &ProxySnapshot) -> Result<()> {
-    set_values(snapshot.enable, &snapshot.server, &snapshot.bypass)
+    set_values(snapshot.enable, &snapshot.server, &snapshot.bypass)?;
+    set_auto_config(&snapshot.auto_config_url)
 }
 
-/// Turn the WinINET proxy off (leaving the server string intact). Promptless
-/// fail-safe used when no snapshot is available, so a dead engine never strands
-/// traffic.
+/// Turn the WinINET proxy off (leaving the server string intact) and clear any
+/// PAC URL we set. Promptless fail-safe used when no snapshot is available, so
+/// a dead engine never strands traffic at our proxy or a dead PAC.
 pub fn force_off() -> Result<()> {
     let key = settings_key(true)?;
     key.set_value("ProxyEnable", &0u32)
         .context("setting ProxyEnable")?;
     notify_wininet();
-    Ok(())
+    set_auto_config("")
 }

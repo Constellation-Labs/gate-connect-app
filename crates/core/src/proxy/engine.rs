@@ -56,6 +56,12 @@ pub struct EngineConfig {
     /// spending the owner's Gate key through the proxy. Linux sets the daemon's
     /// own UID; macOS/Windows pass `None` (out of scope for this release).
     pub owner_uid: Option<u32>,
+    /// The user's pre-existing upstream proxy , used as the
+    /// PAC fallback so non-Gate traffic keeps flowing through it instead of
+    /// going DIRECT while routing is on. PAC-driven platforms only
+    /// ; Linux uses env-var proxies with no PAC.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    pub upstream_proxy: Option<String>,
 }
 
 /// A running engine. Dropping it signals graceful shutdown (fail-safe so a
@@ -65,6 +71,11 @@ pub struct EngineConfig {
 /// [`stop`]: RunningEngine::stop
 pub struct RunningEngine {
     port: u16,
+    /// Loopback port serving the PAC script the system proxy points at.
+    /// PAC-driven platforms only (Windows `AutoConfigURL`, macOS
+    /// `networksetup -setautoproxyurl`); Linux uses env-var proxies with no PAC.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    pac_port: u16,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
     rules_tx: watch::Sender<Arc<Vec<ProxyDomain>>>,
@@ -77,6 +88,12 @@ pub struct RunningEngine {
 impl RunningEngine {
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Loopback port serving the PAC script (Windows-only).
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    pub fn pac_port(&self) -> u16 {
+        self.pac_port
     }
 
     /// True once the engine thread has exited (crash or stop) - the
@@ -432,6 +449,71 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
     Ok((listener, port))
 }
 
+/// Build the PAC (proxy auto-config) script WinINET runs for every connection.
+/// Enabled Gate hosts route to the loopback proxy; everything else falls to
+/// `upstream` when the user already had a proxy (preserving a corporate proxy),
+/// or DIRECT otherwise. Host matching mirrors [`ProxyDomain::matches_host`]:
+/// exact, case-insensitive hostnames.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) -> String {
+    let mut s = String::from("function FindProxyForURL(url, host) {\n");
+    s.push_str("  var h = host.toLowerCase();\n");
+    for host in domains.iter().flat_map(|d| d.hosts.iter()) {
+        s.push_str(&format!(
+            "  if (h === \"{}\") return \"PROXY 127.0.0.1:{proxy_port}\";\n",
+            host.to_ascii_lowercase()
+        ));
+    }
+    match upstream {
+        // Preserve the user's prior upstream proxy for all other traffic, but
+        // keep plain/local hostnames DIRECT as WinINET's `<local>` bypass did.
+        Some(proxy) => {
+            s.push_str("  if (isPlainHostName(h)) return \"DIRECT\";\n");
+            s.push_str(&format!("  return \"PROXY {proxy}\";\n"));
+        }
+        None => s.push_str("  return \"DIRECT\";\n"),
+    }
+    s.push_str("}\n");
+    s
+}
+
+/// Serve the PAC script on a dedicated loopback listener. WinINET fetches the
+/// `AutoConfigURL` *directly* (not through the proxy), so this must be a plain
+/// HTTP responder, separate from the hudsucker proxy on `proxy_port`. The body
+/// is rebuilt per request from the live rule set. Runs until the engine's
+/// runtime is torn down.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+async fn serve_pac(
+    listener: tokio::net::TcpListener,
+    rules: watch::Receiver<Arc<Vec<ProxyDomain>>>,
+    proxy_port: u16,
+    upstream: Option<String>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let rules = rules.clone();
+        let upstream = upstream.clone();
+        tokio::spawn(async move {
+            // Consume the request (a small GET we don't parse) before replying.
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let body = pac_script(&rules.borrow(), proxy_port, upstream.as_deref());
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/x-ns-proxy-autoconfig\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+    }
+}
+
 /// Start the engine on an ephemeral loopback port. Blocks until the proxy
 /// has built and bound (or fails), then returns a handle. The tokio runtime
 /// lives on the spawned thread and is torn down when the handle is stopped
@@ -454,8 +536,20 @@ where
     }
 
     let (listener, port) = bind_loopback(cfg.preferred_port)?;
+    // Windows points WinINET at a PAC served on its own loopback port (see
+    // `serve_pac`); the proxy port itself is baked into the PAC body.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let (pac_listener, pac_port) = bind_loopback(None).context("binding the PAC loopback port")?;
 
     let (rules_tx, rules_rx) = watch::channel(Arc::new(enabled_only(&cfg.domains)));
+    // The PAC body is regenerated per request from this live rule set, so a
+    // domain toggle needs no registry write.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let pac_rules_rx = rules_rx.clone();
+    // Fallback proxy baked into the PAC so non-Gate traffic keeps using the
+    // user's prior proxy instead of going DIRECT.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let upstream_proxy = cfg.upstream_proxy.clone();
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let handler = GateHandler {
         rules: rules_rx,
@@ -529,6 +623,20 @@ where
                 };
 
                 let _ = ready_tx.send(Ok(()));
+                // Bring up the PAC responder on the engine runtime; it dies with
+                // the runtime when the engine stops. Non-fatal if it can't start
+                // - the proxy still runs, WinINET just fails the PAC fetch and
+                // falls back to DIRECT (no interception) rather than stranding
+                // traffic.
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                {
+                    match tokio::net::TcpListener::from_std(pac_listener) {
+                        Ok(pac) => {
+                            tokio::spawn(serve_pac(pac, pac_rules_rx, port, upstream_proxy));
+                        }
+                        Err(e) => eprintln!("gate proxy PAC listener failed to start: {e}"),
+                    }
+                }
                 if let Err(e) = proxy.start().await {
                     eprintln!("gate proxy engine stopped with error: {e}");
                 }
@@ -544,6 +652,8 @@ where
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok(())) => Ok(RunningEngine {
             port,
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            pac_port,
             shutdown: Some(shutdown_tx),
             thread: Some(thread),
             rules_tx,
@@ -613,5 +723,36 @@ mod tests {
         // A port nothing owns resolves to None (fails closed).
         let unused = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
         assert_eq!(peer_uid_for(unused), None);
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn pac_routes_only_listed_hosts_to_proxy() {
+        let domains = vec![ProxyDomain {
+            slug: "anthropic".into(),
+            display_name: "Anthropic".into(),
+            hosts: vec!["api.anthropic.com".into(), "API.OTHER.com".into()],
+            upstream_url: "https://api.anthropic.com".into(),
+            rewrite_prefixes: vec!["/v1/".into()],
+            passthrough_prefixes: vec![],
+            enabled: true,
+            supported: true,
+        }];
+
+        // No prior proxy: listed hosts hit the engine, everything else DIRECT.
+        let pac = pac_script(&domains, 8123, None);
+        assert!(pac.contains("if (h === \"api.anthropic.com\") return \"PROXY 127.0.0.1:8123\";"));
+        assert!(pac.contains("if (h === \"api.other.com\") return \"PROXY 127.0.0.1:8123\";"));
+        assert!(pac.trim_end().ends_with("return \"DIRECT\";\n}"));
+        assert!(!pac.contains("teams"));
+
+        // With a prior proxy: Gate hosts still hit the engine, plain hostnames
+        // stay direct, and everything else falls back to the upstream proxy.
+        let pac = pac_script(&domains, 8123, Some("proxy.corp.com:8080"));
+        assert!(pac.contains("if (h === \"api.anthropic.com\") return \"PROXY 127.0.0.1:8123\";"));
+        assert!(pac.contains("if (isPlainHostName(h)) return \"DIRECT\";"));
+        assert!(pac
+            .trim_end()
+            .ends_with("return \"PROXY proxy.corp.com:8080\";\n}"));
     }
 }

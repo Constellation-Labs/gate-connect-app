@@ -131,6 +131,8 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
             ca_key_pem,
             preferred_port: None,
             owner_uid: None,
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            upstream_proxy: None,
         },
         || {},
     )
@@ -209,6 +211,8 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
             ca_key_pem,
             preferred_port: None,
             owner_uid: None,
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            upstream_proxy: None,
         },
         || {},
     )
