@@ -240,12 +240,20 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
         }
     }
 
+    // Record the on state durably so a later reconcile ([`reconcile_enabled`])
+    // or reboot re-applies the provider. When the engine is live, route the
+    // change through the manager so routing also starts immediately; otherwise
+    // persist the flag directly. Mirrors [`disable`], which always persists the
+    // off-intent regardless of proxy state.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    if plan.enable_domain {
-        for domain in p.proxy_domain_slugs {
+    for domain in p.proxy_domain_slugs {
+        if plan.enable_domain {
             crate::proxy::manager()
                 .set_domain(domain, true)
                 .with_context(|| format!("enabling proxy domain {domain:?}"))?;
+        } else {
+            crate::proxy::config::set_enabled(domain, true)
+                .with_context(|| format!("persisting proxy domain {domain:?}"))?;
         }
     }
 
