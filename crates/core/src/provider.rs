@@ -70,24 +70,24 @@ pub fn providers() -> Vec<Provider> {
             tool_ids: &[],
             proxy_domain_slugs: &["openrouter"],
         },
-        Provider {
-            slug: "google",
-            display_name: "Google / Gemini",
-            // The Gemini CLI can't route through the proxy on macOS (Node
-            // ignores the system proxy + keychain), so it's called out there
-            // only; the CLI works on Linux/Windows.
-            subtitle: if cfg!(target_os = "macos") {
-                "Gemini API (CLI not supported)"
-            } else {
-                "Gemini API"
-            },
-            // Proxy-only, like OpenRouter: no CLI integration, routed entirely
-            // through the proxy domain (requires the proxy to be running). Two
-            // domains: the generative-language API (API-key clients) and the
-            // Code Assist backend (the Gemini CLI's "login with Google" flow).
-            tool_ids: &[],
-            proxy_domain_slugs: &["google", "google-codeassist"],
-        },
+//         Provider {
+//             slug: "google",
+//             display_name: "Google / Gemini",
+//             // The Gemini CLI can't route through the proxy on macOS (Node
+//             // ignores the system proxy + keychain), so it's called out there
+//             // only; the CLI works on Linux/Windows.
+//             subtitle: if cfg!(target_os = "macos") {
+//                 "Gemini API (CLI not supported)"
+//             } else {
+//                 "Gemini API"
+//             },
+//             // Proxy-only, like OpenRouter: no CLI integration, routed entirely
+//             // through the proxy domain (requires the proxy to be running). Two
+//             // domains: the generative-language API (API-key clients) and the
+//             // Code Assist backend (the Gemini CLI's "login with Google" flow).
+//             tool_ids: &[],
+//             proxy_domain_slugs: &["google", "google-codeassist"],
+//         },
     ]
 }
 
@@ -472,16 +472,16 @@ mod tests {
         assert_eq!(p.proxy_domain_slugs, &["openrouter"]);
     }
 
-    #[test]
-    fn gemini_provider_is_proxy_only() {
-        let p = find("google").expect("google/gemini provider present");
-        assert_eq!(p.display_name, "Google / Gemini");
-        assert!(
-            p.tool_ids.is_empty(),
-            "Gemini has no CLI integration - it's proxy-only"
-        );
-        assert_eq!(p.proxy_domain_slugs, &["google", "google-codeassist"]);
-    }
+//     #[test]
+//     fn gemini_provider_is_proxy_only() {
+//         let p = find("google").expect("google/gemini provider present");
+//         assert_eq!(p.display_name, "Google / Gemini");
+//         assert!(
+//             p.tool_ids.is_empty(),
+//             "Gemini has no CLI integration - it's proxy-only"
+//         );
+//         assert_eq!(p.proxy_domain_slugs, &["google", "google-codeassist"]);
+//     }
 
     #[test]
     fn claude_is_listed_before_codex() {
