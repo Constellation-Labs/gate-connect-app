@@ -192,18 +192,11 @@ export function App() {
       track(next.running ? "proxy_enabled" : "proxy_disabled");
       setRestartHint(true);
       if (next.running) setRelaunchHint(true);
-      // The master toggle also disconnects/restores providers, so refresh them.
-      let current = await listProviders().catch(() => []);
-      // Turning the proxy on turns every available integration on with it.
-      if (next.running) {
-        await Promise.all(
-          current
-            .filter((p) => p.available && !p.enabled)
-            .map((p) => providerEnable(p.slug)),
-        );
-        current = await listProviders().catch(() => current);
-      }
-      setProviders(current);
+      // The backend owns the provider set across a master toggle: turning off
+      // snapshots the on-providers and disables all; turning on restores that
+      // snapshot. Just reflect the result - don't force every available
+      // provider on, which would clobber the ones the user deliberately left off.
+      setProviders(await listProviders().catch(() => []));
     } catch (e) {
       trackError(e, "generic");
       // Surface why the toggle failed (e.g. on Linux the CA-trust admin step

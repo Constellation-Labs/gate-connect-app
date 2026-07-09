@@ -145,3 +145,36 @@ fn already_connected_tool_is_left_untouched() {
     let after_second = fs::read(env::claude_code_settings_path().unwrap()).unwrap();
     assert_eq!(after_first, after_second);
 }
+
+/// Regression: enabling a provider while the proxy is off must persist the
+/// on-intent durably, so a later [`reconcile_enabled`] re-wires a tool that has
+/// since dropped back to [`Status::Detected`]. Guards the enable/disable
+/// persisted-intent asymmetry - `disable` always persisted off, but `enable`
+/// used to persist on only while the proxy was running, stranding the intent
+/// after an off then on cycle with routing stopped.
+#[test]
+fn enable_while_proxy_off_persists_intent_for_reconcile() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    install_claude_unconfigured();
+
+    // Off then on with the proxy stopped. `disable` persists the off-intent;
+    // `enable` must re-persist the on-intent as well as configuring the tool.
+    provider::disable("anthropic").unwrap();
+    provider::enable("anthropic").unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+
+    // Drop the tool back to `Detected` (its Gate config removed) while the
+    // persisted domain flag stays intact - the state a fresh reconcile faces
+    // after a reboot or when the tool's config is lost.
+    fs::remove_file(env::claude_code_settings_path().unwrap()).unwrap();
+    assert_eq!(claude_status(), Status::Detected);
+
+    provider::reconcile_enabled().unwrap();
+
+    // The persisted on-intent drove the re-wire. Without the symmetry fix,
+    // `enable` left the domain persisted off from the earlier `disable`, so
+    // reconcile would skip the provider and Claude would stay `Detected`.
+    assert_eq!(claude_status(), Status::Connected);
+}
