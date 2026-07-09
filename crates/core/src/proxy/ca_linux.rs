@@ -189,14 +189,27 @@ pub fn ensure_trusted() -> Result<()> {
 /// removable.
 pub fn untrust() -> Result<()> {
     let store = trust_store()?;
-    if !store.anchor.exists() {
-        return Ok(());
+    if store.anchor.exists() {
+        let script = format!(
+            "/bin/rm -f {dst} && {refresh}",
+            dst = sh_quote(&store.anchor.display().to_string()),
+            refresh = store.refresh_cmd,
+        );
+        run_as_admin(&script).context("removing the proxy CA from the system trust store")?;
     }
-    let script = format!(
-        "/bin/rm -f {dst} && {refresh}",
-        dst = sh_quote(&store.anchor.display().to_string()),
-        refresh = store.refresh_cmd,
-    );
-    run_as_admin(&script).context("removing the proxy CA from the system trust store")?;
-    Ok(())
+    remove_ca_material()
+}
+
+/// Full teardown for an explicit removal: drop the private key from the secret
+/// store and the public cert from disk, so "remove" clears the MITM material
+/// rather than only the system-store anchor. Best-effort on the key (a missing
+/// entry is fine) and on an absent cert file.
+fn remove_ca_material() -> Result<()> {
+    let _ = keychain::delete(&key_service(), &env::current_user()?);
+    let cert = cert_path()?;
+    match fs::remove_file(&cert) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("removing {}", cert.display())),
+    }
 }

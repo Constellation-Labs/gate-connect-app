@@ -236,7 +236,8 @@ mod tests {
         fn new(tag: &str) -> Self {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!("gate_pf_{}_{tag}_{n}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("gate_pf_{}_{tag}_{n}", std::process::id()));
             fs::create_dir_all(&dir).unwrap();
             TmpDir(dir)
         }
@@ -279,7 +280,10 @@ mod tests {
 
         assert_eq!(fs::read(&real).unwrap(), b"new");
         // The link itself is left intact, not replaced by a regular file.
-        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     /// A symlink that redirects the write out of its directory (the
@@ -308,4 +312,3 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"");
     }
 }
-

@@ -140,6 +140,11 @@ pub fn is_trusted() -> Result<bool> {
     }
     let out = Command::new("/usr/bin/security")
         .arg("verify-cert")
+        // Evaluate against the SSL policy so this matches the scope the trust
+        // setting is installed with (`ensure_trusted` uses `-p ssl`). A basic
+        // (unscoped) evaluation would not see a policy-scoped trust setting and
+        // would report the CA as untrusted, re-prompting on every launch.
+        .args(["-p", "ssl"])
         .arg("-c")
         .arg(&cert)
         .output()
@@ -209,7 +214,12 @@ pub fn ensure_trusted() -> Result<()> {
     let keychain = login_keychain()?;
     let status = Command::new("/usr/bin/security")
         .arg("add-trusted-cert")
-        .args(["-r", "trustRoot", "-k"])
+        // `-p ssl` scopes the trust setting to TLS server evaluation instead
+        // of every policy (S/MIME, code signing, ...). The proxy only ever
+        // needs this root for the MITM TLS leg, so the anchor should not be
+        // trusted for anything else. `is_trusted` verifies against the same
+        // `-p ssl` policy.
+        .args(["-r", "trustRoot", "-p", "ssl", "-k"])
         .arg(&keychain)
         .arg(&cert)
         .status()
@@ -222,20 +232,35 @@ pub fn ensure_trusted() -> Result<()> {
     Ok(())
 }
 
-/// Remove the CA's trust. Runs `security remove-trusted-cert` directly so its
-/// native authorization dialog appears.
+/// Remove the CA's trust and its key material. Runs `security
+/// remove-trusted-cert` directly so its native authorization dialog appears,
+/// then tears down the private key and public cert so an explicit "remove"
+/// leaves nothing behind.
 pub fn untrust() -> Result<()> {
-    if !is_trusted()? {
-        return Ok(());
+    if is_trusted()? {
+        let cert = cert_path()?;
+        let status = Command::new("/usr/bin/security")
+            .arg("remove-trusted-cert")
+            .arg(&cert)
+            .status()
+            .context("running security remove-trusted-cert")?;
+        if !status.success() {
+            anyhow::bail!("couldn't untrust the proxy CA (security remove-trusted-cert failed)");
+        }
     }
+    remove_ca_material()
+}
+
+/// Full teardown for an explicit removal: drop the private key from the
+/// keychain and the public cert from disk, so "remove" clears the MITM
+/// material rather than only the trust setting. Best-effort on the key (a
+/// missing entry is fine) and on an absent cert file.
+fn remove_ca_material() -> Result<()> {
+    let _ = keychain::delete(&key_service(), &env::current_user()?);
     let cert = cert_path()?;
-    let status = Command::new("/usr/bin/security")
-        .arg("remove-trusted-cert")
-        .arg(&cert)
-        .status()
-        .context("running security remove-trusted-cert")?;
-    if !status.success() {
-        anyhow::bail!("couldn't untrust the proxy CA (security remove-trusted-cert failed)");
+    match fs::remove_file(&cert) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("removing {}", cert.display())),
     }
-    Ok(())
 }

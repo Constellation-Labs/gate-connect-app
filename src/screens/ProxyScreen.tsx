@@ -17,6 +17,7 @@ export function ProxyScreen({
   onToggleProxy,
   onSetProvider,
   onTrustCa,
+  onUntrustCa,
   restartHint,
   relaunchHint,
   codexDrifted,
@@ -29,6 +30,7 @@ export function ProxyScreen({
   onToggleProxy: () => void;
   onSetProvider: (slug: string, enabled: boolean) => void;
   onTrustCa: () => void;
+  onUntrustCa: () => void;
   restartHint: boolean;
   relaunchHint: boolean;
   codexDrifted: boolean;
@@ -74,6 +76,24 @@ export function ProxyScreen({
             className="shrink-0 text-[12px] font-medium text-gc-accent disabled:opacity-40"
           >
             Trust
+          </button>
+        </div>
+      )}
+
+      {!proxy.running && proxy.ca_trusted && (
+        <div className="mx-3.5 mb-1 flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
+          <Icon name="shieldCheck" size={15} className="shrink-0 text-gc-ink-3" />
+          <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+            Gate’s certificate is still trusted in your {trustStore}. Removing
+            it clears the certificate and private key from this machine.
+          </div>
+          <button
+            type="button"
+            onClick={onUntrustCa}
+            disabled={busy}
+            className="shrink-0 text-[12px] font-medium text-gc-accent disabled:opacity-40"
+          >
+            Remove
           </button>
         </div>
       )}
