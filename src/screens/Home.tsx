@@ -7,7 +7,6 @@ export function Home({
   workspace,
   proxyOn,
   providerCount,
-  requestCount,
   showProxy,
   error,
   onOpenProxy,
@@ -18,7 +17,6 @@ export function Home({
   workspace: string;
   proxyOn: boolean;
   providerCount: number;
-  requestCount: number;
   showProxy: boolean;
   error?: string | null;
   onOpenProxy: () => void;
@@ -58,12 +56,6 @@ export function Home({
                   ? `On · ${providerCount} provider${providerCount === 1 ? "" : "s"}`
                   : "Off · not routing"}
               </div>
-              {proxyOn && (
-                <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
-                  <span className="font-mono tabular-nums">{requestCount.toLocaleString()}</span>{" "}
-                  request{requestCount === 1 ? "" : "s"} routed
-                </div>
-              )}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <span

@@ -80,23 +80,6 @@ export function App() {
     return () => clearTimeout(t);
   }, [relaunchHint]);
 
-  // While the proxy is running and the popover is showing a screen that
-  // displays the gateway-request count, poll status every second so the
-  // counter ticks up live. The effect already stops when the proxy is off or
-  // the screen changes away; we deliberately don't gate on
-  // `document.visibilityState`, since a Tauri menubar popover webview doesn't
-  // reliably report "visible" and that would silently suppress every tick.
-  const proxyRunning = proxy?.running ?? false;
-  useEffect(() => {
-    if (!proxyRunning || (screen !== "home" && screen !== "proxy")) return;
-    const id = setInterval(() => {
-      proxyStatus()
-        .then(setProxy)
-        .catch(() => {});
-    }, 1000);
-    return () => clearInterval(id);
-  }, [proxyRunning, screen]);
-
   // App version, stamped into the bundle at release time and shown quietly
   // in the footer. Best-effort: stays empty (footer hidden) if it can't load.
   const [version, setVersion] = useState("");
@@ -332,7 +315,6 @@ export function App() {
   const providerCount = providers.filter(
     (p) => p.enabled && !HIDDEN_PROVIDER_SLUGS.has(p.slug),
   ).length;
-  const requestCount = proxy?.gateway_requests ?? 0;
   const showProxy = proxy !== null;
 
   let body: ReactNode;
@@ -402,7 +384,6 @@ export function App() {
         workspace={workspace}
         proxyOn={proxyOn}
         providerCount={providerCount}
-        requestCount={requestCount}
         showProxy={showProxy}
         error={providerError}
         onOpenProxy={() => setScreen("proxy")}

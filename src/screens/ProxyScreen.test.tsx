@@ -16,7 +16,6 @@ const proxy: ProxyState = {
   port: 8080,
   ca_trusted: false,
   domains: [],
-  gateway_requests: 0,
 };
 
 function renderOn(platform: Platform, relaunchHint = false, props: Partial<React.ComponentProps<typeof ProxyScreen>> = {}) {
