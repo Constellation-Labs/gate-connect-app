@@ -26,6 +26,13 @@ pub struct Account {
 #[derive(Serialize, Deserialize)]
 struct AccountFile {
     gateway_base_url: String,
+    /// Leading characters of the stored Gate key - enough to identify *which*
+    /// key is in use without revealing the secret. Stored here so the Settings
+    /// reveal can read it from disk instead of touching the keychain. Absent in
+    /// files written before this field existed, and while the account is in a
+    /// key-less pending state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api_key_prefix: Option<String>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -56,6 +63,13 @@ pub fn load() -> Result<Option<Account>> {
 /// the keychain. Used by the UI to show "you're signed in" state
 /// without triggering an authorization prompt to read the secret.
 pub fn load_base_url() -> Result<Option<String>> {
+    Ok(read_account_file()?.map(|f| f.gateway_base_url))
+}
+
+/// Read and parse `account.json`, or `None` when no account is on disk. The
+/// on-disk half of the account (gateway URL + key prefix) that both the UI
+/// state helpers and [`save`] read without touching the keychain.
+fn read_account_file() -> Result<Option<AccountFile>> {
     let path = config_path()?;
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
@@ -64,15 +78,16 @@ pub fn load_base_url() -> Result<Option<String>> {
     };
     let parsed: AccountFile = serde_json::from_str(&raw)
         .with_context(|| format!("parsing {} as JSON", path.display()))?;
-    Ok(Some(parsed.gateway_base_url))
+    Ok(Some(parsed))
 }
 
 /// Persist account state.
 ///
 /// `api_key = Some(value)` writes the key to keychain (creating or
-/// rotating). `api_key = None` leaves any existing keychain entry
-/// untouched - used by the "edit account" form so the user can update
-/// only the base URL without re-entering their key.
+/// rotating) and records its prefix in `account.json`. `api_key = None`
+/// leaves any existing keychain entry - and the stored prefix - untouched,
+/// used by the "edit account" form so the user can update only the base URL
+/// without re-entering their key.
 pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     if gateway_base_url.len() > 2048 {
         anyhow::bail!("gateway base URL is unexpectedly long (>2048 bytes)");
@@ -80,20 +95,32 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     if !gateway_base_url.starts_with("https://") {
         anyhow::bail!("gateway base URL must be https://");
     }
-    let path = config_path()?;
-    let file = AccountFile {
-        gateway_base_url: gateway_base_url.to_string(),
+    // Recompute the prefix from a new key; otherwise preserve the one already
+    // on disk so a URL-only edit doesn't drop it.
+    let api_key_prefix = match api_key {
+        Some(key) => Some(key.chars().take(12).collect()),
+        None => read_account_file()?.and_then(|f| f.api_key_prefix),
     };
-    let mut json = serde_json::to_string_pretty(&file).context("serializing account.json")?;
-    json.push('\n');
-    primitives::write_file(&path, json.as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))?;
+    write_account_file(&AccountFile {
+        gateway_base_url: gateway_base_url.to_string(),
+        api_key_prefix,
+    })?;
 
     if let Some(key) = api_key {
         let user = env::current_user()?;
         keychain::set(&service(), &user, key)?;
     }
     Ok(())
+}
+
+/// Serialize `file` to `account.json` with owner-only permissions. The single
+/// on-disk writer, paired with [`read_account_file`].
+fn write_account_file(file: &AccountFile) -> Result<()> {
+    let path = config_path()?;
+    let mut json = serde_json::to_string_pretty(file).context("serializing account.json")?;
+    json.push('\n');
+    primitives::write_file(&path, json.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// Dev-mode environment switch: point the account at a different gateway and
@@ -104,12 +131,47 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     save(gateway_base_url, None)?; // new URL on disk, key untouched
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?; // forget the old key
+                                          // The stored prefix named the key we just deleted, so drop it too.
+    write_account_file(&AccountFile {
+        gateway_base_url: gateway_base_url.to_string(),
+        api_key_prefix: None,
+    })?;
     Ok(())
 }
 
 pub fn has_api_key() -> Result<bool> {
     let user = env::current_user()?;
     Ok(keychain::get(&service(), &user)?.is_some())
+}
+
+/// Leading characters of the stored Gate key - through the random part that
+/// distinguishes one key from another - so the UI can show *which* key is in
+/// use without revealing the secret. Reads the prefix recorded in
+/// `account.json` by [`save`], so it never touches the keychain and never
+/// prompts. Returns `None` when no key is stored, or when the account predates
+/// the stored-prefix field .
+pub fn api_key_prefix() -> Result<Option<String>> {
+    Ok(read_account_file()?.and_then(|f| f.api_key_prefix))
+}
+
+/// Fallback reveal for accounts saved before the prefix was recorded on disk:
+/// read the key from the keychain (which may trigger an OS authorization
+/// prompt), record its prefix in `account.json` so later reveals are free, and
+/// return it. Gated behind an explicit user confirmation in the UI because of
+/// the keychain read. Returns `None` when no key is stored.
+pub fn backfill_api_key_prefix() -> Result<Option<String>> {
+    let user = env::current_user()?;
+    let Some(key) = keychain::get(&service(), &user)? else {
+        return Ok(None);
+    };
+    let prefix: String = key.chars().take(12).collect();
+    if let Some(gateway_base_url) = load_base_url()? {
+        write_account_file(&AccountFile {
+            gateway_base_url,
+            api_key_prefix: Some(prefix.clone()),
+        })?;
+    }
+    Ok(Some(prefix))
 }
 
 pub fn clear() -> Result<()> {
