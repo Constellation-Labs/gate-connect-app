@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Account } from "../lib/api";
-import { launchAtLoginStatus, setLaunchAtLogin } from "../lib/api";
+import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { trackError } from "../lib/analytics";
 import { GATEWAY_SERVERS } from "../lib/config";
 import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch } from "../components/gc/ui";
@@ -42,6 +42,37 @@ export function Settings({
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
   const [laLoaded, setLaLoaded] = useState(false);
   const [confirmDisableLaunch, setConfirmDisableLaunch] = useState(false);
+  // Masked until the user taps to reveal - kept opt-in so even the prefix
+  // stays hidden until asked. null = masked, string = shown.
+  const [revealedPrefix, setRevealedPrefix] = useState<string | null>(null);
+  // Set when a pre-prefix account has no stored prefix, so revealing must fall
+  // back to a keychain read. We ask first, since that read can prompt.
+  const [confirmReveal, setConfirmReveal] = useState(false);
+
+  async function revealKeyPrefix() {
+    try {
+      const prefix = await getAccountKeyPrefix();
+      if (prefix) {
+        setRevealedPrefix(prefix);
+      } else {
+        // No prefix on disk: an account saved before we recorded one. Offer the
+        // keychain fallback rather than silently doing nothing.
+        setConfirmReveal(true);
+      }
+    } catch (err) {
+      trackError(err, "generic");
+    }
+  }
+
+  async function revealFromKeychain() {
+    setConfirmReveal(false);
+    try {
+      const prefix = await backfillAccountKeyPrefix();
+      if (prefix) setRevealedPrefix(prefix);
+    } catch (err) {
+      trackError(err, "generic");
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -91,6 +122,8 @@ export function Settings({
       await onReplaceKey(newKey.trim());
       setReplacing(false);
       setNewKey("");
+      setRevealedPrefix(null);
+      setConfirmReveal(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       trackError(err, "save_api_key");
@@ -152,8 +185,22 @@ export function Settings({
           <div className="flex h-9 items-center gap-2 rounded bg-gc-subtle px-3 text-gc-ink-3 shadow-border">
             <Icon name="key" size={14} className="text-gc-ink-4" />
             <span className="flex-1 font-mono text-[12px] tracking-wide">
-              {account.has_api_key ? "sk-gw-••••••••••••••••" : "No key stored"}
+              {account.has_api_key
+                ? revealedPrefix
+                  ? `${revealedPrefix}••••••••••`
+                  : "sk-gw-••••••••••••••••"
+                : "No key stored"}
             </span>
+            {account.has_api_key && revealedPrefix === null && (
+              <button
+                type="button"
+                onClick={revealKeyPrefix}
+                aria-label="Show start of key"
+                className="text-gc-ink-4 hover:text-gc-ink-2"
+              >
+                <Icon name="eye" size={14} />
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex flex-col gap-2">
@@ -193,6 +240,30 @@ export function Settings({
         {error && <p className="mt-2 text-[11.5px] text-gc-error">{error}</p>}
         {account.has_api_key && !replacing && (
           <p className="mt-1.5 text-[11px] text-gc-ink-4">Stored in your keychain.</p>
+        )}
+        {confirmReveal && (
+          <div className="mt-2 rounded bg-gc-subtle p-3 shadow-border">
+            <div className="text-[11.5px] leading-snug text-gc-ink-2">
+              Showing the start of your key reads it from your keychain, which
+              may ask for permission.
+            </div>
+            <div className="mt-2.5 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={revealFromKeychain}
+                className="text-[12.5px] font-medium text-gc-accent"
+              >
+                Show start of key
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmReveal(false)}
+                className="ml-auto text-[12.5px] font-medium text-gc-ink-3"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         )}
       </div>
 

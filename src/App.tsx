@@ -14,6 +14,7 @@ import {
   proxyEnable,
   proxyDisable,
   proxyTrustCa,
+  proxyUntrustCa,
   listProviders,
   providerEnable,
   providerDisable,
@@ -192,18 +193,11 @@ export function App() {
       track(next.running ? "proxy_enabled" : "proxy_disabled");
       setRestartHint(true);
       if (next.running) setRelaunchHint(true);
-      // The master toggle also disconnects/restores providers, so refresh them.
-      let current = await listProviders().catch(() => []);
-      // Turning the proxy on turns every available integration on with it.
-      if (next.running) {
-        await Promise.all(
-          current
-            .filter((p) => p.available && !p.enabled)
-            .map((p) => providerEnable(p.slug)),
-        );
-        current = await listProviders().catch(() => current);
-      }
-      setProviders(current);
+      // The backend owns the provider set across a master toggle: turning off
+      // snapshots the on-providers and disables all; turning on restores that
+      // snapshot. Just reflect the result - don't force every available
+      // provider on, which would clobber the ones the user deliberately left off.
+      setProviders(await listProviders().catch(() => []));
     } catch (e) {
       trackError(e, "generic");
       // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
@@ -261,6 +255,25 @@ export function App() {
       track("ca_trusted");
     } catch {
       // a cancelled trust dialog rejects; re-sync instead of leaking an
+      // unhandled rejection with the banner stuck in its old state
+      try {
+        setProxy(await proxyStatus());
+      } catch {
+        /* noop */
+      }
+    } finally {
+      setProxyBusy(false);
+    }
+  }, [proxyBusy]);
+
+  const untrustCa = useCallback(async () => {
+    if (proxyBusy) return;
+    setProxyBusy(true);
+    try {
+      setProxy(await proxyUntrustCa());
+      track("ca_untrusted");
+    } catch {
+      // a cancelled removal dialog rejects; re-sync instead of leaking an
       // unhandled rejection with the banner stuck in its old state
       try {
         setProxy(await proxyStatus());
@@ -366,6 +379,7 @@ export function App() {
         onToggleProxy={toggleProxy}
         onSetProvider={setProvider}
         onTrustCa={trustCa}
+        onUntrustCa={untrustCa}
       />
     );
   } else if (screen === "settings" && account) {

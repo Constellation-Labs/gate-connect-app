@@ -25,6 +25,7 @@ export type AnalyticsEvent =
   | "proxy_disabled"
   | "provider_toggled"
   | "ca_trusted"
+  | "ca_untrusted"
   | "tour_completed"
   | "tour_skipped"
   | "error_shown";
