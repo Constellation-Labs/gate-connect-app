@@ -101,15 +101,18 @@ impl ProxyManager {
                 // Per-user UID gating is a Linux concern (shared loopback proxy);
                 // unused on macOS.
                 owner_uid: None,
+                // Keep any pre-existing proxy as the PAC fallback so non-Gate
+                // traffic still flows through it while routing is on.
+                upstream_proxy: system_proxy::upstream_proxy(&snapshot),
             },
             // Fail-safe: if the engine dies unexpectedly, revert the system
             // proxy so traffic is never stranded at a dead listener.
             || manager().handle_engine_crash(),
         )?;
-        let port = running.port();
 
-        // Point the system proxy at the engine. Promptless.
-        if let Err(e) = system_proxy::enable(port, &services) {
+        // Point the system proxy at the engine's loopback PAC. Promptless.
+        let pac_url = format!("http://127.0.0.1:{}/proxy.pac", running.pac_port());
+        if let Err(e) = system_proxy::enable_pac(&pac_url, &services) {
             running.stop();
             let _ = system_proxy::clear_snapshot();
             return Err(e).context("enabling system proxy");

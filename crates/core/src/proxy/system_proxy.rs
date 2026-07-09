@@ -1,9 +1,12 @@
 //! macOS system HTTP/HTTPS proxy wiring via `networksetup`. Enabling points
-//! every active network service's web + secure-web proxy at our loopback
-//! engine; disabling restores the exact prior state from a snapshot (mirrors
-//! the `previousEnv` restore pattern in [`crate::env`]). Reads are
-//! non-privileged; only the set/restore step needs admin, so the manager
-//! batches it with the CA-trust change into one prompt.
+//! every active network service at our loopback PAC via the auto-proxy URL
+//! (`-setautoproxyurl`) and turns the manual web/secure slots off, so only
+//! Gate's intercepted hosts route to the engine and everything else stays
+//! direct or falls back to the user's prior proxy; disabling restores the
+//! exact prior state from a snapshot (mirrors the `previousEnv` restore pattern
+//! in [`crate::env`]). Reads are non-privileged; only the set/restore step
+//! needs admin, so the manager batches it with the CA-trust change into one
+//! prompt.
 
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
@@ -27,12 +30,24 @@ pub struct ProxySetting {
     pub port: String,
 }
 
+/// A service's automatic proxy (PAC) slot - the `networksetup` auto-proxy URL
+/// and whether it's on.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AutoProxy {
+    pub enabled: bool,
+    pub url: String,
+}
+
 /// Snapshot of one network service's proxy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceProxy {
     pub service: String,
     pub web: ProxySetting,
     pub secure: ProxySetting,
+    /// Automatic proxy (PAC) slot. Defaulted so a snapshot written by an older
+    /// build (before PAC mode) still loads.
+    #[serde(default)]
+    pub auto: AutoProxy,
 }
 
 fn snapshot_path() -> Result<PathBuf> {
@@ -88,16 +103,41 @@ fn get_proxy(flag: &str, service: &str) -> Result<ProxySetting> {
     Ok(parse_proxy(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// Parse `networksetup -getautoproxyurl` output. When no PAC is set macOS
+/// prints `URL: (null)`, which we normalize to an empty URL.
+fn parse_autoproxy(output: &str) -> AutoProxy {
+    let mut auto = AutoProxy::default();
+    for line in output.lines() {
+        if let Some(v) = line.strip_prefix("URL:") {
+            let v = v.trim();
+            auto.url = if v == "(null)" { String::new() } else { v.to_string() };
+        } else if let Some(v) = line.strip_prefix("Enabled:") {
+            auto.enabled = v.trim().eq_ignore_ascii_case("Yes");
+        }
+    }
+    auto
+}
+
+fn get_autoproxy(service: &str) -> Result<AutoProxy> {
+    let out = Command::new(NETWORKSETUP)
+        .args(["-getautoproxyurl", service])
+        .output()
+        .with_context(|| format!("running networksetup -getautoproxyurl {service:?}"))?;
+    Ok(parse_autoproxy(&String::from_utf8_lossy(&out.stdout)))
+}
+
 /// Read the current proxy config for every active service. Non-privileged.
 pub fn snapshot() -> Result<Vec<ServiceProxy>> {
     let mut snapshot = Vec::new();
     for service in active_services()? {
         let web = get_proxy("-getwebproxy", &service)?;
         let secure = get_proxy("-getsecurewebproxy", &service)?;
+        let auto = get_autoproxy(&service)?;
         snapshot.push(ServiceProxy {
             service,
             web,
             secure,
+            auto,
         });
     }
     Ok(snapshot)
@@ -134,30 +174,50 @@ pub fn clear_snapshot() -> Result<()> {
     }
 }
 
-/// Privileged shell command that points all `services` at our loopback
-/// engine (both HTTP and HTTPS proxy slots).
-pub fn enable_command(port: u16, services: &[String]) -> String {
+/// Privileged shell command that points all `services` at our loopback PAC
+/// and turns their manual web/secure slots off, so only the PAC governs
+/// routing. `-setautoproxyurl` also enables the auto-proxy state; the explicit
+/// `-setautoproxystate on` keeps it unambiguous.
+pub fn enable_pac_command(pac_url: &str, services: &[String]) -> String {
     let mut parts = Vec::new();
+    let url = sh_quote(pac_url);
     for service in services {
         let q = sh_quote(service);
-        parts.push(format!("{NETWORKSETUP} -setwebproxy {q} 127.0.0.1 {port}"));
-        parts.push(format!("{NETWORKSETUP} -setwebproxystate {q} on"));
-        parts.push(format!(
-            "{NETWORKSETUP} -setsecurewebproxy {q} 127.0.0.1 {port}"
-        ));
-        parts.push(format!("{NETWORKSETUP} -setsecurewebproxystate {q} on"));
+        parts.push(format!("{NETWORKSETUP} -setautoproxyurl {q} {url}"));
+        parts.push(format!("{NETWORKSETUP} -setautoproxystate {q} on"));
+        parts.push(format!("{NETWORKSETUP} -setwebproxystate {q} off"));
+        parts.push(format!("{NETWORKSETUP} -setsecurewebproxystate {q} off"));
     }
     parts.join(" && ")
 }
 
+/// The user's pre-existing upstream proxy as a `host:port` string for the PAC
+/// fallback, so non-Gate traffic keeps flowing through it while routing is on.
+/// Prefers a service's secure (HTTPS) slot, then its web (HTTP) slot; skips
+/// disabled and loopback slots ; returns
+/// `None` when no service had an enabled manual proxy.
+pub fn upstream_proxy(snapshot: &[ServiceProxy]) -> Option<String> {
+    let directive = |p: &ProxySetting| {
+        (p.enabled && !p.server.is_empty() && !is_loopback(&p.server)).then(|| {
+            if p.port.is_empty() {
+                p.server.clone()
+            } else {
+                format!("{}:{}", p.server, p.port)
+            }
+        })
+    };
+    snapshot
+        .iter()
+        .find_map(|s| directive(&s.secure).or_else(|| directive(&s.web)))
+}
+
 /// Privileged shell command that restores each service to its snapshot.
-/// A slot's saved server/port is re-written whenever the snapshot has one -
-/// even when the slot was *off*: `enable_command` overwrote it with
-/// `127.0.0.1:<our-port>`, and turning the state off alone would leave that
-/// stale loopback address saved in System Settings (common case: a corp
-/// proxy kept configured but toggled off). The state is then restored to
-/// what it was. Windows restores `ProxyServer` verbatim; this keeps the
-/// platforms equivalent.
+/// Enabling only turns the manual web/secure slots *off* (it drives routing
+/// through the auto-proxy/PAC slot instead), so their saved server/port are
+/// untouched; restoring rewrites the saved server whenever present and puts the
+/// state back, which is a harmless no-op on the server but faithfully restores
+/// the on/off state. The PAC slot *is* overwritten by enable , so its saved URL is rewritten when present and the state
+/// restored - otherwise a stale loopback PAC would linger in System Settings.
 pub fn restore_command(snapshot: &[ServiceProxy]) -> String {
     let mut parts = Vec::new();
     for s in snapshot {
@@ -202,6 +262,24 @@ pub fn restore_command(snapshot: &[ServiceProxy]) -> String {
                 "off"
             }
         ));
+
+        // Restore the PAC slot. enable overwrote the URL with our loopback PAC,
+        // so rewrite the saved one whenever present, then restore the state -
+        // mirrors the web/secure handling above.
+        if !s.auto.url.is_empty() {
+            parts.push(format!(
+                "{NETWORKSETUP} -setautoproxyurl {q} {url}",
+                url = sh_quote(&s.auto.url)
+            ));
+        }
+        parts.push(format!(
+            "{NETWORKSETUP} -setautoproxystate {q} {state}",
+            state = if s.auto.enabled && !s.auto.url.is_empty() {
+                "on"
+            } else {
+                "off"
+            }
+        ));
     }
     parts.join(" && ")
 }
@@ -215,6 +293,7 @@ pub fn force_off_command(services: &[String]) -> String {
         let q = sh_quote(service);
         parts.push(format!("{NETWORKSETUP} -setwebproxystate {q} off"));
         parts.push(format!("{NETWORKSETUP} -setsecurewebproxystate {q} off"));
+        parts.push(format!("{NETWORKSETUP} -setautoproxystate {q} off"));
     }
     parts.join(" && ")
 }
@@ -238,10 +317,10 @@ fn apply(script: &str) -> Result<()> {
     crate::primitives::run_as_admin(script).context("running networksetup (elevated)")
 }
 
-/// Point every active service at the loopback engine. Promptless on a
-/// standard account.
-pub fn enable(port: u16, services: &[String]) -> Result<()> {
-    apply(&enable_command(port, services))
+/// Point every active service at the loopback PAC. Promptless on a standard
+/// account.
+pub fn enable_pac(pac_url: &str, services: &[String]) -> Result<()> {
+    apply(&enable_pac_command(pac_url, services))
 }
 
 /// Restore every service to its snapshot. Promptless; safety-critical.
@@ -258,6 +337,18 @@ pub fn force_off(services: &[String]) -> Result<()> {
 /// distinguish a stranded Gate proxy from a user's real (remote) proxy.
 fn is_loopback(server: &str) -> bool {
     matches!(server, "127.0.0.1" | "::1" | "localhost" | "0.0.0.0")
+}
+
+/// The port of a loopback PAC URL (e.g. `http://127.0.0.1:8123/proxy.pac`), or
+/// `None` when the URL is empty or not a loopback address we served. Used to
+/// spot a stranded PAC pointing at a dead engine.
+fn autoproxy_loopback_port(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
+    let authority = rest.split('/').next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    is_loopback(host).then(|| port.to_string())
 }
 
 /// True if a proxy slot points at a loopback address with nothing listening on
@@ -310,6 +401,21 @@ pub fn clear_stranded_loopback() -> Result<Vec<String>> {
                 touched = true;
             }
         }
+
+        // PAC slot: stranded if the auto-proxy URL points at a dead loopback PAC.
+        let auto = get_autoproxy(&service)?;
+        if auto.enabled {
+            if let Some(port) = autoproxy_loopback_port(&auto.url) {
+                let port_alive = *alive
+                    .entry(port.clone())
+                    .or_insert_with(|| loopback_port_alive(&port));
+                if !port_alive {
+                    parts.push(format!("{NETWORKSETUP} -setautoproxystate {q} off"));
+                    touched = true;
+                }
+            }
+        }
+
         if touched {
             cleared.push(service);
         }
@@ -350,5 +456,47 @@ mod tests {
         assert!(!slot_is_stranded(&slot(true, "proxy.corp", "8080"), false));
         // Disabled slot - nothing to clear.
         assert!(!slot_is_stranded(&slot(false, "127.0.0.1", "61722"), false));
+    }
+
+    #[test]
+    fn autoproxy_loopback_port_extracts_only_our_pac() {
+        assert_eq!(
+            autoproxy_loopback_port("http://127.0.0.1:8123/proxy.pac"),
+            Some("8123".into())
+        );
+        // A remote PAC is the user's own - never ours.
+        assert_eq!(
+            autoproxy_loopback_port("http://pac.corp.example.com/proxy.pac"),
+            None
+        );
+        assert_eq!(autoproxy_loopback_port(""), None);
+    }
+
+    #[test]
+    fn upstream_proxy_prefers_secure_and_skips_disabled_and_loopback() {
+        let svc = |web: ProxySetting, secure: ProxySetting| ServiceProxy {
+            service: "Wi-Fi".into(),
+            web,
+            secure,
+            auto: AutoProxy::default(),
+        };
+        // Secure wins over web.
+        let snap = vec![svc(
+            slot(true, "web.corp", "80"),
+            slot(true, "secure.corp", "443"),
+        )];
+        assert_eq!(upstream_proxy(&snap).as_deref(), Some("secure.corp:443"));
+        // Falls back to web when secure is off.
+        let snap = vec![svc(
+            slot(true, "web.corp", "8080"),
+            slot(false, "secure.corp", "443"),
+        )];
+        assert_eq!(upstream_proxy(&snap).as_deref(), Some("web.corp:8080"));
+        // A stranded loopback slot is never treated as an upstream.
+        let snap = vec![svc(
+            slot(false, "", ""),
+            slot(true, "127.0.0.1", "61722"),
+        )];
+        assert_eq!(upstream_proxy(&snap), None);
     }
 }

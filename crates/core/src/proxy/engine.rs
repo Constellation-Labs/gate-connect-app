@@ -58,9 +58,9 @@ pub struct EngineConfig {
     pub owner_uid: Option<u32>,
     /// The user's pre-existing upstream proxy , used as the
     /// PAC fallback so non-Gate traffic keeps flowing through it instead of
-    /// going DIRECT while routing is on. Windows-only; the macOS/Linux system
-    /// proxies aren't PAC-driven.
-    #[cfg(windows)]
+    /// going DIRECT while routing is on. PAC-driven platforms only
+    /// ; Linux uses env-var proxies with no PAC.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub upstream_proxy: Option<String>,
 }
 
@@ -71,10 +71,10 @@ pub struct EngineConfig {
 /// [`stop`]: RunningEngine::stop
 pub struct RunningEngine {
     port: u16,
-    /// Loopback port serving the PAC script WinINET points at. Windows-only;
-    /// the macOS `system_proxy` path configures the proxy directly and never
-    /// serves a PAC.
-    #[cfg(windows)]
+    /// Loopback port serving the PAC script the system proxy points at.
+    /// PAC-driven platforms only (Windows `AutoConfigURL`, macOS
+    /// `networksetup -setautoproxyurl`); Linux uses env-var proxies with no PAC.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     pac_port: u16,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
@@ -91,7 +91,7 @@ impl RunningEngine {
     }
 
     /// Loopback port serving the PAC script (Windows-only).
-    #[cfg(windows)]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub fn pac_port(&self) -> u16 {
         self.pac_port
     }
@@ -450,7 +450,7 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
 /// `upstream` when the user already had a proxy (preserving a corporate proxy),
 /// or DIRECT otherwise. Host matching mirrors [`ProxyDomain::matches_host`]:
 /// exact, case-insensitive hostnames.
-#[cfg(windows)]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) -> String {
     let mut s = String::from("function FindProxyForURL(url, host) {\n");
     s.push_str("  var h = host.toLowerCase();\n");
@@ -478,7 +478,7 @@ fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) 
 /// HTTP responder, separate from the hudsucker proxy on `proxy_port`. The body
 /// is rebuilt per request from the live rule set. Runs until the engine's
 /// runtime is torn down.
-#[cfg(windows)]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 async fn serve_pac(
     listener: tokio::net::TcpListener,
     rules: watch::Receiver<Arc<Vec<ProxyDomain>>>,
@@ -534,17 +534,17 @@ where
     let (listener, port) = bind_loopback(cfg.preferred_port)?;
     // Windows points WinINET at a PAC served on its own loopback port (see
     // `serve_pac`); the proxy port itself is baked into the PAC body.
-    #[cfg(windows)]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let (pac_listener, pac_port) = bind_loopback(None).context("binding the PAC loopback port")?;
 
     let (rules_tx, rules_rx) = watch::channel(Arc::new(enabled_only(&cfg.domains)));
     // The PAC body is regenerated per request from this live rule set, so a
     // domain toggle needs no registry write.
-    #[cfg(windows)]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let pac_rules_rx = rules_rx.clone();
     // Fallback proxy baked into the PAC so non-Gate traffic keeps using the
     // user's prior proxy instead of going DIRECT.
-    #[cfg(windows)]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let upstream_proxy = cfg.upstream_proxy.clone();
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let handler = GateHandler {
@@ -624,7 +624,7 @@ where
                 // - the proxy still runs, WinINET just fails the PAC fetch and
                 // falls back to DIRECT (no interception) rather than stranding
                 // traffic.
-                #[cfg(windows)]
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
                 {
                     match tokio::net::TcpListener::from_std(pac_listener) {
                         Ok(pac) => {
@@ -648,7 +648,7 @@ where
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok(())) => Ok(RunningEngine {
             port,
-            #[cfg(windows)]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             pac_port,
             shutdown: Some(shutdown_tx),
             thread: Some(thread),
@@ -721,7 +721,7 @@ mod tests {
         assert_eq!(peer_uid_for(unused), None);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[test]
     fn pac_routes_only_listed_hosts_to_proxy() {
         let domains = vec![ProxyDomain {
