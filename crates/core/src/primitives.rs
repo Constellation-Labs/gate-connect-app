@@ -18,12 +18,35 @@ use std::process::Command;
 /// `mode`; on Windows `mode` is ignored (Windows uses ACLs, and the file
 /// inherits its parent dir's ACL).
 pub fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    // If `path` is a symlink (e.g. ~/.claude/settings.json linked to a synced
-    // location), resolve it so we rewrite the real target and leave the link
-    // intact instead of replacing it with a regular file.
+    // If `path` is a symlink (e.g. ~/.claude/settings.json), resolve it so we
+    // rewrite the real target and leave the link intact instead of replacing
+    // it with a regular file. But refuse a link that redirects the write OUT
+    // of its own directory: the payload carries the Gate key, and a config
+    // path symlinked into synced storage (iCloud/Dropbox) or elsewhere would
+    // send the key off the machine. A link that stays in the same directory is
+    // benign and still followed.
     let dest = match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(path)
-            .with_context(|| format!("resolving symlink {}", path.display()))?,
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let target = fs::canonicalize(path)
+                .with_context(|| format!("resolving symlink {}", path.display()))?;
+            // Canonicalize both sides so the comparison is apples-to-apples
+            // (both extended-form `\\?\...` on Windows).
+            let link_dir = path
+                .parent()
+                .map(fs::canonicalize)
+                .transpose()
+                .with_context(|| format!("resolving parent of {}", path.display()))?;
+            if target.parent().map(Path::to_path_buf) != link_dir {
+                anyhow::bail!(
+                    "refusing to write Gate credentials through symlink {} which \
+                     resolves outside its directory to {}; replace it with a \
+                     regular file",
+                    path.display(),
+                    target.display()
+                );
+            }
+            target
+        }
         _ => path.to_path_buf(),
     };
     let path: &Path = &dest;
@@ -202,3 +225,87 @@ fn simple_uuid_v4() -> Result<String> {
   bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
   ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fresh, unique temp directory for one test; removed on drop.
+    struct TmpDir(std::path::PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("gate_pf_{}_{tag}_{n}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            TmpDir(dir)
+        }
+        fn path(&self, name: &str) -> std::path::PathBuf {
+            self.0.join(name)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn write_file_writes_regular_file() {
+        let dir = TmpDir::new("regular");
+        let path = dir.path("config.json");
+        write_file(&path, b"hello", 0o600).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"hello");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    /// A symlink that stays inside its own directory is benign and still
+    /// followed: the real target receives the bytes.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_follows_same_dir_symlink() {
+        let dir = TmpDir::new("samedir");
+        let real = dir.path("config.real.json");
+        let link = dir.path("config.json");
+        fs::write(&real, b"old").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_file(&link, b"new", 0o600).unwrap();
+
+        assert_eq!(fs::read(&real).unwrap(), b"new");
+        // The link itself is left intact, not replaced by a regular file.
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    }
+
+    /// A symlink that redirects the write out of its directory (the
+    /// synced-folder threat) is refused before any bytes are written, and the
+    /// error names the resolved target.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_refuses_escaping_symlink() {
+        let cfg = TmpDir::new("escape_cfg");
+        let synced = TmpDir::new("escape_synced");
+        let target = synced.path("stolen.json");
+        let link = cfg.path("config.json");
+        fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = write_file(&link, b"sk-gw-secret", 0o600)
+            .expect_err("escaping symlink must be refused");
+
+        let msg = format!("{err:#}");
+        assert!(msg.contains("refusing"), "unexpected error: {msg}");
+        assert!(
+            msg.contains(&target.canonicalize().unwrap().display().to_string()),
+            "error should name the resolved target: {msg}"
+        );
+        // Nothing was written through the link.
+        assert_eq!(fs::read(&target).unwrap(), b"");
+    }
+}
+
