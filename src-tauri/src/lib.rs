@@ -269,6 +269,8 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
         // A rotated key was copied into tool configs (and the running proxy
         // engine) at connect time - push the new one everywhere it's embedded.
         if let Some(k) = key.as_deref() {
+            // Pasting a key selects the legacy path explicitly.
+            account::set_auth_mode(account::AuthMode::ApiKey).map_err(|e| format!("{e:#}"))?;
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             gate_connect_core::proxy::manager().refresh_api_key(k);
             registry::refresh_gate_key_everywhere(k).map_err(|e| format!("{e:#}"))?;
@@ -379,6 +381,13 @@ async fn oauth_begin_login(app: tauri::AppHandle) -> Result<OAuthStatusDto, Stri
             },
         )
         .map_err(|e| format!("{e:#}"))?;
+        // Record that this account authenticates via OAuth so load() stops
+        // requiring a pasted key, and push the fresh token into a running
+        // engine so routing switches to it without waiting for a restart.
+        gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
+            .map_err(|e| format!("{e:#}"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
         Ok(OAuthStatusDto::from(&tokens))
     })
     .await
@@ -393,14 +402,37 @@ async fn oauth_status() -> Result<OAuthStatusDto, String> {
         .map_err(|e| format!("oauth status join error: {e}"))?
 }
 
-/// Forget the stored OAuth tokens (sign out).
+/// Forget the stored OAuth tokens (sign out). Leaves `auth_mode` at `OAuth`
+/// so the popover shows the sign-in prompt again rather than the legacy
+/// key-entry form; choosing the legacy path is an explicit key save.
 #[tauri::command]
 async fn oauth_sign_out() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))
+        gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))?;
+        // Revert a running engine to the legacy header immediately (empty
+        // token == fall back to the API key, if one is present).
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager().refresh_token("");
+        Ok::<(), String>(())
     })
     .await
     .map_err(|e| format!("oauth sign-out join error: {e}"))?
+}
+
+/// Explicitly set the auth mode. Used when a user chooses the legacy pasted-key
+/// path from the sign-in screen; OAuth sign-in sets it implicitly.
+#[tauri::command]
+async fn set_auth_mode(oauth: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mode = if oauth {
+            gate_connect_core::account::AuthMode::OAuth
+        } else {
+            gate_connect_core::account::AuthMode::ApiKey
+        };
+        gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("set auth mode join error: {e}"))?
 }
 
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
@@ -999,6 +1031,7 @@ pub fn run() {
                     oauth_begin_login,
                     oauth_status,
                     oauth_sign_out,
+                    set_auth_mode,
                     app_platform,
                     unpin_popover,
                     open_onboarding_window,
@@ -1039,6 +1072,7 @@ pub fn run() {
                     switch_gateway,
                     oauth_status,
                     oauth_sign_out,
+                    set_auth_mode,
                     app_platform,
                     unpin_popover,
                     open_onboarding_window,
@@ -1173,6 +1207,22 @@ pub fn run() {
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
+                    // OAuth: refresh a stale Cognito access token before the
+                    // engine seeds itself below, so re-honor / auto-enable
+                    // inject a live token (enable() re-reads the stored token
+                    // via access_token_for_injection). Never opens the browser
+                    // - a failed refresh just leaves the popover in the "sign
+                    // in" state the UI derives from oauth_status. Best-effort.
+                    if gate_connect_core::account::auth_mode().unwrap_or_default()
+                        == gate_connect_core::account::AuthMode::OAuth
+                    {
+                        if let Some(cfg) = gate_connect_core::oauth::OAuthConfig::from_build_env() {
+                            if let Err(e) = gate_connect_core::oauth::ensure_fresh(&cfg) {
+                                eprintln!("[gate] startup OAuth token refresh failed: {e}");
+                            }
+                        }
+                    }
+
                     // If a previous session left the system proxy on (unclean
                     // quit / crash), revert it first so HTTPS isn't routed at a
                     // dead loopback port. A clean disable leaves nothing to do.
