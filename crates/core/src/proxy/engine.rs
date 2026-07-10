@@ -351,7 +351,13 @@ impl HttpHandler for GateHandler {
                 let api_key = self.api_key.borrow().clone();
                 let token = self.token.borrow().clone();
                 let oauth_token = (!token.is_empty()).then(|| token.as_ref());
-                match apply_rewrite(&mut req, &self.gateway, &upstream_url, &api_key, oauth_token) {
+                match apply_rewrite(
+                    &mut req,
+                    &self.gateway,
+                    &upstream_url,
+                    &api_key,
+                    oauth_token,
+                ) {
                     Ok(()) => {
                         action = "rewrite->gateway";
                     }
