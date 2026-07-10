@@ -26,6 +26,14 @@ tracing-subscriber.workspace = true
 http.workspace = true
 time.workspace = true
 
+# Cognito OAuth (`oauth` module) for the app's own gateway auth. `reqwest`
+# (blocking, rustls) calls the Cognito token endpoint; `sha2` + `base64`
+# derive the PKCE S256 challenge; `rand` mints the verifier + CSRF state.
+reqwest.workspace = true
+sha2.workspace = true
+base64.workspace = true
+rand.workspace = true
+
 # `libc` backs the unix `getpwuid(geteuid())` username lookup in env.rs -
 # we resolve the real account from the password database rather than
 # trusting inherited `$USER` / `$USERNAME`.
@@ -54,13 +62,11 @@ pem = "3.0"
 # throwaway CA with `rcgen`, runs a tiny loopback mock gateway (built on the
 # `hyper` already in the tree, so no MSRV-fragile test framework is pulled in),
 # boots the real `proxy::engine`, and drives a `reqwest` client through it to
-# assert the rewrite + `X-Gate-*` headers reach the gateway. None of this
-# touches the OS trust store or system proxy, so it needs no elevation.
+# assert the rewrite + `X-Gate-*` headers reach the gateway. `reqwest` itself
+# is now a normal dependency (see the `oauth` module), so it isn't repeated
+# here. None of this touches the OS trust store or system proxy, so it needs
+# no elevation.
 [dev-dependencies]
-reqwest = { version = "0.13", default-features = false, features = [
-  "rustls",
-  "json",
-] }
 rcgen = "0.14"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
