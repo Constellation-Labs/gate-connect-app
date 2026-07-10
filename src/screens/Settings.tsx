@@ -42,8 +42,9 @@ export function Settings({
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
   const [laLoaded, setLaLoaded] = useState(false);
   const [confirmDisableLaunch, setConfirmDisableLaunch] = useState(false);
-  // Masked until the user taps to reveal - kept opt-in so even the prefix
-  // stays hidden until asked. null = masked, string = shown.
+  // Auto-loaded from account.json on mount once a prefix has been recorded
+  // there, so it stays visible without re-revealing each visit. null = not
+  // yet loaded/stored (pre-prefix accounts fall back to a keychain reveal).
   const [revealedPrefix, setRevealedPrefix] = useState<string | null>(null);
   // Set when a pre-prefix account has no stored prefix, so revealing must fall
   // back to a keychain read. We ask first, since that read can prompt.
@@ -87,6 +88,19 @@ export function Settings({
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!account.has_api_key) return;
+    let active = true;
+    getAccountKeyPrefix()
+      .then((prefix) => {
+        if (active && prefix) setRevealedPrefix(prefix);
+      })
+      .catch((err) => trackError(err, "generic"));
+    return () => {
+      active = false;
+    };
+  }, [account.has_api_key]);
 
   async function toggleLaunchAtLogin() {
     if (!laLoaded) return;
