@@ -92,6 +92,55 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+      # Tauri's AppImage bundler pulls libwayland-client/cursor/egl/server
+      # into the AppDir via the GTK/WebKit dependency chain, even though
+      # libGL/libEGL themselves are correctly excluded (tauri-apps/tauri
+      # #11988, #8929). The bundled libwayland-egl doesn't speak the host
+      # compositor's Wayland protocol version, so EGL display creation
+      # fails and the window renders blank on newer distros (confirmed on
+      # Ubuntu 26 with WEBKIT_DISABLE_DMABUF_RENDERER having no effect,
+      # since the failure happens before WebKit picks a renderer).
+      #
+      # Fix: strip the bundled copies so the dynamic loader falls back to
+      # the system libwayland, repack, then re-sign - the tauri-action step
+      # above already signed the pre-strip file, and its signature won't
+      # match the patched bytes. Only the linux-x86_64 signature in
+      # latest.json needs updating; the URL and version are unchanged since
+      # the filename is the same.
+      - name: Fix bundled libwayland in AppImage
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          BUNDLE="target/release/bundle/appimage"
+          APPIMAGE=$(ls "$BUNDLE"/*.AppImage)
+          NAME=$(basename "$APPIMAGE")
+
+          curl -fsSL -o /tmp/appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool.AppImage
+          (cd /tmp && ./appimagetool.AppImage --appimage-extract >/dev/null)
+
+          (cd "$BUNDLE" && "./$NAME" --appimage-extract >/dev/null)
+          rm -f "$BUNDLE"/squashfs-root/usr/lib/libwayland-*.so*
+          rm -f "$APPIMAGE"
+          ARCH=x86_64 /tmp/squashfs-root/AppRun "$BUNDLE/squashfs-root" "$APPIMAGE"
+
+          pnpm exec tauri signer sign "$APPIMAGE"
+          gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" --clobber
+
+          gh release download "$TAG" -p latest.json -O /tmp/latest.json --clobber
+          jq --arg sig "$(cat "$APPIMAGE.sig")" \
+            '.platforms["linux-x86_64"].signature = $sig' \
+            /tmp/latest.json > /tmp/latest.json.new
+          mv /tmp/latest.json.new /tmp/latest.json
+          gh release upload "$TAG" /tmp/latest.json --clobber
       # Add version-less copies of each platform's primary installer alongside
       # the versioned assets, so a stable /releases/latest/download/<name> URL
       # always resolves to the newest published release. The versioned assets
