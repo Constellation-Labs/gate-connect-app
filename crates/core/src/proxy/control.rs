@@ -116,6 +116,9 @@ pub enum Request {
     SetIntercept {
         gateway_base_url: String,
         api_key: String,
+        /// Cognito access token to inject instead of the API key; empty means
+        /// fall back to the API key.
+        oauth_token: String,
         ca_cert_pem: String,
         ca_key_pem: String,
         domains: Vec<ProxyDomain>,

@@ -65,3 +65,14 @@ http = "1"
 time = "0.3"
 serde_yaml = "0.9"
 gate-connect-core = { path = "crates/core" }
+# OAuth (Cognito) support in the shipped binary. `reqwest` (blocking, rustls,
+# no OpenSSL) calls the Cognito `/oauth2/token` endpoint; `sha2` + `base64`
+# derive the PKCE S256 challenge; `rand` mints the verifier and CSRF state.
+reqwest = { version = "0.13", default-features = false, features = [
+  "blocking",
+  "rustls",
+  "json",
+] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"

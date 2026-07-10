@@ -126,6 +126,7 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
         EngineConfig {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
+            oauth_token: String::new(), // legacy API-key path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -206,6 +207,9 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
         EngineConfig {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
+            // Exercises the OAuth path end-to-end: a stored token is injected
+            // as x-gate-authorization instead of the API key.
+            oauth_token: "cognito-access-token".into(),
             domains,
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -242,8 +246,9 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
     engine.stop();
 
     // 4. The rewrite landed on the gateway: original path preserved (OpenRouter
-    //    nests its API under /api/v1/), Gate headers injected, and the client's
-    //    own bearer forwarded untouched.
+    //    nests its API under /api/v1/), the OAuth token injected as
+    //    x-gate-authorization (not the API key), and the client's own bearer
+    //    forwarded untouched.
     let reqs = gateway.captured.lock().unwrap().clone();
     assert_eq!(
         reqs.len(),
@@ -253,7 +258,15 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
     let r = &reqs[0];
     assert_eq!(r.method, "POST");
     assert_eq!(r.path, "/api/v1/chat/completions");
-    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-gate-authorization"),
+        Some("Bearer cognito-access-token")
+    );
+    assert_eq!(
+        r.header("x-gate-api-key"),
+        None,
+        "the API key must not be sent when an OAuth token is present"
+    );
     assert_eq!(
         r.header("x-gate-upstream-url"),
         Some("https://openrouter.ai")
