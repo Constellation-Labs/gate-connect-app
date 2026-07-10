@@ -33,8 +33,14 @@ use crate::proxy::{decide, should_intercept_host, Decision, ProxyDomain};
 pub struct EngineConfig {
     /// Gate gateway base URL - the rewrite target authority.
     pub gateway_base_url: String,
-    /// Gate API key, injected as `X-Gate-Api-Key`.
+    /// Gate API key, injected as `X-Gate-Api-Key` when no OAuth token is set
+    /// (the legacy credential).
     pub api_key: String,
+    /// Cognito access token. When non-empty it's injected as
+    /// `X-Gate-Authorization: Bearer <token>` *instead of* the API key;
+    /// empty means fall back to `api_key`. Hot-swappable via
+    /// [`RunningEngine::update_token`].
+    pub oauth_token: String,
     /// Full domain catalog; the engine routes only the `enabled` ones.
     pub domains: Vec<ProxyDomain>,
     /// PEM of the local root CA cert (public).
@@ -88,6 +94,7 @@ pub struct RunningEngine {
     thread: Option<JoinHandle<()>>,
     rules_tx: watch::Sender<Arc<Vec<ProxyDomain>>>,
     key_tx: watch::Sender<Arc<str>>,
+    token_tx: watch::Sender<Arc<str>>,
     /// Set before a deliberate shutdown so the engine thread can tell an
     /// expected stop from an unexpected exit (crash / bind loss).
     stopping: Arc<AtomicBool>,
@@ -128,6 +135,13 @@ impl RunningEngine {
     /// without this the engine keeps injecting the key it was started with.
     pub fn update_api_key(&self, api_key: &str) {
         let _ = self.key_tx.send(Arc::from(api_key));
+    }
+
+    /// Push a refreshed OAuth access token to the live engine. Empty string
+    /// clears it (reverting to the API key). Cheap - no restart; this is how
+    /// a silent token refresh reaches in-flight routing.
+    pub fn update_token(&self, oauth_token: &str) {
+        let _ = self.token_tx.send(Arc::from(oauth_token));
     }
 
     /// Signal graceful shutdown and wait for the engine thread to exit.
@@ -193,6 +207,9 @@ struct GateHandler {
     gateway: Uri,
     /// Live-updatable Gate API key (rotations push a new value).
     api_key: watch::Receiver<Arc<str>>,
+    /// Live-updatable Cognito access token. Empty string means "unset" -
+    /// fall back to `api_key`.
+    token: watch::Receiver<Arc<str>>,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
@@ -332,7 +349,9 @@ impl HttpHandler for GateHandler {
                 (decide(&rules, host, &path), self.peer_allowed(ctx))
             {
                 let api_key = self.api_key.borrow().clone();
-                match apply_rewrite(&mut req, &self.gateway, &upstream_url, &api_key) {
+                let token = self.token.borrow().clone();
+                let oauth_token = (!token.is_empty()).then(|| token.as_ref());
+                match apply_rewrite(&mut req, &self.gateway, &upstream_url, &api_key, oauth_token) {
                     Ok(()) => {
                         action = "rewrite->gateway";
                     }
@@ -404,13 +423,18 @@ impl HttpHandler for GateHandler {
 
 /// Repoint a request at the gateway: swap scheme + authority for the
 /// gateway's, keep the original path/query, and inject the Gate headers.
-/// The app's own auth header (bearer / `x-api-key`) is left intact -
-/// Gate validates `X-Gate-Api-Key` and forwards the rest.
+/// The app's own auth header (bearer / `x-api-key`) is left intact - Gate
+/// validates the Gate credential and forwards the rest.
+///
+/// Credential precedence: when `oauth_token` is `Some`, inject
+/// `X-Gate-Authorization: Bearer <token>` and omit the API key; otherwise
+/// inject the legacy `X-Gate-Api-Key`.
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
     upstream_url: &str,
     api_key: &str,
+    oauth_token: Option<&str>,
 ) -> Result<()> {
     let gw = gateway.clone().into_parts();
     let mut parts = req.uri().clone().into_parts();
@@ -419,10 +443,18 @@ pub(crate) fn apply_rewrite<T>(
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
     let headers = req.headers_mut();
-    headers.insert(
-        "x-gate-api-key",
-        HeaderValue::from_str(api_key).context("building x-gate-api-key header")?,
-    );
+    if let Some(token) = oauth_token {
+        headers.insert(
+            "x-gate-authorization",
+            HeaderValue::from_str(&format!("Bearer {token}"))
+                .context("building x-gate-authorization header")?,
+        );
+    } else {
+        headers.insert(
+            "x-gate-api-key",
+            HeaderValue::from_str(api_key).context("building x-gate-api-key header")?,
+        );
+    }
     headers.insert(
         "x-gate-upstream-url",
         HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
@@ -604,10 +636,12 @@ where
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let upstream_proxy = cfg.upstream_proxy.clone();
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
+    let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
     let handler = GateHandler {
         rules: rules_rx,
         gateway,
         api_key: key_rx,
+        token: token_rx,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
     };
@@ -711,6 +745,7 @@ where
             thread: Some(thread),
             rules_tx,
             key_tx,
+            token_tx,
             stopping,
         }),
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
@@ -734,11 +769,13 @@ mod tests {
             .body(())
             .unwrap();
 
+        // No OAuth token: legacy API-key header.
         apply_rewrite(
             &mut req,
             &gateway,
             "https://api.anthropic.com",
             "sk-gw-test",
+            None,
         )
         .unwrap();
 
@@ -752,6 +789,44 @@ mod tests {
             "https://api.anthropic.com"
         );
         // The app's own credential is preserved.
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer app-token"
+        );
+    }
+
+    #[test]
+    fn rewrite_with_oauth_token_injects_bearer_not_api_key() {
+        let gateway: Uri = "https://gateway-staging.constellationgate.ai"
+            .parse()
+            .unwrap();
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages")
+            .header("authorization", "Bearer app-token")
+            .body(())
+            .unwrap();
+
+        apply_rewrite(
+            &mut req,
+            &gateway,
+            "https://api.anthropic.com",
+            "sk-gw-test",
+            Some("cognito-access-token"),
+        )
+        .unwrap();
+
+        // OAuth token wins: bearer on x-gate-authorization, no api-key header.
+        assert_eq!(
+            req.headers().get("x-gate-authorization").unwrap(),
+            "Bearer cognito-access-token"
+        );
+        assert!(req.headers().get("x-gate-api-key").is_none());
+        assert_eq!(
+            req.headers().get("x-gate-upstream-url").unwrap(),
+            "https://api.anthropic.com"
+        );
+        // The app's own credential is still preserved.
         assert_eq!(
             req.headers().get("authorization").unwrap(),
             "Bearer app-token"

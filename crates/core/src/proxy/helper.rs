@@ -207,6 +207,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
         Request::SetIntercept {
             gateway_base_url,
             api_key,
+            oauth_token,
             ca_cert_pem,
             ca_key_pem,
             domains,
@@ -226,6 +227,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
             match guard.as_ref() {
                 Some(running) => {
                     running.update_api_key(&api_key);
+                    running.update_token(&oauth_token);
                     running.update_domains(&domains);
                     Response::Intercepting {
                         port: running.port(),
@@ -236,6 +238,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                         EngineConfig {
                             gateway_base_url,
                             api_key,
+                            oauth_token,
                             domains,
                             ca_cert_pem,
                             ca_key_pem,

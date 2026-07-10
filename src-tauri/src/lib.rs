@@ -321,6 +321,88 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
     .map_err(|e| format!("switch join error: {e}"))?
 }
 
+// ---- OAuth (Cognito) ----
+//
+// Gate Connect's own gateway auth via a Cognito access token, the successor
+// to the pasted API key. `oauth_begin_login` runs the full interactive flow
+// (open the Hosted UI, catch the loopback redirect, exchange the code) off
+// the main thread; `oauth_status` / `oauth_sign_out` are cheap keychain
+// reads/writes.
+
+#[derive(Serialize)]
+struct OAuthStatusDto {
+    signed_in: bool,
+    email: Option<String>,
+    /// Access-token expiry as a Unix timestamp; 0 when signed out.
+    expires_at_unix: i64,
+}
+
+impl From<&gate_connect_core::oauth::OAuthTokens> for OAuthStatusDto {
+    fn from(t: &gate_connect_core::oauth::OAuthTokens) -> Self {
+        Self {
+            signed_in: true,
+            email: t.email(),
+            expires_at_unix: t.expires_at_unix,
+        }
+    }
+}
+
+fn oauth_status_now() -> Result<OAuthStatusDto, String> {
+    match gate_connect_core::oauth::current().map_err(|e| format!("{e:#}"))? {
+        Some(t) => Ok(OAuthStatusDto::from(&t)),
+        None => Ok(OAuthStatusDto {
+            signed_in: false,
+            email: None,
+            expires_at_unix: 0,
+        }),
+    }
+}
+
+/// Run one interactive Cognito login: open the Hosted UI in the browser and
+/// capture the redirect on a loopback listener. Blocks (off the main thread)
+/// until the user finishes signing in or the flow times out.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+async fn oauth_begin_login(app: tauri::AppHandle) -> Result<OAuthStatusDto, String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let cfg = gate_connect_core::oauth::OAuthConfig::from_build_env()
+        .ok_or_else(|| "OAuth is not configured in this build".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let tokens = gate_connect_core::oauth::login(
+            &cfg,
+            gate_connect_core::oauth::REDIRECT_PORTS,
+            |url| {
+                app.opener()
+                    .open_url(url.to_string(), None::<String>)
+                    .map_err(|e| anyhow::anyhow!("opening the sign-in page: {e}"))
+            },
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        Ok(OAuthStatusDto::from(&tokens))
+    })
+    .await
+    .map_err(|e| format!("login join error: {e}"))?
+}
+
+/// Current OAuth sign-in status (signed in, email, expiry).
+#[tauri::command]
+async fn oauth_status() -> Result<OAuthStatusDto, String> {
+    tauri::async_runtime::spawn_blocking(oauth_status_now)
+        .await
+        .map_err(|e| format!("oauth status join error: {e}"))?
+}
+
+/// Forget the stored OAuth tokens (sign out).
+#[tauri::command]
+async fn oauth_sign_out() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("oauth sign-out join error: {e}"))?
+}
+
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
 /// copy: keychain vs Credential Manager, plist vs registry, whether a
 /// password prompt appears, etc.
@@ -914,6 +996,9 @@ pub fn run() {
                     save_account,
                     clear_account,
                     switch_gateway,
+                    oauth_begin_login,
+                    oauth_status,
+                    oauth_sign_out,
                     app_platform,
                     unpin_popover,
                     open_onboarding_window,
@@ -952,6 +1037,8 @@ pub fn run() {
                     save_account,
                     clear_account,
                     switch_gateway,
+                    oauth_status,
+                    oauth_sign_out,
                     app_platform,
                     unpin_popover,
                     open_onboarding_window,
