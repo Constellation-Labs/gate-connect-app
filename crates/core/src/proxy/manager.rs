@@ -93,6 +93,10 @@ impl ProxyManager {
             engine::EngineConfig {
                 gateway_base_url: account.gateway_base_url.clone(),
                 api_key: account.api_key.clone(),
+                // Cognito access token to inject instead of the API key, when
+                // a valid one is stored. Empty means fall back to the API
+                // key; a later refresh pushes updates via `refresh_token`.
+                oauth_token: crate::oauth::access_token_for_injection(),
                 domains: domains.clone(),
                 ca_cert_pem: ca.cert_pem().to_string(),
                 ca_key_pem: ca.key_pem().to_string(),
@@ -219,6 +223,20 @@ impl ProxyManager {
             .as_ref()
         {
             running.update_api_key(api_key);
+        }
+    }
+
+    /// Push a refreshed OAuth access token into the running engine, if any.
+    /// Empty string reverts to the API key. Used by the silent-refresh loop
+    /// so a renewed token reaches in-flight routing without a restart.
+    pub fn refresh_token(&self, oauth_token: &str) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_token(oauth_token);
         }
     }
 

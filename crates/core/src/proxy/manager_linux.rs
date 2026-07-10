@@ -133,6 +133,7 @@ impl ProxyManager {
         let port = match client.set_intercept(
             &account.gateway_base_url,
             &account.api_key,
+            &crate::oauth::access_token_for_injection(),
             ca.cert_pem(),
             ca.key_pem(),
             &domains,
@@ -249,6 +250,35 @@ impl ProxyManager {
                 let _ = client.set_intercept(
                     &account.gateway_base_url,
                     api_key,
+                    &crate::oauth::access_token_for_injection(),
+                    ca.cert_pem(),
+                    ca.key_pem(),
+                    &domains,
+                    system_proxy::load_port().unwrap_or(None),
+                );
+            }
+        }
+    }
+
+    /// Push a refreshed OAuth access token into the running daemon, if any.
+    /// Empty string reverts to the API key. Re-sends the current account/CA
+    /// so the live update carries the new token to in-flight routing.
+    pub fn refresh_token(&self, oauth_token: &str) {
+        if let Some(client) = self
+            .client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
+        {
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            if let (Ok(Some(account)), Ok(ca)) = (account::load(), ca::load_or_create()) {
+                let _ = client.set_intercept(
+                    &account.gateway_base_url,
+                    &account.api_key,
+                    oauth_token,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -272,6 +302,7 @@ impl ProxyManager {
         if let Err(e) = client.set_intercept(
             &account.gateway_base_url,
             &account.api_key,
+            &crate::oauth::access_token_for_injection(),
             ca.cert_pem(),
             ca.key_pem(),
             domains,
