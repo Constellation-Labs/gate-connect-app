@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Account } from "../lib/api";
+import type { Account, OAuthStatus } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { GATEWAY_SERVERS } from "../lib/config";
@@ -20,9 +20,11 @@ function hostOf(url: string): string {
  *  key calls save_account, Disconnect calls clear_account. */
 export function Settings({
   account,
+  oauth,
   onBack,
   onReplaceKey,
   onDisconnect,
+  onSignOut,
   onSwitchGateway,
   onReplayTour,
   routingOn,
@@ -31,9 +33,11 @@ export function Settings({
   onUntrustCa,
 }: {
   account: Account;
+  oauth: OAuthStatus | null;
   onBack: () => void;
   onReplaceKey: (key: string) => Promise<void>;
   onDisconnect: () => Promise<void>;
+  onSignOut: () => Promise<void>;
   onSwitchGateway: (url: string) => Promise<void>;
   onReplayTour: () => void;
   routingOn: boolean;
@@ -41,6 +45,8 @@ export function Settings({
   proxyBusy: boolean;
   onUntrustCa: () => void;
 }) {
+  const isOAuth = account.auth_mode === "oauth";
+  const connected = isOAuth ? (oauth?.signed_in ?? false) : account.has_api_key;
   const [replacing, setReplacing] = useState(false);
   const [devMode, setDevMode] = useState(false);
   const platform = usePlatform();
@@ -183,6 +189,20 @@ export function Settings({
     }
   }
 
+  async function signOut() {
+    if (submitting) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      await onSignOut();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "disconnect");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function selectServer(url: string) {
     if (url === account.gateway_base_url || submitting) return;
     setError(null);
@@ -214,9 +234,51 @@ export function Settings({
             {account.gateway_base_url}
           </div>
         </div>
-        <ConnPill state={account.has_api_key ? "connected" : "signedout"} />
+        <ConnPill state={connected ? "connected" : "signedout"} />
       </div>
 
+      {isOAuth && (
+        <>
+          <SectionLabel>Signed in</SectionLabel>
+          <div className="flex items-center gap-3 px-3.5 py-2.5">
+            <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-gc-accent-wash text-gc-accent">
+              <Icon name="shieldCheck" size={16} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[13px] font-medium text-gc-ink">
+                {oauth?.email ?? (connected ? "Signed in" : "Session expired")}
+              </div>
+              <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
+                {connected ? "constellation account" : "sign in again to resume routing"}
+              </div>
+            </div>
+          </div>
+          <div className="mt-1 flex items-center gap-4 px-3.5 pb-1">
+            <button
+              type="button"
+              onClick={signOut}
+              disabled={submitting}
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            >
+              <Icon name="refresh" size={14} />
+              Sign out
+            </button>
+            <button
+              type="button"
+              onClick={disconnect}
+              disabled={submitting}
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
+            >
+              <Icon name="trash" size={14} />
+              Disconnect
+            </button>
+          </div>
+          {error && <p className="mt-2 px-3.5 text-[11.5px] text-gc-error">{error}</p>}
+        </>
+      )}
+
+      {!isOAuth && (
+        <>
       <SectionLabel>Gate API Key</SectionLabel>
       <div className="px-3.5">
         {!replacing ? (
@@ -325,6 +387,8 @@ export function Settings({
             Disconnect
           </button>
         </div>
+      )}
+        </>
       )}
 
       <SectionLabel>Startup</SectionLabel>

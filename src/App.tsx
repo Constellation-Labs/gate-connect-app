@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
+import type { Account, OAuthStatus, ProxyState, ProviderState, Tool } from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -10,6 +10,8 @@ import {
   saveAccount,
   clearAccount,
   switchGateway,
+  oauthStatus,
+  oauthSignOut,
   proxyStatus,
   proxyEnable,
   proxyDisable,
@@ -64,10 +66,19 @@ async function forwardBackendErrors(): Promise<void> {
   for (const e of errs) trackError(e.message, backendErrorContext(e.context));
 }
 
+/** Whether the account has a usable credential right now: a stored key in
+ *  legacy mode, or a live OAuth session in OAuth mode. Drives home-vs-sign-in. */
+function isSignedIn(account: Account | null, oauth: OAuthStatus | null): boolean {
+  if (!account) return false;
+  if (account.auth_mode === "oauth") return oauth?.signed_in ?? false;
+  return account.has_api_key;
+}
+
 export function App() {
   const platform = usePlatform();
   const [screen, setScreen] = useState<Screen>("loading");
   const [account, setAccount] = useState<Account | null>(null);
+  const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providers, setProviders] = useState<ProviderState[]>([]);
@@ -159,6 +170,9 @@ export function App() {
         trackError(err, "startup");
         return null;
       });
+      // Best-effort: on failure treat as signed out (routes to sign-in), never
+      // crashes the launch.
+      const oauthState = await oauthStatus().catch(() => null);
       let px: ProxyState | null;
       try {
         px = await proxyStatus();
@@ -182,12 +196,13 @@ export function App() {
       const lal = await launchAtLoginStatus().catch(() => null);
       if (!alive) return;
       setAccount(acct);
+      setOAuth(oauthState);
       setProxy(px);
       setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
       if (px?.running) setRoutingNotice("on");
-      const resolved: Screen = acct ? "home" : "firstrun";
+      const resolved: Screen = isSignedIn(acct, oauthState) ? "home" : "firstrun";
       setScreen(resolved);
       if (!hasSeenTour()) {
         // First launch ever: open the window-sized intro and step the popover
@@ -268,6 +283,17 @@ export function App() {
 
   const refreshAccount = useCallback(async () => {
     setAccount(await getAccount().catch(() => null));
+    setOAuth(await oauthStatus().catch(() => null));
+  }, []);
+
+  // OAuth sign-out: forget the stored tokens but keep the account, so the
+  // popover returns to the sign-in prompt (not first-run) and routing config /
+  // tool connections stay put for the next sign-in. The backend reverts a
+  // running engine to the legacy header.
+  const signOut = useCallback(async () => {
+    await oauthSignOut();
+    setOAuth(await oauthStatus().catch(() => null));
+    setScreen("firstrun");
   }, []);
 
   const onConnected = useCallback(async () => {
@@ -459,7 +485,16 @@ export function App() {
       </div>
     );
   } else if (screen === "firstrun") {
-    body = <FirstRun onConnected={onConnected} initialGateway={account?.gateway_base_url} />;
+    body = (
+      <FirstRun
+        onConnected={onConnected}
+        initialGateway={account?.gateway_base_url}
+        // An existing OAuth account here means a prior session that's no longer
+        // signed in (silent refresh failed / explicit sign-out): show the
+        // welcome-back re-auth copy rather than the first-run welcome.
+        reauth={!!account && account.auth_mode === "oauth"}
+      />
+    );
   } else if (screen === "success") {
     body = (
       <Success
@@ -494,9 +529,11 @@ export function App() {
     body = (
       <Settings
         account={account}
+        oauth={oauth}
         onBack={() => setScreen("home")}
         onReplaceKey={replaceKey}
         onDisconnect={disconnect}
+        onSignOut={signOut}
         onSwitchGateway={switchGatewayServer}
         onReplayTour={() => {
           openOnboardingWindow("settings").catch(() => {});
