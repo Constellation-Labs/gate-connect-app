@@ -72,6 +72,16 @@ fn sign_in() {
     account::save("https://gw.example.com", Some("sk-gw-testkey123")).unwrap();
 }
 
+/// Persist a stable relay port so [`proxy::relay_base_url`] resolves. CLI tool
+/// configs point at the loopback relay, so connecting/reconciling a tool needs
+/// a bound relay port; in these tests no engine runs, so we seed the persisted
+/// port file directly (the same file the manager writes after `enable`).
+fn set_relay_port(port: u16) {
+    let dir = env::app_support_dir().unwrap().join("proxy");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+}
+
 /// Make Claude Code look installed-but-unconfigured: its config dir exists
 /// (so `detect()` is true) with no Gate settings written, which is
 /// [`Status::Detected`].
@@ -88,6 +98,7 @@ fn tool_installed_after_enable_is_configured() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
+    set_relay_port(9977);
     install_claude_unconfigured();
     // Precondition: Anthropic is on by default, and Claude is present but not
     // yet routed through Gate.
@@ -131,6 +142,7 @@ fn already_connected_tool_is_left_untouched() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
+    set_relay_port(9977);
     install_claude_unconfigured();
 
     // First sweep connects it.
@@ -157,6 +169,7 @@ fn enable_while_proxy_off_persists_intent_for_reconcile() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
+    set_relay_port(9977);
     install_claude_unconfigured();
 
     // Off then on with the proxy stopped. `disable` persists the off-intent;
