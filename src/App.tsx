@@ -25,6 +25,7 @@ import {
   openOnboardingWindow,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
+import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
 import { ProxyScreen } from "./screens/ProxyScreen";
 import { Settings } from "./screens/Settings";
@@ -38,7 +39,15 @@ import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { usePlatform } from "./lib/platform";
 
-type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
+type Screen =
+  | "loading"
+  | "firstrun"
+  | "orgpicker"
+  | "home"
+  | "proxy"
+  | "settings"
+  | "success"
+  | "coming-soon";
 
 // Providers hidden from the UI for now. Slugs match the backend provider list.
 const HIDDEN_PROVIDER_SLUGS = new Set<string>([]);
@@ -52,12 +61,21 @@ function hostOf(url: string | undefined): string {
   }
 }
 
-/** Whether the account has a usable credential right now: a stored key in
- *  legacy mode, or a live OAuth session in OAuth mode. Drives home-vs-sign-in. */
+/** Whether the account is fully usable right now: a stored key in legacy mode,
+ *  or a live OAuth session *with an org selected* in OAuth mode (the gateway
+ *  rejects OAuth requests that carry no org). Drives home-vs-sign-in/picker. */
 function isSignedIn(account: Account | null, oauth: OAuthStatus | null): boolean {
   if (!account) return false;
-  if (account.auth_mode === "oauth") return oauth?.signed_in ?? false;
+  if (account.auth_mode === "oauth") return (oauth?.signed_in ?? false) && !!account.org_id;
   return account.has_api_key;
+}
+
+/** An OAuth session that's authenticated but hasn't picked an org yet - the
+ *  one state that routes to the org picker rather than sign-in or home. */
+function needsOrg(account: Account | null, oauth: OAuthStatus | null): boolean {
+  return (
+    account?.auth_mode === "oauth" && (oauth?.signed_in ?? false) && !account.org_id
+  );
 }
 
 export function App() {
@@ -65,6 +83,9 @@ export function App() {
   const [screen, setScreen] = useState<Screen>("loading");
   const [account, setAccount] = useState<Account | null>(null);
   const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
+  // Where the org picker returns to when done: "home" (startup re-pick),
+  // "success" (fresh sign-in), or "settings" (Switch organization).
+  const [orgPickerReturn, setOrgPickerReturn] = useState<Screen>("home");
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providers, setProviders] = useState<ProviderState[]>([]);
@@ -123,7 +144,17 @@ export function App() {
       setProxy(px);
       setProviders(provs);
       setTools(toolList);
-      const resolved: Screen = isSignedIn(acct, oauthState) ? "home" : "firstrun";
+      let resolved: Screen;
+      if (isSignedIn(acct, oauthState)) {
+        resolved = "home";
+      } else if (needsOrg(acct, oauthState)) {
+        // Signed in via OAuth but no org picked yet - go straight to the picker
+        // (returning home once chosen), not back through sign-in.
+        setOrgPickerReturn("home");
+        resolved = "orgpicker";
+      } else {
+        resolved = "firstrun";
+      }
       setScreen(resolved);
       if (!hasSeenTour()) {
         // First launch ever: open the window-sized intro and step the popover
@@ -203,11 +234,34 @@ export function App() {
     setScreen("firstrun");
   }, []);
 
+  // Open the org picker from Settings; it returns to Settings when done.
+  const switchOrg = useCallback(() => {
+    setOrgPickerReturn("settings");
+    setScreen("orgpicker");
+  }, []);
+
   const onConnected = useCallback(async () => {
-    await refreshAccount();
+    // Read the fresh account directly (state setters are async) so we can route
+    // an OAuth sign-in that still needs an org straight to the picker.
+    const acct = await getAccount().catch(() => null);
+    const oauthState = await oauthStatus().catch(() => null);
+    setAccount(acct);
+    setOAuth(oauthState);
     track("signed_in");
-    setScreen("success");
-  }, [refreshAccount]);
+    if (needsOrg(acct, oauthState)) {
+      setOrgPickerReturn("success");
+      setScreen("orgpicker");
+    } else {
+      setScreen("success");
+    }
+  }, []);
+
+  // Org chosen (or auto-selected): refresh account state and return where the
+  // picker was entered from.
+  const onOrgChosen = useCallback(async () => {
+    await refreshAccount();
+    setScreen(orgPickerReturn);
+  }, [refreshAccount, orgPickerReturn]);
 
   const toggleProxy = useCallback(async () => {
     if (proxyBusy) return;
@@ -386,6 +440,13 @@ export function App() {
         reauth={!!account && account.auth_mode === "oauth"}
       />
     );
+  } else if (screen === "orgpicker") {
+    body = (
+      <OrgPicker
+        onDone={onOrgChosen}
+        onBack={orgPickerReturn === "settings" ? () => setScreen("settings") : undefined}
+      />
+    );
   } else if (screen === "success") {
     body = (
       <Success
@@ -426,6 +487,7 @@ export function App() {
         onReplaceKey={replaceKey}
         onDisconnect={disconnect}
         onSignOut={signOut}
+        onSwitchOrg={switchOrg}
         onSwitchGateway={switchGatewayServer}
         onReplayTour={() => {
           openOnboardingWindow("settings").catch(() => {});
