@@ -93,6 +93,15 @@ pub fn engine_likely_running() -> bool {
         .unwrap_or(false)
 }
 
+/// The loopback base URL CLI tools point at to route through the reverse-proxy
+/// relay, or `None` if no relay port has ever been bound (so nothing to point
+/// at yet). Reads the persisted port, so it's stable across restarts and valid
+/// even while the engine is momentarily down. This is the base URL the tool
+/// integrations write into their config instead of a gateway URL + key.
+pub fn relay_base_url() -> Option<String> {
+    relay::load_persisted_port().map(relay::base_url)
+}
+
 /// One routable provider. The built-in set is defined by
 /// [`default_domains`]; persisted config only flips `enabled` per `slug`,
 /// so adding a new built-in domain automatically surfaces it in the UI.
