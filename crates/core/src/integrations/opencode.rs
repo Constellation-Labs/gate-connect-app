@@ -18,9 +18,8 @@
 //! "provider": {
 //!   "<id>": {
 //!     "options": {
-//!       "baseURL": "<gateway>/v1",
+//!       "baseURL": "http://127.0.0.1:<relay-port>/v1",
 //!       "headers": {
-//!         "X-Gate-Api-Key": "...",
 //!         "X-Gate-Upstream-Url": "<original provider host>",
 //!         ...any pre-existing headers the user had
 //!       }
@@ -28,6 +27,11 @@
 //!   }
 //! }
 //! ```
+//!
+//! The base URL points at the loopback reverse-proxy relay
+//! ([`crate::proxy::relay`]), not the gateway: the relay injects the live
+//! Gate credential per request, so **no Gate credential is written to
+//! opencode.json** - only the non-secret `X-Gate-Upstream-Url` hint.
 //!
 //! The provider's `apiKey` , its model list, and any
 //! other options the user set survive the merge. OpenCode keeps using
@@ -56,14 +60,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::account;
 use crate::env;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
 
-const GATE_KEY_HEADER: &str = "X-Gate-Api-Key";
 const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
 
 /// Sidecar state file. OpenCode's JSON schema rejects unknown top-level
@@ -257,11 +259,11 @@ impl Integration for OpenCode {
 
         let settings = load_settings()?.unwrap_or_default();
 
-        let expected_base = match account::load_base_url()? {
+        let expected_base = match crate::proxy::relay_base_url() {
             Some(u) => compute_base_url(&u),
             None => {
                 return Ok(Status::Drifted(
-                    "Gate Connect is not signed in - sign in to validate OpenCode config".into(),
+                    "the Gate proxy has not been enabled yet - turn it on to route OpenCode".into(),
                 ));
             }
         };
@@ -284,17 +286,14 @@ impl Integration for OpenCode {
             let headers = options
                 .and_then(|o| o.get("headers"))
                 .and_then(|v| v.as_object());
-            let has_key = headers
-                .and_then(|h| h.get(GATE_KEY_HEADER))
-                .and_then(|v| v.as_str())
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
+            // No key check: the relay injects the Gate credential live, so the
+            // config carries only the non-secret upstream hint.
             let has_upstream = headers
                 .and_then(|h| h.get(UPSTREAM_URL_HEADER))
                 .and_then(|v| v.as_str())
                 .map(|s| !s.is_empty())
                 .unwrap_or(false);
-            if base_url == expected_base && has_key && has_upstream {
+            if base_url == expected_base && has_upstream {
                 healthy += 1;
             } else {
                 drifted.push(provider_id.clone());
@@ -326,12 +325,9 @@ impl Integration for OpenCode {
                 "OpenCode is not installed on this machine - install it from https://opencode.ai first"
             );
         }
-        if !input.gateway_base_url.starts_with("https://") {
-            anyhow::bail!("gateway base URL must be https://");
-        }
-
-        let acct = account::load()?
-            .context("Gate Connect is not signed in (no account.json + keychain entry)")?;
+        let relay_base_url = input.relay_base_url.as_deref().context(
+            "the Gate proxy relay is not running - enable the proxy before connecting OpenCode",
+        )?;
 
         let mut settings = load_settings()?.unwrap_or_default();
         let auth = load_opencode_auth().unwrap_or_default();
@@ -400,17 +396,11 @@ impl Integration for OpenCode {
         // values from the previous connect.
         let mut state = load_state()?.unwrap_or_default();
 
-        let gateway_base_url = compute_base_url(&input.gateway_base_url);
+        let relay_base = compute_base_url(relay_base_url);
         let provider_map = ensure_object(&mut settings, "provider");
 
         for target in &targets {
-            apply_override(
-                provider_map,
-                &mut state,
-                target,
-                &gateway_base_url,
-                &acct.api_key,
-            );
+            apply_override(provider_map, &mut state, target, &relay_base);
         }
 
         save_state(&state)?;
@@ -450,36 +440,12 @@ impl Integration for OpenCode {
         remove_state()
     }
 
-    fn refresh_gate_key(&self, api_key: &str) -> Result<()> {
-        // Only rewrite state we own: the sidecar lists exactly the
-        // providers connect() stamped with Gate headers.
-        let Some(state) = load_state()? else {
-            return Ok(());
-        };
-        let Some(mut settings) = load_settings()? else {
-            return Ok(());
-        };
-        let mut changed = false;
-        if let Some(provider_map) = settings.get_mut("provider").and_then(|v| v.as_object_mut()) {
-            for provider_id in state.providers.keys() {
-                let key_slot = provider_map
-                    .get_mut(provider_id)
-                    .and_then(|v| v.as_object_mut())
-                    .and_then(|p| p.get_mut("options"))
-                    .and_then(|v| v.as_object_mut())
-                    .and_then(|o| o.get_mut("headers"))
-                    .and_then(|v| v.as_object_mut())
-                    .and_then(|h| h.get_mut(GATE_KEY_HEADER));
-                if let Some(slot) = key_slot {
-                    *slot = Value::String(api_key.to_string());
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            return Ok(());
-        }
-        write_settings(&settings)
+    fn refresh_gate_key(&self, _api_key: &str) -> Result<()> {
+        // No-op: the reverse-proxy relay injects the Gate credential live per
+        // request, so opencode.json carries no key and a rotation needs no
+        // rewrite. Kept to satisfy the trait; the old scheme rewrote an
+        // embedded X-Gate-Api-Key header per gated provider here.
+        Ok(())
     }
 
     fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
@@ -498,14 +464,15 @@ impl Integration for OpenCode {
 }
 
 /// Snapshot the provider's current state, then overwrite `options.baseURL`
-/// and merge our two `X-Gate-*` headers into `options.headers`. Existing
-/// `options.apiKey`, model lists, and any other fields survive untouched.
+/// (to the relay) and merge the non-secret `X-Gate-Upstream-Url` header into
+/// `options.headers`. No Gate credential is written - the relay injects it live
+/// per request. Existing `options.apiKey`, model lists, and any other fields
+/// survive untouched.
 fn apply_override(
     provider_map: &mut Map<String, Value>,
     state: &mut State,
     target: &KnownProvider,
-    gateway_base_url: &str,
-    gate_api_key: &str,
+    relay_base_url: &str,
 ) {
     // Only snapshot the first time we touch this provider. Re-connect
     // must preserve the user's original values, not record our own
@@ -554,7 +521,7 @@ fn apply_override(
 
     options.insert(
         "baseURL".to_string(),
-        Value::String(gateway_base_url.to_string()),
+        Value::String(relay_base_url.to_string()),
     );
 
     let headers_entry = options
@@ -566,10 +533,6 @@ fn apply_override(
     let headers = headers_entry
         .as_object_mut()
         .expect("headers entry was just coerced to an object");
-    headers.insert(
-        GATE_KEY_HEADER.to_string(),
-        Value::String(gate_api_key.to_string()),
-    );
     headers.insert(
         UPSTREAM_URL_HEADER.to_string(),
         Value::String(target.upstream_url.to_string()),
@@ -627,11 +590,11 @@ fn restore_provider(
     }
 }
 
-/// Append the SDK's expected path suffix (`/v1`) to the user's gateway
-/// URL. Trims trailing slash, and avoids doubling the suffix if the user
-/// pasted a gateway URL that already ends in `/v1`.
-fn compute_base_url(gateway: &str) -> String {
-    let trimmed = gateway.trim_end_matches('/');
+/// Append the SDK's expected path suffix (`/v1`) to the relay's loopback base
+/// URL. The relay (and Gate behind it) forward the path verbatim, so the `/v1`
+/// segment lives here. Trims trailing slash, and avoids doubling the suffix.
+fn compute_base_url(base: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
     if trimmed.ends_with(GATEWAY_PATH_SUFFIX) {
         trimmed.to_string()
     } else {
@@ -670,9 +633,9 @@ fn write_settings(settings: &Map<String, Value>) -> Result<()> {
     let path = settings_path()?;
     let mut body = serde_json::to_string_pretty(settings).context("serializing opencode.json")?;
     body.push('\n');
-    // 0o600: this file holds the Gate API key under
-    // `provider.<id>.options.headers`. Atomic-write protects against
-    // partial writes corrupting JSON on crash.
+    // 0o600 defensively (the file no longer holds the Gate key - the relay
+    // injects it - but may carry other user config). Atomic-write protects
+    // against partial writes corrupting JSON on crash.
     crate::primitives::write_file(&path, body.as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
 }
@@ -760,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_override_adds_gate_headers_without_clobbering_user_options() {
+    fn apply_override_adds_upstream_header_without_clobbering_user_options() {
         let mut providers = Map::new();
         providers.insert(
             "anthropic".to_string(),
@@ -781,20 +744,20 @@ mod tests {
             &mut providers,
             &mut state,
             &target,
-            "https://gw.example.com/v1",
-            "sk-gw-xxx",
+            "http://127.0.0.1:9977/v1",
         );
 
         let anth = providers["anthropic"].as_object().unwrap();
         let opts = anth["options"].as_object().unwrap();
-        // baseURL overwritten to gateway
-        assert_eq!(opts["baseURL"], json!("https://gw.example.com/v1"));
+        // baseURL overwritten to the relay
+        assert_eq!(opts["baseURL"], json!("http://127.0.0.1:9977/v1"));
         // user's apiKey survived
         assert_eq!(opts["apiKey"], json!("{env:ANTHROPIC_API_KEY}"));
-        // user's existing header preserved alongside Gate headers
+        // user's existing header preserved alongside the Gate upstream hint
         let hdrs = opts["headers"].as_object().unwrap();
         assert_eq!(hdrs["X-User-Custom"], json!("yes"));
-        assert_eq!(hdrs[GATE_KEY_HEADER], json!("sk-gw-xxx"));
+        // No Gate credential is ever written - the relay injects it live.
+        assert!(!hdrs.contains_key("X-Gate-Api-Key"));
         assert_eq!(
             hdrs[UPSTREAM_URL_HEADER],
             json!("https://api.anthropic.com")
@@ -837,11 +800,10 @@ mod tests {
             &mut providers,
             &mut state,
             &target,
-            "https://gw.example.com/v1",
-            "sk-gw-xxx",
+            "http://127.0.0.1:9977/v1",
         );
 
-        // Connect mutated options.baseURL and added Gate headers - confirm.
+        // Connect mutated options.baseURL and added the upstream header - confirm.
         assert_ne!(providers["openai"], original);
 
         // Now disconnect.
@@ -866,8 +828,7 @@ mod tests {
             &mut providers,
             &mut state,
             &target,
-            "https://gw.example.com/v1",
-            "sk-gw-xxx",
+            "http://127.0.0.1:9977/v1",
         );
 
         assert!(providers.contains_key("openai"));
@@ -960,30 +921,24 @@ mod tests {
             &mut providers,
             &mut state,
             &target,
-            "https://gw1.example/v1",
-            "key1",
+            "http://127.0.0.1:9001/v1",
         );
         let first_snapshot = state.providers["anthropic"].previous_headers.clone();
 
-        // Second connect with a different gateway / key - snapshot must NOT
+        // Second connect with a different relay port - snapshot must NOT
         // change to reflect our own intermediate (post-first-connect) state.
         apply_override(
             &mut providers,
             &mut state,
             &target,
-            "https://gw2.example/v1",
-            "key2",
+            "http://127.0.0.1:9002/v1",
         );
         let second_snapshot = state.providers["anthropic"].previous_headers.clone();
         assert_eq!(first_snapshot, second_snapshot);
-        // Headers on disk reflect the latest connect.
-        assert_eq!(
-            providers["anthropic"]["options"]["headers"][GATE_KEY_HEADER],
-            json!("key2")
-        );
+        // baseURL on disk reflects the latest connect.
         assert_eq!(
             providers["anthropic"]["options"]["baseURL"],
-            json!("https://gw2.example/v1")
+            json!("http://127.0.0.1:9002/v1")
         );
     }
 }
