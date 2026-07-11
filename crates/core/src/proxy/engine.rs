@@ -41,6 +41,11 @@ pub struct EngineConfig {
     /// empty means fall back to `api_key`. Hot-swappable via
     /// [`RunningEngine::update_token`].
     pub oauth_token: String,
+    /// Selected org UUID, injected as `X-Gate-Org-Id` alongside the OAuth
+    /// token (the gateway requires it on every OAuth request). Empty when no
+    /// org is selected or in legacy API-key mode. Hot-swappable via
+    /// [`RunningEngine::update_org`].
+    pub org_id: String,
     /// Full domain catalog; the engine routes only the `enabled` ones.
     pub domains: Vec<ProxyDomain>,
     /// PEM of the local root CA cert (public).
@@ -95,6 +100,7 @@ pub struct RunningEngine {
     rules_tx: watch::Sender<Arc<Vec<ProxyDomain>>>,
     key_tx: watch::Sender<Arc<str>>,
     token_tx: watch::Sender<Arc<str>>,
+    org_tx: watch::Sender<Arc<str>>,
     /// Set before a deliberate shutdown so the engine thread can tell an
     /// expected stop from an unexpected exit (crash / bind loss).
     stopping: Arc<AtomicBool>,
@@ -148,6 +154,13 @@ impl RunningEngine {
     /// a silent token refresh reaches in-flight routing.
     pub fn update_token(&self, oauth_token: &str) {
         let _ = self.token_tx.send(Arc::from(oauth_token));
+    }
+
+    /// Push the selected org UUID to the live engine (injected as
+    /// `X-Gate-Org-Id` alongside the OAuth token). Empty string clears it.
+    /// Cheap - no restart; this is how an org switch reaches in-flight routing.
+    pub fn update_org(&self, org_id: &str) {
+        let _ = self.org_tx.send(Arc::from(org_id));
     }
 
     /// Signal graceful shutdown and wait for the engine thread to exit.
@@ -216,6 +229,9 @@ struct GateHandler {
     /// Live-updatable Cognito access token. Empty string means "unset" -
     /// fall back to `api_key`.
     token: watch::Receiver<Arc<str>>,
+    /// Live-updatable selected org UUID. Empty string means "none selected";
+    /// injected as `X-Gate-Org-Id` only when an OAuth token is present.
+    org: watch::Receiver<Arc<str>>,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
@@ -357,12 +373,15 @@ impl HttpHandler for GateHandler {
                 let api_key = self.api_key.borrow().clone();
                 let token = self.token.borrow().clone();
                 let oauth_token = (!token.is_empty()).then(|| token.as_ref());
+                let org = self.org.borrow().clone();
+                let org_id = (!org.is_empty()).then(|| org.as_ref());
                 match apply_rewrite(
                     &mut req,
                     &self.gateway,
                     &upstream_url,
                     &api_key,
                     oauth_token,
+                    org_id,
                 ) {
                     Ok(()) => {
                         action = "rewrite->gateway";
@@ -439,14 +458,16 @@ impl HttpHandler for GateHandler {
 /// validates the Gate credential and forwards the rest.
 ///
 /// Credential precedence: when `oauth_token` is `Some`, inject
-/// `X-Gate-Authorization: Bearer <token>` and omit the API key; otherwise
-/// inject the legacy `X-Gate-Api-Key`.
+/// `X-Gate-Authorization: Bearer <token>` (plus `X-Gate-Org-Id` when `org_id`
+/// is `Some` - the gateway requires it on OAuth requests) and omit the API key;
+/// otherwise inject the legacy `X-Gate-Api-Key`.
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
     upstream_url: &str,
     api_key: &str,
     oauth_token: Option<&str>,
+    org_id: Option<&str>,
 ) -> Result<()> {
     let gw = gateway.clone().into_parts();
     let mut parts = req.uri().clone().into_parts();
@@ -461,6 +482,12 @@ pub(crate) fn apply_rewrite<T>(
             HeaderValue::from_str(&format!("Bearer {token}"))
                 .context("building x-gate-authorization header")?,
         );
+        if let Some(org) = org_id {
+            headers.insert(
+                "x-gate-org-id",
+                HeaderValue::from_str(org).context("building x-gate-org-id header")?,
+            );
+        }
     } else {
         headers.insert(
             "x-gate-api-key",
@@ -609,17 +636,20 @@ where
     let upstream_proxy = cfg.upstream_proxy.clone();
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
+    let (org_tx, org_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.org_id.as_str()));
     // The relay shares the same credential channels , so a
-    // token refresh or key rotation reaches CLI tools and GUI apps alike. Clone
-    // before the handler moves the originals.
+    // token refresh, key rotation, or org switch reaches CLI tools and GUI apps
+    // alike. Clone before the handler moves the originals.
     let relay_gateway = gateway.clone();
     let relay_key_rx = key_rx.clone();
     let relay_token_rx = token_rx.clone();
+    let relay_org_rx = org_rx.clone();
     let handler = GateHandler {
         rules: rules_rx,
         gateway,
         api_key: key_rx,
         token: token_rx,
+        org: org_rx,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
     };
@@ -706,9 +736,13 @@ where
                 // like the PAC responder it dies with the runtime on stop.
                 // Non-fatal: if it can't adopt its listener the MITM proxy
                 // still runs, only CLI tools pointed at the relay fail.
-                if let Err(e) =
-                    super::relay::spawn(relay_listener, relay_gateway, relay_key_rx, relay_token_rx)
-                {
+                if let Err(e) = super::relay::spawn(
+                    relay_listener,
+                    relay_gateway,
+                    relay_key_rx,
+                    relay_token_rx,
+                    relay_org_rx,
+                ) {
                     eprintln!("gate proxy relay failed to start: {e}");
                 }
                 if let Err(e) = proxy.start().await {
@@ -734,6 +768,7 @@ where
             rules_tx,
             key_tx,
             token_tx,
+            org_tx,
             stopping,
         }),
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
@@ -757,12 +792,13 @@ mod tests {
             .body(())
             .unwrap();
 
-        // No OAuth token: legacy API-key header.
+        // No OAuth token: legacy API-key header, and no org header.
         apply_rewrite(
             &mut req,
             &gateway,
             "https://api.anthropic.com",
             "sk-gw-test",
+            None,
             None,
         )
         .unwrap();
@@ -772,6 +808,7 @@ mod tests {
             "https://gateway-staging.constellationgate.ai/v1/messages?beta=true"
         );
         assert_eq!(req.headers().get("x-gate-api-key").unwrap(), "sk-gw-test");
+        assert!(req.headers().get("x-gate-org-id").is_none());
         assert_eq!(
             req.headers().get("x-gate-upstream-url").unwrap(),
             "https://api.anthropic.com"
@@ -801,14 +838,17 @@ mod tests {
             "https://api.anthropic.com",
             "sk-gw-test",
             Some("cognito-access-token"),
+            Some("org-uuid-1"),
         )
         .unwrap();
 
-        // OAuth token wins: bearer on x-gate-authorization, no api-key header.
+        // OAuth token wins: bearer on x-gate-authorization, no api-key header,
+        // and the selected org rides on x-gate-org-id.
         assert_eq!(
             req.headers().get("x-gate-authorization").unwrap(),
             "Bearer cognito-access-token"
         );
+        assert_eq!(req.headers().get("x-gate-org-id").unwrap(), "org-uuid-1");
         assert!(req.headers().get("x-gate-api-key").is_none());
         assert_eq!(
             req.headers().get("x-gate-upstream-url").unwrap(),

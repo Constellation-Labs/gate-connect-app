@@ -79,6 +79,9 @@ const GATE_KEY_HEADER: &str = "x-gate-api-key";
 /// OAuth credential header (Cognito access token), injected when a token is
 /// present; takes precedence over the API key.
 const GATE_AUTHORIZATION_HEADER: &str = "x-gate-authorization";
+/// Selected-org header, injected alongside the OAuth token (the gateway
+/// requires it on every OAuth request).
+const GATE_ORG_HEADER: &str = "x-gate-org-id";
 
 /// Everything a relay connection needs, shared across all requests.
 struct RelayState {
@@ -92,6 +95,9 @@ struct RelayState {
     api_key: watch::Receiver<Arc<str>>,
     /// Live Cognito access token; empty string means "fall back to the key".
     token: watch::Receiver<Arc<str>>,
+    /// Live selected org UUID; empty means "none selected". Injected only when
+    /// a token is present.
+    org: watch::Receiver<Arc<str>>,
     /// Upstream URLs the built-in catalog permits. The relay refuses to forward
     /// a request whose `x-gate-upstream-url` isn't one of these, so a local
     /// process can't aim the gateway at an arbitrary host .
@@ -103,6 +109,7 @@ impl RelayState {
         gateway: &Uri,
         api_key: watch::Receiver<Arc<str>>,
         token: watch::Receiver<Arc<str>>,
+        org: watch::Receiver<Arc<str>>,
     ) -> Self {
         let scheme = gateway.scheme_str().unwrap_or("https");
         let authority = gateway.authority().map(|a| a.as_str()).unwrap_or("");
@@ -119,6 +126,7 @@ impl RelayState {
             gateway_base: format!("{scheme}://{authority}"),
             api_key,
             token,
+            org,
             allowed_upstreams,
         }
     }
@@ -132,10 +140,11 @@ pub(crate) fn spawn(
     gateway: Uri,
     api_key: watch::Receiver<Arc<str>>,
     token: watch::Receiver<Arc<str>>,
+    org: watch::Receiver<Arc<str>>,
 ) -> Result<()> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
-    let state = Arc::new(RelayState::new(&gateway, api_key, token));
+    let state = Arc::new(RelayState::new(&gateway, api_key, token, org));
     tokio::spawn(async move {
         loop {
             let (stream, _) = match listener.accept().await {
@@ -263,11 +272,19 @@ fn inject_credential(headers: &mut HeaderMap, state: &RelayState) {
     // Clone the values out of the watch guards so no lock is held.
     let token: Arc<str> = state.token.borrow().clone();
     let api_key: Arc<str> = state.api_key.borrow().clone();
+    let org: Arc<str> = state.org.borrow().clone();
     headers.remove(GATE_AUTHORIZATION_HEADER);
     headers.remove(GATE_KEY_HEADER);
+    headers.remove(GATE_ORG_HEADER);
     if !token.is_empty() {
         if let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) {
             headers.insert(HeaderName::from_static(GATE_AUTHORIZATION_HEADER), value);
+        }
+        // The gateway requires the org header on every OAuth request.
+        if !org.is_empty() {
+            if let Ok(value) = HeaderValue::from_str(&org) {
+                headers.insert(HeaderName::from_static(GATE_ORG_HEADER), value);
+            }
         }
     } else if let Ok(value) = HeaderValue::from_str(&api_key) {
         headers.insert(HeaderName::from_static(GATE_KEY_HEADER), value);

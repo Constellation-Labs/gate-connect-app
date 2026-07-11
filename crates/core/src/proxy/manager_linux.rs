@@ -134,6 +134,7 @@ impl ProxyManager {
             &account.gateway_base_url,
             &account.api_key,
             &crate::oauth::access_token_for_injection(),
+            &crate::account::org_id_for_injection(),
             ca.cert_pem(),
             ca.key_pem(),
             &domains,
@@ -236,6 +237,7 @@ impl ProxyManager {
                     &account.gateway_base_url,
                     api_key,
                     &crate::oauth::access_token_for_injection(),
+                    &crate::account::org_id_for_injection(),
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -265,6 +267,37 @@ impl ProxyManager {
                     &account.gateway_base_url,
                     &account.api_key,
                     oauth_token,
+                    &crate::account::org_id_for_injection(),
+                    ca.cert_pem(),
+                    ca.key_pem(),
+                    &domains,
+                    system_proxy::load_port().unwrap_or(None),
+                    crate::proxy::relay::load_persisted_port(),
+                );
+            }
+        }
+    }
+
+    /// Push a newly-selected org UUID into the running daemon, if any. Empty
+    /// string clears it. Re-sends the current account/CA/token so the live
+    /// update carries the new org to in-flight routing.
+    pub fn refresh_org(&self, org_id: &str) {
+        if let Some(client) = self
+            .client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
+        {
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            if let (Ok(Some(account)), Ok(ca)) = (account::load(), ca::load_or_create()) {
+                let _ = client.set_intercept(
+                    &account.gateway_base_url,
+                    &account.api_key,
+                    &crate::oauth::access_token_for_injection(),
+                    org_id,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -290,6 +323,7 @@ impl ProxyManager {
             &account.gateway_base_url,
             &account.api_key,
             &crate::oauth::access_token_for_injection(),
+            &crate::account::org_id_for_injection(),
             ca.cert_pem(),
             ca.key_pem(),
             domains,
