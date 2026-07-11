@@ -215,6 +215,7 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
+                relay_base_url: crate::proxy::relay_base_url(),
             };
             integ
                 .connect(&input)
@@ -329,6 +330,7 @@ pub fn reconcile_enabled() -> Result<()> {
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
+                relay_base_url: crate::proxy::relay_base_url(),
             };
             if let Err(e) = integ.connect(&input) {
                 eprintln!(

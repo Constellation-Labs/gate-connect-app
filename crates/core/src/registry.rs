@@ -49,6 +49,12 @@ impl fmt::Display for ToolId {
 pub struct ConnectInput {
     pub gateway_base_url: String,
     pub upstream_url: String,
+    /// Loopback base URL of the reverse-proxy relay
+    /// ([`crate::proxy::relay_base_url`]). Relay-routed integrations point
+    /// their tool config here and inject no credential (the relay injects the
+    /// live one). `None` when no relay port has been bound yet - a relay-routed
+    /// integration then declines to connect.
+    pub relay_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
