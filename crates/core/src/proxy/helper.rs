@@ -243,6 +243,10 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                             ca_cert_pem,
                             ca_key_pem,
                             preferred_port,
+                            // TODO(relay stable port): thread a preferred relay
+                            // port through the control protocol so CLI configs
+                            // stay valid across restarts on Linux.
+                            preferred_relay_port: None,
                             // The daemon runs as the owner; only intercept this
                             // user's own traffic. SAFETY: geteuid never fails.
                             owner_uid: Some(unsafe { libc::geteuid() }),

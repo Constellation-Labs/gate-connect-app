@@ -112,6 +112,9 @@ impl ProxyManager {
                 // at its own launch must keep serving a fresh PAC, or its
                 // fetch fails and it falls back to DIRECT, bypassing Gate.
                 preferred_pac_port: system_proxy::load_pac_port().unwrap_or(None),
+                // TODO(relay stable port): reuse a persisted relay port so CLI
+                // tool configs stay valid across restarts.
+                preferred_relay_port: None,
                 // Per-user UID gating is a Linux concern; unused on Windows.
                 owner_uid: None,
                 // Keep any pre-existing proxy as the PAC fallback so non-Gate

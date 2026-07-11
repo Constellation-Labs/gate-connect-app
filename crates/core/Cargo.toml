@@ -34,6 +34,18 @@ sha2.workspace = true
 base64.workspace = true
 rand.workspace = true
 
+# CLI reverse-proxy relay (`proxy::relay`): a plaintext loopback HTTP server
+# CLI tools point their base URL at, so the credential is injected live per
+# request instead of baked into a config file. `hyper` (http1 server) accepts
+# the tool's request; the response is forwarded to the gateway via `reqwest`
+# and streamed back with `futures-util` mapping the body stream onto
+# `http-body-util`'s `StreamBody`.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false }
+
 # `libc` backs the unix `getpwuid(geteuid())` username lookup in env.rs -
 # we resolve the real account from the password database rather than
 # trusting inherited `$USER` / `$USERNAME`.
@@ -58,17 +70,12 @@ winreg = "0.52"
 sha1 = "0.10"
 pem = "3.0"
 
-# Test-only. The proxy end-to-end test (`tests/proxy_e2e.rs`) mints a
-# throwaway CA with `rcgen`, runs a tiny loopback mock gateway (built on the
-# `hyper` already in the tree, so no MSRV-fragile test framework is pulled in),
-# boots the real `proxy::engine`, and drives a `reqwest` client through it to
-# assert the rewrite + `X-Gate-*` headers reach the gateway. `reqwest` itself
-# is now a normal dependency (see the `oauth` module), so it isn't repeated
-# here. None of this touches the OS trust store or system proxy, so it needs
-# no elevation.
+# Test-only. The proxy end-to-end tests (`tests/proxy_e2e.rs`,
+# `tests/relay_e2e.rs`) mint a throwaway CA with `rcgen`, run a tiny loopback
+# mock gateway, boot the real `proxy` engine/relay, and drive a `reqwest`
+# client through it to assert the rewrite + `X-Gate-*` headers reach the
+# gateway. `reqwest`, `hyper`, `http-body-util`, and `bytes` are now normal
+# dependencies (relay + oauth), so they aren't repeated here. None of this
+# touches the OS trust store or system proxy, so it needs no elevation.
 [dev-dependencies]
 rcgen = "0.14"
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
-bytes = "1"
