@@ -16,6 +16,10 @@
 //! non-secret `x-gate-upstream-url` hint; the secret lives in the keychain and
 //! is injected here at request time, so a token refresh is invisible to the
 //! tool and rotating the key touches nothing on disk.
+//!
+//! [`serve`] runs the same relay standalone (its own runtime, no MITM/CA/system
+//! proxy) as a blocking headless host for environments with no menubar app -
+//! containers, servers, CI.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -69,6 +73,36 @@ pub(crate) fn base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+/// An extra CA to trust on the gateway hop, from `GATE_CONNECT_TEST_CA` (a PEM
+/// file path). Test seam for the e2e's self-signed mock gateway; unset in real
+/// builds, where the default roots cover the gateway's public cert.
+fn test_extra_ca() -> Option<reqwest::Certificate> {
+    let path = std::env::var_os("GATE_CONNECT_TEST_CA")?;
+    let pem = std::fs::read(path).ok()?;
+    reqwest::Certificate::from_pem(&pem).ok()
+}
+
+/// Bind the relay's loopback listener, reusing `preferred` (the persisted port)
+/// when free, else an ephemeral port. Non-blocking so tokio can adopt it.
+fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
+    let listener = match preferred {
+        Some(p) => std::net::TcpListener::bind(("127.0.0.1", p))
+            .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
+            .context("binding relay loopback port")?,
+        None => {
+            std::net::TcpListener::bind(("127.0.0.1", 0)).context("binding relay loopback port")?
+        }
+    };
+    let port = listener
+        .local_addr()
+        .context("reading relay listener address")?
+        .port();
+    listener
+        .set_nonblocking(true)
+        .context("setting relay listener non-blocking")?;
+    Ok((listener, port))
+}
+
 /// Non-secret hint the tool config sets, telling the gateway which upstream to
 /// forward to. The relay validates it against the built-in catalog and passes
 /// it through untouched.
@@ -113,10 +147,15 @@ impl RelayState {
     ) -> Self {
         let scheme = gateway.scheme_str().unwrap_or("https");
         let authority = gateway.authority().map(|a| a.as_str()).unwrap_or("");
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("building relay reqwest client");
+        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        // Test seam (mirrors the other `GATE_CONNECT_TEST_*` seams): trust an
+        // extra CA on the gateway hop so the e2e's self-signed mock gateway
+        // validates. Unset in real builds, where the default roots cover the
+        // real gateway's public cert.
+        if let Some(ca) = test_extra_ca() {
+            builder = builder.add_root_certificate(ca);
+        }
+        let client = builder.build().expect("building relay reqwest client");
         let allowed_upstreams = default_domains()
             .into_iter()
             .map(|d| d.upstream_url)
@@ -145,28 +184,88 @@ pub(crate) fn spawn(
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
     let state = Arc::new(RelayState::new(&gateway, api_key, token, org));
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(pair) => pair,
-                Err(_) => continue,
-            };
-            let state = Arc::clone(&state);
-            tokio::spawn(async move {
-                let io = TokioIo::new(stream);
-                let service = service_fn(move |req| {
-                    let state = Arc::clone(&state);
-                    async move { Ok::<_, Infallible>(handle(req, state).await) }
-                });
-                // http1 only: the CLI -> loopback hop is plaintext HTTP/1.1;
-                // the gateway hop (reqwest) negotiates h2 on its own.
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await;
-            });
-        }
-    });
+    tokio::spawn(accept_loop(listener, state));
     Ok(())
+}
+
+/// Accept connections forever, serving each on the relay handler. Shared by the
+/// engine-hosted [`spawn`] and the standalone [`serve`].
+async fn accept_loop(listener: TcpListener, state: Arc<RelayState>) {
+    loop {
+        let (stream, _) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(_) => continue,
+        };
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |req| {
+                let state = Arc::clone(&state);
+                async move { Ok::<_, Infallible>(handle(req, state).await) }
+            });
+            // http1 only: the CLI -> loopback hop is plaintext HTTP/1.1;
+            // the gateway hop (reqwest) negotiates h2 on its own.
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, service)
+                .await;
+        });
+    }
+}
+
+/// Run ONLY the reverse-proxy relay - no MITM, no CA trust, no system-proxy
+/// changes - on the stable loopback port, and block until the process is
+/// killed. This is the headless routing host for CLI tools where there's no
+/// menubar app (a container, a server, CI): it seeds the current account's
+/// credential + OAuth token + org, keeps the token fresh in the background, and
+/// serves the relay so tools pointed at `http://127.0.0.1:<port>` route through
+/// Gate. Never returns `Ok` while serving.
+pub fn serve() -> Result<()> {
+    let account = crate::account::load()?
+        .context("no Gate account configured - sign in before `proxy serve`")?;
+    let gateway: Uri = account
+        .gateway_base_url
+        .parse()
+        .with_context(|| format!("parsing gateway URL {:?}", account.gateway_base_url))?;
+
+    let (std_listener, port) = bind_relay(load_persisted_port())?;
+    let _ = save_persisted_port(port);
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("building relay runtime")?;
+    rt.block_on(async move {
+        // Seed the credential channels from what's on disk right now. The key
+        // rarely changes in a headless host, so it's seeded once; the token and
+        // org are refreshed in the loop below.
+        let (_key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(account.api_key.as_str()));
+        let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(
+            crate::oauth::access_token_for_injection().as_str(),
+        ));
+        let (org_tx, org_rx) =
+            watch::channel::<Arc<str>>(Arc::from(crate::account::org_id_for_injection().as_str()));
+
+        let listener =
+            TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
+        let state = Arc::new(RelayState::new(&gateway, key_rx, token_rx, org_rx));
+        tokio::spawn(accept_loop(listener, state));
+
+        println!("gate-connect relay listening on {}", base_url(port));
+
+        // Keep the OAuth token fresh (silent refresh) and pick up an org switch;
+        // block forever hosting the relay.
+        let cfg = crate::oauth::OAuthConfig::from_build_env();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            if let Some(cfg) = cfg.as_ref() {
+                let _ = crate::oauth::ensure_fresh(cfg);
+            }
+            let _ = token_tx.send(Arc::from(
+                crate::oauth::access_token_for_injection().as_str(),
+            ));
+            let _ = org_tx.send(Arc::from(crate::account::org_id_for_injection().as_str()));
+        }
+    })
 }
 
 /// Proxy one request, converting any failure into an HTTP error response so the

@@ -109,6 +109,14 @@ pub fn relay_base_url() -> Option<String> {
     relay::load_persisted_port().map(relay::base_url)
 }
 
+/// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no
+/// MITM, no CA trust, no system-proxy changes). For environments with no
+/// menubar app - containers, servers, CI - so CLI tools pointed at the relay
+/// still route through Gate. Blocks until the process is killed.
+pub fn serve_relay() -> anyhow::Result<()> {
+    relay::serve()
+}
+
 /// One routable provider. The built-in set is defined by
 /// [`default_domains`]; persisted config only flips `enabled` per `slug`,
 /// so adding a new built-in domain automatically surfaces it in the UI.
