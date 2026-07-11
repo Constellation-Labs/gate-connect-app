@@ -211,6 +211,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
             ca_key_pem,
             domains,
             preferred_port,
+            preferred_relay_port,
         } => {
             // Access control #4: only ever route catalog providers.
             if let Err(e) = control::validate_domains(&domains) {
@@ -230,6 +231,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                     running.update_domains(&domains);
                     Response::Intercepting {
                         port: running.port(),
+                        relay_port: running.relay_port(),
                     }
                 }
                 None => {
@@ -242,10 +244,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                             ca_cert_pem,
                             ca_key_pem,
                             preferred_port,
-                            // TODO(relay stable port): thread a preferred relay
-                            // port through the control protocol so CLI configs
-                            // stay valid across restarts on Linux.
-                            preferred_relay_port: None,
+                            preferred_relay_port,
                             // The daemon runs as the owner; only intercept this
                             // user's own traffic. SAFETY: geteuid never fails.
                             owner_uid: Some(unsafe { libc::geteuid() }),
@@ -257,8 +256,9 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                     ) {
                         Ok(running) => {
                             let port = running.port();
+                            let relay_port = running.relay_port();
                             *guard = Some(running);
-                            Response::Intercepting { port }
+                            Response::Intercepting { port, relay_port }
                         }
                         Err(e) => Response::Error {
                             message: format!("starting engine: {e}"),
