@@ -102,6 +102,9 @@ impl ProxyManager {
                 ca_key_pem: ca.key_pem().to_string(),
                 // macOS reads the system proxy live, so an ephemeral port is fine.
                 preferred_port: None,
+                // TODO(relay stable port): reuse a persisted relay port so CLI
+                // tool configs stay valid across restarts.
+                preferred_relay_port: None,
                 // Per-user UID gating is a Linux concern (shared loopback proxy);
                 // unused on macOS.
                 owner_uid: None,

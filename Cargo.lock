@@ -1533,6 +1533,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "dirs 5.0.1",
+ "futures-util",
  "http",
  "http-body-util",
  "hudsucker",
