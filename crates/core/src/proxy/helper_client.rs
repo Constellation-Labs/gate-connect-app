@@ -49,6 +49,14 @@ impl std::fmt::Display for StaleDaemon {
 
 impl std::error::Error for StaleDaemon {}
 
+/// The ports the daemon bound for a [`HelperClient::set_intercept`] call: the
+/// MITM proxy port the system proxy points at, and the CLI reverse-proxy relay
+/// port CLI tool configs point at.
+pub struct Intercepting {
+    pub port: u16,
+    pub relay_port: u16,
+}
+
 impl HelperClient {
     /// Connect to a running daemon, spawning one (`<current-exe> --proxy-helper`,
     /// detached) if none is listening yet. Performs the `Hello` token handshake.
@@ -138,7 +146,8 @@ impl HelperClient {
         ca_key_pem: &str,
         domains: &[ProxyDomain],
         preferred_port: Option<u16>,
-    ) -> Result<u16> {
+        preferred_relay_port: Option<u16>,
+    ) -> Result<Intercepting> {
         let req = Request::SetIntercept {
             gateway_base_url: gateway_base_url.to_string(),
             api_key: api_key.to_string(),
@@ -147,9 +156,10 @@ impl HelperClient {
             ca_key_pem: ca_key_pem.to_string(),
             domains: domains.to_vec(),
             preferred_port,
+            preferred_relay_port,
         };
         match self.round_trip(&req, INTERCEPT_TIMEOUT)? {
-            Response::Intercepting { port } => Ok(port),
+            Response::Intercepting { port, relay_port } => Ok(Intercepting { port, relay_port }),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("unexpected SetIntercept reply: {other:?}"),
         }
