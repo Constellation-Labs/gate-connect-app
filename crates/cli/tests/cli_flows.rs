@@ -379,21 +379,45 @@ fn spawn_token_mock() -> String {
     format!("http://{addr}/oauth2/token")
 }
 
+/// Serve one canned `/v1/me/orgs` response (a single org, so `login --oauth`
+/// auto-selects it). Returns the URL to feed the orgs-endpoint seam.
+fn spawn_orgs_mock() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind orgs mock");
+    let addr = listener.local_addr().expect("orgs mock addr");
+    thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut tmp = [0u8; 2048];
+            let _ = stream.read(&mut tmp);
+            let body = r#"{"user":{"id":"u-cli","email":"cli@example.test"},"orgs":[{"orgId":"org-cli-1","name":"CLI Org","slug":"cli-org","role":"owner"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    format!("http://{addr}/v1/me/orgs")
+}
+
 /// `login --oauth`: the CLI prints the authorize URL and waits on a loopback
 /// redirect; we play the browser (hit the callback with a matching state), the
 /// mock token endpoint answers the exchange, and the account records OAuth mode.
 /// Hermetic: temp home + file-backed secrets, the Cognito config supplied via
 /// the runtime env seam, and the token endpoint redirected to the mock.
 #[test]
-fn login_oauth_captures_redirect_and_records_oauth_mode() {
+fn login_oauth_captures_redirect_selects_org_and_records_mode() {
     let h = Harness::new();
     let token_endpoint = spawn_token_mock();
+    let orgs_endpoint = spawn_orgs_mock();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_gate-connect"))
         .args(["login", "--base-url", GATEWAY_URL, "--oauth"])
         .env("GATE_CONNECT_TEST_HOME", h.home())
         .env("GATE_CONNECT_TEST_SECRETS", h.secrets.path())
         .env("GATE_CONNECT_TEST_TOKEN_ENDPOINT", &token_endpoint)
+        .env("GATE_CONNECT_TEST_ORGS_ENDPOINT", &orgs_endpoint)
         .env("GATE_COGNITO_HOSTED_DOMAIN", "auth.example.test")
         .env("GATE_COGNITO_CLIENT_ID", "client-cli-test")
         .stdout(Stdio::piped())
@@ -448,5 +472,11 @@ fn login_oauth_captures_redirect_and_records_oauth_mode() {
     assert!(
         account_json.contains("\"auth_mode\": \"oauth\""),
         "account.json should record OAuth mode: {account_json}"
+    );
+    // The single org was auto-selected and persisted (its UUID feeds
+    // X-Gate-Org-Id on every gateway request).
+    assert!(
+        account_json.contains("\"org_id\": \"org-cli-1\""),
+        "account.json should record the selected org: {account_json}"
     );
 }

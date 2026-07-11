@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use gate_connect_core::{account, oauth, registry, ConnectInput, Status, ToolId};
+use gate_connect_core::{account, oauth, org, registry, ConnectInput, Status, ToolId};
 
 // The built-in proxy is wired on the three desktop OSes (CA trust +
 // system-proxy backends exist there); its subcommands are gated to match.
@@ -47,6 +47,10 @@ enum Command {
         /// on a loopback listener. Ignores `--api-key`.
         #[arg(long)]
         oauth: bool,
+        /// With `--oauth`, preselect this organization (its UUID or slug)
+        /// instead of prompting. Auto-selected when you belong to only one.
+        #[arg(long)]
+        org: Option<String>,
     },
     /// Sign out. Removes the stored base URL and the keychain entry.
     Logout,
@@ -145,7 +149,8 @@ fn main() -> Result<()> {
             api_key,
             api_key_file,
             oauth,
-        } => cmd_login(base_url, api_key, api_key_file, oauth),
+            org,
+        } => cmd_login(base_url, api_key, api_key_file, oauth, org),
         Command::Logout => cmd_logout(),
         Command::Whoami => cmd_whoami(),
         Command::List => cmd_list(),
@@ -168,12 +173,13 @@ fn cmd_login(
     api_key: Option<String>,
     api_key_file: Option<std::path::PathBuf>,
     oauth: bool,
+    org: Option<String>,
 ) -> Result<()> {
     if oauth {
         if api_key.is_some() || api_key_file.is_some() {
             anyhow::bail!("--oauth cannot be combined with --api-key / --api-key-file");
         }
-        return cmd_login_oauth(base_url);
+        return cmd_login_oauth(base_url, org);
     }
     let api_key = resolve_secret(api_key, api_key_file, "Gate API key")?;
     account::save(&base_url, Some(&api_key))?;
@@ -199,7 +205,7 @@ fn cmd_login(
 /// then prints the authorize URL and blocks on the loopback redirect. The token
 /// bundle lands in the secret store; the relay / MITM engine inject it live, so
 /// no credential is written to disk here.
-fn cmd_login_oauth(base_url: String) -> Result<()> {
+fn cmd_login_oauth(base_url: String, org: Option<String>) -> Result<()> {
     let cfg = oauth::OAuthConfig::from_build_env().context(
         "OAuth is not configured in this build (GATE_COGNITO_HOSTED_DOMAIN / GATE_COGNITO_CLIENT_ID unset)",
     )?;
@@ -209,11 +215,60 @@ fn cmd_login_oauth(base_url: String) -> Result<()> {
         Ok(())
     })?;
     account::set_auth_mode(account::AuthMode::OAuth)?;
+
+    // The gateway requires an org on every OAuth request, so pick one now.
+    let orgs = org::list(&base_url, &tokens.access_token)?;
+    let chosen = select_org(&orgs, org.as_deref())?;
+    account::set_org(&chosen.org_id, &chosen.name)?;
+
     match tokens.email() {
-        Some(email) => println!("Signed in to {base_url} as {email}."),
-        None => println!("Signed in to {base_url}."),
+        Some(email) => println!("Signed in to {base_url} as {email} (org: {}).", chosen.name),
+        None => println!("Signed in to {base_url} (org: {}).", chosen.name),
     }
     Ok(())
+}
+
+/// Resolve which org to use: an explicit `--org` (UUID or slug), the only org
+/// when there's exactly one, or an interactive numbered prompt otherwise.
+fn select_org<'a>(orgs: &'a [org::Org], preselect: Option<&str>) -> Result<&'a org::Org> {
+    if orgs.is_empty() {
+        anyhow::bail!(
+            "no organizations are available for your account; ask an admin to add you to one"
+        );
+    }
+    if let Some(sel) = preselect {
+        return orgs
+            .iter()
+            .find(|o| o.org_id == sel || o.slug == sel)
+            .with_context(|| {
+                let available = orgs
+                    .iter()
+                    .map(|o| o.slug.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("no org matches {sel:?} (available: {available})")
+            });
+    }
+    if orgs.len() == 1 {
+        return Ok(&orgs[0]);
+    }
+    println!("Select an organization:");
+    for (i, o) in orgs.iter().enumerate() {
+        println!("  {}. {} ({})", i + 1, o.name, o.slug);
+    }
+    print!("Enter number [1-{}]: ", orgs.len());
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("reading org selection")?;
+    let idx: usize = line
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid selection {:?}", line.trim()))?;
+    orgs.get(idx.wrapping_sub(1))
+        .context("selection out of range")
 }
 
 /// Resolve a secret from, in order of precedence: an explicit value
