@@ -104,9 +104,9 @@ impl ProxyManager {
                 ca_key_pem: ca.key_pem().to_string(),
                 // WinINET is read live per-process, so an ephemeral port is fine.
                 preferred_port: None,
-                // TODO(relay stable port): reuse a persisted relay port so CLI
-                // tool configs stay valid across restarts.
-                preferred_relay_port: None,
+                // Reuse the persisted relay port so CLI tool configs (which bake
+                // http://127.0.0.1:<port>) stay valid across restarts.
+                preferred_relay_port: crate::proxy::relay::load_persisted_port(),
                 // Per-user UID gating is a Linux concern; unused on Windows.
                 owner_uid: None,
                 // Keep any pre-existing proxy as the PAC fallback so non-Gate
@@ -117,6 +117,11 @@ impl ProxyManager {
             // proxy so traffic is never stranded at a dead listener.
             || manager().handle_engine_crash(),
         )?;
+
+        // Remember the relay port so the next run rebinds it and baked CLI
+        // configs stay valid (best-effort).
+        let _ = crate::proxy::relay::save_persisted_port(running.relay_port());
+
         let pac_url = format!("http://127.0.0.1:{}/proxy.pac", running.pac_port());
 
         // Point WinINET at the engine's loopback PAC. Promptless.
