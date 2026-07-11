@@ -55,6 +55,11 @@ pub struct EngineConfig {
     /// Windows pass `None` (their system proxy is read live, so a changing port
     /// never strands a frozen session).
     pub preferred_port: Option<u16>,
+    /// Preferred loopback port for the CLI reverse-proxy relay ([`super::relay`]),
+    /// bound alongside the MITM listener. Same stable-port rationale as
+    /// `preferred_port`: CLI tools bake this port into their config, so reusing
+    /// it across restarts keeps that config valid. Ephemeral if taken/`None`.
+    pub preferred_relay_port: Option<u16>,
     /// When `Some(uid)`, only connections from that local UID are intercepted
     /// (MITM'd + rewritten with the Gate key injected); traffic from any other
     /// local user is blind-tunnelled. The loopback listener is plain TCP and
@@ -77,6 +82,9 @@ pub struct EngineConfig {
 /// [`stop`]: RunningEngine::stop
 pub struct RunningEngine {
     port: u16,
+    /// Loopback port of the CLI reverse-proxy relay ([`super::relay`]), bound
+    /// alongside the MITM listener. CLI tool configs point their base URL here.
+    relay_port: u16,
     /// Loopback port serving the PAC script the system proxy points at.
     /// PAC-driven platforms only (Windows `AutoConfigURL`, macOS
     /// `networksetup -setautoproxyurl`); Linux uses env-var proxies with no PAC.
@@ -95,6 +103,12 @@ pub struct RunningEngine {
 impl RunningEngine {
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Loopback port of the CLI reverse-proxy relay. CLI tool configs point
+    /// their base URL at `http://127.0.0.1:<relay_port>`.
+    pub fn relay_port(&self) -> u16 {
+        self.relay_port
     }
 
     /// Loopback port serving the PAC script (Windows-only).
@@ -574,6 +588,11 @@ where
     }
 
     let (listener, port) = bind_loopback(cfg.preferred_port)?;
+    // CLI reverse-proxy relay ([`super::relay`]) on its own loopback port; CLI
+    // tool configs point their base URL here. Bound eagerly so the port is
+    // known before the engine thread starts, like the MITM listener.
+    let (relay_listener, relay_port) =
+        bind_loopback(cfg.preferred_relay_port).context("binding the relay loopback port")?;
     // Windows points WinINET at a PAC served on its own loopback port (see
     // `serve_pac`); the proxy port itself is baked into the PAC body.
     #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -590,6 +609,12 @@ where
     let upstream_proxy = cfg.upstream_proxy.clone();
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
+    // The relay shares the same credential channels , so a
+    // token refresh or key rotation reaches CLI tools and GUI apps alike. Clone
+    // before the handler moves the originals.
+    let relay_gateway = gateway.clone();
+    let relay_key_rx = key_rx.clone();
+    let relay_token_rx = token_rx.clone();
     let handler = GateHandler {
         rules: rules_rx,
         gateway,
@@ -677,6 +702,15 @@ where
                         Err(e) => eprintln!("gate proxy PAC listener failed to start: {e}"),
                     }
                 }
+                // Bring up the CLI reverse-proxy relay on the same runtime;
+                // like the PAC responder it dies with the runtime on stop.
+                // Non-fatal: if it can't adopt its listener the MITM proxy
+                // still runs, only CLI tools pointed at the relay fail.
+                if let Err(e) =
+                    super::relay::spawn(relay_listener, relay_gateway, relay_key_rx, relay_token_rx)
+                {
+                    eprintln!("gate proxy relay failed to start: {e}");
+                }
                 if let Err(e) = proxy.start().await {
                     eprintln!("gate proxy engine stopped with error: {e}");
                 }
@@ -692,6 +726,7 @@ where
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok(())) => Ok(RunningEngine {
             port,
+            relay_port,
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             pac_port,
             shutdown: Some(shutdown_tx),

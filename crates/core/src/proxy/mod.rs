@@ -33,6 +33,9 @@ pub mod engine;
 
 mod cert_authority;
 
+/// Plaintext loopback reverse proxy for CLI tools; hosted in the engine.
+mod relay;
+
 pub mod config;
 
 pub mod intent;
