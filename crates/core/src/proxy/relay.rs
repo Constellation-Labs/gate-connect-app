@@ -64,6 +64,11 @@ pub(crate) fn save_persisted_port(port: u16) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
+/// The loopback base URL a CLI tool points at to route through the relay.
+pub(crate) fn base_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
+}
+
 /// Non-secret hint the tool config sets, telling the gateway which upstream to
 /// forward to. The relay validates it against the built-in catalog and passes
 /// it through untouched.

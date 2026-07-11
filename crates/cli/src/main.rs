@@ -297,6 +297,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
         upstream_url,
+        relay_base_url: gate_connect_core::proxy::relay_base_url(),
     };
     integ.connect(&input)?;
     println!("Connected {}.", integ.display_name());
