@@ -194,6 +194,11 @@ fn resolve_integration(slug: &str) -> Result<Box<dyn gate_connect_core::Integrat
 struct AccountDto {
     gateway_base_url: String,
     has_api_key: bool,
+    /// Which credential the account authenticates with, so the UI can route
+    /// an OAuth account that isn't signed in to the sign-in screen and show
+    /// the legacy key controls only in API-key mode. Serialized snake_case
+    /// (`"api_key"` / `"oauth"`).
+    auth_mode: gate_connect_core::account::AuthMode,
 }
 
 #[tauri::command]
@@ -216,9 +221,11 @@ fn get_account() -> Result<Option<AccountDto>, String> {
         return Ok(None);
     };
     let has_api_key = account::has_api_key().map_err(|e| format!("{e:#}"))?;
+    let auth_mode = account::auth_mode().map_err(|e| format!("{e:#}"))?;
     Ok(Some(AccountDto {
         gateway_base_url,
         has_api_key,
+        auth_mode,
     }))
 }
 
