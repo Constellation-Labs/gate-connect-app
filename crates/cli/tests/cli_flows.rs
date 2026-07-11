@@ -18,6 +18,11 @@ use tempfile::TempDir;
 
 const GATEWAY_URL: &str = "https://mock.gateway.test";
 const API_KEY: &str = "sk-gw-ci-test";
+/// A stable relay port to seed so `connect` can point tool configs at the
+/// loopback relay. No engine actually runs in these tests - we only assert the
+/// config the CLI writes, which uses the persisted port via `relay_base_url()`.
+const RELAY_PORT: u16 = 8977;
+const RELAY_URL: &str = "http://127.0.0.1:8977";
 
 /// A throwaway home + secret store and a helper to run the CLI against them.
 struct Harness {
@@ -59,9 +64,18 @@ impl Harness {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// Sign in so `connect` has a gateway URL on disk + a key in the store.
+    /// Sign in so `connect` has a gateway URL on disk + a key in the store, and
+    /// seed a persisted relay port so `connect` can point tool configs at the
+    /// loopback relay (the app would set this by enabling the proxy).
     fn login(&self) {
         self.run_ok(&["login", "--base-url", GATEWAY_URL, "--api-key", API_KEY]);
+        let proxy_dir = self
+            .home()
+            .join("app-support")
+            .join("Gate Connect")
+            .join("proxy");
+        fs::create_dir_all(&proxy_dir).unwrap();
+        fs::write(proxy_dir.join("relay-port"), RELAY_PORT.to_string()).unwrap();
     }
 }
 
@@ -80,28 +94,29 @@ fn claude_code_connect_then_disconnect() {
 
     let settings: PathBuf = h.home().join(".claude").join("settings.json");
     let body = read(&settings);
-    assert!(body.contains(GATEWAY_URL), "base URL missing: {body}");
-    assert!(
-        body.contains("X-Gate-Api-Key"),
-        "gate key header missing: {body}"
-    );
+    assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
     assert!(
         body.contains("X-Gate-Upstream-Url"),
         "upstream header missing: {body}"
     );
-    assert!(body.contains(API_KEY), "api key value missing: {body}");
+    // No credential is ever written - the relay injects it live.
+    assert!(
+        !body.contains("X-Gate-Api-Key"),
+        "credential must not be written to config: {body}"
+    );
+    assert!(
+        !body.contains(API_KEY),
+        "api key value must not be written: {body}"
+    );
 
     h.run_ok(&["disconnect", "claude-code"]);
 
     let after = fs::read_to_string(&settings).unwrap_or_default();
     assert!(
-        !after.contains("X-Gate-Api-Key"),
+        !after.contains("X-Gate-Upstream-Url"),
         "gate residue left behind: {after}"
     );
-    assert!(
-        !after.contains(GATEWAY_URL),
-        "gateway URL left behind: {after}"
-    );
+    assert!(!after.contains(RELAY_URL), "relay URL left behind: {after}");
 }
 
 #[test]
@@ -122,18 +137,22 @@ fn codex_connect_then_disconnect() {
         "pointer not set: {body}"
     );
     assert!(
-        body.contains(&format!("{GATEWAY_URL}/v1")),
-        "base URL missing: {body}"
+        body.contains(&format!("{RELAY_URL}/v1")),
+        "relay base URL missing: {body}"
     );
     assert!(
         body.contains("requires_openai_auth = true"),
         "requires_openai_auth not set: {body}"
     );
+    // No credential is ever written - the relay injects it live.
     assert!(
-        body.contains("X-Gate-Api-Key"),
-        "gate key header missing: {body}"
+        !body.contains("X-Gate-Api-Key"),
+        "credential must not be written to config: {body}"
     );
-    assert!(body.contains(API_KEY), "api key value missing: {body}");
+    assert!(
+        !body.contains(API_KEY),
+        "api key value must not be written: {body}"
+    );
 
     h.run_ok(&["disconnect", "codex"]);
 
@@ -181,8 +200,8 @@ wire_api = "responses"
 
     let body = read(&config);
     assert!(
-        body.contains(&format!("{GATEWAY_URL}/v1")),
-        "managed base URL missing: {body}"
+        body.contains(&format!("{RELAY_URL}/v1")),
+        "managed relay base URL missing: {body}"
     );
     assert!(
         !body.contains("sk-gw-stale-manual-key"),
@@ -192,7 +211,11 @@ wire_api = "responses"
         body.contains("requires_openai_auth = true"),
         "requires_openai_auth not set: {body}"
     );
-    assert!(body.contains(API_KEY), "api key value missing: {body}");
+    // The adopted block carries no credential - the relay injects it live.
+    assert!(
+        !body.contains(API_KEY),
+        "api key value must not be written: {body}"
+    );
     // The user's unrelated keys survive the adoption.
     assert!(
         body.contains(r#"model = "anthropic/claude-opus-4-8""#),
@@ -229,24 +252,29 @@ fn opencode_connect_then_disconnect() {
     h.run_ok(&["connect", "opencode"]);
 
     let body = read(&config);
-    assert!(body.contains(GATEWAY_URL), "base URL missing: {body}");
+    assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
     assert!(
-        body.contains("X-Gate-Api-Key"),
-        "gate key header missing: {body}"
+        body.contains("X-Gate-Upstream-Url"),
+        "upstream header missing: {body}"
     );
-    assert!(body.contains(API_KEY), "api key value missing: {body}");
+    // No credential is ever written - the relay injects it live.
+    assert!(
+        !body.contains("X-Gate-Api-Key"),
+        "credential must not be written to config: {body}"
+    );
+    assert!(
+        !body.contains(API_KEY),
+        "api key value must not be written: {body}"
+    );
 
     h.run_ok(&["disconnect", "opencode"]);
 
     let after = read(&config);
     assert!(
-        !after.contains("X-Gate-Api-Key"),
+        !after.contains("X-Gate-Upstream-Url"),
         "gate residue left behind: {after}"
     );
-    assert!(
-        !after.contains(GATEWAY_URL),
-        "gateway URL left behind: {after}"
-    );
+    assert!(!after.contains(RELAY_URL), "relay URL left behind: {after}");
 }
 
 #[test]
@@ -268,26 +296,31 @@ fn openclaw_connect_then_disconnect() {
 
     let body = read(&config);
     assert!(
-        body.contains(&format!("{GATEWAY_URL}/v1")),
-        "base URL missing: {body}"
+        body.contains(&format!("{RELAY_URL}/v1")),
+        "relay base URL missing: {body}"
     );
     assert!(
-        body.contains("X-Gate-Api-Key"),
-        "gate key header missing: {body}"
+        body.contains("X-Gate-Upstream-Url"),
+        "upstream header missing: {body}"
     );
-    assert!(body.contains(API_KEY), "api key value missing: {body}");
+    // No credential is ever written - the relay injects it live.
+    assert!(
+        !body.contains("X-Gate-Api-Key"),
+        "credential must not be written to config: {body}"
+    );
+    assert!(
+        !body.contains(API_KEY),
+        "api key value must not be written: {body}"
+    );
 
     h.run_ok(&["disconnect", "openclaw"]);
 
     let after = read(&config);
     assert!(
-        !after.contains("X-Gate-Api-Key"),
+        !after.contains("X-Gate-Upstream-Url"),
         "gate residue left behind: {after}"
     );
-    assert!(
-        !after.contains(GATEWAY_URL),
-        "gateway URL left behind: {after}"
-    );
+    assert!(!after.contains(RELAY_URL), "relay URL left behind: {after}");
 }
 
 #[test]
