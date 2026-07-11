@@ -45,7 +45,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # openclaw requires node >=22.19; on Node 20 npm silently skips its
+          # install, so it was inert on every runner. 22 keeps the other CLIs
+          # happy too.
+          node-version: 22
 
       - name: Build gate-connect CLI
         run: cargo build -p gate-connect-cli
