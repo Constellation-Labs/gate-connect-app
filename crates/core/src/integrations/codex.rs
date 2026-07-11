@@ -7,6 +7,14 @@
 //! of the file - comments, user-defined providers, profiles, etc. -
 //! byte-identical.
 //!
+//! `base_url` points at the loopback reverse-proxy relay
+//! ([`crate::proxy::relay`]), not the gateway: the relay injects the live
+//! Gate credential per request and forwards to the gateway, so **no Gate
+//! credential is written to config.toml**. `http_headers` carries only the
+//! non-secret `X-Gate-Upstream-Url` hint. (The path suffix Codex needs -
+//! `/codex` or `/v1` - is still appended to the relay base, since the relay
+//! forwards the request path verbatim onto the gateway.)
+//!
 //! Like Claude Code, Codex brings its own upstream credentials. We set
 //! `requires_openai_auth = true` on the provider so Codex attaches its
 //! own `codex login` session - the ChatGPT OAuth token or the API key in
@@ -28,7 +36,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{value, DocumentMut, Item, Table, Value};
 
-use crate::account;
 use crate::env;
 use crate::primitives;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
@@ -112,14 +119,13 @@ fn read_auth_mode() -> Result<AuthMode> {
     }
 }
 
-/// Codex `base_url` - gateway origin plus the auth-mode-specific path
-/// suffix Codex appends `/responses` to. Gate is pure path-passthrough,
-/// so this suffix has to match the upstream's path layout
-/// (`chatgpt.com/backend-api/codex` vs. `api.openai.com/v1`). Trims any
-/// trailing slash, and avoids doubling the suffix if the user pasted a
-/// gateway URL that already includes it.
-fn compute_base_url(gateway: &str, mode: AuthMode) -> String {
-    let trimmed = gateway.trim_end_matches('/');
+/// Codex `base_url` - the relay loopback origin plus the auth-mode-specific
+/// path suffix Codex appends `/responses` to. The relay (and Gate behind it)
+/// forward the path verbatim, so this suffix has to match the upstream's path
+/// layout (`chatgpt.com/backend-api/codex` vs. `api.openai.com/v1`). Trims any
+/// trailing slash, and avoids doubling the suffix if `base` already includes it.
+fn compute_base_url(base: &str, mode: AuthMode) -> String {
+    let trimmed = base.trim_end_matches('/');
     let suffix = mode.gateway_path_suffix();
     if trimmed.ends_with(suffix) {
         trimmed.to_string()
@@ -154,7 +160,6 @@ const APIKEY_UPSTREAM_URL: &str = "https://api.openai.com";
 const PROVIDER_ID: &str = "gate";
 const PROVIDER_DISPLAY_NAME: &str = "Constellation Gate";
 
-const GATE_KEY_HEADER: &str = "X-Gate-Api-Key";
 const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
 
 /// Common install locations for the `codex` binary. Detection also falls
@@ -245,11 +250,13 @@ impl Integration for Codex {
             )));
         }
 
-        let gateway = match account::load_base_url()? {
+        // The provider points at the relay's loopback base; the relay only
+        // exists once the proxy has been enabled.
+        let relay_base = match crate::proxy::relay_base_url() {
             Some(u) => u,
             None => {
                 return Ok(Status::Drifted(
-                    "Gate Connect is not signed in - sign in to validate Codex config".into(),
+                    "the Gate proxy has not been enabled yet - turn it on to route Codex".into(),
                 ));
             }
         };
@@ -258,7 +265,7 @@ impl Integration for Codex {
         // bites - wrong base_url shape causes 404s; API-key mode just needs
         // an OPENAI_API_KEY to authenticate).
         let mode = read_auth_mode().unwrap_or(AuthMode::Chatgpt);
-        let expected_base = compute_base_url(&gateway, mode);
+        let expected_base = compute_base_url(&relay_base, mode);
         let base_url = provider_block
             .get("base_url")
             .and_then(|i| i.as_str())
@@ -269,21 +276,18 @@ impl Integration for Codex {
             )));
         }
 
+        // Only the non-secret upstream hint is written; the relay injects the
+        // Gate credential live, so there is deliberately no key header here.
         let headers_table = provider_block
             .get("http_headers")
             .and_then(|i| i.as_table_like());
-        let has_key = headers_table
-            .and_then(|h| h.get(GATE_KEY_HEADER))
-            .and_then(|i| i.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
         let upstream = headers_table
             .and_then(|h| h.get(UPSTREAM_URL_HEADER))
             .and_then(|i| i.as_str())
             .unwrap_or("");
-        if !has_key || upstream.is_empty() {
+        if upstream.is_empty() {
             return Ok(Status::Drifted(format!(
-                "[model_providers.{PROVIDER_ID}.http_headers] missing {GATE_KEY_HEADER} or {UPSTREAM_URL_HEADER}"
+                "[model_providers.{PROVIDER_ID}.http_headers] missing {UPSTREAM_URL_HEADER}"
             )));
         }
         let expected_upstream = mode.upstream_url();
@@ -303,9 +307,9 @@ impl Integration for Codex {
                 "Codex is not installed on this machine - install it from https://developers.openai.com/codex first"
             );
         }
-        if !input.gateway_base_url.starts_with("https://") {
-            anyhow::bail!("gateway base URL must be https://");
-        }
+        let relay_base = input.relay_base_url.as_deref().context(
+            "the Gate proxy relay is not running - enable the proxy before connecting Codex",
+        )?;
         // We intentionally ignore `input.upstream_url`. The ChatGPT-mode
         // bearer authenticates only against chatgpt.com/backend-api, the
         // apikey-mode bearer only against api.openai.com/v1, so we
@@ -314,8 +318,6 @@ impl Integration for Codex {
         // field. This mirrors what Codex itself would have done in its
         // native (non-Gate) routing.
         let mode = read_auth_mode()?;
-        let acct = account::load()?
-            .context("Gate Connect is not signed in (no account.json + keychain entry)")?;
 
         let path = config_path()?;
         let mut doc = if path.exists() {
@@ -370,7 +372,7 @@ impl Integration for Codex {
             .context("`model_providers` must be a TOML table")?;
         model_providers.set_implicit(true);
 
-        let base_url = compute_base_url(&input.gateway_base_url, mode);
+        let base_url = compute_base_url(relay_base, mode);
         let upstream_url = mode.upstream_url();
 
         let mut provider = Table::new();
@@ -386,9 +388,10 @@ impl Integration for Codex {
         // and `[auth] command` per the Codex docs, so we set neither.
         provider.insert("requires_openai_auth", value(true));
 
+        // Only the non-secret upstream hint. The Gate credential is injected
+        // live by the relay, never written here.
         let mut headers = Table::new();
         headers.set_implicit(false);
-        headers.insert(GATE_KEY_HEADER, value(acct.api_key.as_str()));
         headers.insert(UPSTREAM_URL_HEADER, value(upstream_url));
         provider.insert("http_headers", Item::Table(headers));
 
@@ -498,29 +501,12 @@ impl Integration for Codex {
         Ok(())
     }
 
-    fn refresh_gate_key(&self, api_key: &str) -> Result<()> {
-        let path = config_path()?;
-        if !path.exists() {
-            return Ok(());
-        }
-        let mut doc = read_doc(&path)?;
-        // Only rewrite state we own: bail out unless our provider block's
-        // header table is present (i.e. we are connected).
-        let Some(headers) = doc
-            .get_mut("model_providers")
-            .and_then(|i| i.as_table_like_mut())
-            .and_then(|t| t.get_mut(PROVIDER_ID))
-            .and_then(|i| i.as_table_like_mut())
-            .and_then(|t| t.get_mut("http_headers"))
-            .and_then(|i| i.as_table_like_mut())
-        else {
-            return Ok(());
-        };
-        if headers.get(GATE_KEY_HEADER).is_none() {
-            return Ok(());
-        }
-        headers.insert(GATE_KEY_HEADER, value(api_key));
-        write_doc(&path, &doc)
+    fn refresh_gate_key(&self, _api_key: &str) -> Result<()> {
+        // No-op: the reverse-proxy relay injects the Gate credential live per
+        // request, so config.toml carries no key and a rotation needs no
+        // rewrite. Kept to satisfy the trait; the old scheme rewrote an
+        // embedded X-Gate-Api-Key header here.
+        Ok(())
     }
 
     fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
@@ -549,9 +535,9 @@ fn read_doc(path: &Path) -> Result<DocumentMut> {
 }
 
 fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
-    // 0o600: this file carries the Gate API key under
-    // [model_providers.gate.http_headers]. Atomic-write protects against
-    // partial writes tearing the TOML on crash.
+    // 0o600 defensively (the file no longer carries the Gate key - the relay
+    // injects it - but may hold other user config). Atomic-write protects
+    // against partial writes tearing the TOML on crash.
     primitives::write_file(path, doc.to_string().as_bytes(), 0o600)
         .with_context(|| format!("writing {}", path.display()))
 }
@@ -643,12 +629,11 @@ mod tests {
         provider.insert("name", value(PROVIDER_DISPLAY_NAME));
         provider.insert(
             "base_url",
-            value(compute_base_url("https://gw.example.com", AuthMode::Chatgpt).as_str()),
+            value(compute_base_url("http://127.0.0.1:9977", AuthMode::Chatgpt).as_str()),
         );
         provider.insert("requires_openai_auth", value(true));
         let mut headers = Table::new();
         headers.set_implicit(false);
-        headers.insert(GATE_KEY_HEADER, value("sk-gw-xxx"));
         headers.insert(UPSTREAM_URL_HEADER, value(AuthMode::Chatgpt.upstream_url()));
         provider.insert("http_headers", Item::Table(headers));
         model_providers.insert(PROVIDER_ID, Item::Table(provider));
@@ -659,12 +644,14 @@ mod tests {
         assert!(rendered.contains("[model_providers.gate]"));
         assert!(rendered.contains("requires_openai_auth = true"));
         assert!(rendered.contains("[model_providers.gate.http_headers]"));
-        assert!(rendered.contains("X-Gate-Api-Key"));
         assert!(rendered.contains("X-Gate-Upstream-Url"));
-        // ChatGPT mode: base_url ends in /codex (so client sends
-        // /codex/responses), upstream is the bare backend-api host
+        // No Gate credential is ever written to config.toml - the relay
+        // injects it live.
+        assert!(!rendered.contains("X-Gate-Api-Key"));
+        // ChatGPT mode: base_url points at the relay and ends in /codex (so the
+        // client sends /codex/responses); upstream is the bare backend-api host
         // (Gate concatenates the path onto it).
-        assert!(rendered.contains("base_url = \"https://gw.example.com/codex\""));
+        assert!(rendered.contains("base_url = \"http://127.0.0.1:9977/codex\""));
         assert!(rendered.contains("\"https://chatgpt.com/backend-api\""));
         // And specifically NOT the double-codex shape that produced 404s.
         assert!(!rendered.contains("https://chatgpt.com/backend-api/codex"));
