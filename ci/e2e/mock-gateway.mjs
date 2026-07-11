@@ -28,6 +28,16 @@ const server = https.createServer(options, (req, res) => {
   });
 });
 
+// Diagnostics: a failed TLS handshake (e.g. the relay's rustls client rejecting
+// our cert) never reaches the request handler, so surface it here or the only
+// symptom is an opaque 502 on the relay side.
+server.on('tlsClientError', (err) => {
+  console.log(`tlsClientError: ${err.message}`);
+});
+server.on('secureConnection', (sock) => {
+  console.log(`secureConnection: ${sock.getProtocol()} ${sock.authorized ? 'authorized' : 'unauthorized'}`);
+});
+
 server.listen(port, '127.0.0.1', () => {
-  console.log(`mock gateway listening on https://localhost:${port}`);
+  console.log(`mock gateway listening on https://127.0.0.1:${port}`);
 });

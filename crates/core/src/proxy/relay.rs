@@ -151,9 +151,13 @@ impl RelayState {
         // Test seam (mirrors the other `GATE_CONNECT_TEST_*` seams): trust an
         // extra CA on the gateway hop so the e2e's self-signed mock gateway
         // validates. Unset in real builds, where the default roots cover the
-        // real gateway's public cert.
+        // real gateway's public cert. `tls_certs_only` verifies against a pure
+        // webpki store holding only this CA (dropping the built-in roots) -
+        // otherwise reqwest's default (rustls-platform-verifier) routes through
+        // macOS Security.framework, whose stricter policy rejects the self-signed
+        // mock cert even as an added root (the relay hop 502s on macOS only).
         if let Some(ca) = test_extra_ca() {
-            builder = builder.add_root_certificate(ca);
+            builder = builder.tls_certs_only([ca]);
         }
         let client = builder.build().expect("building relay reqwest client");
         let allowed_upstreams = default_domains()
