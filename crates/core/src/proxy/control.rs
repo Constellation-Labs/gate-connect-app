@@ -131,6 +131,10 @@ pub enum Request {
         ca_key_pem: String,
         domains: Vec<ProxyDomain>,
         preferred_port: Option<u16>,
+        /// Preferred loopback port for the CLI reverse-proxy relay, so it
+        /// rebinds the same address across restarts and baked CLI configs stay
+        /// valid.
+        preferred_relay_port: Option<u16>,
     },
     /// Drop to pass-through: keep listening, blind-tunnel everything. Used on
     /// the GUI's explicit "off" - the engine keeps the port bound so frozen
@@ -156,8 +160,9 @@ pub enum Response {
         #[serde(default)]
         fingerprint: String,
     },
-    /// Acknowledges a [`Request::SetIntercept`] with the port actually bound.
-    Intercepting { port: u16 },
+    /// Acknowledges a [`Request::SetIntercept`] with the MITM proxy port and
+        /// the CLI reverse-proxy relay port actually bound.
+        Intercepting { port: u16, relay_port: u16 },
     /// Generic success (passthrough / shutdown accepted).
     Ok,
     /// Current state for [`Request::Status`].

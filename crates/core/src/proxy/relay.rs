@@ -35,6 +35,35 @@ use tokio::sync::watch;
 
 use crate::proxy::default_domains;
 
+/// Where the stable relay port is persisted. CLI tool configs bake
+/// `http://127.0.0.1:<port>`, so the port must survive restarts: the manager
+/// reuses it as the engine's `preferred_relay_port` and only falls back to a
+/// fresh ephemeral port if it's taken. Cross-platform (unlike the MITM port,
+/// which only Linux persists), since every platform's CLI configs need it.
+pub(crate) fn port_path() -> Result<std::path::PathBuf> {
+    Ok(crate::env::app_support_dir()?
+        .join("proxy")
+        .join("relay-port"))
+}
+
+/// The last relay port we persisted, if any and still parseable.
+pub(crate) fn load_persisted_port() -> Option<u16> {
+    let path = port_path().ok()?;
+    std::fs::read_to_string(path)
+        .ok()?
+        .trim()
+        .parse::<u16>()
+        .ok()
+}
+
+/// Persist the relay port for reuse on the next run. Best-effort durability;
+/// non-secret, so written 0644.
+pub(crate) fn save_persisted_port(port: u16) -> Result<()> {
+    let path = port_path()?;
+    crate::primitives::write_file(&path, port.to_string().as_bytes(), 0o644)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
 /// Non-secret hint the tool config sets, telling the gateway which upstream to
 /// forward to. The relay validates it against the built-in catalog and passes
 /// it through untouched.
