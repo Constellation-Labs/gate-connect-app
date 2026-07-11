@@ -50,15 +50,35 @@ pub struct OAuthConfig {
     pub scopes: Vec<String>,
 }
 
+/// One build-time OAuth config value: the process env wins at runtime, else
+/// the value baked in at build time. Empty env values are ignored so an
+/// exported-but-blank var doesn't blank out a baked default.
+fn config_value(name: &str, baked: Option<&str>) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| baked.map(str::to_string))
+}
+
 impl OAuthConfig {
-    /// Read the config baked in at build time. Returns `None` when the build
-    /// didn't set the Cognito env vars, so callers can fall back to the
-    /// legacy API-key flow with a clear message instead of panicking.
+    /// Read the OAuth client config. Each value comes from the process env at
+    /// runtime if set (dev/staging override, and the CLI's hermetic tests),
+    /// otherwise the value baked in at build time via `option_env!`. Returns
+    /// `None` when neither supplies the domain/client id, so callers can fall
+    /// back to the legacy API-key flow with a clear message instead of
+    /// panicking. All three values are public client config (no secret), so a
+    /// runtime override is safe.
     pub fn from_build_env() -> Option<Self> {
-        let hosted_domain = option_env!("GATE_COGNITO_HOSTED_DOMAIN")?.to_string();
-        let client_id = option_env!("GATE_COGNITO_CLIENT_ID")?.to_string();
-        let scopes = option_env!("GATE_COGNITO_SCOPES")
-            .unwrap_or("openid email profile aws.cognito.signin.user.admin")
+        let hosted_domain = config_value(
+            "GATE_COGNITO_HOSTED_DOMAIN",
+            option_env!("GATE_COGNITO_HOSTED_DOMAIN"),
+        )?;
+        let client_id = config_value(
+            "GATE_COGNITO_CLIENT_ID",
+            option_env!("GATE_COGNITO_CLIENT_ID"),
+        )?;
+        let scopes = config_value("GATE_COGNITO_SCOPES", option_env!("GATE_COGNITO_SCOPES"))
+            .unwrap_or_else(|| "openid email profile aws.cognito.signin.user.admin".to_string())
             .split_whitespace()
             .map(str::to_string)
             .collect();

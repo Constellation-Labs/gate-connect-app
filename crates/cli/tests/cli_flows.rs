@@ -11,8 +11,13 @@
 //! key instead of the OS keychain. No network, no elevation, no real gateway.
 
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use tempfile::TempDir;
 
@@ -349,5 +354,99 @@ fn openclaw_status_reports_connected_then_drift() {
     assert!(
         status.contains("drifted"),
         "expected drift after hand-edit, got: {status}"
+    );
+}
+
+/// Serve one canned JSON token response on a loopback endpoint, standing in for
+/// Cognito's `/oauth2/token`. Returns the URL to feed the token-endpoint seam.
+fn spawn_token_mock() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind token mock");
+    let addr = listener.local_addr().expect("token mock addr");
+    thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut tmp = [0u8; 2048];
+            let _ = stream.read(&mut tmp); // drain the request; we don't assert on it
+            let body = r#"{"access_token":"at-cli","refresh_token":"rt-cli","expires_in":3600,"token_type":"Bearer"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    format!("http://{addr}/oauth2/token")
+}
+
+/// `login --oauth`: the CLI prints the authorize URL and waits on a loopback
+/// redirect; we play the browser (hit the callback with a matching state), the
+/// mock token endpoint answers the exchange, and the account records OAuth mode.
+/// Hermetic: temp home + file-backed secrets, the Cognito config supplied via
+/// the runtime env seam, and the token endpoint redirected to the mock.
+#[test]
+fn login_oauth_captures_redirect_and_records_oauth_mode() {
+    let h = Harness::new();
+    let token_endpoint = spawn_token_mock();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gate-connect"))
+        .args(["login", "--base-url", GATEWAY_URL, "--oauth"])
+        .env("GATE_CONNECT_TEST_HOME", h.home())
+        .env("GATE_CONNECT_TEST_SECRETS", h.secrets.path())
+        .env("GATE_CONNECT_TEST_TOKEN_ENDPOINT", &token_endpoint)
+        .env("GATE_COGNITO_HOSTED_DOMAIN", "auth.example.test")
+        .env("GATE_COGNITO_CLIENT_ID", "client-cli-test")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn gate-connect login --oauth");
+
+    // Drain the CLI's stdout to EOF on a thread (so its final "Signed in" print
+    // never hits a broken pipe), forwarding the authorize URL back over a
+    // channel. The CLI prints that URL, then blocks on the loopback callback.
+    let stdout = child.stdout.take().expect("child stdout");
+    let (tx, rx) = mpsc::channel();
+    let drain = thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        let mut tx = Some(tx);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if line.contains("/oauth2/authorize") {
+                if let (Some(idx), Some(tx)) = (line.find("http"), tx.take()) {
+                    let _ = tx.send(line[idx..].trim().to_string());
+                }
+            }
+        }
+    });
+    let authorize_url = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("CLI did not print an authorize URL");
+
+    // Play the browser: echo the state back on the loopback callback with a code.
+    let url = reqwest::Url::parse(&authorize_url).expect("parse authorize URL");
+    let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+    let state = params.get("state").expect("state param").clone();
+    let mut callback = reqwest::Url::parse(params.get("redirect_uri").expect("redirect_uri param"))
+        .expect("parse redirect_uri");
+    callback
+        .query_pairs_mut()
+        .append_pair("code", "auth-code-cli")
+        .append_pair("state", &state);
+    reqwest::blocking::get(callback).expect("hit loopback callback");
+
+    let status = child.wait().expect("wait for CLI");
+    let _ = drain.join();
+    assert!(status.success(), "login --oauth exited with {status}");
+
+    // The account records OAuth mode - proof the round-trip completed, the
+    // token exchange stored a bundle, and set_auth_mode ran against the account.
+    let account_json = read(
+        &h.home()
+            .join("app-support")
+            .join("Gate Connect")
+            .join("account.json"),
+    );
+    assert!(
+        account_json.contains("\"auth_mode\": \"oauth\""),
+        "account.json should record OAuth mode: {account_json}"
     );
 }

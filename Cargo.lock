@@ -1521,6 +1521,7 @@ dependencies = [
  "anyhow",
  "clap",
  "gate-connect-core",
+ "reqwest",
  "rpassword",
  "tempfile",
 ]
