@@ -1,12 +1,15 @@
 name: E2E (real tools)
 
-# Installs the real claude / codex / opencode / openclaw / hermes CLIs, points each at a local
-# HTTPS mock gateway through the normal `gate-connect connect` flow, fires one
-# headless request, and asserts the mock received it with the X-Gate-Api-Key /
-# X-Gate-Upstream-Url headers. It mutates the runner's trust store and depends
-# on third-party CLIs whose flags and auth shapes drift - so it is NOT a
-# required check (don't gate merges on it). Each tool fails independently and
-# the captured-request assertion is the source of truth.
+# Installs the real claude / codex / opencode / openclaw / hermes CLIs and drives
+# the full relay path: `gate-connect proxy serve` hosts the loopback relay,
+# `gate-connect connect` points each CLI at it over plaintext http, the CLI fires
+# one headless request, and the relay injects the Gate credential + forwards over
+# TLS to a local HTTPS mock gateway. Runs twice - once signed in with an API key
+# (asserts X-Gate-Api-Key) and once via OAuth (asserts X-Gate-Authorization +
+# X-Gate-Org-Id) - since both auth modes must keep working. Depends on
+# third-party CLIs whose flags and auth shapes drift, so it is NOT a required
+# check (don't gate merges on it). Each tool fails independently and the
+# captured-request assertion is the source of truth.
 on:
   pull_request:
   push:
@@ -47,17 +50,12 @@ jobs:
       - name: Build gate-connect CLI
         run: cargo build -p gate-connect-cli
 
-      # Codex relies on the OS trust store for a custom CA; that works on Linux
-      # and Windows but not macOS (it ignores the keychain), so skip installing
-      # it there.
+      # Every CLI now talks to the relay over plaintext loopback, so codex no
+      # longer needs the OS trust store for a custom CA (the old macOS blocker,
+      # openai/codex#9526); install it on all platforms.
       - name: Install AI CLIs
         shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            npm install -g @anthropic-ai/claude-code opencode-ai openclaw
-          else
-            npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai openclaw
-          fi
+        run: npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai openclaw
 
       # Hermes is a Python agent installed via the bash install.sh, which
       # symlinks the launcher to ~/.local/bin/hermes; --skip-browser drops the
