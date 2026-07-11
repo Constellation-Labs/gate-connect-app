@@ -100,6 +100,8 @@ impl ProxyManager {
                 // a valid one is stored. Empty means fall back to the API
                 // key; a later refresh pushes updates via `refresh_token`.
                 oauth_token: crate::oauth::access_token_for_injection(),
+                // Selected org, injected as X-Gate-Org-Id alongside the token.
+                org_id: crate::account::org_id_for_injection(),
                 domains: domains.clone(),
                 ca_cert_pem: ca.cert_pem().to_string(),
                 ca_key_pem: ca.key_pem().to_string(),
@@ -252,6 +254,20 @@ impl ProxyManager {
             .as_ref()
         {
             running.update_token(oauth_token);
+        }
+    }
+
+    /// Push a newly-selected org UUID into the running engine, if any. Empty
+    /// string clears it. Used by the org switcher so the new `X-Gate-Org-Id`
+    /// reaches in-flight routing without a restart.
+    pub fn refresh_org(&self, org_id: &str) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_org(org_id);
         }
     }
 
