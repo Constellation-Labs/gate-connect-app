@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
+use gate_connect_core::{account, oauth, registry, ConnectInput, Status, ToolId};
 
 // The built-in proxy is wired on the three desktop OSes (CA trust +
 // system-proxy backends exist there); its subcommands are gated to match.
@@ -29,9 +29,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sign in to Gate AI. Stores the base URL on disk and the API key
-    /// in the OS secret store (Keychain / Credential Manager / Secret
-    /// Service). Re-run to update.
+    /// Sign in to Gate AI. Stores the base URL on disk and the credential in
+    /// the OS secret store (Keychain / Credential Manager / Secret Service).
+    /// Re-run to update. With `--oauth`, signs in through the Constellation
+    /// (Cognito) Hosted UI in the browser instead of a pasted API key.
     Login {
         #[arg(long, env = "GATE_BASE_URL")]
         base_url: String,
@@ -41,6 +42,11 @@ enum Command {
         /// passing it on the command line or typing it at the prompt.
         #[arg(long)]
         api_key_file: Option<std::path::PathBuf>,
+        /// Sign in via the Constellation Hosted UI (OAuth) instead of an API
+        /// key. Prints a URL to open in your browser and captures the redirect
+        /// on a loopback listener. Ignores `--api-key`.
+        #[arg(long)]
+        oauth: bool,
     },
     /// Sign out. Removes the stored base URL and the keychain entry.
     Logout,
@@ -138,7 +144,8 @@ fn main() -> Result<()> {
             base_url,
             api_key,
             api_key_file,
-        } => cmd_login(base_url, api_key, api_key_file),
+            oauth,
+        } => cmd_login(base_url, api_key, api_key_file, oauth),
         Command::Logout => cmd_logout(),
         Command::Whoami => cmd_whoami(),
         Command::List => cmd_list(),
@@ -160,7 +167,14 @@ fn cmd_login(
     base_url: String,
     api_key: Option<String>,
     api_key_file: Option<std::path::PathBuf>,
+    oauth: bool,
 ) -> Result<()> {
+    if oauth {
+        if api_key.is_some() || api_key_file.is_some() {
+            anyhow::bail!("--oauth cannot be combined with --api-key / --api-key-file");
+        }
+        return cmd_login_oauth(base_url);
+    }
     let api_key = resolve_secret(api_key, api_key_file, "Gate API key")?;
     account::save(&base_url, Some(&api_key))?;
     // The key is copied into tool configs at connect time - push the new
@@ -177,6 +191,28 @@ fn cmd_login(
         }
     }
     println!("Signed in to {base_url}.");
+    Ok(())
+}
+
+/// Sign in through the Constellation (Cognito) Hosted UI. Persists the gateway
+/// first so the browser round-trip can record OAuth as the account's auth mode,
+/// then prints the authorize URL and blocks on the loopback redirect. The token
+/// bundle lands in the secret store; the relay / MITM engine inject it live, so
+/// no credential is written to disk here.
+fn cmd_login_oauth(base_url: String) -> Result<()> {
+    let cfg = oauth::OAuthConfig::from_build_env().context(
+        "OAuth is not configured in this build (GATE_COGNITO_HOSTED_DOMAIN / GATE_COGNITO_CLIENT_ID unset)",
+    )?;
+    account::save(&base_url, None)?;
+    let tokens = oauth::login(&cfg, oauth::REDIRECT_PORTS, |url| {
+        println!("Open this URL in your browser to sign in:\n\n  {url}\n");
+        Ok(())
+    })?;
+    account::set_auth_mode(account::AuthMode::OAuth)?;
+    match tokens.email() {
+        Some(email) => println!("Signed in to {base_url} as {email}."),
+        None => println!("Signed in to {base_url}."),
+    }
     Ok(())
 }
 

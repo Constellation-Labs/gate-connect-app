@@ -28,6 +28,9 @@ const KEYCHAIN_LABEL: &str = "gateway-api-key";
 pub enum AuthMode {
     #[default]
     ApiKey,
+    // `rename_all` would snake-case this to `o_auth`; pin the wire value the
+    // frontend and CLI expect.
+    #[serde(rename = "oauth")]
     OAuth,
 }
 
