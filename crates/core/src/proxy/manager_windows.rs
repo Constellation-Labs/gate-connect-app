@@ -104,6 +104,9 @@ impl ProxyManager {
                 ca_key_pem: ca.key_pem().to_string(),
                 // WinINET is read live per-process, so an ephemeral port is fine.
                 preferred_port: None,
+                // TODO(relay stable port): reuse a persisted relay port so CLI
+                // tool configs stay valid across restarts.
+                preferred_relay_port: None,
                 // Per-user UID gating is a Linux concern; unused on Windows.
                 owner_uid: None,
                 // Keep any pre-existing proxy as the PAC fallback so non-Gate
