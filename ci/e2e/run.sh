@@ -1,14 +1,30 @@
 #!/usr/bin/env bash
-# Real-tools end-to-end driver. Points each installed AI CLI at a local HTTPS
-# mock gateway via the normal `gate-connect connect` flow, fires one headless
-# request, and asserts the mock received it with the Gate headers. Best-effort:
-# the external CLIs' invocation flags and auth shapes drift over time, so each
-# tool is allowed to fail without aborting the others; the per-tool capture
-# assertion is the source of truth.
+# Real-tools end-to-end driver. Exercises the full relay path: `gate-connect
+# proxy serve` hosts the loopback reverse-proxy relay, `gate-connect connect`
+# points each installed AI CLI at that relay (plaintext http), the tool fires one
+# headless request, the relay injects the Gate credential + forwards over TLS to
+# a local HTTPS mock gateway, and we assert the mock received it with the right
+# headers.
+#
+# Two phases, because both auth modes must keep working:
+#   Phase A - API key (legacy): relay injects x-gate-api-key.
+#   Phase B - OAuth (primary):  relay injects x-gate-authorization + x-gate-org-id.
+# The tool config is identical in both phases (it just points at the relay); only
+# what the relay injects - and therefore the per-phase assertion - differs.
+#
+# Because the tools now talk to the relay over plaintext loopback, they need no
+# CA trust of their own: only the relay speaks TLS to the mock gateway, and it
+# trusts the throwaway CA via the GATE_CONNECT_TEST_CA seam. The OAuth token /
+# org-list calls run over plain HTTP against mock-auth.mjs via the
+# GATE_CONNECT_TEST_TOKEN_ENDPOINT / GATE_CONNECT_TEST_ORGS_ENDPOINT seams.
+#
+# Best-effort: the external CLIs' invocation flags and auth shapes drift over
+# time, so each tool is allowed to fail without aborting the others; the per-tool
+# capture assertion is the source of truth.
 #
 # Runs on Linux, macOS, and Windows (Git Bash). Assumes: `gate-connect` is built
-# (target/debug), node is on PATH, and the CLIs are installed. May mutate the OS
-# trust store, so it only belongs on a throwaway CI runner.
+# (target/debug), node is on PATH, and the CLIs are installed. Belongs on a
+# throwaway CI runner.
 set -uo pipefail
 
 OS="other"
@@ -81,9 +97,10 @@ CLI="$ROOT/target/debug/gate-connect"
 [ "$OS" = "Windows" ] && CLI="$CLI.exe"
 PORT=8443
 # Use 127.0.0.1, not localhost: on macOS `localhost` can resolve to IPv6 ::1
-# first, but the mock binds 127.0.0.1 only - so a tool would hit a dead ::1
-# address. The leaf cert carries an IP:127.0.0.1 SAN so TLS still validates.
+# first, but the mock binds 127.0.0.1 only - so the relay would hit a dead ::1
+# address. The leaf cert carries an IP:127.0.0.1 SAN so the relay's TLS validates.
 BASE_URL="https://127.0.0.1:$PORT"
+AUTH_PORT=8455
 CAPTURE="$WORK/capture.jsonl"
 : > "$CAPTURE"
 # Tool stdout/stderr goes here, not the step's inherited pipe: on Windows a tool
@@ -102,17 +119,12 @@ ckpt() {
   echo ">>> ckpt $(date -u +%H:%M:%S) $*" >> "$DIAG" 2>/dev/null || true
 }
 
-# Node tools (claude / opencode-on-bun) talk to the mock over TLS. Rather than
-# fight each runtime's CA-trust quirks (bun ignores NODE_EXTRA_CA_CERTS on
-# macOS; msys cert paths confuse Node on Windows), skip verification for these
-# local-only calls - the assertion is about the request reaching the gateway
-# with the right headers, not about CA trust. ANTHROPIC_API_KEY just lets claude
-# attach an auth header so it actually sends.
+# The tools now talk to the relay over plaintext loopback, so none of them need
+# CA trust or TLS quirks of their own. NODE_TLS_REJECT_UNAUTHORIZED stays off as
+# a belt-and-suspenders in case a node CLI does any incidental TLS; ANTHROPIC_API_KEY
+# just lets claude attach an auth header so it actually sends a request.
 export NODE_TLS_REJECT_UNAUTHORIZED=0
 export ANTHROPIC_API_KEY="sk-ant-e2e-dummy"
-# Codex (Rust) has no env to trust a custom CA for a model provider
-# (openai/codex#9526), so it relies on the OS trust store - Linux only below.
-export CODEX_CA_CERTIFICATE="$(winpath "$CA_DIR/ca.pem")"
 
 PASS=0
 FAIL=0
@@ -122,7 +134,7 @@ FAIL=0
 # `wait` on the process: on Windows the codex shim spawns a grandchild that may
 # be unkillable from msys, and blocking on it would stall the whole step. Since
 # the tool's stdout/stderr go to a file, leaving it orphaned is harmless - the
-# step still completes once the script exits and the EXIT trap stops the mock.
+# step still completes once the script exits and the EXIT trap stops the mocks.
 run_until_capture() {
   local needle="$1"
   shift
@@ -152,9 +164,9 @@ run_until_capture() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Mint a throwaway CA + a 127.0.0.1 leaf. On Linux/macOS we also trust the CA
-#    in the OS store (for Codex's Rust TLS); Node tools rely on the verify-skip
-#    above, so Windows needs no trust-store wiring.
+# 1. Mint a throwaway CA + a 127.0.0.1 leaf. Only the relay validates the mock
+#    gateway's cert, and it trusts this CA via GATE_CONNECT_TEST_CA - no OS trust
+#    store wiring and no per-tool CA env needed anymore.
 # ---------------------------------------------------------------------------
 # Run openssl from inside CA_DIR with bare filenames so it works whether the
 # openssl on PATH is the msys build (wants /c/… paths) or a native Windows one
@@ -180,45 +192,44 @@ EXT
     -out leaf.pem -days 2 -extfile leaf.ext
 )
 
-export NODE_EXTRA_CA_CERTS="$(winpath "$CA_DIR/ca.pem")"
+# The relay's reqwest client adds this CA to its roots (GATE_CONNECT_TEST_CA
+# seam) so its TLS hop to the mock gateway validates.
+export GATE_CONNECT_TEST_CA="$(winpath "$CA_DIR/ca.pem")"
 
-case "$OS" in
-  Linux)
-    sudo cp "$CA_DIR/ca.pem" /usr/local/share/ca-certificates/gc-e2e.crt
-    sudo update-ca-certificates
-    ;;
-  Darwin)
-    sudo security add-trusted-cert -d -r trustRoot \
-      -k /Library/Keychains/System.keychain "$CA_DIR/ca.pem"
-    ;;
-  Windows)
-    # Into the LocalMachine Root store. NOT the current-user store: adding a
-    # trusted root for the current user pops an interactive "install this
-    # certificate?" dialog that hangs forever on a headless runner. The machine
-    # store is non-interactive (the runner is an admin). stdin from /dev/null as
-    # a belt-and-suspenders against any prompt. Codex's Rust TLS reads this store.
-    certutil -addstore -f Root "$(winpath "$CA_DIR/ca.pem")" </dev/null >/dev/null 2>&1 || true
-    ;;
-esac
+# OAuth build config (public client, no secret): the hosted domain is only ever
+# shown in the authorize URL - we fake the browser round-trip - and the token /
+# org-list calls are redirected to mock-auth over http by the seams below.
+export GATE_COGNITO_HOSTED_DOMAIN="auth.e2e.test"
+export GATE_COGNITO_CLIENT_ID="e2e-client"
+export GATE_CONNECT_TEST_TOKEN_ENDPOINT="http://127.0.0.1:$AUTH_PORT/oauth2/token"
+export GATE_CONNECT_TEST_ORGS_ENDPOINT="http://127.0.0.1:$AUTH_PORT/v1/me/orgs"
 
 # ---------------------------------------------------------------------------
-# 2. Start the mock gateway and wait until it accepts TLS.
+# 2. Start the mocks: HTTPS gateway (the relay forwards here) + plain-HTTP auth
+#    (token + org-list for the OAuth phase). Both write to files, not the step's
+#    pipe, so the step completes the moment the script exits.
 # ---------------------------------------------------------------------------
-# Mock output goes to a file (not the step's pipe) so nothing but the shell
-# itself holds stdout - the step then completes the moment the script exits,
-# even if a tool left an orphaned process behind.
 CAPTURE_LOG="$(winpath "$CAPTURE")" MOCK_PORT="$PORT" \
   MOCK_CERT="$(winpath "$CA_DIR/leaf.pem")" MOCK_KEY="$(winpath "$CA_DIR/leaf.key")" \
   node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" >"$WORK/mock.out" 2>&1 &
 MOCK_PID=$!
+
+MOCK_AUTH_PORT="$AUTH_PORT" \
+  node "$(winpath "$ROOT/ci/e2e/mock-auth.mjs")" >"$WORK/mock-auth.out" 2>&1 &
+AUTH_PID=$!
+
+RELAY_PID=""
 cleanup() {
   kill -KILL "$MOCK_PID" 2>/dev/null
+  kill -KILL "$AUTH_PID" 2>/dev/null
+  [ -n "$RELAY_PID" ] && kill -KILL "$RELAY_PID" 2>/dev/null
   # Codex's Rust binary survives an msys kill and, in the runner's job object,
   # keeps the step from finishing. A real Windows kill of the whole tree lets
   # the step exit. (No-op if codex isn't running; codex.exe doesn't exist off
   # Windows.)
   if [ "$OS" = "Windows" ]; then
     taskkill /F /T /IM codex.exe >/dev/null 2>&1 || true
+    taskkill /F /IM gate-connect.exe >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -229,152 +240,237 @@ for _ in $(seq 1 40); do
 done
 
 # ---------------------------------------------------------------------------
-# 3. Sign in once; every tool reuses this account.
+# Relay host: `gate-connect proxy serve` binds the loopback relay and blocks.
+# It seeds the credential channels from the current account, so it must be
+# (re)started after each phase's login. connect reads the persisted relay port,
+# so serve must be up before any connect.
 # ---------------------------------------------------------------------------
-ckpt "mock ready; signing in"
-"$CLI" login --base-url "$BASE_URL" --api-key "sk-gw-e2e" || {
-  echo "login failed"
-  exit 1
+start_relay() {
+  : > "$WORK/serve.out"
+  ckpt "relay: starting proxy serve"
+  "$CLI" proxy serve >"$WORK/serve.out" 2>&1 &
+  RELAY_PID=$!
+  local i=0
+  while [ "$i" -lt 30 ]; do
+    grep -q 'relay listening on' "$WORK/serve.out" 2>/dev/null && {
+      ckpt "relay: ready ($(grep -o 'http://[^ ]*' "$WORK/serve.out" | head -n1))"
+      return 0
+    }
+    kill -0 "$RELAY_PID" 2>/dev/null || {
+      echo "relay: serve exited before becoming ready"
+      sed 's/^/    /' "$WORK/serve.out"
+      return 1
+    }
+    sleep 0.5
+    i=$((i + 1))
+  done
+  echo "relay: serve did not become ready in time"
+  sed 's/^/    /' "$WORK/serve.out"
+  return 1
 }
-ckpt "signed in"
 
-# run_tool <label> <slug> <path-needle> -- <invoke cmd...>
+stop_relay() {
+  [ -n "$RELAY_PID" ] || return 0
+  ckpt "relay: stopping proxy serve (pid=$RELAY_PID)"
+  kill -KILL "$RELAY_PID" 2>/dev/null
+  wait "$RELAY_PID" 2>/dev/null
+  RELAY_PID=""
+}
+
+# Fake the browser leg of `login --oauth`: run it headless, read the authorize
+# URL it prints, and hit its loopback /callback with a code + the echoed state.
+# The CLI then exchanges the code (mock-auth /oauth2/token), lists orgs
+# (mock-auth /v1/me/orgs -> single org, auto-selected), and persists everything.
+oauth_login() {
+  local out="$WORK/oauth-login.out"
+  : > "$out"
+  ckpt "oauth: starting login --oauth"
+  "$CLI" login --base-url "$BASE_URL" --oauth >"$out" 2>&1 &
+  local lpid=$!
+  local url="" i=0
+  while [ "$i" -lt 40 ]; do
+    url=$(grep -oE 'https://[^ ]*oauth2/authorize[^ ]*' "$out" 2>/dev/null | head -n1)
+    [ -n "$url" ] && break
+    kill -0 "$lpid" 2>/dev/null || break
+    sleep 0.25
+    i=$((i + 1))
+  done
+  if [ -z "$url" ]; then
+    echo "oauth: login never printed an authorize URL"
+    sed 's/^/    /' "$out"
+    kill -KILL "$lpid" 2>/dev/null
+    return 1
+  fi
+  ckpt "oauth: faking browser callback"
+  local cb
+  cb=$(node -e 'const u=new URL(process.argv[1]);const r=u.searchParams.get("redirect_uri");const s=u.searchParams.get("state");const c=new URL(r);c.searchParams.set("code","e2e-auth-code");c.searchParams.set("state",s);process.stdout.write(c.toString());' "$url") || {
+    echo "oauth: could not derive callback URL from: $url"
+    kill -KILL "$lpid" 2>/dev/null
+    return 1
+  }
+  curl -s "$cb" >/dev/null 2>&1
+  ckpt "oauth: callback delivered; waiting for login to finish"
+  wait "$lpid"
+}
+
+# run_tool <label> <slug> <path-needle> <mode> -- <invoke cmd...>
 run_tool() {
-  local label="$1" slug="$2" needle="$3"
-  shift 3
+  local label="$1" slug="$2" needle="$3" mode="$4"
+  shift 4
   [ "$1" = "--" ] && shift
-  echo "::group::$label"
-  TOOL_OUT="$WORK/$slug.out" # per-tool so the diagnostics step keeps each one
+  echo "::group::$label ($mode)"
+  TOOL_OUT="$WORK/$slug-$mode.out" # per-tool/phase so the diagnostics step keeps each one
   : > "$CAPTURE"
-  ckpt "[$label] connect"
+  ckpt "[$label/$mode] connect"
   if "$CLI" connect "$slug"; then
-    ckpt "[$label] connected; running tool"
+    ckpt "[$label/$mode] connected; running tool"
     run_until_capture "$needle" "$@"
-    ckpt "[$label] run_until_capture returned; tool output:"
+    ckpt "[$label/$mode] run_until_capture returned; tool output:"
     sed 's/^/    /' "$TOOL_OUT" 2>/dev/null
-    ckpt "[$label] disconnect"
+    ckpt "[$label/$mode] disconnect"
     "$CLI" disconnect "$slug" >/dev/null 2>&1
-    ckpt "[$label] asserting capture"
-    if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" "$(winpath "$CAPTURE")" "$needle"; then
-      echo "PASS: $label reached the gateway with Gate headers"
+    ckpt "[$label/$mode] asserting capture"
+    if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" "$(winpath "$CAPTURE")" "$needle" "$mode"; then
+      echo "PASS: $label reached the gateway with the $mode Gate headers"
       PASS=$((PASS + 1))
     else
-      echo "FAIL: $label did not reach the gateway as expected"
+      echo "FAIL: $label did not reach the gateway as expected ($mode)"
       FAIL=$((FAIL + 1))
     fi
-    ckpt "[$label] done"
+    ckpt "[$label/$mode] done"
   else
-    echo "FAIL: $label connect failed"
+    echo "FAIL: $label connect failed ($mode)"
     FAIL=$((FAIL + 1))
   fi
   echo "::endgroup::"
 }
 
-# --- Claude Code: gate-connect writes the gateway URL + headers into the env
-#     block of ~/.claude/settings.json; claude POSTs /v1/messages there. We run
-#     `--bare` (the documented CI mode - it skips the OAuth/keychain read that
-#     otherwise hangs headless macOS) and feed it that exact settings file via
-#     `--settings` so the env block still applies.
-mkdir -p "$HOME/.claude"
-run_tool "claude-code" "claude-code" "/v1/messages" -- \
-  claude --bare -p "ping" --settings "$(winpath "$HOME/.claude/settings.json")"
-
-# --- Codex: apikey mode → base_url + /v1, POSTs /v1/responses. Codex has no env
-#     to trust a custom CA for a model provider (openai/codex#9526), so it relies
-#     on the OS trust store - which we populate on Linux and Windows above.
-#     macOS codex doesn't read the keychain for this, so it stays skipped there.
-if [ "$OS" != "Darwin" ]; then
-  mkdir -p "$HOME/.codex"
-  printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
-  run_tool "codex" "codex" "/v1/responses" -- \
-    codex exec --skip-git-repo-check "ping"
-else
-  echo "::notice::skipping codex on macOS - its TLS stack can't trust a test CA for a custom model provider (openai/codex#9526) and ignores the keychain; codex is exercised on Linux and Windows."
-fi
-
-# --- OpenCode: gate-connect rewrites its anthropic provider's baseURL to Gate
-#     → POSTs /v1/messages. A model must be named explicitly (`provider/model`),
-#     otherwise `opencode run` picks a default that bypasses the anthropic
-#     provider we overrode and hits the real API.
-mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
-printf '{"anthropic":{"type":"api","key":"sk-ant-e2e-dummy"}}' \
-  > "$HOME/.local/share/opencode/auth.json"
-printf '{"provider":{"anthropic":{}}}' > "$HOME/.config/opencode/opencode.json"
 # Pick an anthropic model from opencode's catalog rather than pinning an id:
 # models.dev retires them (claude-3-5-haiku-latest vanished and broke this).
 # Skip the `-latest` aliases - they're the unstable ones models.dev remaps, and
 # `opencode models` lists in no fixed order, so grabbing the first match landed
 # on claude-3-5-haiku-latest at random. Sort for a deterministic pick instead.
-MODEL=$(opencode models | grep '^anthropic/' | grep -v -- '-latest$' | sort | head -n1)
-if [ -z "$MODEL" ]; then
-  echo "FAIL: opencode listed no anthropic models"
+# Computed once (it's independent of the auth phase).
+OPENCODE_MODEL=""
+if command -v opencode >/dev/null 2>&1; then
+  OPENCODE_MODEL=$(opencode models | grep '^anthropic/' | grep -v -- '-latest$' | sort | head -n1)
+fi
+
+# Run every installed tool against the relay and assert the given auth mode's
+# Gate headers reached the mock gateway. The tool config is mode-independent (it
+# just points at the relay); the relay injects the differing credential.
+run_all_tools() {
+  local mode="$1"
+
+  # --- Claude Code: gate-connect writes the relay base URL + upstream headers
+  #     into the env block of ~/.claude/settings.json; claude POSTs /v1/messages
+  #     to the relay. We run `--bare` (the documented CI mode - it skips the
+  #     OAuth/keychain read that otherwise hangs headless macOS) and feed it that
+  #     exact settings file via `--settings` so the env block applies.
+  mkdir -p "$HOME/.claude"
+  run_tool "claude-code" "claude-code" "/v1/messages" "$mode" -- \
+    claude --bare -p "ping" --settings "$(winpath "$HOME/.claude/settings.json")"
+
+  # --- Codex: apikey mode → relay base + /v1, POSTs /v1/responses. Talks to the
+  #     relay over plaintext http now, so the old custom-CA problem
+  #     (openai/codex#9526) no longer applies. Guarded on install - codex isn't
+  #     on every runner in the matrix.
+  if command -v codex >/dev/null 2>&1; then
+    mkdir -p "$HOME/.codex"
+    printf '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-e2e-dummy"}' > "$HOME/.codex/auth.json"
+    run_tool "codex" "codex" "/v1/responses" "$mode" -- \
+      codex exec --skip-git-repo-check "ping"
+  else
+    echo "::notice::skipping codex - CLI not installed on this runner"
+  fi
+
+  # --- OpenCode: gate-connect rewrites its anthropic provider's baseURL to the
+  #     relay → POSTs /v1/messages. A model must be named explicitly
+  #     (`provider/model`), otherwise `opencode run` picks a default that bypasses
+  #     the anthropic provider we overrode and hits the real API.
+  mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
+  printf '{"anthropic":{"type":"api","key":"sk-ant-e2e-dummy"}}' \
+    > "$HOME/.local/share/opencode/auth.json"
+  printf '{"provider":{"anthropic":{}}}' > "$HOME/.config/opencode/opencode.json"
+  if [ -z "$OPENCODE_MODEL" ]; then
+    echo "::notice::skipping opencode - no anthropic model listed (or CLI not installed)"
+  else
+    run_tool "opencode" "opencode" "/v1/messages" "$mode" -- \
+      opencode run --model "$OPENCODE_MODEL" "ping"
+  fi
+
+  # --- OpenClaw: multi-provider, like OpenCode. gate-connect rewrites the
+  #     anthropic provider's baseUrl in ~/.openclaw/openclaw.json to the relay →
+  #     POSTs /v1/messages. We seed a minimal anthropic provider block:
+  #     gate-connect detects OpenClaw off the config dir existing, and needs a
+  #     supported provider (anthropic/openai/openrouter) under models.providers to
+  #     have something to route. Guarded on install.
+  if command -v openclaw >/dev/null 2>&1; then
+    mkdir -p "$HOME/.openclaw"
+    printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1"}}}}' \
+      > "$HOME/.openclaw/openclaw.json"
+    run_tool "openclaw" "openclaw" "/v1/messages" "$mode" -- \
+      openclaw message "ping"
+  else
+    echo "::notice::skipping openclaw - CLI not installed on this runner"
+  fi
+
+  # --- Hermes: Python OpenAI-compatible agent. gate-connect rewrites
+  #     model.base_url in ~/.hermes/config.yaml to the relay and injects the Gate
+  #     headers into model.default_headers → POSTs /v1/chat/completions. We seed a
+  #     complete model block the way a configured user's would look: provider must
+  #     be set or hermes refuses to run ("No LLM provider configured"), and
+  #     base_url must be a public https URL or gate-connect treats it as local and
+  #     refuses to route it (connect overwrites it with the relay URL anyway).
+  #     provider=custom is hermes' recipe for an OpenAI-compatible endpoint: it
+  #     calls model.base_url directly using model.api_key. Since hermes now talks
+  #     to the plaintext relay, no ssl_verify / custom_providers TLS shim is
+  #     needed. Guarded on install.
+  if command -v hermes >/dev/null 2>&1; then
+    mkdir -p "$HOME/.hermes"
+    printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
+      > "$HOME/.hermes/config.yaml"
+    export OPENAI_API_KEY="sk-e2e-dummy"
+    run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
+      hermes -z "ping" --model openai/gpt-4o-mini
+  else
+    echo "::notice::skipping hermes - CLI not installed on this runner"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Phase A - API key (legacy). Relay injects x-gate-api-key.
+# ---------------------------------------------------------------------------
+ckpt "mocks ready; PHASE A (api-key)"
+echo "::group::phase: api-key login"
+"$CLI" login --base-url "$BASE_URL" --api-key "sk-gw-e2e" || {
+  echo "api-key login failed"
+  exit 1
+}
+echo "::endgroup::"
+start_relay || exit 1
+run_all_tools "api-key"
+stop_relay
+"$CLI" logout >/dev/null 2>&1 || true
+
+# ---------------------------------------------------------------------------
+# Phase B - OAuth (primary). Relay injects x-gate-authorization + x-gate-org-id.
+# ---------------------------------------------------------------------------
+ckpt "PHASE B (oauth)"
+echo "::group::phase: oauth login"
+if oauth_login; then
+  echo "::endgroup::"
+  start_relay || exit 1
+  run_all_tools "oauth"
+  stop_relay
+  "$CLI" logout >/dev/null 2>&1 || true
+else
+  echo "::endgroup::"
+  echo "FAIL: oauth login did not complete; skipping the OAuth phase"
   FAIL=$((FAIL + 1))
-else
-  run_tool "opencode" "opencode" "/v1/messages" -- \
-    opencode run --model "$MODEL" "ping"
 fi
 
-# --- OpenClaw: multi-provider, like OpenCode. gate-connect rewrites the
-# anthropic provider's baseUrl in ~/.openclaw/openclaw.json to Gate → POSTs
-# /v1/messages. We seed a minimal anthropic provider block: gate-connect
-# detects OpenClaw off the config dir existing, and needs a supported provider
-# (anthropic/openai/openrouter) under models.providers to have something to
-# route. The Gate headers are injected by connect into that provider's config,
-# so the request carries them even though the dummy upstream key would 401.
-# openclaw is an npm CLI, so the NODE_TLS_REJECT_UNAUTHORIZED skip and
-# ANTHROPIC_API_KEY exported above already let it reach the mock over TLS.
-# Guarded on install because openclaw isn't set up on every runner in the
-# matrix; a missing CLI is a skip, not a failure.
-if command -v openclaw >/dev/null 2>&1; then
-  mkdir -p "$HOME/.openclaw"
-  printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1"}}}}' \
-    > "$HOME/.openclaw/openclaw.json"
-  run_tool "openclaw" "openclaw" "/v1/messages" -- \
-    openclaw message "ping"
-else
-  echo "::notice::skipping openclaw - CLI not installed on this runner"
-fi
-
-# --- Hermes: Python OpenAI-compatible agent. gate-connect rewrites
-# model.base_url in ~/.hermes/config.yaml to Gate and injects the Gate
-# headers into model.default_headers → POSTs /v1/chat/completions. We seed a
-# complete model block the way a configured user's would look: provider must be
-# set or hermes refuses to run ("No LLM provider configured"), and base_url must
-# be a public https URL or gate-connect treats it as local and refuses to route
-# it. provider=custom is hermes' recipe for an OpenAI-compatible endpoint: it
-# calls model.base_url directly using model.api_key. gate-connect preserves
-# provider/api_key and only redirects base_url + injects headers, so after
-# connect hermes POSTs the mock with the dummy key (which the mock accepts).
-# Guarded on install: if a runner's hermes install lands the binary
-# off PATH, skip rather than fail.
-#
-# TLS: hermes' HTTP stack (OpenAI SDK → httpx) verifies the mock's test-CA leaf
-# via agent/ssl_verify.py, and it never consults the OS trust store (no
-# truststore), so the System-keychain trust above does nothing for it. Supplying
-# the test CA through certifi or $HERMES_CA_BUNDLE works on Linux but NOT on the
-# macOS runner - there hermes still reports "Connection error" with zero requests
-# even when its resolved bundle contains our CA, a macOS-specific validation
-# quirk in its Python TLS stack. So for this local-only mock we disable
-# verification outright - the same posture as NODE_TLS_REJECT_UNAUTHORIZED=0 for
-# the node tools; the assertion is that the request reaches the gateway, not that
-# a real cert chain validates. hermes only honors ssl_verify from a
-# custom_providers entry matched to the client's base_url by URL (not from the
-# top-level model block), so we seed one whose base_url equals what connect
-# rewrites model.base_url to (<gateway>/v1). connect edits only model.base_url +
-# model.default_headers, so the custom_providers block is preserved untouched.
-if command -v hermes >/dev/null 2>&1; then
-  mkdir -p "$HOME/.hermes"
-  printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\ncustom_providers:\n  - name: gate-e2e\n    base_url: %s/v1\n    ssl_verify: false\n' \
-    "$BASE_URL" > "$HOME/.hermes/config.yaml"
-  export OPENAI_API_KEY="sk-e2e-dummy"
-
-  run_tool "hermes" "hermes" "/v1/chat/completions" -- \
-    hermes -z "ping" --model openai/gpt-4o-mini
-else
-  echo "::notice::skipping hermes - CLI not installed on this runner"
-fi
-
-ckpt "all tools finished; reached end of script"
+ckpt "all phases finished; reached end of script"
 echo "----------------------------------------"
 echo "Passed: $PASS  Failed: $FAIL"
 test "$FAIL" -eq 0
