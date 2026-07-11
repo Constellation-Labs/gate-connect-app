@@ -430,14 +430,18 @@ run_all_tools() {
   #     complete model block the way a configured user's would look: provider must
   #     be set or hermes refuses to run ("No LLM provider configured"), and
   #     base_url must be a public https URL or gate-connect treats it as local and
-  #     refuses to route it (connect overwrites it with the relay URL anyway).
-  #     provider=custom is hermes' recipe for an OpenAI-compatible endpoint: it
-  #     calls model.base_url directly using model.api_key. Since hermes now talks
-  #     to the plaintext relay, no ssl_verify / custom_providers TLS shim is
-  #     needed. Guarded on install.
+  #     refuses to route it. provider=custom is hermes' recipe for an
+  #     OpenAI-compatible endpoint: it calls model.base_url directly using
+  #     model.api_key. Since hermes now talks to the plaintext relay, no
+  #     ssl_verify / custom_providers TLS shim is needed. The base_url host must be
+  #     one the relay allows: gate-connect derives X-Gate-Upstream-Url by stripping
+  #     the trailing /v1, and the relay only forwards to upstreams in its built-in
+  #     catalog - so api.openai.com works but openrouter.ai/api (bare host is
+  #     openrouter.ai in the catalog, not openrouter.ai/api) would be rejected 403.
+  #     Guarded on install.
   if command -v hermes >/dev/null 2>&1; then
     mkdir -p "$HOME/.hermes"
-    printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
+    printf 'model:\n  provider: custom\n  base_url: https://api.openai.com/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
       > "$HOME/.hermes/config.yaml"
     export OPENAI_API_KEY="sk-e2e-dummy"
     run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
