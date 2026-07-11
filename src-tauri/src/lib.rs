@@ -125,9 +125,17 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
                 "No upstream Anthropic credential saved. Add one before connecting.".into(),
             );
         }
+        // Auto-enable the proxy so the reverse-proxy relay is live: relay-routed
+        // tool configs point at the loopback relay, which only exists while the
+        // engine runs. Idempotent if the proxy is already on.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager()
+            .enable()
+            .map_err(|e| format!("{e:#}"))?;
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url,
             upstream_url,
+            relay_base_url: gate_connect_core::proxy::relay_base_url(),
         };
         integ.connect(&input).map_err(|e| format!("{e:#}"))?;
         Ok(status_for(integ.as_ref()))
