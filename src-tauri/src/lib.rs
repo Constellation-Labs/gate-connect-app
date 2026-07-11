@@ -199,6 +199,10 @@ struct AccountDto {
     /// the legacy key controls only in API-key mode. Serialized snake_case
     /// (`"api_key"` / `"oauth"`).
     auth_mode: gate_connect_core::account::AuthMode,
+    /// Selected org (OAuth mode), so the UI can show it and route to the picker
+    /// when an OAuth session has no org yet. Both `None` until the user picks.
+    org_id: Option<String>,
+    org_name: Option<String>,
 }
 
 #[tauri::command]
@@ -222,10 +226,16 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     };
     let has_api_key = account::has_api_key().map_err(|e| format!("{e:#}"))?;
     let auth_mode = account::auth_mode().map_err(|e| format!("{e:#}"))?;
+    let (org_id, org_name) = match account::selected_org().map_err(|e| format!("{e:#}"))? {
+        Some((id, name)) => (Some(id), Some(name)),
+        None => (None, None),
+    };
     Ok(Some(AccountDto {
         gateway_base_url,
         has_api_key,
         auth_mode,
+        org_id,
+        org_name,
     }))
 }
 
@@ -438,6 +448,31 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("set auth mode join error: {e}"))?
+}
+
+/// List the orgs the signed-in user may act on (for the org picker). Reads the
+/// current gateway + stored OAuth token and calls the gateway's `/v1/me/orgs`.
+#[tauri::command]
+async fn oauth_list_orgs() -> Result<Vec<gate_connect_core::org::Org>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::org::list_current().map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("list orgs join error: {e}"))?
+}
+
+/// Persist the selected org and push it into a running engine/relay so
+/// `X-Gate-Org-Id` takes effect live (no restart).
+#[tauri::command]
+async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::account::set_org(&org_id, &org_name).map_err(|e| format!("{e:#}"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager().refresh_org(&org_id);
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("set org join error: {e}"))?
 }
 
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
@@ -860,6 +895,8 @@ pub fn run() {
                     oauth_status,
                     oauth_sign_out,
                     set_auth_mode,
+                    oauth_list_orgs,
+                    set_org,
                     app_platform,
                     unpin_popover,
                     open_onboarding_window,
@@ -900,6 +937,8 @@ pub fn run() {
                     oauth_status,
                     oauth_sign_out,
                     set_auth_mode,
+                    oauth_list_orgs,
+                    set_org,
                     app_platform,
                     unpin_popover,
                     open_onboarding_window,
