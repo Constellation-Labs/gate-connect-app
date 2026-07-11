@@ -130,7 +130,7 @@ impl ProxyManager {
 
         // Spawn/connect the daemon and start (or live-update) interception.
         let mut client = HelperClient::connect_or_spawn()?;
-        let port = match client.set_intercept(
+        let bound = match client.set_intercept(
             &account.gateway_base_url,
             &account.api_key,
             &crate::oauth::access_token_for_injection(),
@@ -138,15 +138,19 @@ impl ProxyManager {
             ca.key_pem(),
             &domains,
             preferred_port,
+            crate::proxy::relay::load_persisted_port(),
         ) {
-            Ok(port) => port,
+            Ok(bound) => bound,
             Err(e) => {
                 let _ = system_proxy::clear_snapshot();
                 return Err(e).context("starting proxy interception");
             }
         };
-        // Remember the port for next time (best-effort).
+        let port = bound.port;
+        // Remember the ports for next time (best-effort). The relay port must be
+        // stable too, since CLI tool configs bake http://127.0.0.1:<relay_port>.
         let _ = system_proxy::save_port(port);
+        let _ = crate::proxy::relay::save_persisted_port(bound.relay_port);
 
         // Point the system proxy at the engine. Unprivileged (user drop-in).
         if let Err(e) = system_proxy::enable(port) {
@@ -255,6 +259,7 @@ impl ProxyManager {
                     ca.key_pem(),
                     &domains,
                     system_proxy::load_port().unwrap_or(None),
+                    crate::proxy::relay::load_persisted_port(),
                 );
             }
         }
@@ -283,6 +288,7 @@ impl ProxyManager {
                     ca.key_pem(),
                     &domains,
                     system_proxy::load_port().unwrap_or(None),
+                    crate::proxy::relay::load_persisted_port(),
                 );
             }
         }
@@ -307,6 +313,7 @@ impl ProxyManager {
             ca.key_pem(),
             domains,
             system_proxy::load_port().unwrap_or(None),
+            crate::proxy::relay::load_persisted_port(),
         ) {
             eprintln!("gate proxy: live domain update failed: {e}");
         }

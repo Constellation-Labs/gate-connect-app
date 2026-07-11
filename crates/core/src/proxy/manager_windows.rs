@@ -112,9 +112,9 @@ impl ProxyManager {
                 // at its own launch must keep serving a fresh PAC, or its
                 // fetch fails and it falls back to DIRECT, bypassing Gate.
                 preferred_pac_port: system_proxy::load_pac_port().unwrap_or(None),
-                // TODO(relay stable port): reuse a persisted relay port so CLI
-                // tool configs stay valid across restarts.
-                preferred_relay_port: None,
+                // Reuse the persisted relay port so CLI tool configs (which bake
+                // http://127.0.0.1:<port>) stay valid across restarts.
+                preferred_relay_port: crate::proxy::relay::load_persisted_port(),
                 // Per-user UID gating is a Linux concern; unused on Windows.
                 owner_uid: None,
                 // Keep any pre-existing proxy as the PAC fallback so non-Gate
@@ -129,6 +129,9 @@ impl ProxyManager {
         // Remember the ports for next time (best-effort).
         let _ = system_proxy::save_port(running.port());
         let _ = system_proxy::save_pac_port(running.pac_port());
+        // Remember the relay port so the next run rebinds it and baked CLI
+        // configs stay valid (best-effort).
+        let _ = crate::proxy::relay::save_persisted_port(running.relay_port());
 
         let pac_url = format!("http://127.0.0.1:{}/proxy.pac", running.pac_port());
 
