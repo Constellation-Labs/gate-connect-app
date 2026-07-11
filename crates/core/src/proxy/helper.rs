@@ -246,6 +246,10 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                             // No PAC on Linux (env-var proxies wire clients
                             // straight at the engine port).
                             preferred_pac_port: None,
+                            // TODO(relay stable port): thread a preferred relay
+                            // port through the control protocol so CLI configs
+                            // stay valid across restarts on Linux.
+                            preferred_relay_port: None,
                             // The daemon runs as the owner; only intercept this
                             // user's own traffic. SAFETY: geteuid never fails.
                             owner_uid: Some(unsafe { libc::geteuid() }),

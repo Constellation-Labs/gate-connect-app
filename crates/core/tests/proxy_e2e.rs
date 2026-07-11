@@ -159,6 +159,7 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
             ca_key_pem,
             preferred_port: None,
             preferred_pac_port: None,
+            preferred_relay_port: None,
             owner_uid: None,
             upstream_proxy: None,
         },
@@ -232,11 +233,13 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
         EngineConfig {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
+            oauth_token: String::new(), // legacy API-key path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
             preferred_port: None,
             preferred_pac_port: None,
+            preferred_relay_port: None,
             owner_uid: None,
             upstream_proxy: None,
         },
@@ -352,6 +355,7 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
             ca_key_pem,
             preferred_port: None,
             preferred_pac_port: None,
+            preferred_relay_port: None,
             owner_uid: None,
             upstream_proxy: None,
         },
@@ -429,11 +433,13 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     let config = |preferred_port: Option<u16>| EngineConfig {
         gateway_base_url: gateway.base_url.clone(),
         api_key: "sk-gw-test".into(),
+        oauth_token: String::new(), // legacy API-key path
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
         preferred_port,
         preferred_pac_port: None,
+        preferred_relay_port: None,
         owner_uid: None,
         upstream_proxy: None,
     };
