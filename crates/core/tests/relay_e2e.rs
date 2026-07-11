@@ -108,13 +108,14 @@ fn mint_ca() -> (String, String) {
     (cert.pem(), key.serialize_pem())
 }
 
-fn boot_engine(gateway_base_url: String, oauth_token: &str) -> engine::RunningEngine {
+fn boot_engine(gateway_base_url: String, oauth_token: &str, org_id: &str) -> engine::RunningEngine {
     let (ca_cert_pem, ca_key_pem) = mint_ca();
     engine::start(
         EngineConfig {
             gateway_base_url,
             api_key: "sk-gw-test".into(),
             oauth_token: oauth_token.into(),
+            org_id: org_id.into(),
             domains: default_domains(),
             ca_cert_pem,
             ca_key_pem,
@@ -134,7 +135,11 @@ fn boot_engine(gateway_base_url: String, oauth_token: &str) -> engine::RunningEn
 #[tokio::test]
 async fn relay_injects_oauth_token_and_forwards_to_gateway() {
     let gateway = start_mock_gateway().await;
-    let engine = boot_engine(gateway.base_url.clone(), "cognito-access-token");
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
 
     let client = reqwest::Client::builder().build().unwrap();
     let resp = client
@@ -170,6 +175,11 @@ async fn relay_injects_oauth_token_and_forwards_to_gateway() {
         Some("Bearer cognito-access-token")
     );
     assert_eq!(
+        r.header("x-gate-org-id"),
+        Some("org-uuid-1"),
+        "the selected org must ride alongside the OAuth token"
+    );
+    assert_eq!(
         r.header("x-gate-api-key"),
         None,
         "the API key must not be sent when an OAuth token is present"
@@ -189,7 +199,7 @@ async fn relay_injects_oauth_token_and_forwards_to_gateway() {
 #[tokio::test]
 async fn relay_falls_back_to_api_key_when_no_token() {
     let gateway = start_mock_gateway().await;
-    let engine = boot_engine(gateway.base_url.clone(), "");
+    let engine = boot_engine(gateway.base_url.clone(), "", "");
 
     let client = reqwest::Client::builder().build().unwrap();
     let resp = client
@@ -222,7 +232,7 @@ async fn relay_falls_back_to_api_key_when_no_token() {
 #[tokio::test]
 async fn relay_hot_swaps_a_refreshed_token() {
     let gateway = start_mock_gateway().await;
-    let engine = boot_engine(gateway.base_url.clone(), "first-token");
+    let engine = boot_engine(gateway.base_url.clone(), "first-token", "org-uuid-1");
 
     engine.update_token("second-token");
 
@@ -254,7 +264,11 @@ async fn relay_hot_swaps_a_refreshed_token() {
 #[tokio::test]
 async fn relay_rejects_unknown_upstream() {
     let gateway = start_mock_gateway().await;
-    let engine = boot_engine(gateway.base_url.clone(), "cognito-access-token");
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
 
     let client = reqwest::Client::builder().build().unwrap();
     let resp = client

@@ -55,6 +55,13 @@ struct AccountFile {
     /// as `ApiKey`, preserving the legacy behavior.
     #[serde(default)]
     auth_mode: AuthMode,
+    /// Selected organization (OAuth mode only). `org_id` is the UUID injected
+    /// on `X-Gate-Org-Id`; `org_name` is cached for display. Non-secret. Absent
+    /// until the user picks an org after signing in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    org_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    org_name: Option<String>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -132,11 +139,17 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         Some(key) => Some(key.chars().take(12).collect()),
         None => existing.as_ref().and_then(|f| f.api_key_prefix.clone()),
     };
-    let auth_mode = existing.map(|f| f.auth_mode).unwrap_or_default();
+    // Preserve the auth mode and selected org - both are chosen via their own
+    // setters, not by saving a URL/key.
+    let auth_mode = existing.as_ref().map(|f| f.auth_mode).unwrap_or_default();
+    let org_id = existing.as_ref().and_then(|f| f.org_id.clone());
+    let org_name = existing.and_then(|f| f.org_name.clone());
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix,
         auth_mode,
+        org_id,
+        org_name,
     })?;
 
     if let Some(key) = api_key {
@@ -167,13 +180,50 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     let auth_mode = read_account_file()?
         .map(|f| f.auth_mode)
         .unwrap_or_default();
-    // The stored prefix named the key we just deleted, so drop it too.
+    // The stored prefix named the key we just deleted, so drop it too. The org
+    // is environment-specific, so a gateway switch clears it - the user re-picks
+    // against the new environment after re-authenticating.
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix: None,
         auth_mode,
+        org_id: None,
+        org_name: None,
     })?;
     Ok(())
+}
+
+/// Persist the selected organization (OAuth mode). `org_id` is the UUID
+/// injected on `X-Gate-Org-Id`; `org_name` is cached for display. Requires an
+/// existing `account.json`.
+pub fn set_org(org_id: &str, org_name: &str) -> Result<()> {
+    let mut file = read_account_file()?.context("no account configured")?;
+    file.org_id = Some(org_id.to_string());
+    file.org_name = Some(org_name.to_string());
+    write_account_file(&file)
+}
+
+/// The currently selected `(org_id, org_name)`, or `None` if the user hasn't
+/// picked one yet. Cheap disk read; never touches the keychain.
+pub fn selected_org() -> Result<Option<(String, String)>> {
+    Ok(
+        read_account_file()?.and_then(|f| match (f.org_id, f.org_name) {
+            (Some(id), Some(name)) => Some((id, name)),
+            (Some(id), None) => Some((id.clone(), id)),
+            _ => None,
+        }),
+    )
+}
+
+/// The org id to inject on `X-Gate-Org-Id` right now, or an empty string when
+/// none is selected. The single source of truth the proxy managers seed the
+/// engine/relay from (mirrors [`crate::oauth::access_token_for_injection`]).
+pub fn org_id_for_injection() -> String {
+    read_account_file()
+        .ok()
+        .flatten()
+        .and_then(|f| f.org_id)
+        .unwrap_or_default()
 }
 
 /// Switch the persisted auth mode, preserving the base URL and key prefix. The

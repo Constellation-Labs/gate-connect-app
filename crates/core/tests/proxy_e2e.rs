@@ -127,6 +127,7 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(), // legacy API-key path
+            org_id: String::new(),      // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -209,8 +210,10 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
             // Exercises the OAuth path end-to-end: a stored token is injected
-            // as x-gate-authorization instead of the API key.
+            // as x-gate-authorization instead of the API key, with the selected
+            // org on x-gate-org-id.
             oauth_token: "cognito-access-token".into(),
+            org_id: "org-uuid-1".into(),
             domains,
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -263,6 +266,11 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
     assert_eq!(
         r.header("x-gate-authorization"),
         Some("Bearer cognito-access-token")
+    );
+    assert_eq!(
+        r.header("x-gate-org-id"),
+        Some("org-uuid-1"),
+        "the selected org must ride alongside the OAuth token"
     );
     assert_eq!(
         r.header("x-gate-api-key"),

@@ -207,6 +207,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
             gateway_base_url,
             api_key,
             oauth_token,
+            org_id,
             ca_cert_pem,
             ca_key_pem,
             domains,
@@ -228,6 +229,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                 Some(running) => {
                     running.update_api_key(&api_key);
                     running.update_token(&oauth_token);
+                    running.update_org(&org_id);
                     running.update_domains(&domains);
                     Response::Intercepting {
                         port: running.port(),
@@ -240,6 +242,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                             gateway_base_url,
                             api_key,
                             oauth_token,
+                            org_id,
                             domains,
                             ca_cert_pem,
                             ca_key_pem,

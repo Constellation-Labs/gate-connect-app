@@ -119,6 +119,9 @@ pub enum Request {
         /// Cognito access token to inject instead of the API key; empty means
         /// fall back to the API key.
         oauth_token: String,
+        /// Selected org UUID, injected as `X-Gate-Org-Id` alongside the OAuth
+        /// token; empty means none selected.
+        org_id: String,
         ca_cert_pem: String,
         ca_key_pem: String,
         domains: Vec<ProxyDomain>,
