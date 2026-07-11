@@ -365,6 +365,17 @@ if command -v opencode >/dev/null 2>&1; then
   OPENCODE_MODEL=$(opencode models | grep '^anthropic/' | grep -v -- '-latest$' | sort | head -n1)
 fi
 
+# Same idea for OpenClaw: its catalog id drifts, so pick a current anthropic one
+# from `openclaw infer model list` (JSON lines) rather than pinning. The request
+# reaches the relay regardless of whether the id is "real" (the mock 200s), but a
+# catalog id keeps openclaw from bailing before it sends.
+OPENCLAW_MODEL=""
+if command -v openclaw >/dev/null 2>&1; then
+  OPENCLAW_MODEL=$(openclaw infer model list 2>/dev/null \
+    | grep '"provider":"anthropic"' | grep -v -- '-latest"' \
+    | head -n1 | sed -E 's/.*"id":"([^"]+)".*/\1/')
+fi
+
 # Run every installed tool against the relay and assert the given auth mode's
 # Gate headers reached the mock gateway. The tool config is mode-independent (it
 # just points at the relay); the relay injects the differing credential.
@@ -410,18 +421,23 @@ run_all_tools() {
 
   # --- OpenClaw: multi-provider, like OpenCode. gate-connect rewrites the
   #     anthropic provider's baseUrl in ~/.openclaw/openclaw.json to the relay →
-  #     POSTs /v1/messages. We seed a minimal anthropic provider block:
-  #     gate-connect detects OpenClaw off the config dir existing, and needs a
-  #     supported provider (anthropic/openai/openrouter) under models.providers to
-  #     have something to route. Guarded on install.
-  if command -v openclaw >/dev/null 2>&1; then
+  #     POSTs /v1/messages. We seed a minimal anthropic provider block (with a
+  #     dummy apiKey so openclaw actually fires the call): gate-connect detects
+  #     OpenClaw off the config dir existing, and needs a supported provider
+  #     (anthropic/openai/openrouter) under models.providers to have something to
+  #     route. `infer model run --local` runs one turn straight through the
+  #     provider baseUrl (not the openclaw gateway daemon, which isn't running
+  #     here). Guarded on install + a resolved catalog model.
+  if ! command -v openclaw >/dev/null 2>&1; then
+    echo "::notice::skipping openclaw - CLI not installed on this runner"
+  elif [ -z "$OPENCLAW_MODEL" ]; then
+    echo "::notice::skipping openclaw - no anthropic model listed in the catalog"
+  else
     mkdir -p "$HOME/.openclaw"
-    printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1"}}}}' \
+    printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1","apiKey":"sk-ant-e2e-dummy"}}}}' \
       > "$HOME/.openclaw/openclaw.json"
     run_tool "openclaw" "openclaw" "/v1/messages" "$mode" -- \
-      openclaw message "ping"
-  else
-    echo "::notice::skipping openclaw - CLI not installed on this runner"
+      openclaw infer model run --local --model "anthropic/$OPENCLAW_MODEL" --prompt "ping"
   fi
 
   # --- Hermes: Python OpenAI-compatible agent. gate-connect rewrites
