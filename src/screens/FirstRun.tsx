@@ -106,7 +106,8 @@ export function FirstRun({
         </p>
       )}
 
-      {!showKey ? (
+      {!reauth &&
+        (!showKey ? (
         <div className="mt-4 flex justify-center">
           <button
             type="button"
@@ -119,8 +120,13 @@ export function FirstRun({
       ) : (
         <div className="mt-5">
           <div className="mb-1.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
-            Gate API Key <span className="text-gc-ink-5">(legacy)</span>
+            Gate API Key
           </div>
+          <p className="mb-2 text-[11px] leading-snug text-gc-ink-4">
+            Best for CI or headless machines where browser sign-in isn't
+            practical. Otherwise, sign in with Constellation - nothing to
+            paste, and it refreshes on its own.
+          </p>
           <Input
             leadingIcon={<Icon name="key" size={14} />}
             placeholder="sk-gw-…"
@@ -149,7 +155,7 @@ export function FirstRun({
             {submitting ? "Connecting…" : "Connect with key"}
           </Button>
         </div>
-      )}
+      ))}
 
       {error && (
         <p className="mt-3 text-[11.5px] leading-snug text-gc-error">{error}</p>
