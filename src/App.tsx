@@ -12,6 +12,7 @@ import {
   switchGateway,
   oauthStatus,
   oauthSignOut,
+  oauthBeginLogin,
   proxyStatus,
   proxyEnable,
   proxyDisable,
@@ -402,6 +403,14 @@ export function App() {
     }
   }, [proxyBusy]);
 
+  // Legacy key accounts can switch to Constellation sign-in from Settings; the
+  // OAuth flow flips auth_mode to OAuth on success, then onConnected routes to
+  // the org picker.
+  const upgradeToOAuth = useCallback(async () => {
+    await oauthBeginLogin();
+    await onConnected();
+  }, [onConnected]);
+
   const replaceKey = useCallback(
     async (key: string) => {
       const base = account?.gateway_base_url;
@@ -522,6 +531,7 @@ export function App() {
         oauth={oauth}
         onBack={() => setScreen("home")}
         onReplaceKey={replaceKey}
+        onUpgradeToOAuth={upgradeToOAuth}
         onDisconnect={disconnect}
         onSignOut={signOut}
         onSwitchOrg={switchOrg}
