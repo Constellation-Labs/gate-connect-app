@@ -23,6 +23,7 @@ export function Settings({
   oauth,
   onBack,
   onReplaceKey,
+  onUpgradeToOAuth,
   onDisconnect,
   onSignOut,
   onSwitchOrg,
@@ -37,6 +38,7 @@ export function Settings({
   oauth: OAuthStatus | null;
   onBack: () => void;
   onReplaceKey: (key: string) => Promise<void>;
+  onUpgradeToOAuth: () => Promise<void>;
   onDisconnect: () => Promise<void>;
   onSignOut: () => Promise<void>;
   onSwitchOrg: () => void;
@@ -56,6 +58,7 @@ export function Settings({
   const [newKey, setNewKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [upgrading, setUpgrading] = useState(false);
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
   const [laLoaded, setLaLoaded] = useState(false);
   // The launch-at-login toggle is off but the OS login item is still
@@ -219,6 +222,18 @@ export function Settings({
     }
   }
 
+  async function handleUpgrade() {
+    setError(null);
+    setUpgrading(true);
+    try {
+      await onUpgradeToOAuth();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "sign_in");
+      setUpgrading(false);
+    }
+  }
+
   return (
     <div className="flex grow flex-col">
       <SubHeader title="Settings" onBack={onBack} />
@@ -307,6 +322,23 @@ export function Settings({
 
       {!isOAuth && (
         <>
+      <SectionLabel>Sign in with Constellation</SectionLabel>
+      <div className="mb-4 px-3.5">
+        <p className="mb-2.5 text-[12px] leading-snug text-gc-ink-3">
+          Switch to Constellation sign-in and there's nothing to paste or
+          rotate - your session lives in the keychain and refreshes on its
+          own. You can switch back to an API key anytime.
+        </p>
+        <Button variant="accent" full disabled={upgrading} onClick={handleUpgrade}>
+          <Icon name="shieldCheck" size={15} />
+          {upgrading ? "Waiting for browser…" : "Sign in with Constellation"}
+        </Button>
+        {upgrading && (
+          <p className="mt-2 text-[11px] leading-snug text-gc-ink-4">
+            Finish signing in on the page that opened in your browser.
+          </p>
+        )}
+      </div>
       <SectionLabel>Gate API Key</SectionLabel>
       <div className="px-3.5">
         {!replacing ? (
