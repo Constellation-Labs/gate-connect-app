@@ -11,6 +11,11 @@
 //! This is a change detector, not a security boundary - the control socket's
 //! UID and token checks remain the access control - so a hand-rolled FNV-1a
 //! keeps the build script dependency-free.
+//!
+//! Also makes the `option_env!`-baked Cognito OAuth config (see `src/oauth.rs`)
+//! cache-correct. Cargo does not track env vars read via `option_env!`, so
+//! without declaring them a restored `target/` can mask a changed value and
+//! ship a stale (or absent) bake.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +23,14 @@ use std::path::{Path, PathBuf};
 fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
+
+    for var in [
+        "GATE_COGNITO_HOSTED_DOMAIN",
+        "GATE_COGNITO_CLIENT_ID",
+        "GATE_COGNITO_SCOPES",
+    ] {
+        println!("cargo:rerun-if-env-changed={var}");
+    }
 
     let mut files = Vec::new();
     collect_rs_files(Path::new("src"), &mut files);
