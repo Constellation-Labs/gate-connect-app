@@ -143,7 +143,7 @@ pub struct AuthorizationRequest {
 }
 
 /// Build the Hosted UI authorize URL for a fresh login. `redirect_uri` is
-/// the loopback callback the listener bound (`http://127.0.0.1:<port>/callback`).
+/// the loopback callback the listener bound (`http://localhost:<port>/callback`).
 pub fn begin_login(cfg: &OAuthConfig, redirect_uri: &str) -> Result<AuthorizationRequest> {
     let pkce = generate_pkce();
     let state = random_b64url();
@@ -366,7 +366,7 @@ pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
 
 /// Loopback ports the app tries, in order, for the OAuth redirect. Cognito
 /// requires an exact callback-URL match, so **these must be registered as
-/// allowed callback URLs on the app client** (`http://127.0.0.1:<port>/callback`).
+/// allowed callback URLs on the app client** (`http://localhost:<port>/callback`).
 /// Tests pass `&[0]` to bind an ephemeral port instead.
 pub const REDIRECT_PORTS: &[u16] = &[8977, 8978, 8979];
 
@@ -388,7 +388,7 @@ const ERROR_HTML: &str = "<!doctype html><meta charset=utf-8><title>Sign-in fail
 /// `redirect_uri` must be passed to [`begin_login`] and [`complete_login`]
 /// unchanged.
 pub struct LoopbackListener {
-    listener: std::net::TcpListener,
+    listeners: Vec<std::net::TcpListener>,
     redirect_uri: String,
 }
 
@@ -397,16 +397,27 @@ impl LoopbackListener {
     /// [`REDIRECT_PORTS`] in production or `&[0]` for an ephemeral test port.
     pub fn bind(candidate_ports: &[u16]) -> Result<Self> {
         for &port in candidate_ports {
-            if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
-                let bound = listener
-                    .local_addr()
-                    .context("reading loopback listener address")?
-                    .port();
-                return Ok(Self {
-                    listener,
-                    redirect_uri: format!("http://127.0.0.1:{bound}/callback"),
-                });
+            // Bind IPv4 loopback first; it pins the concrete port (which
+            // matters for the `0` ephemeral case) that the IPv6 bind reuses.
+            let Ok(v4) = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) else {
+                continue;
+            };
+            let bound = v4
+                .local_addr()
+                .context("reading loopback listener address")?
+                .port();
+            // The redirect URI advertises `localhost` (the only host Cognito
+            // accepts over http), so the browser may connect over either IP
+            // family. Also accept IPv6 loopback so the callback lands whichever
+            // one `localhost` resolves to; best-effort, since a host may lack `::1`.
+            let mut listeners = vec![v4];
+            if let Ok(v6) = std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, bound)) {
+                listeners.push(v6);
             }
+            return Ok(Self {
+                listeners,
+                redirect_uri: format!("http://localhost:{bound}/callback"),
+            });
         }
         bail!("no loopback callback port available (tried {candidate_ports:?})");
     }
@@ -422,24 +433,27 @@ impl LoopbackListener {
         expected_state: &str,
         timeout: std::time::Duration,
     ) -> Result<String> {
-        self.listener
-            .set_nonblocking(true)
-            .context("setting loopback listener non-blocking")?;
+        for listener in &self.listeners {
+            listener
+                .set_nonblocking(true)
+                .context("setting loopback listener non-blocking")?;
+        }
         let deadline = std::time::Instant::now() + timeout;
         loop {
-            match self.listener.accept() {
-                Ok((stream, _)) => match self.handle_callback(stream, expected_state)? {
-                    Some(code) => return Ok(code),
-                    None => continue, // not the callback (favicon, etc.)
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() >= deadline {
-                        bail!("timed out waiting for the login redirect");
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+            for listener in &self.listeners {
+                match listener.accept() {
+                    Ok((stream, _)) => match self.handle_callback(stream, expected_state)? {
+                        Some(code) => return Ok(code),
+                        None => {} // not the callback (favicon, etc.); keep polling
+                    },
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => return Err(e).context("accepting loopback callback"),
                 }
-                Err(e) => return Err(e).context("accepting loopback callback"),
             }
+            if std::time::Instant::now() >= deadline {
+                bail!("timed out waiting for the login redirect");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
@@ -476,7 +490,7 @@ impl LoopbackListener {
             .next()
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or("");
-        let url = reqwest::Url::parse(&format!("http://127.0.0.1{target}"))
+        let url = reqwest::Url::parse(&format!("http://localhost{target}"))
             .context("parsing loopback callback URL")?;
         if url.path() != "/callback" {
             let _ = write_http(&mut stream, "404 Not Found", "");
@@ -567,14 +581,14 @@ mod tests {
 
     #[test]
     fn authorize_url_carries_pkce_and_flow_params() {
-        let req = begin_login(&cfg(), "http://127.0.0.1:52847/callback").unwrap();
+        let req = begin_login(&cfg(), "http://localhost:52847/callback").unwrap();
         let url = reqwest::Url::parse(&req.authorize_url).unwrap();
         assert_eq!(url.host_str(), Some("auth.example.test"));
         assert_eq!(url.path(), "/oauth2/authorize");
         let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(q["response_type"], "code");
         assert_eq!(q["client_id"], "client123");
-        assert_eq!(q["redirect_uri"], "http://127.0.0.1:52847/callback");
+        assert_eq!(q["redirect_uri"], "http://localhost:52847/callback");
         assert_eq!(q["scope"], "openid email");
         assert_eq!(q["code_challenge_method"], "S256");
         assert_eq!(q["state"], req.state);
