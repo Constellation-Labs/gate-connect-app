@@ -102,8 +102,8 @@ export function ProxyScreen({
         <div className="mx-3.5 mb-1 flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
           <Icon name="info" size={15} className="shrink-0 text-gc-ink-3" />
           <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
-            Apps already running won’t route through Gate. Log out and back in,
-            then reopen them so they pick up the proxy at launch.
+            Apps already running won’t route through Gate. Reopen them and
+            they’ll pick up the proxy at launch.
           </div>
         </div>
       )}

@@ -407,6 +407,8 @@ export function App() {
         providerCount={providerCount}
         showProxy={showProxy}
         error={providerError}
+        restartHint={restartHint}
+        relaunchHint={relaunchHint}
         onOpenProxy={() => setScreen("proxy")}
         onToggleProxy={toggleProxy}
         onOpenDirectGateway={() => setScreen("coming-soon")}
