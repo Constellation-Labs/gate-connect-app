@@ -108,9 +108,7 @@ impl HelperClient {
             CONTROL_TIMEOUT,
         ) {
             Ok(Response::Hello { ok: false, .. }) => anyhow::bail!("control token rejected"),
-            Ok(Response::Hello { ok: true, version })
-                if version == control::PROTOCOL_VERSION =>
-            {
+            Ok(Response::Hello { ok: true, version }) if version == control::PROTOCOL_VERSION => {
                 Ok(client)
             }
             // Authenticated, but the daemon reports a different protocol version
