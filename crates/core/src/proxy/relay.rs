@@ -265,7 +265,10 @@ pub fn serve() -> Result<()> {
         // block forever hosting the relay.
         let cfg = crate::oauth::OAuthConfig::from_build_env();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(
+                crate::oauth::REFRESH_INTERVAL_SECS,
+            ))
+            .await;
             if let Some(cfg) = cfg.as_ref() {
                 let _ = crate::oauth::ensure_fresh(cfg);
             }

@@ -1067,6 +1067,39 @@ pub fn run() {
                 });
             }
 
+            // Keep the Cognito access token fresh for the whole session. The
+            // engine (and its embedded relay) seed the token once at enable()
+            // and only re-read it on login / sign-out, so without this a
+            // long-lived session would keep injecting the access token past its
+            // ~1h expiry and the gateway would start rejecting traffic until the
+            // next launch. Mirror the standalone CLI relay's silent-refresh
+            // loop: every 30s, refresh if near expiry and push the live token
+            // into a running engine (a no-op when routing is off). Never opens
+            // the browser - a failed refresh just lets the token lapse to the
+            // "sign in" state the UI derives from oauth_status. Best-effort, off
+            // the tray thread.
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            std::thread::spawn(|| {
+                let cfg = gate_connect_core::oauth::OAuthConfig::from_build_env();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(
+                        gate_connect_core::oauth::REFRESH_INTERVAL_SECS,
+                    ));
+                    if gate_connect_core::account::auth_mode().unwrap_or_default()
+                        != gate_connect_core::account::AuthMode::OAuth
+                    {
+                        continue;
+                    }
+                    if let Some(cfg) = cfg.as_ref() {
+                        if let Err(e) = gate_connect_core::oauth::ensure_fresh(cfg) {
+                            eprintln!("[gate] periodic OAuth token refresh failed: {e}");
+                        }
+                    }
+                    gate_connect_core::proxy::manager()
+                        .refresh_token(&gate_connect_core::oauth::access_token_for_injection());
+                }
+            });
+
             // Linux dismisses the popover by minimizing (see the Focused(false)
             // handler), so it needs a taskbar/dock entry to restore from -
             // override the config's skipTaskbar:true here. macOS hides from the

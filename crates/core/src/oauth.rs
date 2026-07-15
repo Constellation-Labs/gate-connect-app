@@ -35,6 +35,11 @@ const KEYCHAIN_LABEL: &str = "oauth-tokens";
 /// cover clock skew and requests already in flight.
 const EXPIRY_SKEW_SECS: i64 = 60;
 
+/// How often the silent-refresh drivers poll to keep the access token fresh -
+/// the standalone CLI relay ([`crate::proxy::relay`]) and the desktop app's
+/// background loop both tick on this interval, calling [`ensure_fresh`].
+pub const REFRESH_INTERVAL_SECS: u64 = 30;
+
 /// Static, build-time OAuth client configuration. Baked per environment the
 /// same way the gateway base URL is (`VITE_GATE_DEFAULT_BASE_URL`): set
 /// `GATE_COGNITO_HOSTED_DOMAIN`, `GATE_COGNITO_CLIENT_ID`, and
