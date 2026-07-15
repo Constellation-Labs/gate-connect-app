@@ -6,10 +6,10 @@ legacy fallback). To do that it needs a dedicated Cognito **app client** in the
 same user pool Gate uses.
 
 That client is created **out-of-band** (not managed by Gate's Terraform). Gate's
-Terraform consumes its id through the `cognito_connect_client_id` variable:
+Terraform consumes its id through the `cognito_desktop_client_id` variable:
 
-- `variables.tf` declares `cognito_connect_client_id`
-- `security.tf` sets `local.cognito.connect_client_id = var.cognito_connect_client_id`
+- `variables.tf` declares `cognito_desktop_client_id`
+- `security.tf` sets `local.cognito.connect_client_id = var.cognito_desktop_client_id`
 - `compute.tf` puts it in the gateway env:
   `GATEWAY_COGNITO_CLIENT_IDS = join(",", compact([client_id, connect_client_id]))`
 - each env's tfvars supplies the value (see `staging.tfvars.example`)
@@ -128,8 +128,15 @@ aws cognito-idp create-managed-login-branding \
 
 Record the **ManagedLoginBrandingId**. At this point the Hosted UI renders with
 Cognito's stock look. To make it read as Gate, apply the `cg` brand palette and
-logo. Export the settings, edit them (or use the Console's Managed Login
-designer, which is easier and previews live), then update.
+logo below.
+
+> **Trap: do not export the settings from a `--use-cognito-provided-values`
+> branding and edit them.** That baseline stores **no** settings document, so
+> `describe-managed-login-branding ... --query 'ManagedLoginBranding.Settings'`
+> returns `null`. Feeding `null` back with `--no-use-cognito-provided-values`
+> makes `update-managed-login-branding` fail with a 500
+> (`InternalErrorException`), because Cognito has an empty branding to render.
+> You need a complete, valid settings document first (next paragraph).
 
 Brand values (resolved from `gate/packages/frontend-ui/src/cg/tokens.css`):
 
@@ -147,34 +154,64 @@ Brand values (resolved from `gate/packages/frontend-ui/src/cg/tokens.css`):
 Note: Managed Login offers only a curated font list, so the type is a near-match
 to Geist, not literal Geist.
 
-Export, edit, apply:
+### Applying the brand (Console designer, recommended)
+
+Author the style in the **Console Managed Login designer**, which generates a
+valid settings document, handles the logo upload, and previews live. Do not
+hand-author the settings JSON; that is what triggers the 500 above.
+
+1. Cognito, your user pool, **Managed login**, edit the style for the
+   `gate-connect-desktop` client.
+2. Apply the palette in the table, set **LIGHT** mode, and upload
+   `docs/cognito/logo-light.png` as the form logo (enable the logo toggle).
+3. Save and publish.
+
+### Making it reproducible (optional, CLI)
+
+Once the designer style exists, its settings are real (not `null`), so you can
+export them and vendor them for repeatable applies in other environments:
 
 ```bash
 aws cognito-idp describe-managed-login-branding \
   --user-pool-id us-east-1_GPcJkAGzM --managed-login-branding-id <ID> \
-  --region us-east-1 --no-cli-pager --query 'ManagedLoginBranding.Settings' > branding.json
-# edit branding.json: apply the palette above, LIGHT mode, enable the form logo
+  --region us-east-1 --no-cli-pager --query 'ManagedLoginBranding.Settings' \
+  > docs/cognito/connect-branding-settings.json
 
+# re-apply (e.g. in another env), run from the repo root:
 aws cognito-idp update-managed-login-branding \
-  --user-pool-id us-east-1_GPcJkAGzM --managed-login-branding-id <ID> \
-  --settings file://branding.json \
-  --assets file://connect-branding-assets.json \
+  --user-pool-id <POOL_ID> --managed-login-branding-id <ID> \
+  --settings file://docs/cognito/connect-branding-settings.json \
+  --assets file://docs/cognito/connect-branding-assets.json \
   --no-use-cognito-provided-values \
-  --region us-east-1 --no-cli-pager
+  --region <REGION> --no-cli-pager
 ```
+
+> **Always send `--assets` together with `--settings`.** `update-managed-login-branding`
+> replaces the branding with exactly what you pass, so a settings-only update
+> (a quick color tweak) silently drops the logo. Keep both files on every apply,
+> and validate the settings JSON first
+> (`python3 -m json.tool docs/cognito/connect-branding-settings.json > /dev/null`)
+> so a broken edit fails locally instead of as an opaque 500.
 
 ### Logo asset
 
-Use the `cg` brand lockup `gate/packages/frontend-ui/src/cg/layout/brand/logo-light.png`
-(the dark lockup, for light surfaces). Encode it into a Cognito assets file:
+The logo is vendored in this repo so the branding is reproducible without
+reaching into the Gate repo:
+
+- `docs/cognito/logo-light.png` - the `cg` brand lockup (dark, for light
+  surfaces), copied from `gate/packages/frontend-ui/src/cg/layout/brand/logo-light.png`
+- `docs/cognito/connect-branding-assets.json` - that PNG encoded as a Cognito
+  `FORM_LOGO` / `LIGHT` / `PNG` asset, which the `update-managed-login-branding`
+  command above consumes directly
+
+Regenerate the assets file if the logo changes:
 
 ```bash
 python3 - <<'PY'
 import base64, json
-src = "<path-to-gate>/packages/frontend-ui/src/cg/layout/brand/logo-light.png"
-b64 = base64.b64encode(open(src, "rb").read()).decode()
+b64 = base64.b64encode(open("docs/cognito/logo-light.png", "rb").read()).decode()
 assets = [{"Category": "FORM_LOGO", "ColorMode": "LIGHT", "Extension": "PNG", "Bytes": b64}]
-open("connect-branding-assets.json", "w").write(json.dumps(assets))
+open("docs/cognito/connect-branding-assets.json", "w").write(json.dumps(assets))
 PY
 ```
 
