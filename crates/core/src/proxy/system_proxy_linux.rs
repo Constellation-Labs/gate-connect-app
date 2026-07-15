@@ -17,10 +17,16 @@
 //!
 //! `systemd --user` reads `environment.d` at login and applies it to the
 //! graphical session, so the variables reach GUI apps started afterwards *and*
-//! command-line shells spawned from the session. Like `/etc/environment` before
-//! it, this only affects **new** sessions - already-running shells keep their
-//! environment until restarted. Known limitation: pure non-systemd sessions
-//! (rare on modern Ubuntu/GNOME) don't read `environment.d`.
+//! command-line shells spawned from the session. On its own that only affects
+//! **new** login sessions, which would force a logout. To avoid that, enabling
+//! also pushes the same variables into the *running* session via
+//! `dbus-update-activation-environment --systemd`, which updates the D-Bus
+//! activation environment and the `systemd --user` manager that modern desktops
+//! use to launch apps - so a tool relaunched after enabling picks up the proxy
+//! immediately, no logout. That push is best-effort: with no session bus, or on
+//! a pure non-systemd session (rare on modern Ubuntu/GNOME), it's a no-op and
+//! the drop-in still applies at the next login. Either way, already-running
+//! processes keep their environment until relaunched - nothing can change that.
 //!
 //! Pairs with a *stable* engine port (persisted via [`load_port`]/[`save_port`]):
 //! a session freezes the proxy pointer at login, so the engine must come back on
@@ -105,25 +111,82 @@ fn dropin_present() -> Result<bool> {
     Ok(dropin_path()?.exists())
 }
 
-/// Build the drop-in contents pointing at `127.0.0.1:port`. systemd
-/// `environment.d` parses `KEY=VALUE` lines (not shell), so a value may contain
-/// spaces; we double-quote the CA path anyway for clarity and to stay safe if a
-/// consumer ever sources it more strictly.
-fn build_dropin(port: u16) -> Result<String> {
+/// The proxy-related environment variables we manage, in a stable order.
+/// Enabling sets them (drop-in + live push); disabling blanks them in the
+/// running session. Single source of truth so the two paths can't drift.
+const PROXY_VARS: [&str; 7] = [
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+];
+
+/// The name/value pairs for an *enabled* proxy pointing at `127.0.0.1:port`,
+/// keyed by [`PROXY_VARS`]. Consumed by both [`build_dropin`] and the live
+/// session push in [`enable`].
+fn proxy_env(port: u16) -> Result<Vec<(&'static str, String)>> {
     let endpoint = format!("http://127.0.0.1:{port}");
-    let no_proxy = "localhost,127.0.0.1,::1";
-    let ca = ca_cert_path()?;
-    Ok(format!(
-        "# Managed by Gate Connect - do not edit. Removed when the proxy is off.\n\
-         http_proxy={endpoint}\n\
-         https_proxy={endpoint}\n\
-         HTTP_PROXY={endpoint}\n\
-         HTTPS_PROXY={endpoint}\n\
-         no_proxy={no_proxy}\n\
-         NO_PROXY={no_proxy}\n\
-         NODE_EXTRA_CA_CERTS=\"{ca}\"\n",
-        ca = ca.display(),
-    ))
+    let no_proxy = "localhost,127.0.0.1,::1".to_string();
+    let ca = ca_cert_path()?.display().to_string();
+    let values = [
+        endpoint.clone(),
+        endpoint.clone(),
+        endpoint.clone(),
+        endpoint,
+        no_proxy.clone(),
+        no_proxy,
+        ca,
+    ];
+    Ok(PROXY_VARS.into_iter().zip(values).collect())
+}
+
+/// Build the drop-in body from name/value pairs. systemd `environment.d` parses
+/// `KEY=VALUE` lines (not shell), so a value may contain spaces; we double-quote
+/// the CA path anyway for clarity and to stay safe if a consumer ever sources it
+/// more strictly.
+fn build_dropin(assignments: &[(&'static str, String)]) -> String {
+    let mut body =
+        String::from("# Managed by Gate Connect - do not edit. Removed when the proxy is off.\n");
+    for (key, value) in assignments {
+        if *key == "NODE_EXTRA_CA_CERTS" {
+            body.push_str(&format!("{key}=\"{value}\"\n"));
+        } else {
+            body.push_str(&format!("{key}={value}\n"));
+        }
+    }
+    body
+}
+
+/// Push proxy variable assignments into the *running* login session so tools
+/// launched (or relaunched) now pick them up without waiting for the next
+/// login. `dbus-update-activation-environment --systemd` updates both the D-Bus
+/// activation environment and the `systemd --user` manager that modern desktops
+/// use to spawn apps. Best-effort: no session bus, or a desktop that doesn't
+/// ship the tool, just means the `environment.d` drop-in applies at next login
+/// instead. Already-running processes keep their old environment until
+/// relaunched - nothing can change that.
+fn push_to_session(assignments: &[(&'static str, String)]) {
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+        return; // no graphical session bus to update; drop-in covers next login
+    }
+    let mut cmd = std::process::Command::new("dbus-update-activation-environment");
+    cmd.arg("--systemd");
+    for (key, value) in assignments {
+        cmd.arg(format!("{key}={value}"));
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!(
+            "[gate] live proxy env push exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // tool absent; fine
+        Err(e) => eprintln!("[gate] could not run dbus-update-activation-environment: {e}"),
+    }
 }
 
 /// Note whether our drop-in is currently present. Non-privileged.
@@ -164,12 +227,17 @@ pub fn clear_snapshot() -> Result<()> {
     }
 }
 
-/// Point the system proxy at the loopback engine by writing our drop-in.
-/// Unprivileged (user's home). Only affects new sessions.
+/// Point the system proxy at the loopback engine: write our `environment.d`
+/// drop-in (applied to future login sessions) and push the same variables into
+/// the running session so a tool relaunched now picks them up without a logout.
+/// Unprivileged (user's home).
 pub fn enable(port: u16) -> Result<()> {
+    let assignments = proxy_env(port)?;
     let path = dropin_path()?;
-    crate::primitives::write_file(&path, build_dropin(port)?.as_bytes(), 0o644)
-        .with_context(|| format!("writing {}", path.display()))
+    crate::primitives::write_file(&path, build_dropin(&assignments).as_bytes(), 0o644)
+        .with_context(|| format!("writing {}", path.display()))?;
+    push_to_session(&assignments);
+    Ok(())
 }
 
 /// Delete our drop-in, restoring the user environment to its prior (proxy-free)
@@ -183,11 +251,20 @@ pub fn restore(_snapshot: &ProxySnapshot) -> Result<()> {
 /// engine never strands new shells at an unreachable proxy. Unprivileged.
 pub fn force_off() -> Result<()> {
     let path = dropin_path()?;
-    match fs::remove_file(&path) {
+    let result = match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
-    }
+    };
+    // Blank the vars in the running session too, so tools launched after turning
+    // the proxy off stop routing through a possibly-dead engine without waiting
+    // for the next login. (Already-running processes keep them until relaunched.)
+    let cleared: Vec<(&'static str, String)> = PROXY_VARS
+        .into_iter()
+        .map(|key| (key, String::new()))
+        .collect();
+    push_to_session(&cleared);
+    result
 }
 
 #[cfg(test)]
