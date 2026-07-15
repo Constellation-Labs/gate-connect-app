@@ -147,7 +147,12 @@ impl RelayState {
     ) -> Self {
         let scheme = gateway.scheme_str().unwrap_or("https");
         let authority = gateway.authority().map(|a| a.as_str()).unwrap_or("");
-        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        // `.no_proxy()`: the relay IS a proxy - its gateway hop must go direct,
+        // never back through the app's own system proxy (which would loop
+        // relay -> engine -> gateway). Ignores any `HTTP(S)_PROXY` in the env.
+        let mut builder = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none());
         // Test seam (mirrors the other `GATE_CONNECT_TEST_*` seams): trust an
         // extra CA on the gateway hop so the e2e's self-signed mock gateway
         // validates. Unset in real builds, where the default roots cover the

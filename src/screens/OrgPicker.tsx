@@ -3,7 +3,7 @@ import type { Org } from "../lib/api";
 import { oauthListOrgs, setOrg } from "../lib/api";
 import { trackError } from "../lib/analytics";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
-import { SubHeader } from "../components/gc/ui";
+import { Button, SubHeader } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
 /** Org-selection step, shown right after an OAuth sign-in (and reused by the
@@ -16,9 +16,11 @@ import { Icon } from "../components/gc/Icon";
 export function OrgPicker({
   onDone,
   onBack,
+onReauth,
 }: {
   onDone: () => void;
   onBack?: () => void;
+  onReauth: () => void;
 }) {
   const [orgs, setOrgs] = useState<Org[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +95,12 @@ export function OrgPicker({
         )}
 
         {error && (
-          <p className="py-2 text-[11.5px] leading-snug text-gc-error">{error}</p>
+          <div className="flex flex-col gap-2 py-2">
+            <p className="text-[11.5px] leading-snug text-gc-error">{error}</p>
+            <Button variant="accent" full onClick={onReauth}>
+              Sign in again
+            </Button>
+          </div>
         )}
 
         {!loading &&
