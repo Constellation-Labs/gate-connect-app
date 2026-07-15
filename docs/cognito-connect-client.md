@@ -1,0 +1,243 @@
+# Gate Connect: Cognito OAuth client setup (runbook)
+
+Gate Connect authenticates to the gateway with a Cognito **access token** on
+the `x-gate-authorization` header (the pasted API key on `x-gate-api-key` is the
+legacy fallback). To do that it needs a dedicated Cognito **app client** in the
+same user pool Gate uses.
+
+That client is created **out-of-band** (not managed by Gate's Terraform). Gate's
+Terraform consumes its id through the `cognito_connect_client_id` variable:
+
+- `variables.tf` declares `cognito_connect_client_id`
+- `security.tf` sets `local.cognito.connect_client_id = var.cognito_connect_client_id`
+- `compute.tf` puts it in the gateway env:
+  `GATEWAY_COGNITO_CLIENT_IDS = join(",", compact([client_id, connect_client_id]))`
+- each env's tfvars supplies the value (see `staging.tfvars.example`)
+
+This runbook is the source of truth for creating and re-creating that client per
+environment. Run it once per environment (staging, production), and again if the
+client is ever rebuilt.
+
+## Why out-of-band and not a Terraform resource
+
+The desktop client differs from the browser SPA clients in the shared `cognito`
+module: it is a public client (no secret), uses loopback callbacks, and carries
+its own managed-login branding and logo asset. Keeping it out-of-band avoids
+vendoring branding assets into the module and keeps the loopback specifics out of
+the SPA client config. Terraform still owns the gateway trust wiring; it just
+takes the client id as an input.
+
+## Prerequisites
+
+1. **Correct AWS account and region.** This is the number one failure. Wrong
+   creds show up as `describe-user-pool-client` returning "does not exist" and
+   the Hosted UI showing "Login pages unavailable. Please contact an
+   administrator." Verify first:
+   ```bash
+   aws sts get-caller-identity
+   ```
+2. **Disable the AWS CLI v2 pager** for this session, or output gets swallowed in
+   a non-interactive shell:
+   ```bash
+   export AWS_PAGER=""
+   ```
+3. The target pool is Terraform-managed (`cognito_manage_pool = true`), so the
+   pool, domain, and SPA clients already exist. This runbook only adds the
+   Connect client and its branding.
+
+## Reference values
+
+| Item | Staging value |
+|---|---|
+| Region | `us-east-1` |
+| User pool id | `us-east-1_GPcJkAGzM` |
+| Hosted domain | `swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com` |
+| Domain prefix | `swarm-deck-staging-ue1` |
+
+App-side constants (from `crates/core/src/oauth.rs`):
+
+| Item | Value |
+|---|---|
+| Loopback callback ports (`REDIRECT_PORTS`) | `8977`, `8978`, `8979` |
+| Callback path | `/callback` (host `localhost`, scheme `http`) |
+| Scopes (default) | `openid email profile aws.cognito.signin.user.admin` |
+
+For production, resolve the equivalent pool id and domain with step 1 against the
+production account and region.
+
+## Step 1: Confirm the pool behind the hosted domain
+
+Always work back from the domain so the client lands in the pool the domain
+fronts (a client in a different pool causes "Login pages unavailable"):
+
+```bash
+aws cognito-idp describe-user-pool-domain --domain swarm-deck-staging-ue1 \
+  --region us-east-1 --no-cli-pager \
+  --query 'DomainDescription.{Pool:UserPoolId,Status:Status,Version:ManagedLoginVersion}'
+```
+
+Confirm `Pool` matches the user pool id above. `Version: 2` means the domain uses
+**Managed Login**, which makes step 3 mandatory.
+
+## Step 2: Create the dedicated public client
+
+```bash
+aws cognito-idp create-user-pool-client \
+  --user-pool-id us-east-1_GPcJkAGzM \
+  --client-name gate-connect-desktop \
+  --no-generate-secret \
+  --allowed-o-auth-flows code \
+  --allowed-o-auth-flows-user-pool-client \
+  --allowed-o-auth-scopes openid email profile aws.cognito.signin.user.admin \
+  --callback-urls \
+    http://localhost:8977/callback \
+    http://localhost:8978/callback \
+    http://localhost:8979/callback \
+  --supported-identity-providers COGNITO Google \
+  --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH \
+  --prevent-user-existence-errors ENABLED \
+  --region us-east-1 --no-cli-pager --query 'UserPoolClient.ClientId'
+```
+
+Record the returned **ClientId**.
+
+Flag notes:
+- `--no-generate-secret`: public client (PKCE, no secret), which is what a native
+  desktop app is.
+- All three loopback callbacks: the app tries `8977`, `8978`, `8979` in order and
+  binds the first free one. Cognito matches the callback exactly (scheme, host,
+  port, path), so all three must be registered or a port fallback fails.
+- Host is `localhost`, not `127.0.0.1`: Cognito only accepts `http` callbacks on
+  `localhost`. The app advertises `http://localhost:<port>/callback` accordingly.
+- `ALLOW_REFRESH_TOKEN_AUTH`: needed for the app's silent token refresh.
+- `COGNITO Google`: lets users who signed up via Google sign in too.
+- Scopes match the app's compiled default, so no build-time scope override is
+  needed. Optional hardening below.
+
+## Step 3: Create managed-login branding (required when domain is v2)
+
+A Managed Login (v2) domain serves "Login pages unavailable" for any client that
+has no published branding style. Create a baseline first so login renders:
+
+```bash
+aws cognito-idp create-managed-login-branding \
+  --user-pool-id us-east-1_GPcJkAGzM --client-id <CONNECT_CLIENT_ID> \
+  --use-cognito-provided-values --region us-east-1 --no-cli-pager \
+  --query 'ManagedLoginBranding.ManagedLoginBrandingId'
+```
+
+Record the **ManagedLoginBrandingId**. At this point the Hosted UI renders with
+Cognito's stock look. To make it read as Gate, apply the `cg` brand palette and
+logo. Export the settings, edit them (or use the Console's Managed Login
+designer, which is easier and previews live), then update.
+
+Brand values (resolved from `gate/packages/frontend-ui/src/cg/tokens.css`):
+
+| Role | cg token | Value |
+|---|---|---|
+| Primary (button bg, text) | `ink-900` / white | `#020202` on `#ffffff` |
+| Primary hover | `ink-800` | `#0e0e0e` |
+| Muted text | `ink-500` | `#6c6c6c` |
+| Borders / link underline | `ink-200` | `#e1e1e1` |
+| Page background | `canvas` | `#ecece7` |
+| Card / form surface | `white` | `#ffffff` |
+| Control radius / card radius | `radius-md` / modal | 8px / 12px |
+| Color scheme mode | light only | `LIGHT` |
+
+Note: Managed Login offers only a curated font list, so the type is a near-match
+to Geist, not literal Geist.
+
+Export, edit, apply:
+
+```bash
+aws cognito-idp describe-managed-login-branding \
+  --user-pool-id us-east-1_GPcJkAGzM --managed-login-branding-id <ID> \
+  --region us-east-1 --no-cli-pager --query 'ManagedLoginBranding.Settings' > branding.json
+# edit branding.json: apply the palette above, LIGHT mode, enable the form logo
+
+aws cognito-idp update-managed-login-branding \
+  --user-pool-id us-east-1_GPcJkAGzM --managed-login-branding-id <ID> \
+  --settings file://branding.json \
+  --assets file://connect-branding-assets.json \
+  --no-use-cognito-provided-values \
+  --region us-east-1 --no-cli-pager
+```
+
+### Logo asset
+
+Use the `cg` brand lockup `gate/packages/frontend-ui/src/cg/layout/brand/logo-light.png`
+(the dark lockup, for light surfaces). Encode it into a Cognito assets file:
+
+```bash
+python3 - <<'PY'
+import base64, json
+src = "<path-to-gate>/packages/frontend-ui/src/cg/layout/brand/logo-light.png"
+b64 = base64.b64encode(open(src, "rb").read()).decode()
+assets = [{"Category": "FORM_LOGO", "ColorMode": "LIGHT", "Extension": "PNG", "Bytes": b64}]
+open("connect-branding-assets.json", "w").write(json.dumps(assets))
+PY
+```
+
+Enable the form logo in `branding.json` (the "Logo" toggle in the designer), or
+the asset will not show.
+
+## Step 4: Wire the client id into Gate's Terraform
+
+In the Gate repo, set the client id in the environment's real tfvars (not the
+`.example`):
+
+```hcl
+# terraform/aws/environments/staging.tfvars
+cognito_connect_client_id = "<CONNECT_CLIENT_ID>"
+```
+
+Then apply. The gateway env `GATEWAY_COGNITO_CLIENT_IDS` already references
+`local.cognito.connect_client_id`, so applying redeploys the gateway trusting the
+new client. Until this is set, sign-in captures a token but `GET /v1/me/orgs`
+(the org picker) and all proxied calls return 401.
+
+## Step 5: Wire the client id into the Connect build
+
+The app reads three values, baked at compile time via `option_env!` in
+`crates/core/src/oauth.rs`, with process env overriding at runtime. They are
+public client config, not secrets.
+
+Release builds: set as repo Variables (Settings, Secrets and variables, Actions,
+Variables), consumed by `.github/workflows/release.yml`:
+
+- `GATE_COGNITO_CLIENT_ID` = the created client id
+- `GATE_COGNITO_HOSTED_DOMAIN` = the hosted domain (no scheme, no trailing slash)
+- `GATE_COGNITO_SCOPES` = optional; defaults to
+  `openid email profile aws.cognito.signin.user.admin`
+
+`crates/core/build.rs` declares `rerun-if-env-changed` for these so a cached
+`target/` cannot ship a stale value.
+
+Local testing (no rebuild needed, runtime env wins over the baked value):
+
+```bash
+export GATE_COGNITO_HOSTED_DOMAIN=swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com
+export GATE_COGNITO_CLIENT_ID=<CONNECT_CLIENT_ID>
+pnpm tauri dev
+```
+
+## Gotchas
+
+- **Wrong account or region** is the most common failure and hides as a missing
+  client or "Login pages unavailable." Run `aws sts get-caller-identity` first.
+- **Exact callback match**: Cognito matches scheme, host, port, and path. Register
+  all three loopback ports; host must be `localhost`, path `/callback`.
+- **Managed Login v2** needs a published branding style per client, or the Hosted
+  UI shows "Login pages unavailable." This is per client, so a new client needs
+  its own style (step 3).
+- **Scope hardening (optional)**: the app never calls Cognito user self-service
+  APIs and the gateway only reads `sub`, so `aws.cognito.signin.user.admin` is
+  unnecessary. To tighten, allow only `openid email` on the client and set
+  `GATE_COGNITO_SCOPES="openid email"` in the build (or change the default in
+  `oauth.rs`).
+- **Do not reuse a shared SPA client** for the desktop app in production: it would
+  require adding loopback callbacks to a browser client, coupling token lifetimes,
+  and losing per-client revocation and audit. Use the dedicated client.
+- **`update-user-pool-client` replaces the whole config.** If you ever edit an
+  existing client via the CLI, re-specify every field or use the Console, which
+  does a read-modify-write.
