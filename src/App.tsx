@@ -454,6 +454,7 @@ export function App() {
       <OrgPicker
         onDone={onOrgChosen}
         onBack={orgPickerReturn === "settings" ? () => setScreen("settings") : undefined}
+        onReauth={signOut}
       />
     );
   } else if (screen === "success") {

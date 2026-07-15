@@ -244,7 +244,13 @@ fn post_token(
         .extend_pairs(params.iter().copied());
     let body = serializer.query().unwrap_or("").to_string();
 
-    let resp = reqwest::blocking::Client::new()
+    // Control-plane call: reach Cognito directly, never through the app's own
+    // data-plane proxy. `.no_proxy()` ignores any `HTTP(S)_PROXY` the app set.
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .context("building the Cognito token HTTP client")?;
+    let resp = client
         .post(cfg.token_endpoint())
         .header(
             reqwest::header::CONTENT_TYPE,
