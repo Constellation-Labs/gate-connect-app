@@ -49,7 +49,14 @@ fn orgs_endpoint(gateway_base_url: &str) -> String {
 /// List the orgs the OAuth user may act on. `access_token` is the Cognito
 /// access token, sent on `x-gate-authorization` (the gateway's custom slot).
 pub fn list(gateway_base_url: &str, access_token: &str) -> Result<Vec<Org>> {
-    let resp = reqwest::blocking::Client::new()
+    // Control-plane call: talk straight to the gateway, never through the
+    // app's own data-plane proxy (which injects `X-Gate-Api-Key`, not the
+    // OAuth token). `.no_proxy()` ignores any `HTTP(S)_PROXY` the app set.
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .context("building the orgs HTTP client")?;
+    let resp = client
         .get(orgs_endpoint(gateway_base_url))
         .header("x-gate-authorization", format!("Bearer {access_token}"))
         .send()
