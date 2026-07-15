@@ -67,6 +67,13 @@ pub fn singleton_lock_path() -> Result<PathBuf> {
     Ok(runtime_dir()?.join("proxyd.lock"))
 }
 
+/// File the daemon writes its PID to at startup, so a client that can't shut it
+/// down cleanly (e.g. a leftover speaking a protocol the client no longer
+/// understands) can force-kill it and take over.
+pub fn pid_path() -> Result<PathBuf> {
+    Ok(runtime_dir()?.join("proxyd.pid"))
+}
+
 fn set_mode(path: &std::path::Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
@@ -85,12 +92,25 @@ pub fn random_token() -> Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// Control-protocol version. Bump on any wire-incompatible change to
+/// [`Request`]/[`Response`] (e.g. a new required field). Exchanged in the
+/// `Hello` handshake so a client detects a daemon left over from an older build
+/// and replaces it, rather than talking a mismatched protocol and failing later
+/// on a reply whose shape it no longer recognizes.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// GUI → daemon. The CA + gateway travel only inside [`Request::SetIntercept`];
 /// the daemon needs them to mint leaf certs and rewrite to the gateway.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
-    /// First message on every connection: authenticate with the per-run token.
-    Hello { token: String },
+    /// First message on every connection: authenticate with the per-run token
+    /// and advertise the client's [`PROTOCOL_VERSION`]. `version` defaults to 0
+    /// when absent, so a newer daemon can still parse an older client's Hello.
+    Hello {
+        token: String,
+        #[serde(default)]
+        version: u32,
+    },
     /// Start (or live-update) interception. Carries everything the engine needs
     /// for one session. `preferred_port` reuses the stable port across runs.
     SetIntercept {
@@ -114,8 +134,14 @@ pub enum Request {
 /// daemon → GUI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
-    /// Auth result for [`Request::Hello`].
-    Hello { ok: bool },
+    /// Auth result for [`Request::Hello`], carrying the daemon's
+    /// [`PROTOCOL_VERSION`]. `version` defaults to 0 when absent, so a reply
+    /// from a pre-versioning daemon reads as an (incompatible) version 0.
+    Hello {
+        ok: bool,
+        #[serde(default)]
+        version: u32,
+    },
     /// Acknowledges a [`Request::SetIntercept`] with the port actually bound.
     Intercepting { port: u16 },
     /// Generic success (passthrough / shutdown accepted).

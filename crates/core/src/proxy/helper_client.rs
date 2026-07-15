@@ -34,12 +34,34 @@ pub struct HelperClient {
     writer: UnixStream,
 }
 
+/// Sentinel error: a daemon is listening and authenticated, but reported a
+/// different [`control::PROTOCOL_VERSION`] (typically one left over from an
+/// older build). Carried via `anyhow` and matched in [`HelperClient::connect_or_spawn`],
+/// which replaces the daemon rather than reusing it.
+#[derive(Debug)]
+struct StaleDaemon;
+
+impl std::fmt::Display for StaleDaemon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("proxy helper is running an incompatible protocol version")
+    }
+}
+
+impl std::error::Error for StaleDaemon {}
+
 impl HelperClient {
     /// Connect to a running daemon, spawning one (`<current-exe> --proxy-helper`,
     /// detached) if none is listening yet. Performs the `Hello` token handshake.
     pub fn connect_or_spawn() -> Result<HelperClient> {
-        if let Ok(client) = Self::connect_existing() {
-            return Ok(client);
+        match Self::connect_existing() {
+            Ok(client) => return Ok(client),
+            // A daemon is listening but speaks an incompatible protocol (a
+            // leftover from another build). Replace it: it was asked to shut
+            // down in `connect_existing`; give it a moment, then force-kill if
+            // it's still holding the socket, so `spawn_daemon` below isn't
+            // wedged behind its singleton flock.
+            Err(e) if e.is::<StaleDaemon>() => replace_stale_daemon(),
+            Err(_) => {}
         }
         spawn_daemon()?;
         // The daemon binds its socket + writes the token shortly after exec;
@@ -73,10 +95,34 @@ impl HelperClient {
             .context("reading control token")?
             .trim()
             .to_string();
-        match client.round_trip(&Request::Hello { token }, CONTROL_TIMEOUT)? {
-            Response::Hello { ok: true } => Ok(client),
-            Response::Hello { ok: false } => anyhow::bail!("control token rejected"),
-            other => anyhow::bail!("unexpected Hello reply: {other:?}"),
+        // We reached a listening daemon. From here, anything short of a clean,
+        // same-version Hello means it's a leftover we can't reuse - classify it
+        // as `StaleDaemon` so `connect_or_spawn` replaces it (gracefully if it
+        // still speaks the protocol, by force-kill otherwise) instead of getting
+        // wedged behind its singleton flock.
+        match client.round_trip(
+            &Request::Hello {
+                token,
+                version: control::PROTOCOL_VERSION,
+            },
+            CONTROL_TIMEOUT,
+        ) {
+            Ok(Response::Hello { ok: false, .. }) => anyhow::bail!("control token rejected"),
+            Ok(Response::Hello { ok: true, version })
+                if version == control::PROTOCOL_VERSION =>
+            {
+                Ok(client)
+            }
+            // Authenticated, but the daemon reports a different protocol version
+            // (e.g. a build predating this one). Ask it to shut down cleanly;
+            // `connect_or_spawn` force-kills if it doesn't comply.
+            Ok(Response::Hello { ok: true, .. }) => {
+                let _ = client.round_trip(&Request::Shutdown, CONTROL_TIMEOUT);
+                Err(anyhow::Error::new(StaleDaemon))
+            }
+            // An unexpected reply, or a reply we couldn't even parse/read: a
+            // daemon speaking a protocol we don't understand. Replace it.
+            Ok(_) | Err(_) => Err(anyhow::Error::new(StaleDaemon)),
         }
     }
 
@@ -146,6 +192,69 @@ impl HelperClient {
         }
         serde_json::from_str(resp.trim_end()).context("parsing response")
     }
+}
+
+/// Replace a daemon that reported an incompatible protocol. It was already
+/// asked to `Shutdown` in `connect_existing` (a no-op if it didn't understand
+/// the request); give it a moment to exit on its own, then force-kill it so the
+/// singleton flock is free for the replacement `spawn_daemon`.
+fn replace_stale_daemon() {
+    if wait_for_daemon_gone() {
+        return;
+    }
+    force_kill_daemon();
+    let _ = wait_for_daemon_gone();
+}
+
+/// Wait (briefly, bounded ~2s) for a daemon to release its socket, returning
+/// whether it's gone. The next `spawn_daemon` guards startup with an exclusive
+/// flock, so the old process must exit before we spawn the replacement, or the
+/// new daemon would bail as a duplicate. "Gone" == the socket refuses connects.
+fn wait_for_daemon_gone() -> bool {
+    let Ok(sock) = control::socket_path() else {
+        return true;
+    };
+    for _ in 0..40 {
+        if UnixStream::connect(&sock).is_err() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// Best-effort `SIGKILL` of the running daemon, identified by the pidfile it
+/// wrote at startup. Used only after a graceful `Shutdown` failed to make it
+/// exit. Guards against a recycled pid by confirming the target is actually a
+/// proxy helper before signalling.
+fn force_kill_daemon() {
+    let Ok(pid_path) = control::pid_path() else {
+        return;
+    };
+    let Some(pid) = std::fs::read_to_string(&pid_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+    else {
+        return;
+    };
+    if pid <= 1 || !is_proxy_helper(pid) {
+        return;
+    }
+    // SAFETY: `kill` with any pid and a valid signal is safe; we ignore the
+    // result (the process may have exited between the check and here).
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+/// Whether `/proc/<pid>/cmdline` looks like our detached proxy helper
+/// (`<exe> --proxy-helper`), so `force_kill_daemon` never signals an unrelated
+/// process that recycled the pid.
+fn is_proxy_helper(pid: libc::pid_t) -> bool {
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        // argv entries are NUL-separated.
+        .map(|raw| raw.split(|&b| b == 0).any(|arg| arg == b"--proxy-helper"))
+        .unwrap_or(false)
 }
 
 /// Spawn the daemon as a detached child: `setsid` so it leaves the GUI's

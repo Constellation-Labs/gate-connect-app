@@ -58,6 +58,15 @@ async fn serve() -> Result<()> {
     // socket from a previous run and bind fresh.
     let _ = std::fs::remove_file(&sock);
 
+    // Write our pid (0600) so a client that can't shut us down cleanly (e.g. a
+    // future protocol we don't speak) can force-kill us and take over the
+    // singleton lock. Held for the daemon's life; the next daemon overwrites it.
+    let pid_path = control::pid_path()?;
+    std::fs::write(&pid_path, std::process::id().to_string())
+        .with_context(|| format!("writing {}", pid_path.display()))?;
+    std::fs::set_permissions(&pid_path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("locking down {}", pid_path.display()))?;
+
     // Write the auth token (0600) the GUI must echo back in Hello.
     let token = control::random_token()?;
     let token_path = control::token_path()?;
@@ -141,9 +150,16 @@ async fn handle_conn(
         .context("connection closed before Hello")?;
     let authed = matches!(
         serde_json::from_str::<Request>(&first),
-        Ok(Request::Hello { token: t }) if t == token
+        Ok(Request::Hello { token: t, .. }) if t == token
     );
-    write_response(&mut write_half, &Response::Hello { ok: authed }).await?;
+    write_response(
+        &mut write_half,
+        &Response::Hello {
+            ok: authed,
+            version: control::PROTOCOL_VERSION,
+        },
+    )
+    .await?;
     if !authed {
         anyhow::bail!("Hello failed authentication");
     }
