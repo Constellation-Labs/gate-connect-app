@@ -787,6 +787,22 @@ fn close_running_agents() -> u32 {
 fn set_updater_relaunching(relaunching: bool) {
     UPDATER_RELAUNCHING.store(relaunching, Ordering::Release);
 }
+/// Whether the OAuth session has died and the user must sign in again. Set by
+/// the background refresh loop on the signed-in→dead edge (a `live_session()`
+/// that can no longer refresh) and read by the tray-drawing functions to raise
+/// an attention signal - a red dot on the glyph and a "sign in required"
+/// tooltip - that outranks the routing-on/off color. Relaxed ordering: it only
+/// gates a cosmetic redraw. Starts false (assume signed in until proven dead).
+static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
+
+/// Debug-only manual override for the sign-in attention signal, toggled from a
+/// hidden tray menu item ("DEBUG: toggle sign-in-needed") so the red dot and
+/// Linux notification can be exercised without waiting for a real session to
+/// die. When set, the 30s refresh loop pins its `dead` verdict true so its next
+/// tick doesn't clear the forced state; clearing it lets the loop recompute the
+/// real session state. Never compiled into release builds.
+#[cfg(debug_assertions)]
+static DEBUG_FORCE_SIGNIN: AtomicBool = AtomicBool::new(false);
 
 /// Stop pinning the popover open. The frontend calls this on the user's
 /// first interaction with the first-launch window, switching the popover
@@ -876,6 +892,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        // Desktop notifications. Registered on all desktop platforms (harmless);
+        // only fired on Linux, whose tray backends are the weakest signal for a
+        // dead OAuth session (see the refresh loop in `setup`).
+        .plugin(tauri_plugin_notification::init())
         // Login item, controlled by the standalone "Launch at login" setting
         // (see `set_launch_at_login`). It is no longer armed/disarmed by the
         // routing toggle; turning it on is what lets the app relaunch and
@@ -1091,8 +1111,21 @@ pub fn run() {
                         == gate_connect_core::account::AuthMode::OAuth
                     {
                         if let Some(cfg) = gate_connect_core::oauth::OAuthConfig::from_build_env() {
-                            if let Err(e) = gate_connect_core::oauth::ensure_fresh(&cfg) {
-                                eprintln!("[gate] startup OAuth token refresh failed: {e}");
+                            // Seed the tray attention flag from the result so the
+                            // first tray paint in the auto-enable below is already
+                            // correct, instead of showing a misleading routing dot
+                            // for up to one refresh interval. Only a refresh
+                            // *failure* (Err: a stored session that can't refresh)
+                            // is an alarm; `Ok(None)` is a signed-out / never
+                            // signed-in state and must stay quiet.
+                            match gate_connect_core::oauth::ensure_fresh(&cfg) {
+                                Ok(_) => {
+                                    SESSION_NEEDS_SIGNIN.store(false, Ordering::Relaxed)
+                                }
+                                Err(e) => {
+                                    eprintln!("[gate] startup OAuth token refresh failed: {e}");
+                                    SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
+                                }
                             }
                         }
                     }
@@ -1191,25 +1224,76 @@ pub fn run() {
             // "sign in" state the UI derives from oauth_status. Best-effort, off
             // the tray thread.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            std::thread::spawn(|| loop {
-                std::thread::sleep(std::time::Duration::from_secs(
-                    gate_connect_core::oauth::REFRESH_INTERVAL_SECS,
-                ));
-                if gate_connect_core::account::auth_mode().unwrap_or_default()
-                    != gate_connect_core::account::AuthMode::OAuth
-                {
-                    continue;
-                }
-                // `live_session` silently refreshes a stale token (persisting it)
-                // and yields None when the session is dead; push the result into
-                // the running engine (a no-op when routing is off). "" reverts to
-                // the API-key fallback, matching the signed-out state the UI
-                // derives from oauth_status.
-                let token = gate_connect_core::oauth::live_session()
-                    .map(|t| t.access_token)
-                    .unwrap_or_default();
-                gate_connect_core::proxy::manager().refresh_token(&token);
-            });
+            {
+                let refresh_handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(
+                        gate_connect_core::oauth::REFRESH_INTERVAL_SECS,
+                    ));
+                    if gate_connect_core::account::auth_mode().unwrap_or_default()
+                        != gate_connect_core::account::AuthMode::OAuth
+                    {
+                        // Not an OAuth account (e.g. the user switched a dead
+                        // session to a pasted key): clear any stale attention
+                        // signal so the tray doesn't strand a red dot, then idle.
+                        if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
+                            let running = gate_connect_core::proxy::manager()
+                                .status()
+                                .map(|s| s.running)
+                                .unwrap_or(false);
+                            update_tray_status(&refresh_handle, running);
+                        }
+                        continue;
+                    }
+                    // `live_session` silently refreshes a stale token (persisting
+                    // it) and yields None when the session is dead; push the
+                    // result into the running engine (a no-op when routing is
+                    // off). "" reverts to the API-key fallback, matching the
+                    // signed-out state the UI derives from oauth_status.
+                    let token = gate_connect_core::oauth::live_session()
+                        .map(|t| t.access_token)
+                        .unwrap_or_default();
+                    gate_connect_core::proxy::manager().refresh_token(&token);
+
+                    // Raise (or clear) the tray attention signal on the
+                    // signed-in↔dead edge. "Dead" means a stored session exists
+                    // but can no longer refresh (expired / revoked) - NOT a
+                    // deliberate sign-out, which clears the stored tokens
+                    // (`oauth::clear`) and so must stay quiet even though
+                    // auth_mode is still OAuth. Redraw only on a change so the
+                    // tray isn't rewritten every 30s.
+                    let dead = token.is_empty()
+                        && gate_connect_core::oauth::current()
+                            .ok()
+                            .flatten()
+                            .is_some();
+                    // Debug override keeps the forced state pinned across ticks.
+                    #[cfg(debug_assertions)]
+                    let dead = dead || DEBUG_FORCE_SIGNIN.load(Ordering::Relaxed);
+                    if SESSION_NEEDS_SIGNIN.swap(dead, Ordering::Relaxed) != dead {
+                        let running = gate_connect_core::proxy::manager()
+                            .status()
+                            .map(|s| s.running)
+                            .unwrap_or(false);
+                        update_tray_status(&refresh_handle, running);
+                        // First tick that finds the session dead: nudge the user
+                        // on Linux, where the tray dot/tooltip are the weakest
+                        // signal (some desktops need an AppIndicator extension to
+                        // show the tray at all). Fired once per death by the edge
+                        // guard above.
+                        #[cfg(target_os = "linux")]
+                        if dead {
+                            use tauri_plugin_notification::NotificationExt;
+                            let _ = refresh_handle
+                                .notification()
+                                .builder()
+                                .title("Gate Connect")
+                                .body("Your session expired. Open Gate Connect to sign in again and keep routing.")
+                                .show();
+                        }
+                    }
+                });
+            }
 
             // Linux dismisses the popover by minimizing (see the Focused(false)
             // handler), so it needs a taskbar/dock entry to restore from -
@@ -1248,9 +1332,20 @@ pub fn run() {
 
             let show_item = MenuItemBuilder::with_id("show", "Open Gate Connect").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Gate Connect").build(app)?;
-            let menu = MenuBuilder::new(app)
-                .items(&[&show_item, &quit_item])
-                .build()?;
+            // Debug builds get a hidden toggle to force the sign-in attention
+            // state (red dot + Linux notification) for manual testing. Stripped
+            // from release builds.
+            #[cfg(debug_assertions)]
+            let debug_signin_item =
+                MenuItemBuilder::with_id("debug-toggle-signin", "DEBUG: toggle sign-in-needed")
+                    .build(app)?;
+            #[allow(unused_mut)]
+            let mut menu_builder = MenuBuilder::new(app).items(&[&show_item, &quit_item]);
+            #[cfg(debug_assertions)]
+            {
+                menu_builder = menu_builder.items(&[&debug_signin_item]);
+            }
+            let menu = menu_builder.build()?;
 
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
@@ -1276,6 +1371,29 @@ pub fn run() {
                         }
                     }
                     "quit" => app.exit(0),
+                    // Debug-only: flip the sign-in attention signal and repaint
+                    // the tray immediately (the loop's override keeps it pinned).
+                    #[cfg(debug_assertions)]
+                    "debug-toggle-signin" => {
+                        let on = !DEBUG_FORCE_SIGNIN.load(Ordering::Relaxed);
+                        DEBUG_FORCE_SIGNIN.store(on, Ordering::Relaxed);
+                        SESSION_NEEDS_SIGNIN.store(on, Ordering::Relaxed);
+                        let running = gate_connect_core::proxy::manager()
+                            .status()
+                            .map(|s| s.running)
+                            .unwrap_or(false);
+                        update_tray_status(app, running);
+                        #[cfg(target_os = "linux")]
+                        if on {
+                            use tauri_plugin_notification::NotificationExt;
+                            let _ = app
+                                .notification()
+                                .builder()
+                                .title("Gate Connect")
+                                .body("Your session expired. Open Gate Connect to sign in again and keep routing.")
+                                .show();
+                        }
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -1486,10 +1604,12 @@ fn position_startup(window: &tauri::WebviewWindow) {
 
 /// Build the tray image, recoloring the hex mark to a high-contrast tone for
 /// the current menu-bar / taskbar appearance (light vs dark) so it stays
-/// visible on any backdrop, then compositing a colored routing-status dot on
-/// top (green when the proxy is routing, gray when off) for all platforms.
+/// visible on any backdrop, then compositing a colored status dot on top for
+/// all platforms. A dead OAuth session (`needs_signin`) draws a red "sign in
+/// required" dot; otherwise the routine routing dot is green when the proxy is
+/// routing, gray when off.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
+fn tray_image(proxy_on: bool, needs_signin: bool, dark_menubar: bool) -> Option<Image<'static>> {
     let base = Image::from_bytes(TRAY_ICON_PNG).ok()?;
     let w = base.width();
     let h = base.height();
@@ -1509,12 +1629,16 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
         }
     }
 
-    // Composite the status dot, bottom-right: the one colored element, green
-    // when the proxy is routing and gray when off. Rendered on every platform -
-    // macOS composites it over the (temporarily non-template) mark, and the
-    // Windows/Linux trays carry the full-color icon directly.
+    // Composite the status dot, bottom-right: the one colored element. A dead
+    // OAuth session (`needs_signin`) shows a red "sign in required" dot;
+    // otherwise it tracks routing - green when the proxy is routing, gray when
+    // off. Rendered on every platform - macOS composites it over the
+    // (temporarily non-template) mark, and the Windows/Linux trays carry the
+    // full-color icon directly.
     {
-        let (dr, dg, db): (u8, u8, u8) = if proxy_on {
+        let (dr, dg, db): (u8, u8, u8) = if needs_signin {
+            (0xE5, 0x48, 0x4D) // red - sign in required
+        } else if proxy_on {
             (0x2E, 0xCC, 0x71) // green - routing
         } else {
             (0x8A, 0x8F, 0x9A) // gray - off
@@ -1544,11 +1668,13 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
 }
 
 /// Refresh the tray icon for the current appearance: tint the mark for a
-/// light vs dark menu bar / taskbar, and overlay the routing-status dot. Also
-/// refreshes the tooltip on macOS + Windows.
+/// light vs dark menu bar / taskbar, and overlay the status dot (routing, or
+/// the red sign-in-required dot when the OAuth session is dead - see
+/// `tray_image`). Also refreshes the tooltip on macOS + Windows.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
     use tauri::Manager;
+    let needs_signin = SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed);
     let dark = app
         .get_webview_window("main")
         .and_then(|win| win.theme().ok())
@@ -1560,7 +1686,7 @@ fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
         // never templates and already carry full color.
         #[cfg(target_os = "macos")]
         let _ = tray.set_icon_as_template(false);
-        if let Some(img) = tray_image(proxy_on, dark) {
+        if let Some(img) = tray_image(proxy_on, needs_signin, dark) {
             let _ = tray.set_icon(Some(img));
         }
     }
@@ -1568,14 +1694,18 @@ fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
     update_tray_tooltip(app, proxy_on);
 }
 
-/// Set the tray hover tooltip to reflect the routing state. Cross-platform
-/// (macOS + Windows); Linux tray backends (SNI/AppIndicator) don't support
-/// tooltips, so this is compiled out there. The macOS status dot is handled in
+/// Set the tray hover tooltip. Cross-platform (macOS + Windows); Linux tray
+/// backends (SNI/AppIndicator) don't support tooltips, so this is compiled out
+/// there. A dead OAuth session takes priority over the routing state; the
+/// attention flag is read from `SESSION_NEEDS_SIGNIN` so the routing call sites
+/// don't have to thread it through. The macOS status dot is handled in
 /// `update_tray_status`.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
     if let Some(tray) = app.tray_by_id("main") {
-        let text = if proxy_on {
+        let text = if SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed) {
+            "Gate Connect · sign in required"
+        } else if proxy_on {
             "Gate Connect · routing on"
         } else {
             "Gate Connect · routing off"
