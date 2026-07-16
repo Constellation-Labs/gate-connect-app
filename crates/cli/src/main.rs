@@ -188,9 +188,10 @@ fn cmd_login(
     }
     let api_key = resolve_secret(api_key, api_key_file, "Gate API key")?;
     account::save(&base_url, Some(&api_key))?;
-    // The key is copied into tool configs at connect time - push the new
-    // one into any config that still embeds an old key.
-    registry::refresh_gate_key_everywhere(&api_key)?;
+    // Signing in with a key selects the legacy path explicitly, so a prior
+    // `login --oauth` doesn't leave the account injecting a stale OAuth token
+    // (the relay reads the mode via `access_token_for_injection`).
+    account::set_auth_mode(account::AuthMode::ApiKey)?;
     // The proxy engine lives in whichever process enabled it (usually the
     // menubar app) - this process can't push the new key into it.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

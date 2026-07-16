@@ -281,14 +281,22 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
     // rewrites, none of which should block the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
         account::save(&base_url, key.as_deref()).map_err(|e| format!("{e:#}"))?;
-        // A rotated key was copied into tool configs (and the running proxy
-        // engine) at connect time - push the new one everywhere it's embedded.
+        // A rotated key is hot-swapped into the running proxy engine below;
+        // the relay injects it live per request, so no tool config embeds it.
         if let Some(k) = key.as_deref() {
             // Pasting a key selects the legacy path explicitly.
             account::set_auth_mode(account::AuthMode::ApiKey).map_err(|e| format!("{e:#}"))?;
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            gate_connect_core::proxy::manager().refresh_api_key(k);
-            registry::refresh_gate_key_everywhere(k).map_err(|e| format!("{e:#}"))?;
+            {
+                let manager = gate_connect_core::proxy::manager();
+                // Drop any live OAuth bearer from the running engine now that
+                // we're in ApiKey mode. The background refresh loop is gated on
+                // OAuth mode, so it won't clear it; and a still-valid Cognito
+                // session would otherwise keep overriding the pasted key until
+                // the token expired. No-op when routing is off.
+                manager.refresh_token("");
+                manager.refresh_api_key(k);
+            }
         }
         Ok(())
     })
