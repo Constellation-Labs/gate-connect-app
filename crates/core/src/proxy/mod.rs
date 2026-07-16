@@ -27,6 +27,8 @@
 //! systemd `environment.d` drop-in (so the proxy reaches command-line tools and
 //! GUI apps without root). Other platforms get no [`ProxyManager`].
 
+use anyhow::{Context, Result};
+use http::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 pub mod engine;
@@ -108,6 +110,61 @@ pub fn relay_base_url() -> Option<String> {
 /// still route through Gate. Blocks until the process is killed.
 pub fn serve_relay() -> anyhow::Result<()> {
     relay::serve()
+}
+
+/// Non-secret hint the tool config (or the MITM rewrite) sets, telling the
+/// gateway which upstream to forward to.
+pub(crate) const UPSTREAM_URL_HEADER: &str = "x-gate-upstream-url";
+/// Legacy credential header (Gate workspace key), injected when no OAuth token
+/// is present.
+pub(crate) const GATE_KEY_HEADER: &str = "x-gate-api-key";
+/// OAuth credential header (Cognito access token); takes precedence over the
+/// API key when present.
+pub(crate) const GATE_AUTHORIZATION_HEADER: &str = "x-gate-authorization";
+/// Selected-org header, injected alongside the OAuth token (the gateway
+/// requires it on every OAuth request).
+pub(crate) const GATE_ORG_HEADER: &str = "x-gate-org-id";
+
+/// Inject the live Gate credential into `headers`, the single precedence rule
+/// shared by the MITM engine ([`engine::apply_rewrite`]) and the loopback
+/// [`relay`] so the two paths can't drift.
+///
+/// Any client-supplied Gate credential headers are stripped first, so a local
+/// process can't smuggle an attacker-chosen token, key, or org past us to the
+/// gateway. Then: a non-empty `oauth_token` wins - `X-Gate-Authorization:
+/// Bearer <token>` plus `X-Gate-Org-Id` when `org_id` is `Some` - and the API
+/// key is omitted; otherwise the legacy `X-Gate-Api-Key` is injected.
+pub(crate) fn inject_gate_credential(
+    headers: &mut HeaderMap,
+    api_key: &str,
+    oauth_token: Option<&str>,
+    org_id: Option<&str>,
+) -> Result<()> {
+    headers.remove(GATE_AUTHORIZATION_HEADER);
+    headers.remove(GATE_KEY_HEADER);
+    headers.remove(GATE_ORG_HEADER);
+    match oauth_token.filter(|t| !t.is_empty()) {
+        Some(token) => {
+            headers.insert(
+                HeaderName::from_static(GATE_AUTHORIZATION_HEADER),
+                HeaderValue::from_str(&format!("Bearer {token}"))
+                    .context("building x-gate-authorization header")?,
+            );
+            if let Some(org) = org_id {
+                headers.insert(
+                    HeaderName::from_static(GATE_ORG_HEADER),
+                    HeaderValue::from_str(org).context("building x-gate-org-id header")?,
+                );
+            }
+        }
+        None => {
+            headers.insert(
+                HeaderName::from_static(GATE_KEY_HEADER),
+                HeaderValue::from_str(api_key).context("building x-gate-api-key header")?,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// One routable provider. The built-in set is defined by
