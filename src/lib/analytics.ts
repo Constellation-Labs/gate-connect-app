@@ -20,7 +20,7 @@ export type AnalyticsEvent =
   | "app_launched"
   | "popover_opened"
   | "signed_in"
-  | "disconnected"
+  | "workspace_forgotten"
   | "key_replaced"
   | "proxy_enabled"
   | "proxy_disabled"
