@@ -16,14 +16,14 @@ function hostOf(url: string): string {
 
 /** Settings - workspace + Gate API key management. The key itself is held in
  *  the OS keychain and never returned to the UI, so it shows masked; Replace
- *  key calls save_account, Disconnect calls clear_account. */
+ *  key calls save_account, Forget calls clear_account. */
 export function Settings({
   account,
   oauth,
   onBack,
   onReplaceKey,
   onUpgradeToOAuth,
-  onDisconnect,
+  onForget,
   onSignOut,
   onSwitchOrg,
   onSwitchGateway,
@@ -35,7 +35,7 @@ export function Settings({
   onBack: () => void;
   onReplaceKey: (key: string) => Promise<void>;
   onUpgradeToOAuth: () => Promise<void>;
-  onDisconnect: () => Promise<void>;
+  onForget: () => Promise<void>;
   onSignOut: () => Promise<void>;
   onSwitchOrg: () => void;
   onSwitchGateway: (url: string) => Promise<void>;
@@ -157,15 +157,15 @@ export function Settings({
     }
   }
 
-  async function disconnect() {
+  async function forget() {
     if (submitting) return;
     setError(null);
     setSubmitting(true);
     try {
-      await onDisconnect();
+      await onForget();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-      trackError(err, "disconnect");
+      trackError(err, "forget");
     } finally {
       setSubmitting(false);
     }
@@ -179,7 +179,7 @@ export function Settings({
       await onSignOut();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-      trackError(err, "disconnect");
+      trackError(err, "sign_out");
     } finally {
       setSubmitting(false);
     }
@@ -241,12 +241,21 @@ export function Settings({
               <div className="truncate text-[13px] font-medium text-gc-ink">
                 {oauth?.email ?? (connected ? "Signed in" : "Session expired")}
               </div>
-              <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
-                {connected ? "constellation account" : "sign in again to resume routing"}
+              <div className="truncate text-[11.5px] text-gc-ink-4">
+                {account.org_name ?? "No organization selected"}
               </div>
             </div>
           </div>
-          <div className="mt-1 flex items-center gap-4 px-3.5 pb-1">
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2 px-3.5 pb-1">
+            <button
+              type="button"
+              onClick={onSwitchOrg}
+              disabled={submitting}
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent"
+            >
+              <Icon name="refresh" size={14} />
+              Switch organization
+            </button>
             <button
               type="button"
               onClick={signOut}
@@ -258,41 +267,15 @@ export function Settings({
             </button>
             <button
               type="button"
-              onClick={disconnect}
+              onClick={forget}
               disabled={submitting}
               className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
             >
               <Icon name="trash" size={14} />
-              Disconnect
+              Forget
             </button>
           </div>
           {error && <p className="mt-2 px-3.5 text-[11.5px] text-gc-error">{error}</p>}
-
-          <SectionLabel>Organization</SectionLabel>
-          <div className="flex items-center gap-3 px-3.5 py-2.5">
-            <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-gc-accent-wash text-gc-accent">
-              <Icon name="cube" size={16} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[13px] font-medium text-gc-ink">
-                {account.org_name ?? "No organization selected"}
-              </div>
-              <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
-                routes on X-Gate-Org-Id
-              </div>
-            </div>
-          </div>
-          <div className="mt-1 flex items-center gap-4 px-3.5 pb-1">
-            <button
-              type="button"
-              onClick={onSwitchOrg}
-              disabled={submitting}
-              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent"
-            >
-              <Icon name="refresh" size={14} />
-              Switch organization
-            </button>
-          </div>
         </>
       )}
 
@@ -415,12 +398,12 @@ export function Settings({
           </button>
           <button
             type="button"
-            onClick={disconnect}
+            onClick={forget}
             disabled={submitting}
             className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
           >
             <Icon name="trash" size={14} />
-            Disconnect
+            Forget
           </button>
         </div>
       )}
