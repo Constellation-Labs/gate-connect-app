@@ -423,7 +423,7 @@ export function App() {
     await relaunch();
   }, []);
 
-  const disconnect = useCallback(async () => {
+  const forget = useCallback(async () => {
     if (proxy?.running) {
       // A failed disable can leave system HTTPS pointed at a dead engine
       // port - abort the sign-out and surface it instead of silently
@@ -443,7 +443,7 @@ export function App() {
     // if that fails we are still signed in, so let the rejection reach
     // Settings instead of showing first-run over a half-signed-out state.
     await clearAccount();
-    track("disconnected");
+    track("workspace_forgotten");
     setAccount(null);
     setScreen("firstrun");
   }, [proxy]);
@@ -525,7 +525,7 @@ export function App() {
         onBack={() => setScreen("home")}
         onReplaceKey={replaceKey}
         onUpgradeToOAuth={upgradeToOAuth}
-        onDisconnect={disconnect}
+        onForget={forget}
         onSignOut={signOut}
         onSwitchOrg={switchOrg}
         onSwitchGateway={switchGatewayServer}
