@@ -235,26 +235,44 @@ new client. Until this is set, sign-in captures a token but `GET /v1/me/orgs`
 
 ## Step 5: Wire the client id into the Connect build
 
-The app reads three values, baked at compile time via `option_env!` in
-`crates/core/src/oauth.rs`, with process env overriding at runtime. They are
+The app reads its OAuth client config, baked at compile time via `option_env!`
+in `crates/core/src/oauth.rs`, with process env overriding at runtime. They are
 public client config, not secrets.
+
+**Two pools, picked at runtime.** Both the production and staging Cognito pools
+are baked into a single binary. `OAuthConfig::from_build_env()` selects the pair
+matching the active gateway: if `account.gateway_base_url`'s host equals
+`STAGING_GATEWAY_HOST` (`gateway-staging.constellationgate.ai`, kept in sync with
+`GATEWAY_SERVERS` in `src/lib/config.ts`) it uses the `_STAGING` values;
+every other host (production, self-hosted, unknown, or no account yet) uses the
+prod values.
 
 Release builds: set as repo Variables (Settings, Secrets and variables, Actions,
 Variables), consumed by `.github/workflows/release.yml`:
 
-- `GATE_COGNITO_CLIENT_ID` = the created client id
-- `GATE_COGNITO_HOSTED_DOMAIN` = the hosted domain (no scheme, no trailing slash)
+- `GATE_COGNITO_CLIENT_ID` = the prod connect client id
+- `GATE_COGNITO_HOSTED_DOMAIN` = the prod hosted domain (no scheme, no trailing slash)
 - `GATE_COGNITO_SCOPES` = optional; defaults to
   `openid email profile aws.cognito.signin.user.admin`
+- `GATE_COGNITO_CLIENT_ID_STAGING` = the staging connect client id
+- `GATE_COGNITO_HOSTED_DOMAIN_STAGING` = the staging hosted domain
+- `GATE_COGNITO_SCOPES_STAGING` = optional; same default as prod
 
-`crates/core/build.rs` declares `rerun-if-env-changed` for these so a cached
+`crates/core/build.rs` declares `rerun-if-env-changed` for all six so a cached
 `target/` cannot ship a stale value.
 
-Local testing (no rebuild needed, runtime env wins over the baked value):
+Local testing (no rebuild needed, runtime env wins over the baked value). Set
+the pair matching the gateway you'll select in Settings → Dev mode:
 
 ```bash
-export GATE_COGNITO_HOSTED_DOMAIN=swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com
-export GATE_COGNITO_CLIENT_ID=<CONNECT_CLIENT_ID>
+# Production gateway (default):
+export GATE_COGNITO_HOSTED_DOMAIN=<PROD_HOSTED_DOMAIN>
+export GATE_COGNITO_CLIENT_ID=<PROD_CONNECT_CLIENT_ID>
+
+# Staging gateway (select "Staging" in Settings → Dev mode):
+export GATE_COGNITO_HOSTED_DOMAIN_STAGING=swarm-deck-staging-ue1.auth.us-east-1.amazoncognito.com
+export GATE_COGNITO_CLIENT_ID_STAGING=<STAGING_CONNECT_CLIENT_ID>
+
 pnpm tauri dev
 ```
 

@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use gate_connect_core::env;
 use gate_connect_core::oauth::{self, OAuthTokens};
 
 /// A loopback mock of Cognito's `/oauth2/token`. Accepts forever on a background
@@ -170,6 +171,11 @@ fn live_session_passes_through_valid_refreshes_expired_and_reports_dead() {
     let secrets = temp_secrets_dir();
     std::env::set_var("GATE_CONNECT_TEST_TOKEN_ENDPOINT", &mock.endpoint);
     std::env::set_var("GATE_CONNECT_TEST_SECRETS", &secrets);
+    // Pin the data dir at a throwaway location so `from_build_env()` (which now
+    // reads `account.json` to choose the prod vs staging Cognito pool) sees no
+    // account and takes the prod branch, matching the prod-name vars below.
+    // Without this the test would read the real machine's account host.
+    env::set_app_support_dir_for_tests(Some(secrets.clone()));
     // `live_session` derives its config from the environment; these make
     // `from_build_env()` return Some. The token endpoint is overridden by the
     // seam above, so the domain value itself is never contacted.

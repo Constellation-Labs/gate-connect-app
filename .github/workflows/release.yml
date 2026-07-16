@@ -90,8 +90,14 @@ jobs:
           # not secrets, so these are repo Variables. Absent ⇒ the app falls
           # back to the legacy API-key flow. GATE_COGNITO_SCOPES is optional;
           # the code defaults to "openid email profile aws.cognito.signin.user.admin".
+          # Both pools are baked in; the app picks prod vs staging at runtime by
+          # the selected gateway host (STAGING_GATEWAY_HOST in oauth.rs).
           GATE_COGNITO_HOSTED_DOMAIN: ${{ vars.GATE_COGNITO_HOSTED_DOMAIN }}
           GATE_COGNITO_CLIENT_ID: ${{ vars.GATE_COGNITO_CLIENT_ID }}
+          GATE_COGNITO_SCOPES: ${{ vars.GATE_COGNITO_SCOPES }}
+          GATE_COGNITO_HOSTED_DOMAIN_STAGING: ${{ vars.GATE_COGNITO_HOSTED_DOMAIN_STAGING }}
+          GATE_COGNITO_CLIENT_ID_STAGING: ${{ vars.GATE_COGNITO_CLIENT_ID_STAGING }}
+          GATE_COGNITO_SCOPES_STAGING: ${{ vars.GATE_COGNITO_SCOPES_STAGING }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Gate Connect ${{ github.ref_name }}'
