@@ -30,7 +30,7 @@ use futures_util::TryStreamExt;
 use http::Uri;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
-use hyper::header::{HeaderMap, HeaderName, HeaderValue, HOST};
+use hyper::header::{HeaderMap, HeaderName, HOST};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -103,19 +103,14 @@ fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
     Ok((listener, port))
 }
 
-/// Non-secret hint the tool config sets, telling the gateway which upstream to
-/// forward to. The relay validates it against the built-in catalog and passes
-/// it through untouched.
-const UPSTREAM_URL_HEADER: &str = "x-gate-upstream-url";
-/// Legacy credential header (Gate workspace key), injected when no OAuth token
-/// is present.
-const GATE_KEY_HEADER: &str = "x-gate-api-key";
-/// OAuth credential header (Cognito access token), injected when a token is
-/// present; takes precedence over the API key.
-const GATE_AUTHORIZATION_HEADER: &str = "x-gate-authorization";
-/// Selected-org header, injected alongside the OAuth token (the gateway
-/// requires it on every OAuth request).
-const GATE_ORG_HEADER: &str = "x-gate-org-id";
+// The Gate credential/upstream header names and the shared credential-
+// injection rule live in the parent module so the relay and the MITM engine
+// can't drift; this module just references them.
+use super::{
+    inject_gate_credential, GATE_AUTHORIZATION_HEADER, GATE_KEY_HEADER, GATE_ORG_HEADER,
+    UPSTREAM_URL_HEADER,
+};
+
 
 /// Everything a relay connection needs, shared across all requests.
 struct RelayState {
@@ -324,7 +319,12 @@ async fn proxy(
     headers.remove(HOST);
     let target = match route {
         Route::Rewrite => {
-            inject_credential(&mut headers, state);
+            inject_credential(&mut headers, state).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("injecting Gate credential: {e:#}"),
+                )
+            })?;
             format!("{}{}", state.gateway_base, path_and_query)
         }
         Route::Passthrough => {
@@ -384,30 +384,18 @@ async fn proxy(
     })
 }
 
-/// Overwrite any client-supplied Gate credential headers with the live one.
-/// Precedence mirrors the MITM engine's `apply_rewrite`: an OAuth token wins
-/// and the API key is dropped; otherwise the legacy key is injected.
-fn inject_credential(headers: &mut HeaderMap, state: &RelayState) {
+/// Overwrite any client-supplied Gate credential headers with the live one,
+/// via the precedence rule shared with the MITM engine
+/// ([`inject_gate_credential`]): an OAuth token wins and the API key is
+/// dropped; otherwise the legacy key is injected.
+fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> {
     // Clone the values out of the watch guards so no lock is held.
     let token: Arc<str> = state.token.borrow().clone();
     let api_key: Arc<str> = state.api_key.borrow().clone();
     let org: Arc<str> = state.org.borrow().clone();
-    headers.remove(GATE_AUTHORIZATION_HEADER);
-    headers.remove(GATE_KEY_HEADER);
-    headers.remove(GATE_ORG_HEADER);
-    if !token.is_empty() {
-        if let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) {
-            headers.insert(HeaderName::from_static(GATE_AUTHORIZATION_HEADER), value);
-        }
-        // The gateway requires the org header on every OAuth request.
-        if !org.is_empty() {
-            if let Ok(value) = HeaderValue::from_str(&org) {
-                headers.insert(HeaderName::from_static(GATE_ORG_HEADER), value);
-            }
-        }
-    } else if let Ok(value) = HeaderValue::from_str(&api_key) {
-        headers.insert(HeaderName::from_static(GATE_KEY_HEADER), value);
-    }
+    let oauth_token = (!token.is_empty()).then(|| token.as_ref());
+    let org_id = (!org.is_empty()).then(|| org.as_ref());
+    inject_gate_credential(headers, &api_key, oauth_token, org_id)
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM

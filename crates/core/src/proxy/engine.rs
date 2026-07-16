@@ -463,12 +463,10 @@ impl HttpHandler for GateHandler {
 /// Repoint a request at the gateway: swap scheme + authority for the
 /// gateway's, keep the original path/query, and inject the Gate headers.
 /// The app's own auth header (bearer / `x-api-key`) is left intact - Gate
-/// validates the Gate credential and forwards the rest.
-///
-/// Credential precedence: when `oauth_token` is `Some`, inject
-/// `X-Gate-Authorization: Bearer <token>` (plus `X-Gate-Org-Id` when `org_id`
-/// is `Some` - the gateway requires it on OAuth requests) and omit the API key;
-/// otherwise inject the legacy `X-Gate-Api-Key`.
+/// validates the Gate credential and forwards the rest. The credential
+/// precedence (OAuth token wins, else the legacy key) lives in
+/// [`super::inject_gate_credential`], shared with the relay so the two paths
+/// can't drift.
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
@@ -484,26 +482,9 @@ pub(crate) fn apply_rewrite<T>(
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
     let headers = req.headers_mut();
-    if let Some(token) = oauth_token {
-        headers.insert(
-            "x-gate-authorization",
-            HeaderValue::from_str(&format!("Bearer {token}"))
-                .context("building x-gate-authorization header")?,
-        );
-        if let Some(org) = org_id {
-            headers.insert(
-                "x-gate-org-id",
-                HeaderValue::from_str(org).context("building x-gate-org-id header")?,
-            );
-        }
-    } else {
-        headers.insert(
-            "x-gate-api-key",
-            HeaderValue::from_str(api_key).context("building x-gate-api-key header")?,
-        );
-    }
+    super::inject_gate_credential(headers, api_key, oauth_token, org_id)?;
     headers.insert(
-        "x-gate-upstream-url",
+        super::UPSTREAM_URL_HEADER,
         HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
     );
     Ok(())
