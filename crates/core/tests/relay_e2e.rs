@@ -242,7 +242,11 @@ async fn relay_falls_back_to_api_key_when_no_token() {
 async fn relay_respects_caller_supplied_gate_key() {
     let gateway = start_mock_gateway().await;
     // Seed an OAuth token + org, which would normally be injected as a bearer.
-    let engine = boot_engine(gateway.base_url.clone(), "cognito-access-token", "org-uuid-1");
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
 
     let client = reqwest::Client::builder().build().unwrap();
     let resp = client
