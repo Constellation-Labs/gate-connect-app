@@ -164,8 +164,8 @@ pub enum Response {
         fingerprint: String,
     },
     /// Acknowledges a [`Request::SetIntercept`] with the MITM proxy port and
-        /// the CLI reverse-proxy relay port actually bound.
-        Intercepting { port: u16, relay_port: u16 },
+    /// the CLI reverse-proxy relay port actually bound.
+    Intercepting { port: u16, relay_port: u16 },
     /// Generic success (passthrough / shutdown accepted).
     Ok,
     /// Current state for [`Request::Status`].
