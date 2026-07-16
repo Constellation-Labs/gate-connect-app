@@ -133,6 +133,10 @@ struct RelayState {
     /// the MITM engine's `decide` does: inference (`/v1/`) rewrites to the
     /// gateway, everything else passes through to the real upstream.
     domains: Vec<ProxyDomain>,
+    /// The UID allowed to spend the host's Gate credential, or `None` to allow
+    /// any loopback peer. Set only where UIDs are resolvable (Linux); mirrors
+    /// [`super::engine::EngineConfig::owner_uid`]. See [`RelayState::peer_allowed`].
+    owner_uid: Option<u32>,
 }
 
 impl RelayState {
@@ -141,6 +145,7 @@ impl RelayState {
         api_key: watch::Receiver<Arc<str>>,
         token: watch::Receiver<Arc<str>>,
         org: watch::Receiver<Arc<str>>,
+        owner_uid: Option<u32>,
     ) -> Self {
         let scheme = gateway.scheme_str().unwrap_or("https");
         let authority = gateway.authority().map(|a| a.as_str()).unwrap_or("");
@@ -169,6 +174,21 @@ impl RelayState {
             token,
             org,
             domains: default_domains(),
+            owner_uid,
+        }
+    }
+
+    /// Whether `peer` (a loopback connection's remote address) may spend the
+    /// host's Gate credential. `true` when no owner restriction is set;
+    /// otherwise the peer's resolved UID must equal the owner. Fails **closed**:
+    /// an unresolvable UID is rejected rather than served, so we never hand the
+    /// credential to an unverified local process. Mirrors the MITM engine's
+    /// `peer_allowed`, except the relay drops the connection where the engine
+    /// falls back to a blind tunnel.
+    fn peer_allowed(&self, peer: std::net::SocketAddr) -> bool {
+        match self.owner_uid {
+            None => true,
+            Some(owner) => super::engine::peer_uid_for(peer) == Some(owner),
         }
     }
 }
@@ -182,10 +202,11 @@ pub(crate) fn spawn(
     api_key: watch::Receiver<Arc<str>>,
     token: watch::Receiver<Arc<str>>,
     org: watch::Receiver<Arc<str>>,
+    owner_uid: Option<u32>,
 ) -> Result<()> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
-    let state = Arc::new(RelayState::new(&gateway, api_key, token, org));
+    let state = Arc::new(RelayState::new(&gateway, api_key, token, org, owner_uid));
     tokio::spawn(accept_loop(listener, state));
     Ok(())
 }
@@ -194,10 +215,20 @@ pub(crate) fn spawn(
 /// engine-hosted [`spawn`] and the standalone [`serve`].
 async fn accept_loop(listener: TcpListener, state: Arc<RelayState>) {
     loop {
-        let (stream, _) = match listener.accept().await {
+        let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(_) => continue,
         };
+        // Only the owner may spend the host's Gate credential. Drop a non-owner
+        // (or UID-unresolvable) peer before serving it - unlike the MITM engine,
+        // which blind-tunnels, the relay has nowhere to forward without the
+        // credential, so refusing the connection is the fail-closed action.
+        if !state.peer_allowed(peer) {
+            if super::engine::debug_log() {
+                eprintln!("[gate-relay] refusing connection from non-owner peer {peer}");
+            }
+            continue;
+        }
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
@@ -249,7 +280,14 @@ pub fn serve() -> Result<()> {
 
         let listener =
             TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
-        let state = Arc::new(RelayState::new(&gateway, key_rx, token_rx, org_rx));
+        // Only the user who launched `proxy serve` may spend its credential.
+        // UID gating is Linux-only (see `engine::peer_uid_for`); elsewhere a
+        // loopback peer's UID isn't resolvable, so we can't gate.
+        #[cfg(target_os = "linux")]
+        let owner_uid = Some(unsafe { libc::geteuid() });
+        #[cfg(not(target_os = "linux"))]
+        let owner_uid: Option<u32> = None;
+        let state = Arc::new(RelayState::new(&gateway, key_rx, token_rx, org_rx, owner_uid));
         tokio::spawn(accept_loop(listener, state));
 
         println!("gate-connect relay listening on {}", base_url(port));
@@ -384,10 +422,9 @@ async fn proxy(
     })
 }
 
-/// Overwrite any client-supplied Gate credential headers with the live one,
-/// via the precedence rule shared with the MITM engine
-/// ([`inject_gate_credential`]): an OAuth token wins and the API key is
-/// dropped; otherwise the legacy key is injected.
+/// Inject the live Gate credential, via the rule shared with the MITM engine
+/// ([`inject_gate_credential`]): a caller-supplied `x-gate-api-key` is left
+/// untouched; otherwise an OAuth token wins over the legacy key.
 fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> {
     // Clone the values out of the watch guards so no lock is held.
     let token: Arc<str> = state.token.borrow().clone();
