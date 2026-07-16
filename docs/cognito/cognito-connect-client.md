@@ -94,7 +94,7 @@ aws cognito-idp create-user-pool-client \
     http://localhost:8978/callback \
     http://localhost:8979/callback \
   --supported-identity-providers COGNITO Google \
-  --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH \
+  --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH ALLOW_USER_AUTH \
   --prevent-user-existence-errors ENABLED \
   --region us-east-1 --no-cli-pager --query 'UserPoolClient.ClientId'
 ```
@@ -110,6 +110,12 @@ Flag notes:
 - Host is `localhost`, not `127.0.0.1`: Cognito only accepts `http` callbacks on
   `localhost`. The app advertises `http://localhost:<port>/callback` accordingly.
 - `ALLOW_REFRESH_TOKEN_AUTH`: needed for the app's silent token refresh.
+- `ALLOW_USER_AUTH`: enables choice-based sign-in, which is what surfaces the
+  passkey option in Managed Login (the shared pool's WebAuthn config does the
+  rest). This necessarily switches the login screen to the identifier-first
+  design (email first, then password/passkey on the next screen); the classic
+  combined username+password screen and passkey are mutually exclusive. Omit this
+  flag to keep the classic screen at the cost of no passkey.
 - `COGNITO Google`: lets users who signed up via Google sign in too.
 - Scopes match the app's compiled default, so no build-time scope override is
   needed. Optional hardening below.
