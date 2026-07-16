@@ -193,7 +193,7 @@ fn enabled_only(domains: &[ProxyDomain]) -> Vec<ProxyDomain> {
 
 /// Whether to emit per-request engine logs to stderr. Off unless
 /// `GATE_PROXY_DEBUG` is set in the environment, so production stays quiet.
-fn debug_log() -> bool {
+pub(crate) fn debug_log() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_DEBUG").is_some())
 }
@@ -268,8 +268,10 @@ impl GateHandler {
 /// (i.e. the connecting peer's socket) by scanning the kernel's TCP table.
 /// Linux-only; other platforms never set `owner_uid`, so this just reports
 /// "unknown". Returns `None` if the socket isn't found or can't be parsed.
+/// Shared with the relay (`super::relay`), which gates its accept loop the
+/// same way the MITM path gates interception.
 #[cfg(target_os = "linux")]
-fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
+pub(crate) fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
     use std::net::{Ipv4Addr, SocketAddr};
     // Clients reach us at http://127.0.0.1:<port>, so the peer is IPv4 loopback;
     // we only parse /proc/net/tcp (v4). A v6 peer (shouldn't happen) fails
@@ -305,7 +307,7 @@ fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn peer_uid_for(_addr: std::net::SocketAddr) -> Option<u32> {
+pub(crate) fn peer_uid_for(_addr: std::net::SocketAddr) -> Option<u32> {
     None
 }
 
@@ -456,9 +458,9 @@ impl HttpHandler for GateHandler {
 /// gateway's, keep the original path/query, and inject the Gate headers.
 /// The app's own auth header (bearer / `x-api-key`) is left intact - Gate
 /// validates the Gate credential and forwards the rest. The credential
-/// precedence (OAuth token wins, else the legacy key) lives in
-/// [`super::inject_gate_credential`], shared with the relay so the two paths
-/// can't drift.
+/// precedence (a caller-supplied `x-gate-api-key` is respected, else OAuth
+/// token wins over the legacy key) lives in [`super::inject_gate_credential`],
+/// shared with the relay so the two paths can't drift.
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
@@ -625,6 +627,8 @@ where
     let relay_key_rx = key_rx.clone();
     let relay_token_rx = token_rx.clone();
     let relay_org_rx = org_rx.clone();
+    // The relay gates its accept loop on the same owner UID the MITM path uses.
+    let relay_owner_uid = cfg.owner_uid;
     let handler = GateHandler {
         rules: rules_rx,
         gateway,
@@ -723,6 +727,7 @@ where
                     relay_key_rx,
                     relay_token_rx,
                     relay_org_rx,
+                    relay_owner_uid,
                 ) {
                     eprintln!("gate proxy relay failed to start: {e}");
                 }
