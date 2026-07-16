@@ -19,7 +19,7 @@ import { classifyError, type ErrorContext } from "./errors";
 export type AnalyticsEvent =
   | "app_launched"
   | "signed_in"
-  | "disconnected"
+  | "workspace_forgotten"
   | "key_replaced"
   | "proxy_enabled"
   | "proxy_disabled"
