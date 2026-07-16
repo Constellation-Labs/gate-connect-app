@@ -820,8 +820,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         // Desktop notifications. Registered on all desktop platforms (harmless);
-        // only fired on Linux, whose tray backends are the weakest signal for a
-        // dead OAuth session (see the refresh loop in `setup`).
+        // fired on macOS + Linux when a dead OAuth session is detected (Windows
+        // relies on the tray tooltip). See the refresh loop in `setup`.
         .plugin(tauri_plugin_notification::init())
         // Login item, controlled by the standalone "Launch at login" setting
         // (see `set_launch_at_login`). It is no longer armed/disarmed by the
@@ -1182,11 +1182,11 @@ pub fn run() {
                             .unwrap_or(false);
                         update_tray_status(&refresh_handle, running);
                         // First tick that finds the session dead: nudge the user
-                        // on Linux, where the tray dot/tooltip are the weakest
-                        // signal (some desktops need an AppIndicator extension to
-                        // show the tray at all). Fired once per death by the edge
-                        // guard above.
-                        #[cfg(target_os = "linux")]
+                        // with a system notification on macOS + Linux, so the
+                        // dead session is noticed even when the popover is closed
+                        // and the menu-bar/tray dot is out of the user's eyeline.
+                        // Fired once per death by the edge guard above.
+                        #[cfg(any(target_os = "macos", target_os = "linux"))]
                         if dead {
                             use tauri_plugin_notification::NotificationExt;
                             let _ = refresh_handle
@@ -1288,7 +1288,7 @@ pub fn run() {
                             .map(|s| s.running)
                             .unwrap_or(false);
                         update_tray_status(app, running);
-                        #[cfg(target_os = "linux")]
+                        #[cfg(any(target_os = "macos", target_os = "linux"))]
                         if on {
                             use tauri_plugin_notification::NotificationExt;
                             let _ = app
