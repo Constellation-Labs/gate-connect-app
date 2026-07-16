@@ -111,7 +111,6 @@ use super::{
     UPSTREAM_URL_HEADER,
 };
 
-
 /// Everything a relay connection needs, shared across all requests.
 struct RelayState {
     /// TLS client for the gateway hop. Redirects disabled - a proxy forwards
@@ -287,7 +286,9 @@ pub fn serve() -> Result<()> {
         let owner_uid = Some(unsafe { libc::geteuid() });
         #[cfg(not(target_os = "linux"))]
         let owner_uid: Option<u32> = None;
-        let state = Arc::new(RelayState::new(&gateway, key_rx, token_rx, org_rx, owner_uid));
+        let state = Arc::new(RelayState::new(
+            &gateway, key_rx, token_rx, org_rx, owner_uid,
+        ));
         tokio::spawn(accept_loop(listener, state));
 
         println!("gate-connect relay listening on {}", base_url(port));
