@@ -365,14 +365,22 @@ impl From<&gate_connect_core::oauth::OAuthTokens> for OAuthStatusDto {
 }
 
 fn oauth_status_now() -> Result<OAuthStatusDto, String> {
-    match gate_connect_core::oauth::current().map_err(|e| format!("{e:#}"))? {
-        Some(t) => Ok(OAuthStatusDto::from(&t)),
-        None => Ok(OAuthStatusDto {
+    // Share the injector's source of truth (`live_session`): refresh a stale
+    // access token so status reflects a live session, and report signed-out when
+    // there's no usable session - never signed in, signed out, or the refresh
+    // token is dead / unreachable. Reporting signed-out here is what routes the
+    // UI back to the sign-in prompt instead of showing a signed-in home that's
+    // actually riding the legacy API-key fallback. Keeping a running engine's
+    // token fresh is the background refresh loop's job (see `run()`), not this
+    // read's, so status stays a read that never mutates engine state.
+    Ok(match gate_connect_core::oauth::live_session() {
+        Some(t) => OAuthStatusDto::from(&t),
+        None => OAuthStatusDto {
             signed_in: false,
             email: None,
             expires_at_unix: 0,
-        }),
-    }
+        },
+    })
 }
 
 /// Run one interactive Cognito login: open the Hosted UI in the browser and

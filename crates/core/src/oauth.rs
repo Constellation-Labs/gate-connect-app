@@ -340,17 +340,29 @@ pub fn clear() -> Result<()> {
     Ok(())
 }
 
-/// The access token to inject into gateway requests right now: the stored
-/// token if present and not past its skew-adjusted expiry, else an empty
-/// string (meaning "fall back to the legacy API key"). This is the single
-/// source of truth the proxy managers seed the engine from.
+/// The live OAuth session right now: the stored token if still valid, silently
+/// refreshed via the refresh token if it's past its skew-adjusted expiry, or
+/// `None` when there's no usable session - never signed in, signed out, or the
+/// refresh token is dead / unreachable. Never errors: a failed refresh reports
+/// `None` so callers drop to the sign-in prompt (status) or the legacy API key
+/// (injection) rather than surfacing a transient error or riding a token that no
+/// longer works.
+///
+/// Shared by [`access_token_for_injection`] and the Tauri `oauth_status`
+/// command so the credential the engine actually sends and the signed-in state
+/// the UI shows can't disagree - the divergence that let an expired session keep
+/// reading as "signed in" while traffic had quietly reverted to the API key.
+pub fn live_session() -> Option<OAuthTokens> {
+    let cfg = OAuthConfig::from_build_env()?;
+    ensure_fresh(&cfg).ok().flatten()
+}
+
+/// The access token to inject into gateway requests right now: the live session's
+/// access token (refreshed if it had expired), else an empty string (meaning
+/// "fall back to the legacy API key"). This is the single source of truth the
+/// proxy managers seed the engine from.
 pub fn access_token_for_injection() -> String {
-    current()
-        .ok()
-        .flatten()
-        .filter(|t| !t.is_expired(OffsetDateTime::now_utc().unix_timestamp()))
-        .map(|t| t.access_token)
-        .unwrap_or_default()
+    live_session().map(|t| t.access_token).unwrap_or_default()
 }
 
 /// Return the freshest token bundle, refreshing silently if the stored one is
