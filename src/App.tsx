@@ -372,8 +372,8 @@ export function App() {
         codexDrifted={codexDrifted}
         onBack={() => {
           setProviderError(null);
-          setRestartHint(false);
-          setRelaunchHint(false);
+          // Keep restart/relaunch hints alive so a change made here still
+          // reminds the user on the home screen; their timers auto-dismiss.
           setScreen("home");
         }}
         onToggleProxy={toggleProxy}
