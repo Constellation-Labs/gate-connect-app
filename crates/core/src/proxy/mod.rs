@@ -136,19 +136,23 @@ pub(crate) const GATE_ORG_HEADER: &str = "x-gate-org-id";
 /// shared by the MITM engine ([`engine::apply_rewrite`]) and the loopback
 /// [`relay`] so the two paths can't drift.
 ///
-/// Any client-supplied Gate credential headers are stripped first, so a local
-/// process can't smuggle an attacker-chosen token, key, or org past us to the
-/// gateway. Then: a non-empty `oauth_token` wins - `X-Gate-Authorization:
-/// Bearer <token>` plus `X-Gate-Org-Id` when `org_id` is `Some` - and the API
-/// key is omitted; otherwise the legacy `X-Gate-Api-Key` is injected.
+/// If the caller already set an `X-Gate-Api-Key`, that's respected: the Gate
+/// headers are left exactly as they arrived and nothing is injected. Otherwise
+/// any stray `X-Gate-Authorization` / `X-Gate-Org-Id` are stripped (so an org
+/// can't ride alongside the credential we inject) and the live credential is
+/// added: a non-empty `oauth_token` wins - `X-Gate-Authorization: Bearer
+/// <token>` plus `X-Gate-Org-Id` when `org_id` is `Some` - otherwise the legacy
+/// `X-Gate-Api-Key`.
 pub(crate) fn inject_gate_credential(
     headers: &mut HeaderMap,
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
 ) -> Result<()> {
+    if headers.contains_key(GATE_KEY_HEADER) {
+        return Ok(());
+    }
     headers.remove(GATE_AUTHORIZATION_HEADER);
-    headers.remove(GATE_KEY_HEADER);
     headers.remove(GATE_ORG_HEADER);
     match oauth_token.filter(|t| !t.is_empty()) {
         Some(token) => {

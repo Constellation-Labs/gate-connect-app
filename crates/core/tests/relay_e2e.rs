@@ -109,6 +109,15 @@ fn mint_ca() -> (String, String) {
 }
 
 fn boot_engine(gateway_base_url: String, oauth_token: &str, org_id: &str) -> engine::RunningEngine {
+    boot_engine_owned(gateway_base_url, oauth_token, org_id, None)
+}
+
+fn boot_engine_owned(
+    gateway_base_url: String,
+    oauth_token: &str,
+    org_id: &str,
+    owner_uid: Option<u32>,
+) -> engine::RunningEngine {
     let (ca_cert_pem, ca_key_pem) = mint_ca();
     engine::start(
         EngineConfig {
@@ -121,7 +130,7 @@ fn boot_engine(gateway_base_url: String, oauth_token: &str, org_id: &str) -> eng
             ca_key_pem,
             preferred_port: None,
             preferred_relay_port: None,
-            owner_uid: None,
+            owner_uid,
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             upstream_proxy: None,
         },
@@ -227,6 +236,45 @@ async fn relay_falls_back_to_api_key_when_no_token() {
     );
 }
 
+/// A caller that supplies its own `x-gate-api-key` keeps it: the relay forwards
+/// that key untouched and injects nothing - not even the seeded OAuth token.
+#[tokio::test]
+async fn relay_respects_caller_supplied_gate_key() {
+    let gateway = start_mock_gateway().await;
+    // Seed an OAuth token + org, which would normally be injected as a bearer.
+    let engine = boot_engine(gateway.base_url.clone(), "cognito-access-token", "org-uuid-1");
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("x-gate-upstream-url", "https://api.anthropic.com")
+        .header("x-gate-api-key", "sk-gw-caller")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("relay request should succeed");
+    assert!(resp.status().is_success());
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    let r = &reqs[0];
+    assert_eq!(
+        r.header("x-gate-api-key"),
+        Some("sk-gw-caller"),
+        "the caller's own key must be forwarded untouched"
+    );
+    assert_eq!(
+        r.header("x-gate-authorization"),
+        None,
+        "the seeded OAuth token must not be injected over a caller-supplied key"
+    );
+}
+
 /// A refreshed token reaches the relay live, with no restart and no config
 /// rewrite - the whole point of injecting per request.
 #[tokio::test]
@@ -288,5 +336,46 @@ async fn relay_rejects_unknown_upstream() {
     assert!(
         gateway.captured.lock().unwrap().is_empty(),
         "a rejected upstream must never reach the gateway"
+    );
+}
+
+/// A non-owner peer can't spend the host credential: with an `owner_uid` that
+/// can't match our connection, the relay drops the socket before serving, so
+/// the client sees a closed connection and nothing reaches the gateway. UID
+/// resolution is Linux-only, so the gate is only enforced (and tested) there.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn relay_refuses_non_owner_peer() {
+    let gateway = start_mock_gateway().await;
+    // u32::MAX can never be our real UID, so `peer_uid_for` (our own loopback
+    // connection) resolves to a different value and the peer is refused. An
+    // unresolvable UID (None) also fails closed, so either way this is refused.
+    let engine = boot_engine_owned(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+        Some(u32::MAX),
+    );
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let result = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("x-gate-upstream-url", "https://api.anthropic.com")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await;
+
+    engine.stop();
+
+    assert!(
+        result.is_err(),
+        "a non-owner peer must be refused, got {result:?}"
+    );
+    assert!(
+        gateway.captured.lock().unwrap().is_empty(),
+        "nothing may reach the gateway when the peer is refused"
     );
 }
