@@ -28,7 +28,7 @@ import { ProxyScreen } from "./screens/ProxyScreen";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { ComingSoon } from "./screens/ComingSoon";
-import { UpdateBanner } from "./components/UpdateBanner";
+import { UpdatePanel } from "./components/UpdatePanel";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { track, trackError } from "./lib/analytics";
@@ -419,7 +419,7 @@ export function App() {
 
   return (
     <div
-      className={`flex h-full w-full flex-col overflow-y-auto overflow-x-hidden bg-gc-surface text-gc-ink${
+      className={`relative flex h-full w-full flex-col overflow-y-auto overflow-x-hidden bg-gc-surface text-gc-ink${
         // Linux runs as a borderless, opaque window, so a rounded card just
         // exposes the square window corners behind it. macOS/Windows round the
         // window itself, so the card rounds to match.
@@ -432,13 +432,13 @@ export function App() {
       }`}
     >
       {platform === "linux" && <LinuxTitleBar />}
-      <UpdateBanner />
       {body}
       {version && (
         <p className="mt-auto shrink-0 px-3.5 py-2 text-center font-mono text-[10.5px] text-gc-ink-5">
           v{version}
         </p>
       )}
+      <UpdatePanel />
     </div>
   );
 }
