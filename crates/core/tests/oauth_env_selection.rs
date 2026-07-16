@@ -1,17 +1,20 @@
 //! `OAuthConfig::from_build_env` resolves the production vs staging Cognito
 //! pool from the currently-selected gateway host. Exercises the real
 //! `account.json` read against a throwaway data dir (via the
-//! [`env::set_app_support_dir_for_tests`] seam), in its own test binary so the
-//! process-global data-dir + env-var overrides can't leak into other tests.
+//! `GATE_CONNECT_TEST_HOME` seam), in its own test binary so the process-global
+//! data-dir + env-var overrides can't leak into other tests.
 
 use std::fs;
 use std::path::PathBuf;
 
-use gate_connect_core::{account, env, oauth::OAuthConfig};
+use gate_connect_core::{account, oauth::OAuthConfig};
 
 /// Point `app_support_dir()` at a fresh temp dir for the duration of a test, so
-/// `account.json` resolves there on every OS. Clears the override and deletes
-/// the dir on drop.
+/// `account.json` resolves there on every OS. Uses the `GATE_CONNECT_TEST_HOME`
+/// seam rather than the process-global mutex override, because `app_support_dir`
+/// consults that env var first: a mutex override would be silently bypassed when
+/// the env var is already set in the environment (CI). Clears the seam and
+/// deletes the dir on drop.
 struct TempDataDir {
     dir: PathBuf,
 }
@@ -29,14 +32,14 @@ impl TempDataDir {
             n
         ));
         fs::create_dir_all(&dir).unwrap();
-        env::set_app_support_dir_for_tests(Some(dir.clone()));
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
         TempDataDir { dir }
     }
 }
 
 impl Drop for TempDataDir {
     fn drop(&mut self) {
-        env::set_app_support_dir_for_tests(None);
+        std::env::remove_var("GATE_CONNECT_TEST_HOME");
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
