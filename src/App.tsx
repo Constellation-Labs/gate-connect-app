@@ -218,6 +218,35 @@ export function App() {
     };
   }, []);
 
+  // The popover webview persists across tray hide/show, so the initial-load
+  // effect doesn't re-run when the user reopens the popover. Re-check the OAuth
+  // session whenever the window regains focus: if the access token expired while
+  // the popover was closed and couldn't be silently refreshed (refresh token
+  // revoked / offline), drop to the sign-in prompt instead of leaving a
+  // signed-in home up that's actually riding the legacy API-key fallback. Scoped
+  // to OAuth accounts - a pasted-key account has no session to expire.
+  useEffect(() => {
+    if (account?.auth_mode !== "oauth") return;
+    let alive = true;
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) return;
+      void (async () => {
+        const oauthState = await oauthStatus().catch(() => null);
+        if (!alive) return;
+        setOAuth(oauthState);
+        // Session died out from under us: prompt re-sign-in. Guard on needsOrg so
+        // a signed-in-but-org-pending session isn't yanked off the picker.
+        if (!isSignedIn(account, oauthState) && !needsOrg(account, oauthState)) {
+          setScreen("firstrun");
+        }
+      })();
+    });
+    return () => {
+      alive = false;
+      void unlisten.then((f) => f());
+    };
+  }, [account]);
+
   // The onboarding window announces completion; record the seen-flag in this
   // webview's storage too so the intro doesn't re-gate the next launch on
   // platforms where the two webviews don't share localStorage.
