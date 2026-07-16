@@ -1087,25 +1087,24 @@ pub fn run() {
             // "sign in" state the UI derives from oauth_status. Best-effort, off
             // the tray thread.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            std::thread::spawn(|| {
-                let cfg = gate_connect_core::oauth::OAuthConfig::from_build_env();
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(
-                        gate_connect_core::oauth::REFRESH_INTERVAL_SECS,
-                    ));
-                    if gate_connect_core::account::auth_mode().unwrap_or_default()
-                        != gate_connect_core::account::AuthMode::OAuth
-                    {
-                        continue;
-                    }
-                    if let Some(cfg) = cfg.as_ref() {
-                        if let Err(e) = gate_connect_core::oauth::ensure_fresh(cfg) {
-                            eprintln!("[gate] periodic OAuth token refresh failed: {e}");
-                        }
-                    }
-                    gate_connect_core::proxy::manager()
-                        .refresh_token(&gate_connect_core::oauth::access_token_for_injection());
+            std::thread::spawn(|| loop {
+                std::thread::sleep(std::time::Duration::from_secs(
+                    gate_connect_core::oauth::REFRESH_INTERVAL_SECS,
+                ));
+                if gate_connect_core::account::auth_mode().unwrap_or_default()
+                    != gate_connect_core::account::AuthMode::OAuth
+                {
+                    continue;
                 }
+                // `live_session` silently refreshes a stale token (persisting it)
+                // and yields None when the session is dead; push the result into
+                // the running engine (a no-op when routing is off). "" reverts to
+                // the API-key fallback, matching the signed-out state the UI
+                // derives from oauth_status.
+                let token = gate_connect_core::oauth::live_session()
+                    .map(|t| t.access_token)
+                    .unwrap_or_default();
+                gate_connect_core::proxy::manager().refresh_token(&token);
             });
 
             // Linux dismisses the popover by minimizing (see the Focused(false)

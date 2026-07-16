@@ -261,17 +261,14 @@ pub fn serve() -> Result<()> {
 
         println!("gate-connect relay listening on {}", base_url(port));
 
-        // Keep the OAuth token fresh (silent refresh) and pick up an org switch;
-        // block forever hosting the relay.
-        let cfg = crate::oauth::OAuthConfig::from_build_env();
+        // Keep the OAuth token fresh (`access_token_for_injection` silently
+        // refreshes a stale token) and pick up an org switch; block forever
+        // hosting the relay.
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(
                 crate::oauth::REFRESH_INTERVAL_SECS,
             ))
             .await;
-            if let Some(cfg) = cfg.as_ref() {
-                let _ = crate::oauth::ensure_fresh(cfg);
-            }
             let _ = token_tx.send(Arc::from(
                 crate::oauth::access_token_for_injection().as_str(),
             ));
