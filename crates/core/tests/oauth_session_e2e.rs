@@ -171,11 +171,16 @@ fn live_session_passes_through_valid_refreshes_expired_and_reports_dead() {
     let secrets = temp_secrets_dir();
     std::env::set_var("GATE_CONNECT_TEST_TOKEN_ENDPOINT", &mock.endpoint);
     std::env::set_var("GATE_CONNECT_TEST_SECRETS", &secrets);
-    // Pin the data dir at a throwaway location so `from_build_env()` (which now
-    // reads `account.json` to choose the prod vs staging Cognito pool) sees no
-    // account and takes the prod branch, matching the prod-name vars below.
-    // Without this the test would read the real machine's account host.
+    // Pin the data dir at a throwaway location so `from_build_env()` reads our
+    // seeded `account.json` (below) rather than the real machine's, and so the
+    // keychain seam stores tokens under it.
     env::set_app_support_dir_for_tests(Some(secrets.clone()));
+    // Seed an OAuth-mode account. The gateway host is deliberately non-staging,
+    // so `from_build_env()` takes the prod branch matching the prod-name vars
+    // below; the auth mode is what `access_token_for_injection` gates on.
+    gate_connect_core::account::save("https://gateway.example.com", None).expect("seed account");
+    gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
+        .expect("set oauth mode");
     // `live_session` derives its config from the environment; these make
     // `from_build_env()` return Some. The token endpoint is overridden by the
     // seam above, so the domain value itself is never contacted.
@@ -271,6 +276,30 @@ fn live_session_passes_through_valid_refreshes_expired_and_reports_dead() {
     assert!(
         oauth::current().expect("read").is_some(),
         "a failed refresh must not clear the stored bundle"
+    );
+
+    // 5. Auth mode gates injection independently of the session. A valid OAuth
+    //    session persists (so the user can switch back without re-authenticating),
+    //    but in ApiKey mode the injector returns empty - a freshly pasted Gate
+    //    key must not be overridden by a still-live bearer.
+    oauth::store(&tokens("at-mode-gated", "rt-mode", now + 3600)).expect("store valid");
+    gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::ApiKey)
+        .expect("switch to api-key mode");
+    assert!(
+        oauth::live_session().is_some(),
+        "the OAuth session survives an auth-mode switch"
+    );
+    assert_eq!(
+        oauth::access_token_for_injection(),
+        "",
+        "ApiKey mode must not inject the OAuth bearer"
+    );
+    gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
+        .expect("restore oauth mode");
+    assert_eq!(
+        oauth::access_token_for_injection(),
+        "at-mode-gated",
+        "OAuth mode injects the live token again"
     );
 
     // Clean up the seams and temp dir.

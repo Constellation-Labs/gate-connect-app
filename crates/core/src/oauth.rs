@@ -406,7 +406,16 @@ pub fn live_session() -> Option<OAuthTokens> {
 /// access token (refreshed if it had expired), else an empty string (meaning
 /// "fall back to the legacy API key"). This is the single source of truth the
 /// proxy managers seed the engine from.
+///
+/// Gated on the persisted auth mode: in `ApiKey` mode this always returns empty,
+/// even when a valid Cognito session still exists. Without the gate, pasting a
+/// Gate key - which flips the mode to `ApiKey` - would keep injecting the stale
+/// OAuth bearer (and survive restarts, since every seed path reads this) until
+/// the token happened to expire, so the pasted key never took effect.
 pub fn access_token_for_injection() -> String {
+    if crate::account::auth_mode().unwrap_or_default() != crate::account::AuthMode::OAuth {
+        return String::new();
+    }
     live_session().map(|t| t.access_token).unwrap_or_default()
 }
 
