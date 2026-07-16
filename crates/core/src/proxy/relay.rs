@@ -37,7 +37,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
-use crate::proxy::default_domains;
+use crate::proxy::{default_domains, ProxyDomain};
 
 /// Where the stable relay port is persisted. CLI tool configs bake
 /// `http://127.0.0.1:<port>`, so the port must survive restarts: the manager
@@ -132,10 +132,12 @@ struct RelayState {
     /// Live selected org UUID; empty means "none selected". Injected only when
     /// a token is present.
     org: watch::Receiver<Arc<str>>,
-    /// Upstream URLs the built-in catalog permits. The relay refuses to forward
-    /// a request whose `x-gate-upstream-url` isn't one of these, so a local
-    /// process can't aim the gateway at an arbitrary host .
-    allowed_upstreams: Vec<String>,
+    /// The built-in domain catalog. Used to (a) validate the tool-supplied
+    /// `x-gate-upstream-url` against a known upstream - so a local process can't
+    /// aim the relay at an arbitrary host - and (b) classify each path the way
+    /// the MITM engine's `decide` does: inference (`/v1/`) rewrites to the
+    /// gateway, everything else passes through to the real upstream.
+    domains: Vec<ProxyDomain>,
 }
 
 impl RelayState {
@@ -165,17 +167,13 @@ impl RelayState {
             builder = builder.tls_certs_only([ca]);
         }
         let client = builder.build().expect("building relay reqwest client");
-        let allowed_upstreams = default_domains()
-            .into_iter()
-            .map(|d| d.upstream_url)
-            .collect();
         Self {
             client,
             gateway_base: format!("{scheme}://{authority}"),
             api_key,
             token,
             org,
-            allowed_upstreams,
+            domains: default_domains(),
         }
     }
 }
@@ -300,8 +298,13 @@ async fn proxy(
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| "/".to_string());
 
-    // The tool config sets the (non-secret) upstream hint; validate it against
-    // the catalog before we forward anything under the Gate credential.
+    // The tool config sets the (non-secret) upstream hint; classify the request
+    // against the catalog before we forward anything. Inference paths rewrite to
+    // the gateway under the Gate credential; account/metadata paths (e.g. Claude
+    // Code's `/api/oauth/usage`) pass through to the real upstream under the
+    // tool's own credential - mirroring the MITM engine's `decide`. Without this
+    // the relay funnels every path to the gateway, which only serves inference
+    // and 404s the rest.
     let upstream = req
         .headers()
         .get(UPSTREAM_URL_HEADER)
@@ -311,17 +314,26 @@ async fn proxy(
             StatusCode::BAD_REQUEST,
             format!("missing {UPSTREAM_URL_HEADER} header"),
         ))?;
-    if !state.allowed_upstreams.iter().any(|u| u == &upstream) {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!("upstream {upstream:?} is not in the built-in catalog"),
-        ));
-    }
+    let route = route(&state.domains, &upstream, &path_and_query).ok_or((
+        StatusCode::FORBIDDEN,
+        format!("upstream {upstream:?} is not in the built-in catalog"),
+    ))?;
 
     let mut headers = req.headers().clone();
     strip_hop_by_hop(&mut headers);
     headers.remove(HOST);
-    inject_credential(&mut headers, state);
+    let target = match route {
+        Route::Rewrite => {
+            inject_credential(&mut headers, state);
+            format!("{}{}", state.gateway_base, path_and_query)
+        }
+        Route::Passthrough => {
+            // Strip every Gate-internal header and forward under the tool's own
+            // `Authorization`; never inject the Gate credential here.
+            strip_gate_headers(&mut headers);
+            format!("{upstream}{path_and_query}")
+        }
+    };
 
     let body = req
         .into_body()
@@ -335,7 +347,6 @@ async fn proxy(
         })?
         .to_bytes();
 
-    let target = format!("{}{}", state.gateway_base, path_and_query);
     let upstream_resp = state
         .client
         .request(method, &target)
@@ -399,6 +410,48 @@ fn inject_credential(headers: &mut HeaderMap, state: &RelayState) {
     }
 }
 
+/// Where a relayed request should go. The relay's analogue of the MITM
+/// engine's [`Decision`](crate::proxy::Decision), but keyed by the
+/// tool-supplied `x-gate-upstream-url` hint instead of a CONNECT host.
+enum Route {
+    /// Inference path: rewrite to the gateway with the Gate credential injected.
+    Rewrite,
+    /// Account/metadata path: forward to the real upstream under the tool's own
+    /// credential.
+    Passthrough,
+}
+
+/// Classify a relayed request the way the MITM engine's `decide` does:
+/// passthrough prefixes win, then inference (`/v1/`) rewrites; any other path on
+/// a catalog upstream passes through. Returns `None` when `upstream` isn't in
+/// the built-in catalog, so the caller refuses to forward it.
+fn route(domains: &[ProxyDomain], upstream: &str, path: &str) -> Option<Route> {
+    let d = domains.iter().find(|d| d.upstream_url == upstream)?;
+    if d.passthrough_prefixes
+        .iter()
+        .any(|p| path.starts_with(p.as_str()))
+    {
+        return Some(Route::Passthrough);
+    }
+    if d.rewrite_prefixes
+        .iter()
+        .any(|p| path.starts_with(p.as_str()))
+    {
+        return Some(Route::Rewrite);
+    }
+    Some(Route::Passthrough)
+}
+
+/// Strip every Gate-internal header before a passthrough hop, so none of them
+/// leak to the real upstream. The tool's own `Authorization` is left untouched
+/// so account endpoints (usage, profile) authenticate as the tool's identity.
+fn strip_gate_headers(headers: &mut HeaderMap) {
+    headers.remove(UPSTREAM_URL_HEADER);
+    headers.remove(GATE_AUTHORIZATION_HEADER);
+    headers.remove(GATE_KEY_HEADER);
+    headers.remove(GATE_ORG_HEADER);
+}
+
 /// Hop-by-hop headers must not be forwarded end-to-end (RFC 9110 §7.6.1).
 fn is_hop_by_hop(name: &HeaderName) -> bool {
     matches!(
@@ -434,4 +487,35 @@ fn error_response(status: StatusCode, message: String) -> Response<BoxBody<Bytes
         .status(status)
         .body(body)
         .expect("building relay error response")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_inference_to_gateway_and_account_paths_to_upstream() {
+        let domains = default_domains();
+        let anthropic = "https://api.anthropic.com";
+
+        // Inference rewrites to the gateway.
+        assert!(matches!(
+            route(&domains, anthropic, "/v1/messages?beta=true"),
+            Some(Route::Rewrite)
+        ));
+        // Claude Code's usage/account calls pass through to the real upstream -
+        // the bug this fixes: they used to be funneled to the gateway and 404.
+        assert!(matches!(
+            route(&domains, anthropic, "/api/oauth/usage"),
+            Some(Route::Passthrough)
+        ));
+        // An explicit passthrough prefix (the Squirrel updater) also passes
+        // through, never rewritten.
+        assert!(matches!(
+            route(&domains, anthropic, "/api/desktop/RELEASES"),
+            Some(Route::Passthrough)
+        ));
+        // An upstream outside the catalog is refused.
+        assert!(route(&domains, "https://attacker.example", "/v1/messages").is_none());
+    }
 }
