@@ -4,8 +4,8 @@
 //! when the two halves have drifted, so a signed-in user is never touched.
 //!
 //! These exercise the real `account.json` read/write/remove against a throwaway
-//! data dir (via the [`env::set_app_support_dir_for_tests`] seam - a `$HOME`
-//! override doesn't redirect the data dir on Windows) plus a process-global
+//! data dir (via the `GATE_CONNECT_TEST_HOME` seam - a bare `$HOME` override
+//! doesn't redirect the data dir on Windows) plus a process-global
 //! in-memory keychain backend, so the real OS secret store is never touched. It
 //! lives in its own test binary so those process-wide overrides can't leak into
 //! the in-crate unit tests, and a `Mutex` serializes them within this binary.
@@ -19,8 +19,11 @@ use gate_connect_core::{account, env, keychain};
 static LOCK: Mutex<()> = Mutex::new(());
 
 /// Point `app_support_dir()` at a fresh temp dir for the duration of a test, so
-/// `account.json` resolves there on every OS. Clears the override and deletes
-/// the dir on drop.
+/// `account.json` resolves there on every OS. Uses the `GATE_CONNECT_TEST_HOME`
+/// seam rather than the process-global mutex override, because `app_support_dir`
+/// consults that env var first: a mutex override would be silently bypassed when
+/// the env var is already set in the environment (CI). Clears the seam and
+/// deletes the dir on drop.
 struct TempDataDir {
     dir: PathBuf,
 }
@@ -38,14 +41,14 @@ impl TempDataDir {
             n
         ));
         fs::create_dir_all(&dir).unwrap();
-        env::set_app_support_dir_for_tests(Some(dir.clone()));
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &dir);
         TempDataDir { dir }
     }
 }
 
 impl Drop for TempDataDir {
     fn drop(&mut self) {
-        env::set_app_support_dir_for_tests(None);
+        std::env::remove_var("GATE_CONNECT_TEST_HOME");
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
