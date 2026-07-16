@@ -262,8 +262,8 @@ mod tests {
 
     fn with_temp_env<T>(f: impl FnOnce() -> T) -> T {
         // These tests mutate process-global state (XDG_CONFIG_HOME and the
-        // app_support_dir test override) and share a single temp dir, so they
-        // must not run concurrently: otherwise one test's teardown
+        // GATE_CONNECT_TEST_HOME data-dir seam) and share a single temp dir, so
+        // they must not run concurrently: otherwise one test's teardown
         // `remove_dir_all` races another's writes and the atomic rename fails
         // with ENOENT. Serialize them. (`unwrap_or_else` swallows a poisoned
         // lock from an earlier panicking test so the rest still run.)
@@ -276,9 +276,18 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("gate-proxy-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         std::env::set_var("XDG_CONFIG_HOME", tmp.join("config"));
-        env::set_app_support_dir_for_tests(Some(tmp.join("data")));
+        // Redirect the data dir via the GATE_CONNECT_TEST_HOME seam, which
+        // `app_support_dir` consults before the mutex override - a mutex
+        // override would be silently bypassed when the env var is already set in
+        // the environment (CI). Save and restore any ambient value rather than
+        // clearing it, since this runs in-process alongside the other unit tests.
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &tmp);
         let out = f();
-        env::set_app_support_dir_for_tests(None);
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
         let _ = fs::remove_dir_all(&tmp);
         out
     }
