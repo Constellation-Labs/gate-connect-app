@@ -366,14 +366,6 @@ impl Integration for OpenClaw {
         remove_state()
     }
 
-    fn refresh_gate_key(&self, _api_key: &str) -> Result<()> {
-        // No-op: the reverse-proxy relay injects the Gate credential live per
-        // request, so openclaw.json carries no key and a rotation needs no
-        // rewrite. Kept to satisfy the trait; the old scheme rewrote an
-        // embedded X-Gate-Api-Key header per gated provider here.
-        Ok(())
-    }
-
     fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
         anyhow::bail!(
             "OpenClaw does not need a separate upstream credential — Gate Connect adds its headers to whatever provider(s) you've already configured in ~/.openclaw/openclaw.json."
