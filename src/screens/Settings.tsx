@@ -296,7 +296,7 @@ export function Settings({
               className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
             >
               <Icon name="trash" size={14} />
-              Forget
+              Reset
             </button>
           </div>
           {error && <p className="mt-2 px-3.5 text-[11.5px] text-gc-error">{error}</p>}
@@ -427,7 +427,7 @@ export function Settings({
             className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
           >
             <Icon name="trash" size={14} />
-            Forget
+            Reset
           </button>
         </div>
       )}
