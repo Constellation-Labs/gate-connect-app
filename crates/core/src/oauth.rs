@@ -194,6 +194,14 @@ pub struct AuthorizationRequest {
 
 /// Build the Hosted UI authorize URL for a fresh login. `redirect_uri` is
 /// the loopback callback the listener bound (`http://localhost:<port>/callback`).
+///
+/// `prompt=login` forces Cognito to show the login screen even when its Hosted
+/// UI session cookie is still live in the browser. Without it, an explicit
+/// sign-in after a sign-out / forget silently re-issues a code for whoever the
+/// browser is still signed in as ("You're signed in, close this tab"), giving
+/// the user no way to switch or add an account. This only runs on an explicit
+/// interactive sign-in - silent session resumption uses the refresh token
+/// ([`ensure_fresh`]), never this URL - so re-prompting here is always intended.
 pub fn begin_login(cfg: &OAuthConfig, redirect_uri: &str) -> Result<AuthorizationRequest> {
     let pkce = generate_pkce();
     let state = random_b64url();
@@ -208,6 +216,7 @@ pub fn begin_login(cfg: &OAuthConfig, redirect_uri: &str) -> Result<Authorizatio
             ("state", state.as_str()),
             ("code_challenge", pkce.challenge.as_str()),
             ("code_challenge_method", "S256"),
+            ("prompt", "login"),
         ],
     )
     .context("building Cognito authorize URL")?;
@@ -670,6 +679,9 @@ mod tests {
         assert_eq!(q["code_challenge_method"], "S256");
         assert_eq!(q["state"], req.state);
         assert!(!q["code_challenge"].is_empty());
+        // Forces the Hosted UI login screen so a re-sign-in can switch accounts
+        // instead of silently reusing the browser's Cognito session.
+        assert_eq!(q["prompt"], "login");
     }
 
     #[test]

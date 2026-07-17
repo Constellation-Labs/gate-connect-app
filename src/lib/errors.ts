@@ -69,7 +69,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     (lc.includes("authorization") && lc.includes("denied"))
   ) {
     const verb =
-      context === "forget" ? "Forget" : context === "sign_out" ? "Sign out" : "Connect";
+      context === "forget" ? "Reset" : context === "sign_out" ? "Sign out" : "Connect";
     return {
       title: "macOS prompt canceled",
       hint: `Click ${verb} again and approve the macOS password prompt.`,
@@ -124,7 +124,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     sign_in: "Couldn't save your account",
     sign_out: "Couldn't sign out",
     connect: "Couldn't connect this tool",
-    forget: "Couldn't forget the workspace",
+    forget: "Couldn't reset Gate Connect",
     save_api_key: "Couldn't save the API key",
     generic: "Something went wrong",
   };
