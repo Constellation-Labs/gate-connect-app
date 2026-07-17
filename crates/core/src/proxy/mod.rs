@@ -203,10 +203,20 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // Applies to every host above. Only group hosts that genuinely
             // share this upstream - never collapse distinct API hosts onto one.
             upstream_url: "https://api.anthropic.com".into(),
-            rewrite_prefixes: vec!["/v1/".into()],
-            // Paths outside /v1/ already pass through; this keeps the Squirrel
-            // auto-updater explicit. Other /api/* paths (claude_code,
-            // event_logging, bootstrap) also reach the real host unrewritten.
+            // Only genuine inference endpoints are rewritten to the gateway.
+            // Scoped deliberately narrow: Claude Desktop / Cowork also make
+            // OAuth + account calls on this same host under /v1/ (e.g.
+            // /v1/oauth/*, /v1/organizations/*), and those carry no model, so
+            // the gateway can't classify them and rejects them 503 ("AI
+            // unknown"). Rewriting only /v1/messages (covers count_tokens +
+            // batches sub-paths) and legacy /v1/complete lets every other /v1/
+            // path fall through to `decide`'s default Passthrough and reach the
+            // real host unchanged. Do NOT widen this back to "/v1/".
+            rewrite_prefixes: vec!["/v1/messages".into(), "/v1/complete".into()],
+            // Paths outside the inference set already pass through; this keeps
+            // the Squirrel auto-updater explicit. Other /api/* paths
+            // (claude_code, event_logging, bootstrap) also reach the real host
+            // unrewritten.
             passthrough_prefixes: vec!["/api/desktop/".into()],
             enabled: true,
             supported: true,
@@ -222,7 +232,17 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // manual integration (config.toml base_url) instead.
             hosts: vec!["api.openai.com".into()],
             upstream_url: "https://api.openai.com".into(),
-            rewrite_prefixes: vec!["/v1/".into()],
+            // Inference endpoints only, same reasoning as Anthropic above: a
+            // client's non-inference /v1/ calls (e.g. /v1/models preflight)
+            // carry no model, so the gateway can't classify them and 503s.
+            // Rewrite only the model-call paths; everything else on the host
+            // passes through to real api.openai.com. Do NOT widen back to "/v1/".
+            rewrite_prefixes: vec![
+                "/v1/chat/completions".into(),
+                "/v1/completions".into(),
+                "/v1/responses".into(),
+                "/v1/embeddings".into(),
+            ],
             passthrough_prefixes: vec![],
             enabled: false,
             supported: true,
@@ -301,6 +321,47 @@ mod tests {
         );
     }
 
+    /// Regression for AG (Claude Desktop 503s): OAuth/account calls live under
+    /// /v1/ on the same intercepted host but carry no model, so they must reach
+    /// real api.anthropic.com untouched - never be rewritten to the gateway
+    /// (which rejects them 503 "AI unknown"). Guards against re-widening
+    /// `rewrite_prefixes` back to "/v1/".
+    #[test]
+    fn passes_through_oauth_and_account_paths() {
+        let d = anthropic();
+        for path in [
+            "/v1/oauth/token",
+            "/v1/organizations",
+            "/v1/organizations/me",
+            "/v1/models",
+        ] {
+            assert_eq!(
+                decide(&d, "api.anthropic.com", path),
+                Decision::Passthrough,
+                "non-inference path {path} must pass through, not rewrite"
+            );
+        }
+    }
+
+    #[test]
+    fn rewrites_legacy_complete_and_count_tokens() {
+        let d = anthropic();
+        // Legacy text-completions endpoint.
+        assert_eq!(
+            decide(&d, "api.anthropic.com", "/v1/complete"),
+            Decision::Rewrite {
+                upstream_url: "https://api.anthropic.com".into()
+            }
+        );
+        // count_tokens rides under /v1/messages, so the prefix still catches it.
+        assert_eq!(
+            decide(&d, "api.anthropic.com", "/v1/messages/count_tokens"),
+            Decision::Rewrite {
+                upstream_url: "https://api.anthropic.com".into()
+            }
+        );
+    }
+
     #[test]
     fn ignores_unmatched_host() {
         let d = anthropic();
@@ -369,6 +430,31 @@ mod tests {
         );
         // case-insensitive host match
         assert!(should_intercept_host(&d, "API.OPENAI.COM"));
+    }
+
+    /// OpenAI mirror of `passes_through_oauth_and_account_paths`: non-inference
+    /// /v1/ calls must pass through to real api.openai.com, not be rewritten to
+    /// the gateway (which 503s on a modelless request). Chat + legacy
+    /// completions still rewrite.
+    #[test]
+    fn openai_passes_through_non_inference_and_rewrites_chat() {
+        let d = openai();
+        for path in ["/v1/models", "/v1/files", "/v1/assistants"] {
+            assert_eq!(
+                decide(&d, "api.openai.com", path),
+                Decision::Passthrough,
+                "non-inference path {path} must pass through, not rewrite"
+            );
+        }
+        for path in ["/v1/chat/completions", "/v1/completions", "/v1/embeddings"] {
+            assert_eq!(
+                decide(&d, "api.openai.com", path),
+                Decision::Rewrite {
+                    upstream_url: "https://api.openai.com".into()
+                },
+                "inference path {path} must rewrite to the gateway"
+            );
+        }
     }
 
     #[test]
