@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use gate_connect_core::{account, oauth::OAuthConfig};
+use gate_connect_core::{account, keychain, oauth::OAuthConfig};
 
 /// Point `app_support_dir()` at a fresh temp dir for the duration of a test, so
 /// `account.json` resolves there on every OS. Uses the `GATE_CONNECT_TEST_HOME`
@@ -49,6 +49,10 @@ impl Drop for TempDataDir {
 #[test]
 fn resolves_pool_from_gateway_host() {
     let _data = TempDataDir::set();
+    // `switch_gateway` below deletes the stored key from the keychain; route that
+    // through the in-memory backend so it never touches the OS secret store,
+    // which is absent on headless CI (where the real delete errors out).
+    keychain::use_in_memory_backend();
 
     std::env::set_var("GATE_COGNITO_HOSTED_DOMAIN", "prod.auth.test");
     std::env::set_var("GATE_COGNITO_CLIENT_ID", "prod-client");
