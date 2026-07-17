@@ -104,7 +104,7 @@ export function App() {
   const [restartHint, setRestartHint] = useState(false);
   useEffect(() => {
     if (!restartHint) return;
-    const t = setTimeout(() => setRestartHint(false), 8000);
+    const t = setTimeout(() => setRestartHint(false), 15000);
     return () => clearTimeout(t);
   }, [restartHint]);
   // Flashed briefly when routing is turned on; the Routing screen shows a
@@ -112,7 +112,7 @@ export function App() {
   const [relaunchHint, setRelaunchHint] = useState(false);
   useEffect(() => {
     if (!relaunchHint) return;
-    const t = setTimeout(() => setRelaunchHint(false), 8000);
+    const t = setTimeout(() => setRelaunchHint(false), 15000);
     return () => clearTimeout(t);
   }, [relaunchHint]);
 
