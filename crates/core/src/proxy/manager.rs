@@ -149,6 +149,25 @@ impl ProxyManager {
     /// unconditional - the revert happens first and never depends on admin,
     /// so it can't be canceled and strand traffic. The CA is left trusted.
     pub fn disable(&self) -> Result<ProxyState> {
+        self.disable_inner()?;
+        self.status()
+    }
+
+    /// Like [`disable`](Self::disable), but returns nothing instead of the
+    /// resulting [`ProxyState`]. Used on app exit: `status()` calls
+    /// `ca::is_trusted()`, which shells out to `certutil` on Windows, so
+    /// computing a status the exiting process only discards spawns that probe
+    /// on the shutdown path - where the child can be torn down mid-read and
+    /// hang the quit. Reverting the proxy and stopping the engine never needs
+    /// certutil.
+    pub fn disable_quiet(&self) -> Result<()> {
+        self.disable_inner()
+    }
+
+    /// Shared body of [`disable`](Self::disable) /
+    /// [`disable_quiet`](Self::disable_quiet): revert the system proxy and stop
+    /// the engine, without computing status.
+    fn disable_inner(&self) -> Result<()> {
         let running = self
             .engine
             .lock()
@@ -172,7 +191,7 @@ impl ProxyManager {
             running.stop();
         }
         let _ = system_proxy::clear_snapshot();
-        self.status()
+        Ok(())
     }
 
     /// Toggle a domain. If the engine is running, the new rules are pushed

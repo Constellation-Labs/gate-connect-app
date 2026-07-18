@@ -1060,11 +1060,11 @@ pub fn run() {
             // at the now-dead engine port. The engine lives in a process-global
             // static whose Drop is bypassed at normal exit, so without this the
             // system proxy stays pointed at a dead listener and kills
-            // connectivity until the next launch's self-heal. disable() is
-            // promptless and leaves the CA trusted.
+            // connectivity until the next launch's self-heal. disable_quiet()
+            // is promptless and leaves the CA trusted.
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let tauri::RunEvent::Exit = &event {
-                if let Err(e) = gate_connect_core::proxy::manager().disable() {
+                if let Err(e) = gate_connect_core::proxy::manager().disable_quiet() {
                     eprintln!("[gate] reverting proxy on exit failed: {e}");
                 }
                 // The login item is now a standalone "Launch at login" setting,
