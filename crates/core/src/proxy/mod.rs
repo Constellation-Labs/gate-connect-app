@@ -248,6 +248,38 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             supported: true,
         },
         ProxyDomain {
+            slug: "chatgpt".into(),
+            display_name: "ChatGPT (Codex subscription)".into(),
+            // ChatGPT-subscription Codex talks to the Responses API at
+            // chatgpt.com/backend-api/codex/responses (bearer = the user's
+            // ChatGPT OAuth token, passed through). Distinct host+path prefix
+            // from the api.openai.com (API-key) entry above.
+            hosts: vec!["chatgpt.com".into()],
+            // Bare host, same shape as the openai entry: Gate concatenates the
+            // preserved request path onto this, so the /backend-api/codex
+            // segment rides in the path (rewrite_prefixes below), NOT here.
+            // `https://chatgpt.com` + `/backend-api/codex/responses` →
+            // `https://chatgpt.com/backend-api/codex/responses`.
+            upstream_url: "https://chatgpt.com".into(),
+            // Only the Codex Responses inference path is rewritten. Same
+            // narrow-scoping reasoning as Anthropic/OpenAI: other /backend-api/
+            // paths carry no model and would 503 ("AI unknown") at the gateway,
+            // so they fall through to `decide`'s default Passthrough and reach
+            // real chatgpt.com. Do NOT widen this to "/backend-api/".
+            rewrite_prefixes: vec!["/backend-api/codex/responses".into()],
+            passthrough_prefixes: vec![],
+            // Opt-in. NOTE: Codex's own agent ignores the system proxy and
+            // reaches chatgpt.com directly, so the manual config.toml
+            // integration (integrations/codex.rs) is the primary route for
+            // Codex; this catalog entry covers clients that DO honor the
+            // system proxy and registers chatgpt.com as a permitted upstream.
+            // Enabling interception here also requires the CA to be permitted
+            // for chatgpt.com (see cert_authority::ca_certificate_params) — a
+            // regenerated CA on installs created before this host was added.
+            enabled: false,
+            supported: true,
+        },
+        ProxyDomain {
             slug: "openrouter".into(),
             display_name: "OpenRouter".into(),
             // OpenRouter's API lives at openrouter.ai/api/v1/* (OpenAI-shaped
@@ -460,14 +492,72 @@ mod tests {
     #[test]
     fn openai_domain_does_not_match_chatgpt_host() {
         // The api.openai.com domain is scoped to that host only - it must not
-        // match chatgpt.com. (Codex's chatgpt.com traffic comes from its Rust
-        // agent, which bypasses the system proxy, so it's out of the proxy's
-        // reach entirely - covered by the manual Codex integration instead.)
+        // match chatgpt.com (that host is served by the separate `chatgpt`
+        // catalog entry). This asserts host-scope isolation: with only the
+        // openai domain loaded, a chatgpt.com request is left untouched.
         let d = openai();
         assert!(!should_intercept_host(&d, "chatgpt.com"));
         assert_eq!(
             decide(&d, "chatgpt.com", "/backend-api/codex/responses"),
             Decision::Tunnel
         );
+    }
+
+    /// ChatGPT-subscription Codex upstream. Must be a supported, routable
+    /// entry so the proxy can register chatgpt.com/backend-api alongside the
+    /// api.openai.com (API-key) and api.anthropic.com entries.
+    fn chatgpt() -> Vec<ProxyDomain> {
+        let mut d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "chatgpt")
+            .expect("chatgpt domain present in catalog");
+        d.enabled = true; // catalog default is opt-in; enable for the test
+        vec![d]
+    }
+
+    #[test]
+    fn chatgpt_is_supported() {
+        let d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "chatgpt")
+            .expect("chatgpt domain present in catalog");
+        assert!(d.supported, "chatgpt must be a supported upstream");
+        // Bare-host upstream: the /backend-api/codex path rides in the request
+        // path (Gate appends it), never in the injected upstream URL.
+        assert_eq!(d.upstream_url, "https://chatgpt.com");
+    }
+
+    #[test]
+    fn rewrites_codex_chatgpt_responses_path() {
+        let d = chatgpt();
+        // ChatGPT-subscription Codex hits chatgpt.com/backend-api/codex/responses,
+        // which must rewrite to the gateway with the bare chatgpt.com upstream
+        // injected. Gate then appends the preserved path, yielding
+        // chatgpt.com/backend-api/codex/responses on the upstream side.
+        assert_eq!(
+            decide(&d, "chatgpt.com", "/backend-api/codex/responses"),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com".into()
+            }
+        );
+        // Query strings ride along (the prefix still matches).
+        assert_eq!(
+            decide(&d, "chatgpt.com", "/backend-api/codex/responses?stream=true"),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com".into()
+            }
+        );
+        // Non-inference /backend-api/ paths carry no model and must pass through
+        // to real chatgpt.com, never be rewritten (the gateway would 503 on a
+        // modelless request). Same guard as the OpenAI/Anthropic entries.
+        for path in ["/backend-api/me", "/backend-api/accounts/check", "/"] {
+            assert_eq!(
+                decide(&d, "chatgpt.com", path),
+                Decision::Passthrough,
+                "non-inference path {path} must pass through, not rewrite"
+            );
+        }
+        // case-insensitive host match
+        assert!(should_intercept_host(&d, "CHATGPT.COM"));
     }
 }
