@@ -166,7 +166,26 @@ impl ProxyManager {
     pub fn disable(&self) -> Result<ProxyState> {
         // Cross-process lock: serialize against a concurrent app/CLI enable.
         let _op_lock = FileLock::acquire(&system_proxy::op_lock_path()?, true)?;
+        self.disable_inner()?;
+        self.status()
+    }
 
+    /// Like [`disable`](Self::disable), but returns nothing instead of the
+    /// resulting [`ProxyState`]. Used on app exit: `status()` does a control
+    /// round-trip to the daemon and probes CA trust via `ca::is_trusted()` -
+    /// work the exiting process only discards. Clearing interception never
+    /// needs either.
+    pub fn disable_quiet(&self) -> Result<()> {
+        // Cross-process lock: serialize against a concurrent app/CLI enable.
+        let _op_lock = FileLock::acquire(&system_proxy::op_lock_path()?, true)?;
+        self.disable_inner()
+    }
+
+    /// Shared body of [`disable`](Self::disable) /
+    /// [`disable_quiet`](Self::disable_quiet): revert the system proxy and drop
+    /// the daemon to pass-through, without computing status. Assumes the caller
+    /// holds the cross-process op lock.
+    fn disable_inner(&self) -> Result<()> {
         let client = self
             .client
             .lock()
@@ -192,7 +211,7 @@ impl ProxyManager {
         }
         let _ = system_proxy::clear_snapshot();
         off_result.context("removing the system-proxy drop-in")?;
-        self.status()
+        Ok(())
     }
 
     /// Toggle a domain. If the proxy is on, push the new rule set to the daemon

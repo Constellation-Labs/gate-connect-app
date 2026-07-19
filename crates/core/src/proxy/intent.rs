@@ -4,9 +4,9 @@
 //! they disable it; read on launch to decide whether to re-enable routing
 //! after a machine restart.
 //!
-//! Deliberately *not* touched by the exit-time `manager().disable()` - that
-//! path reverts the system proxy directly, never through `proxy_disable`, so
-//! a clean quit leaves the intent intact and the next launch restores it.
+//! Deliberately *not* touched by the exit-time `manager().disable_quiet()` -
+//! that path reverts the system proxy directly, never through `proxy_disable`,
+//! so a clean quit leaves the intent intact and the next launch restores it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
