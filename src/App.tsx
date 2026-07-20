@@ -432,13 +432,16 @@ export function App() {
       }`}
     >
       {platform === "linux" && <LinuxTitleBar />}
+      {/* Renders the startup takeover as an absolute overlay, or (on reopen)
+          the slim update banner in-flow at the top of the popover - hence its
+          placement above the body. */}
+      <UpdatePanel />
       {body}
       {version && (
         <p className="mt-auto shrink-0 px-3.5 py-2 text-center font-mono text-[10.5px] text-gc-ink-5">
           v{version}
         </p>
       )}
-      <UpdatePanel />
     </div>
   );
 }
