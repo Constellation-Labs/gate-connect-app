@@ -248,6 +248,10 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new("curl")
             .arg("-sS")
+            // (schannel/Windows) the MITM leaf has no CRL/OCSP endpoint, so
+            // schannel returns CERT_TRUST_REVOCATION_STATUS_UNKNOWN and fails
+            // verification (exit 60). No-op on OpenSSL/SecureTransport builds.
+            .arg("--ssl-no-revoke")
             .arg("--fail") // nonzero exit unless the gateway answers 2xx
             .arg("--cacert")
             .arg(&ca_arg)
