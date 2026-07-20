@@ -222,10 +222,13 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
         EngineConfig {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
+            oauth_token: String::new(), // legacy API-key path
+            org_id: String::new(),      // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
             preferred_port: None,
+            preferred_relay_port: None,
             owner_uid: None,
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             upstream_proxy: None,
