@@ -542,7 +542,11 @@ mod tests {
         );
         // Query strings ride along (the prefix still matches).
         assert_eq!(
-            decide(&d, "chatgpt.com", "/backend-api/codex/responses?stream=true"),
+            decide(
+                &d,
+                "chatgpt.com",
+                "/backend-api/codex/responses?stream=true"
+            ),
             Decision::Rewrite {
                 upstream_url: "https://chatgpt.com".into()
             }
