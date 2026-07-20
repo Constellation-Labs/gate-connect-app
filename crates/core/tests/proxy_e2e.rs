@@ -7,9 +7,25 @@
 //! This drives `proxy::engine::start` directly - the same engine the CLI's
 //! `proxy enable` and the menubar app boot - so it exercises the only path in
 //! the app that emits real gateway-bound traffic. It is fully hermetic: a
-//! throwaway CA, a loopback mock gateway, and an in-process client. Nothing
-//! touches the OS trust store or system proxy, so no elevation is needed and
-//! it runs identically on macOS, Windows, and Linux.
+//! throwaway CA, a loopback mock gateway, and clients that never leave
+//! loopback - an in-process `reqwest`, plus a real `curl` subprocess routed
+//! solely by the `https_proxy` env var, proving the engine also intercepts a
+//! black-box external client it did not construct (the config-less-app case).
+//! Nothing touches the OS trust store or system proxy, so no elevation is
+//! needed and it runs identically on macOS, Windows, and Linux.
+//!
+//! Deliberately out of scope here: a full `gate-connect proxy enable` run that
+//! wires the real OS system proxy and installs the engine's MITM CA into the OS
+//! trust store, then drives a naive client that validates the leaf via the OS
+//! store . That path can't be exercised hermetically against a
+//! loopback mock, because the engine's upstream connector (hudsucker's
+//! webpki-roots) validates the gateway cert against Mozilla roots only - it
+//! won't trust a private test CA on the engine->gateway leg - and
+//! `account::save` rejects a plain-http gateway that would otherwise sidestep
+//! that TLS. Closing it would take an engine change (a configurable upstream
+//! root) or bypassing the account guard, so the real-enable + OS-trust wiring
+//! stays unverified by automated tests for now; `ci/e2e/run.sh` covers the
+//! config-file integration path instead, not the built-in proxy.
 
 use std::sync::{Arc, Mutex};
 
@@ -181,6 +197,114 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
         r.header("authorization"),
         Some("Bearer app-token"),
         "the client's own credential must be forwarded untouched"
+    );
+}
+
+/// The same rewrite guarantee, but for a **real external process** routed
+/// through the engine solely by the `https_proxy` environment variable - the
+/// mechanism config-less, env-honoring apps use. Unlike the tests above, the
+/// engine never constructs this client: `curl` speaks CONNECT to the loopback
+/// port, does a real TLS handshake against the engine's MITM leaf for
+/// api.anthropic.com , and the engine must
+/// still rewrite `/v1/messages` to the gateway with the Gate headers injected.
+#[tokio::test]
+async fn proxy_intercepts_external_process_routed_by_proxy_env() {
+    // 1. Mock gateway on loopback (plain HTTP, so the engine->gateway hop needs
+    //    no upstream trust and the test stays hermetic).
+    let gateway = start_mock_gateway().await;
+
+    // 2. Boot the real engine. `default_domains()` ships Anthropic enabled.
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            owner_uid: None,
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    // 3. Persist the CA so an out-of-process client can trust the MITM leaf.
+    let ca_path = std::env::temp_dir().join(format!(
+        "gate-proxy-e2e-ca-{}-{}.pem",
+        std::process::id(),
+        engine.port()
+    ));
+    std::fs::write(&ca_path, &ca_cert_pem).expect("writing CA to temp file");
+
+    // 4. Drive `curl` - a client the engine did not build - routed only by the
+    //    proxy env vars. spawn_blocking keeps the (single-threaded) test runtime
+    //    free to serve the mock while curl runs. NO_PROXY is cleared so an
+    //    inherited exclusion can't exempt the host.
+    let proxy_url = format!("http://127.0.0.1:{}", engine.port());
+    let ca_arg = ca_path.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("curl")
+            .arg("-sS")
+            // (schannel/Windows) the MITM leaf has no CRL/OCSP endpoint, so
+            // schannel returns CERT_TRUST_REVOCATION_STATUS_UNKNOWN and fails
+            // verification (exit 60). No-op on OpenSSL/SecureTransport builds.
+            .arg("--ssl-no-revoke")
+            .arg("--fail") // nonzero exit unless the gateway answers 2xx
+            .arg("--cacert")
+            .arg(&ca_arg)
+            .arg("-X")
+            .arg("POST")
+            .arg("-H")
+            .arg("authorization: Bearer app-token")
+            .arg("-H")
+            .arg("content-type: application/json")
+            .arg("--data")
+            .arg(r#"{"model":"claude","messages":[]}"#)
+            .arg("https://api.anthropic.com/v1/messages")
+            .env("https_proxy", &proxy_url)
+            .env("HTTPS_PROXY", &proxy_url)
+            .env("no_proxy", "")
+            .env("NO_PROXY", "")
+            .output()
+    })
+    .await
+    .expect("joining the curl task")
+    .expect("curl must be installed to run this test");
+
+    engine.stop();
+    let _ = std::fs::remove_file(&ca_path);
+
+    assert!(
+        output.status.success(),
+        "curl through the proxy failed: status={:?}\nstdout={}\nstderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // 5. Same rewrite guarantees as the in-process test, now proven for an
+    //    external process configured only via proxy env vars.
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "gateway should have received exactly one request"
+    );
+    let r = &reqs[0];
+    assert_eq!(r.method, "POST");
+    assert_eq!(r.path, "/v1/messages");
+    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-gate-upstream-url"),
+        Some("https://api.anthropic.com")
+    );
+    assert_eq!(
+        r.header("authorization"),
+        Some("Bearer app-token"),
+        "the external client's own credential must be forwarded untouched"
     );
 }
 
