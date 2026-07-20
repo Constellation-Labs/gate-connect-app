@@ -20,7 +20,7 @@ export function Button({
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
   const styles =
     variant === "accent"
-      ? "bg-gc-accent text-white hover:brightness-110 active:brightness-95"
+      ? "bg-gc-accent text-white hover:bg-gc-accent-ink active:bg-gc-accent-ink"
       : "bg-gc-surface text-gc-ink shadow-border hover:shadow-border-hover";
   return (
     <button
