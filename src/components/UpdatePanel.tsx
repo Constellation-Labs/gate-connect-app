@@ -2,40 +2,66 @@ import { useEffect, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
-import { Button } from "./gc/ui";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Button, IconButton } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
-/** Checks for an app update on mount; if one exists, takes over the popover
- *  with a full-panel prompt offering a one-click in-app update. "Install &
- *  relaunch" downloads and installs the signed bundle, then relaunches into
- *  the new version. The check is silent - offline or an unreachable endpoint
- *  shows nothing, and the panel stays up until the user installs or picks
- *  "Later", so it can't be scrolled past. */
+/** Checks for an app update. The first check at startup takes over the popover
+ *  with a full-panel prompt. Because the webview stays mounted for the app's
+ *  whole life, later checks run each time the tray reopens the popover and
+ *  surface as a slim top banner instead - a mid-task reopen shouldn't be
+ *  blocked by a takeover. Both offer the same one-click "install & relaunch".
+ *  The check is silent - offline or an unreachable endpoint shows nothing. */
 export function UpdatePanel() {
   const [update, setUpdate] = useState<Update | null>(null);
   const [current, setCurrent] = useState("");
-  const [dismissed, setDismissed] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [failed, setFailed] = useState(false);
+  // The startup takeover, dismissed with "Later".
+  const [panelDismissed, setPanelDismissed] = useState(false);
+  // The reopen banner, dismissed with its close button.
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  // Flipped once the window has been reopened (blurred, then refocused); from
+  // then on an available update surfaces as the banner, not the startup panel.
+  const [reopened, setReopened] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    check()
-      .then((u) => {
-        if (alive && u) setUpdate(u);
-      })
-      .catch(() => undefined);
+    const runCheck = () =>
+      check()
+        .then((u) => {
+          if (alive && u) setUpdate(u);
+        })
+        .catch(() => undefined);
+
+    runCheck();
     getVersion()
       .then((v) => {
         if (alive) setCurrent(v);
       })
       .catch(() => undefined);
+
+    // The tray reveals the popover with show() + set_focus(), so a focus-gained
+    // edge marks a reopen. Re-check then, so an update released while the app
+    // sat in the tray still surfaces. Requiring a prior blur keeps the initial
+    // launch view on the full panel - only a genuine return-to-window flips to
+    // the banner.
+    let blurred = false;
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) {
+        blurred = true;
+        return;
+      }
+      if (blurred) {
+        setReopened(true);
+        void runCheck();
+      }
+    });
     return () => {
       alive = false;
+      void unlisten.then((f) => f());
     };
   }, []);
-
-  if (!update || dismissed) return null;
 
   async function install() {
     if (!update) return;
@@ -50,6 +76,47 @@ export function UpdatePanel() {
     }
   }
 
+  if (!update) return null;
+
+  // After a reopen, surface the quiet top banner instead of the takeover.
+  if (reopened) {
+    if (bannerDismissed) return null;
+    return (
+      <div className="flex shrink-0 items-center gap-2 border-b border-gc-line bg-gc-accent-wash-2 py-1.5 pl-3 pr-1.5">
+        <Icon name="refresh" size={13} className="shrink-0 text-gc-accent" />
+        <div className="min-w-0 flex-1 text-[11.5px] text-gc-ink-2">
+          {failed ? (
+            "Update failed · try again"
+          ) : (
+            <>
+              Update available · <span className="font-mono">v{update.version}</span>
+            </>
+          )}
+        </div>
+        <button
+          type="button"
+          disabled={installing}
+          onClick={() => {
+            void install();
+          }}
+          className="shrink-0 text-[11.5px] font-semibold text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3 disabled:no-underline disabled:opacity-60"
+        >
+          {installing ? "Installing…" : failed ? "Retry" : "Update"}
+        </button>
+        {!installing && (
+          <IconButton
+            icon="x"
+            size={13}
+            onClick={() => setBannerDismissed(true)}
+            aria-label="Dismiss update"
+          />
+        )}
+      </div>
+    );
+  }
+
+  // Startup: full-panel takeover.
+  if (panelDismissed) return null;
   return (
     <div className="gc-panel-in absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-gc-lg bg-gc-accent-wash text-gc-accent">
@@ -89,7 +156,7 @@ export function UpdatePanel() {
         {!installing && (
           <button
             type="button"
-            onClick={() => setDismissed(true)}
+            onClick={() => setPanelDismissed(true)}
             className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             Later
