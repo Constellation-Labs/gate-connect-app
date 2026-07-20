@@ -348,8 +348,8 @@ fn provider_disable(slug: String) -> Result<gate_connect_core::provider::Provide
 // the platforms where CA trust + system-proxy wiring is implemented (macOS via
 // `security`/`networksetup`, Windows via `certutil`/WinINET, Linux via the
 // system trust store + `/etc/environment`) and registered in each platform's
-// handler block below. The tray status dot is a macOS feature, so only the
-// macOS build refreshes it from enable/disable.
+// handler block below. Each build refreshes the tray status dot from
+// enable/disable so the routing state shows in the menu bar / taskbar.
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
@@ -399,13 +399,10 @@ async fn proxy_enable(
     })
     .await
     .map_err(|e| format!("proxy enable join error: {e}"))??;
-    #[cfg(target_os = "macos")]
+    // Refresh the tray for the new routing state on every platform: retint the
+    // mark, recolor the status dot (green on / gray off), and update the
+    // tooltip where supported (macOS + Windows).
     update_tray_status(&app, state.running);
-    #[cfg(target_os = "windows")]
-    update_tray_tooltip(&app, state.running);
-    // `app` only feeds the macOS/Windows tray refresh above; keep it bound on
-    // other platforms without an unused-variable warning.
-    let _ = &app;
     // Persist the user's intent so the startup auto-enable in `setup` re-routes
     // after a restart. Whether the app actually relaunches at boot is governed
     // separately by the "Launch at login" setting (see `set_launch_at_login`).
@@ -438,13 +435,10 @@ async fn proxy_disable(
     })
     .await
     .map_err(|e| format!("proxy disable join error: {e}"))??;
-    #[cfg(target_os = "macos")]
+    // Refresh the tray for the new routing state on every platform: retint the
+    // mark, recolor the status dot (green on / gray off), and update the
+    // tooltip where supported (macOS + Windows).
     update_tray_status(&app, state.running);
-    #[cfg(target_os = "windows")]
-    update_tray_tooltip(&app, state.running);
-    // `app` only feeds the macOS/Windows tray refresh above; keep it bound on
-    // other platforms without an unused-variable warning.
-    let _ = &app;
     // Explicit "off" is sticky across restarts: clear the routing intent so the
     // startup auto-enable in `setup` leaves the app in passthrough. Whether the
     // app relaunches at boot is governed separately by the "Launch at login"
@@ -847,10 +841,10 @@ pub fn run() {
                                     "[gate] restoring providers after startup auto-enable failed: {e}"
                                 );
                             }
-                            #[cfg(target_os = "macos")]
+                            // Reflect the auto-enabled routing in the tray:
+                            // retint the mark, turn the status dot green, and
+                            // set the tooltip where supported (macOS + Windows).
                             update_tray_status(&handle, state.running);
-                            #[cfg(target_os = "windows")]
-                            update_tray_tooltip(&handle, state.running);
                             // Nudge an already-mounted popover to re-read: its
                             // status poll is idle while routing last read as
                             // off, so it won't notice the flip on its own. The
@@ -1034,8 +1028,8 @@ pub fn run() {
             }
 
             // Reflect the current proxy state in the tray at launch: tint the
-            // mark for the menu-bar / taskbar appearance, add the macOS status
-            // dot, and refresh the tooltip (macOS + Windows).
+            // mark for the menu-bar / taskbar appearance, add the status dot,
+            // and refresh the tooltip (macOS + Windows).
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
                 let running = gate_connect_core::proxy::manager()
@@ -1044,8 +1038,8 @@ pub fn run() {
                     .unwrap_or(false);
                 update_tray_status(app.handle(), running);
             }
-            // Linux has no status dot or tooltip, but the mark still needs
-            // tinting for the panel's light/dark theme so it stays visible.
+            // Linux has no tooltip, but the mark still needs tinting for the
+            // panel's light/dark theme plus the status dot so it stays visible.
             #[cfg(target_os = "linux")]
             if let Ok(st) = gate_connect_core::proxy::manager().status() {
                 update_tray_status(app.handle(), st.running);
@@ -1147,10 +1141,8 @@ fn position_startup(window: &tauri::WebviewWindow) {
 
 /// Build the tray image, recoloring the hex mark to a high-contrast tone for
 /// the current menu-bar / taskbar appearance (light vs dark) so it stays
-/// visible on any backdrop. On macOS a colored routing-status dot is
-/// composited on top (green when the proxy is routing, gray when off); Windows
-/// and Linux get the tinted mark only, since their tray backends don't carry
-/// the status dot.
+/// visible on any backdrop, then compositing a colored routing-status dot on
+/// top (green when the proxy is routing, gray when off) for all platforms.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
     let base = Image::from_bytes(TRAY_ICON_PNG).ok()?;
@@ -1172,11 +1164,10 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
         }
     }
 
-    // Composite the status dot, bottom-right. macOS only: the dot is the one
-    // colored element, and Windows/Linux trays don't render it today.
-    #[cfg(not(target_os = "macos"))]
-    let _ = proxy_on;
-    #[cfg(target_os = "macos")]
+    // Composite the status dot, bottom-right: the one colored element, green
+    // when the proxy is routing and gray when off. Rendered on every platform -
+    // macOS composites it over the (temporarily non-template) mark, and the
+    // Windows/Linux trays carry the full-color icon directly.
     {
         let (dr, dg, db): (u8, u8, u8) = if proxy_on {
             (0x2E, 0xCC, 0x71) // green - routing
@@ -1208,8 +1199,8 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
 }
 
 /// Refresh the tray icon for the current appearance: tint the mark for a
-/// light vs dark menu bar / taskbar, and on macOS overlay the routing-status
-/// dot. Also refreshes the tooltip on macOS + Windows.
+/// light vs dark menu bar / taskbar, and overlay the routing-status dot. Also
+/// refreshes the tooltip on macOS + Windows.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
     use tauri::Manager;
@@ -1219,8 +1210,9 @@ fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
         .map(|t| t == tauri::Theme::Dark)
         .unwrap_or(false);
     if let Some(tray) = app.tray_by_id("main") {
-        // The colored dot requires non-template rendering; macOS-only, since
-        // templating is what auto-tints there and is a no-op elsewhere.
+        // The colored dot requires non-template rendering. macOS-only switch:
+        // templating is what auto-tints there, whereas Windows/Linux icons are
+        // never templates and already carry full color.
         #[cfg(target_os = "macos")]
         let _ = tray.set_icon_as_template(false);
         if let Some(img) = tray_image(proxy_on, dark) {
