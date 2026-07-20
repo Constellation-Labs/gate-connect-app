@@ -544,4 +544,20 @@ mod tests {
         // An upstream outside the catalog is refused.
         assert!(route(&domains, "https://attacker.example", "/v1/messages").is_none());
     }
+
+    #[test]
+    fn routes_chatgpt_codex_responses_to_gateway() {
+        // Regression: ChatGPT-subscription Codex writes
+        // `X-Gate-Upstream-Url: https://chatgpt.com/backend-api` and hits the
+        // relay at `/codex/responses`. The relay must recognize that upstream
+        // (exact-match against the catalog) and classify the path as inference
+        // so it rewrites to the gateway - otherwise the relay 403s the request
+        // ("upstream ... is not in the built-in catalog").
+        let domains = default_domains();
+        let chatgpt = "https://chatgpt.com/backend-api";
+        assert!(matches!(
+            route(&domains, chatgpt, "/codex/responses"),
+            Some(Route::Rewrite)
+        ));
+    }
 }

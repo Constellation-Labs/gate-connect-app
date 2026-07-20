@@ -329,6 +329,33 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             supported: true,
         },
         ProxyDomain {
+            slug: "chatgpt".into(),
+            display_name: "ChatGPT (Codex subscription)".into(),
+            // ChatGPT-subscription Codex talks to the Responses API at
+            // chatgpt.com/backend-api/codex/responses (bearer = the user's
+            // ChatGPT OAuth token, passed through). Codex reaches Gate via the
+            // manual integration (integrations/codex.rs), whose base_url points
+            // at the loopback relay; its own embedded agent ignores the system
+            // proxy, so the MITM engine never captures this traffic. This entry
+            // exists so the relay recognizes the tool-supplied upstream hint.
+            hosts: vec!["chatgpt.com".into()],
+            // Shape matches integrations/codex.rs exactly, because the relay
+            // exact-matches the `X-Gate-Upstream-Url` header codex.rs writes:
+            // the `/backend-api` segment rides in the upstream here, and the
+            // client-side path is the short `/codex/responses` (Codex's
+            // base_url is `<relay>/codex`, wire_api appends `/responses`). The
+            // gateway concatenates path onto upstream, yielding
+            // `https://chatgpt.com/backend-api/codex/responses`. This is a
+            // different split than the MITM convention (bare host + full
+            // `/backend-api/codex/responses` path) because the relay sees
+            // Codex's rewritten path, not the real upstream path.
+            upstream_url: "https://chatgpt.com/backend-api".into(),
+            rewrite_prefixes: vec!["/codex/responses".into()],
+            passthrough_prefixes: vec![],
+            enabled: false,
+            supported: true,
+        },
+        ProxyDomain {
             slug: "openrouter".into(),
             display_name: "OpenRouter".into(),
             // OpenRouter's API lives at openrouter.ai/api/v1/* (OpenAI-shaped
