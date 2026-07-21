@@ -3,6 +3,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { setUpdaterRelaunching } from "../lib/api";
 import { Button, IconButton } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
@@ -68,9 +69,15 @@ export function UpdatePanel() {
     setFailed(false);
     setInstalling(true);
     try {
+      // Mark the coming exit as an updater relaunch so the backend keeps the
+      // routing intent and restores routing after the restart. Before the
+      // install, not after: on Windows the installer exits the app from
+      // inside downloadAndInstall().
+      await setUpdaterRelaunching(true);
       await update.downloadAndInstall();
       await relaunch();
     } catch {
+      await setUpdaterRelaunching(false).catch(() => undefined);
       setInstalling(false);
       setFailed(true);
     }

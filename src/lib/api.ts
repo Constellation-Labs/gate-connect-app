@@ -145,3 +145,10 @@ export const launchAtLoginStatus = () => invoke<boolean>("launch_at_login_status
 
 export const setLaunchAtLogin = (enabled: boolean) =>
   invoke<void>("set_launch_at_login", { enabled });
+
+/** Mark (or unmark) the next exit as an updater-driven relaunch, so the exit
+ * handler keeps the routing intent and the relaunched app restores routing.
+ * Set before `downloadAndInstall()` (Windows exits from inside it); reset if
+ * the install fails. */
+export const setUpdaterRelaunching = (relaunching: boolean) =>
+  invoke<void>("set_updater_relaunching", { relaunching });
