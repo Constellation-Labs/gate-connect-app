@@ -157,6 +157,7 @@ async fn handle_conn(
         &Response::Hello {
             ok: authed,
             version: control::PROTOCOL_VERSION,
+            fingerprint: control::BUILD_FINGERPRINT.into(),
         },
     )
     .await?;

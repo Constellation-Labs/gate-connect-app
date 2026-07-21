@@ -35,15 +35,16 @@ pub struct HelperClient {
 }
 
 /// Sentinel error: a daemon is listening and authenticated, but reported a
-/// different [`control::PROTOCOL_VERSION`] (typically one left over from an
-/// older build). Carried via `anyhow` and matched in [`HelperClient::connect_or_spawn`],
-/// which replaces the daemon rather than reusing it.
+/// different [`control::PROTOCOL_VERSION`] or [`control::BUILD_FINGERPRINT`]
+/// (typically one left over from an older build). Carried via `anyhow` and
+/// matched in [`HelperClient::connect_or_spawn`], which replaces the daemon
+/// rather than reusing it.
 #[derive(Debug)]
 struct StaleDaemon;
 
 impl std::fmt::Display for StaleDaemon {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("proxy helper is running an incompatible protocol version")
+        f.write_str("proxy helper is running an incompatible protocol or build version")
     }
 }
 
@@ -108,12 +109,19 @@ impl HelperClient {
             CONTROL_TIMEOUT,
         ) {
             Ok(Response::Hello { ok: false, .. }) => anyhow::bail!("control token rejected"),
-            Ok(Response::Hello { ok: true, version }) if version == control::PROTOCOL_VERSION => {
+            Ok(Response::Hello {
+                ok: true,
+                version,
+                fingerprint,
+            }) if version == control::PROTOCOL_VERSION
+                && fingerprint == control::BUILD_FINGERPRINT =>
+            {
                 Ok(client)
             }
-            // Authenticated, but the daemon reports a different protocol version
-            // (e.g. a build predating this one). Ask it to shut down cleanly;
-            // `connect_or_spawn` force-kills if it doesn't comply.
+            // Authenticated, but the daemon reports a different protocol
+            // version or build fingerprint (e.g. a build predating this one).
+            // Ask it to shut down cleanly; `connect_or_spawn` force-kills if
+            // it doesn't comply.
             Ok(Response::Hello { ok: true, .. }) => {
                 let _ = client.round_trip(&Request::Shutdown, CONTROL_TIMEOUT);
                 Err(anyhow::Error::new(StaleDaemon))
