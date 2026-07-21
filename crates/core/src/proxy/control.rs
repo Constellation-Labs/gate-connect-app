@@ -99,6 +99,14 @@ pub fn random_token() -> Result<String> {
 /// on a reply whose shape it no longer recognizes.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Digest of the core crate's sources, computed by `build.rs` and exchanged in
+/// the `Hello` handshake alongside [`PROTOCOL_VERSION`]. The version only
+/// changes on wire-incompatible edits, so a daemon whose *behavior* differs
+/// (new catalog entry, relay fix, engine change) used to be reused silently
+/// and e.g. reject a domain the client's catalog has. Any core source change
+/// alters this fingerprint, so the client replaces such a daemon instead.
+pub const BUILD_FINGERPRINT: &str = env!("GATE_CORE_FINGERPRINT");
+
 /// GUI → daemon. The CA + gateway travel only inside [`Request::SetIntercept`];
 /// the daemon needs them to mint leaf certs and rewrite to the gateway.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,12 +143,15 @@ pub enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
     /// Auth result for [`Request::Hello`], carrying the daemon's
-    /// [`PROTOCOL_VERSION`]. `version` defaults to 0 when absent, so a reply
-    /// from a pre-versioning daemon reads as an (incompatible) version 0.
+    /// [`PROTOCOL_VERSION`] and [`BUILD_FINGERPRINT`]. Both default when
+    /// absent (version 0, empty fingerprint), so a reply from an older daemon
+    /// reads as incompatible.
     Hello {
         ok: bool,
         #[serde(default)]
         version: u32,
+        #[serde(default)]
+        fingerprint: String,
     },
     /// Acknowledges a [`Request::SetIntercept`] with the port actually bound.
     Intercepting { port: u16 },
@@ -204,6 +215,14 @@ mod tests {
         assert_eq!(t.len(), 32);
         assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(t, random_token().unwrap());
+    }
+
+    #[test]
+    fn build_fingerprint_is_hex_u64() {
+        // Source-sensitivity is inherent to build.rs (it hashes `src/`); here
+        // we only pin the shape the handshake compares.
+        assert_eq!(BUILD_FINGERPRINT.len(), 16);
+        assert!(BUILD_FINGERPRINT.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

@@ -212,6 +212,9 @@ CAPTURE_LOG="$(winpath "$CAPTURE")" MOCK_PORT="$PORT" \
   node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" >"$WORK/mock.out" 2>&1 &
 MOCK_PID=$!
 cleanup() {
+  # Preserve the status that triggered the trap (the final `test $FAIL -eq 0`,
+  # or an early `exit`) before any teardown command clobbers $?.
+  local status=$?
   kill -KILL "$MOCK_PID" 2>/dev/null
   # Codex's Rust binary survives an msys kill and, in the runner's job object,
   # keeps the step from finishing. A real Windows kill of the whole tree lets
@@ -220,6 +223,12 @@ cleanup() {
   if [ "$OS" = "Windows" ]; then
     taskkill /F /T /IM codex.exe >/dev/null 2>&1 || true
   fi
+  # Re-exit with the preserved status. On Windows/msys, reaping these freshly
+  # killed native processes as the shell winds down corrupts the exit status
+  # word - the step reported exit 2304 even though every assertion passed
+  # (Passed: 3 Failed: 0). Exiting explicitly makes the pass/fail result, not
+  # teardown noise, the code the runner sees.
+  exit "$status"
 }
 trap cleanup EXIT
 

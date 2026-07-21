@@ -1,8 +1,11 @@
 //! Handshake test for the Linux proxy helper control protocol: the client must
-//! reuse a daemon that reports the same [`PROTOCOL_VERSION`] and detect one that
-//! reports a different version as stale (asking it to shut down so it can be
-//! replaced). A version-mismatched daemon is exactly the "leftover from an older
-//! build" case that used to make a later request fail on an unrecognized reply.
+//! reuse a daemon that reports the same [`PROTOCOL_VERSION`] and
+//! [`BUILD_FINGERPRINT`], and detect one that reports a different version or
+//! fingerprint as stale (asking it to shut down so it can be replaced). Both
+//! are "leftover from another build" cases: a version mismatch used to make a
+//! later request fail on an unrecognized reply, a fingerprint mismatch used to
+//! keep old daemon behavior running (e.g. rejecting a catalog domain the
+//! client's build knows).
 //!
 //! Hermetic: `$XDG_RUNTIME_DIR` is pointed at a throwaway dir and a fake daemon
 //! is stood up on the real control socket. Nothing is spawned - the test drives
@@ -27,25 +30,28 @@ fn setup() {
 }
 
 /// Stand up a fake daemon on the control socket that answers `Hello` with the
-/// given protocol version, then drive `connect_existing`. Returns whether the
-/// client accepted the daemon (mapping any error to its message), and whether
-/// the daemon was subsequently asked to `Shutdown`.
-fn run_scenario(daemon_version: u32) -> (Result<(), String>, bool) {
+/// given protocol version and build fingerprint, then drive `connect_existing`.
+/// Returns whether the client accepted the daemon (mapping any error to its
+/// message), and whether the daemon was subsequently asked to `Shutdown`.
+fn run_scenario(daemon_version: u32, daemon_fingerprint: &str) -> (Result<(), String>, bool) {
     let sock = control::socket_path().expect("socket path");
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).expect("bind fake daemon socket");
 
+    let fingerprint = daemon_fingerprint.to_string();
     let daemon = std::thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept client");
         let mut writer = stream.try_clone().expect("clone stream");
         let mut reader = BufReader::new(stream);
 
-        // Consume the client's Hello, then advertise our protocol version.
+        // Consume the client's Hello, then advertise our protocol version and
+        // build fingerprint.
         let mut hello = String::new();
         reader.read_line(&mut hello).expect("read Hello");
         let reply = Response::Hello {
             ok: true,
             version: daemon_version,
+            fingerprint,
         };
         writeln!(writer, "{}", serde_json::to_string(&reply).unwrap()).expect("write Hello reply");
         writer.flush().unwrap();
@@ -83,20 +89,21 @@ fn run_scenario(daemon_version: u32) -> (Result<(), String>, bool) {
 fn same_version_reused_mismatch_replaced() {
     setup();
 
-    // Same version: the daemon is reused and never asked to shut down.
-    let (reused, reused_shutdown) = run_scenario(PROTOCOL_VERSION);
+    // Same version and fingerprint: the daemon is reused and never asked to
+    // shut down.
+    let (reused, reused_shutdown) = run_scenario(PROTOCOL_VERSION, control::BUILD_FINGERPRINT);
     assert!(
         reused.is_ok(),
-        "a same-version daemon should be reused, got {reused:?}"
+        "a same-build daemon should be reused, got {reused:?}"
     );
     assert!(
         !reused_shutdown,
-        "a same-version daemon should not be asked to shut down"
+        "a same-build daemon should not be asked to shut down"
     );
 
     // Different version: detected as stale and asked to shut down, so it can be
     // replaced rather than reused.
-    let (stale, stale_shutdown) = run_scenario(PROTOCOL_VERSION + 1);
+    let (stale, stale_shutdown) = run_scenario(PROTOCOL_VERSION + 1, control::BUILD_FINGERPRINT);
     let err = stale.expect_err("a mismatched-version daemon must not be reused");
     assert!(
         err.contains("incompatible protocol"),
@@ -105,5 +112,18 @@ fn same_version_reused_mismatch_replaced() {
     assert!(
         stale_shutdown,
         "a stale daemon should be asked to shut down"
+    );
+
+    // Same version but a different build fingerprint (a daemon whose Hello
+    // predates fingerprints replies with the empty default): same treatment.
+    let (skewed, skewed_shutdown) = run_scenario(PROTOCOL_VERSION, "");
+    let err = skewed.expect_err("a mismatched-fingerprint daemon must not be reused");
+    assert!(
+        err.contains("incompatible protocol"),
+        "expected a stale-daemon error, got {err:?}"
+    );
+    assert!(
+        skewed_shutdown,
+        "a build-skewed daemon should be asked to shut down"
     );
 }
