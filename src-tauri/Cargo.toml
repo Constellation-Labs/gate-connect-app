@@ -22,6 +22,7 @@ anyhow.workspace = true
 gate-connect-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
 tauri = { version = "~2.11", features = ["tray-icon", "image-png"] }
 tauri-plugin-process = "2.3.1"
 url = "2"

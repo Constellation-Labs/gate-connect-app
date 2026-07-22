@@ -158,3 +158,8 @@ export const setUpdaterRelaunching = (relaunching: boolean) =>
  * a build without port persistence). Already-running AI apps may still point
  * at the dead old port, so the popover shows a restart notice. */
 export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
+
+/** Terminate running agent processes (claude, codex, opencode, ...) so their
+ * next launch picks up the routing change. Resolves to how many processes
+ * were signalled; 0 means none were running. */
+export const closeRunningAgents = () => invoke<number>("close_running_agents");
