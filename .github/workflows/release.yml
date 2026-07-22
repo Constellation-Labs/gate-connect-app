@@ -89,6 +89,10 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Gate Connect ${{ github.ref_name }}'
           releaseBody: 'Download the installer for your platform below.'
+          # GitHub prepends releaseBody to the auto-generated notes (grouped by
+          # merged PRs). Only the matrix leg that CREATES the draft triggers
+          # generation; the other legs find and reuse the existing draft.
+          generateReleaseNotes: true
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
