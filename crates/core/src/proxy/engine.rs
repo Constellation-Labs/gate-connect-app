@@ -440,7 +440,7 @@ pub(crate) fn apply_rewrite<T>(
 /// so tokio can adopt it.
 fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
     let listener = match preferred {
-        Some(p) => std::net::TcpListener::bind(("127.0.0.1", p))
+        Some(p) => bind_preferred(p)
             .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
             .with_context(|| format!("binding loopback (preferred {p}, then ephemeral)"))?,
         None => {
@@ -455,6 +455,35 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
         .set_nonblocking(true)
         .context("setting the loopback listener non-blocking")?;
     Ok((listener, port))
+}
+
+/// Bind `127.0.0.1:port` for the preferred-port reuse path. On unix this sets
+/// `SO_REUSEADDR` before binding: the previous engine session's connections
+/// leave server-side TIME_WAIT sockets on the port for minutes, and without
+/// the flag the restart's rebind fails and silently falls back to an ephemeral
+/// port - defeating the address stability the preferred port exists for. Safe
+/// on this listener: unix `SO_REUSEADDR` only permits rebinding over such
+/// lingering remnants, never over a live listener, so the taken-port fallback
+/// still works. Windows keeps the plain bind - its defaults already allow the
+/// rebind, and `SO_REUSEADDR` there *would* let another local process hijack
+/// a live port.
+#[cfg(unix)]
+fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&std::net::SocketAddr::from(([127, 0, 0, 1], port)).into())?;
+    // Match std's TcpListener::bind backlog.
+    socket.listen(128)?;
+    Ok(socket.into())
+}
+
+#[cfg(not(unix))]
+fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+    std::net::TcpListener::bind(("127.0.0.1", port))
 }
 
 /// Build the PAC (proxy auto-config) script WinINET runs for every connection.

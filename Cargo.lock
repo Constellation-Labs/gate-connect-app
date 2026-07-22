@@ -1547,6 +1547,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha1",
+ "socket2",
  "time",
  "tokio",
  "toml_edit 0.22.27",
