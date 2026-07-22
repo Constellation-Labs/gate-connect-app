@@ -557,11 +557,13 @@ fn routed_clients_stale() -> bool {
     ROUTED_CLIENTS_MAY_BE_STALE.load(Ordering::Acquire)
 }
 
-/// Process names of the registry agents' CLIs (`ToolId` slugs map to these
-/// binaries). Matched against the process name with any `.exe` suffix
-/// stripped, so one list serves all three desktop OSes.
+/// Process names of the agent CLIs we're willing to close. A subset of the
+/// registry tools: `hermes` and `openclaw` are excluded - their names are too
+/// generic / their processes shouldn't be killed from here. Matched against
+/// the process name with any `.exe` suffix stripped, so one list serves all
+/// three desktop OSes.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESS_NAMES: [&str; 5] = ["claude", "codex", "opencode", "openclaw", "hermes"];
+const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
 
 /// Terminate running agent processes so their next launch picks up the
 /// routing change. Graceful where the platform allows it (SIGTERM on
