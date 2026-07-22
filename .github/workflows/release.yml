@@ -104,9 +104,14 @@ jobs:
       # Fix: strip the bundled copies so the dynamic loader falls back to
       # the system libwayland, repack, then re-sign - the tauri-action step
       # above already signed the pre-strip file, and its signature won't
-      # match the patched bytes. Only the linux-x86_64 signature in
-      # latest.json needs updating; the URL and version are unchanged since
-      # the filename is the same.
+      # match the patched bytes. The AppImage signature in latest.json needs
+      # updating; the URL and version are unchanged since the filename is the
+      # same. tauri-action writes TWO keys for the AppImage - the base
+      # "linux-x86_64" and the installer-qualified "linux-x86_64-appimage" -
+      # and the updater plugin prefers the "-appimage" one (it searches
+      # ["{os}-{arch}-{installer}", "{os}-{arch}"] and takes the first hit).
+      # Both must get the re-signed signature, or an AppImage install verifies
+      # the stripped bytes against the stale pre-strip signature and fails.
       - name: Fix bundled libwayland in AppImage
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
@@ -136,9 +141,11 @@ jobs:
           gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" --clobber
 
           gh release download "$TAG" -p latest.json -O /tmp/latest.json --clobber
-          jq --arg sig "$(cat "$APPIMAGE.sig")" \
-            '.platforms["linux-x86_64"].signature = $sig' \
-            /tmp/latest.json > /tmp/latest.json.new
+          jq --arg sig "$(cat "$APPIMAGE.sig")" '
+            .platforms |= with_entries(
+              if (.value.url // "" | endswith(".AppImage"))
+              then .value.signature = $sig else . end)
+          ' /tmp/latest.json > /tmp/latest.json.new
           mv /tmp/latest.json.new /tmp/latest.json
           gh release upload "$TAG" /tmp/latest.json --clobber
       # Add version-less copies of each platform's primary installer alongside
