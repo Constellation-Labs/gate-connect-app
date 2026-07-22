@@ -394,3 +394,127 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
         "the client's own credential must be forwarded untouched"
     );
 }
+
+/// The restart contract the stable-port persistence relies on (Linux login
+/// sessions freeze the proxy pointer; macOS/Windows clients may resolve the
+/// proxy once at their own launch): an engine restarted with the
+/// previously-bound port as `preferred_port` must come back on the same
+/// address and still rewrite to the gateway, and a taken preferred port must
+/// fall back to an ephemeral one instead of failing the start.
+#[tokio::test]
+async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
+    let gateway = start_mock_gateway().await;
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let config = |preferred_port: Option<u16>| EngineConfig {
+        gateway_base_url: gateway.base_url.clone(),
+        api_key: "sk-gw-test".into(),
+        domains: default_domains(),
+        ca_cert_pem: ca_cert_pem.clone(),
+        ca_key_pem: ca_key_pem.clone(),
+        preferred_port,
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        preferred_pac_port: None,
+        owner_uid: None,
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        upstream_proxy: None,
+    };
+
+    // First run: ephemeral bind, note where it landed.
+    let engine = engine::start(config(None), || {}).expect("first engine start");
+    let port = engine.port();
+    engine.stop();
+
+    // Restart preferring that port: same address, and it still routes.
+    let engine = engine::start(config(Some(port)), || {}).expect("restarted engine start");
+    assert_eq!(engine.port(), port, "restart must reuse the preferred port");
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("authorization", "Bearer app-token")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("request should route through the restarted engine");
+    assert!(
+        resp.status().is_success(),
+        "gateway returned {}",
+        resp.status()
+    );
+    engine.stop();
+
+    // Preferred port taken by someone else: fall back to an ephemeral port
+    // rather than failing the start.
+    let blocker = std::net::TcpListener::bind(("127.0.0.1", port)).expect("occupying the port");
+    let engine = engine::start(config(Some(port)), || {}).expect("fallback engine start");
+    assert_ne!(
+        engine.port(),
+        port,
+        "a taken preferred port must fall back to an ephemeral one"
+    );
+    engine.stop();
+    drop(blocker);
+}
+
+/// Same restart contract for the PAC listener (PAC-driven platforms only):
+/// the `AutoConfigURL` a client captured bakes the PAC port in, so a restart
+/// must serve a fresh PAC - pointing at the live engine port - from the same
+/// address.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[tokio::test]
+async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
+    let gateway = start_mock_gateway().await;
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let config = |preferred_pac_port: Option<u16>| EngineConfig {
+        gateway_base_url: gateway.base_url.clone(),
+        api_key: "sk-gw-test".into(),
+        domains: default_domains(),
+        ca_cert_pem: ca_cert_pem.clone(),
+        ca_key_pem: ca_key_pem.clone(),
+        preferred_port: None,
+        preferred_pac_port,
+        owner_uid: None,
+        upstream_proxy: None,
+    };
+
+    // First run: note the PAC port.
+    let engine = engine::start(config(None), || {}).expect("first engine start");
+    let pac_port = engine.pac_port();
+    engine.stop();
+
+    // Restart preferring it: same address, and the served PAC points at the
+    // *new* engine port, not a stale one.
+    let engine = engine::start(config(Some(pac_port)), || {}).expect("restarted engine start");
+    assert_eq!(
+        engine.pac_port(),
+        pac_port,
+        "restart must reuse the preferred PAC port"
+    );
+    let pac = reqwest::get(format!("http://127.0.0.1:{pac_port}/proxy.pac"))
+        .await
+        .expect("fetching the PAC")
+        .text()
+        .await
+        .expect("reading the PAC body");
+    assert!(
+        pac.contains(&format!("PROXY 127.0.0.1:{}", engine.port())),
+        "PAC must route to the live engine port; got:\n{pac}"
+    );
+    engine.stop();
+
+    // Taken PAC port: fall back rather than failing the start.
+    let blocker =
+        std::net::TcpListener::bind(("127.0.0.1", pac_port)).expect("occupying the PAC port");
+    let engine = engine::start(config(Some(pac_port)), || {}).expect("fallback engine start");
+    assert_ne!(
+        engine.pac_port(),
+        pac_port,
+        "a taken preferred PAC port must fall back to an ephemeral one"
+    );
+    engine.stop();
+    drop(blocker);
+}
