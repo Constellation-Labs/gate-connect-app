@@ -152,3 +152,9 @@ export const setLaunchAtLogin = (enabled: boolean) =>
  * the install fails. */
 export const setUpdaterRelaunching = (relaunching: boolean) =>
   invoke<void>("set_updater_relaunching", { relaunching });
+
+/** Whether the startup auto-enable brought routing back on a different local
+ * port than the previous session (e.g. the first launch after upgrading from
+ * a build without port persistence). Already-running AI apps may still point
+ * at the dead old port, so the popover shows a restart notice. */
+export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");

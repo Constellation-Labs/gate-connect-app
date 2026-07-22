@@ -539,6 +539,24 @@ static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// pre-update state anyway.
 static UPDATER_RELAUNCHING: AtomicBool = AtomicBool::new(false);
 
+/// Whether the startup auto-enable brought the engine back on a *different*
+/// loopback port than the previous session persisted (including "nothing
+/// persisted" - the first launch of a port-persisting build, i.e. an upgrade
+/// from an older version). Clients that resolved the proxy at their own
+/// launch keep dialing the dead old port until relaunched, so the popover
+/// shows a "restart your AI apps" notice while this is set. One-shot per app
+/// run: once the port persists, later restarts reuse it and this stays false.
+static ROUTED_CLIENTS_MAY_BE_STALE: AtomicBool = AtomicBool::new(false);
+
+/// Whether already-running routed clients may be pointing at a dead port
+/// (see [`ROUTED_CLIENTS_MAY_BE_STALE`]). Read-only; the frontend keeps its
+/// own dismissed state for the webview's lifetime.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn routed_clients_stale() -> bool {
+    ROUTED_CLIENTS_MAY_BE_STALE.load(Ordering::Acquire)
+}
+
 /// Mark (or unmark) the next exit as an updater-driven relaunch. Called by the
 /// frontend around `downloadAndInstall()` - before it starts, because on
 /// Windows the installer exits the app from inside that call.
@@ -683,6 +701,7 @@ pub fn run() {
                     launch_at_login_status,
                     set_launch_at_login,
                     set_updater_relaunching,
+                    routed_clients_stale,
                 ]
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -852,8 +871,26 @@ pub fn run() {
                     if let Err(e) = gate_connect_core::provider::restore_all() {
                         eprintln!("[gate] restoring providers on startup auto-enable failed: {e}");
                     }
+                    // Snapshot the persisted engine port before enable
+                    // overwrites it; comparing it afterwards tells us whether
+                    // the engine came back on the previous session's address.
+                    let prior_port = gate_connect_core::proxy::system_proxy::load_port()
+                        .ok()
+                        .flatten();
                     match gate_connect_core::proxy::manager().enable() {
                         Ok(state) => {
+                            // Port changed (or none was persisted - the first
+                            // launch after upgrading from a build without port
+                            // persistence): clients that resolved the proxy at
+                            // their own launch are now dialing a dead port.
+                            // Surface a "restart your AI apps" notice in the
+                            // popover.
+                            let new_port = gate_connect_core::proxy::system_proxy::load_port()
+                                .ok()
+                                .flatten();
+                            if prior_port != new_port {
+                                ROUTED_CLIENTS_MAY_BE_STALE.store(true, Ordering::Release);
+                            }
                             // Second restore pass for domain-only providers the
                             // pre-enable pass left in the snapshot (nothing to
                             // configure until the proxy is running).
