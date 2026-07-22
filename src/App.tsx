@@ -30,6 +30,7 @@ import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { ComingSoon } from "./screens/ComingSoon";
 import { UpdatePanel } from "./components/UpdatePanel";
+import { StartupRoutingNotice } from "./components/StartupRoutingNotice";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { track, trackError } from "./lib/analytics";
@@ -91,6 +92,14 @@ export function App() {
   const [staleAgentsHint, setStaleAgentsHint] = useState(false);
   const [staleAgentsDismissed, setStaleAgentsDismissed] = useState(false);
 
+  // Set when routing flips on/off in a way worth a full-popover takeover:
+  // either routing is already on as the app comes up (the initial load reads
+  // it running, or the backend's startup auto-enable lands and announces
+  // itself via `proxy-state-changed`), or the user toggles the proxy from the
+  // home screen. Holds the direction so the takeover can word on vs off;
+  // shown until dismissed.
+  const [routingNotice, setRoutingNotice] = useState<"on" | "off" | null>(null);
+
   // App version, stamped into the bundle at release time and shown quietly
   // in the footer. Best-effort: stays empty (footer hidden) if it can't load.
   const [version, setVersion] = useState("");
@@ -120,6 +129,7 @@ export function App() {
       setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
+      if (px?.running) setRoutingNotice("on");
       const resolved: Screen = acct ? "home" : "firstrun";
       setScreen(resolved);
       if (!hasSeenTour()) {
@@ -153,6 +163,7 @@ export function App() {
       setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
+      if (px?.running) setRoutingNotice("on");
     });
     return () => {
       alive = false;
@@ -197,38 +208,50 @@ export function App() {
     setScreen("success");
   }, [refreshAccount]);
 
-  const toggleProxy = useCallback(async () => {
-    if (proxyBusy) return;
-    setProxyBusy(true);
-    setProviderError(null);
-    try {
-      const next = proxy?.running ? await proxyDisable() : await proxyEnable();
-      setProxy(next);
-      track(next.running ? "proxy_enabled" : "proxy_disabled");
-      setRestartHint(true);
-      if (next.running) setRelaunchHint(true);
-      // The backend owns the provider set across a master toggle: turning off
-      // snapshots the on-providers and disables all; turning on restores that
-      // snapshot. Just reflect the result - don't force every available
-      // provider on, which would clobber the ones the user deliberately left off.
-      setProviders(await listProviders().catch(() => []));
-    } catch (e) {
-      trackError(e, "generic");
-      // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
-      // or a missing network service) instead of silently reverting - a
-      // swallowed error reads as "the toggle does nothing".
-      setProviderError(typeof e === "string" ? e : String(e));
-      // Re-sync to the true state after the failed toggle.
+  // `takeover: true` (the home-screen toggle) surfaces the result as the
+  // full-popover routing notice; the Routing screen's toggle keeps its
+  // inline hints instead.
+  const toggleProxy = useCallback(
+    async (takeover: boolean) => {
+      if (proxyBusy) return;
+      setProxyBusy(true);
+      setProviderError(null);
       try {
-        setProxy(await proxyStatus());
-      } catch {
-        /* noop */
+        const next = proxy?.running ? await proxyDisable() : await proxyEnable();
+        setProxy(next);
+        track(next.running ? "proxy_enabled" : "proxy_disabled");
+        // The takeover and the inline hints say the same thing ("restart your
+        // agents"), so show one or the other, never both.
+        if (takeover) {
+          setRoutingNotice(next.running ? "on" : "off");
+        } else {
+          setRestartHint(true);
+          if (next.running) setRelaunchHint(true);
+        }
+        // The backend owns the provider set across a master toggle: turning off
+        // snapshots the on-providers and disables all; turning on restores that
+        // snapshot. Just reflect the result - don't force every available
+        // provider on, which would clobber the ones the user deliberately left off.
+        setProviders(await listProviders().catch(() => []));
+      } catch (e) {
+        trackError(e, "generic");
+        // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
+        // or a missing network service) instead of silently reverting - a
+        // swallowed error reads as "the toggle does nothing".
+        setProviderError(typeof e === "string" ? e : String(e));
+        // Re-sync to the true state after the failed toggle.
+        try {
+          setProxy(await proxyStatus());
+        } catch {
+          /* noop */
+        }
+        setProviders(await listProviders().catch(() => []));
+      } finally {
+        setProxyBusy(false);
       }
-      setProviders(await listProviders().catch(() => []));
-    } finally {
-      setProxyBusy(false);
-    }
-  }, [proxy, proxyBusy]);
+    },
+    [proxy, proxyBusy],
+  );
 
   const setProvider = useCallback(
     async (slug: string, enabled: boolean) => {
@@ -390,7 +413,7 @@ export function App() {
           // reminds the user on the home screen; their timers auto-dismiss.
           setScreen("home");
         }}
-        onToggleProxy={toggleProxy}
+        onToggleProxy={() => toggleProxy(false)}
         onSetProvider={setProvider}
         onTrustCa={trustCa}
         onUntrustCa={untrustCa}
@@ -426,7 +449,7 @@ export function App() {
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onOpenProxy={() => setScreen("proxy")}
-        onToggleProxy={toggleProxy}
+        onToggleProxy={() => toggleProxy(true)}
         onOpenDirectGateway={() => setScreen("coming-soon")}
         onOpenSettings={() => setScreen("settings")}
       />
@@ -452,6 +475,12 @@ export function App() {
           the slim update banner in-flow at the top of the popover - hence its
           placement above the body. */}
       <UpdatePanel />
+      {routingNotice !== null && screen !== "loading" && (
+        <StartupRoutingNotice
+          routingOn={routingNotice === "on"}
+          onDismiss={() => setRoutingNotice(null)}
+        />
+      )}
       {body}
       {version && (
         <p className="mt-auto shrink-0 px-3.5 py-2 text-center font-mono text-[10.5px] text-gc-ink-5">
