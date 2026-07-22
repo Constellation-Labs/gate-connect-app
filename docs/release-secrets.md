@@ -1,8 +1,9 @@
 # Release secrets checklist
 
 GitHub Actions secrets consumed by `.github/workflows/release.yml` (the
-tag-triggered `Release` job). Add them under **Settings → Secrets and variables
-→ Actions → New repository secret**.
+tag-triggered `Release` job) and `.github/workflows/release-notes-slack.yml`
+(posts release notes to Slack when a release is published). Add them under
+**Settings → Secrets and variables → Actions → New repository secret**.
 
 The macOS job (`macos-latest`) is the only one that code-signs and notarizes;
 the Linux/Windows jobs ignore the `APPLE_*` secrets. The Tauri *updater*
@@ -22,6 +23,7 @@ every platform.
 | `APPLE_API_KEY` | macOS | App Store Connect **Key ID** (the `XXXX` in `AuthKey_XXXX.p8`). |
 | `APPLE_API_ISSUER` | macOS | App Store Connect **Issuer ID** (UUID, shown above the keys table). |
 | `VITE_POSTHOG_KEY` | optional | Inlined into the frontend by Vite. Absent ⇒ analytics is a no-op; build still succeeds. |
+| `SLACK_WEBHOOK_URL` | yes | Slack incoming-webhook URL bound to `#gate-release-notes`; `release-notes-slack.yml` posts the release notes there when a stable (non-prerelease, non-`-rc`) release is published. |
 | `GITHUB_TOKEN` | n/a | Auto-provided by Actions; no setup needed. |
 
 ## Producing the values
@@ -44,6 +46,11 @@ openssl pkcs12 -in GateAICert.p12 -nokeys -clcerts -passin pass:'P12_PASSWORD' -
 #   On macOS you can instead use: security find-identity -v -p codesigning
 ```
 
+- `SLACK_WEBHOOK_URL`: [api.slack.com/apps](https://api.slack.com/apps) →
+  create (or reuse) an app in the workspace → **Incoming Webhooks** → activate →
+  **Add New Webhook to Workspace** → pick `#gate-release-notes` → copy the
+  `https://hooks.slack.com/services/…` URL. The webhook is channel-bound: to
+  change channels, create a new webhook and update the secret.
 - `APPLE_API_KEY` is the Key ID embedded in the `.p8` filename (`AuthKey_<KEYID>.p8`).
 - `APPLE_API_ISSUER` is in App Store Connect → **Users and Access → Integrations
   → App Store Connect API**, above the keys table.

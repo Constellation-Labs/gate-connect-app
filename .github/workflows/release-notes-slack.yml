@@ -1,0 +1,100 @@
+name: Release notes to Slack
+
+on:
+  release:
+    types: [published]
+  # Manual test hook: post an existing release by tag without re-publishing it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to post (e.g. v0.1.2)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  slack:
+    # Stable releases only: skip the GitHub prerelease flag AND any hyphenated
+    # tag (v0.1.2-rc.1 etc). tauri-action creates rc drafts with
+    # prerelease: false, so the tag guard covers a human forgetting to tick
+    # "pre-release" when publishing. workflow_dispatch bypasses the guard for
+    # testing.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (!github.event.release.prerelease &&
+           !contains(github.event.release.tag_name, '-')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Slack payload
+        id: payload
+        uses: actions/github-script@v7
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        with:
+          script: |
+            let release = context.payload.release;
+            if (!release) {
+              ({ data: release } = await github.rest.repos.getReleaseByTag({
+                ...context.repo,
+                tag: process.env.DISPATCH_TAG,
+              }));
+            }
+
+            // GitHub release markdown -> Slack mrkdwn. Escape &<> before
+            // inserting <url|text> link markup so the escaping can't eat it.
+            function toMrkdwn(md) {
+              let s = md.replace(/\r\n/g, '\n');
+              // The download hint is redundant in Slack; the button covers it.
+              s = s.replace(/^Download the installer for your platform below\.\n*/m, '');
+              s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+              s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<$2|$1>');
+              s = s.replace(/(?<![|<])\bhttps:\/\/github\.com\/\S+\/pull\/(\d+)/g, '<$&|#$1>');
+              s = s.replace(/(?<![|<])\bhttps:\/\/github\.com\/\S+\/compare\/(\S+)/g, '<$&|$1>');
+              s = s.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+              s = s.replace(/\*\*([^*\n]+)\*\*/g, '*$1*');
+              s = s.replace(/^(\s*)[*-]\s+/gm, '$1• ');
+              return s.replace(/\n{3,}/g, '\n\n').trim();
+            }
+
+            let notes = toMrkdwn(release.body || '');
+            if (!notes) notes = '_No release notes provided._';
+            // Slack caps section text at 3000 chars; cut on a line boundary.
+            const LIMIT = 2900;
+            if (notes.length > LIMIT) {
+              notes = notes.slice(0, LIMIT).replace(/\n[^\n]*$/, '')
+                + `\n_…truncated - <${release.html_url}|see the full notes on GitHub>_`;
+            }
+
+            const title = release.name || `Gate Connect ${release.tag_name}`;
+            const payload = {
+              text: `${title} released`,
+              blocks: [
+                {
+                  type: 'header',
+                  text: { type: 'plain_text', text: title.slice(0, 150), emoji: true },
+                },
+                {
+                  type: 'section',
+                  text: { type: 'mrkdwn', text: notes },
+                },
+                {
+                  type: 'actions',
+                  elements: [
+                    {
+                      type: 'button',
+                      text: { type: 'plain_text', text: 'View release on GitHub' },
+                      url: release.html_url,
+                    },
+                  ],
+                },
+              ],
+            };
+            core.setOutput('payload', JSON.stringify(payload));
+
+      - name: Post to Slack
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: ${{ steps.payload.outputs.payload }}
