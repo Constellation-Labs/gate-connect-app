@@ -84,8 +84,8 @@ export function Home({
 
         {staleAgentsHint && (
           <div className="flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
-            <Icon name="info" size={15} className="shrink-0 text-gc-ink-3" />
-            <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+            <Icon name="info" size={15} className="shrink-0 text-gc-error" />
+            <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-error">
               Gate&rsquo;s local address changed. Restart your AI apps to
               reconnect.
             </div>
@@ -110,8 +110,8 @@ export function Home({
 
         {restartHint && !(platform === "linux" && relaunchHint) && (
           <div className="flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
-            <Icon name="info" size={15} className="shrink-0 text-gc-ink-3" />
-            <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+            <Icon name="info" size={15} className="shrink-0 text-gc-error" />
+            <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-error">
               Restart your agent to apply the change.
             </div>
           </div>
