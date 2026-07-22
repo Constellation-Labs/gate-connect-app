@@ -96,8 +96,16 @@ impl ProxyManager {
                 domains: domains.clone(),
                 ca_cert_pem: ca.cert_pem().to_string(),
                 ca_key_pem: ca.key_pem().to_string(),
-                // macOS reads the system proxy live, so an ephemeral port is fine.
-                preferred_port: None,
+                // Reuse the port we bound last time: macOS reads the system
+                // proxy live, but clients that resolved the proxy once at
+                // their own launch (e.g. Claude Desktop) keep dialing the old
+                // port across our restarts - an app upgrade must come back on
+                // the same address or those clients break until relaunched.
+                preferred_port: system_proxy::load_port().unwrap_or(None),
+                // Same for the PAC port: the AutoConfigURL a client captured
+                // at its own launch must keep serving a fresh PAC, or its
+                // fetch fails and it falls back to DIRECT, bypassing Gate.
+                preferred_pac_port: system_proxy::load_pac_port().unwrap_or(None),
                 // Per-user UID gating is a Linux concern (shared loopback proxy);
                 // unused on macOS.
                 owner_uid: None,
@@ -109,6 +117,10 @@ impl ProxyManager {
             // proxy so traffic is never stranded at a dead listener.
             || manager().handle_engine_crash(),
         )?;
+
+        // Remember the ports for next time (best-effort).
+        let _ = system_proxy::save_port(running.port());
+        let _ = system_proxy::save_pac_port(running.pac_port());
 
         // Point the system proxy at the engine's loopback PAC. Promptless.
         let pac_url = format!("http://127.0.0.1:{}/proxy.pac", running.pac_port());

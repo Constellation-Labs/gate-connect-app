@@ -43,12 +43,20 @@ pub struct EngineConfig {
     pub ca_key_pem: String,
     /// Preferred loopback port to bind. `Some(p)` asks the engine to reuse a
     /// previously-chosen port so a restart keeps the same address - the system
-    /// proxy pointer baked into a login session stays valid across app
-    /// restarts instead of dangling at a dead ephemeral port. Falls back to an
-    /// ephemeral port if `p` is taken (or `None`). Linux sets this; macOS and
-    /// Windows pass `None` (their system proxy is read live, so a changing port
-    /// never strands a frozen session).
+    /// proxy pointer baked into a login session (Linux) or a client that
+    /// resolved the proxy once at its own launch (macOS/Windows) stays valid
+    /// across app restarts instead of dangling at a dead ephemeral port. Falls
+    /// back to an ephemeral port if `p` is taken (or `None`). All three
+    /// platforms persist and pass the last-bound port.
     pub preferred_port: Option<u16>,
+    /// Preferred loopback port for the PAC listener, same contract as
+    /// [`preferred_port`](Self::preferred_port): reuse the last-bound port so
+    /// the `AutoConfigURL` a client captured at its own launch still serves a
+    /// fresh PAC after we restart, instead of failing the fetch and silently
+    /// falling back to DIRECT (bypassing Gate). PAC-driven platforms only;
+    /// Linux uses env-var proxies with no PAC.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    pub preferred_pac_port: Option<u16>,
     /// When `Some(uid)`, only connections from that local UID are intercepted
     /// (MITM'd + rewritten with the Gate key injected); traffic from any other
     /// local user is blind-tunnelled. The loopback listener is plain TCP and
@@ -432,7 +440,7 @@ pub(crate) fn apply_rewrite<T>(
 /// so tokio can adopt it.
 fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
     let listener = match preferred {
-        Some(p) => std::net::TcpListener::bind(("127.0.0.1", p))
+        Some(p) => bind_preferred(p)
             .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
             .with_context(|| format!("binding loopback (preferred {p}, then ephemeral)"))?,
         None => {
@@ -447,6 +455,35 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
         .set_nonblocking(true)
         .context("setting the loopback listener non-blocking")?;
     Ok((listener, port))
+}
+
+/// Bind `127.0.0.1:port` for the preferred-port reuse path. On unix this sets
+/// `SO_REUSEADDR` before binding: the previous engine session's connections
+/// leave server-side TIME_WAIT sockets on the port for minutes, and without
+/// the flag the restart's rebind fails and silently falls back to an ephemeral
+/// port - defeating the address stability the preferred port exists for. Safe
+/// on this listener: unix `SO_REUSEADDR` only permits rebinding over such
+/// lingering remnants, never over a live listener, so the taken-port fallback
+/// still works. Windows keeps the plain bind - its defaults already allow the
+/// rebind, and `SO_REUSEADDR` there *would* let another local process hijack
+/// a live port.
+#[cfg(unix)]
+fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&std::net::SocketAddr::from(([127, 0, 0, 1], port)).into())?;
+    // Match std's TcpListener::bind backlog.
+    socket.listen(128)?;
+    Ok(socket.into())
+}
+
+#[cfg(not(unix))]
+fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+    std::net::TcpListener::bind(("127.0.0.1", port))
 }
 
 /// Build the PAC (proxy auto-config) script WinINET runs for every connection.
@@ -539,7 +576,8 @@ where
     // Windows points WinINET at a PAC served on its own loopback port (see
     // `serve_pac`); the proxy port itself is baked into the PAC body.
     #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let (pac_listener, pac_port) = bind_loopback(None).context("binding the PAC loopback port")?;
+    let (pac_listener, pac_port) =
+        bind_loopback(cfg.preferred_pac_port).context("binding the PAC loopback port")?;
 
     let (rules_tx, rules_rx) = watch::channel(Arc::new(enabled_only(&cfg.domains)));
     // The PAC body is regenerated per request from this live rule set, so a

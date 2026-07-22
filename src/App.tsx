@@ -21,6 +21,7 @@ import {
   listTools,
   unpinPopover,
   openOnboardingWindow,
+  routedClientsStale,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
 import { Home } from "./screens/Home";
@@ -81,6 +82,15 @@ export function App() {
     return () => clearTimeout(t);
   }, [relaunchHint]);
 
+  // Set when the startup auto-enable brought routing back on a different
+  // local port than the previous session (first launch after upgrading from
+  // a build without port persistence, or the persisted port was taken).
+  // Already-running AI apps keep dialing the dead old port, so Home shows a
+  // restart notice. Sticky until the user dismisses it - unlike the
+  // auto-dismissing hints above, their tools stay broken until acted on.
+  const [staleAgentsHint, setStaleAgentsHint] = useState(false);
+  const [staleAgentsDismissed, setStaleAgentsDismissed] = useState(false);
+
   // App version, stamped into the bundle at release time and shown quietly
   // in the footer. Best-effort: stays empty (footer hidden) if it can't load.
   const [version, setVersion] = useState("");
@@ -103,11 +113,13 @@ export function App() {
       }
       const provs = await listProviders().catch(() => []);
       const toolList = await listTools().catch(() => []);
+      const stale = await routedClientsStale().catch(() => false);
       if (!alive) return;
       setAccount(acct);
       setProxy(px);
       setProviders(provs);
       setTools(toolList);
+      if (stale) setStaleAgentsHint(true);
       const resolved: Screen = acct ? "home" : "firstrun";
       setScreen(resolved);
       if (!hasSeenTour()) {
@@ -135,10 +147,12 @@ export function App() {
       const px = await proxyStatus().catch(() => null);
       const provs = await listProviders().catch(() => []);
       const toolList = await listTools().catch(() => []);
+      const stale = await routedClientsStale().catch(() => false);
       if (!alive) return;
       setProxy(px);
       setProviders(provs);
       setTools(toolList);
+      if (stale) setStaleAgentsHint(true);
     });
     return () => {
       alive = false;
@@ -409,6 +423,8 @@ export function App() {
         error={providerError}
         restartHint={restartHint}
         relaunchHint={relaunchHint}
+        staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
+        onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onOpenProxy={() => setScreen("proxy")}
         onToggleProxy={toggleProxy}
         onOpenDirectGateway={() => setScreen("coming-soon")}

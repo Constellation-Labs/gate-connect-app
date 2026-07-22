@@ -62,6 +62,60 @@ fn snapshot_path() -> Result<PathBuf> {
         .join("system-proxy.snapshot.json"))
 }
 
+/// Path where we persist the engine's chosen loopback port so it can be reused
+/// across restarts. WinINET consumers re-resolve after our
+/// `INTERNET_OPTION_SETTINGS_CHANGED` poke, but clients that resolve the proxy
+/// once at their own launch (e.g. Electron apps doing Node-side requests) keep
+/// dialing the old port after we restart - a stable port keeps them working
+/// without a client restart.
+fn port_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?.join("proxy").join("port"))
+}
+
+/// The last engine port we persisted, if any and still parseable.
+pub fn load_port() -> Result<Option<u16>> {
+    let path = port_path()?;
+    match fs::read_to_string(&path) {
+        Ok(raw) => Ok(raw.trim().parse::<u16>().ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Persist the engine port for reuse on the next run. Best-effort durability;
+/// non-secret (the 0o644 is ignored on Windows).
+pub fn save_port(port: u16) -> Result<()> {
+    let path = port_path()?;
+    crate::primitives::write_file(&path, port.to_string().as_bytes(), 0o644)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+/// Path where we persist the PAC listener's port, companion to [`port_path`]:
+/// the `AutoConfigURL` bakes this port in, and a client that captured that URL
+/// at its own launch must find a fresh PAC there after we restart, or its PAC
+/// fetch fails and it silently falls back to DIRECT (bypassing Gate).
+fn pac_port_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?.join("proxy").join("pac-port"))
+}
+
+/// The last PAC port we persisted, if any and still parseable.
+pub fn load_pac_port() -> Result<Option<u16>> {
+    let path = pac_port_path()?;
+    match fs::read_to_string(&path) {
+        Ok(raw) => Ok(raw.trim().parse::<u16>().ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Persist the PAC port for reuse on the next run. Best-effort durability;
+/// non-secret (the 0o644 is ignored on Windows).
+pub fn save_pac_port(port: u16) -> Result<()> {
+    let path = pac_port_path()?;
+    crate::primitives::write_file(&path, port.to_string().as_bytes(), 0o644)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
 fn settings_key(write: bool) -> Result<RegKey> {
     let access = if write {
         KEY_READ | KEY_SET_VALUE

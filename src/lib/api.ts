@@ -145,3 +145,16 @@ export const launchAtLoginStatus = () => invoke<boolean>("launch_at_login_status
 
 export const setLaunchAtLogin = (enabled: boolean) =>
   invoke<void>("set_launch_at_login", { enabled });
+
+/** Mark (or unmark) the next exit as an updater-driven relaunch, so the exit
+ * handler keeps the routing intent and the relaunched app restores routing.
+ * Set before `downloadAndInstall()` (Windows exits from inside it); reset if
+ * the install fails. */
+export const setUpdaterRelaunching = (relaunching: boolean) =>
+  invoke<void>("set_updater_relaunching", { relaunching });
+
+/** Whether the startup auto-enable brought routing back on a different local
+ * port than the previous session (e.g. the first launch after upgrading from
+ * a build without port persistence). Already-running AI apps may still point
+ * at the dead old port, so the popover shows a restart notice. */
+export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");

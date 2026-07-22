@@ -528,6 +528,43 @@ static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 /// site so the next open reconciles again. Starts false (window not yet shown).
 static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
+/// Whether the coming exit is an updater-driven relaunch rather than a user
+/// quit. The exit handler clears the routing intent on a plain quit when
+/// launch-at-login is off (no login item means nothing would re-route after a
+/// reboot), but an update install relaunches us immediately - clearing the
+/// intent there would leave routing off after every upgrade. Set by the
+/// frontend right before it kicks off the updater install; reset if that
+/// install fails. If the relaunch itself fails after a successful install the
+/// flag stays set, which at worst preserves an intent that matched the
+/// pre-update state anyway.
+static UPDATER_RELAUNCHING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the startup auto-enable brought the engine back on a *different*
+/// loopback port than the previous session persisted (including "nothing
+/// persisted" - the first launch of a port-persisting build, i.e. an upgrade
+/// from an older version). Clients that resolved the proxy at their own
+/// launch keep dialing the dead old port until relaunched, so the popover
+/// shows a "restart your AI apps" notice while this is set. One-shot per app
+/// run: once the port persists, later restarts reuse it and this stays false.
+static ROUTED_CLIENTS_MAY_BE_STALE: AtomicBool = AtomicBool::new(false);
+
+/// Whether already-running routed clients may be pointing at a dead port
+/// (see [`ROUTED_CLIENTS_MAY_BE_STALE`]). Read-only; the frontend keeps its
+/// own dismissed state for the webview's lifetime.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn routed_clients_stale() -> bool {
+    ROUTED_CLIENTS_MAY_BE_STALE.load(Ordering::Acquire)
+}
+
+/// Mark (or unmark) the next exit as an updater-driven relaunch. Called by the
+/// frontend around `downloadAndInstall()` - before it starts, because on
+/// Windows the installer exits the app from inside that call.
+#[tauri::command]
+fn set_updater_relaunching(relaunching: bool) {
+    UPDATER_RELAUNCHING.store(relaunching, Ordering::Release);
+}
+
 /// Stop pinning the popover open. The frontend calls this on the user's
 /// first interaction with the first-launch window, switching the popover
 /// back to normal click-outside-to-dismiss behavior.
@@ -663,6 +700,8 @@ pub fn run() {
                     proxy_untrust_ca,
                     launch_at_login_status,
                     set_launch_at_login,
+                    set_updater_relaunching,
+                    routed_clients_stale,
                 ]
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -688,6 +727,7 @@ pub fn run() {
                     list_providers,
                     provider_enable,
                     provider_disable,
+                    set_updater_relaunching,
                 ]
             }
         })
@@ -831,8 +871,26 @@ pub fn run() {
                     if let Err(e) = gate_connect_core::provider::restore_all() {
                         eprintln!("[gate] restoring providers on startup auto-enable failed: {e}");
                     }
+                    // Snapshot the persisted engine port before enable
+                    // overwrites it; comparing it afterwards tells us whether
+                    // the engine came back on the previous session's address.
+                    let prior_port = gate_connect_core::proxy::system_proxy::load_port()
+                        .ok()
+                        .flatten();
                     match gate_connect_core::proxy::manager().enable() {
                         Ok(state) => {
+                            // Port changed (or none was persisted - the first
+                            // launch after upgrading from a build without port
+                            // persistence): clients that resolved the proxy at
+                            // their own launch are now dialing a dead port.
+                            // Surface a "restart your AI apps" notice in the
+                            // popover.
+                            let new_port = gate_connect_core::proxy::system_proxy::load_port()
+                                .ok()
+                                .flatten();
+                            if prior_port != new_port {
+                                ROUTED_CLIENTS_MAY_BE_STALE.store(true, Ordering::Release);
+                            }
                             // Second restore pass for domain-only providers the
                             // pre-enable pass left in the snapshot (nothing to
                             // configure until the proxy is running).
@@ -1067,8 +1125,12 @@ pub fn run() {
                 // clear the routing intent too, otherwise a later manual launch
                 // would silently re-enable routing. Launch-at-login on keeps the
                 // intent, so opting in is what persists routing across a restart.
+                // An updater-driven relaunch is exempt: the app comes right back
+                // and should restore routing exactly as the user left it.
                 use tauri_plugin_autostart::ManagerExt;
-                if !app_handle.autolaunch().is_enabled().unwrap_or(false) {
+                if !UPDATER_RELAUNCHING.load(Ordering::Acquire)
+                    && !app_handle.autolaunch().is_enabled().unwrap_or(false)
+                {
                     if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
                         eprintln!("[gate] clearing routing intent on exit failed: {e}");
                     }

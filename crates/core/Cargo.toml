@@ -29,8 +29,14 @@ time.workspace = true
 # `libc` backs the unix `getpwuid(geteuid())` username lookup in env.rs -
 # we resolve the real account from the password database rather than
 # trusting inherited `$USER` / `$USERNAME`.
+#
+# `socket2` backs the engine's preferred-port rebind (engine.rs
+# `bind_preferred`): SO_REUSEADDR must be set before bind so a restarted
+# engine can reclaim its port past the previous session's TIME_WAIT sockets,
+# and std's TcpListener can't set options pre-bind.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+socket2 = "0.6"
 
 # `winreg` backs the Windows proxy's system-proxy wiring, which reads and
 # writes the per-user WinINET `Internet Settings` registry values.
