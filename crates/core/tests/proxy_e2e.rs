@@ -47,13 +47,10 @@ use gate_connect_core::proxy::engine::{self, EngineConfig};
 /// concurrently running test can defeat that by (re)allocating from the same
 /// ephemeral range in the gap - listeners and outbound client connections
 /// alike. Every test takes this guard first, so the file runs one test at a
-/// time. `into_inner` keeps a poisoned lock (an earlier test panicking mid-
-/// guard) from cascading into unrelated failures.
-static SERIAL: Mutex<()> = Mutex::new(());
-
-fn serial_guard() -> std::sync::MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+/// time. A tokio mutex, not std: the guard is held across await points
+/// (clippy's await_holding_lock), and it releases cleanly when a failing
+/// test panics instead of poisoning.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// One request the mock gateway received, reduced to what we assert on.
 #[derive(Clone)]
@@ -145,7 +142,7 @@ fn mint_ca() -> (String, String) {
 
 #[tokio::test]
 async fn proxy_rewrites_intercepted_request_to_gateway() {
-    let _serial = serial_guard();
+    let _serial = SERIAL.lock().await;
     // 1. Mock gateway on loopback. The rewritten request must land here.
     let gateway = start_mock_gateway().await;
 
@@ -225,7 +222,7 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
 /// still rewrite `/v1/messages` to the gateway with the Gate headers injected.
 #[tokio::test]
 async fn proxy_intercepts_external_process_routed_by_proxy_env() {
-    let _serial = serial_guard();
+    let _serial = SERIAL.lock().await;
     // 1. Mock gateway on loopback (plain HTTP, so the engine->gateway hop needs
     //    no upstream trust and the test stays hermetic).
     let gateway = start_mock_gateway().await;
@@ -329,7 +326,7 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
 
 #[tokio::test]
 async fn proxy_rewrites_openrouter_request_to_gateway() {
-    let _serial = serial_guard();
+    let _serial = SERIAL.lock().await;
     // 1. Mock gateway on loopback. The rewritten request must land here.
     let gateway = start_mock_gateway().await;
 
@@ -419,7 +416,7 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
 /// fall back to an ephemeral one instead of failing the start.
 #[tokio::test]
 async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
-    let _serial = serial_guard();
+    let _serial = SERIAL.lock().await;
     let gateway = start_mock_gateway().await;
     let (ca_cert_pem, ca_key_pem) = mint_ca();
     let config = |preferred_port: Option<u16>| EngineConfig {
@@ -484,7 +481,7 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 #[tokio::test]
 async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
-    let _serial = serial_guard();
+    let _serial = SERIAL.lock().await;
     let gateway = start_mock_gateway().await;
     let (ca_cert_pem, ca_key_pem) = mint_ca();
     let config = |preferred_pac_port: Option<u16>| EngineConfig {
