@@ -106,8 +106,7 @@ export function FirstRun({
         </p>
       )}
 
-      {!reauth &&
-        (!showKey ? (
+      {!showKey ? (
         <div className="mt-4 flex justify-center">
           <button
             type="button"
@@ -155,7 +154,7 @@ export function FirstRun({
             {submitting ? "Connecting…" : "Connect with key"}
           </Button>
         </div>
-      ))}
+      )}
 
       {error && (
         <p className="mt-3 text-[11.5px] leading-snug text-gc-error">{error}</p>
