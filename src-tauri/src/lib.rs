@@ -557,6 +557,49 @@ fn routed_clients_stale() -> bool {
     ROUTED_CLIENTS_MAY_BE_STALE.load(Ordering::Acquire)
 }
 
+/// Process names of the agent CLIs we're willing to close. A subset of the
+/// registry tools: `hermes` and `openclaw` are excluded - their names are too
+/// generic / their processes shouldn't be killed from here. Matched against
+/// the process name with any `.exe` suffix stripped, so one list serves all
+/// three desktop OSes.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// Terminate running agent processes so their next launch picks up the
+/// routing change. Graceful where the platform allows it (SIGTERM on
+/// macOS/Linux, so agents can flush state; Windows only has TerminateProcess).
+/// Returns how many processes were signalled - 0 means none were running.
+/// Best-effort: processes we can't signal (another user's, already gone) are
+/// skipped, not errors.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn close_running_agents() -> u32 {
+    use sysinfo::{ProcessesToUpdate, Signal, System};
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let own_pid = sysinfo::get_current_pid().ok();
+    let mut closed = 0u32;
+    for (pid, process) in sys.processes() {
+        if Some(*pid) == own_pid {
+            continue;
+        }
+        let name = process.name().to_string_lossy().to_lowercase();
+        let name = name.strip_suffix(".exe").unwrap_or(&name);
+        if !AGENT_PROCESS_NAMES.contains(&name) {
+            continue;
+        }
+        // kill_with(Term) is None on platforms without signal support
+        // (Windows); fall back to the hard kill there.
+        let signalled = process
+            .kill_with(Signal::Term)
+            .unwrap_or_else(|| process.kill());
+        if signalled {
+            closed += 1;
+        }
+    }
+    closed
+}
+
 /// Mark (or unmark) the next exit as an updater-driven relaunch. Called by the
 /// frontend around `downloadAndInstall()` - before it starts, because on
 /// Windows the installer exits the app from inside that call.
@@ -702,6 +745,7 @@ pub fn run() {
                     set_launch_at_login,
                     set_updater_relaunching,
                     routed_clients_stale,
+                    close_running_agents,
                 ]
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
