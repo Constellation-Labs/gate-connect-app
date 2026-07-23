@@ -231,7 +231,7 @@ In the Gate repo, set the client id in the environment's real tfvars (not the
 
 ```hcl
 # terraform/aws/environments/staging.tfvars
-cognito_connect_client_id = "<CONNECT_CLIENT_ID>"
+cognito_desktop_client_id = "<CONNECT_CLIENT_ID>"
 ```
 
 Then apply. The gateway env `GATEWAY_COGNITO_CLIENT_IDS` already references
@@ -281,6 +281,43 @@ export GATE_COGNITO_CLIENT_ID_STAGING=<STAGING_CONNECT_CLIENT_ID>
 
 pnpm tauri dev
 ```
+
+## Production setup checklist
+
+The condensed run-through of steps 1-5 against the production account. Staging
+is already done; production is not. Each item links back to the step with the
+full command and flag rationale.
+
+- [ ] **Prod AWS credentials.** `aws sts get-caller-identity` shows the
+  production account; `export AWS_PAGER=""`. (Prerequisites)
+- [ ] **Resolve the prod pool.** `describe-user-pool-domain` against the
+  production domain prefix; record the pool id, hosted domain, and region, and
+  note whether `Version` is `2` (Managed Login). (Step 1)
+- [ ] **Create the client.** `create-user-pool-client` in the prod pool:
+  `gate-connect-desktop`, no secret, code flow, the three loopback callbacks
+  (`http://localhost:8977|8978|8979/callback`), `COGNITO Google`,
+  `ALLOW_REFRESH_TOKEN_AUTH ALLOW_USER_AUTH`. Record the **ClientId**. (Step 2)
+- [ ] **Branding.** Create baseline branding for the new client
+  (`--use-cognito-provided-values`), then apply the Gate style: either
+  re-apply the vendored `connect-branding-settings.json` +
+  `connect-branding-assets.json` via `update-managed-login-branding` (both
+  files, always), or redo the Console designer steps. Verify the Hosted UI
+  renders with the logo, not "Login pages unavailable." (Step 3)
+- [ ] **Gateway trust.** In the Gate repo, set
+  `cognito_desktop_client_id = "<PROD_CLIENT_ID>"` in the production tfvars
+  and apply. Until this lands, sign-in succeeds but every gateway call 401s.
+  (Step 4)
+- [ ] **Release variables.** Set the GitHub Actions repo Variables
+  `GATE_COGNITO_CLIENT_ID` (prod client id) and `GATE_COGNITO_HOSTED_DOMAIN`
+  (prod hosted domain, no scheme); leave `GATE_COGNITO_SCOPES` unset unless
+  hardening. The `_STAGING` variables stay as they are. (Step 5)
+- [ ] **Cut a release** so the new values are baked into the binary
+  (`build.rs` re-runs on env change, so no stale cache).
+- [ ] **Verify end to end.** Fresh install pointing at the production gateway:
+  sign in via the branded Hosted UI, org picker loads (`GET /v1/me/orgs`
+  returns 200), a proxied tool call succeeds. Then flip Settings → Dev mode to
+  Staging and confirm staging login still works (the runtime pool selection
+  picks the `_STAGING` pair only for `gateway-staging.constellationgate.ai`).
 
 ## Gotchas
 
