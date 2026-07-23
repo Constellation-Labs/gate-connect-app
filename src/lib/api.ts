@@ -163,3 +163,17 @@ export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
  * next launch picks up the routing change. Resolves to how many processes
  * were signalled; 0 means none were running. */
 export const closeRunningAgents = () => invoke<number>("close_running_agents");
+
+/** A backend failure buffered for the analytics seam. `context` names the
+ * operation that failed (validated frontend-side against the known set);
+ * `message` is the raw error chain - it stays on this machine, only the
+ * classified title is sent. */
+export interface BackendError {
+  context: string;
+  message: string;
+}
+
+/** Hand over (and clear) the backend's buffered analytics errors. Called once
+ * at mount to sweep failures that predate the webview, then again on each
+ * `backend-error-pending` nudge. */
+export const drainBackendErrors = () => invoke<BackendError[]>("drain_backend_errors");

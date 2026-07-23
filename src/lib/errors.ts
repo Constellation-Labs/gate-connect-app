@@ -18,7 +18,29 @@ export type ErrorContext =
   | "trust_ca"
   | "untrust_ca"
   | "startup"
+  | "account_reconcile"
+  | "provider_restore"
+  | "provider_reconcile"
+  | "routing_intent"
+  | "restore_routing"
+  | "launch_at_login"
   | "generic";
+
+/** Contexts the Rust side is allowed to report through `drain_backend_errors`.
+ * An unknown string (a backend site added without a frontend counterpart)
+ * degrades to "generic" rather than sending an unvetted label. */
+const BACKEND_CONTEXTS = new Set<ErrorContext>([
+  "account_reconcile",
+  "provider_restore",
+  "provider_reconcile",
+  "routing_intent",
+  "restore_routing",
+  "launch_at_login",
+]);
+
+export function backendErrorContext(context: string): ErrorContext {
+  return BACKEND_CONTEXTS.has(context as ErrorContext) ? (context as ErrorContext) : "generic";
+}
 
 export interface ClassifiedError {
   title: string;
@@ -135,6 +157,12 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     trust_ca: "Couldn't trust the certificate",
     untrust_ca: "Couldn't remove the certificate trust",
     startup: "Couldn't load state at startup",
+    account_reconcile: "Couldn't reconcile the saved account",
+    provider_restore: "Couldn't restore provider routing",
+    provider_reconcile: "Couldn't refresh tool configs",
+    routing_intent: "Couldn't save the routing preference",
+    restore_routing: "Couldn't restore routing at startup",
+    launch_at_login: "Couldn't set launch at login",
     generic: "Something went wrong",
   };
   return {

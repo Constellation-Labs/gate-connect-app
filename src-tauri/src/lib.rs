@@ -7,6 +7,7 @@
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::{
@@ -17,8 +18,8 @@ use tauri::{
 };
 #[cfg(not(target_os = "linux"))]
 use tauri::{Position, Size};
-// Used only by the startup auto-enable to nudge the popover to re-read state.
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+// Used by the startup auto-enable to nudge the popover to re-read state, and
+// by `report_backend_error` to nudge a drain.
 use tauri::Emitter;
 
 /// Shape-check a user-supplied key coming over the JS-to-Rust boundary.
@@ -203,6 +204,7 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     // to first-run, so we log and fall through to the read below.
     if let Err(e) = account::reconcile() {
         eprintln!("account reconcile failed: {e}");
+        report_backend_error("account_reconcile", format!("{e:#}"));
     }
     let Some(gateway_base_url) = account::load_base_url().map_err(|e| format!("{e:#}"))? else {
         return Ok(None);
@@ -383,6 +385,7 @@ async fn proxy_enable(
         // hiccup never blocks the proxy from coming up.
         if let Err(e) = gate_connect_core::provider::restore_all() {
             eprintln!("[gate] restoring providers on proxy enable failed: {e}");
+            report_backend_error("provider_restore", format!("{e:#}"));
         }
         gate_connect_core::proxy::manager()
             .enable()
@@ -392,6 +395,7 @@ async fn proxy_enable(
         // running, so the pre-enable pass leaves them in the snapshot.
         if let Err(e) = gate_connect_core::provider::restore_all() {
             eprintln!("[gate] restoring providers after proxy enable failed: {e}");
+            report_backend_error("provider_restore", format!("{e:#}"));
         }
         gate_connect_core::proxy::manager()
             .status()
@@ -410,6 +414,7 @@ async fn proxy_enable(
     // the command.
     if let Err(e) = gate_connect_core::proxy::intent::set_intent(true) {
         eprintln!("[gate] persisting routing intent failed: {e}");
+        report_backend_error("routing_intent", format!("{e:#}"));
     }
     Ok(state)
 }
@@ -428,6 +433,7 @@ async fn proxy_disable(
         // switch.
         if let Err(e) = gate_connect_core::provider::snapshot_and_disable_all() {
             eprintln!("[gate] disabling providers on proxy disable failed: {e}");
+            report_backend_error("provider_restore", format!("{e:#}"));
         }
         gate_connect_core::proxy::manager()
             .disable()
@@ -446,6 +452,7 @@ async fn proxy_disable(
     // doesn't matter to this command's result.
     if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
         eprintln!("[gate] clearing routing intent failed: {e}");
+        report_backend_error("routing_intent", format!("{e:#}"));
     }
     Ok(state)
 }
@@ -555,6 +562,47 @@ static ROUTED_CLIENTS_MAY_BE_STALE: AtomicBool = AtomicBool::new(false);
 #[tauri::command]
 fn routed_clients_stale() -> bool {
     ROUTED_CLIENTS_MAY_BE_STALE.load(Ordering::Acquire)
+}
+
+/// A backend failure worth surfacing in analytics. The frontend owns the
+/// PostHog client, so failures are buffered here until it drains them: the
+/// buffer covers the pre-webview window (startup auto-enable runs before the
+/// popover mounts), and the nudge event covers failures while it's mounted.
+/// `message` stays on this machine - the frontend classifies it and sends
+/// only the classified title over the wire, same as invoke rejections.
+#[derive(Clone, Serialize)]
+struct BackendError {
+    context: &'static str,
+    message: String,
+}
+
+static PENDING_BACKEND_ERRORS: Mutex<Vec<BackendError>> = Mutex::new(Vec::new());
+/// Set once in `setup`; lets failure sites without an AppHandle (threads,
+/// spawn_blocking closures) nudge the popover.
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// Queue a failure for the frontend analytics seam and nudge a mounted
+/// popover to drain it. Capped so a repeating failure can't grow unbounded;
+/// oldest entries drop first.
+fn report_backend_error(context: &'static str, message: String) {
+    if let Ok(mut pending) = PENDING_BACKEND_ERRORS.lock() {
+        if pending.len() >= 32 {
+            pending.remove(0);
+        }
+        pending.push(BackendError { context, message });
+    }
+    if let Some(handle) = APP_HANDLE.get() {
+        let _ = handle.emit("backend-error-pending", ());
+    }
+}
+
+/// Hand the buffered backend failures to the frontend and clear the buffer.
+#[tauri::command]
+fn drain_backend_errors() -> Vec<BackendError> {
+    PENDING_BACKEND_ERRORS
+        .lock()
+        .map(|mut v| std::mem::take(&mut *v))
+        .unwrap_or_default()
 }
 
 /// Process names of the agent CLIs we're willing to close. A subset of the
@@ -746,6 +794,7 @@ pub fn run() {
                     set_updater_relaunching,
                     routed_clients_stale,
                     close_running_agents,
+                    drain_backend_errors,
                 ]
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -772,6 +821,7 @@ pub fn run() {
                     provider_enable,
                     provider_disable,
                     set_updater_relaunching,
+                    drain_backend_errors,
                 ]
             }
         })
@@ -816,6 +866,7 @@ pub fn run() {
                     std::thread::spawn(|| {
                         if let Err(e) = gate_connect_core::provider::reconcile_enabled() {
                             eprintln!("[gate] provider config reconcile on focus failed: {e}");
+                            report_backend_error("provider_reconcile", format!("{e:#}"));
                         }
                     });
                 }
@@ -841,6 +892,10 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Lets failure sites without a handle of their own nudge the
+            // popover to drain buffered analytics errors.
+            let _ = APP_HANDLE.set(app.handle().clone());
+
             // Hide the dock icon - Gate Connect lives in the menu bar.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -859,6 +914,7 @@ pub fn run() {
                     if !marker.exists() {
                         if let Err(e) = app.autolaunch().enable() {
                             eprintln!("[gate] enabling launch-at-login default failed: {e}");
+                            report_backend_error("launch_at_login", format!("{e}"));
                         }
                         let _ = std::fs::create_dir_all(&dir);
                         let _ = std::fs::write(&marker, b"1");
@@ -875,6 +931,7 @@ pub fn run() {
             std::thread::spawn(|| {
                 if let Err(e) = gate_connect_core::provider::reconcile_enabled() {
                     eprintln!("[gate] provider config reconcile on startup failed: {e}");
+                    report_backend_error("provider_reconcile", format!("{e:#}"));
                 }
             });
 
@@ -895,6 +952,7 @@ pub fn run() {
                     // dead loopback port. A clean disable leaves nothing to do.
                     if let Err(e) = gate_connect_core::proxy::manager().reconcile_on_startup() {
                         eprintln!("proxy startup reconcile failed: {e}");
+                        report_backend_error("restore_routing", format!("{e:#}"));
                     }
 
                     // Restart persistence: bring routing back if the user last
@@ -914,6 +972,7 @@ pub fn run() {
                     // enable); harmless and idempotent otherwise.
                     if let Err(e) = gate_connect_core::provider::restore_all() {
                         eprintln!("[gate] restoring providers on startup auto-enable failed: {e}");
+                        report_backend_error("provider_restore", format!("{e:#}"));
                     }
                     // Snapshot the persisted engine port before enable
                     // overwrites it; comparing it afterwards tells us whether
@@ -942,6 +1001,7 @@ pub fn run() {
                                 eprintln!(
                                     "[gate] restoring providers after startup auto-enable failed: {e}"
                                 );
+                                report_backend_error("provider_restore", format!("{e:#}"));
                             }
                             // Reflect the auto-enabled routing in the tray:
                             // retint the mark, turn the status dot green, and
@@ -960,6 +1020,7 @@ pub fn run() {
                             // silent launch, open the popover so the user can
                             // finish it. A visible launch already shows it below.
                             eprintln!("[gate] startup auto-enable failed: {e}");
+                            report_backend_error("restore_routing", format!("{e:#}"));
                             if silent_launch {
                                 if let Some(window) = handle.get_webview_window("main") {
                                     POPOVER_PINNED.store(true, Ordering::Release);

@@ -23,6 +23,7 @@ import {
   unpinPopover,
   openOnboardingWindow,
   routedClientsStale,
+  drainBackendErrors,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
 import { Home } from "./screens/Home";
@@ -35,6 +36,7 @@ import { StartupRoutingNotice } from "./components/StartupRoutingNotice";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { track, trackError } from "./lib/analytics";
+import { backendErrorContext } from "./lib/errors";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { usePlatform } from "./lib/platform";
@@ -51,6 +53,14 @@ function hostOf(url: string | undefined): string {
   } catch {
     return url;
   }
+}
+
+/** Drain the backend's buffered failures into the analytics seam. The raw
+ * message is classified frontend-side like any invoke rejection; only the
+ * title goes over the wire. */
+async function forwardBackendErrors(): Promise<void> {
+  const errs = await drainBackendErrors().catch(() => []);
+  for (const e of errs) trackError(e.message, backendErrorContext(e.context));
 }
 
 export function App() {
@@ -162,6 +172,8 @@ export function App() {
         proxy_available: px !== null,
         routing_on: px?.running ?? false,
         provider_count: provs.filter((p) => p.enabled).length,
+        // Sizes the hand-written-Gate-setup population (see codexDrifted).
+        codex_drifted: toolList.some((t) => t.slug === "codex" && t.status.kind === "drifted"),
         ...(lal === null ? {} : { launch_at_login: lal }),
       });
     })();
@@ -215,6 +227,17 @@ export function App() {
         track("popover_opened");
       }
     });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
+  // Backend failures buffer Rust-side because they can predate this webview
+  // (the startup auto-enable runs before the popover mounts). Sweep the
+  // buffer once at mount, then drain again on each nudge.
+  useEffect(() => {
+    void forwardBackendErrors();
+    const unlisten = listen("backend-error-pending", () => void forwardBackendErrors());
     return () => {
       void unlisten.then((f) => f());
     };

@@ -48,6 +48,7 @@ const ALLOWED_PROP_KEYS = new Set<string>([
   "has_account",
   "proxy_available",
   "routing_on",
+  "codex_drifted",
   "provider",
   "provider_count",
   "enabled",
