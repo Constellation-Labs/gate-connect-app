@@ -508,11 +508,14 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
     let config = |preferred_pac_port: Option<u16>| EngineConfig {
         gateway_base_url: gateway.base_url.clone(),
         api_key: "sk-gw-test".into(),
+        oauth_token: String::new(), // legacy API-key path
+        org_id: String::new(),      // no org on the legacy path
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
         preferred_port: None,
         preferred_pac_port,
+        preferred_relay_port: None,
         owner_uid: None,
         upstream_proxy: None,
     };
