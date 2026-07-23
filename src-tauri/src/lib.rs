@@ -982,15 +982,6 @@ fn set_updater_relaunching(relaunching: bool) {
 /// gates a cosmetic redraw. Starts false (assume signed in until proven dead).
 static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
 
-/// Debug-only manual override for the sign-in attention signal, toggled from a
-/// hidden tray menu item ("DEBUG: toggle sign-in-needed") so the red dot and
-/// Linux notification can be exercised without waiting for a real session to
-/// die. When set, the 30s refresh loop pins its `dead` verdict true so its next
-/// tick doesn't clear the forced state; clearing it lets the loop recompute the
-/// real session state. Never compiled into release builds.
-#[cfg(debug_assertions)]
-static DEBUG_FORCE_SIGNIN: AtomicBool = AtomicBool::new(false);
-
 /// Stop pinning the popover open. The frontend calls this on the user's
 /// first interaction with the first-launch window, switching the popover
 /// back to normal click-outside-to-dismiss behavior.
@@ -1523,9 +1514,6 @@ pub fn run() {
                             .ok()
                             .flatten()
                             .is_some();
-                    // Debug override keeps the forced state pinned across ticks.
-                    #[cfg(debug_assertions)]
-                    let dead = dead || DEBUG_FORCE_SIGNIN.load(Ordering::Relaxed);
                     if SESSION_NEEDS_SIGNIN.swap(dead, Ordering::Relaxed) != dead {
                         let running = gate_connect_core::proxy::manager()
                             .status()
@@ -1590,20 +1578,9 @@ pub fn run() {
 
             let show_item = MenuItemBuilder::with_id("show", "Open Gate Connect").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Gate Connect").build(app)?;
-            // Debug builds get a hidden toggle to force the sign-in attention
-            // state (red dot + Linux notification) for manual testing. Stripped
-            // from release builds.
-            #[cfg(debug_assertions)]
-            let debug_signin_item =
-                MenuItemBuilder::with_id("debug-toggle-signin", "DEBUG: toggle sign-in-needed")
-                    .build(app)?;
-            #[allow(unused_mut)]
-            let mut menu_builder = MenuBuilder::new(app).items(&[&show_item, &quit_item]);
-            #[cfg(debug_assertions)]
-            {
-                menu_builder = menu_builder.items(&[&debug_signin_item]);
-            }
-            let menu = menu_builder.build()?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&show_item, &quit_item])
+                .build()?;
 
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
@@ -1629,29 +1606,6 @@ pub fn run() {
                         }
                     }
                     "quit" => app.exit(0),
-                    // Debug-only: flip the sign-in attention signal and repaint
-                    // the tray immediately (the loop's override keeps it pinned).
-                    #[cfg(debug_assertions)]
-                    "debug-toggle-signin" => {
-                        let on = !DEBUG_FORCE_SIGNIN.load(Ordering::Relaxed);
-                        DEBUG_FORCE_SIGNIN.store(on, Ordering::Relaxed);
-                        SESSION_NEEDS_SIGNIN.store(on, Ordering::Relaxed);
-                        let running = gate_connect_core::proxy::manager()
-                            .status()
-                            .map(|s| s.running)
-                            .unwrap_or(false);
-                        update_tray_status(app, running);
-                        #[cfg(any(target_os = "macos", target_os = "linux"))]
-                        if on {
-                            use tauri_plugin_notification::NotificationExt;
-                            let _ = app
-                                .notification()
-                                .builder()
-                                .title("Gate Connect")
-                                .body("Your session expired. Open Gate Connect to sign in again and keep routing.")
-                                .show();
-                        }
-                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
