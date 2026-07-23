@@ -19,6 +19,7 @@ import {
   providerEnable,
   providerDisable,
   listTools,
+  launchAtLoginStatus,
   unpinPopover,
   openOnboardingWindow,
   routedClientsStale,
@@ -113,16 +114,33 @@ export function App() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const acct = await getAccount().catch(() => null);
+      // Each load degrades to its empty default so the popover still opens;
+      // the failure itself is tracked rather than swallowed.
+      const acct = await getAccount().catch((err) => {
+        trackError(err, "startup");
+        return null;
+      });
       let px: ProxyState | null;
       try {
         px = await proxyStatus();
-      } catch {
+      } catch (err) {
+        trackError(err, "startup");
         px = null;
       }
-      const provs = await listProviders().catch(() => []);
-      const toolList = await listTools().catch(() => []);
-      const stale = await routedClientsStale().catch(() => false);
+      const provs = await listProviders().catch((err) => {
+        trackError(err, "startup");
+        return [];
+      });
+      const toolList = await listTools().catch((err) => {
+        trackError(err, "startup");
+        return [];
+      });
+      const stale = await routedClientsStale().catch((err) => {
+        trackError(err, "startup");
+        return false;
+      });
+      // Analytics-only dimension on app_launched; omitted when unreadable.
+      const lal = await launchAtLoginStatus().catch(() => null);
       if (!alive) return;
       setAccount(acct);
       setProxy(px);
@@ -139,7 +157,13 @@ export function App() {
         openOnboardingWindow("firstrun").catch(() => {});
         getCurrentWindow().hide().catch(() => {});
       }
-      track("app_launched", { has_account: !!acct, proxy_available: px !== null });
+      track("app_launched", {
+        has_account: !!acct,
+        proxy_available: px !== null,
+        routing_on: px?.running ?? false,
+        provider_count: provs.filter((p) => p.enabled).length,
+        ...(lal === null ? {} : { launch_at_login: lal }),
+      });
     })();
     return () => {
       alive = false;
@@ -163,13 +187,50 @@ export function App() {
       setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
-      if (px?.running) setRoutingNotice("on");
+      if (px?.running) {
+        setRoutingNotice("on");
+        // The backend only emits this nudge after its startup auto-enable, so
+        // routing coming up here is a restored session, not a user toggle.
+        track("proxy_enabled", { source: "restored" });
+      }
     });
     return () => {
       alive = false;
       void unlisten.then((f) => f());
     };
   }, []);
+
+  // Reopens from the tray: the popover blurs when it hides, so a blur → focus
+  // edge is a genuine return (same detection as UpdatePanel's re-check). The
+  // launch itself is app_launched; only returns count here.
+  useEffect(() => {
+    let blurred = false;
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) {
+        blurred = true;
+        return;
+      }
+      if (blurred) {
+        blurred = false;
+        track("popover_opened");
+      }
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
+  // Exposure events for the two "your tools need attention" surfaces, fired
+  // on the state edge so the two set-sites (initial load and the backend
+  // nudge) don't each need their own call.
+  useEffect(() => {
+    if (staleAgentsHint) track("stale_agents_shown");
+  }, [staleAgentsHint]);
+  useEffect(() => {
+    if (routingNotice !== null) {
+      track("routing_notice_shown", { enabled: routingNotice === "on" });
+    }
+  }, [routingNotice]);
 
   // The onboarding window announces completion; record the seen-flag in this
   // webview's storage too so the intro doesn't re-gate the next launch on
@@ -219,7 +280,7 @@ export function App() {
       try {
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
         setProxy(next);
-        track(next.running ? "proxy_enabled" : "proxy_disabled");
+        track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
         // The takeover and the inline hints say the same thing ("restart your
         // agents"), so show one or the other, never both.
         if (takeover) {
@@ -234,7 +295,7 @@ export function App() {
         // provider on, which would clobber the ones the user deliberately left off.
         setProviders(await listProviders().catch(() => []));
       } catch (e) {
-        trackError(e, "generic");
+        trackError(e, "proxy_toggle");
         // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
         // or a missing network service) instead of silently reverting - a
         // swallowed error reads as "the toggle does nothing".
@@ -274,7 +335,7 @@ export function App() {
         }
       } catch (e) {
         setProviderError(typeof e === "string" ? e : String(e));
-        trackError(e, "generic");
+        trackError(e, "provider_toggle", { provider: slug, enabled });
         // Re-sync the switch to its true state after a failed toggle.
         setProviders(await listProviders().catch(() => []));
       } finally {
@@ -290,9 +351,11 @@ export function App() {
     try {
       setProxy(await proxyTrustCa());
       track("ca_trusted");
-    } catch {
+    } catch (err) {
       // a cancelled trust dialog rejects; re-sync instead of leaking an
-      // unhandled rejection with the banner stuck in its old state
+      // unhandled rejection with the banner stuck in its old state. Tracked
+      // so a genuine keychain failure is visible (cancels classify apart).
+      trackError(err, "trust_ca");
       try {
         setProxy(await proxyStatus());
       } catch {
@@ -309,9 +372,11 @@ export function App() {
     try {
       setProxy(await proxyUntrustCa());
       track("ca_untrusted");
-    } catch {
+    } catch (err) {
       // a cancelled removal dialog rejects; re-sync instead of leaking an
-      // unhandled rejection with the banner stuck in its old state
+      // unhandled rejection with the banner stuck in its old state. Tracked
+      // so a genuine keychain failure is visible (cancels classify apart).
+      trackError(err, "untrust_ca");
       try {
         setProxy(await proxyStatus());
       } catch {

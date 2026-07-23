@@ -9,10 +9,15 @@
  */
 export type ErrorContext =
   | "sign_in"
-  | "connect"
   | "disconnect"
-  | "forget"
   | "save_api_key"
+  | "update"
+  | "close_agents"
+  | "proxy_toggle"
+  | "provider_toggle"
+  | "trust_ca"
+  | "untrust_ca"
+  | "startup"
   | "generic";
 
 export interface ClassifiedError {
@@ -121,10 +126,15 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
     sign_in: "Couldn't save your account",
-    connect: "Couldn't connect this tool",
     disconnect: "Couldn't disconnect",
-    forget: "Couldn't remove the saved credential",
     save_api_key: "Couldn't save the API key",
+    update: "Couldn't install the update",
+    close_agents: "Couldn't close the running agents",
+    proxy_toggle: "Couldn't toggle routing",
+    provider_toggle: "Couldn't toggle the provider",
+    trust_ca: "Couldn't trust the certificate",
+    untrust_ca: "Couldn't remove the certificate trust",
+    startup: "Couldn't load state at startup",
     generic: "Something went wrong",
   };
   return {

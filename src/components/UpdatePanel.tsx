@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { setUpdaterRelaunching } from "../lib/api";
+import { track, trackError } from "../lib/analytics";
 import { Button, IconButton } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
@@ -25,6 +26,15 @@ export function UpdatePanel() {
   // Flipped once the window has been reopened (blurred, then refocused); from
   // then on an available update surfaces as the banner, not the startup panel.
   const [reopened, setReopened] = useState(false);
+
+  // Exposure event, once per discovered version - a re-check that returns the
+  // same version isn't a new surface.
+  const shownVersion = useRef<string | null>(null);
+  useEffect(() => {
+    if (!update || shownVersion.current === update.version) return;
+    shownVersion.current = update.version;
+    track("update_shown", { source: reopened ? "banner" : "panel" });
+  }, [update, reopened]);
 
   useEffect(() => {
     let alive = true;
@@ -75,8 +85,12 @@ export function UpdatePanel() {
       // inside downloadAndInstall().
       await setUpdaterRelaunching(true);
       await update.downloadAndInstall();
+      // Best-effort: on Windows the installer exits the app from inside
+      // downloadAndInstall(), so this event may never send there.
+      track("update_installed");
       await relaunch();
-    } catch {
+    } catch (err) {
+      trackError(err, "update");
       await setUpdaterRelaunching(false).catch(() => undefined);
       setInstalling(false);
       setFailed(true);
@@ -114,7 +128,10 @@ export function UpdatePanel() {
           <IconButton
             icon="x"
             size={13}
-            onClick={() => setBannerDismissed(true)}
+            onClick={() => {
+              setBannerDismissed(true);
+              track("update_dismissed", { source: "banner" });
+            }}
             aria-label="Dismiss update"
           />
         )}
@@ -163,7 +180,10 @@ export function UpdatePanel() {
         {!installing && (
           <button
             type="button"
-            onClick={() => setPanelDismissed(true)}
+            onClick={() => {
+              setPanelDismissed(true);
+              track("update_dismissed", { source: "panel" });
+            }}
             className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             Later

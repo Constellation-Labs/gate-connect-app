@@ -18,6 +18,7 @@ import { classifyError, type ErrorContext } from "./errors";
 /** The only event names we ever emit. */
 export type AnalyticsEvent =
   | "app_launched"
+  | "popover_opened"
   | "signed_in"
   | "disconnected"
   | "key_replaced"
@@ -28,6 +29,13 @@ export type AnalyticsEvent =
   | "ca_untrusted"
   | "tour_completed"
   | "tour_skipped"
+  | "update_shown"
+  | "update_installed"
+  | "update_dismissed"
+  | "agents_closed"
+  | "stale_agents_shown"
+  | "routing_notice_shown"
+  | "launch_at_login_toggled"
   | "error_shown";
 
 type Props = Record<string, string | number | boolean>;
@@ -39,11 +47,16 @@ type Props = Record<string, string | number | boolean>;
 const ALLOWED_PROP_KEYS = new Set<string>([
   "has_account",
   "proxy_available",
+  "routing_on",
   "provider",
+  "provider_count",
   "enabled",
+  "launch_at_login",
   "context",
   "title",
   "source",
+  "count",
+  "step",
 ]);
 
 let enabled = false;
@@ -90,12 +103,13 @@ export function track(event: AnalyticsEvent, props?: Props): void {
 /**
  * Record a user-facing failure: a paired `error_shown` event plus a PostHog
  * exception. We send the *classified* title + context, never the raw Tauri
- * error string (it can carry hosts/paths).
+ * error string (it can carry hosts/paths). `props` lets a call site attach
+ * extra allowlisted dimensions (e.g. which provider's toggle failed).
  */
-export function trackError(err: unknown, context: ErrorContext): void {
+export function trackError(err: unknown, context: ErrorContext, props?: Props): void {
   if (!enabled) return;
   const { title } = classifyError(err, context);
-  track("error_shown", { context, title });
+  track("error_shown", { ...props, context, title });
   posthog.captureException(new Error(title), { context });
 }
 

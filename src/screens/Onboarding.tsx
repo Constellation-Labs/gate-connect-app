@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -141,7 +141,26 @@ export function Onboarding() {
   const step = steps[index];
   const last = index === steps.length - 1;
 
+  // Closing the window before "Get started" is a skip. `finish` also closes
+  // the window, so it sets this first to keep a completed run from
+  // double-counting as a skip. The index rides in a ref so the once-mounted
+  // close listener reads the step the user actually left from.
+  const finishedRef = useRef(false);
+  const indexRef = useRef(index);
+  indexRef.current = index;
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onCloseRequested(() => {
+      if (finishedRef.current) return;
+      finishedRef.current = true;
+      track("tour_skipped", { source, step: indexRef.current + 1 });
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, [source]);
+
   const finish = () => {
+    finishedRef.current = true;
     setTourSeen(dontShow);
     track("tour_completed", { source });
     // Tell the popover window to record the flag in its own storage too, in
