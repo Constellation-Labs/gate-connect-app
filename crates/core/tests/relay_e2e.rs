@@ -129,6 +129,8 @@ fn boot_engine_owned(
             ca_cert_pem,
             ca_key_pem,
             preferred_port: None,
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            preferred_pac_port: None,
             preferred_relay_port: None,
             owner_uid,
             #[cfg(any(target_os = "windows", target_os = "macos"))]
