@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Account } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
-import { trackError } from "../lib/analytics";
+import { track, trackError } from "../lib/analytics";
 import { GATEWAY_SERVERS } from "../lib/config";
 import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
@@ -121,6 +121,7 @@ export function Settings({
     setLaunchAtLoginState(next); // optimistic
     try {
       await setLaunchAtLogin(next);
+      track("launch_at_login_toggled", { enabled: next });
     } catch (err) {
       setLaunchAtLoginState(!next); // revert on failure
       setError(err instanceof Error ? err.message : String(err));

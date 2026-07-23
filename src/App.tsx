@@ -19,6 +19,7 @@ import {
   providerEnable,
   providerDisable,
   listTools,
+  launchAtLoginStatus,
   unpinPopover,
   openOnboardingWindow,
   routedClientsStale,
@@ -138,6 +139,8 @@ export function App() {
         trackError(err, "startup");
         return false;
       });
+      // Analytics-only dimension on app_launched; omitted when unreadable.
+      const lal = await launchAtLoginStatus().catch(() => null);
       if (!alive) return;
       setAccount(acct);
       setProxy(px);
@@ -154,7 +157,13 @@ export function App() {
         openOnboardingWindow("firstrun").catch(() => {});
         getCurrentWindow().hide().catch(() => {});
       }
-      track("app_launched", { has_account: !!acct, proxy_available: px !== null });
+      track("app_launched", {
+        has_account: !!acct,
+        proxy_available: px !== null,
+        routing_on: px?.running ?? false,
+        provider_count: provs.filter((p) => p.enabled).length,
+        ...(lal === null ? {} : { launch_at_login: lal }),
+      });
     })();
     return () => {
       alive = false;
@@ -178,13 +187,50 @@ export function App() {
       setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
-      if (px?.running) setRoutingNotice("on");
+      if (px?.running) {
+        setRoutingNotice("on");
+        // The backend only emits this nudge after its startup auto-enable, so
+        // routing coming up here is a restored session, not a user toggle.
+        track("proxy_enabled", { source: "restored" });
+      }
     });
     return () => {
       alive = false;
       void unlisten.then((f) => f());
     };
   }, []);
+
+  // Reopens from the tray: the popover blurs when it hides, so a blur → focus
+  // edge is a genuine return (same detection as UpdatePanel's re-check). The
+  // launch itself is app_launched; only returns count here.
+  useEffect(() => {
+    let blurred = false;
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) {
+        blurred = true;
+        return;
+      }
+      if (blurred) {
+        blurred = false;
+        track("popover_opened");
+      }
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
+  // Exposure events for the two "your tools need attention" surfaces, fired
+  // on the state edge so the two set-sites (initial load and the backend
+  // nudge) don't each need their own call.
+  useEffect(() => {
+    if (staleAgentsHint) track("stale_agents_shown");
+  }, [staleAgentsHint]);
+  useEffect(() => {
+    if (routingNotice !== null) {
+      track("routing_notice_shown", { enabled: routingNotice === "on" });
+    }
+  }, [routingNotice]);
 
   // The onboarding window announces completion; record the seen-flag in this
   // webview's storage too so the intro doesn't re-gate the next launch on
@@ -234,7 +280,7 @@ export function App() {
       try {
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
         setProxy(next);
-        track(next.running ? "proxy_enabled" : "proxy_disabled");
+        track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
         // The takeover and the inline hints say the same thing ("restart your
         // agents"), so show one or the other, never both.
         if (takeover) {
