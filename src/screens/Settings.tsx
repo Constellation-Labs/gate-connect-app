@@ -168,6 +168,7 @@ export function Settings({
       await onSwitchGateway(url); // relaunches the app on success; nothing below runs
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "generic");
     } finally {
       setSubmitting(false);
     }

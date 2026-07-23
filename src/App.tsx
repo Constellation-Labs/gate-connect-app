@@ -113,16 +113,31 @@ export function App() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const acct = await getAccount().catch(() => null);
+      // Each load degrades to its empty default so the popover still opens;
+      // the failure itself is tracked rather than swallowed.
+      const acct = await getAccount().catch((err) => {
+        trackError(err, "startup");
+        return null;
+      });
       let px: ProxyState | null;
       try {
         px = await proxyStatus();
-      } catch {
+      } catch (err) {
+        trackError(err, "startup");
         px = null;
       }
-      const provs = await listProviders().catch(() => []);
-      const toolList = await listTools().catch(() => []);
-      const stale = await routedClientsStale().catch(() => false);
+      const provs = await listProviders().catch((err) => {
+        trackError(err, "startup");
+        return [];
+      });
+      const toolList = await listTools().catch((err) => {
+        trackError(err, "startup");
+        return [];
+      });
+      const stale = await routedClientsStale().catch((err) => {
+        trackError(err, "startup");
+        return false;
+      });
       if (!alive) return;
       setAccount(acct);
       setProxy(px);
@@ -234,7 +249,7 @@ export function App() {
         // provider on, which would clobber the ones the user deliberately left off.
         setProviders(await listProviders().catch(() => []));
       } catch (e) {
-        trackError(e, "generic");
+        trackError(e, "proxy_toggle");
         // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
         // or a missing network service) instead of silently reverting - a
         // swallowed error reads as "the toggle does nothing".
@@ -274,7 +289,7 @@ export function App() {
         }
       } catch (e) {
         setProviderError(typeof e === "string" ? e : String(e));
-        trackError(e, "generic");
+        trackError(e, "provider_toggle", { provider: slug, enabled });
         // Re-sync the switch to its true state after a failed toggle.
         setProviders(await listProviders().catch(() => []));
       } finally {
@@ -290,9 +305,11 @@ export function App() {
     try {
       setProxy(await proxyTrustCa());
       track("ca_trusted");
-    } catch {
+    } catch (err) {
       // a cancelled trust dialog rejects; re-sync instead of leaking an
-      // unhandled rejection with the banner stuck in its old state
+      // unhandled rejection with the banner stuck in its old state. Tracked
+      // so a genuine keychain failure is visible (cancels classify apart).
+      trackError(err, "trust_ca");
       try {
         setProxy(await proxyStatus());
       } catch {
@@ -309,9 +326,11 @@ export function App() {
     try {
       setProxy(await proxyUntrustCa());
       track("ca_untrusted");
-    } catch {
+    } catch (err) {
       // a cancelled removal dialog rejects; re-sync instead of leaking an
-      // unhandled rejection with the banner stuck in its old state
+      // unhandled rejection with the banner stuck in its old state. Tracked
+      // so a genuine keychain failure is visible (cancels classify apart).
+      trackError(err, "untrust_ca");
       try {
         setProxy(await proxyStatus());
       } catch {

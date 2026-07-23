@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { closeRunningAgents } from "../lib/api";
+import { track, trackError } from "../lib/analytics";
 import { Button } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
@@ -28,8 +29,11 @@ export function StartupRoutingNotice({
     setClosing(true);
     setError(null);
     try {
-      setClosed(await closeRunningAgents());
+      const count = await closeRunningAgents();
+      setClosed(count);
+      track("agents_closed", { count });
     } catch (e) {
+      trackError(e, "close_agents");
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setClosing(false);

@@ -23,11 +23,11 @@ describe("classifyError", () => {
   describe("string errors", () => {
     it("preserves the raw string payload verbatim", () => {
       const raw = "connection refused by gateway";
-      expect(classifyError(raw, "connect").raw).toBe(raw);
+      expect(classifyError(raw, "generic").raw).toBe(raw);
     });
 
     it("classifies a network failure with a gateway-reach title", () => {
-      const result = classifyError("connection refused", "connect");
+      const result = classifyError("connection refused", "generic");
       expect(result.title.toLowerCase()).toContain("gateway");
     });
 
@@ -37,7 +37,7 @@ describe("classifyError", () => {
     });
 
     it("classifies a user-canceled macOS prompt", () => {
-      const result = classifyError("User canceled (-128)", "connect");
+      const result = classifyError("User canceled (-128)", "generic");
       expect(result.title.toLowerCase()).toContain("canceled");
     });
 
@@ -51,7 +51,7 @@ describe("classifyError", () => {
 
   describe("Error instances", () => {
     it("classifies an Error by its message, not its [object] form", () => {
-      const result = classifyError(new Error("connection refused"), "connect");
+      const result = classifyError(new Error("connection refused"), "generic");
       expect(result.raw).not.toContain("[object");
       expect(result.raw).toContain("connection refused");
       expect(result.title.toLowerCase()).toContain("gateway");
@@ -67,7 +67,7 @@ describe("classifyError", () => {
     });
 
     it("classifies an object by its inner message field", () => {
-      const result = classifyError({ message: "connection refused" }, "connect");
+      const result = classifyError({ message: "connection refused" }, "generic");
       expect(result.title.toLowerCase()).toContain("gateway");
     });
 
@@ -85,7 +85,7 @@ describe("classifyError", () => {
 
   describe("unsupported / unavailable command errors", () => {
     it("surfaces a platform-availability message for an unregistered command", () => {
-      const result = classifyError("command not_found is not registered", "connect");
+      const result = classifyError("command not_found is not registered", "generic");
       expect(result.title.toLowerCase()).toContain("platform");
     });
 
@@ -95,7 +95,7 @@ describe("classifyError", () => {
     });
 
     it("surfaces a platform message when the command is not available on this platform", () => {
-      const result = classifyError("this command is not available on this platform", "connect");
+      const result = classifyError("this command is not available on this platform", "generic");
       expect(result.title.toLowerCase()).toContain("platform");
     });
   });
