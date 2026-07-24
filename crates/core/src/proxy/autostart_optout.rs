@@ -1,0 +1,144 @@
+//! Deferred "Launch at login" opt-out: a marker recording that the user
+//! turned the login item off while routing was on. Deregistering immediately
+//! in that state would mean a crash leaves the system proxy pointed at a
+//! dead port with nothing relaunching at boot to run the startup self-heal,
+//! so the login item stays registered and the marker defers the
+//! deregistration to the next point where the system proxy is known safe:
+//! routing turned off, a clean quit (the exit handler reverts the proxy
+//! first), or the next login-item launch (whose startup reconcile reverts
+//! any stale proxy before the app deregisters and exits). While the marker
+//! is pending, the launch-at-login status reported to the UI is the user's
+//! choice (off), not the OS registration.
+//!
+//! Only the marker persistence and the defer-vs-deregister decision live
+//! here; the OS login item itself is owned by the desktop shell (the
+//! tauri-plugin-autostart calls in `src-tauri`).
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+
+fn marker_path() -> Result<PathBuf> {
+    // Root of the support dir, next to the `autostart-defaulted` marker the
+    // desktop shell writes for the first-run default.
+    Ok(crate::env::app_support_dir()?.join("autostart-pending-disable"))
+}
+
+/// Whether a deferred opt-out is waiting for its deregistration to complete.
+/// Best-effort: an unresolvable support dir reads as "not pending", so it
+/// can never block a direct deregistration.
+pub fn pending() -> bool {
+    marker_path().map(|p| pending_at(&p)).unwrap_or(false)
+}
+
+/// Set or clear the marker. Clearing an absent marker is a no-op, so
+/// completion paths can call this unconditionally.
+pub fn set_pending(pending: bool) -> Result<()> {
+    set_pending_at(&marker_path()?, pending)
+}
+
+/// Record the user turning launch-at-login off. With routing intent on, the
+/// opt-out defers: the marker arms and the login item must stay registered.
+/// Otherwise any stale marker clears. Returns whether the caller should
+/// deregister the login item now.
+pub fn record_disable() -> Result<bool> {
+    record_disable_at(&marker_path()?, crate::proxy::intent::load_intent())
+}
+
+fn record_disable_at(path: &Path, routing_intent: bool) -> Result<bool> {
+    set_pending_at(path, routing_intent)?;
+    Ok(!routing_intent)
+}
+
+fn pending_at(path: &Path) -> bool {
+    path.exists()
+}
+
+fn set_pending_at(path: &Path, pending: bool) -> Result<()> {
+    if pending {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+        fs::write(path, b"1").with_context(|| format!("writing {}", path.display()))
+    } else {
+        match fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            r => r.with_context(|| format!("removing {}", path.display())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A unique path per test so the marker round-trip exercises no
+    // process-global state (unlike `app_support_dir`), keeping these safe
+    // under parallel runs.
+    fn temp_marker(name: &str) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!(
+                "gate-autostart-optout-test-{}-{name}",
+                std::process::id()
+            ))
+            .join("autostart-pending-disable")
+    }
+
+    #[test]
+    fn absent_marker_reads_not_pending() {
+        let path = temp_marker("absent");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        assert!(!pending_at(&path));
+    }
+
+    #[test]
+    fn set_then_clear_round_trips() {
+        let path = temp_marker("round-trip");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        set_pending_at(&path, true).unwrap();
+        assert!(pending_at(&path));
+        set_pending_at(&path, false).unwrap();
+        assert!(!pending_at(&path));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn clearing_absent_marker_is_a_no_op() {
+        let path = temp_marker("clear-absent");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        set_pending_at(&path, false).unwrap();
+        assert!(!pending_at(&path));
+    }
+
+    #[test]
+    fn disable_with_routing_on_defers_and_arms_marker() {
+        let path = temp_marker("defer");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        let deregister_now = record_disable_at(&path, true).unwrap();
+        assert!(!deregister_now);
+        assert!(pending_at(&path));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn disable_with_routing_off_deregisters_now_and_clears_stale_marker() {
+        let path = temp_marker("immediate");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        set_pending_at(&path, true).unwrap();
+        let deregister_now = record_disable_at(&path, false).unwrap();
+        assert!(deregister_now);
+        assert!(!pending_at(&path));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn repeated_deferred_disable_stays_pending() {
+        let path = temp_marker("repeat");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        assert!(!record_disable_at(&path, true).unwrap());
+        assert!(!record_disable_at(&path, true).unwrap());
+        assert!(pending_at(&path));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+}

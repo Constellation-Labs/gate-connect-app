@@ -454,24 +454,88 @@ async fn proxy_disable(
         eprintln!("[gate] clearing routing intent failed: {e}");
         report_backend_error("routing_intent", format!("{e:#}"));
     }
+    // A deferred launch-at-login opt-out can complete now: with routing off,
+    // deregistering can no longer strand the system proxy across a restart.
+    complete_pending_autostart_disable(&app);
     Ok(state)
 }
 
 // Launch at login. A standalone user setting (Settings screen) that owns the
 // login item directly - it is no longer armed/disarmed by the routing toggle.
+//
+// Disabling it while routing is on is two-step: the opt-out marker and the
+// defer-vs-deregister decision live in `gate_connect_core::proxy::
+// autostart_optout` (see its module docs for the full rationale), and only
+// the OS login-item calls live here.
+
+/// Finish a deferred launch-at-login opt-out: deregister the login item and
+/// clear the marker. Call only when the system proxy is known to be safe
+/// (routing off or already reverted). On failure the marker is kept so a
+/// later safe point retries.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn complete_pending_autostart_disable(app: &tauri::AppHandle) {
+    use gate_connect_core::proxy::autostart_optout;
+    use tauri_plugin_autostart::ManagerExt;
+    if !autostart_optout::pending() {
+        return;
+    }
+    if let Err(e) = app.autolaunch().disable() {
+        eprintln!("[gate] completing deferred launch-at-login opt-out failed: {e}");
+        report_backend_error("launch_at_login", format!("{e:#}"));
+        // If the item somehow reads as still registered, keep the marker and
+        // retry at the next safe point; if it's gone despite the error, the
+        // opt-out is done and the marker can drop.
+        if app.autolaunch().is_enabled().unwrap_or(true) {
+            return;
+        }
+    }
+    if let Err(e) = autostart_optout::set_pending(false) {
+        eprintln!("[gate] clearing launch-at-login opt-out marker failed: {e}");
+    }
+}
+
+/// Frontend-facing launch-at-login state. `enabled` is the user's choice
+/// (what the Settings toggle shows); `pending_disable` reports a deferred
+/// opt-out whose deregistration hasn't completed yet - the OS login-items
+/// list still shows the app during that window, and Settings explains why.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(serde::Serialize)]
+struct LaunchAtLoginStatus {
+    enabled: bool,
+    pending_disable: bool,
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn launch_at_login_status(app: tauri::AppHandle) -> Result<bool, String> {
+fn launch_at_login_status(app: tauri::AppHandle) -> Result<LaunchAtLoginStatus, String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(|e| format!("{e:#}"))
+    let registered = app
+        .autolaunch()
+        .is_enabled()
+        .map_err(|e| format!("{e:#}"))?;
+    let pending = gate_connect_core::proxy::autostart_optout::pending();
+    Ok(LaunchAtLoginStatus {
+        enabled: registered && !pending,
+        pending_disable: pending,
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use gate_connect_core::proxy::autostart_optout;
     use tauri_plugin_autostart::ManagerExt;
     let mgr = app.autolaunch();
-    if enabled { mgr.enable() } else { mgr.disable() }.map_err(|e| format!("{e:#}"))
+    if enabled {
+        autostart_optout::set_pending(false).map_err(|e| format!("{e:#}"))?;
+        mgr.enable().map_err(|e| format!("{e:#}"))
+    } else if autostart_optout::record_disable().map_err(|e| format!("{e:#}"))? {
+        mgr.disable().map_err(|e| format!("{e:#}"))
+    } else {
+        // Routing is on: the opt-out is deferred and the login item stays
+        // registered until the next safe point.
+        Ok(())
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -955,6 +1019,26 @@ pub fn run() {
                         report_backend_error("restore_routing", format!("{e:#}"));
                     }
 
+                    // A deferred launch-at-login opt-out reaching a login-item
+                    // launch means the previous session never hit a clean stop
+                    // (crash / hard restart). The reconcile above has already
+                    // reverted any stranded system proxy, so finish the job:
+                    // deregister, drop the routing intent so a later manual
+                    // launch stays passthrough, and exit - the user asked us
+                    // not to run at startup. A manual or updater-driven launch
+                    // (not --silent) skips this and restores routing as the
+                    // user left it; the still-pending opt-out completes at the
+                    // next safe point instead.
+                    if silent_launch && gate_connect_core::proxy::autostart_optout::pending() {
+                        complete_pending_autostart_disable(&handle);
+                        if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
+                            eprintln!("[gate] clearing routing intent failed: {e}");
+                            report_backend_error("routing_intent", format!("{e:#}"));
+                        }
+                        handle.exit(0);
+                        return;
+                    }
+
                     // Restart persistence: bring routing back if the user last
                     // left it on. The exit-time disable reverts the *system
                     // proxy* only and keeps the routing intent when "Launch at
@@ -1225,16 +1309,26 @@ pub fn run() {
                     eprintln!("[gate] reverting proxy on exit failed: {e}");
                 }
                 // The login item is now a standalone "Launch at login" setting,
-                // decoupled from routing. If the user hasn't asked Gate to launch
-                // at login, it won't relaunch to re-route after a restart - so
-                // clear the routing intent too, otherwise a later manual launch
-                // would silently re-enable routing. Launch-at-login on keeps the
-                // intent, so opting in is what persists routing across a restart.
-                // An updater-driven relaunch is exempt: the app comes right back
-                // and should restore routing exactly as the user left it.
+                // decoupled from routing. A deferred opt-out (toggled off while
+                // routing was on) completes here: disable_quiet() above has
+                // reverted the system proxy, so deregistering can no longer
+                // strand it. An updater-driven relaunch is exempt - the app
+                // comes right back, so the pending opt-out stays armed and
+                // routing is restored exactly as the user left it.
                 use tauri_plugin_autostart::ManagerExt;
+                if !UPDATER_RELAUNCHING.load(Ordering::Acquire) {
+                    complete_pending_autostart_disable(app_handle);
+                }
+                // If the user hasn't asked Gate to launch at login, it won't
+                // relaunch to re-route after a restart - so clear the routing
+                // intent too, otherwise a later manual launch would silently
+                // re-enable routing. Launch-at-login on keeps the intent, so
+                // opting in is what persists routing across a restart. A
+                // still-pending opt-out counts as off: it's the user's choice,
+                // even if the deregistration above couldn't complete.
                 if !UPDATER_RELAUNCHING.load(Ordering::Acquire)
-                    && !app_handle.autolaunch().is_enabled().unwrap_or(false)
+                    && (!app_handle.autolaunch().is_enabled().unwrap_or(false)
+                        || gate_connect_core::proxy::autostart_optout::pending())
                 {
                     if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
                         eprintln!("[gate] clearing routing intent on exit failed: {e}");

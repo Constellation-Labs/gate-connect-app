@@ -174,7 +174,7 @@ export function App() {
         provider_count: provs.filter((p) => p.enabled).length,
         // Sizes the hand-written-Gate-setup population (see codexDrifted).
         codex_drifted: toolList.some((t) => t.slug === "codex" && t.status.kind === "drifted"),
-        ...(lal === null ? {} : { launch_at_login: lal }),
+        ...(lal === null ? {} : { launch_at_login: lal.enabled }),
       });
     })();
     return () => {
