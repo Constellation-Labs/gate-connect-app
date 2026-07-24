@@ -141,7 +141,17 @@ export const providerDisable = (slug: string) => invoke<ProviderState>("provider
 // the routing toggle: turning it on is what lets the app relaunch and re-route
 // after a restart.
 
-export const launchAtLoginStatus = () => invoke<boolean>("launch_at_login_status");
+export interface LaunchAtLoginStatus {
+  /** The user's choice, i.e. what the Settings toggle shows. */
+  enabled: boolean;
+  /** A deferred opt-out (toggled off while routing was on) whose OS
+   * deregistration hasn't completed yet; the login-items list still shows
+   * the app during this window. */
+  pending_disable: boolean;
+}
+
+export const launchAtLoginStatus = () =>
+  invoke<LaunchAtLoginStatus>("launch_at_login_status");
 
 export const setLaunchAtLogin = (enabled: boolean) =>
   invoke<void>("set_launch_at_login", { enabled });

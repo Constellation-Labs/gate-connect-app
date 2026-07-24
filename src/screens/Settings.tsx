@@ -50,7 +50,10 @@ export function Settings({
   const [error, setError] = useState<string | null>(null);
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
   const [laLoaded, setLaLoaded] = useState(false);
-  const [confirmDisableLaunch, setConfirmDisableLaunch] = useState(false);
+  // A launch-at-login opt-out the backend deferred (toggled off while routing
+  // was on): the OS login-items list still shows the app until the
+  // deregistration completes, so surface a note explaining the window.
+  const [laPendingDisable, setLaPendingDisable] = useState(false);
   // Auto-loaded from account.json on mount once a prefix has been recorded
   // there, so it stays visible without re-revealing each visit. null = not
   // yet loaded/stored (pre-prefix accounts fall back to a keychain reveal).
@@ -87,9 +90,10 @@ export function Settings({
   useEffect(() => {
     let active = true;
     launchAtLoginStatus()
-      .then((enabled) => {
+      .then((status) => {
         if (!active) return;
-        setLaunchAtLoginState(enabled);
+        setLaunchAtLoginState(status.enabled);
+        setLaPendingDisable(status.pending_disable);
         setLaLoaded(true);
       })
       .catch((err) => trackError(err, "generic"));
@@ -113,24 +117,23 @@ export function Settings({
 
   async function toggleLaunchAtLogin() {
     if (!laLoaded) return;
-    const next = !launchAtLogin;
-    // Turning launch-at-login off while routing is on can strand the system
-    // proxy after an unexpected restart: nothing relaunches to run the
-    // startup self-heal, so other apps' traffic stays broken until the user
-    // reopens Gate Connect. Confirm before disabling in that case.
-    if (!next && routingOn) {
-      setConfirmDisableLaunch(true);
-      return;
-    }
-    await applyLaunchAtLogin(next);
+    // Turning this off while routing is on needs no warning: the backend
+    // defers the actual deregistration until the system proxy is safe
+    // (routing off, clean quit, or the next login launch), so a crash can
+    // never strand traffic (see set_launch_at_login in lib.rs).
+    await applyLaunchAtLogin(!launchAtLogin);
   }
 
   async function applyLaunchAtLogin(next: boolean) {
-    setConfirmDisableLaunch(false);
     setLaunchAtLoginState(next); // optimistic
     try {
       await setLaunchAtLogin(next);
       track("launch_at_login_toggled", { enabled: next });
+      // The backend decides whether an opt-out deregisters now or is
+      // deferred (routing on), so re-read the status for the pending note.
+      const status = await launchAtLoginStatus();
+      setLaunchAtLoginState(status.enabled);
+      setLaPendingDisable(status.pending_disable);
     } catch (err) {
       setLaunchAtLoginState(!next); // revert on failure
       setError(err instanceof Error ? err.message : String(err));
@@ -324,28 +327,13 @@ export function Settings({
         </div>
         <Switch on={launchAtLogin} disabled={!laLoaded} onClick={toggleLaunchAtLogin} />
       </div>
-      {confirmDisableLaunch && (
-        <div className="mx-3.5 mb-1 rounded bg-gc-subtle p-3 shadow-border">
-          <div className="text-[11.5px] leading-snug text-gc-ink-2">
-            With this off, an unexpected restart can leave other apps unable to
-            reach the internet until you reopen Gate Connect. Turn off routing
-            first to avoid this.
-          </div>
-          <div className="mt-2.5 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => applyLaunchAtLogin(false)}
-              className="text-[12.5px] font-medium text-gc-error"
-            >
-              Turn off anyway
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmDisableLaunch(false)}
-              className="ml-auto text-[12.5px] font-medium text-gc-ink-3"
-            >
-              Keep on
-            </button>
+      {laPendingDisable && (
+        <div className="mx-3.5 mb-1 flex items-start gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
+          <Icon name="info" size={15} className="mt-px shrink-0 text-gc-ink-3" />
+          <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+            Gate Connect stays in your login items a little longer. It removes
+            itself once routing turns off or the app quits, so an unexpected
+            restart can't leave routing broken.
           </div>
         </div>
       )}

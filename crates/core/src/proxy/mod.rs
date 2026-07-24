@@ -37,6 +37,8 @@ pub mod config;
 
 pub mod intent;
 
+pub mod autostart_optout;
+
 #[cfg(target_os = "macos")]
 pub mod ca;
 #[cfg(target_os = "windows")]
