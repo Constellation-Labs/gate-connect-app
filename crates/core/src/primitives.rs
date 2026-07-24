@@ -137,12 +137,28 @@ pub(crate) fn run_as_admin(shell_cmd: &str) -> Result<()> {
         // double-quoted string with backslashes and quotes escaped.
         let inner = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
         let applescript = format!("do shell script \"{inner}\" with administrator privileges");
-        let status = Command::new("/usr/bin/osascript")
+        // Capture output rather than inheriting: osascript is non-interactive
+        // from this process's perspective (the auth dialog is GUI), and its
+        // stderr is the only way to tell a genuine cancel ("User canceled.
+        // (-128)") from the inner command failing after a correct password.
+        let out = Command::new("/usr/bin/osascript")
             .args(["-e", &applescript])
-            .status()
+            .output()
             .context("invoking osascript")?;
-        if !status.success() {
-            anyhow::bail!("osascript command exited non-zero (user cancelled?)");
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stderr = stderr.trim();
+            if stderr.contains("-128") {
+                anyhow::bail!("the administrator authorization dialog was cancelled");
+            }
+            anyhow::bail!(
+                "osascript command exited non-zero: {}",
+                if stderr.is_empty() {
+                    "(no stderr)"
+                } else {
+                    stderr
+                }
+            );
         }
     }
     Ok(())
