@@ -30,7 +30,6 @@ function renderOn(platform: Platform, relaunchHint = false, props: Partial<React
       onToggleProxy={vi.fn()}
       onSetProvider={vi.fn()}
       onTrustCa={vi.fn()}
-      onUntrustCa={vi.fn()}
       restartHint={false}
       relaunchHint={relaunchHint}
       codexDrifted={false}
@@ -55,30 +54,6 @@ describe("ProxyScreen CA-trust notice", () => {
     renderOn("windows");
     expect(screen.getByText(/isn’t trusted in your certificate store yet/)).toBeTruthy();
     expect(screen.queryByText(/keychain/)).toBeNull();
-  });
-});
-
-describe("ProxyScreen persistent-trust notice", () => {
-  const trusted: ProxyState = { ...proxy, running: false, ca_trusted: true };
-
-  it("offers Remove when routing is off but the CA is still trusted", () => {
-    renderOn("macos", false, { proxy: trusted });
-    expect(screen.getByText(/still trusted in your keychain/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
-  });
-
-  it("is hidden while routing is running", () => {
-    renderOn("macos", false, {
-      proxy: { ...proxy, running: true, ca_trusted: true },
-    });
-    expect(screen.queryByText(/still trusted/)).toBeNull();
-  });
-
-  it("calls onUntrustCa when Remove is clicked", () => {
-    const onUntrustCa = vi.fn();
-    renderOn("macos", false, { proxy: trusted, onUntrustCa });
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
-    expect(onUntrustCa).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -5,6 +5,7 @@ import { track, trackError } from "../lib/analytics";
 import { GATEWAY_SERVERS } from "../lib/config";
 import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
+import { usePlatform } from "../lib/platform";
 
 function hostOf(url: string): string {
   try {
@@ -25,6 +26,9 @@ export function Settings({
   onSwitchGateway,
   onReplayTour,
   routingOn,
+  caTrusted,
+  proxyBusy,
+  onUntrustCa,
 }: {
   account: Account;
   onBack: () => void;
@@ -33,9 +37,14 @@ export function Settings({
   onSwitchGateway: (url: string) => Promise<void>;
   onReplayTour: () => void;
   routingOn: boolean;
+  caTrusted: boolean;
+  proxyBusy: boolean;
+  onUntrustCa: () => void;
 }) {
   const [replacing, setReplacing] = useState(false);
   const [devMode, setDevMode] = useState(false);
+  const platform = usePlatform();
+  const trustStore = platform === "windows" ? "certificate store" : "keychain";
   const [newKey, setNewKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -340,6 +349,29 @@ export function Settings({
           </div>
         </div>
       )}
+      {caTrusted && !routingOn && (
+        <>
+          <SectionLabel>Certificate</SectionLabel>
+          <div className="flex items-center gap-3 px-3.5 py-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-medium text-gc-ink">Gate certificate</div>
+              <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
+                Still trusted in your {trustStore}. Removing it clears the
+                certificate and private key from this machine.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onUntrustCa}
+              disabled={proxyBusy}
+              className="shrink-0 text-[12px] font-medium text-gc-accent disabled:opacity-40"
+            >
+              Remove
+            </button>
+          </div>
+        </>
+      )}
+
       <div className="px-3.5 pb-1 pt-1">
         <button
             type="button"
