@@ -173,10 +173,17 @@ fn system_keychain_has_ca() -> Result<bool> {
 /// Remove any Gate CA a prior install left behind before we install the
 /// current one. We always drop it from the user login keychain (no admin),
 /// and - only if one is actually present - from the root-owned System
-/// keychain via a single admin prompt. `-t` removes the cert's trust settings
-/// along with the cert. Login-keychain removal is best-effort (a missing cert
-/// just exits non-zero); the System-keychain removal surfaces a real failure
-/// because it's gated behind the admin prompt the user just accepted.
+/// keychain via a single admin prompt. The login-keychain delete uses `-t`
+/// to drop the cert's user-domain trust settings with it and is best-effort
+/// (a missing cert just exits non-zero). The System-keychain delete must NOT
+/// use `-t`: removing admin-domain trust settings needs the interactive
+/// Security-Agent authorization that the osascript "with administrator
+/// privileges" context cannot provide (same limitation as `add-trusted-cert`,
+/// see module docs), so `-t` makes the whole cleanup fail even after the user
+/// enters a correct password. Deleting just the cert is enough - an orphaned
+/// admin trust entry for a cert that's no longer in any keychain is inert.
+/// The System-keychain removal surfaces a real failure because it's gated
+/// behind the admin prompt the user just accepted.
 fn remove_stale_cas() -> Result<()> {
     let _ = Command::new("/usr/bin/security")
         .args(["delete-certificate", "-c", CA_COMMON_NAME, "-t"])
@@ -185,7 +192,7 @@ fn remove_stale_cas() -> Result<()> {
 
     if system_keychain_has_ca()? {
         let script = format!(
-            "/usr/bin/security delete-certificate -c {cn} -t {kc}",
+            "/usr/bin/security delete-certificate -c {cn} {kc}",
             cn = sh_quote(CA_COMMON_NAME),
             kc = sh_quote(SYSTEM_KEYCHAIN),
         );
