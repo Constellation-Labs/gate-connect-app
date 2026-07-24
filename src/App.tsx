@@ -504,7 +504,6 @@ export function App() {
         onToggleProxy={() => toggleProxy(false)}
         onSetProvider={setProvider}
         onTrustCa={trustCa}
-        onUntrustCa={untrustCa}
       />
     );
   } else if (screen === "settings" && account) {
@@ -519,6 +518,9 @@ export function App() {
           openOnboardingWindow("settings").catch(() => {});
         }}
         routingOn={proxyOn}
+        caTrusted={proxy?.ca_trusted ?? false}
+        proxyBusy={proxyBusy}
+        onUntrustCa={untrustCa}
       />
     );
   } else if (screen === "coming-soon") {
