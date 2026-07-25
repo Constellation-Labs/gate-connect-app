@@ -461,22 +461,6 @@ pub fn clear_stranded_loopback() -> Result<Vec<String>> {
 mod tests {
     use super::*;
 
-    /// Point `app_support_dir` (which `port_path` keys off) at a throwaway
-    /// dir so the test never touches the real user data. Serialized because
-    /// the override is process-global.
-    fn with_temp_env<T>(f: impl FnOnce() -> T) -> T {
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = GUARD.lock().unwrap_or_else(|e| e.into_inner());
-
-        let tmp = std::env::temp_dir().join(format!("gate-proxy-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&tmp);
-        env::set_app_support_dir_for_tests(Some(tmp.clone()));
-        let out = f();
-        env::set_app_support_dir_for_tests(None);
-        let _ = fs::remove_dir_all(&tmp);
-        out
-    }
-
     fn slot(enabled: bool, server: &str, port: &str) -> ProxySetting {
         ProxySetting {
             enabled,
