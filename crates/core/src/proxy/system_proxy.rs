@@ -56,58 +56,32 @@ fn snapshot_path() -> Result<PathBuf> {
         .join("system-proxy.snapshot.json"))
 }
 
-/// Path where we persist the engine's chosen loopback port so it can be reused
-/// across restarts. macOS reads the system proxy live, but clients that resolve
-/// the proxy once at their own launch (e.g. Claude Desktop) keep dialing the
-/// old port after we restart - a stable port keeps them working without a
-/// client restart.
-fn port_path() -> Result<PathBuf> {
-    Ok(env::app_support_dir()?.join("proxy").join("port"))
-}
-
-/// The last engine port we persisted, if any and still parseable.
+/// The engine's chosen loopback port persists (via [`super::port_persist`])
+/// so it can be reused across restarts. macOS reads the system proxy live,
+/// but clients that resolve the proxy once at their own launch (e.g. Claude
+/// Desktop) keep dialing the old port after we restart - a stable port keeps
+/// them working without a client restart.
 pub fn load_port() -> Result<Option<u16>> {
-    let path = port_path()?;
-    match fs::read_to_string(&path) {
-        Ok(raw) => Ok(raw.trim().parse::<u16>().ok()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
+    super::port_persist::load("port")
 }
 
-/// Persist the engine port for reuse on the next run. Best-effort durability;
-/// non-secret, so written 0644.
+/// Persist the engine port for reuse on the next run (see [`load_port`]).
 pub fn save_port(port: u16) -> Result<()> {
-    let path = port_path()?;
-    crate::primitives::write_file(&path, port.to_string().as_bytes(), 0o644)
-        .with_context(|| format!("writing {}", path.display()))
+    super::port_persist::save("port", port)
 }
 
-/// Path where we persist the PAC listener's port, companion to [`port_path`]:
-/// the system proxy's `AutoConfigURL` bakes this port in, and a client that
+/// The PAC listener's port persists too, companion to [`load_port`]: the
+/// system proxy's `AutoConfigURL` bakes this port in, and a client that
 /// captured that URL at its own launch must find a fresh PAC there after we
 /// restart, or its PAC fetch fails and it silently falls back to DIRECT
 /// (bypassing Gate).
-fn pac_port_path() -> Result<PathBuf> {
-    Ok(env::app_support_dir()?.join("proxy").join("pac-port"))
-}
-
-/// The last PAC port we persisted, if any and still parseable.
 pub fn load_pac_port() -> Result<Option<u16>> {
-    let path = pac_port_path()?;
-    match fs::read_to_string(&path) {
-        Ok(raw) => Ok(raw.trim().parse::<u16>().ok()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
+    super::port_persist::load("pac-port")
 }
 
-/// Persist the PAC port for reuse on the next run. Best-effort durability;
-/// non-secret, so written 0644.
+/// Persist the PAC port for reuse on the next run (see [`load_pac_port`]).
 pub fn save_pac_port(port: u16) -> Result<()> {
-    let path = pac_port_path()?;
-    crate::primitives::write_file(&path, port.to_string().as_bytes(), 0o644)
-        .with_context(|| format!("writing {}", path.display()))
+    super::port_persist::save("pac-port", port)
 }
 
 /// Active (non-disabled) network services. The first output line is a
@@ -486,37 +460,6 @@ pub fn clear_stranded_loopback() -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Point `app_support_dir` (which `port_path` keys off) at a throwaway
-    /// dir so the test never touches the real user data. Serialized because
-    /// the override is process-global.
-    fn with_temp_env<T>(f: impl FnOnce() -> T) -> T {
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = GUARD.lock().unwrap_or_else(|e| e.into_inner());
-
-        let tmp = std::env::temp_dir().join(format!("gate-proxy-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&tmp);
-        env::set_app_support_dir_for_tests(Some(tmp.clone()));
-        let out = f();
-        env::set_app_support_dir_for_tests(None);
-        let _ = fs::remove_dir_all(&tmp);
-        out
-    }
-
-    #[test]
-    fn port_round_trips() {
-        with_temp_env(|| {
-            assert_eq!(load_port().unwrap(), None);
-            save_port(40555).unwrap();
-            assert_eq!(load_port().unwrap(), Some(40555));
-
-            // The PAC port is a separate file so the two never clobber.
-            assert_eq!(load_pac_port().unwrap(), None);
-            save_pac_port(40556).unwrap();
-            assert_eq!(load_pac_port().unwrap(), Some(40556));
-            assert_eq!(load_port().unwrap(), Some(40555));
-        });
-    }
 
     fn slot(enabled: bool, server: &str, port: &str) -> ProxySetting {
         ProxySetting {

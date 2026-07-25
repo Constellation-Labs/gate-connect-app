@@ -45,12 +45,23 @@ pub fn set_pending(pending: bool) -> Result<()> {
     set_pending_at(&marker_path()?, pending)
 }
 
-/// Record the user turning launch-at-login off. With routing intent on, the
+/// Record the user turning launch-at-login off. With routing on, the
 /// opt-out defers: the marker arms and the login item must stay registered.
 /// Otherwise any stale marker clears. Returns whether the caller should
 /// deregister the login item now.
+///
+/// "Routing on" is judged from the persisted intent OR the live snapshot
+/// marker ([`crate::proxy::engine_likely_running`]): `proxy_enable` persists
+/// the intent best-effort *after* routing is already up, so a failed intent
+/// write must not let this opt-out deregister the safety net while the
+/// system proxy is routed - a later crash would strand it with nothing
+/// relaunching at boot to self-heal.
 pub fn record_disable() -> Result<bool> {
-    record_disable_at(&marker_path()?, crate::proxy::intent::load_intent())
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    let routing_on = crate::proxy::intent::load_intent() || crate::proxy::engine_likely_running();
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let routing_on = crate::proxy::intent::load_intent();
+    record_disable_at(&marker_path()?, routing_on)
 }
 
 fn record_disable_at(path: &Path, routing_intent: bool) -> Result<bool> {

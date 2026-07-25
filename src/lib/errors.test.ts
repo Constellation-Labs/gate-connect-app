@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyError } from "./errors";
+import { backendErrorContext, classifyError } from "./errors";
 
 // These tests assert the *contract* of classifyError rather than exact copy,
 // so they stay green as the wording is tuned. The load-bearing guarantees:
@@ -98,5 +98,36 @@ describe("classifyError", () => {
       const result = classifyError("this command is not available on this platform", "generic");
       expect(result.title.toLowerCase()).toContain("platform");
     });
+  });
+});
+
+// The allowlist seam between the backend's `report_backend_error` labels and
+// what leaves the machine: a backend context added without a frontend
+// counterpart must degrade to "generic" rather than forward an unvetted label
+// to analytics.
+describe("backendErrorContext", () => {
+  it("passes through every vetted backend context", () => {
+    for (const ctx of [
+      "account_reconcile",
+      "provider_restore",
+      "provider_disable",
+      "provider_reconcile",
+      "routing_intent",
+      "restore_routing",
+      "launch_at_login",
+    ]) {
+      expect(backendErrorContext(ctx)).toBe(ctx);
+    }
+  });
+
+  it("degrades an unknown backend label to generic", () => {
+    expect(backendErrorContext("brand_new_backend_site")).toBe("generic");
+    expect(backendErrorContext("")).toBe("generic");
+  });
+
+  it("does not forward frontend-only contexts the backend never reports", () => {
+    // e.g. proxy_toggle is a valid *frontend* context but not a backend one;
+    // a backend claiming it would be a labeling bug, so it degrades too.
+    expect(backendErrorContext("proxy_toggle")).toBe("generic");
   });
 });

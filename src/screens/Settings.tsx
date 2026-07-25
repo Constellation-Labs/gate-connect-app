@@ -98,7 +98,7 @@ export function Settings({
         setLaPendingDisable(status.pending_disable);
         setLaLoaded(true);
       })
-      .catch((err) => trackError(err, "generic"));
+      .catch((err) => trackError(err, "launch_at_login"));
     return () => {
       active = false;
     };
@@ -130,16 +130,24 @@ export function Settings({
     setLaunchAtLoginState(next); // optimistic
     try {
       await setLaunchAtLogin(next);
-      track("launch_at_login_toggled", { enabled: next });
-      // The backend decides whether an opt-out deregisters now or is
-      // deferred (routing on), so re-read the status for the pending note.
+    } catch (err) {
+      setLaunchAtLoginState(!next); // revert on failure
+      setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "launch_at_login");
+      return;
+    }
+    track("launch_at_login_toggled", { enabled: next });
+    // The backend decides whether an opt-out deregisters now or is deferred
+    // (routing on), so re-read the status for the pending note. Best-effort
+    // and separate from the toggle above: the toggle already succeeded, so a
+    // failed re-read must not revert the switch to the opposite of the
+    // actual state.
+    try {
       const status = await launchAtLoginStatus();
       setLaunchAtLoginState(status.enabled);
       setLaPendingDisable(status.pending_disable);
     } catch (err) {
-      setLaunchAtLoginState(!next); // revert on failure
-      setError(err instanceof Error ? err.message : String(err));
-      trackError(err, "generic");
+      trackError(err, "launch_at_login");
     }
   }
 
@@ -333,9 +341,9 @@ export function Settings({
         <div className="mx-3.5 mb-1 flex items-start gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
           <Icon name="info" size={15} className="mt-px shrink-0 text-gc-ink-3" />
           <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
-            While routing is on, Gate Connect stays in your login items as a
-            safety net, so an unexpected restart can't leave routing broken.
-            It removes itself when routing turns off or the app quits.
+            Gate Connect is still listed in your login items as a safety net,
+            so an unexpected restart can't leave routing broken. It removes
+            itself automatically once that's safe.
           </div>
         </div>
       )}

@@ -189,6 +189,12 @@ struct AccountDto {
     has_api_key: bool,
 }
 
+/// Whether an `account::reconcile` failure was already forwarded to the
+/// analytics seam this run. The reconcile runs on every popover interaction
+/// (each `get_account`), so a persistently failing one would otherwise emit
+/// an `error_shown` per open; one event per run carries the same signal.
+static ACCOUNT_RECONCILE_REPORTED: AtomicBool = AtomicBool::new(false);
+
 #[tauri::command]
 fn get_account() -> Result<Option<AccountDto>, String> {
     // Reconcile the stored account against its on-disk anchor before reading it,
@@ -204,7 +210,9 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     // to first-run, so we log and fall through to the read below.
     if let Err(e) = account::reconcile() {
         eprintln!("account reconcile failed: {e}");
-        report_backend_error("account_reconcile", format!("{e:#}"));
+        if !ACCOUNT_RECONCILE_REPORTED.swap(true, Ordering::AcqRel) {
+            report_backend_error("account_reconcile", format!("{e:#}"));
+        }
     }
     let Some(gateway_base_url) = account::load_base_url().map_err(|e| format!("{e:#}"))? else {
         return Ok(None);
@@ -427,28 +435,47 @@ async fn proxy_enable(
     // want. Marker before registration: a crash between the two steps must
     // not leave a registration that reads as the user's choice. Best-effort:
     // routing is already on, so failures only lose the net, not the command.
+    //
+    // Known (accepted) race: this read-then-write pair and the one in
+    // `set_launch_at_login` share no lock, so a Settings toggle landing
+    // between this `is_enabled()` check and the arm+enable below can end up
+    // marked pending (a fresh opt-in reported as off) until the next safe
+    // point clears it. The window is milliseconds wide and both sites are
+    // driven by one user in one popover; not worth a lock.
     {
         use gate_connect_core::proxy::autostart_optout;
         use tauri_plugin_autostart::ManagerExt;
         let mgr = app.autolaunch();
-        if let Ok(false) = mgr.is_enabled() {
-            match autostart_optout::record_safety_net_registration() {
-                Ok(()) => {
-                    if let Err(e) = mgr.enable() {
-                        eprintln!("[gate] registering launch-at-login safety net failed: {e}");
-                        report_backend_error("launch_at_login", format!("{e:#}"));
-                        // Nothing got registered, so there is nothing for the
-                        // marker to defer; leaving it armed would only make a
-                        // real opt-in later read as pending.
-                        if let Err(e) = autostart_optout::set_pending(false) {
-                            eprintln!("[gate] clearing safety-net marker failed: {e}");
+        match mgr.is_enabled() {
+            Ok(false) => {
+                match autostart_optout::record_safety_net_registration() {
+                    Ok(()) => {
+                        if let Err(e) = mgr.enable() {
+                            eprintln!("[gate] registering launch-at-login safety net failed: {e}");
+                            report_backend_error("launch_at_login", format!("{e:#}"));
+                            // Nothing got registered, so there is nothing for the
+                            // marker to defer; leaving it armed would only make a
+                            // real opt-in later read as pending.
+                            if let Err(e) = autostart_optout::set_pending(false) {
+                                eprintln!("[gate] clearing safety-net marker failed: {e}");
+                            }
                         }
                     }
+                    Err(e) => {
+                        eprintln!("[gate] arming launch-at-login safety-net marker failed: {e}");
+                        report_backend_error("launch_at_login", format!("{e:#}"));
+                    }
                 }
-                Err(e) => {
-                    eprintln!("[gate] arming launch-at-login safety-net marker failed: {e}");
-                    report_backend_error("launch_at_login", format!("{e:#}"));
-                }
+            }
+            // Already registered (the user's own opt-in, or a still-pending
+            // marker from an earlier session): nothing to arm.
+            Ok(true) => {}
+            // Can't tell whether a login item exists: don't risk arming the
+            // marker over a real opt-in. Losing the net is the lesser harm,
+            // but it should be visible.
+            Err(e) => {
+                eprintln!("[gate] probing launch-at-login for the safety net failed: {e}");
+                report_backend_error("launch_at_login", format!("{e:#}"));
             }
         }
     }
@@ -469,7 +496,7 @@ async fn proxy_disable(
         // switch.
         if let Err(e) = gate_connect_core::provider::snapshot_and_disable_all() {
             eprintln!("[gate] disabling providers on proxy disable failed: {e}");
-            report_backend_error("provider_restore", format!("{e:#}"));
+            report_backend_error("provider_disable", format!("{e:#}"));
         }
         gate_connect_core::proxy::manager()
             .disable()
@@ -561,6 +588,8 @@ fn launch_at_login_status(app: tauri::AppHandle) -> Result<LaunchAtLoginStatus, 
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     use gate_connect_core::proxy::autostart_optout;
     use tauri_plugin_autostart::ManagerExt;
+    // This marker/login-item read-then-write and the safety-net block in
+    // `proxy_enable` share no lock; see the accepted-race note there.
     let mgr = app.autolaunch();
     if enabled {
         autostart_optout::set_pending(false).map_err(|e| format!("{e:#}"))?;
@@ -640,10 +669,12 @@ static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// launch-at-login is off (no login item means nothing would re-route after a
 /// reboot), but an update install relaunches us immediately - clearing the
 /// intent there would leave routing off after every upgrade. Set by the
-/// frontend right before it kicks off the updater install; reset if that
-/// install fails. If the relaunch itself fails after a successful install the
-/// flag stays set, which at worst preserves an intent that matched the
-/// pre-update state anyway.
+/// frontend after the update download completes, right before it kicks off
+/// the install (not around the whole download: a quit while the download is
+/// still running is a genuine user exit and must keep the exit-time intent
+/// clear and deferred opt-out completion); reset if the install fails. If the
+/// relaunch itself fails after a successful install the flag stays set, which
+/// at worst preserves an intent that matched the pre-update state anyway.
 static UPDATER_RELAUNCHING: AtomicBool = AtomicBool::new(false);
 
 /// Whether the startup auto-enable brought the engine back on a *different*
@@ -705,16 +736,22 @@ fn drain_backend_errors() -> Vec<BackendError> {
         .unwrap_or_default()
 }
 
-/// Process names of the agent CLIs we're willing to close. A subset of the
-/// registry tools: `hermes` and `openclaw` are excluded - their names are too
-/// generic / their processes shouldn't be killed from here. Matched against
-/// the process name with any `.exe` suffix stripped, so one list serves all
-/// three desktop OSes.
+/// Process names of the AI tools we're willing to close - deliberately both
+/// the agent CLIs *and* the desktop apps that share the binary name: on macOS
+/// Claude Desktop / Cowork's main process is literally `Claude`, and it is a
+/// routed tool that resolves the proxy at its own launch, so closing it is
+/// the point. A subset of the registry tools: `hermes` and `openclaw` are
+/// excluded - their names are too generic / their processes shouldn't be
+/// killed from here. (An unrelated user binary that happens to be named
+/// `claude`/`codex`/`opencode` is accepted collateral; the action sits behind
+/// an explicit in-popover confirm.) Matched against the process name with any
+/// `.exe` suffix stripped, so one list serves all three desktop OSes.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
 
-/// Terminate running agent processes so their next launch picks up the
-/// routing change. Graceful where the platform allows it (SIGTERM on
+/// Terminate running agent processes (CLIs and desktop apps, see
+/// [`AGENT_PROCESS_NAMES`]) so their next launch picks up the routing change.
+/// Graceful where the platform allows it (SIGTERM on
 /// macOS/Linux, so agents can flush state; Windows only has TerminateProcess).
 /// Returns how many processes were signalled - 0 means none were running.
 /// Best-effort: processes we can't signal (another user's, already gone) are
@@ -749,8 +786,10 @@ fn close_running_agents() -> u32 {
 }
 
 /// Mark (or unmark) the next exit as an updater-driven relaunch. Called by the
-/// frontend around `downloadAndInstall()` - before it starts, because on
-/// Windows the installer exits the app from inside that call.
+/// frontend after the update download completes and before `install()` -
+/// before, because on Windows the installer exits the app from inside that
+/// call; after the download, so quitting mid-download still counts as a
+/// genuine user exit.
 #[tauri::command]
 fn set_updater_relaunching(relaunching: bool) {
     UPDATER_RELAUNCHING.store(relaunching, Ordering::Release);
@@ -1057,15 +1096,35 @@ pub fn run() {
 
                     // A deferred launch-at-login opt-out reaching a login-item
                     // launch means the previous session never hit a clean stop
-                    // (crash / hard restart). The reconcile above has already
-                    // reverted any stranded system proxy, so finish the job:
-                    // deregister, drop the routing intent so a later manual
-                    // launch stays passthrough, and exit - the user asked us
-                    // not to run at startup. A manual or updater-driven launch
-                    // (not --silent) skips this and restores routing as the
-                    // user left it; the still-pending opt-out completes at the
-                    // next safe point instead.
+                    // (crash / hard restart; on Linux even a clean quit, since
+                    // the exit handler below is macOS/Windows-only). Make sure
+                    // routing is actually off, then finish the job: deregister,
+                    // drop the routing intent so a later manual launch stays
+                    // passthrough, and exit - the user asked us not to run at
+                    // startup. On macOS/Windows the reconcile above has already
+                    // *reverted* any stranded system proxy; on Linux it does
+                    // the opposite - it re-honors (re-enables) a leftover
+                    // snapshot - so without an explicit disable here the daemon
+                    // would keep intercepting headless after we exit, and the
+                    // re-written snapshot would make every later manual launch
+                    // re-honor routing again with the intent cleared. A manual
+                    // or updater-driven launch (not --silent) skips this and
+                    // restores routing as the user left it; the still-pending
+                    // opt-out completes at the next safe point instead.
                     if silent_launch && gate_connect_core::proxy::autostart_optout::pending() {
+                        // Linux-only: macOS/Windows reconciled to "off" above,
+                        // and running disable there would force_off proxy
+                        // settings the reconcile just restored (e.g. a
+                        // corporate proxy). Best-effort: even a failed
+                        // disable_quiet has dropped the daemon to pass-through
+                        // and cleared the snapshot, so nothing is stranded.
+                        #[cfg(target_os = "linux")]
+                        if let Err(e) = gate_connect_core::proxy::manager().disable_quiet() {
+                            eprintln!(
+                                "[gate] disabling re-honored routing for the deferred opt-out failed: {e}"
+                            );
+                            report_backend_error("restore_routing", format!("{e:#}"));
+                        }
                         complete_pending_autostart_disable(&handle);
                         if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
                             eprintln!("[gate] clearing routing intent failed: {e}");
@@ -1094,24 +1153,40 @@ pub fn run() {
                         eprintln!("[gate] restoring providers on startup auto-enable failed: {e}");
                         report_backend_error("provider_restore", format!("{e:#}"));
                     }
-                    // Snapshot the persisted engine port before enable
-                    // overwrites it; comparing it afterwards tells us whether
-                    // the engine came back on the previous session's address.
-                    let prior_port = gate_connect_core::proxy::system_proxy::load_port()
-                        .ok()
-                        .flatten();
+                    // Snapshot the persisted ports before enable overwrites
+                    // them; comparing them against the state enable returns
+                    // tells us whether the engine (and PAC listener) came back
+                    // on the previous session's address. The returned state is
+                    // the authority for the new ports - the post-enable
+                    // persistence is best-effort, so re-reading the files here
+                    // could compare enable's own input back against itself.
+                    let prior_port = gate_connect_core::proxy::system_proxy::load_port();
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    let prior_pac_port = gate_connect_core::proxy::system_proxy::load_pac_port();
                     match gate_connect_core::proxy::manager().enable() {
                         Ok(state) => {
-                            // Port changed (or none was persisted - the first
-                            // launch after upgrading from a build without port
-                            // persistence): clients that resolved the proxy at
-                            // their own launch are now dialing a dead port.
-                            // Surface a "restart your AI apps" notice in the
-                            // popover.
-                            let new_port = gate_connect_core::proxy::system_proxy::load_port()
-                                .ok()
-                                .flatten();
-                            if prior_port != new_port {
+                            // Engine port changed (or none was persisted - the
+                            // first launch after upgrading from a build without
+                            // port persistence): clients that resolved the
+                            // proxy at their own launch are now dialing a dead
+                            // port. A changed PAC port breaks them more
+                            // quietly: the AutoConfigURL they captured stops
+                            // serving and they silently fall back to DIRECT,
+                            // bypassing Gate. Either way, surface a "restart
+                            // your AI apps" notice in the popover. An
+                            // unreadable port file reads as "unknown", not
+                            // "changed" - the engine may well have come back on
+                            // the same port (its own load can succeed where
+                            // this one failed), and a false notice nags the
+                            // user for nothing.
+                            let engine_moved =
+                                prior_port.map(|p| p != state.port).unwrap_or(false);
+                            #[cfg(any(target_os = "macos", target_os = "windows"))]
+                            let pac_moved =
+                                prior_pac_port.map(|p| p != state.pac_port).unwrap_or(false);
+                            #[cfg(target_os = "linux")]
+                            let pac_moved = false;
+                            if engine_moved || pac_moved {
                                 ROUTED_CLIENTS_MAY_BE_STALE.store(true, Ordering::Release);
                             }
                             // Second restore pass for domain-only providers the

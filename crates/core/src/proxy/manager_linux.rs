@@ -80,6 +80,9 @@ impl ProxyManager {
         Ok(ProxyState {
             running,
             port,
+            // Linux wires env-var proxies straight at the engine port; there
+            // is no PAC listener.
+            pac_port: None,
             ca_trusted: ca::is_trusted()?,
             domains: config::load_domains()?,
         })

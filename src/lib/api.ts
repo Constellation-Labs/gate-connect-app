@@ -79,6 +79,8 @@ export interface ProxyDomain {
 export interface ProxyState {
   running: boolean;
   port: number | null;
+  /** Loopback port serving the PAC script (macOS/Windows; null on Linux). */
+  pac_port: number | null;
   ca_trusted: boolean;
   domains: ProxyDomain[];
 }
@@ -158,8 +160,9 @@ export const setLaunchAtLogin = (enabled: boolean) =>
 
 /** Mark (or unmark) the next exit as an updater-driven relaunch, so the exit
  * handler keeps the routing intent and the relaunched app restores routing.
- * Set before `downloadAndInstall()` (Windows exits from inside it); reset if
- * the install fails. */
+ * Set after the update download completes, right before `install()` (Windows
+ * exits from inside it); a quit while the download is still running is a
+ * genuine user exit and must not carry the mark. Reset if the install fails. */
 export const setUpdaterRelaunching = (relaunching: boolean) =>
   invoke<void>("set_updater_relaunching", { relaunching });
 
@@ -169,9 +172,10 @@ export const setUpdaterRelaunching = (relaunching: boolean) =>
  * at the dead old port, so the popover shows a restart notice. */
 export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
 
-/** Terminate running agent processes (claude, codex, opencode, ...) so their
- * next launch picks up the routing change. Resolves to how many processes
- * were signalled; 0 means none were running. */
+/** Terminate running AI tools (agent CLIs and the desktop apps sharing their
+ * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up
+ * the routing change. Resolves to how many processes were signalled; 0 means
+ * none were running. */
 export const closeRunningAgents = () => invoke<number>("close_running_agents");
 
 /** A backend failure buffered for the analytics seam. `context` names the

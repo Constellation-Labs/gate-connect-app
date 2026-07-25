@@ -53,9 +53,10 @@ pub struct EngineConfig {
     /// [`preferred_port`](Self::preferred_port): reuse the last-bound port so
     /// the `AutoConfigURL` a client captured at its own launch still serves a
     /// fresh PAC after we restart, instead of failing the fetch and silently
-    /// falling back to DIRECT (bypassing Gate). PAC-driven platforms only;
-    /// Linux uses env-var proxies with no PAC.
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    /// falling back to DIRECT (bypassing Gate). Only read on PAC-driven
+    /// platforms (macOS/Windows); Linux uses env-var proxies with no PAC and
+    /// passes `None` (a plain field, like `owner_uid`, so construction sites
+    /// need no cfg attribute).
     pub preferred_pac_port: Option<u16>,
     /// When `Some(uid)`, only connections from that local UID are intercepted
     /// (MITM'd + rewritten with the Gate key injected); traffic from any other
@@ -66,9 +67,8 @@ pub struct EngineConfig {
     pub owner_uid: Option<u32>,
     /// The user's pre-existing upstream proxy , used as the
     /// PAC fallback so non-Gate traffic keeps flowing through it instead of
-    /// going DIRECT while routing is on. PAC-driven platforms only
-    /// ; Linux uses env-var proxies with no PAC.
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    /// going DIRECT while routing is on. Only read on PAC-driven platforms
+    /// (macOS/Windows); Linux passes `None`.
     pub upstream_proxy: Option<String>,
 }
 
@@ -457,25 +457,40 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
     Ok((listener, port))
 }
 
-/// Bind `127.0.0.1:port` for the preferred-port reuse path. On unix this sets
-/// `SO_REUSEADDR` before binding: the previous engine session's connections
-/// leave server-side TIME_WAIT sockets on the port for minutes, and without
-/// the flag the restart's rebind fails and silently falls back to an ephemeral
-/// port - defeating the address stability the preferred port exists for. Safe
-/// on this listener: unix `SO_REUSEADDR` only permits rebinding over such
-/// lingering remnants, never over a live listener, so the taken-port fallback
-/// still works. Windows keeps the plain bind - its defaults already allow the
-/// rebind, and `SO_REUSEADDR` there *would* let another local process hijack
-/// a live port.
+/// Bind `127.0.0.1:port` for the preferred-port reuse path. On unix a plain
+/// bind is tried first; when it fails with the port "in use", the previous
+/// engine session's connections may just be lingering as server-side
+/// TIME_WAIT sockets (they stay for minutes), and without `SO_REUSEADDR` the
+/// restart's rebind fails and silently falls back to an ephemeral port -
+/// defeating the address stability the preferred port exists for. But BSD /
+/// macOS `SO_REUSEADDR` also permits a `127.0.0.1:P` bind while another
+/// process holds a *live* `0.0.0.0:P` listener, which would silently shadow
+/// that app's loopback traffic. A connect probe tells the two apart: a port
+/// held only by TIME_WAIT remnants refuses, a live listener accepts - so the
+/// `SO_REUSEADDR` rebind runs only after a refused probe, and a live listener
+/// keeps the taken-port fallback. (A process binding the wildcard in the
+/// probe-to-bind gap can still be shadowed; that race is unavoidable and
+/// vanishingly narrow.) Windows keeps the plain bind - its defaults already
+/// allow the rebind, and `SO_REUSEADDR` there *would* let another local
+/// process hijack a live port.
 #[cfg(unix)]
 fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+    if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+        return Ok(listener);
+    }
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250)).is_ok() {
+        // Someone is live on this port (loopback or wildcard) - don't shadow
+        // it; let the caller fall back to an ephemeral port.
+        return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse));
+    }
     let socket = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::STREAM,
         Some(socket2::Protocol::TCP),
     )?;
     socket.set_reuse_address(true)?;
-    socket.bind(&std::net::SocketAddr::from(([127, 0, 0, 1], port)).into())?;
+    socket.bind(&addr.into())?;
     // Match std's TcpListener::bind backlog.
     socket.listen(128)?;
     Ok(socket.into())

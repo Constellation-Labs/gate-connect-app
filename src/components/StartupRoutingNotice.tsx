@@ -59,7 +59,7 @@ export function StartupRoutingNotice({
         {closed === null ? (
           <p className="text-[12.5px] leading-snug text-gc-error">
             {confirming
-              ? "Close all running agents? Anything they're working on will be interrupted."
+              ? "Close all running agents, including desktop apps like Claude? Anything they're working on will be interrupted."
               : routingOn
                 ? "Agents already running won't route through Gate. Close them and start them again."
                 : "Agents already running still point at Gate. Close them and start them again."}

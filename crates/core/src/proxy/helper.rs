@@ -240,9 +240,13 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                             ca_cert_pem,
                             ca_key_pem,
                             preferred_port,
+                            // No PAC on Linux (env-var proxies wire clients
+                            // straight at the engine port).
+                            preferred_pac_port: None,
                             // The daemon runs as the owner; only intercept this
                             // user's own traffic. SAFETY: geteuid never fails.
                             owner_uid: Some(unsafe { libc::geteuid() }),
+                            upstream_proxy: None,
                         },
                         // The daemon doesn't auto-revert on engine death; the
                         // GUI's drop-in lifecycle and a later re-enable handle

@@ -20,6 +20,7 @@ export type ErrorContext =
   | "startup"
   | "account_reconcile"
   | "provider_restore"
+  | "provider_disable"
   | "provider_reconcile"
   | "routing_intent"
   | "restore_routing"
@@ -32,6 +33,7 @@ export type ErrorContext =
 const BACKEND_CONTEXTS = new Set<ErrorContext>([
   "account_reconcile",
   "provider_restore",
+  "provider_disable",
   "provider_reconcile",
   "routing_intent",
   "restore_routing",
@@ -159,6 +161,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     startup: "Couldn't load state at startup",
     account_reconcile: "Couldn't reconcile the saved account",
     provider_restore: "Couldn't restore provider routing",
+    provider_disable: "Couldn't disconnect provider routing",
     provider_reconcile: "Couldn't refresh tool configs",
     routing_intent: "Couldn't save the routing preference",
     restore_routing: "Couldn't restore routing at startup",
