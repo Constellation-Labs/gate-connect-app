@@ -32,16 +32,17 @@ pub fn manager() -> &'static ProxyManager {
 impl ProxyManager {
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
-        let port = self
+        let (port, pac_port) = self
             .engine
             .lock()
             .expect("proxy engine mutex poisoned")
             .as_ref()
-            .map(|e| Some(e.port()))
-            .unwrap_or(None);
+            .map(|e| (Some(e.port()), Some(e.pac_port())))
+            .unwrap_or((None, None));
         Ok(ProxyState {
             running: port.is_some(),
             port,
+            pac_port,
             ca_trusted: ca::is_trusted()?,
             domains: config::load_domains()?,
         })

@@ -40,6 +40,7 @@ import { backendErrorContext } from "./lib/errors";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { usePlatform } from "./lib/platform";
+import { useWindowReopen } from "./lib/useWindowReopen";
 
 type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
 
@@ -121,9 +122,37 @@ export function App() {
   // Initial load: account decides first-run vs home; proxy status is
   // best-effort (the proxy commands exist on all three desktop OSes, but a
   // failure here just hides the proxy UI via `showProxy`).
+  //
+  // The backend can flip routing on by itself at startup (restart
+  // persistence: it re-enables what the user last left on) and announces it
+  // with a single `proxy-state-changed` nudge; our status poll stays idle
+  // while routing reads as off, and nothing re-reads when the popover is
+  // reopened from the tray. Registering the listener *before* the first
+  // status read (and awaiting the registration) closes the gap where the
+  // enable lands after the read but before the listener is live - that
+  // one-shot nudge would otherwise be missed for the webview's lifetime.
   useEffect(() => {
     let alive = true;
+    const unlisten = listen("proxy-state-changed", async () => {
+      const px = await proxyStatus().catch(() => null);
+      const provs = await listProviders().catch(() => []);
+      const toolList = await listTools().catch(() => []);
+      const stale = await routedClientsStale().catch(() => false);
+      if (!alive) return;
+      setProxy(px);
+      setProviders(provs);
+      setTools(toolList);
+      if (stale) setStaleAgentsHint(true);
+      if (px?.running) {
+        setRoutingNotice("on");
+        // The backend only emits this nudge after its startup auto-enable, so
+        // routing coming up here is a restored session, not a user toggle.
+        track("proxy_enabled", { source: "restored" });
+      }
+    });
     (async () => {
+      // A failed registration shouldn't block the popover from loading.
+      await unlisten.catch(() => {});
       // Each load degrades to its empty default so the popover still opens;
       // the failure itself is tracked rather than swallowed.
       const acct = await getAccount().catch((err) => {
@@ -179,58 +208,13 @@ export function App() {
     })();
     return () => {
       alive = false;
+      void unlisten.then((f) => f()).catch(() => {});
     };
   }, []);
 
-  // The backend can flip routing on by itself at startup (restart
-  // persistence: it re-enables what the user last left on). Our status poll
-  // stays idle while routing reads as off, and nothing re-reads when the
-  // popover is reopened from the tray, so the backend emits a nudge after a
-  // background enable and we re-read proxy + provider state here.
-  useEffect(() => {
-    let alive = true;
-    const unlisten = listen("proxy-state-changed", async () => {
-      const px = await proxyStatus().catch(() => null);
-      const provs = await listProviders().catch(() => []);
-      const toolList = await listTools().catch(() => []);
-      const stale = await routedClientsStale().catch(() => false);
-      if (!alive) return;
-      setProxy(px);
-      setProviders(provs);
-      setTools(toolList);
-      if (stale) setStaleAgentsHint(true);
-      if (px?.running) {
-        setRoutingNotice("on");
-        // The backend only emits this nudge after its startup auto-enable, so
-        // routing coming up here is a restored session, not a user toggle.
-        track("proxy_enabled", { source: "restored" });
-      }
-    });
-    return () => {
-      alive = false;
-      void unlisten.then((f) => f());
-    };
-  }, []);
-
-  // Reopens from the tray: the popover blurs when it hides, so a blur → focus
-  // edge is a genuine return (same detection as UpdatePanel's re-check). The
-  // launch itself is app_launched; only returns count here.
-  useEffect(() => {
-    let blurred = false;
-    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused) {
-        blurred = true;
-        return;
-      }
-      if (blurred) {
-        blurred = false;
-        track("popover_opened");
-      }
-    });
-    return () => {
-      void unlisten.then((f) => f());
-    };
-  }, []);
+  // Reopens from the tray: the launch itself is app_launched; only returns
+  // count here.
+  useWindowReopen(() => track("popover_opened"));
 
   // Backend failures buffer Rust-side because they can predate this webview
   // (the startup auto-enable runs before the popover mounts). Sweep the

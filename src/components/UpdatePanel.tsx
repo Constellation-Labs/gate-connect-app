@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { setUpdaterRelaunching } from "../lib/api";
+import { useWindowReopen } from "../lib/useWindowReopen";
 import { track, trackError } from "../lib/analytics";
 import { Button, IconButton } from "./gc/ui";
 import { Icon } from "./gc/Icon";
@@ -36,57 +36,55 @@ export function UpdatePanel() {
     track("update_shown", { source: reopened ? "banner" : "panel" });
   }, [update, reopened]);
 
-  useEffect(() => {
-    let alive = true;
-    const runCheck = () =>
-      check()
-        .then((u) => {
-          if (alive && u) setUpdate(u);
-        })
-        .catch(() => undefined);
-
-    runCheck();
-    getVersion()
-      .then((v) => {
-        if (alive) setCurrent(v);
+  const runCheck = () =>
+    check()
+      .then((u) => {
+        if (u) setUpdate(u);
       })
       .catch(() => undefined);
 
-    // The tray reveals the popover with show() + set_focus(), so a focus-gained
-    // edge marks a reopen. Re-check then, so an update released while the app
-    // sat in the tray still surfaces. Requiring a prior blur keeps the initial
-    // launch view on the full panel - only a genuine return-to-window flips to
-    // the banner.
-    let blurred = false;
-    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused) {
-        blurred = true;
-        return;
-      }
-      if (blurred) {
-        setReopened(true);
-        void runCheck();
-      }
-    });
-    return () => {
-      alive = false;
-      void unlisten.then((f) => f());
-    };
+  useEffect(() => {
+    void runCheck();
+    getVersion()
+      .then(setCurrent)
+      .catch(() => undefined);
   }, []);
+
+  // Re-check on each tray reopen, so an update released while the app sat in
+  // the tray still surfaces. From then on an available update surfaces as the
+  // banner, not the startup panel - a mid-task reopen shouldn't be blocked by
+  // a takeover.
+  useWindowReopen(() => {
+    setReopened(true);
+    void runCheck();
+  });
 
   async function install() {
     if (!update) return;
     setFailed(false);
     setInstalling(true);
+    // Download and install as separate phases so the updater-relaunch mark
+    // brackets only the install: quitting the app while the (long) download
+    // is still running is a genuine user exit, and a set mark there would
+    // make the exit handler skip its routing-intent clear and deferred
+    // launch-at-login opt-out completion with no relaunch coming.
+    try {
+      await update.download();
+    } catch (err) {
+      trackError(err, "update");
+      setInstalling(false);
+      setFailed(true);
+      return;
+    }
     try {
       // Mark the coming exit as an updater relaunch so the backend keeps the
       // routing intent and restores routing after the restart. Before the
       // install, not after: on Windows the installer exits the app from
-      // inside downloadAndInstall().
+      // inside install().
       await setUpdaterRelaunching(true);
-      await update.downloadAndInstall();
+      await update.install();
       // Best-effort: on Windows the installer exits the app from inside
-      // downloadAndInstall(), so this event may never send there.
+      // install(), so this event may never send there.
       track("update_installed");
       await relaunch();
     } catch (err) {

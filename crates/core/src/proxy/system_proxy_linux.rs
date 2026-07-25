@@ -70,34 +70,23 @@ fn snapshot_path() -> Result<PathBuf> {
         .join("system-proxy.snapshot.json"))
 }
 
-/// Path where we persist the engine's chosen loopback port so it can be reused
-/// across restarts (keeping a frozen session's proxy pointer valid).
-fn port_path() -> Result<PathBuf> {
-    Ok(env::app_support_dir()?.join("proxy").join("port"))
+/// The engine's chosen loopback port persists (via [`super::port_persist`])
+/// so it can be reused across restarts (keeping a frozen session's proxy
+/// pointer valid). No PAC port here: Linux wires env-var proxies straight at
+/// the engine.
+pub fn load_port() -> Result<Option<u16>> {
+    super::port_persist::load("port")
+}
+
+/// Persist the engine port for reuse on the next run (see [`load_port`]).
+pub fn save_port(port: u16) -> Result<()> {
+    super::port_persist::save("port", port)
 }
 
 /// Cross-process lock serializing enable/disable, so the app and the CLI can't
 /// interleave the snapshot / drop-in / port writes (see [`super::flock`]).
 pub fn op_lock_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("proxy").join("op.lock"))
-}
-
-/// The last engine port we persisted, if any and still parseable.
-pub fn load_port() -> Result<Option<u16>> {
-    let path = port_path()?;
-    match fs::read_to_string(&path) {
-        Ok(raw) => Ok(raw.trim().parse::<u16>().ok()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
-}
-
-/// Persist the engine port for reuse on the next run. Best-effort durability;
-/// non-secret, so written 0644.
-pub fn save_port(port: u16) -> Result<()> {
-    let path = port_path()?;
-    crate::primitives::write_file(&path, port.to_string().as_bytes(), 0o644)
-        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// Path to our CA cert, mirrored from [`super::ca`] - used for
@@ -314,15 +303,6 @@ mod tests {
     fn force_off_is_noop_without_dropin() {
         with_temp_env(|| {
             assert!(force_off().is_ok());
-        });
-    }
-
-    #[test]
-    fn port_round_trips() {
-        with_temp_env(|| {
-            assert_eq!(load_port().unwrap(), None);
-            save_port(40555).unwrap();
-            assert_eq!(load_port().unwrap(), Some(40555));
         });
     }
 }

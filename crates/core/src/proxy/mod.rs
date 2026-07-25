@@ -39,6 +39,11 @@ pub mod intent;
 
 pub mod autostart_optout;
 
+// Shared load/save for the persisted engine + PAC ports; the per-OS
+// `system_proxy` modules wrap it with their platform rationale.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod port_persist;
+
 #[cfg(target_os = "macos")]
 pub mod ca;
 #[cfg(target_os = "windows")]
@@ -134,6 +139,11 @@ pub struct ProxyState {
     pub running: bool,
     /// Loopback port the engine is bound to (when running).
     pub port: Option<u16>,
+    /// Loopback port serving the PAC script the system proxy points at (when
+    /// running). PAC-driven platforms only (macOS/Windows); always `None` on
+    /// Linux, which wires env-var proxies with no PAC.
+    #[serde(default)]
+    pub pac_port: Option<u16>,
     /// Whether our root CA is trusted in the OS trust store.
     pub ca_trusted: bool,
     /// The full domain catalog with current enabled flags.

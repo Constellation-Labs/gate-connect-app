@@ -14,6 +14,7 @@ import { usePlatform } from "../lib/platform";
 const proxy: ProxyState = {
   running: true,
   port: 8080,
+  pac_port: null,
   ca_trusted: false,
   domains: [],
 };
