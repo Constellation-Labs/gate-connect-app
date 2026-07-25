@@ -1,14 +1,21 @@
-//! Deferred "Launch at login" opt-out: a marker recording that the user
-//! turned the login item off while routing was on. Deregistering immediately
-//! in that state would mean a crash leaves the system proxy pointed at a
-//! dead port with nothing relaunching at boot to run the startup self-heal,
-//! so the login item stays registered and the marker defers the
+//! Launch-at-login safety net: a marker recording that the OS login item is
+//! registered even though the user's launch-at-login choice is OFF, kept
+//! only so a crash while routing is on can self-heal. Without it, a crash
+//! leaves the system proxy pointed at a dead port with nothing relaunching
+//! at boot to run the startup self-heal. The marker defers the
 //! deregistration to the next point where the system proxy is known safe:
 //! routing turned off, a clean quit (the exit handler reverts the proxy
 //! first), or the next login-item launch (whose startup reconcile reverts
 //! any stale proxy before the app deregisters and exits). While the marker
 //! is pending, the launch-at-login status reported to the UI is the user's
 //! choice (off), not the OS registration.
+//!
+//! Two transitions arm the same marker, with the same meaning:
+//! - Deferred opt-out: the user turns launch-at-login off while routing is
+//!   on ([`record_disable`]); the existing registration stays.
+//! - Safety-net registration: the user turns routing on while
+//!   launch-at-login is already off ([`record_safety_net_registration`]);
+//!   the shell registers the login item just for the crash window.
 //!
 //! Only the marker persistence and the defer-vs-deregister decision live
 //! here; the OS login item itself is owned by the desktop shell (the
@@ -49,6 +56,19 @@ pub fn record_disable() -> Result<bool> {
 fn record_disable_at(path: &Path, routing_intent: bool) -> Result<bool> {
     set_pending_at(path, routing_intent)?;
     Ok(!routing_intent)
+}
+
+/// Record a safety-net login-item registration: routing just turned on while
+/// launch-at-login was off, so the shell registers the login item purely for
+/// the crash window. Arm the marker so the registration is reported as
+/// pending (not the user's choice) and deregistered at the next safe point.
+/// Idempotent: re-arming an already-pending marker is a no-op.
+pub fn record_safety_net_registration() -> Result<()> {
+    record_safety_net_registration_at(&marker_path()?)
+}
+
+fn record_safety_net_registration_at(path: &Path) -> Result<()> {
+    set_pending_at(path, true)
 }
 
 fn pending_at(path: &Path) -> bool {
@@ -139,6 +159,45 @@ mod tests {
         assert!(!record_disable_at(&path, true).unwrap());
         assert!(!record_disable_at(&path, true).unwrap());
         assert!(pending_at(&path));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn safety_net_registration_arms_marker() {
+        let path = temp_marker("safety-net");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        record_safety_net_registration_at(&path).unwrap();
+        assert!(pending_at(&path));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn safety_net_registration_is_idempotent() {
+        let path = temp_marker("safety-net-repeat");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        record_safety_net_registration_at(&path).unwrap();
+        record_safety_net_registration_at(&path).unwrap();
+        assert!(pending_at(&path));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn disable_with_routing_on_keeps_safety_net_marker_pending() {
+        let path = temp_marker("safety-net-then-disable-on");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        record_safety_net_registration_at(&path).unwrap();
+        assert!(!record_disable_at(&path, true).unwrap());
+        assert!(pending_at(&path));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn disable_with_routing_off_clears_safety_net_marker() {
+        let path = temp_marker("safety-net-then-disable-off");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        record_safety_net_registration_at(&path).unwrap();
+        assert!(record_disable_at(&path, false).unwrap());
+        assert!(!pending_at(&path));
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 }

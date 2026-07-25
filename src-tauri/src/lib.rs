@@ -416,6 +416,42 @@ async fn proxy_enable(
         eprintln!("[gate] persisting routing intent failed: {e}");
         report_backend_error("routing_intent", format!("{e:#}"));
     }
+    // Crash safety net: routing is now on, but with no login item registered a
+    // crash would strand the system proxy at a dead port with nothing
+    // relaunching at boot to run the startup self-heal. Register the login
+    // item and arm the pending-disable marker (the deferred-opt-out mechanism,
+    // see autostart_optout's module docs), so every existing safe point
+    // deregisters it and the Settings toggle keeps reporting the user's
+    // choice. Skipped when the user opted in themselves - arming would make
+    // the status lie and a later safe point would remove a registration they
+    // want. Marker before registration: a crash between the two steps must
+    // not leave a registration that reads as the user's choice. Best-effort:
+    // routing is already on, so failures only lose the net, not the command.
+    {
+        use gate_connect_core::proxy::autostart_optout;
+        use tauri_plugin_autostart::ManagerExt;
+        let mgr = app.autolaunch();
+        if let Ok(false) = mgr.is_enabled() {
+            match autostart_optout::record_safety_net_registration() {
+                Ok(()) => {
+                    if let Err(e) = mgr.enable() {
+                        eprintln!("[gate] registering launch-at-login safety net failed: {e}");
+                        report_backend_error("launch_at_login", format!("{e:#}"));
+                        // Nothing got registered, so there is nothing for the
+                        // marker to defer; leaving it armed would only make a
+                        // real opt-in later read as pending.
+                        if let Err(e) = autostart_optout::set_pending(false) {
+                            eprintln!("[gate] clearing safety-net marker failed: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[gate] arming launch-at-login safety-net marker failed: {e}");
+                    report_backend_error("launch_at_login", format!("{e:#}"));
+                }
+            }
+        }
+    }
     Ok(state)
 }
 
