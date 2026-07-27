@@ -142,6 +142,17 @@ impl Integration for ClaudeCode {
         }
     }
 
+    fn config_is_managed(&self) -> Result<bool> {
+        // The same marker check status() gates on: only a settings.json we
+        // wrote carries `_gateConnect.managed`.
+        Ok(load_settings()?
+            .as_ref()
+            .and_then(|s| s.get(MARKER_KEY))
+            .and_then(|v| v.as_object())
+            .and_then(|m| m.get("managed"))
+            .is_some())
+    }
+
     fn connect(&self, input: &ConnectInput) -> Result<()> {
         if !self.detect()? {
             anyhow::bail!(

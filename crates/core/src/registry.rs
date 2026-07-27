@@ -100,6 +100,17 @@ pub trait Integration: Send + Sync {
         true
     }
 
+    /// Does the tool's current on-disk config carry Gate Connect's own
+    /// management marker? Distinguishes drift in config *we* wrote (a stale
+    /// scheme from an older build, a changed relay port) from a setup the
+    /// user made by hand out-of-app. [`crate::provider::reconcile_enabled`]
+    /// only auto-reapplies a `Drifted` tool when this is true; the
+    /// conservative default keeps integrations without a marker out of the
+    /// auto-reapply path.
+    fn config_is_managed(&self) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Is the underlying tool installed on this machine?
     fn detect(&self) -> Result<bool>;
 
