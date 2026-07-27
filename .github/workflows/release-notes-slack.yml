@@ -15,15 +15,6 @@ permissions:
 
 jobs:
   slack:
-    # Stable releases only: skip the GitHub prerelease flag AND any hyphenated
-    # tag (v0.1.2-rc.1 etc). tauri-action creates rc drafts with
-    # prerelease: false, so the tag guard covers a human forgetting to tick
-    # "pre-release" when publishing. workflow_dispatch bypasses the guard for
-    # testing.
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' ||
-          (!github.event.release.prerelease &&
-           !contains(github.event.release.tag_name, '-')) }}
     runs-on: ubuntu-latest
     steps:
       - name: Build Slack payload
@@ -66,7 +57,8 @@ jobs:
                 + `\n_…truncated - <${release.html_url}|see the full notes on GitHub>_`;
             }
 
-            const title = release.name || `Gate Connect ${release.tag_name}`;
+            let title = release.name || `Gate Connect ${release.tag_name}`;
+            if (release.prerelease) title += ' (pre-release)';
             const payload = {
               text: `${title} released`,
               blocks: [
