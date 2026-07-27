@@ -1260,6 +1260,8 @@ pub fn run() {
                 apply_popover_space_behavior(&window);
                 install_click_outside_dismiss(app.handle());
             }
+            #[cfg(target_os = "macos")]
+            watch_menu_bar_appearance(app.handle());
 
             let tray_icon = Image::from_bytes(TRAY_ICON_PNG)?;
 
@@ -1271,7 +1273,7 @@ pub fn run() {
 
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon)
-                .icon_as_template(true) // macOS auto-tints for dark/light menu bar
+                .icon_as_template(true) // stand-in until update_tray_status paints the real icon
                 .tooltip("Gate Connect") // baseline; macOS refines it to the routing state
                 .menu(&menu)
                 .show_menu_on_left_click(false) // left-click toggles window; right-click shows menu
@@ -1570,21 +1572,36 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
     Some(Image::new_owned(rgba, w, h))
 }
 
-/// Refresh the tray icon for the current appearance: tint the mark for a
-/// light vs dark menu bar / taskbar, and overlay the routing-status dot. Also
+/// Refresh the tray icon for the current appearance: tint the mark against the
+/// menu bar / taskbar it's sitting on, and overlay the routing-status dot. Also
 /// refreshes the tooltip on macOS + Windows.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
     use tauri::Manager;
-    let dark = app
-        .get_webview_window("main")
-        .and_then(|win| win.theme().ok())
-        .map(|t| t == tauri::Theme::Dark)
-        .unwrap_or(false);
+    let system_dark = || {
+        app.get_webview_window("main")
+            .and_then(|win| win.theme().ok())
+            .map(|t| t == tauri::Theme::Dark)
+            .unwrap_or(false)
+    };
+
+    // macOS: the system theme is the wrong question (see `menu_bar_is_dark`),
+    // so ask the menu bar and keep the sampled value for the watcher to diff
+    // against - otherwise it would re-apply the icon on its next tick.
+    #[cfg(target_os = "macos")]
+    let dark = {
+        let dark = menu_bar_is_dark().unwrap_or_else(system_dark);
+        MENU_BAR_DARK.store(i8::from(dark), Ordering::Release);
+        dark
+    };
+    #[cfg(not(target_os = "macos"))]
+    let dark = system_dark();
+
     if let Some(tray) = app.tray_by_id("main") {
-        // The colored dot requires non-template rendering. macOS-only switch:
-        // templating is what auto-tints there, whereas Windows/Linux icons are
-        // never templates and already carry full color.
+        // The colored dot requires non-template rendering, which forfeits the
+        // automatic macOS tinting - `menu_bar_is_dark` above is what stands in
+        // for it. Windows/Linux icons are never templates and already carry
+        // full color.
         #[cfg(target_os = "macos")]
         let _ = tray.set_icon_as_template(false);
         if let Some(img) = tray_image(proxy_on, dark) {
@@ -1816,6 +1833,134 @@ fn install_click_outside_dismiss(app: &tauri::AppHandle) {
     if let Some(token) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block) {
         std::mem::forget(token); // dropping the token removes the monitor
     }
+}
+
+/// Last menu-bar appearance the tray icon was painted for, so the watcher can
+/// tell a real flip from a redundant sample: -1 unknown, 0 light, 1 dark.
+#[cfg(target_os = "macos")]
+static MENU_BAR_DARK: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+
+/// Read the appearance the macOS menu bar is *actually* drawing with.
+///
+/// The system Light/Dark setting is the wrong question. Since Big Sur the menu
+/// bar is translucent and picks its content color from the desktop picture
+/// behind it, so a dark wallpaper turns every icon white while the system is
+/// still in Light Mode. Template images follow that automatically; ours can't
+/// be one, because templating discards color and the routing dot needs to stay
+/// green. Hand-tinting from the system theme is what left the mark black among
+/// white neighbors.
+///
+/// AppKit does expose the truth, on the status bar window's
+/// `effectiveAppearance`. That window belongs to AppKit rather than to us, so
+/// find it by class and only read from it - registering KVO on a window we
+/// don't own risks the "deallocated while observers were still registered"
+/// crash if AppKit tears it down.
+///
+/// Returns `None` when the status item isn't on screen yet or the class is
+/// renamed out from under us; callers fall back to the system theme.
+#[cfg(target_os = "macos")]
+fn menu_bar_is_dark() -> Option<bool> {
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use objc2::{class, msg_send};
+    use std::ffi::CStr;
+    use std::os::raw::c_char;
+
+    // Reaching NSApp off the main thread is undefined behavior, and this is
+    // called from command handlers and the startup thread as well as from the
+    // main-thread watcher. Off-thread, answer from the watcher's last sample
+    // rather than touching AppKit.
+    if objc2::MainThreadMarker::new().is_none() {
+        return match MENU_BAR_DARK.load(Ordering::Acquire) {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+    }
+
+    let status_bar_cls = AnyClass::get(c"NSStatusBarWindow")?;
+
+    // SAFETY: main-thread-only AppKit reads (callers hop via
+    // `run_on_main_thread`). Every message is a documented public selector on
+    // NSApplication / NSArray / NSWindow / NSAppearance / NSString, each
+    // returns an autoreleased or long-lived object we only borrow, and every
+    // pointer is null-checked before it is messaged again.
+    unsafe {
+        let ns_app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if ns_app.is_null() {
+            return None;
+        }
+        let windows: *mut AnyObject = msg_send![ns_app, windows];
+        if windows.is_null() {
+            return None;
+        }
+        let count: usize = msg_send![windows, count];
+        for i in 0..count {
+            let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
+            if window.is_null() {
+                continue;
+            }
+            let is_status_bar: Bool = msg_send![window, isKindOfClass: status_bar_cls];
+            if !is_status_bar.as_bool() {
+                continue;
+            }
+            let appearance: *mut AnyObject = msg_send![window, effectiveAppearance];
+            if appearance.is_null() {
+                return None;
+            }
+            let name: *mut AnyObject = msg_send![appearance, name];
+            if name.is_null() {
+                return None;
+            }
+            let utf8: *const c_char = msg_send![name, UTF8String];
+            if utf8.is_null() {
+                return None;
+            }
+            // Every dark NSAppearance name carries "Dark" - DarkAqua,
+            // VibrantDark, AccessibilityHighContrastDarkAqua - so a substring
+            // test covers the set without enumerating it.
+            return Some(CStr::from_ptr(utf8).to_string_lossy().contains("Dark"));
+        }
+    }
+    None
+}
+
+/// Keep the tray mark legible when the menu bar flips appearance under it.
+///
+/// Three things flip it: the system Light/Dark switch, a new desktop picture,
+/// and moving to a Space that has a different one. Only the first reaches us,
+/// as `WindowEvent::ThemeChanged`, which is why the icon could sit wrong until
+/// the next routing toggle. `effectiveAppearance` is observable in principle,
+/// but not safely on a window we don't own (see `menu_bar_is_dark`), so sample
+/// it on a slow timer instead and repaint only on an actual flip. The work is a
+/// short walk of `NSApp.windows`, hopped onto the main thread because AppKit
+/// demands it.
+#[cfg(target_os = "macos")]
+fn watch_menu_bar_appearance(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        // The status item may have no window yet when setup paints the launch
+        // icon, so take one quick sample to correct that guess before settling
+        // into the slow cadence.
+        let mut delay = std::time::Duration::from_millis(300);
+        loop {
+            std::thread::sleep(delay);
+            delay = std::time::Duration::from_secs(2);
+            let inner = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                let Some(dark) = menu_bar_is_dark() else {
+                    return;
+                };
+                if MENU_BAR_DARK.load(Ordering::Acquire) == i8::from(dark) {
+                    return;
+                }
+                // `update_tray_status` re-reads the appearance and stores it,
+                // so this stays a no-op until the bar flips again.
+                if let Ok(status) = gate_connect_core::proxy::manager().status() {
+                    update_tray_status(&inner, status.running);
+                }
+            });
+        }
+    });
 }
 
 /// Raise and key the popover without activating the app - set_focus() alone
