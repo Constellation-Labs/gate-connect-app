@@ -22,6 +22,7 @@ use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering};
 use time::OffsetDateTime;
 
 use crate::env;
@@ -30,6 +31,21 @@ use crate::keychain;
 /// Keychain label the token bundle is stored under (service
 /// `ai.constellation.gate-connect.account.oauth-tokens`).
 const KEYCHAIN_LABEL: &str = "oauth-tokens";
+
+/// Raised when the gateway explicitly rejected the stored session - the app's
+/// startup probe ([`crate::org::probe_session`]) got a 401 for a token that
+/// still looks valid locally. While set, [`live_session`] reports no session,
+/// so status drops to the sign-in prompt, injection falls back, and the tray's
+/// dead-session signal fires - the same plumbing a failed refresh drives.
+/// In-memory only (a restart re-probes); cleared when new tokens are stored
+/// (re-login) or the bundle is cleared (sign-out).
+static SESSION_REJECTED_BY_GATEWAY: AtomicBool = AtomicBool::new(false);
+
+/// Record a gateway verdict that the stored session is dead. [`live_session`]
+/// reports `None` until a new login stores fresh tokens.
+pub fn mark_session_rejected() {
+    SESSION_REJECTED_BY_GATEWAY.store(true, Ordering::Relaxed);
+}
 
 /// Refresh once the access token is within this many seconds of expiry, to
 /// cover clock skew and requests already in flight.
@@ -238,6 +254,15 @@ pub struct OAuthTokens {
     /// Absolute expiry as a Unix timestamp (seconds), computed from the
     /// token response's `expires_in` at fetch time.
     pub expires_at_unix: i64,
+    /// The Cognito app client this bundle was minted from. [`ensure_fresh`]
+    /// rejects a bundle whose client doesn't match the current build's
+    /// [`OAuthConfig`], so tokens that survive an upgrade or gateway switch in
+    /// the secret store (Windows Credential Manager persists across upgrades)
+    /// can't keep reading as signed in while the gateway rejects them. Legacy
+    /// bundles deserialize as `""` and are likewise rejected, forcing one
+    /// re-login on the first run of a build that stamps this field.
+    #[serde(default)]
+    pub client_id: String,
 }
 
 impl OAuthTokens {
@@ -286,6 +311,9 @@ fn parse_token_response(
         refresh_token,
         id_token: tr.id_token,
         expires_at_unix: now_unix + tr.expires_in,
+        // Stamped by `post_token`, which knows the requesting client; parsing
+        // alone can't (Cognito's response doesn't echo the client_id).
+        client_id: String::new(),
     })
 }
 
@@ -325,11 +353,13 @@ fn post_token(
     if !status.is_success() {
         bail!("Cognito token endpoint returned {status}: {body}");
     }
-    parse_token_response(
+    let mut tokens = parse_token_response(
         &body,
         OffsetDateTime::now_utc().unix_timestamp(),
         fallback_refresh,
-    )
+    )?;
+    tokens.client_id = cfg.client_id.clone();
+    Ok(tokens)
 }
 
 /// Redeem an authorization `code` for tokens (PKCE authorization-code grant).
@@ -369,11 +399,14 @@ fn service() -> String {
     keychain::account_service(KEYCHAIN_LABEL)
 }
 
-/// Persist the token bundle to the OS secret store.
+/// Persist the token bundle to the OS secret store. Fresh tokens supersede
+/// any recorded gateway rejection of the previous bundle.
 pub fn store(tokens: &OAuthTokens) -> Result<()> {
     let user = env::current_user()?;
     let json = serde_json::to_string(tokens).context("serializing oauth tokens")?;
-    keychain::set(&service(), &user, &json)
+    keychain::set(&service(), &user, &json)?;
+    SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
+    Ok(())
 }
 
 /// Load the stored token bundle, if any.
@@ -387,17 +420,20 @@ pub fn current() -> Result<Option<OAuthTokens>> {
     }
 }
 
-/// Delete the stored token bundle. Idempotent.
+/// Delete the stored token bundle. Idempotent. Also drops any recorded
+/// gateway rejection - it described the bundle being deleted.
 pub fn clear() -> Result<()> {
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?;
+    SESSION_REJECTED_BY_GATEWAY.store(false, Ordering::Relaxed);
     Ok(())
 }
 
 /// The live OAuth session right now: the stored token if still valid, silently
 /// refreshed via the refresh token if it's past its skew-adjusted expiry, or
-/// `None` when there's no usable session - never signed in, signed out, or the
-/// refresh token is dead / unreachable. Never errors: a failed refresh reports
+/// `None` when there's no usable session - never signed in, signed out, the
+/// refresh token is dead / unreachable, or the gateway rejected the session
+/// outright ([`mark_session_rejected`]). Never errors: a failed refresh reports
 /// `None` so callers drop to the sign-in prompt (status) or the legacy API key
 /// (injection) rather than surfacing a transient error or riding a token that no
 /// longer works.
@@ -407,6 +443,12 @@ pub fn clear() -> Result<()> {
 /// the UI shows can't disagree - the divergence that let an expired session keep
 /// reading as "signed in" while traffic had quietly reverted to the API key.
 pub fn live_session() -> Option<OAuthTokens> {
+    // A gateway rejection outranks local freshness: the probe proved the
+    // gateway won't take this token, so reporting it as a session would just
+    // recreate the "connected but every request fails" state.
+    if SESSION_REJECTED_BY_GATEWAY.load(Ordering::Relaxed) {
+        return None;
+    }
     let cfg = OAuthConfig::from_build_env()?;
     ensure_fresh(&cfg).ok().flatten()
 }
@@ -433,6 +475,10 @@ pub fn access_token_for_injection() -> String {
 /// long-idle session comes back signed in without prompting.
 ///
 /// - No stored bundle → `Ok(None)` (never signed in / signed out).
+/// - Stored but minted by a different app client (build upgrade switched
+///   Cognito pools, or the bundle predates the `client_id` stamp) → `Err`.
+///   The gateway would reject the bearer no matter how fresh it looks
+///   locally, so it must not read as signed in.
 /// - Stored and still valid → `Ok(Some(unchanged))`.
 /// - Stored but expired: exchange the refresh token, persist, and return the
 ///   new bundle. A failed refresh (revoked / expired refresh token) surfaces as
@@ -441,6 +487,13 @@ pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
     let Some(tokens) = current()? else {
         return Ok(None);
     };
+    if tokens.client_id != cfg.client_id {
+        bail!(
+            "stored tokens were minted by app client {:?}, but this build uses {:?}; sign in again",
+            tokens.client_id,
+            cfg.client_id
+        );
+    }
     if !tokens.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
         return Ok(Some(tokens));
     }
@@ -717,6 +770,7 @@ mod tests {
             refresh_token: "r".into(),
             id_token: None,
             expires_at_unix: 1_000,
+            client_id: String::new(),
         };
         assert!(!t.is_expired(900)); // 900 + 60 < 1000
         assert!(t.is_expired(950)); // 950 + 60 >= 1000, within skew
@@ -732,6 +786,7 @@ mod tests {
             refresh_token: "r".into(),
             id_token: Some(format!("h.{payload}.s")),
             expires_at_unix: 0,
+            client_id: String::new(),
         };
         assert_eq!(t.email().as_deref(), Some("dev@example.test"));
     }

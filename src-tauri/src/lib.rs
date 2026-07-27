@@ -1298,23 +1298,73 @@ pub fn run() {
                         == gate_connect_core::account::AuthMode::OAuth
                     {
                         if let Some(cfg) = gate_connect_core::oauth::OAuthConfig::from_build_env() {
-                            // Seed the tray attention flag from the result so the
-                            // first tray paint in the auto-enable below is already
-                            // correct, instead of showing a misleading routing dot
-                            // for up to one refresh interval. Only a refresh
-                            // *failure* (Err: a stored session that can't refresh)
-                            // is an alarm; `Ok(None)` is a signed-out / never
-                            // signed-in state and must stay quiet.
-                            match gate_connect_core::oauth::ensure_fresh(&cfg) {
-                                Ok(_) => {
-                                    SESSION_NEEDS_SIGNIN.store(false, Ordering::Relaxed)
-                                }
-                                Err(e) => {
-                                    eprintln!("[gate] startup OAuth token refresh failed: {e}");
-                                    SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
+                        // Seed the tray attention flag from the result so the
+                        // first tray paint in the auto-enable below is already
+                        // correct, instead of showing a misleading routing dot
+                        // for up to one refresh interval. Only a refresh
+                        // *failure* (Err: a stored session that can't refresh)
+                        // is an alarm; `Ok(None)` is a signed-out / never
+                        // signed-in state and must stay quiet.
+                        match gate_connect_core::oauth::ensure_fresh(&cfg) {
+                            Ok(session) => {
+                                SESSION_NEEDS_SIGNIN.store(false, Ordering::Relaxed);
+                                // A locally-fresh session can still be dead at
+                                // the gateway (upgrade / server-side drift:
+                                // revoked user, reseeded org data) - the token
+                                // looks fine here, so only the gateway can say.
+                                // Ask it once, before the engine below seeds
+                                // itself from this session. Offline starts get
+                                // no verdict and change nothing.
+                                if let (Some(tokens), Ok(Some(gateway))) = (
+                                    session,
+                                    gate_connect_core::account::load_base_url(),
+                                ) {
+                                    use gate_connect_core::org::SessionProbe;
+                                    match gate_connect_core::org::probe_session(
+                                        &gateway,
+                                        &tokens.access_token,
+                                    ) {
+                                        SessionProbe::Rejected => {
+                                            eprintln!(
+                                                "[gate] gateway rejected the stored OAuth session; prompting sign-in"
+                                            );
+                                            gate_connect_core::oauth::mark_session_rejected();
+                                            SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
+                                        }
+                                        SessionProbe::Accepted(orgs) => {
+                                            // Session is live, but a stored org that
+                                            // dropped out of the membership list would
+                                            // doom every request; clear it so the UI
+                                            // routes to the org picker (`needsOrg`).
+                                            let stale = gate_connect_core::account::selected_org()
+                                                .ok()
+                                                .flatten()
+                                                .is_some_and(|(id, _)| {
+                                                    !orgs.iter().any(|o| o.org_id == id)
+                                                });
+                                            if stale {
+                                                eprintln!(
+                                                    "[gate] stored org is no longer a membership; clearing it for re-pick"
+                                                );
+                                                if let Err(e) =
+                                                    gate_connect_core::account::clear_org()
+                                                {
+                                                    eprintln!(
+                                                        "[gate] clearing the stale org failed: {e:#}"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        SessionProbe::Unavailable => {}
+                                    }
                                 }
                             }
+                            Err(e) => {
+                                eprintln!("[gate] startup OAuth token refresh failed: {e}");
+                                SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
+                            }
                         }
+                    }
                     }
 
                     // If a previous session left the system proxy on (unclean

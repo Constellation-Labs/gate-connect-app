@@ -154,6 +154,9 @@ fn tokens(access: &str, refresh: &str, expires_at_unix: i64) -> OAuthTokens {
         refresh_token: refresh.to_string(),
         id_token: None,
         expires_at_unix,
+        // Matches the GATE_COGNITO_CLIENT_ID the test sets, so these bundles
+        // read as minted by the current build (step 6 covers the mismatch).
+        client_id: "client123".to_string(),
     }
 }
 
@@ -300,6 +303,60 @@ fn live_session_passes_through_valid_refreshes_expired_and_reports_dead() {
         oauth::access_token_for_injection(),
         "at-mode-gated",
         "OAuth mode injects the live token again"
+    );
+
+    // 6. Unexpired bundle minted by a *different* app client (an upgrade that
+    //    switched Cognito pools, or a pre-stamp legacy bundle surviving in the
+    //    OS secret store): no session and an empty injector, with no network
+    //    attempt - the endpoint still points at the dead port from step 4, so
+    //    any refresh try would hang this assertion on a connection error
+    //    instead of the local rejection. The bundle is kept, so the tray's
+    //    dead-session signal (stored-but-unusable) fires.
+    let mut legacy = tokens("at-wrong-client", "rt-wrong-client", now + 3600);
+    legacy.client_id = String::new(); // pre-release bundles carry no stamp
+    oauth::store(&legacy).expect("store legacy");
+    assert!(
+        oauth::live_session().is_none(),
+        "a bundle from another app client => no usable session, however fresh"
+    );
+    assert_eq!(
+        oauth::access_token_for_injection(),
+        "",
+        "a mismatched bundle must never be injected"
+    );
+    assert!(
+        oauth::current().expect("read").is_some(),
+        "the mismatched bundle is kept so the dead-session signal can fire"
+    );
+
+    // 7. A gateway rejection (the startup probe's 401 verdict) kills an
+    //    otherwise perfectly valid session: status and injection must both go
+    //    dark, the bundle is kept (dead-session signal), and storing fresh
+    //    tokens (re-login) lifts the verdict.
+    oauth::store(&tokens("at-doomed", "rt-doomed", now + 3600)).expect("store valid");
+    assert!(
+        oauth::live_session().is_some(),
+        "sanity: the fresh bundle reads as live before the verdict"
+    );
+    oauth::mark_session_rejected();
+    assert!(
+        oauth::live_session().is_none(),
+        "a gateway rejection outranks local freshness"
+    );
+    assert_eq!(
+        oauth::access_token_for_injection(),
+        "",
+        "a rejected session must not be injected"
+    );
+    assert!(
+        oauth::current().expect("read").is_some(),
+        "the rejected bundle is kept so the dead-session signal can fire"
+    );
+    oauth::store(&tokens("at-relogin", "rt-relogin", now + 3600)).expect("store relogin");
+    assert_eq!(
+        oauth::access_token_for_injection(),
+        "at-relogin",
+        "a new login stores fresh tokens and lifts the rejection"
     );
 
     // Clean up the seams and temp dir.

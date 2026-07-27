@@ -86,6 +86,59 @@ fn parse_orgs(body: &str) -> Result<Vec<Org>> {
     Ok(parsed.orgs)
 }
 
+/// Verdict of [`probe_session`]: what the gateway said about a session that
+/// looks valid locally.
+#[derive(Debug)]
+pub enum SessionProbe {
+    /// Token accepted; these are the user's current org memberships.
+    Accepted(Vec<Org>),
+    /// The gateway explicitly refused the token (HTTP 401). The session is
+    /// dead server-side however fresh it looks locally.
+    Rejected,
+    /// No verdict: unreachable, timed out, a non-auth error status, or an
+    /// unparseable body. Never treated as evidence against the session.
+    Unavailable,
+}
+
+/// Ask the gateway whether the stored session actually works: one
+/// `GET /v1/me/orgs` with the access token. Run at startup, where a session
+/// killed by upgrade or server-side drift (revoked user, reseeded org data)
+/// would otherwise keep reading as "connected" until traffic fails - the token
+/// looks fine locally, so no local check can catch it. Only a definite 401 is
+/// a rejection; anything short of a verdict is [`SessionProbe::Unavailable`]
+/// so an offline start never signs the user out. Short timeout so it can sit
+/// on the startup path without stalling launch.
+pub fn probe_session(gateway_base_url: &str, access_token: &str) -> SessionProbe {
+    // Control-plane call, same rules as `list`: straight to the gateway,
+    // never through the app's own data-plane proxy. A probe misrouted through
+    // the proxy would 401 spuriously and kill a good session.
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    else {
+        return SessionProbe::Unavailable;
+    };
+    let Ok(resp) = client
+        .get(orgs_endpoint(gateway_base_url))
+        .header("x-gate-authorization", format!("Bearer {access_token}"))
+        .send()
+    else {
+        return SessionProbe::Unavailable;
+    };
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return SessionProbe::Rejected;
+    }
+    if !resp.status().is_success() {
+        return SessionProbe::Unavailable;
+    }
+    resp.text()
+        .ok()
+        .and_then(|body| parse_orgs(&body).ok())
+        .map(SessionProbe::Accepted)
+        .unwrap_or(SessionProbe::Unavailable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

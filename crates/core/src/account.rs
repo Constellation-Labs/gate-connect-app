@@ -203,6 +203,17 @@ pub fn set_org(org_id: &str, org_name: &str) -> Result<()> {
     write_account_file(&file)
 }
 
+/// Drop the selected org, keeping everything else. Used when the gateway
+/// reports the stored org is no longer one of the user's memberships (the
+/// startup probe), so the UI routes back to the org picker instead of sending
+/// a doomed `X-Gate-Org-Id` on every request.
+pub fn clear_org() -> Result<()> {
+    let mut file = read_account_file()?.context("no account configured")?;
+    file.org_id = None;
+    file.org_name = None;
+    write_account_file(&file)
+}
+
 /// The currently selected `(org_id, org_name)`, or `None` if the user hasn't
 /// picked one yet. Cheap disk read; never touches the keychain.
 pub fn selected_org() -> Result<Option<(String, String)>> {

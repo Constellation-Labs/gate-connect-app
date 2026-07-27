@@ -93,6 +93,9 @@ fn interactive_login_captures_redirect_and_persists_tokens() {
     assert_eq!(stored.access_token, "at-live");
     assert_eq!(stored.refresh_token, "rt-live");
     assert_eq!(stored.id_token.as_deref(), Some("it-live"));
+    // The bundle records the minting app client, so `ensure_fresh` can reject
+    // it if a later build resolves a different client (pool switch / upgrade).
+    assert_eq!(stored.client_id, "client123");
 
     // Clean up the seams and temp dir.
     oauth::clear().ok();
