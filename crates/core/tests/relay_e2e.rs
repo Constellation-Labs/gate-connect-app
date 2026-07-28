@@ -383,3 +383,102 @@ async fn relay_refuses_non_owner_peer() {
         "nothing may reach the gateway when the peer is refused"
     );
 }
+
+/// Flipping interception off (the Linux daemon with no GUI connected) turns
+/// the relay into a direct forwarder: the same inference request that would
+/// rewrite to the gateway goes to the real upstream instead, with every
+/// Gate-internal header stripped and the tool's own credential intact, and
+/// nothing reaches the gateway. Flipping it back on restores gateway rewriting
+/// and credential injection. The mock upstream is admitted into the catalog
+/// via the `GATE_CONNECT_TEST_UPSTREAM` seam - the built-in entries pin real
+/// hosts, so a loopback mock could never pass validation otherwise.
+#[tokio::test]
+async fn relay_forwards_direct_when_not_intercepting() {
+    let gateway = start_mock_gateway().await;
+    // A second capturing server, standing in for the tool's real upstream.
+    let upstream = start_mock_gateway().await;
+    std::env::set_var("GATE_CONNECT_TEST_UPSTREAM", &upstream.base_url);
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
+
+    engine.set_relay_intercept(false);
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer app-token")
+        .header("x-gate-upstream-url", &upstream.base_url)
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("direct relay request should succeed");
+    assert!(
+        resp.status().is_success(),
+        "direct hop returned {}",
+        resp.status()
+    );
+
+    {
+        let up = upstream.captured.lock().unwrap().clone();
+        assert_eq!(up.len(), 1, "the request must reach the real upstream");
+        let r = &up[0];
+        assert_eq!(r.path, "/v1/messages", "the tool's path must be preserved");
+        assert_eq!(
+            r.header("authorization"),
+            Some("Bearer app-token"),
+            "the tool's own credential must be forwarded untouched"
+        );
+        assert_eq!(
+            r.header("x-gate-authorization"),
+            None,
+            "no Gate credential may leave on a direct hop"
+        );
+        assert_eq!(r.header("x-gate-api-key"), None);
+        assert_eq!(r.header("x-gate-org-id"), None);
+        assert_eq!(
+            r.header("x-gate-upstream-url"),
+            None,
+            "Gate-internal headers must be stripped on a direct hop"
+        );
+    }
+    assert!(
+        gateway.captured.lock().unwrap().is_empty(),
+        "nothing may reach the gateway while not intercepting"
+    );
+
+    // Flip interception back on: the same request rewrites to the gateway
+    // again, Gate credential injected.
+    engine.set_relay_intercept(true);
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer app-token")
+        .header("x-gate-upstream-url", &upstream.base_url)
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("intercepted relay request should succeed");
+    assert!(resp.status().is_success());
+
+    engine.stop();
+
+    let gw = gateway.captured.lock().unwrap().clone();
+    assert_eq!(gw.len(), 1, "the second request must reach the gateway");
+    assert_eq!(
+        gw[0].header("x-gate-authorization"),
+        Some("Bearer cognito-access-token")
+    );
+    assert_eq!(
+        upstream.captured.lock().unwrap().len(),
+        1,
+        "the second request must not go direct"
+    );
+}
