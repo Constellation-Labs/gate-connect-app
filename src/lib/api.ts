@@ -235,6 +235,23 @@ export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
  * none were running. */
 export const closeRunningAgents = () => invoke<number>("close_running_agents");
 
+/** Finish a quit the tray deferred to the popover: the backend buffers the
+ * connected tool names and emits a `quit-requested` nudge instead of exiting
+ * when config-routed tools would be left pointing at the dead relay. */
+export const quitApp = () => invoke<void>("quit_app");
+
+/** Hand over (and clear) the buffered quit request: the connected tool names
+ * to show in the quit takeover, or null when no quit is pending. Swept once
+ * at mount and again on each `quit-requested` nudge, so a Quit clicked
+ * before the listener registered isn't lost. */
+export const pendingQuitTools = () => invoke<string[] | null>("pending_quit_tools");
+
+/** Quit-time teardown: snapshot + disconnect every enabled integration so the
+ * CLI tools fall back to their original settings, leaving the routing intent
+ * untouched so the next startup restore reapplies them. Fires the "restart
+ * your CLI agents" system notification. */
+export const disconnectToolsForQuit = () => invoke<void>("disconnect_tools_for_quit");
+
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);
  * `message` is the raw error chain - it stays on this machine, only the

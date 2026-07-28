@@ -1054,6 +1054,100 @@ fn reveal_popover(app: tauri::AppHandle) {
     reveal_popover_window(&app);
 }
 
+/// Tray "Quit": exit immediately unless config-routed CLI tools are still
+/// managed (Connected, or Drifted - either way their configs point at the
+/// loopback relay). macOS / Windows only: there the relay lives in this
+/// process and dies with it, so those tools hard-fail until Gate Connect runs
+/// again. On Linux the engine lives in a detached helper daemon that outlives
+/// the GUI (see core's `manager_linux`), so the relay port keeps serving
+/// after a quit and there is nothing to warn about - quit plainly. (In OAuth
+/// mode the daemon serves the last-pushed access token, so routing degrades
+/// once it expires; still not the dead-port failure the warning describes.)
+/// Instead of quitting blind, reveal the popover and let the frontend ask
+/// whether to turn the integrations off first; it finishes the quit via
+/// [`quit_app`]. The tool names are buffered (not just emitted): a Quit
+/// clicked before the webview's listener is up would otherwise be silently
+/// swallowed, so the frontend sweeps [`pending_quit_tools`] at mount and on
+/// each `quit-requested` nudge (mirrors the backend-error seam).
+fn request_quit(app: &tauri::AppHandle) {
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    app.exit(0);
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let app = app.clone();
+        // Off the main thread: the status probe reads tool config files.
+        tauri::async_runtime::spawn_blocking(move || {
+            let connected: Vec<String> = registry::registry()
+                .iter()
+                .filter(|integ| {
+                    matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_)))
+                })
+                .map(|integ| integ.display_name().to_string())
+                .collect();
+            if connected.is_empty() {
+                app.exit(0);
+                return;
+            }
+            if let Ok(mut pending) = PENDING_QUIT_TOOLS.lock() {
+                *pending = Some(connected);
+            }
+            reveal_popover_window(&app);
+            let _ = app.emit("quit-requested", ());
+        });
+    }
+}
+
+/// Quit request buffered by [`request_quit`] for the frontend to sweep; the
+/// connected tool names to show in the quit takeover. `None` when no quit is
+/// pending.
+static PENDING_QUIT_TOOLS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Hand the buffered quit request (connected tool names) to the frontend and
+/// clear it.
+#[tauri::command]
+fn pending_quit_tools() -> Option<Vec<String>> {
+    PENDING_QUIT_TOOLS.lock().ok().and_then(|mut p| p.take())
+}
+
+/// Finish a quit that [`request_quit`] deferred to the popover. Plain exit;
+/// the `RunEvent::Exit` handler still reverts the system proxy.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// Quit-time integration teardown (the "turn off integrations" quit choice):
+/// snapshot + disconnect every enabled provider AND the managed standalone
+/// tools no provider maps, so all the CLI tools fall back to their original
+/// settings while Gate Connect is closed, WITHOUT touching the routing
+/// intent - the startup restore reapplies both snapshots the next time the
+/// app runs with routing intended on. Fires a system notification (the
+/// popover dies with the process) telling the user to restart running CLI
+/// agents, which keep the relay address they resolved at their own launch.
+#[tauri::command]
+async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> {
+    // Off the main thread: disconnect does config-file I/O.
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::provider::snapshot_and_disable_all_for_quit()
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("disconnect join error: {e}"))??;
+    {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = app
+            .notification()
+            .builder()
+            .title("Gate Connect")
+            .body(
+                "Integrations are off while Gate Connect is closed. Restart any running \
+                 CLI agents; everything reconnects when Gate Connect starts again.",
+            )
+            .show();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1115,6 +1209,9 @@ pub fn run() {
                     unpin_popover,
                     open_onboarding_window,
                     reveal_popover,
+                    quit_app,
+                    pending_quit_tools,
+                    disconnect_tools_for_quit,
                     list_providers,
                     provider_enable,
                     provider_disable,
@@ -1158,6 +1255,9 @@ pub fn run() {
                     unpin_popover,
                     open_onboarding_window,
                     reveal_popover,
+                    quit_app,
+                    pending_quit_tools,
+                    disconnect_tools_for_quit,
                     list_providers,
                     provider_enable,
                     provider_disable,
@@ -1655,7 +1755,7 @@ pub fn run() {
                             let _ = window.set_focus();
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => request_quit(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {

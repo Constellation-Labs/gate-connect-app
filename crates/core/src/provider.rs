@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::account;
 use crate::registry::{self, ConnectInput, Status, ToolId};
@@ -366,14 +367,18 @@ pub fn reconcile_enabled() -> Result<()> {
 // Turning the master back on re-applies that snapshot, so the user's apps come
 // back exactly as they were.
 
-fn snapshot_path() -> Result<PathBuf> {
-    Ok(crate::env::app_support_dir()?
-        .join("provider")
-        .join("restore-snapshot.json"))
+/// Provider slugs to re-enable on master-on.
+const PROVIDER_SNAPSHOT: &str = "restore-snapshot.json";
+/// Tool slugs no provider maps (OpenCode and friends), disconnected by the
+/// quit-time teardown and reconnected alongside the provider snapshot.
+const QUIT_TOOLS_SNAPSHOT: &str = "restore-tools-snapshot.json";
+
+fn snapshot_path(file: &str) -> Result<PathBuf> {
+    Ok(crate::env::app_support_dir()?.join("provider").join(file))
 }
 
-fn save_snapshot(slugs: &[String]) -> Result<()> {
-    let path = snapshot_path()?;
+fn save_snapshot(file: &str, slugs: &[String]) -> Result<()> {
+    let path = snapshot_path(file)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -381,8 +386,8 @@ fn save_snapshot(slugs: &[String]) -> Result<()> {
     fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))
 }
 
-fn load_snapshot() -> Result<Vec<String>> {
-    let path = snapshot_path()?;
+fn load_snapshot(file: &str) -> Result<Vec<String>> {
+    let path = snapshot_path(file)?;
     match fs::read_to_string(&path) {
         Ok(raw) => Ok(serde_json::from_str(&raw).unwrap_or_default()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -390,8 +395,8 @@ fn load_snapshot() -> Result<Vec<String>> {
     }
 }
 
-fn clear_snapshot() -> Result<()> {
-    let path = snapshot_path()?;
+fn clear_snapshot(file: &str) -> Result<()> {
+    let path = snapshot_path(file)?;
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -399,17 +404,44 @@ fn clear_snapshot() -> Result<()> {
     }
 }
 
+/// Serializes the master-off/on flows. All of them read-modify-write the
+/// restore snapshots, so an interleaved tray-quit teardown and master toggle
+/// could otherwise clobber each other's snapshot mid-flight. Poisoning is
+/// ignored: the snapshots are plain files and every flow is retryable.
+static MASTER_FLOW_LOCK: Mutex<()> = Mutex::new(());
+
+fn master_flow_guard() -> MutexGuard<'static, ()> {
+    MASTER_FLOW_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Master OFF: record every currently-enabled provider, then disconnect them
 /// all. Call this *before* stopping the proxy so each provider's domain is
 /// still flippable. Best-effort per provider so one failure can't strand the
 /// rest. The snapshot survives until the master is turned back on.
 pub fn snapshot_and_disable_all() -> Result<()> {
+    let _guard = master_flow_guard();
+    snapshot_and_disable_all_locked()
+}
+
+fn snapshot_and_disable_all_locked() -> Result<()> {
     let enabled: Vec<String> = list()
         .into_iter()
         .filter(|p| p.enabled)
         .map(|p| p.slug)
         .collect();
-    save_snapshot(&enabled)?;
+    // Union with any existing snapshot rather than overwrite: an existing
+    // file is a pending restore, and a second off-flow (e.g. a quit teardown
+    // right after a master-off) sees fewer - possibly zero - enabled
+    // providers, which would otherwise shrink the restore set to nothing.
+    let mut snapshot = load_snapshot(PROVIDER_SNAPSHOT)?;
+    for slug in &enabled {
+        if !snapshot.contains(slug) {
+            snapshot.push(slug.clone());
+        }
+    }
+    save_snapshot(PROVIDER_SNAPSHOT, &snapshot)?;
     for slug in &enabled {
         if let Err(e) = disable(slug) {
             eprintln!("[gate] disabling provider {slug:?} during master-off failed: {e}");
@@ -418,25 +450,102 @@ pub fn snapshot_and_disable_all() -> Result<()> {
     Ok(())
 }
 
+/// Quit-time master-off (the "turn off integrations and quit" choice): the
+/// provider snapshot + disable, then a sweep that disconnects every registry
+/// tool still managed (Connected or Drifted) afterwards - standalone tools no
+/// provider maps (OpenCode and friends), and provider tools the provider pass
+/// missed (a drifted config, a failed disable). Their configs point at the
+/// loopback relay, which dies with the app. Swept tools are recorded in their
+/// own snapshot so [`restore_all`] reconnects them alongside the providers.
+/// Best-effort per tool, mirroring the provider pass.
+pub fn snapshot_and_disable_all_for_quit() -> Result<()> {
+    let _guard = master_flow_guard();
+    snapshot_and_disable_all_locked()?;
+    let mut disconnected = Vec::new();
+    for integ in registry::registry() {
+        if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
+            continue;
+        }
+        match integ.disconnect() {
+            Ok(()) => disconnected.push(integ.id().slug().to_string()),
+            Err(e) => eprintln!(
+                "[gate] disconnecting {} during quit failed: {e}",
+                integ.display_name()
+            ),
+        }
+    }
+    // Union for the same reason as the provider snapshot.
+    let mut snapshot = load_snapshot(QUIT_TOOLS_SNAPSHOT)?;
+    for slug in disconnected {
+        if !snapshot.contains(&slug) {
+            snapshot.push(slug);
+        }
+    }
+    save_snapshot(QUIT_TOOLS_SNAPSHOT, &snapshot)
+}
+
 /// Master ON: re-enable every provider that was on when routing was last
-/// turned off. Providers that fail to restore stay in the snapshot so a later
-/// call can retry them; the snapshot is cleared once every provider is back.
-/// Idempotent; a missing snapshot is a no-op. Callers run this twice per
-/// master-on: once before the proxy comes up (config-based tools, and the
+/// turned off, then reconnect any standalone tools the quit-time teardown
+/// disconnected. Entries that fail to restore stay in their snapshot so a
+/// later call can retry them; each snapshot is cleared once everything in it
+/// is back. Idempotent; a missing snapshot is a no-op. Callers run this twice
+/// per master-on: once before the proxy comes up (config-based tools, and the
 /// engine's "at least one provider" precondition) and once after (domain-only
 /// providers, which have nothing to configure until the proxy is running).
 pub fn restore_all() -> Result<()> {
+    let _guard = master_flow_guard();
     let mut failed = Vec::new();
-    for slug in load_snapshot()? {
+    for slug in load_snapshot(PROVIDER_SNAPSHOT)? {
         if let Err(e) = enable(&slug) {
             eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
             failed.push(slug);
         }
     }
     if failed.is_empty() {
-        clear_snapshot()
+        clear_snapshot(PROVIDER_SNAPSHOT)?;
     } else {
-        save_snapshot(&failed)
+        save_snapshot(PROVIDER_SNAPSHOT, &failed)?;
+    }
+    restore_quit_tools()
+}
+
+/// Reconnect the standalone tools the quit-time teardown disconnected (see
+/// [`snapshot_and_disable_all_for_quit`]). Same retry semantics as the
+/// provider snapshot: failures stay recorded, the file clears once every tool
+/// is back. Tools uninstalled (or slugs unknown) since the quit are dropped.
+/// Signed out since the quit: leave the snapshot for a later signed-in
+/// restore - there's no gateway to point the tools at.
+fn restore_quit_tools() -> Result<()> {
+    let slugs = load_snapshot(QUIT_TOOLS_SNAPSHOT)?;
+    if slugs.is_empty() {
+        return Ok(());
+    }
+    let Some(account) = account::load()? else {
+        return Ok(());
+    };
+    let relay_base_url = crate::proxy::relay_base_url();
+    let mut failed = Vec::new();
+    for slug in slugs {
+        let Some(integ) = ToolId::from_slug(&slug).and_then(registry::find) else {
+            continue;
+        };
+        if !integ.detect().unwrap_or(false) {
+            continue;
+        }
+        let input = ConnectInput {
+            gateway_base_url: account.gateway_base_url.clone(),
+            upstream_url: integ.default_upstream_url().to_string(),
+            relay_base_url: relay_base_url.clone(),
+        };
+        if let Err(e) = integ.connect(&input) {
+            eprintln!("[gate] restoring tool {slug:?} on master-on failed: {e:#}");
+            failed.push(slug);
+        }
+    }
+    if failed.is_empty() {
+        clear_snapshot(QUIT_TOOLS_SNAPSHOT)
+    } else {
+        save_snapshot(QUIT_TOOLS_SNAPSHOT, &failed)
     }
 }
 
