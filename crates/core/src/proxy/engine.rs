@@ -109,6 +109,10 @@ pub struct RunningEngine {
     key_tx: watch::Sender<Arc<str>>,
     token_tx: watch::Sender<Arc<str>>,
     org_tx: watch::Sender<Arc<str>>,
+    /// Whether the relay rewrites inference to the gateway (true) or forwards
+    /// everything straight to the real upstream (false). See
+    /// [`set_relay_intercept`](Self::set_relay_intercept).
+    relay_intercept_tx: watch::Sender<bool>,
     /// Set before a deliberate shutdown so the engine thread can tell an
     /// expected stop from an unexpected exit (crash / bind loss).
     stopping: Arc<AtomicBool>,
@@ -169,6 +173,18 @@ impl RunningEngine {
     /// Cheap - no restart; this is how an org switch reaches in-flight routing.
     pub fn update_org(&self, org_id: &str) {
         let _ = self.org_tx.send(Arc::from(org_id));
+    }
+
+    /// Flip the relay between gateway interception (rewrite inference and
+    /// inject the Gate credential - the default) and direct forwarding (every
+    /// request goes to the tool's real upstream under its own credential, the
+    /// relay's analogue of the MITM port's blind tunnel). The Linux helper
+    /// daemon flips this alongside the domain set: with no GUI connected
+    /// there's nothing keeping the injected token fresh, so routing to Gate
+    /// would quietly decay into 401s - going direct keeps the tools working,
+    /// just not through Gate. Cheap - no restart.
+    pub fn set_relay_intercept(&self, intercept: bool) {
+        let _ = self.relay_intercept_tx.send(intercept);
     }
 
     /// Signal graceful shutdown and wait for the engine thread to exit.
@@ -673,6 +689,9 @@ where
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
     let (org_tx, org_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.org_id.as_str()));
+    // Intercepting until told otherwise: the engine only starts on an explicit
+    // enable / SetIntercept, both of which mean "route through Gate".
+    let (relay_intercept_tx, relay_intercept_rx) = watch::channel(true);
     // The relay shares the same credential channels , so a
     // token refresh, key rotation, or org switch reaches CLI tools and GUI apps
     // alike. Clone before the handler moves the originals.
@@ -780,6 +799,7 @@ where
                     relay_key_rx,
                     relay_token_rx,
                     relay_org_rx,
+                    relay_intercept_rx,
                     relay_owner_uid,
                 ) {
                     eprintln!("gate proxy relay failed to start: {e}");
@@ -808,6 +828,7 @@ where
             key_tx,
             token_tx,
             org_tx,
+            relay_intercept_tx,
             stopping,
         }),
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),

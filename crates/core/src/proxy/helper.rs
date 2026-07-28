@@ -1,7 +1,8 @@
 //! The long-lived proxy helper daemon (Linux). Owns the loopback listener via
 //! [`super::engine`] so the proxy outlives the GUI process: on GUI quit/crash it
-//! drops to pass-through (blind-tunnel everything) instead of stranding a frozen
-//! session's proxy pointer at a dead port. Driven over a Unix-domain control
+//! drops to pass-through (MITM port blind-tunnels, relay forwards direct to the
+//! real upstream) instead of stranding a frozen session's proxy pointer at a
+//! dead port. Driven over a Unix-domain control
 //! socket - see [`super::control`] for the protocol and the access-control
 //! rationale (`0700` dir / `0600` socket, `SO_PEERCRED` UID check, per-run
 //! token, catalog-constrained intercept).
@@ -23,8 +24,8 @@ use crate::proxy::engine::{self, EngineConfig, RunningEngine};
 
 /// Shared engine handle. Started lazily on the first `SetIntercept` (which
 /// carries the CA the engine needs) and then kept for the daemon's whole life;
-/// `SetPassthrough` / client-disconnect only clear the domain set, never stop
-/// it, so the port stays bound.
+/// `SetPassthrough` / client-disconnect only drop it to pass-through
+/// ([`set_passthrough`]), never stop it, so the ports stay bound.
 type Shared = Arc<Mutex<Option<RunningEngine>>>;
 
 /// Entry point invoked from the desktop binary when launched with
@@ -232,6 +233,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                     running.update_token(&oauth_token);
                     running.update_org(&org_id);
                     running.update_domains(&domains);
+                    running.set_relay_intercept(true);
                     Response::Intercepting {
                         port: running.port(),
                         relay_port: running.relay_port(),
@@ -298,8 +300,13 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
     }
 }
 
-/// Clear the engine's domain set so it blind-tunnels everything, without
-/// stopping it (the port stays bound). No-op if the engine isn't running.
+/// Drop both listeners to their credential-free fallbacks, without stopping
+/// the engine (the ports stay bound). MITM port: clear the domain set so it
+/// blind-tunnels everything. Relay port: forward direct to the real upstream
+/// under the tool's own credential instead of rewriting to the gateway - with
+/// no GUI connected nothing keeps the injected token fresh, so routing to
+/// Gate would quietly decay into 401s; going direct keeps CLI tools working,
+/// just not through Gate. No-op if the engine isn't running.
 fn set_passthrough(engine: &Shared) {
     if let Some(running) = engine
         .lock()
@@ -308,6 +315,7 @@ fn set_passthrough(engine: &Shared) {
         .filter(|e| !e.is_finished())
     {
         running.update_domains(&[]);
+        running.set_relay_intercept(false);
     }
 }
 

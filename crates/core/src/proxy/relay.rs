@@ -9,7 +9,10 @@
 //! MITM proxy, which terminates TLS with a trusted leaf. The relay reads the
 //! tool's request, injects the *live* Gate credential (Cognito access token on
 //! `x-gate-authorization`, or the legacy `x-gate-api-key`) pulled fresh from
-//! the watch-channel per request, and forwards to the gateway over TLS.
+//! the watch-channel per request, and forwards to the gateway over TLS. When
+//! interception is off (the Linux daemon with no GUI connected), it instead
+//! forwards everything to the real upstream under the tool's own credential -
+//! see [`RelayState::intercept`].
 //!
 //! The upshot for the design: **no credential is ever written to a tool's
 //! config file.** The config carries only the loopback base URL and the
@@ -82,6 +85,27 @@ fn test_extra_ca() -> Option<reqwest::Certificate> {
     reqwest::Certificate::from_pem(&pem).ok()
 }
 
+/// An extra catalog entry admitting a mock upstream, from
+/// `GATE_CONNECT_TEST_UPSTREAM` (a base URL). Test seam for the hermetic e2e:
+/// the built-in catalog pins real hosts, so without this the direct-forward
+/// hop (interception off, or a passthrough path) could never be aimed at a
+/// loopback mock. Unset in real builds. Classified with the standard `/v1/`
+/// inference prefix so the same request rewrites to the gateway when
+/// intercepting and forwards direct when not.
+fn test_extra_upstream() -> Option<ProxyDomain> {
+    let url = std::env::var("GATE_CONNECT_TEST_UPSTREAM").ok()?;
+    Some(ProxyDomain {
+        slug: "test-upstream".into(),
+        display_name: "Test upstream".into(),
+        hosts: Vec::new(),
+        upstream_url: url,
+        rewrite_prefixes: vec!["/v1/".into()],
+        passthrough_prefixes: Vec::new(),
+        enabled: true,
+        supported: true,
+    })
+}
+
 /// Bind the relay's loopback listener, reusing `preferred` (the persisted port)
 /// when free, else an ephemeral port. Non-blocking so tokio can adopt it.
 fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
@@ -132,6 +156,12 @@ struct RelayState {
     /// the MITM engine's `decide` does: inference (`/v1/`) rewrites to the
     /// gateway, everything else passes through to the real upstream.
     domains: Vec<ProxyDomain>,
+    /// Whether inference rewrites to the gateway at all. When false (the Linux
+    /// daemon with no GUI connected - see
+    /// [`RunningEngine::set_relay_intercept`](super::engine::RunningEngine::set_relay_intercept)),
+    /// every request forwards to the real upstream under the tool's own
+    /// credential: the relay's analogue of the MITM port's blind tunnel.
+    intercept: watch::Receiver<bool>,
     /// The UID allowed to spend the host's Gate credential, or `None` to allow
     /// any loopback peer. Set only where UIDs are resolvable (Linux); mirrors
     /// [`super::engine::EngineConfig::owner_uid`]. See [`RelayState::peer_allowed`].
@@ -144,6 +174,7 @@ impl RelayState {
         api_key: watch::Receiver<Arc<str>>,
         token: watch::Receiver<Arc<str>>,
         org: watch::Receiver<Arc<str>>,
+        intercept: watch::Receiver<bool>,
         owner_uid: Option<u32>,
     ) -> Self {
         let scheme = gateway.scheme_str().unwrap_or("https");
@@ -166,13 +197,18 @@ impl RelayState {
             builder = builder.tls_certs_only([ca]);
         }
         let client = builder.build().expect("building relay reqwest client");
+        let mut domains = default_domains();
+        if let Some(d) = test_extra_upstream() {
+            domains.push(d);
+        }
         Self {
             client,
             gateway_base: format!("{scheme}://{authority}"),
             api_key,
             token,
             org,
-            domains: default_domains(),
+            domains,
+            intercept,
             owner_uid,
         }
     }
@@ -201,11 +237,14 @@ pub(crate) fn spawn(
     api_key: watch::Receiver<Arc<str>>,
     token: watch::Receiver<Arc<str>>,
     org: watch::Receiver<Arc<str>>,
+    intercept: watch::Receiver<bool>,
     owner_uid: Option<u32>,
 ) -> Result<()> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
-    let state = Arc::new(RelayState::new(&gateway, api_key, token, org, owner_uid));
+    let state = Arc::new(RelayState::new(
+        &gateway, api_key, token, org, intercept, owner_uid,
+    ));
     tokio::spawn(accept_loop(listener, state));
     Ok(())
 }
@@ -276,6 +315,10 @@ pub fn serve() -> Result<()> {
         ));
         let (org_tx, org_rx) =
             watch::channel::<Arc<str>>(Arc::from(crate::account::org_id_for_injection().as_str()));
+        // The standalone host always intercepts - routing through Gate is the
+        // whole point of `proxy serve`, and its own loop below keeps the token
+        // fresh. The sender lives for the whole (never-ending) block.
+        let (_intercept_tx, intercept_rx) = watch::channel(true);
 
         let listener =
             TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
@@ -287,7 +330,12 @@ pub fn serve() -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         let owner_uid: Option<u32> = None;
         let state = Arc::new(RelayState::new(
-            &gateway, key_rx, token_rx, org_rx, owner_uid,
+            &gateway,
+            key_rx,
+            token_rx,
+            org_rx,
+            intercept_rx,
+            owner_uid,
         ));
         tokio::spawn(accept_loop(listener, state));
 
@@ -348,10 +396,19 @@ async fn proxy(
             StatusCode::BAD_REQUEST,
             format!("missing {UPSTREAM_URL_HEADER} header"),
         ))?;
-    let route = route(&state.domains, &upstream, &path_and_query).ok_or((
+    let classified = route(&state.domains, &upstream, &path_and_query).ok_or((
         StatusCode::FORBIDDEN,
         format!("upstream {upstream:?} is not in the built-in catalog"),
     ))?;
+    // Not intercepting (Linux daemon, GUI gone): forward everything to the
+    // real upstream under the tool's own credential, the same way the MITM
+    // port blind-tunnels. The catalog check above still applies - direct mode
+    // doesn't make the relay an open proxy.
+    let route = if *state.intercept.borrow() {
+        classified
+    } else {
+        Route::Passthrough
+    };
 
     let mut headers = req.headers().clone();
     strip_hop_by_hop(&mut headers);
