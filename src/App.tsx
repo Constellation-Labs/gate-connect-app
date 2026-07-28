@@ -27,6 +27,7 @@ import {
   openOnboardingWindow,
   routedClientsStale,
   drainBackendErrors,
+  pendingQuitTools,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
@@ -37,6 +38,7 @@ import { Success } from "./screens/Success";
 import { ComingSoon } from "./screens/ComingSoon";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { StartupRoutingNotice } from "./components/StartupRoutingNotice";
+import { QuitConfirm } from "./components/QuitConfirm";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { track, trackError } from "./lib/analytics";
@@ -144,6 +146,28 @@ export function App() {
   // home screen. Holds the direction so the takeover can word on vs off;
   // shown until dismissed.
   const [routingNotice, setRoutingNotice] = useState<"on" | "off" | null>(null);
+
+  // The tray Quit defers to the popover when config-routed CLI tools are
+  // still managed (their configs point at the loopback relay, which dies
+  // with the app). Holds the connected tool names; non-null shows the quit
+  // takeover. The names are swept from a backend buffer (once at mount, then
+  // on each nudge) rather than carried on the event, so a Quit clicked
+  // before this listener registered isn't lost.
+  const [quitTools, setQuitTools] = useState<string[] | null>(null);
+  useEffect(() => {
+    const sweep = () => {
+      pendingQuitTools()
+        .then((tools) => {
+          if (tools && tools.length > 0) setQuitTools(tools);
+        })
+        .catch(() => {});
+    };
+    sweep();
+    const unlisten = listen("quit-requested", sweep);
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
 
   // App version, stamped into the bundle at release time and shown quietly
   // in the footer. Best-effort: stays empty (footer hidden) if it can't load.
@@ -285,6 +309,9 @@ export function App() {
       track("routing_notice_shown", { enabled: routingNotice === "on" });
     }
   }, [routingNotice]);
+  useEffect(() => {
+    if (quitTools !== null) track("quit_warning_shown", { tool_count: quitTools.length });
+  }, [quitTools]);
 
   // The popover webview persists across tray hide/show, so the initial-load
   // effect doesn't re-run when the user reopens the popover. Re-check the OAuth
@@ -693,6 +720,9 @@ export function App() {
           routingOn={routingNotice === "on"}
           onDismiss={() => setRoutingNotice(null)}
         />
+      )}
+      {quitTools !== null && (
+        <QuitConfirm tools={quitTools} onCancel={() => setQuitTools(null)} />
       )}
       {body}
       {version && (

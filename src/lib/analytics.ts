@@ -35,6 +35,8 @@ export type AnalyticsEvent =
   | "agents_closed"
   | "stale_agents_shown"
   | "routing_notice_shown"
+  | "quit_warning_shown"
+  | "quit_confirmed"
   | "launch_at_login_toggled"
   | "error_shown";
 
@@ -58,6 +60,8 @@ const ALLOWED_PROP_KEYS = new Set<string>([
   "source",
   "count",
   "step",
+  "tool_count",
+  "integrations_disabled",
 ]);
 
 let enabled = false;

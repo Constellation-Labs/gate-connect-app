@@ -402,9 +402,10 @@ fn loopback_port_alive(port: &str) -> bool {
 
 /// Startup fail-safe for when the snapshot can't save us: a hard kill or OS
 /// shutdown bypasses the graceful-disable `Drop`, leaving every active
-/// service's proxy pointed at our loopback engine after it's gone. On next
-/// launch that strands all proxy-honoring apps with ERR_PROXY_CONNECTION_FAILED
-/// while Gate itself shows "off". Turn off any enabled slot that points at a
+/// service's PAC/proxy pointed at our loopback engine after it's gone. The
+/// PAC fetch is then refused and macOS silently falls back to DIRECT, so apps
+/// keep working but bypass Gate while it shows "off" - and the system keeps
+/// probing a dead loopback URL. Turn off any enabled slot that points at a
 /// loopback address with no listener; leave real (remote) proxies untouched.
 /// Returns the services it cleared. Promptless.
 pub fn clear_stranded_loopback() -> Result<Vec<String>> {

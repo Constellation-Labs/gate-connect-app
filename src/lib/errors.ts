@@ -15,6 +15,7 @@ export type ErrorContext =
   | "save_api_key"
   | "update"
   | "close_agents"
+  | "quit_disable"
   | "proxy_toggle"
   | "provider_toggle"
   | "trust_ca"
@@ -159,6 +160,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     save_api_key: "Couldn't save the API key",
     update: "Couldn't install the update",
     close_agents: "Couldn't close the running agents",
+    quit_disable: "Couldn't turn off integrations",
     proxy_toggle: "Couldn't toggle routing",
     provider_toggle: "Couldn't toggle the provider",
     trust_ca: "Couldn't trust the certificate",
