@@ -337,10 +337,10 @@ impl ProxyManager {
     /// Two layers, because the graceful-disable `Drop` is bypassed by a hard
     /// kill: (1) a leftover snapshot restores the exact pre-Gate state; (2) a
     /// belt-and-suspenders sweep turns off any service still pointed at a dead
-    /// loopback listener even when no (or a partial) snapshot survives - that
-    /// case otherwise strands every proxy-honoring app with
-    /// ERR_PROXY_CONNECTION_FAILED while Gate shows "off". Both are promptless,
-    /// so this always succeeds; a clean disable makes it a near no-op.
+    /// loopback listener even when no (or a partial) snapshot survives - in
+    /// that case the PAC fetch fails and traffic silently falls back to
+    /// DIRECT, bypassing Gate while it shows "off". Both are promptless, so
+    /// this always succeeds; a clean disable makes it a near no-op.
     pub fn reconcile_on_startup(&self) -> Result<()> {
         // As in disable: an unreadable snapshot still means an unclean prior
         // session, so force the proxy off rather than bailing and leaving
