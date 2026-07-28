@@ -49,6 +49,12 @@ impl fmt::Display for ToolId {
 pub struct ConnectInput {
     pub gateway_base_url: String,
     pub upstream_url: String,
+    /// Loopback base URL of the reverse-proxy relay
+    /// ([`crate::proxy::relay_base_url`]). Relay-routed integrations point
+    /// their tool config here and inject no credential (the relay injects the
+    /// live one). `None` when no relay port has been bound yet - a relay-routed
+    /// integration then declines to connect.
+    pub relay_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +100,17 @@ pub trait Integration: Send + Sync {
         true
     }
 
+    /// Does the tool's current on-disk config carry Gate Connect's own
+    /// management marker? Distinguishes drift in config *we* wrote (a stale
+    /// scheme from an older build, a changed relay port) from a setup the
+    /// user made by hand out-of-app. [`crate::provider::reconcile_enabled`]
+    /// only auto-reapplies a `Drifted` tool when this is true; the
+    /// conservative default keeps integrations without a marker out of the
+    /// auto-reapply path.
+    fn config_is_managed(&self) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Is the underlying tool installed on this machine?
     fn detect(&self) -> Result<bool>;
 
@@ -122,13 +139,6 @@ pub trait Integration: Send + Sync {
         ""
     }
 
-    /// Re-write the Gate API key embedded in this tool's config after a
-    /// key rotation, preserving everything else. Default no-op for tools
-    /// that aren't connected or that don't embed the key in their config.
-    fn refresh_gate_key(&self, _api_key: &str) -> Result<()> {
-        Ok(())
-    }
-
     /// Is an upstream credential currently saved for this tool?
     fn has_upstream_credential(&self) -> Result<bool>;
 
@@ -149,26 +159,6 @@ pub fn registry() -> Vec<Box<dyn Integration>> {
 
 pub fn find(id: ToolId) -> Option<Box<dyn Integration>> {
     registry().into_iter().find(|i| i.id() == id)
-}
-
-/// Push a rotated Gate API key into every tool config that embeds it.
-/// Connect copies the key into tool configs, so rotating only the
-/// keychain entry would leave every connected tool sending the old key.
-/// Best-effort across tools; failures are collected into one error.
-pub fn refresh_gate_key_everywhere(api_key: &str) -> Result<()> {
-    let mut failures = Vec::new();
-    for integ in registry() {
-        if let Err(e) = integ.refresh_gate_key(api_key) {
-            failures.push(format!("{}: {e}", integ.display_name()));
-        }
-    }
-    if failures.is_empty() {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "the new key was saved, but updating these tool configs failed: {}",
-        failures.join("; ")
-    )
 }
 
 /// Disconnect every tool Gate Connect currently manages (Connected or

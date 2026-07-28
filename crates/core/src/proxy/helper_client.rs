@@ -50,6 +50,14 @@ impl std::fmt::Display for StaleDaemon {
 
 impl std::error::Error for StaleDaemon {}
 
+/// The ports the daemon bound for a [`HelperClient::set_intercept`] call: the
+/// MITM proxy port the system proxy points at, and the CLI reverse-proxy relay
+/// port CLI tool configs point at.
+pub struct Intercepting {
+    pub port: u16,
+    pub relay_port: u16,
+}
+
 impl HelperClient {
     /// Connect to a running daemon, spawning one (`<current-exe> --proxy-helper`,
     /// detached) if none is listening yet. Performs the `Hello` token handshake.
@@ -134,25 +142,34 @@ impl HelperClient {
 
     /// Start or live-update interception. Returns the loopback port the daemon
     /// is bound to (so the caller can point the system proxy at it).
+    // Mirrors the `Request::SetIntercept` wire shape one-to-one; grouping the
+    // fields into a struct would just duplicate that enum variant.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_intercept(
         &mut self,
         gateway_base_url: &str,
         api_key: &str,
+        oauth_token: &str,
+        org_id: &str,
         ca_cert_pem: &str,
         ca_key_pem: &str,
         domains: &[ProxyDomain],
         preferred_port: Option<u16>,
-    ) -> Result<u16> {
+        preferred_relay_port: Option<u16>,
+    ) -> Result<Intercepting> {
         let req = Request::SetIntercept {
             gateway_base_url: gateway_base_url.to_string(),
             api_key: api_key.to_string(),
+            oauth_token: oauth_token.to_string(),
+            org_id: org_id.to_string(),
             ca_cert_pem: ca_cert_pem.to_string(),
             ca_key_pem: ca_key_pem.to_string(),
             domains: domains.to_vec(),
             preferred_port,
+            preferred_relay_port,
         };
         match self.round_trip(&req, INTERCEPT_TIMEOUT)? {
-            Response::Intercepting { port } => Ok(port),
+            Response::Intercepting { port, relay_port } => Ok(Intercepting { port, relay_port }),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("unexpected SetIntercept reply: {other:?}"),
         }

@@ -21,6 +21,9 @@ import { launchAtLoginStatus, setLaunchAtLogin } from "../lib/api";
 const account: Account = {
   gateway_base_url: "https://gate.example.com",
   has_api_key: true,
+  auth_mode: "api_key",
+  org_id: null,
+  org_name: null,
 };
 
 // Typed helper so the mock can't silently drift from the real
@@ -36,9 +39,13 @@ async function renderOn(platform: Platform, props: Partial<React.ComponentProps<
   render(
     <Settings
       account={account}
+      oauth={null}
       onBack={vi.fn()}
       onReplaceKey={vi.fn()}
-      onDisconnect={vi.fn()}
+      onUpgradeToOAuth={vi.fn()}
+      onForget={vi.fn()}
+      onSignOut={vi.fn()}
+      onSwitchOrg={vi.fn()}
       onSwitchGateway={vi.fn()}
       onReplayTour={vi.fn()}
       routingOn={false}

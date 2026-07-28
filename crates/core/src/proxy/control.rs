@@ -124,10 +124,20 @@ pub enum Request {
     SetIntercept {
         gateway_base_url: String,
         api_key: String,
+        /// Cognito access token to inject instead of the API key; empty means
+        /// fall back to the API key.
+        oauth_token: String,
+        /// Selected org UUID, injected as `X-Gate-Org-Id` alongside the OAuth
+        /// token; empty means none selected.
+        org_id: String,
         ca_cert_pem: String,
         ca_key_pem: String,
         domains: Vec<ProxyDomain>,
         preferred_port: Option<u16>,
+        /// Preferred loopback port for the CLI reverse-proxy relay, so it
+        /// rebinds the same address across restarts and baked CLI configs stay
+        /// valid.
+        preferred_relay_port: Option<u16>,
     },
     /// Drop to pass-through: keep listening, blind-tunnel everything. Used on
     /// the GUI's explicit "off" - the engine keeps the port bound so frozen
@@ -153,8 +163,9 @@ pub enum Response {
         #[serde(default)]
         fingerprint: String,
     },
-    /// Acknowledges a [`Request::SetIntercept`] with the port actually bound.
-    Intercepting { port: u16 },
+    /// Acknowledges a [`Request::SetIntercept`] with the MITM proxy port and
+    /// the CLI reverse-proxy relay port actually bound.
+    Intercepting { port: u16, relay_port: u16 },
     /// Generic success (passthrough / shutdown accepted).
     Ok,
     /// Current state for [`Request::Status`].

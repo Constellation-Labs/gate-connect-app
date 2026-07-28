@@ -125,9 +125,17 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
                 "No upstream Anthropic credential saved. Add one before connecting.".into(),
             );
         }
+        // Auto-enable the proxy so the reverse-proxy relay is live: relay-routed
+        // tool configs point at the loopback relay, which only exists while the
+        // engine runs. Idempotent if the proxy is already on.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager()
+            .enable()
+            .map_err(|e| format!("{e:#}"))?;
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url,
             upstream_url,
+            relay_base_url: gate_connect_core::proxy::relay_base_url(),
         };
         integ.connect(&input).map_err(|e| format!("{e:#}"))?;
         Ok(status_for(integ.as_ref()))
@@ -187,6 +195,15 @@ fn resolve_integration(slug: &str) -> Result<Box<dyn gate_connect_core::Integrat
 struct AccountDto {
     gateway_base_url: String,
     has_api_key: bool,
+    /// Which credential the account authenticates with, so the UI can route
+    /// an OAuth account that isn't signed in to the sign-in screen and show
+    /// the legacy key controls only in API-key mode. Serialized snake_case
+    /// (`"api_key"` / `"oauth"`).
+    auth_mode: gate_connect_core::account::AuthMode,
+    /// Selected org (OAuth mode), so the UI can show it and route to the picker
+    /// when an OAuth session has no org yet. Both `None` until the user picks.
+    org_id: Option<String>,
+    org_name: Option<String>,
 }
 
 /// Whether an `account::reconcile` failure was already forwarded to the
@@ -218,9 +235,17 @@ fn get_account() -> Result<Option<AccountDto>, String> {
         return Ok(None);
     };
     let has_api_key = account::has_api_key().map_err(|e| format!("{e:#}"))?;
+    let auth_mode = account::auth_mode().map_err(|e| format!("{e:#}"))?;
+    let (org_id, org_name) = match account::selected_org().map_err(|e| format!("{e:#}"))? {
+        Some((id, name)) => (Some(id), Some(name)),
+        None => (None, None),
+    };
     Ok(Some(AccountDto {
         gateway_base_url,
         has_api_key,
+        auth_mode,
+        org_id,
+        org_name,
     }))
 }
 
@@ -266,12 +291,22 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
     // rewrites, none of which should block the UI thread.
     tauri::async_runtime::spawn_blocking(move || {
         account::save(&base_url, key.as_deref()).map_err(|e| format!("{e:#}"))?;
-        // A rotated key was copied into tool configs (and the running proxy
-        // engine) at connect time - push the new one everywhere it's embedded.
+        // A rotated key is hot-swapped into the running proxy engine below;
+        // the relay injects it live per request, so no tool config embeds it.
         if let Some(k) = key.as_deref() {
+            // Pasting a key selects the legacy path explicitly.
+            account::set_auth_mode(account::AuthMode::ApiKey).map_err(|e| format!("{e:#}"))?;
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            gate_connect_core::proxy::manager().refresh_api_key(k);
-            registry::refresh_gate_key_everywhere(k).map_err(|e| format!("{e:#}"))?;
+            {
+                let manager = gate_connect_core::proxy::manager();
+                // Drop any live OAuth bearer from the running engine now that
+                // we're in ApiKey mode. The background refresh loop is gated on
+                // OAuth mode, so it won't clear it; and a still-valid Cognito
+                // session would otherwise keep overriding the pasted key until
+                // the token expired. No-op when routing is off.
+                manager.refresh_token("");
+                manager.refresh_api_key(k);
+            }
         }
         Ok(())
     })
@@ -319,6 +354,151 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("switch join error: {e}"))?
+}
+
+// ---- OAuth (Cognito) ----
+//
+// Gate Connect's own gateway auth via a Cognito access token, the successor
+// to the pasted API key. `oauth_begin_login` runs the full interactive flow
+// (open the Hosted UI, catch the loopback redirect, exchange the code) off
+// the main thread; `oauth_status` / `oauth_sign_out` are cheap keychain
+// reads/writes.
+
+#[derive(Serialize)]
+struct OAuthStatusDto {
+    signed_in: bool,
+    email: Option<String>,
+    /// Access-token expiry as a Unix timestamp; 0 when signed out.
+    expires_at_unix: i64,
+}
+
+impl From<&gate_connect_core::oauth::OAuthTokens> for OAuthStatusDto {
+    fn from(t: &gate_connect_core::oauth::OAuthTokens) -> Self {
+        Self {
+            signed_in: true,
+            email: t.email(),
+            expires_at_unix: t.expires_at_unix,
+        }
+    }
+}
+
+fn oauth_status_now() -> Result<OAuthStatusDto, String> {
+    // Share the injector's source of truth (`live_session`): refresh a stale
+    // access token so status reflects a live session, and report signed-out when
+    // there's no usable session - never signed in, signed out, or the refresh
+    // token is dead / unreachable. Reporting signed-out here is what routes the
+    // UI back to the sign-in prompt instead of showing a signed-in home that's
+    // actually riding the legacy API-key fallback. Keeping a running engine's
+    // token fresh is the background refresh loop's job (see `run()`), not this
+    // read's, so status stays a read that never mutates engine state.
+    Ok(match gate_connect_core::oauth::live_session() {
+        Some(t) => OAuthStatusDto::from(&t),
+        None => OAuthStatusDto {
+            signed_in: false,
+            email: None,
+            expires_at_unix: 0,
+        },
+    })
+}
+
+/// Run one interactive Cognito login: open the Hosted UI in the browser and
+/// capture the redirect on a loopback listener. Blocks (off the main thread)
+/// until the user finishes signing in or the flow times out.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+async fn oauth_begin_login(app: tauri::AppHandle) -> Result<OAuthStatusDto, String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let cfg = gate_connect_core::oauth::OAuthConfig::from_build_env()
+        .ok_or_else(|| "OAuth is not configured in this build".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let tokens = gate_connect_core::oauth::login(
+            &cfg,
+            gate_connect_core::oauth::REDIRECT_PORTS,
+            |url| {
+                app.opener()
+                    .open_url(url.to_string(), None::<String>)
+                    .map_err(|e| anyhow::anyhow!("opening the sign-in page: {e}"))
+            },
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        // Record that this account authenticates via OAuth so load() stops
+        // requiring a pasted key, and push the fresh token into a running
+        // engine so routing switches to it without waiting for a restart.
+        gate_connect_core::account::set_auth_mode(gate_connect_core::account::AuthMode::OAuth)
+            .map_err(|e| format!("{e:#}"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager().refresh_token(&tokens.access_token);
+        Ok(OAuthStatusDto::from(&tokens))
+    })
+    .await
+    .map_err(|e| format!("login join error: {e}"))?
+}
+
+/// Current OAuth sign-in status (signed in, email, expiry).
+#[tauri::command]
+async fn oauth_status() -> Result<OAuthStatusDto, String> {
+    tauri::async_runtime::spawn_blocking(oauth_status_now)
+        .await
+        .map_err(|e| format!("oauth status join error: {e}"))?
+}
+
+/// Forget the stored OAuth tokens (sign out). Leaves `auth_mode` at `OAuth`
+/// so the popover shows the sign-in prompt again rather than the legacy
+/// key-entry form; choosing the legacy path is an explicit key save.
+#[tauri::command]
+async fn oauth_sign_out() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))?;
+        // Revert a running engine to the legacy header immediately (empty
+        // token == fall back to the API key, if one is present).
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager().refresh_token("");
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("oauth sign-out join error: {e}"))?
+}
+
+/// Explicitly set the auth mode. Used when a user chooses the legacy pasted-key
+/// path from the sign-in screen; OAuth sign-in sets it implicitly.
+#[tauri::command]
+async fn set_auth_mode(oauth: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mode = if oauth {
+            gate_connect_core::account::AuthMode::OAuth
+        } else {
+            gate_connect_core::account::AuthMode::ApiKey
+        };
+        gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("set auth mode join error: {e}"))?
+}
+
+/// List the orgs the signed-in user may act on (for the org picker). Reads the
+/// current gateway + stored OAuth token and calls the gateway's `/v1/me/orgs`.
+#[tauri::command]
+async fn oauth_list_orgs() -> Result<Vec<gate_connect_core::org::Org>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::org::list_current().map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("list orgs join error: {e}"))?
+}
+
+/// Persist the selected org and push it into a running engine/relay so
+/// `X-Gate-Org-Id` takes effect live (no restart).
+#[tauri::command]
+async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::account::set_org(&org_id, &org_name).map_err(|e| format!("{e:#}"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager().refresh_org(&org_id);
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("set org join error: {e}"))?
 }
 
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
@@ -794,6 +974,13 @@ fn close_running_agents() -> u32 {
 fn set_updater_relaunching(relaunching: bool) {
     UPDATER_RELAUNCHING.store(relaunching, Ordering::Release);
 }
+/// Whether the OAuth session has died and the user must sign in again. Set by
+/// the background refresh loop on the signed-in→dead edge (a `live_session()`
+/// that can no longer refresh) and read by the tray-drawing functions to raise
+/// an attention signal - a red dot on the glyph and a "sign in required"
+/// tooltip - that outranks the routing-on/off color. Relaxed ordering: it only
+/// gates a cosmetic redraw. Starts false (assume signed in until proven dead).
+static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
 
 /// Stop pinning the popover open. The frontend calls this on the user's
 /// first interaction with the first-launch window, switching the popover
@@ -883,6 +1070,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        // Desktop notifications. Registered on all desktop platforms (harmless);
+        // fired on macOS + Linux when a dead OAuth session is detected (Windows
+        // relies on the tray tooltip). See the refresh loop in `setup`.
+        .plugin(tauri_plugin_notification::init())
         // Login item, controlled by the standalone "Launch at login" setting
         // (see `set_launch_at_login`). It is no longer armed/disarmed by the
         // routing toggle; turning it on is what lets the app relaunch and
@@ -914,6 +1105,12 @@ pub fn run() {
                     save_account,
                     clear_account,
                     switch_gateway,
+                    oauth_begin_login,
+                    oauth_status,
+                    oauth_sign_out,
+                    set_auth_mode,
+                    oauth_list_orgs,
+                    set_org,
                     app_platform,
                     unpin_popover,
                     open_onboarding_window,
@@ -952,6 +1149,11 @@ pub fn run() {
                     save_account,
                     clear_account,
                     switch_gateway,
+                    oauth_status,
+                    oauth_sign_out,
+                    set_auth_mode,
+                    oauth_list_orgs,
+                    set_org,
                     app_platform,
                     unpin_popover,
                     open_onboarding_window,
@@ -1086,6 +1288,85 @@ pub fn run() {
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
+                    // OAuth: refresh a stale Cognito access token before the
+                    // engine seeds itself below, so re-honor / auto-enable
+                    // inject a live token (enable() re-reads the stored token
+                    // via access_token_for_injection). Never opens the browser
+                    // - a failed refresh just leaves the popover in the "sign
+                    // in" state the UI derives from oauth_status. Best-effort.
+                    if gate_connect_core::account::auth_mode().unwrap_or_default()
+                        == gate_connect_core::account::AuthMode::OAuth
+                    {
+                        if let Some(cfg) = gate_connect_core::oauth::OAuthConfig::from_build_env() {
+                        // Seed the tray attention flag from the result so the
+                        // first tray paint in the auto-enable below is already
+                        // correct, instead of showing a misleading routing dot
+                        // for up to one refresh interval. Only a refresh
+                        // *failure* (Err: a stored session that can't refresh)
+                        // is an alarm; `Ok(None)` is a signed-out / never
+                        // signed-in state and must stay quiet.
+                        match gate_connect_core::oauth::ensure_fresh(&cfg) {
+                            Ok(session) => {
+                                SESSION_NEEDS_SIGNIN.store(false, Ordering::Relaxed);
+                                // A locally-fresh session can still be dead at
+                                // the gateway (upgrade / server-side drift:
+                                // revoked user, reseeded org data) - the token
+                                // looks fine here, so only the gateway can say.
+                                // Ask it once, before the engine below seeds
+                                // itself from this session. Offline starts get
+                                // no verdict and change nothing.
+                                if let (Some(tokens), Ok(Some(gateway))) = (
+                                    session,
+                                    gate_connect_core::account::load_base_url(),
+                                ) {
+                                    use gate_connect_core::org::SessionProbe;
+                                    match gate_connect_core::org::probe_session(
+                                        &gateway,
+                                        &tokens.access_token,
+                                    ) {
+                                        SessionProbe::Rejected => {
+                                            eprintln!(
+                                                "[gate] gateway rejected the stored OAuth session; prompting sign-in"
+                                            );
+                                            gate_connect_core::oauth::mark_session_rejected();
+                                            SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
+                                        }
+                                        SessionProbe::Accepted(orgs) => {
+                                            // Session is live, but a stored org that
+                                            // dropped out of the membership list would
+                                            // doom every request; clear it so the UI
+                                            // routes to the org picker (`needsOrg`).
+                                            let stale = gate_connect_core::account::selected_org()
+                                                .ok()
+                                                .flatten()
+                                                .is_some_and(|(id, _)| {
+                                                    !orgs.iter().any(|o| o.org_id == id)
+                                                });
+                                            if stale {
+                                                eprintln!(
+                                                    "[gate] stored org is no longer a membership; clearing it for re-pick"
+                                                );
+                                                if let Err(e) =
+                                                    gate_connect_core::account::clear_org()
+                                                {
+                                                    eprintln!(
+                                                        "[gate] clearing the stale org failed: {e:#}"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        SessionProbe::Unavailable => {}
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[gate] startup OAuth token refresh failed: {e}");
+                                SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    }
+
                     // If a previous session left the system proxy on (unclean
                     // quit / crash), revert it first so HTTPS isn't routed at a
                     // dead loopback port. A clean disable leaves nothing to do.
@@ -1223,6 +1504,86 @@ pub fn run() {
                                     let _ = window.set_focus();
                                 }
                             }
+                        }
+                    }
+                });
+            }
+
+            // Keep the Cognito access token fresh for the whole session. The
+            // engine (and its embedded relay) seed the token once at enable()
+            // and only re-read it on login / sign-out, so without this a
+            // long-lived session would keep injecting the access token past its
+            // ~1h expiry and the gateway would start rejecting traffic until the
+            // next launch. Mirror the standalone CLI relay's silent-refresh
+            // loop: every 30s, refresh if near expiry and push the live token
+            // into a running engine (a no-op when routing is off). Never opens
+            // the browser - a failed refresh just lets the token lapse to the
+            // "sign in" state the UI derives from oauth_status. Best-effort, off
+            // the tray thread.
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            {
+                let refresh_handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(
+                        gate_connect_core::oauth::REFRESH_INTERVAL_SECS,
+                    ));
+                    if gate_connect_core::account::auth_mode().unwrap_or_default()
+                        != gate_connect_core::account::AuthMode::OAuth
+                    {
+                        // Not an OAuth account (e.g. the user switched a dead
+                        // session to a pasted key): clear any stale attention
+                        // signal so the tray doesn't strand a red dot, then idle.
+                        if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
+                            let running = gate_connect_core::proxy::manager()
+                                .status()
+                                .map(|s| s.running)
+                                .unwrap_or(false);
+                            update_tray_status(&refresh_handle, running);
+                        }
+                        continue;
+                    }
+                    // `live_session` silently refreshes a stale token (persisting
+                    // it) and yields None when the session is dead; push the
+                    // result into the running engine (a no-op when routing is
+                    // off). "" reverts to the API-key fallback, matching the
+                    // signed-out state the UI derives from oauth_status.
+                    let token = gate_connect_core::oauth::live_session()
+                        .map(|t| t.access_token)
+                        .unwrap_or_default();
+                    gate_connect_core::proxy::manager().refresh_token(&token);
+
+                    // Raise (or clear) the tray attention signal on the
+                    // signed-in↔dead edge. "Dead" means a stored session exists
+                    // but can no longer refresh (expired / revoked) - NOT a
+                    // deliberate sign-out, which clears the stored tokens
+                    // (`oauth::clear`) and so must stay quiet even though
+                    // auth_mode is still OAuth. Redraw only on a change so the
+                    // tray isn't rewritten every 30s.
+                    let dead = token.is_empty()
+                        && gate_connect_core::oauth::current()
+                            .ok()
+                            .flatten()
+                            .is_some();
+                    if SESSION_NEEDS_SIGNIN.swap(dead, Ordering::Relaxed) != dead {
+                        let running = gate_connect_core::proxy::manager()
+                            .status()
+                            .map(|s| s.running)
+                            .unwrap_or(false);
+                        update_tray_status(&refresh_handle, running);
+                        // First tick that finds the session dead: nudge the user
+                        // with a system notification on macOS + Linux, so the
+                        // dead session is noticed even when the popover is closed
+                        // and the menu-bar/tray dot is out of the user's eyeline.
+                        // Fired once per death by the edge guard above.
+                        #[cfg(any(target_os = "macos", target_os = "linux"))]
+                        if dead {
+                            use tauri_plugin_notification::NotificationExt;
+                            let _ = refresh_handle
+                                .notification()
+                                .builder()
+                                .title("Gate Connect")
+                                .body("Your session expired. Open Gate Connect to sign in again and keep routing.")
+                                .show();
                         }
                     }
                 });
@@ -1515,10 +1876,12 @@ fn position_startup(window: &tauri::WebviewWindow) {
 
 /// Build the tray image, recoloring the hex mark to a high-contrast tone for
 /// the current menu-bar / taskbar appearance (light vs dark) so it stays
-/// visible on any backdrop, then compositing a colored routing-status dot on
-/// top (green when the proxy is routing, gray when off) for all platforms.
+/// visible on any backdrop, then compositing a colored status dot on top for
+/// all platforms. A dead OAuth session (`needs_signin`) draws a red "sign in
+/// required" dot; otherwise the routine routing dot is green when the proxy is
+/// routing, gray when off.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
+fn tray_image(proxy_on: bool, needs_signin: bool, dark_menubar: bool) -> Option<Image<'static>> {
     let base = Image::from_bytes(TRAY_ICON_PNG).ok()?;
     let w = base.width();
     let h = base.height();
@@ -1538,12 +1901,16 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
         }
     }
 
-    // Composite the status dot, bottom-right: the one colored element, green
-    // when the proxy is routing and gray when off. Rendered on every platform -
-    // macOS composites it over the (temporarily non-template) mark, and the
-    // Windows/Linux trays carry the full-color icon directly.
+    // Composite the status dot, bottom-right: the one colored element. A dead
+    // OAuth session (`needs_signin`) shows a red "sign in required" dot;
+    // otherwise it tracks routing - green when the proxy is routing, gray when
+    // off. Rendered on every platform - macOS composites it over the
+    // (temporarily non-template) mark, and the Windows/Linux trays carry the
+    // full-color icon directly.
     {
-        let (dr, dg, db): (u8, u8, u8) = if proxy_on {
+        let (dr, dg, db): (u8, u8, u8) = if needs_signin {
+            (0xE5, 0x48, 0x4D) // red - sign in required
+        } else if proxy_on {
             (0x2E, 0xCC, 0x71) // green - routing
         } else {
             (0x8A, 0x8F, 0x9A) // gray - off
@@ -1573,11 +1940,13 @@ fn tray_image(proxy_on: bool, dark_menubar: bool) -> Option<Image<'static>> {
 }
 
 /// Refresh the tray icon for the current appearance: tint the mark against the
-/// menu bar / taskbar it's sitting on, and overlay the routing-status dot. Also
-/// refreshes the tooltip on macOS + Windows.
+/// menu bar / taskbar it's sitting on, and overlay the status dot (routing, or
+/// the red sign-in-required dot when the OAuth session is dead - see
+/// `tray_image`). Also refreshes the tooltip on macOS + Windows.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
     use tauri::Manager;
+    let needs_signin = SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed);
     let system_dark = || {
         app.get_webview_window("main")
             .and_then(|win| win.theme().ok())
@@ -1604,7 +1973,7 @@ fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
         // full color.
         #[cfg(target_os = "macos")]
         let _ = tray.set_icon_as_template(false);
-        if let Some(img) = tray_image(proxy_on, dark) {
+        if let Some(img) = tray_image(proxy_on, needs_signin, dark) {
             let _ = tray.set_icon(Some(img));
         }
     }
@@ -1612,14 +1981,18 @@ fn update_tray_status(app: &tauri::AppHandle, proxy_on: bool) {
     update_tray_tooltip(app, proxy_on);
 }
 
-/// Set the tray hover tooltip to reflect the routing state. Cross-platform
-/// (macOS + Windows); Linux tray backends (SNI/AppIndicator) don't support
-/// tooltips, so this is compiled out there. The macOS status dot is handled in
+/// Set the tray hover tooltip. Cross-platform (macOS + Windows); Linux tray
+/// backends (SNI/AppIndicator) don't support tooltips, so this is compiled out
+/// there. A dead OAuth session takes priority over the routing state; the
+/// attention flag is read from `SESSION_NEEDS_SIGNIN` so the routing call sites
+/// don't have to thread it through. The macOS status dot is handled in
 /// `update_tray_status`.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
     if let Some(tray) = app.tray_by_id("main") {
-        let text = if proxy_on {
+        let text = if SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed) {
+            "Gate Connect · sign in required"
+        } else if proxy_on {
             "Gate Connect · routing on"
         } else {
             "Gate Connect · routing off"

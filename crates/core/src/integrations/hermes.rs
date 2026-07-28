@@ -1,11 +1,14 @@
 //! Hermes integration.
 //!
 //! Hermes is a Python-based OpenAI-compatible agent CLI with a single
-//! `model.base_url` in `~/.hermes/config.yaml`. Gate Connect redirects
-//! that endpoint through the gateway by setting `model.base_url` to
-//! `<gateway>/v1` and injecting Gate's two identification headers into
-//! `model.default_headers`. The user's upstream credentials are untouched --
-//! Gate is a pure passthrough on `Authorization` / `x-api-key`.
+//! `model.base_url` in `~/.hermes/config.yaml`. Gate Connect redirects that
+//! endpoint through the loopback reverse-proxy relay ([`crate::proxy::relay`])
+//! by setting `model.base_url` to `http://127.0.0.1:<relay-port>/v1` and
+//! injecting only the non-secret `X-Gate-Upstream-Url` hint into
+//! `model.default_headers`. The relay injects the live Gate credential per
+//! request, so **no Gate credential is written to config.yaml**. The user's
+//! upstream credentials are untouched -- Gate is a pure passthrough on
+//! `Authorization` / `x-api-key`.
 //!
 //! State tracking: a sidecar at `<app_support_dir>/hermes-state.json` records
 //! the original `base_url` and `default_headers` so `disconnect` can restore
@@ -32,7 +35,6 @@ const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 
 const HERMES_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const GATEWAY_PATH_SUFFIX: &str = "/v1";
-const GATE_KEY_HEADER: &str = "X-Gate-Api-Key";
 const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
 const STATE_FILENAME: &str = "hermes-state.json";
 
@@ -101,11 +103,11 @@ impl Integration for Hermes {
             return Ok(Status::Detected);
         };
 
-        let expected_base = match crate::account::load_base_url()? {
+        let expected_base = match crate::proxy::relay_base_url() {
             Some(u) => compute_base_url(&u),
             None => {
                 return Ok(Status::Drifted(
-                    "Gate Connect is not signed in -- sign in to validate Hermes config".into(),
+                    "the Gate proxy has not been enabled yet -- turn it on to route Hermes".into(),
                 ));
             }
         };
@@ -125,11 +127,11 @@ impl Integration for Hermes {
             .and_then(|m| m.get("default_headers"))
             .and_then(|v| v.as_mapping());
 
-        let has_gate_key = headers.and_then(|h| h.get(GATE_KEY_HEADER)).is_some();
-
+        // No key check: the relay injects the Gate credential live, so the
+        // config carries only the non-secret upstream hint.
         let has_upstream_url = headers.and_then(|h| h.get(UPSTREAM_URL_HEADER)).is_some();
 
-        if base_url == expected_base && has_gate_key && has_upstream_url {
+        if base_url == expected_base && has_upstream_url {
             Ok(Status::Connected)
         } else {
             Ok(Status::Drifted(format!(
@@ -144,13 +146,11 @@ impl Integration for Hermes {
                 "Hermes is not installed -- install it from https://github.com/nousresearch/hermes-agent first"
             );
         }
-        if !input.gateway_base_url.starts_with("https://") {
-            anyhow::bail!("gateway base URL must be https://");
-        }
+        let relay_base_url = input.relay_base_url.as_deref().context(
+            "the Gate proxy relay is not running -- enable the proxy before connecting Hermes",
+        )?;
 
-        let acct = crate::account::load()?.context("no Gate account found -- sign in first")?;
-
-        let gateway_base_url = compute_base_url(&input.gateway_base_url);
+        let relay_base = compute_base_url(relay_base_url);
 
         let mut settings = load_settings()?.unwrap_or_default();
 
@@ -202,10 +202,11 @@ impl Integration for Hermes {
         };
         save_state(&state)?;
 
-        // Redirect base_url.
-        model.insert(base_url_key, Value::String(gateway_base_url));
+        // Redirect base_url at the relay .
+        model.insert(base_url_key, Value::String(relay_base));
 
-        // Inject Gate headers into default_headers.
+        // Inject only the non-secret upstream hint into default_headers. The
+        // relay injects the Gate credential live, so no key is written here.
         if !model.contains_key(&headers_key) {
             model.insert(headers_key.clone(), Value::Mapping(Mapping::new()));
         }
@@ -214,10 +215,6 @@ impl Integration for Hermes {
             .and_then(|v| v.as_mapping_mut())
             .context("default_headers is not a mapping")?;
 
-        headers.insert(
-            Value::String(GATE_KEY_HEADER.to_string()),
-            Value::String(acct.api_key.clone()),
-        );
         headers.insert(
             Value::String(UPSTREAM_URL_HEADER.to_string()),
             Value::String(upstream_url),
@@ -267,35 +264,6 @@ impl Integration for Hermes {
         clear_state()
     }
 
-    fn refresh_gate_key(&self, api_key: &str) -> Result<()> {
-        let Some(_state) = load_state()? else {
-            return Ok(());
-        };
-        let Some(mut settings) = load_settings()? else {
-            return Ok(());
-        };
-
-        let model_key = Value::String("model".to_string());
-        let Some(model) = settings
-            .get_mut(&model_key)
-            .and_then(|v| v.as_mapping_mut())
-        else {
-            return Ok(());
-        };
-
-        let headers_key = Value::String("default_headers".to_string());
-        let Some(headers) = model.get_mut(&headers_key).and_then(|v| v.as_mapping_mut()) else {
-            return Ok(());
-        };
-
-        headers.insert(
-            Value::String(GATE_KEY_HEADER.to_string()),
-            Value::String(api_key.to_string()),
-        );
-
-        write_settings(&settings)
-    }
-
     fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
         anyhow::bail!(
             "Hermes does not need a separate upstream credential -- Gate Connect injects its headers into ~/.hermes/config.yaml."
@@ -311,13 +279,10 @@ impl Integration for Hermes {
     }
 }
 
-/// Appends `/v1` to the gateway URL, stripping any trailing slash first.
-fn compute_base_url(gateway_base_url: &str) -> String {
-    format!(
-        "{}{}",
-        gateway_base_url.trim_end_matches('/'),
-        GATEWAY_PATH_SUFFIX
-    )
+/// Appends `/v1` to the relay's loopback base URL, stripping any trailing
+/// slash first. The relay (and Gate behind it) forward the path verbatim.
+fn compute_base_url(base: &str) -> String {
+    format!("{}{}", base.trim_end_matches('/'), GATEWAY_PATH_SUFFIX)
 }
 
 /// Strips the trailing `/v1` from a `base_url` to produce the value Gate

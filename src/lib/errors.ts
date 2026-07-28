@@ -9,7 +9,9 @@
  */
 export type ErrorContext =
   | "sign_in"
-  | "disconnect"
+  | "sign_out"
+  | "connect"
+  | "forget"
   | "save_api_key"
   | "update"
   | "close_agents"
@@ -97,7 +99,8 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     lc.includes("-128") ||
     (lc.includes("authorization") && lc.includes("denied"))
   ) {
-    const verb = context === "disconnect" ? "Disconnect" : "Connect";
+    const verb =
+      context === "forget" ? "Reset" : context === "sign_out" ? "Sign out" : "Connect";
     return {
       title: "macOS prompt canceled",
       hint: `Click ${verb} again and approve the macOS password prompt.`,
@@ -150,7 +153,9 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
     sign_in: "Couldn't save your account",
-    disconnect: "Couldn't disconnect",
+    sign_out: "Couldn't sign out",
+    connect: "Couldn't connect this tool",
+    forget: "Couldn't reset Gate Connect",
     save_api_key: "Couldn't save the API key",
     update: "Couldn't install the update",
     close_agents: "Couldn't close the running agents",

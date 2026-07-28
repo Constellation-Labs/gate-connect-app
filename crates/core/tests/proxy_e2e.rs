@@ -153,11 +153,14 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
         EngineConfig {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
+            oauth_token: String::new(), // legacy API-key path
+            org_id: String::new(),      // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
             preferred_port: None,
             preferred_pac_port: None,
+            preferred_relay_port: None,
             owner_uid: None,
             upstream_proxy: None,
         },
@@ -231,11 +234,14 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
         EngineConfig {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
+            oauth_token: String::new(), // legacy API-key path
+            org_id: String::new(),      // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
             preferred_port: None,
             preferred_pac_port: None,
+            preferred_relay_port: None,
             owner_uid: None,
             upstream_proxy: None,
         },
@@ -343,11 +349,17 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
         EngineConfig {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
+            // Exercises the OAuth path end-to-end: a stored token is injected
+            // as x-gate-authorization instead of the API key, with the selected
+            // org on x-gate-org-id.
+            oauth_token: "cognito-access-token".into(),
+            org_id: "org-uuid-1".into(),
             domains,
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
             preferred_port: None,
             preferred_pac_port: None,
+            preferred_relay_port: None,
             owner_uid: None,
             upstream_proxy: None,
         },
@@ -379,8 +391,9 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
     engine.stop();
 
     // 4. The rewrite landed on the gateway: original path preserved (OpenRouter
-    //    nests its API under /api/v1/), Gate headers injected, and the client's
-    //    own bearer forwarded untouched.
+    //    nests its API under /api/v1/), the OAuth token injected as
+    //    x-gate-authorization (not the API key), and the client's own bearer
+    //    forwarded untouched.
     let reqs = gateway.captured.lock().unwrap().clone();
     assert_eq!(
         reqs.len(),
@@ -390,7 +403,20 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
     let r = &reqs[0];
     assert_eq!(r.method, "POST");
     assert_eq!(r.path, "/api/v1/chat/completions");
-    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-gate-authorization"),
+        Some("Bearer cognito-access-token")
+    );
+    assert_eq!(
+        r.header("x-gate-org-id"),
+        Some("org-uuid-1"),
+        "the selected org must ride alongside the OAuth token"
+    );
+    assert_eq!(
+        r.header("x-gate-api-key"),
+        None,
+        "the API key must not be sent when an OAuth token is present"
+    );
     assert_eq!(
         r.header("x-gate-upstream-url"),
         Some("https://openrouter.ai")
@@ -416,11 +442,14 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     let config = |preferred_port: Option<u16>| EngineConfig {
         gateway_base_url: gateway.base_url.clone(),
         api_key: "sk-gw-test".into(),
+        oauth_token: String::new(), // legacy API-key path
+        org_id: String::new(),      // no org on the legacy path
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
         preferred_port,
         preferred_pac_port: None,
+        preferred_relay_port: None,
         owner_uid: None,
         upstream_proxy: None,
     };
@@ -479,11 +508,14 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
     let config = |preferred_pac_port: Option<u16>| EngineConfig {
         gateway_base_url: gateway.base_url.clone(),
         api_key: "sk-gw-test".into(),
+        oauth_token: String::new(), // legacy API-key path
+        org_id: String::new(),      // no org on the legacy path
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
         preferred_port: None,
         preferred_pac_port,
+        preferred_relay_port: None,
         owner_uid: None,
         upstream_proxy: None,
     };

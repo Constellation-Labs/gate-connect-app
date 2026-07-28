@@ -207,10 +207,13 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
         Request::SetIntercept {
             gateway_base_url,
             api_key,
+            oauth_token,
+            org_id,
             ca_cert_pem,
             ca_key_pem,
             domains,
             preferred_port,
+            preferred_relay_port,
         } => {
             // Access control #4: only ever route catalog providers.
             if let Err(e) = control::validate_domains(&domains) {
@@ -226,9 +229,12 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
             match guard.as_ref() {
                 Some(running) => {
                     running.update_api_key(&api_key);
+                    running.update_token(&oauth_token);
+                    running.update_org(&org_id);
                     running.update_domains(&domains);
                     Response::Intercepting {
                         port: running.port(),
+                        relay_port: running.relay_port(),
                     }
                 }
                 None => {
@@ -236,6 +242,8 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                         EngineConfig {
                             gateway_base_url,
                             api_key,
+                            oauth_token,
+                            org_id,
                             domains,
                             ca_cert_pem,
                             ca_key_pem,
@@ -243,6 +251,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                             // No PAC on Linux (env-var proxies wire clients
                             // straight at the engine port).
                             preferred_pac_port: None,
+                            preferred_relay_port,
                             // The daemon runs as the owner; only intercept this
                             // user's own traffic. SAFETY: geteuid never fails.
                             owner_uid: Some(unsafe { libc::geteuid() }),
@@ -255,8 +264,9 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                     ) {
                         Ok(running) => {
                             let port = running.port();
+                            let relay_port = running.relay_port();
                             *guard = Some(running);
-                            Response::Intercepting { port }
+                            Response::Intercepting { port, relay_port }
                         }
                         Err(e) => Response::Error {
                             message: format!("starting engine: {e}"),

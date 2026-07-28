@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Account } from "../lib/api";
+import type { Account, OAuthStatus } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { GATEWAY_SERVERS } from "../lib/config";
@@ -17,12 +17,16 @@ function hostOf(url: string): string {
 
 /** Settings - workspace + Gate API key management. The key itself is held in
  *  the OS keychain and never returned to the UI, so it shows masked; Replace
- *  key calls save_account, Disconnect calls clear_account. */
+ *  key calls save_account, Forget calls clear_account. */
 export function Settings({
   account,
+  oauth,
   onBack,
   onReplaceKey,
-  onDisconnect,
+  onUpgradeToOAuth,
+  onForget,
+  onSignOut,
+  onSwitchOrg,
   onSwitchGateway,
   onReplayTour,
   routingOn,
@@ -31,9 +35,13 @@ export function Settings({
   onUntrustCa,
 }: {
   account: Account;
+  oauth: OAuthStatus | null;
   onBack: () => void;
   onReplaceKey: (key: string) => Promise<void>;
-  onDisconnect: () => Promise<void>;
+  onUpgradeToOAuth: () => Promise<void>;
+  onForget: () => Promise<void>;
+  onSignOut: () => Promise<void>;
+  onSwitchOrg: () => void;
   onSwitchGateway: (url: string) => Promise<void>;
   onReplayTour: () => void;
   routingOn: boolean;
@@ -41,6 +49,8 @@ export function Settings({
   proxyBusy: boolean;
   onUntrustCa: () => void;
 }) {
+  const isOAuth = account.auth_mode === "oauth";
+  const connected = isOAuth ? (oauth?.signed_in ?? false) : account.has_api_key;
   const [replacing, setReplacing] = useState(false);
   const [devMode, setDevMode] = useState(false);
   const platform = usePlatform();
@@ -48,6 +58,7 @@ export function Settings({
   const [newKey, setNewKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [upgrading, setUpgrading] = useState(false);
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
   const [laLoaded, setLaLoaded] = useState(false);
   // The launch-at-login toggle is off but the OS login item is still
@@ -169,15 +180,29 @@ export function Settings({
     }
   }
 
-  async function disconnect() {
+  async function forget() {
     if (submitting) return;
     setError(null);
     setSubmitting(true);
     try {
-      await onDisconnect();
+      await onForget();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-      trackError(err, "disconnect");
+      trackError(err, "forget");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function signOut() {
+    if (submitting) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      await onSignOut();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "sign_out");
     } finally {
       setSubmitting(false);
     }
@@ -194,6 +219,18 @@ export function Settings({
       trackError(err, "generic");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleUpgrade() {
+    setError(null);
+    setUpgrading(true);
+    try {
+      await onUpgradeToOAuth();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      trackError(err, "sign_in");
+      setUpgrading(false);
     }
   }
 
@@ -214,9 +251,77 @@ export function Settings({
             {account.gateway_base_url}
           </div>
         </div>
-        <ConnPill state={account.has_api_key ? "connected" : "signedout"} />
+        <ConnPill state={connected ? "connected" : "signedout"} />
       </div>
 
+      {isOAuth && (
+        <>
+          <SectionLabel>Signed in</SectionLabel>
+          <div className="flex items-center gap-3 px-3.5 py-2.5">
+            <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-gc-accent-wash text-gc-accent">
+              <Icon name="shieldCheck" size={16} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[13px] font-medium text-gc-ink">
+                {oauth?.email ?? (connected ? "Signed in" : "Session expired")}
+              </div>
+              <div className="truncate text-[11.5px] text-gc-ink-4">
+                {account.org_name ?? "No organization selected"}
+              </div>
+            </div>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2 px-3.5 pb-1">
+            <button
+              type="button"
+              onClick={onSwitchOrg}
+              disabled={submitting}
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent"
+            >
+              <Icon name="refresh" size={14} />
+              Switch organization
+            </button>
+            <button
+              type="button"
+              onClick={signOut}
+              disabled={submitting}
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            >
+              <Icon name="refresh" size={14} />
+              Sign out
+            </button>
+            <button
+              type="button"
+              onClick={forget}
+              disabled={submitting}
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
+            >
+              <Icon name="trash" size={14} />
+              Reset
+            </button>
+          </div>
+          {error && <p className="mt-2 px-3.5 text-[11.5px] text-gc-error">{error}</p>}
+        </>
+      )}
+
+      {!isOAuth && (
+        <>
+      <SectionLabel>Sign in with Constellation</SectionLabel>
+      <div className="mb-4 px-3.5">
+        <p className="mb-2.5 text-[12px] leading-snug text-gc-ink-3">
+          Switch to Constellation sign-in and there's nothing to paste or
+          rotate - your session lives in the keychain and refreshes on its
+          own. You can switch back to an API key anytime.
+        </p>
+        <Button variant="accent" full disabled={upgrading} onClick={handleUpgrade}>
+          <Icon name="shieldCheck" size={15} />
+          {upgrading ? "Waiting for browser…" : "Sign in with Constellation"}
+        </Button>
+        {upgrading && (
+          <p className="mt-2 text-[11px] leading-snug text-gc-ink-4">
+            Finish signing in on the page that opened in your browser.
+          </p>
+        )}
+      </div>
       <SectionLabel>Gate API Key</SectionLabel>
       <div className="px-3.5">
         {!replacing ? (
@@ -317,14 +422,16 @@ export function Settings({
           </button>
           <button
             type="button"
-            onClick={disconnect}
+            onClick={forget}
             disabled={submitting}
             className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
           >
             <Icon name="trash" size={14} />
-            Disconnect
+            Reset
           </button>
         </div>
+      )}
+        </>
       )}
 
       <SectionLabel>Startup</SectionLabel>

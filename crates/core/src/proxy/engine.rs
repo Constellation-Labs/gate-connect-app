@@ -33,8 +33,19 @@ use crate::proxy::{decide, should_intercept_host, Decision, ProxyDomain};
 pub struct EngineConfig {
     /// Gate gateway base URL - the rewrite target authority.
     pub gateway_base_url: String,
-    /// Gate API key, injected as `X-Gate-Api-Key`.
+    /// Gate API key, injected as `X-Gate-Api-Key` when no OAuth token is set
+    /// (the legacy credential).
     pub api_key: String,
+    /// Cognito access token. When non-empty it's injected as
+    /// `X-Gate-Authorization: Bearer <token>` *instead of* the API key;
+    /// empty means fall back to `api_key`. Hot-swappable via
+    /// [`RunningEngine::update_token`].
+    pub oauth_token: String,
+    /// Selected org UUID, injected as `X-Gate-Org-Id` alongside the OAuth
+    /// token (the gateway requires it on every OAuth request). Empty when no
+    /// org is selected or in legacy API-key mode. Hot-swappable via
+    /// [`RunningEngine::update_org`].
+    pub org_id: String,
     /// Full domain catalog; the engine routes only the `enabled` ones.
     pub domains: Vec<ProxyDomain>,
     /// PEM of the local root CA cert (public).
@@ -58,6 +69,11 @@ pub struct EngineConfig {
     /// passes `None` (a plain field, like `owner_uid`, so construction sites
     /// need no cfg attribute).
     pub preferred_pac_port: Option<u16>,
+    /// Preferred loopback port for the CLI reverse-proxy relay ([`super::relay`]),
+    /// bound alongside the MITM listener. Same stable-port rationale as
+    /// `preferred_port`: CLI tools bake this port into their config, so reusing
+    /// it across restarts keeps that config valid. Ephemeral if taken/`None`.
+    pub preferred_relay_port: Option<u16>,
     /// When `Some(uid)`, only connections from that local UID are intercepted
     /// (MITM'd + rewritten with the Gate key injected); traffic from any other
     /// local user is blind-tunnelled. The loopback listener is plain TCP and
@@ -79,6 +95,9 @@ pub struct EngineConfig {
 /// [`stop`]: RunningEngine::stop
 pub struct RunningEngine {
     port: u16,
+    /// Loopback port of the CLI reverse-proxy relay ([`super::relay`]), bound
+    /// alongside the MITM listener. CLI tool configs point their base URL here.
+    relay_port: u16,
     /// Loopback port serving the PAC script the system proxy points at.
     /// PAC-driven platforms only (Windows `AutoConfigURL`, macOS
     /// `networksetup -setautoproxyurl`); Linux uses env-var proxies with no PAC.
@@ -88,6 +107,8 @@ pub struct RunningEngine {
     thread: Option<JoinHandle<()>>,
     rules_tx: watch::Sender<Arc<Vec<ProxyDomain>>>,
     key_tx: watch::Sender<Arc<str>>,
+    token_tx: watch::Sender<Arc<str>>,
+    org_tx: watch::Sender<Arc<str>>,
     /// Set before a deliberate shutdown so the engine thread can tell an
     /// expected stop from an unexpected exit (crash / bind loss).
     stopping: Arc<AtomicBool>,
@@ -96,6 +117,12 @@ pub struct RunningEngine {
 impl RunningEngine {
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Loopback port of the CLI reverse-proxy relay. CLI tool configs point
+    /// their base URL at `http://127.0.0.1:<relay_port>`.
+    pub fn relay_port(&self) -> u16 {
+        self.relay_port
     }
 
     /// Loopback port serving the PAC script (Windows-only).
@@ -130,6 +157,20 @@ impl RunningEngine {
         let _ = self.key_tx.send(Arc::from(api_key));
     }
 
+    /// Push a refreshed OAuth access token to the live engine. Empty string
+    /// clears it (reverting to the API key). Cheap - no restart; this is how
+    /// a silent token refresh reaches in-flight routing.
+    pub fn update_token(&self, oauth_token: &str) {
+        let _ = self.token_tx.send(Arc::from(oauth_token));
+    }
+
+    /// Push the selected org UUID to the live engine (injected as
+    /// `X-Gate-Org-Id` alongside the OAuth token). Empty string clears it.
+    /// Cheap - no restart; this is how an org switch reaches in-flight routing.
+    pub fn update_org(&self, org_id: &str) {
+        let _ = self.org_tx.send(Arc::from(org_id));
+    }
+
     /// Signal graceful shutdown and wait for the engine thread to exit.
     pub fn stop(mut self) {
         self.stopping.store(true, Ordering::Release);
@@ -160,7 +201,7 @@ fn enabled_only(domains: &[ProxyDomain]) -> Vec<ProxyDomain> {
 
 /// Whether to emit per-request engine logs to stderr. Off unless
 /// `GATE_PROXY_DEBUG` is set in the environment, so production stays quiet.
-fn debug_log() -> bool {
+pub(crate) fn debug_log() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_DEBUG").is_some())
 }
@@ -193,6 +234,12 @@ struct GateHandler {
     gateway: Uri,
     /// Live-updatable Gate API key (rotations push a new value).
     api_key: watch::Receiver<Arc<str>>,
+    /// Live-updatable Cognito access token. Empty string means "unset" -
+    /// fall back to `api_key`.
+    token: watch::Receiver<Arc<str>>,
+    /// Live-updatable selected org UUID. Empty string means "none selected";
+    /// injected as `X-Gate-Org-Id` only when an OAuth token is present.
+    org: watch::Receiver<Arc<str>>,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
@@ -229,8 +276,10 @@ impl GateHandler {
 /// (i.e. the connecting peer's socket) by scanning the kernel's TCP table.
 /// Linux-only; other platforms never set `owner_uid`, so this just reports
 /// "unknown". Returns `None` if the socket isn't found or can't be parsed.
+/// Shared with the relay (`super::relay`), which gates its accept loop the
+/// same way the MITM path gates interception.
 #[cfg(target_os = "linux")]
-fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
+pub(crate) fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
     use std::net::{Ipv4Addr, SocketAddr};
     // Clients reach us at http://127.0.0.1:<port>, so the peer is IPv4 loopback;
     // we only parse /proc/net/tcp (v4). A v6 peer (shouldn't happen) fails
@@ -266,7 +315,7 @@ fn peer_uid_for(addr: std::net::SocketAddr) -> Option<u32> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn peer_uid_for(_addr: std::net::SocketAddr) -> Option<u32> {
+pub(crate) fn peer_uid_for(_addr: std::net::SocketAddr) -> Option<u32> {
     None
 }
 
@@ -332,7 +381,18 @@ impl HttpHandler for GateHandler {
                 (decide(&rules, host, &path), self.peer_allowed(ctx))
             {
                 let api_key = self.api_key.borrow().clone();
-                match apply_rewrite(&mut req, &self.gateway, &upstream_url, &api_key) {
+                let token = self.token.borrow().clone();
+                let oauth_token = (!token.is_empty()).then(|| token.as_ref());
+                let org = self.org.borrow().clone();
+                let org_id = (!org.is_empty()).then(|| org.as_ref());
+                match apply_rewrite(
+                    &mut req,
+                    &self.gateway,
+                    &upstream_url,
+                    &api_key,
+                    oauth_token,
+                    org_id,
+                ) {
                     Ok(()) => {
                         action = "rewrite->gateway";
                     }
@@ -404,13 +464,18 @@ impl HttpHandler for GateHandler {
 
 /// Repoint a request at the gateway: swap scheme + authority for the
 /// gateway's, keep the original path/query, and inject the Gate headers.
-/// The app's own auth header (bearer / `x-api-key`) is left intact -
-/// Gate validates `X-Gate-Api-Key` and forwards the rest.
+/// The app's own auth header (bearer / `x-api-key`) is left intact - Gate
+/// validates the Gate credential and forwards the rest. The credential
+/// precedence (a caller-supplied `x-gate-api-key` is respected, else OAuth
+/// token wins over the legacy key) lives in [`super::inject_gate_credential`],
+/// shared with the relay so the two paths can't drift.
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
     upstream_url: &str,
     api_key: &str,
+    oauth_token: Option<&str>,
+    org_id: Option<&str>,
 ) -> Result<()> {
     let gw = gateway.clone().into_parts();
     let mut parts = req.uri().clone().into_parts();
@@ -419,12 +484,9 @@ pub(crate) fn apply_rewrite<T>(
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
     let headers = req.headers_mut();
+    super::inject_gate_credential(headers, api_key, oauth_token, org_id)?;
     headers.insert(
-        "x-gate-api-key",
-        HeaderValue::from_str(api_key).context("building x-gate-api-key header")?,
-    );
-    headers.insert(
-        "x-gate-upstream-url",
+        super::UPSTREAM_URL_HEADER,
         HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
     );
     Ok(())
@@ -588,6 +650,11 @@ where
     }
 
     let (listener, port) = bind_loopback(cfg.preferred_port)?;
+    // CLI reverse-proxy relay ([`super::relay`]) on its own loopback port; CLI
+    // tool configs point their base URL here. Bound eagerly so the port is
+    // known before the engine thread starts, like the MITM listener.
+    let (relay_listener, relay_port) =
+        bind_loopback(cfg.preferred_relay_port).context("binding the relay loopback port")?;
     // Windows points WinINET at a PAC served on its own loopback port (see
     // `serve_pac`); the proxy port itself is baked into the PAC body.
     #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -604,10 +671,23 @@ where
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let upstream_proxy = cfg.upstream_proxy.clone();
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
+    let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
+    let (org_tx, org_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.org_id.as_str()));
+    // The relay shares the same credential channels , so a
+    // token refresh, key rotation, or org switch reaches CLI tools and GUI apps
+    // alike. Clone before the handler moves the originals.
+    let relay_gateway = gateway.clone();
+    let relay_key_rx = key_rx.clone();
+    let relay_token_rx = token_rx.clone();
+    let relay_org_rx = org_rx.clone();
+    // The relay gates its accept loop on the same owner UID the MITM path uses.
+    let relay_owner_uid = cfg.owner_uid;
     let handler = GateHandler {
         rules: rules_rx,
         gateway,
         api_key: key_rx,
+        token: token_rx,
+        org: org_rx,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
     };
@@ -690,6 +770,20 @@ where
                         Err(e) => eprintln!("gate proxy PAC listener failed to start: {e}"),
                     }
                 }
+                // Bring up the CLI reverse-proxy relay on the same runtime;
+                // like the PAC responder it dies with the runtime on stop.
+                // Non-fatal: if it can't adopt its listener the MITM proxy
+                // still runs, only CLI tools pointed at the relay fail.
+                if let Err(e) = super::relay::spawn(
+                    relay_listener,
+                    relay_gateway,
+                    relay_key_rx,
+                    relay_token_rx,
+                    relay_org_rx,
+                    relay_owner_uid,
+                ) {
+                    eprintln!("gate proxy relay failed to start: {e}");
+                }
                 if let Err(e) = proxy.start().await {
                     eprintln!("gate proxy engine stopped with error: {e}");
                 }
@@ -705,12 +799,15 @@ where
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok(())) => Ok(RunningEngine {
             port,
+            relay_port,
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             pac_port,
             shutdown: Some(shutdown_tx),
             thread: Some(thread),
             rules_tx,
             key_tx,
+            token_tx,
+            org_tx,
             stopping,
         }),
         Ok(Err(e)) => anyhow::bail!("proxy engine failed to start: {e}"),
@@ -734,11 +831,14 @@ mod tests {
             .body(())
             .unwrap();
 
+        // No OAuth token: legacy API-key header, and no org header.
         apply_rewrite(
             &mut req,
             &gateway,
             "https://api.anthropic.com",
             "sk-gw-test",
+            None,
+            None,
         )
         .unwrap();
 
@@ -747,11 +847,53 @@ mod tests {
             "https://gateway-staging.constellationgate.ai/v1/messages?beta=true"
         );
         assert_eq!(req.headers().get("x-gate-api-key").unwrap(), "sk-gw-test");
+        assert!(req.headers().get("x-gate-org-id").is_none());
         assert_eq!(
             req.headers().get("x-gate-upstream-url").unwrap(),
             "https://api.anthropic.com"
         );
         // The app's own credential is preserved.
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer app-token"
+        );
+    }
+
+    #[test]
+    fn rewrite_with_oauth_token_injects_bearer_not_api_key() {
+        let gateway: Uri = "https://gateway-staging.constellationgate.ai"
+            .parse()
+            .unwrap();
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages")
+            .header("authorization", "Bearer app-token")
+            .body(())
+            .unwrap();
+
+        apply_rewrite(
+            &mut req,
+            &gateway,
+            "https://api.anthropic.com",
+            "sk-gw-test",
+            Some("cognito-access-token"),
+            Some("org-uuid-1"),
+        )
+        .unwrap();
+
+        // OAuth token wins: bearer on x-gate-authorization, no api-key header,
+        // and the selected org rides on x-gate-org-id.
+        assert_eq!(
+            req.headers().get("x-gate-authorization").unwrap(),
+            "Bearer cognito-access-token"
+        );
+        assert_eq!(req.headers().get("x-gate-org-id").unwrap(), "org-uuid-1");
+        assert!(req.headers().get("x-gate-api-key").is_none());
+        assert_eq!(
+            req.headers().get("x-gate-upstream-url").unwrap(),
+            "https://api.anthropic.com"
+        );
+        // The app's own credential is still preserved.
         assert_eq!(
             req.headers().get("authorization").unwrap(),
             "Bearer app-token"

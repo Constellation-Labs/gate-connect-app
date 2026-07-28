@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
+use gate_connect_core::{account, oauth, org, registry, ConnectInput, Status, ToolId};
 
 // The built-in proxy is wired on the three desktop OSes (CA trust +
 // system-proxy backends exist there); its subcommands are gated to match.
@@ -29,9 +29,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sign in to Gate AI. Stores the base URL on disk and the API key
-    /// in the OS secret store (Keychain / Credential Manager / Secret
-    /// Service). Re-run to update.
+    /// Sign in to Gate AI. Stores the base URL on disk and the credential in
+    /// the OS secret store (Keychain / Credential Manager / Secret Service).
+    /// Re-run to update. With `--oauth`, signs in through the Constellation
+    /// (Cognito) Hosted UI in the browser instead of a pasted API key.
     Login {
         #[arg(long, env = "GATE_BASE_URL")]
         base_url: String,
@@ -41,6 +42,15 @@ enum Command {
         /// passing it on the command line or typing it at the prompt.
         #[arg(long)]
         api_key_file: Option<std::path::PathBuf>,
+        /// Sign in via the Constellation Hosted UI (OAuth) instead of an API
+        /// key. Prints a URL to open in your browser and captures the redirect
+        /// on a loopback listener. Ignores `--api-key`.
+        #[arg(long)]
+        oauth: bool,
+        /// With `--oauth`, preselect this organization (its UUID or slug)
+        /// instead of prompting. Auto-selected when you belong to only one.
+        #[arg(long)]
+        org: Option<String>,
     },
     /// Sign out. Removes the stored base URL and the keychain entry.
     Logout,
@@ -100,6 +110,11 @@ enum ProxyCmd {
     Enable,
     /// Turn the proxy off and restore the prior system-proxy state.
     Disable,
+    /// Run the reverse-proxy relay as a headless host and block until killed.
+    /// For environments with no menubar app (containers, servers, CI): CLI
+    /// tools pointed at the relay route through Gate with the live credential.
+    /// No CA trust, no system-proxy changes. Sign in first.
+    Serve,
     /// List routable provider domains and whether each is enabled.
     Domains,
     /// Enable or disable routing for one provider domain.
@@ -138,7 +153,9 @@ fn main() -> Result<()> {
             base_url,
             api_key,
             api_key_file,
-        } => cmd_login(base_url, api_key, api_key_file),
+            oauth,
+            org,
+        } => cmd_login(base_url, api_key, api_key_file, oauth, org),
         Command::Logout => cmd_logout(),
         Command::Whoami => cmd_whoami(),
         Command::List => cmd_list(),
@@ -160,12 +177,21 @@ fn cmd_login(
     base_url: String,
     api_key: Option<String>,
     api_key_file: Option<std::path::PathBuf>,
+    oauth: bool,
+    org: Option<String>,
 ) -> Result<()> {
+    if oauth {
+        if api_key.is_some() || api_key_file.is_some() {
+            anyhow::bail!("--oauth cannot be combined with --api-key / --api-key-file");
+        }
+        return cmd_login_oauth(base_url, org);
+    }
     let api_key = resolve_secret(api_key, api_key_file, "Gate API key")?;
     account::save(&base_url, Some(&api_key))?;
-    // The key is copied into tool configs at connect time - push the new
-    // one into any config that still embeds an old key.
-    registry::refresh_gate_key_everywhere(&api_key)?;
+    // Signing in with a key selects the legacy path explicitly, so a prior
+    // `login --oauth` doesn't leave the account injecting a stale OAuth token
+    // (the relay reads the mode via `access_token_for_injection`).
+    account::set_auth_mode(account::AuthMode::ApiKey)?;
     // The proxy engine lives in whichever process enabled it (usually the
     // menubar app) - this process can't push the new key into it.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -178,6 +204,77 @@ fn cmd_login(
     }
     println!("Signed in to {base_url}.");
     Ok(())
+}
+
+/// Sign in through the Constellation (Cognito) Hosted UI. Persists the gateway
+/// first so the browser round-trip can record OAuth as the account's auth mode,
+/// then prints the authorize URL and blocks on the loopback redirect. The token
+/// bundle lands in the secret store; the relay / MITM engine inject it live, so
+/// no credential is written to disk here.
+fn cmd_login_oauth(base_url: String, org: Option<String>) -> Result<()> {
+    let cfg = oauth::OAuthConfig::from_build_env().context(
+        "OAuth is not configured in this build (GATE_COGNITO_HOSTED_DOMAIN / GATE_COGNITO_CLIENT_ID unset)",
+    )?;
+    account::save(&base_url, None)?;
+    let tokens = oauth::login(&cfg, oauth::REDIRECT_PORTS, |url| {
+        println!("Open this URL in your browser to sign in:\n\n  {url}\n");
+        Ok(())
+    })?;
+    account::set_auth_mode(account::AuthMode::OAuth)?;
+
+    // The gateway requires an org on every OAuth request, so pick one now.
+    let orgs = org::list(&base_url, &tokens.access_token)?;
+    let chosen = select_org(&orgs, org.as_deref())?;
+    account::set_org(&chosen.org_id, &chosen.name)?;
+
+    match tokens.email() {
+        Some(email) => println!("Signed in to {base_url} as {email} (org: {}).", chosen.name),
+        None => println!("Signed in to {base_url} (org: {}).", chosen.name),
+    }
+    Ok(())
+}
+
+/// Resolve which org to use: an explicit `--org` (UUID or slug), the only org
+/// when there's exactly one, or an interactive numbered prompt otherwise.
+fn select_org<'a>(orgs: &'a [org::Org], preselect: Option<&str>) -> Result<&'a org::Org> {
+    if orgs.is_empty() {
+        anyhow::bail!(
+            "no organizations are available for your account; ask an admin to add you to one"
+        );
+    }
+    if let Some(sel) = preselect {
+        return orgs
+            .iter()
+            .find(|o| o.org_id == sel || o.slug == sel)
+            .with_context(|| {
+                let available = orgs
+                    .iter()
+                    .map(|o| o.slug.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("no org matches {sel:?} (available: {available})")
+            });
+    }
+    if orgs.len() == 1 {
+        return Ok(&orgs[0]);
+    }
+    println!("Select an organization:");
+    for (i, o) in orgs.iter().enumerate() {
+        println!("  {}. {} ({})", i + 1, o.name, o.slug);
+    }
+    print!("Enter number [1-{}]: ", orgs.len());
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("reading org selection")?;
+    let idx: usize = line
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid selection {:?}", line.trim()))?;
+    orgs.get(idx.wrapping_sub(1))
+        .context("selection out of range")
 }
 
 /// Resolve a secret from, in order of precedence: an explicit value
@@ -297,6 +394,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
         upstream_url,
+        relay_base_url: gate_connect_core::proxy::relay_base_url(),
     };
     integ.connect(&input)?;
     println!("Connected {}.", integ.display_name());
@@ -425,6 +523,10 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
         ProxyCmd::Disable => {
             mgr.disable()?;
             println!("Proxy disabled; prior system-proxy state restored.");
+        }
+        ProxyCmd::Serve => {
+            // Blocks until killed; hosts only the relay (no CA, no system proxy).
+            proxy::serve_relay()?;
         }
         ProxyCmd::Domains => print_proxy_domains(&mgr.list_domains()?),
         ProxyCmd::Domain { slug, state } => {

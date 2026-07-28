@@ -18,9 +18,26 @@ use crate::primitives;
 
 const KEYCHAIN_LABEL: &str = "gateway-api-key";
 
+/// How Gate Connect authenticates to the gateway. `OAuth` sends a Cognito
+/// access token on `x-gate-authorization`; `ApiKey` sends the pasted
+/// `sk-gw-...` on `x-gate-api-key` (the legacy path). Defaults to `ApiKey` so
+/// installs predating this field load unchanged (mirrors the PAC back-compat
+/// default in `system_proxy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    #[default]
+    ApiKey,
+    // `rename_all` would snake-case this to `o_auth`; pin the wire value the
+    // frontend and CLI expect.
+    #[serde(rename = "oauth")]
+    OAuth,
+}
+
 pub struct Account {
     pub gateway_base_url: String,
     pub api_key: String,
+    pub auth_mode: AuthMode,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -33,6 +50,18 @@ struct AccountFile {
     /// key-less pending state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     api_key_prefix: Option<String>,
+    /// Which credential Gate Connect sends to the gateway. Absent in files
+    /// written before OAuth support existed; `#[serde(default)]` loads those
+    /// as `ApiKey`, preserving the legacy behavior.
+    #[serde(default)]
+    auth_mode: AuthMode,
+    /// Selected organization (OAuth mode only). `org_id` is the UUID injected
+    /// on `X-Gate-Org-Id`; `org_name` is cached for display. Non-secret. Absent
+    /// until the user picks an org after signing in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    org_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    org_name: Option<String>,
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -43,19 +72,26 @@ pub fn service() -> String {
     keychain::account_service(KEYCHAIN_LABEL)
 }
 
-/// Load the account if both halves (base URL on disk + Gate key in
-/// keychain) are present. Missing either half returns None.
+/// Load the account if it's usable. The gateway URL (on disk) is always
+/// required. The key requirement depends on the auth mode: in the legacy
+/// `ApiKey` mode a Gate key in the keychain is required; in `OAuth` mode the
+/// Cognito token is the credential, so a missing key is expected and loads as
+/// an empty string . Missing what's required returns None.
 pub fn load() -> Result<Option<Account>> {
-    let Some(base_url) = load_base_url()? else {
+    let Some(file) = read_account_file()? else {
         return Ok(None);
     };
     let user = env::current_user()?;
-    let Some(api_key) = keychain::get(&service(), &user)? else {
-        return Ok(None);
+    let stored_key = keychain::get(&service(), &user)?;
+    let api_key = match (file.auth_mode, stored_key) {
+        (_, Some(key)) => key,
+        (AuthMode::OAuth, None) => String::new(),
+        (AuthMode::ApiKey, None) => return Ok(None),
     };
     Ok(Some(Account {
-        gateway_base_url: base_url,
+        gateway_base_url: file.gateway_base_url,
         api_key,
+        auth_mode: file.auth_mode,
     }))
 }
 
@@ -96,14 +132,24 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         anyhow::bail!("gateway base URL must be https://");
     }
     // Recompute the prefix from a new key; otherwise preserve the one already
-    // on disk so a URL-only edit doesn't drop it.
+    // on disk so a URL-only edit doesn't drop it. The auth mode is likewise
+    // preserved - it's chosen via [`set_auth_mode`], not by saving a URL/key.
+    let existing = read_account_file()?;
     let api_key_prefix = match api_key {
         Some(key) => Some(key.chars().take(12).collect()),
-        None => read_account_file()?.and_then(|f| f.api_key_prefix),
+        None => existing.as_ref().and_then(|f| f.api_key_prefix.clone()),
     };
+    // Preserve the auth mode and selected org - both are chosen via their own
+    // setters, not by saving a URL/key.
+    let auth_mode = existing.as_ref().map(|f| f.auth_mode).unwrap_or_default();
+    let org_id = existing.as_ref().and_then(|f| f.org_id.clone());
+    let org_name = existing.and_then(|f| f.org_name.clone());
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix,
+        auth_mode,
+        org_id,
+        org_name,
     })?;
 
     if let Some(key) = api_key {
@@ -131,12 +177,81 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
     save(gateway_base_url, None)?; // new URL on disk, key untouched
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?; // forget the old key
-                                          // The stored prefix named the key we just deleted, so drop it too.
+    let auth_mode = read_account_file()?
+        .map(|f| f.auth_mode)
+        .unwrap_or_default();
+    // The stored prefix named the key we just deleted, so drop it too. The org
+    // is environment-specific, so a gateway switch clears it - the user re-picks
+    // against the new environment after re-authenticating.
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix: None,
+        auth_mode,
+        org_id: None,
+        org_name: None,
     })?;
     Ok(())
+}
+
+/// Persist the selected organization (OAuth mode). `org_id` is the UUID
+/// injected on `X-Gate-Org-Id`; `org_name` is cached for display. Requires an
+/// existing `account.json`.
+pub fn set_org(org_id: &str, org_name: &str) -> Result<()> {
+    let mut file = read_account_file()?.context("no account configured")?;
+    file.org_id = Some(org_id.to_string());
+    file.org_name = Some(org_name.to_string());
+    write_account_file(&file)
+}
+
+/// Drop the selected org, keeping everything else. Used when the gateway
+/// reports the stored org is no longer one of the user's memberships (the
+/// startup probe), so the UI routes back to the org picker instead of sending
+/// a doomed `X-Gate-Org-Id` on every request.
+pub fn clear_org() -> Result<()> {
+    let mut file = read_account_file()?.context("no account configured")?;
+    file.org_id = None;
+    file.org_name = None;
+    write_account_file(&file)
+}
+
+/// The currently selected `(org_id, org_name)`, or `None` if the user hasn't
+/// picked one yet. Cheap disk read; never touches the keychain.
+pub fn selected_org() -> Result<Option<(String, String)>> {
+    Ok(
+        read_account_file()?.and_then(|f| match (f.org_id, f.org_name) {
+            (Some(id), Some(name)) => Some((id, name)),
+            (Some(id), None) => Some((id.clone(), id)),
+            _ => None,
+        }),
+    )
+}
+
+/// The org id to inject on `X-Gate-Org-Id` right now, or an empty string when
+/// none is selected. The single source of truth the proxy managers seed the
+/// engine/relay from (mirrors [`crate::oauth::access_token_for_injection`]).
+pub fn org_id_for_injection() -> String {
+    read_account_file()
+        .ok()
+        .flatten()
+        .and_then(|f| f.org_id)
+        .unwrap_or_default()
+}
+
+/// Switch the persisted auth mode, preserving the base URL and key prefix. The
+/// OAuth sign-in flow sets `OAuth`; pasting a Gate key sets `ApiKey`. Requires
+/// an existing `account.json` .
+pub fn set_auth_mode(mode: AuthMode) -> Result<()> {
+    let mut file = read_account_file()?.context("no account configured")?;
+    file.auth_mode = mode;
+    write_account_file(&file)
+}
+
+/// Current persisted auth mode, defaulting to `ApiKey` when no account exists
+/// yet. A cheap disk read that never touches the keychain.
+pub fn auth_mode() -> Result<AuthMode> {
+    Ok(read_account_file()?
+        .map(|f| f.auth_mode)
+        .unwrap_or_default())
 }
 
 pub fn has_api_key() -> Result<bool> {
@@ -165,11 +280,9 @@ pub fn backfill_api_key_prefix() -> Result<Option<String>> {
         return Ok(None);
     };
     let prefix: String = key.chars().take(12).collect();
-    if let Some(gateway_base_url) = load_base_url()? {
-        write_account_file(&AccountFile {
-            gateway_base_url,
-            api_key_prefix: Some(prefix.clone()),
-        })?;
+    if let Some(mut file) = read_account_file()? {
+        file.api_key_prefix = Some(prefix.clone());
+        write_account_file(&file)?;
     }
     Ok(Some(prefix))
 }
@@ -181,6 +294,9 @@ pub fn clear() -> Result<()> {
     }
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?;
+    // A full disconnect forgets every credential, so any OAuth tokens go too -
+    // nothing is left behind in the secret store .
+    crate::oauth::clear()?;
     Ok(())
 }
 
@@ -195,6 +311,8 @@ pub fn clear() -> Result<()> {
 /// is the secret. We only act on the keychain-orphan half, so a signed-in user
 /// (both halves present) is never touched:
 /// - URL gone, key present → orphaned Gate key → delete it.
+/// - URL gone → any orphaned OAuth tokens are equally stranded → forget them
+///   . `oauth::clear` is idempotent when none exist.
 ///
 /// A key-less `account.json` (URL present, no key) is *not* reconciled: it's a
 /// legitimate pending-key state - a fresh [`switch_gateway`], or a reinstall
@@ -205,6 +323,9 @@ pub fn reconcile() -> Result<()> {
     if !has_url && has_key {
         let user = env::current_user()?;
         keychain::delete(&service(), &user)?;
+    }
+    if !has_url {
+        crate::oauth::clear()?;
     }
     Ok(())
 }

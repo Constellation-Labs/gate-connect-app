@@ -16,9 +16,35 @@ export interface Tool {
   status: Status;
 }
 
+export type AuthMode = "api_key" | "oauth";
+
 export interface Account {
   gateway_base_url: string;
   has_api_key: boolean;
+  /** Which credential the account authenticates with. Drives sign-in routing
+   * and whether the legacy key controls show in Settings. */
+  auth_mode: AuthMode;
+  /** Selected org (OAuth mode). Both null until the user picks one; an OAuth
+   * account with no org routes to the picker. */
+  org_id: string | null;
+  org_name: string | null;
+}
+
+/** One organization the signed-in user may act on, from GET /v1/me/orgs. */
+export interface Org {
+  /** Org UUID - sent back as X-Gate-Org-Id (not the slug). */
+  orgId: string;
+  name: string;
+  slug: string;
+  role: string;
+}
+
+/** Cognito OAuth sign-in state, mirrored from the keychain token bundle. */
+export interface OAuthStatus {
+  signed_in: boolean;
+  email: string | null;
+  /** Access-token expiry as a Unix timestamp; 0 when signed out. */
+  expires_at_unix: number;
 }
 
 export const listTools = () => invoke<Tool[]>("list_tools");
@@ -46,6 +72,37 @@ export const saveAccount = (baseUrl: string, apiKey: string | null) =>
   invoke<void>("save_account", { baseUrl, apiKey });
 
 export const clearAccount = () => invoke<void>("clear_account");
+
+// ---- OAuth (Cognito) ----
+//
+// The successor to the pasted API key: sign in through the Cognito Hosted UI in
+// the browser, capture the redirect on a loopback listener, and store the token
+// bundle in the keychain. The relay / MITM engine inject it live, so no
+// credential is written to any config file.
+
+/** Run one interactive sign-in: opens the Hosted UI in the browser and blocks
+ * (off the main thread) until the redirect is captured and tokens are stored,
+ * or the flow times out. Resolves with the resulting status. */
+export const oauthBeginLogin = () => invoke<OAuthStatus>("oauth_begin_login");
+
+/** Current sign-in status (signed in, email, expiry). Cheap keychain read. */
+export const oauthStatus = () => invoke<OAuthStatus>("oauth_status");
+
+/** Forget the stored OAuth tokens. Leaves auth mode at OAuth so the popover
+ * shows the sign-in prompt again rather than the legacy key form. */
+export const oauthSignOut = () => invoke<void>("oauth_sign_out");
+
+/** Set the auth mode explicitly. Used when choosing the legacy pasted-key path
+ * from the sign-in screen; OAuth sign-in sets it implicitly. */
+export const setAuthMode = (oauth: boolean) => invoke<void>("set_auth_mode", { oauth });
+
+/** List the orgs the signed-in user may act on, for the picker. */
+export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
+
+/** Persist the selected org and push X-Gate-Org-Id into a running engine/relay
+ * live (no restart). */
+export const setOrg = (orgId: string, orgName: string) =>
+  invoke<void>("set_org", { orgId, orgName });
 
 /** Dev-mode gateway switch: repoint the account at another environment and
  *  forget the stored Gate key, so the UI can prompt for a new one. */

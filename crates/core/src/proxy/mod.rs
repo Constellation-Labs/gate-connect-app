@@ -27,11 +27,16 @@
 //! systemd `environment.d` drop-in (so the proxy reaches command-line tools and
 //! GUI apps without root). Other platforms get no [`ProxyManager`].
 
+use anyhow::{Context, Result};
+use http::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 pub mod engine;
 
 mod cert_authority;
+
+/// Plaintext loopback reverse proxy for CLI tools; hosted in the engine.
+mod relay;
 
 pub mod config;
 
@@ -95,6 +100,82 @@ pub fn engine_likely_running() -> bool {
     system_proxy::load_snapshot()
         .map(|s| s.is_some())
         .unwrap_or(false)
+}
+
+/// The loopback base URL CLI tools point at to route through the reverse-proxy
+/// relay, or `None` if no relay port has ever been bound (so nothing to point
+/// at yet). Reads the persisted port, so it's stable across restarts and valid
+/// even while the engine is momentarily down. This is the base URL the tool
+/// integrations write into their config instead of a gateway URL + key.
+pub fn relay_base_url() -> Option<String> {
+    relay::load_persisted_port().map(relay::base_url)
+}
+
+/// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no
+/// MITM, no CA trust, no system-proxy changes). For environments with no
+/// menubar app - containers, servers, CI - so CLI tools pointed at the relay
+/// still route through Gate. Blocks until the process is killed.
+pub fn serve_relay() -> anyhow::Result<()> {
+    relay::serve()
+}
+
+/// Non-secret hint the tool config (or the MITM rewrite) sets, telling the
+/// gateway which upstream to forward to.
+pub(crate) const UPSTREAM_URL_HEADER: &str = "x-gate-upstream-url";
+/// Legacy credential header (Gate workspace key), injected when no OAuth token
+/// is present.
+pub(crate) const GATE_KEY_HEADER: &str = "x-gate-api-key";
+/// OAuth credential header (Cognito access token); takes precedence over the
+/// API key when present.
+pub(crate) const GATE_AUTHORIZATION_HEADER: &str = "x-gate-authorization";
+/// Selected-org header, injected alongside the OAuth token (the gateway
+/// requires it on every OAuth request).
+pub(crate) const GATE_ORG_HEADER: &str = "x-gate-org-id";
+
+/// Inject the live Gate credential into `headers`, the single precedence rule
+/// shared by the MITM engine ([`engine::apply_rewrite`]) and the loopback
+/// [`relay`] so the two paths can't drift.
+///
+/// If the caller already set an `X-Gate-Api-Key`, that's respected: the Gate
+/// headers are left exactly as they arrived and nothing is injected. Otherwise
+/// any stray `X-Gate-Authorization` / `X-Gate-Org-Id` are stripped (so an org
+/// can't ride alongside the credential we inject) and the live credential is
+/// added: a non-empty `oauth_token` wins - `X-Gate-Authorization: Bearer
+/// <token>` plus `X-Gate-Org-Id` when `org_id` is `Some` - otherwise the legacy
+/// `X-Gate-Api-Key`.
+pub(crate) fn inject_gate_credential(
+    headers: &mut HeaderMap,
+    api_key: &str,
+    oauth_token: Option<&str>,
+    org_id: Option<&str>,
+) -> Result<()> {
+    if headers.contains_key(GATE_KEY_HEADER) {
+        return Ok(());
+    }
+    headers.remove(GATE_AUTHORIZATION_HEADER);
+    headers.remove(GATE_ORG_HEADER);
+    match oauth_token.filter(|t| !t.is_empty()) {
+        Some(token) => {
+            headers.insert(
+                HeaderName::from_static(GATE_AUTHORIZATION_HEADER),
+                HeaderValue::from_str(&format!("Bearer {token}"))
+                    .context("building x-gate-authorization header")?,
+            );
+            if let Some(org) = org_id {
+                headers.insert(
+                    HeaderName::from_static(GATE_ORG_HEADER),
+                    HeaderValue::from_str(org).context("building x-gate-org-id header")?,
+                );
+            }
+        }
+        None => {
+            headers.insert(
+                HeaderName::from_static(GATE_KEY_HEADER),
+                HeaderValue::from_str(api_key).context("building x-gate-api-key header")?,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// One routable provider. The built-in set is defined by
@@ -255,6 +336,33 @@ pub fn default_domains() -> Vec<ProxyDomain> {
                 "/v1/responses".into(),
                 "/v1/embeddings".into(),
             ],
+            passthrough_prefixes: vec![],
+            enabled: false,
+            supported: true,
+        },
+        ProxyDomain {
+            slug: "chatgpt".into(),
+            display_name: "ChatGPT (Codex subscription)".into(),
+            // ChatGPT-subscription Codex talks to the Responses API at
+            // chatgpt.com/backend-api/codex/responses (bearer = the user's
+            // ChatGPT OAuth token, passed through). Codex reaches Gate via the
+            // manual integration (integrations/codex.rs), whose base_url points
+            // at the loopback relay; its own embedded agent ignores the system
+            // proxy, so the MITM engine never captures this traffic. This entry
+            // exists so the relay recognizes the tool-supplied upstream hint.
+            hosts: vec!["chatgpt.com".into()],
+            // Shape matches integrations/codex.rs exactly, because the relay
+            // exact-matches the `X-Gate-Upstream-Url` header codex.rs writes:
+            // the `/backend-api` segment rides in the upstream here, and the
+            // client-side path is the short `/codex/responses` (Codex's
+            // base_url is `<relay>/codex`, wire_api appends `/responses`). The
+            // gateway concatenates path onto upstream, yielding
+            // `https://chatgpt.com/backend-api/codex/responses`. This is a
+            // different split than the MITM convention (bare host + full
+            // `/backend-api/codex/responses` path) because the relay sees
+            // Codex's rewritten path, not the real upstream path.
+            upstream_url: "https://chatgpt.com/backend-api".into(),
+            rewrite_prefixes: vec!["/codex/responses".into()],
             passthrough_prefixes: vec![],
             enabled: false,
             supported: true,

@@ -96,6 +96,12 @@ impl ProxyManager {
             engine::EngineConfig {
                 gateway_base_url: account.gateway_base_url.clone(),
                 api_key: account.api_key.clone(),
+                // Cognito access token to inject instead of the API key, when
+                // a valid one is stored. Empty means fall back to the API
+                // key; a later refresh pushes updates via `refresh_token`.
+                oauth_token: crate::oauth::access_token_for_injection(),
+                // Selected org, injected as X-Gate-Org-Id alongside the token.
+                org_id: crate::account::org_id_for_injection(),
                 domains: domains.clone(),
                 ca_cert_pem: ca.cert_pem().to_string(),
                 ca_key_pem: ca.key_pem().to_string(),
@@ -109,6 +115,9 @@ impl ProxyManager {
                 // at its own launch must keep serving a fresh PAC, or its
                 // fetch fails and it falls back to DIRECT, bypassing Gate.
                 preferred_pac_port: system_proxy::load_pac_port().unwrap_or(None),
+                // Reuse the persisted relay port so CLI tool configs (which bake
+                // http://127.0.0.1:<port>) stay valid across restarts.
+                preferred_relay_port: crate::proxy::relay::load_persisted_port(),
                 // Per-user UID gating is a Linux concern; unused on Windows.
                 owner_uid: None,
                 // Keep any pre-existing proxy as the PAC fallback so non-Gate
@@ -123,6 +132,9 @@ impl ProxyManager {
         // Remember the ports for next time (best-effort).
         let _ = system_proxy::save_port(running.port());
         let _ = system_proxy::save_pac_port(running.pac_port());
+        // Remember the relay port so the next run rebinds it and baked CLI
+        // configs stay valid (best-effort).
+        let _ = crate::proxy::relay::save_persisted_port(running.relay_port());
 
         let pac_url = format!("http://127.0.0.1:{}/proxy.pac", running.pac_port());
 
@@ -228,6 +240,34 @@ impl ProxyManager {
             .as_ref()
         {
             running.update_api_key(api_key);
+        }
+    }
+
+    /// Push a refreshed OAuth access token into the running engine, if any.
+    /// Empty string reverts to the API key. Used by the silent-refresh loop
+    /// so a renewed token reaches in-flight routing without a restart.
+    pub fn refresh_token(&self, oauth_token: &str) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_token(oauth_token);
+        }
+    }
+
+    /// Push a newly-selected org UUID into the running engine, if any. Empty
+    /// string clears it. Used by the org switcher so the new `X-Gate-Org-Id`
+    /// reaches in-flight routing without a restart.
+    pub fn refresh_org(&self, org_id: &str) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_org(org_id);
         }
     }
 

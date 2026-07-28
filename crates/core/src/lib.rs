@@ -12,6 +12,8 @@
 pub mod account;
 pub mod env;
 pub mod keychain;
+pub mod oauth;
+pub mod org;
 pub mod primitives;
 pub mod provider;
 pub mod proxy;

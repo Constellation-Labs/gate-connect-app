@@ -133,22 +133,28 @@ impl ProxyManager {
 
         // Spawn/connect the daemon and start (or live-update) interception.
         let mut client = HelperClient::connect_or_spawn()?;
-        let port = match client.set_intercept(
+        let bound = match client.set_intercept(
             &account.gateway_base_url,
             &account.api_key,
+            &crate::oauth::access_token_for_injection(),
+            &crate::account::org_id_for_injection(),
             ca.cert_pem(),
             ca.key_pem(),
             &domains,
             preferred_port,
+            crate::proxy::relay::load_persisted_port(),
         ) {
-            Ok(port) => port,
+            Ok(bound) => bound,
             Err(e) => {
                 let _ = system_proxy::clear_snapshot();
                 return Err(e).context("starting proxy interception");
             }
         };
-        // Remember the port for next time (best-effort).
+        let port = bound.port;
+        // Remember the ports for next time (best-effort). The relay port must be
+        // stable too, since CLI tool configs bake http://127.0.0.1:<relay_port>.
         let _ = system_proxy::save_port(port);
+        let _ = crate::proxy::relay::save_persisted_port(bound.relay_port);
 
         // Point the system proxy at the engine. Unprivileged (user drop-in).
         if let Err(e) = system_proxy::enable(port) {
@@ -252,10 +258,73 @@ impl ProxyManager {
                 let _ = client.set_intercept(
                     &account.gateway_base_url,
                     api_key,
+                    &crate::oauth::access_token_for_injection(),
+                    &crate::account::org_id_for_injection(),
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
                     system_proxy::load_port().unwrap_or(None),
+                    crate::proxy::relay::load_persisted_port(),
+                );
+            }
+        }
+    }
+
+    /// Push a refreshed OAuth access token into the running daemon, if any.
+    /// Empty string reverts to the API key. Re-sends the current account/CA
+    /// so the live update carries the new token to in-flight routing.
+    pub fn refresh_token(&self, oauth_token: &str) {
+        if let Some(client) = self
+            .client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
+        {
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            if let (Ok(Some(account)), Ok(ca)) = (account::load(), ca::load_or_create()) {
+                let _ = client.set_intercept(
+                    &account.gateway_base_url,
+                    &account.api_key,
+                    oauth_token,
+                    &crate::account::org_id_for_injection(),
+                    ca.cert_pem(),
+                    ca.key_pem(),
+                    &domains,
+                    system_proxy::load_port().unwrap_or(None),
+                    crate::proxy::relay::load_persisted_port(),
+                );
+            }
+        }
+    }
+
+    /// Push a newly-selected org UUID into the running daemon, if any. Empty
+    /// string clears it. Re-sends the current account/CA/token so the live
+    /// update carries the new org to in-flight routing.
+    pub fn refresh_org(&self, org_id: &str) {
+        if let Some(client) = self
+            .client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
+        {
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            if let (Ok(Some(account)), Ok(ca)) = (account::load(), ca::load_or_create()) {
+                let _ = client.set_intercept(
+                    &account.gateway_base_url,
+                    &account.api_key,
+                    &crate::oauth::access_token_for_injection(),
+                    org_id,
+                    ca.cert_pem(),
+                    ca.key_pem(),
+                    &domains,
+                    system_proxy::load_port().unwrap_or(None),
+                    crate::proxy::relay::load_persisted_port(),
                 );
             }
         }
@@ -275,10 +344,13 @@ impl ProxyManager {
         if let Err(e) = client.set_intercept(
             &account.gateway_base_url,
             &account.api_key,
+            &crate::oauth::access_token_for_injection(),
+            &crate::account::org_id_for_injection(),
             ca.cert_pem(),
             ca.key_pem(),
             domains,
             system_proxy::load_port().unwrap_or(None),
+            crate::proxy::relay::load_persisted_port(),
         ) {
             eprintln!("gate proxy: live domain update failed: {e}");
         }

@@ -72,6 +72,16 @@ fn sign_in() {
     account::save("https://gw.example.com", Some("sk-gw-testkey123")).unwrap();
 }
 
+/// Persist a stable relay port so [`proxy::relay_base_url`] resolves. CLI tool
+/// configs point at the loopback relay, so connecting/reconciling a tool needs
+/// a bound relay port; in these tests no engine runs, so we seed the persisted
+/// port file directly (the same file the manager writes after `enable`).
+fn set_relay_port(port: u16) {
+    let dir = env::app_support_dir().unwrap().join("proxy");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+}
+
 /// Make Claude Code look installed-but-unconfigured: its config dir exists
 /// (so `detect()` is true) with no Gate settings written, which is
 /// [`Status::Detected`].
@@ -88,6 +98,7 @@ fn tool_installed_after_enable_is_configured() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
+    set_relay_port(9977);
     install_claude_unconfigured();
     // Precondition: Anthropic is on by default, and Claude is present but not
     // yet routed through Gate.
@@ -131,6 +142,7 @@ fn already_connected_tool_is_left_untouched() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
+    set_relay_port(9977);
     install_claude_unconfigured();
 
     // First sweep connects it.
@@ -157,6 +169,7 @@ fn enable_while_proxy_off_persists_intent_for_reconcile() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
+    set_relay_port(9977);
     install_claude_unconfigured();
 
     // Off then on with the proxy stopped. `disable` persists the off-intent;
@@ -177,4 +190,65 @@ fn enable_while_proxy_off_persists_intent_for_reconcile() {
     // `enable` left the domain persisted off from the earlier `disable`, so
     // reconcile would skip the provider and Claude would stay `Detected`.
     assert_eq!(claude_status(), Status::Connected);
+}
+
+/// Write the pre-relay scheme our older builds put in settings.json: base URL
+/// pointing straight at the gateway and the Gate key baked into the custom
+/// headers, with the `_gateConnect` marker showing we wrote it. This is
+/// [`Status::Drifted`] under the relay scheme.
+fn install_claude_with_stale_managed_config() {
+    install_claude_unconfigured();
+    let stale = serde_json::json!({
+        "env": {
+            "ANTHROPIC_BASE_URL": "https://gw.example.com",
+            "ANTHROPIC_CUSTOM_HEADERS":
+                "X-Gate-Api-Key: sk-gw-testkey123\nX-Gate-Upstream-Url: https://api.anthropic.com"
+        },
+        "_gateConnect": {
+            "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS"],
+            "previousEnv": {}
+        }
+    });
+    fs::write(
+        env::claude_code_settings_path().unwrap(),
+        serde_json::to_string_pretty(&stale).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn stale_managed_config_is_reapplied() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    set_relay_port(9977);
+    install_claude_with_stale_managed_config();
+    // Precondition: the old scheme reads as drift, not as connected.
+    assert!(matches!(claude_status(), Status::Drifted(_)));
+
+    provider::reconcile_enabled().unwrap();
+
+    // The sweep reasserted the managed keys: relay base URL, no baked key.
+    assert_eq!(claude_status(), Status::Connected);
+    let raw = fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap();
+    assert!(raw.contains("http://127.0.0.1:9977"));
+    assert!(!raw.contains("X-Gate-Api-Key"));
+}
+
+#[test]
+fn managed_drift_without_relay_is_left_alone() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    // No relay port persisted: connect() has no base URL to point the tool
+    // at, and the drift reason may *be* "relay not enabled yet".
+    install_claude_with_stale_managed_config();
+    let before = fs::read(env::claude_code_settings_path().unwrap()).unwrap();
+
+    provider::reconcile_enabled().unwrap();
+
+    // Untouched: still drifted, byte-for-byte identical config.
+    assert!(matches!(claude_status(), Status::Drifted(_)));
+    let after = fs::read(env::claude_code_settings_path().unwrap()).unwrap();
+    assert_eq!(before, after);
 }

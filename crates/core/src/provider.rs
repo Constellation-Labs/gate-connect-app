@@ -215,6 +215,7 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
+                relay_base_url: crate::proxy::relay_base_url(),
             };
             integ
                 .connect(&input)
@@ -305,13 +306,18 @@ fn domains_enabled_persisted(_p: &Provider) -> bool {
 ///
 /// Only tools that carry their own upstream credential (`requires_upstream_credential
 /// == false`, e.g. Claude Code) are auto-applied; a tool that needs a
-/// Gate-stored key is left for the explicit connect flow. Only tools in
-/// [`Status::Detected`] (installed, no Gate config) are touched - `Connected`
-/// and `Drifted` are left alone so this never clobbers an existing setup.
+/// Gate-stored key is left for the explicit connect flow. Tools in
+/// [`Status::Detected`] (installed, no Gate config) are connected; a
+/// [`Status::Drifted`] tool is *re*-connected only when its config carries our
+/// own management marker ([`Integration::config_is_managed`]) - i.e. the stale
+/// values are ours (an old scheme, a changed relay port), not a setup the user
+/// made by hand - and the relay is up so there's a live base URL to point it
+/// at. Unmarked drift is left alone so this never clobbers an out-of-app setup.
 pub fn reconcile_enabled() -> Result<()> {
     let Some(account) = account::load()? else {
         return Ok(()); // no gateway configured yet - nothing to point tools at
     };
+    let relay_base_url = crate::proxy::relay_base_url();
     for p in providers() {
         if !domains_enabled_persisted(&p) {
             continue;
@@ -323,12 +329,23 @@ pub fn reconcile_enabled() -> Result<()> {
             if integ.requires_upstream_credential() {
                 continue; // needs a stored key; not safe to auto-apply
             }
-            if !matches!(integ.status(), Ok(Status::Detected)) {
-                continue; // NotInstalled / Connected / Drifted - leave as-is
+            let reapply = match integ.status() {
+                Ok(Status::Detected) => true,
+                // Our own writes gone stale - safe to reassert, but only with
+                // a relay to point at (connect() bails without one, and this
+                // drift may *be* "relay not enabled yet").
+                Ok(Status::Drifted(_)) => {
+                    relay_base_url.is_some() && integ.config_is_managed().unwrap_or(false)
+                }
+                _ => false, // NotInstalled / Connected / status error - leave as-is
+            };
+            if !reapply {
+                continue;
             }
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
+                relay_base_url: relay_base_url.clone(),
             };
             if let Err(e) = integ.connect(&input) {
                 eprintln!(

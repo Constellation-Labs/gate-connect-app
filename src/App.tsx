@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
+import type { Account, OAuthStatus, ProxyState, ProviderState, Tool } from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -10,6 +10,9 @@ import {
   saveAccount,
   clearAccount,
   switchGateway,
+  oauthStatus,
+  oauthSignOut,
+  oauthBeginLogin,
   proxyStatus,
   proxyEnable,
   proxyDisable,
@@ -26,6 +29,7 @@ import {
   drainBackendErrors,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
+import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
 import { ProxyScreen } from "./screens/ProxyScreen";
 import { Settings } from "./screens/Settings";
@@ -42,7 +46,15 @@ import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { usePlatform } from "./lib/platform";
 import { useWindowReopen } from "./lib/useWindowReopen";
 
-type Screen = "loading" | "firstrun" | "home" | "proxy" | "settings" | "success" | "coming-soon";
+type Screen =
+  | "loading"
+  | "firstrun"
+  | "orgpicker"
+  | "home"
+  | "proxy"
+  | "settings"
+  | "success"
+  | "coming-soon";
 
 // Providers hidden from the UI for now. Slugs match the backend provider list.
 const HIDDEN_PROVIDER_SLUGS = new Set<string>([]);
@@ -64,10 +76,31 @@ async function forwardBackendErrors(): Promise<void> {
   for (const e of errs) trackError(e.message, backendErrorContext(e.context));
 }
 
+/** Whether the account is fully usable right now: a stored key in legacy mode,
+ *  or a live OAuth session *with an org selected* in OAuth mode (the gateway
+ *  rejects OAuth requests that carry no org). Drives home-vs-sign-in/picker. */
+function isSignedIn(account: Account | null, oauth: OAuthStatus | null): boolean {
+  if (!account) return false;
+  if (account.auth_mode === "oauth") return (oauth?.signed_in ?? false) && !!account.org_id;
+  return account.has_api_key;
+}
+
+/** An OAuth session that's authenticated but hasn't picked an org yet - the
+ *  one state that routes to the org picker rather than sign-in or home. */
+function needsOrg(account: Account | null, oauth: OAuthStatus | null): boolean {
+  return (
+    account?.auth_mode === "oauth" && (oauth?.signed_in ?? false) && !account.org_id
+  );
+}
+
 export function App() {
   const platform = usePlatform();
   const [screen, setScreen] = useState<Screen>("loading");
   const [account, setAccount] = useState<Account | null>(null);
+  const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
+  // Where the org picker returns to when done: "home" (startup re-pick),
+  // "success" (fresh sign-in), or "settings" (Switch organization).
+  const [orgPickerReturn, setOrgPickerReturn] = useState<Screen>("home");
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providers, setProviders] = useState<ProviderState[]>([]);
@@ -83,7 +116,7 @@ export function App() {
   const [restartHint, setRestartHint] = useState(false);
   useEffect(() => {
     if (!restartHint) return;
-    const t = setTimeout(() => setRestartHint(false), 8000);
+    const t = setTimeout(() => setRestartHint(false), 15000);
     return () => clearTimeout(t);
   }, [restartHint]);
   // Flashed briefly when routing is turned on; the Routing screen shows a
@@ -91,7 +124,7 @@ export function App() {
   const [relaunchHint, setRelaunchHint] = useState(false);
   useEffect(() => {
     if (!relaunchHint) return;
-    const t = setTimeout(() => setRelaunchHint(false), 8000);
+    const t = setTimeout(() => setRelaunchHint(false), 15000);
     return () => clearTimeout(t);
   }, [relaunchHint]);
 
@@ -159,6 +192,9 @@ export function App() {
         trackError(err, "startup");
         return null;
       });
+      // Best-effort: on failure treat as signed out (routes to sign-in), never
+      // crashes the launch.
+      const oauthState = await oauthStatus().catch(() => null);
       let px: ProxyState | null;
       try {
         px = await proxyStatus();
@@ -182,12 +218,23 @@ export function App() {
       const lal = await launchAtLoginStatus().catch(() => null);
       if (!alive) return;
       setAccount(acct);
+      setOAuth(oauthState);
       setProxy(px);
       setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
       if (px?.running) setRoutingNotice("on");
-      const resolved: Screen = acct ? "home" : "firstrun";
+      let resolved: Screen;
+      if (isSignedIn(acct, oauthState)) {
+        resolved = "home";
+      } else if (needsOrg(acct, oauthState)) {
+        // Signed in via OAuth but no org picked yet - go straight to the picker
+        // (returning home once chosen), not back through sign-in.
+        setOrgPickerReturn("home");
+        resolved = "orgpicker";
+      } else {
+        resolved = "firstrun";
+      }
       setScreen(resolved);
       if (!hasSeenTour()) {
         // First launch ever: open the window-sized intro and step the popover
@@ -239,6 +286,35 @@ export function App() {
     }
   }, [routingNotice]);
 
+  // The popover webview persists across tray hide/show, so the initial-load
+  // effect doesn't re-run when the user reopens the popover. Re-check the OAuth
+  // session whenever the window regains focus: if the access token expired while
+  // the popover was closed and couldn't be silently refreshed (refresh token
+  // revoked / offline), drop to the sign-in prompt instead of leaving a
+  // signed-in home up that's actually riding the legacy API-key fallback. Scoped
+  // to OAuth accounts - a pasted-key account has no session to expire.
+  useEffect(() => {
+    if (account?.auth_mode !== "oauth") return;
+    let alive = true;
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) return;
+      void (async () => {
+        const oauthState = await oauthStatus().catch(() => null);
+        if (!alive) return;
+        setOAuth(oauthState);
+        // Session died out from under us: prompt re-sign-in. Guard on needsOrg so
+        // a signed-in-but-org-pending session isn't yanked off the picker.
+        if (!isSignedIn(account, oauthState) && !needsOrg(account, oauthState)) {
+          setScreen("firstrun");
+        }
+      })();
+    });
+    return () => {
+      alive = false;
+      void unlisten.then((f) => f());
+    };
+  }, [account]);
+
   // The onboarding window announces completion; record the seen-flag in this
   // webview's storage too so the intro doesn't re-gate the next launch on
   // platforms where the two webviews don't share localStorage.
@@ -268,13 +344,47 @@ export function App() {
 
   const refreshAccount = useCallback(async () => {
     setAccount(await getAccount().catch(() => null));
+    setOAuth(await oauthStatus().catch(() => null));
+  }, []);
+
+  // OAuth sign-out: forget the stored tokens but keep the account, so the
+  // popover returns to the sign-in prompt (not first-run) and routing config /
+  // tool connections stay put for the next sign-in. The backend reverts a
+  // running engine to the legacy header.
+  const signOut = useCallback(async () => {
+    await oauthSignOut();
+    setOAuth(await oauthStatus().catch(() => null));
+    setScreen("firstrun");
+  }, []);
+
+  // Open the org picker from Settings; it returns to Settings when done.
+  const switchOrg = useCallback(() => {
+    setOrgPickerReturn("settings");
+    setScreen("orgpicker");
   }, []);
 
   const onConnected = useCallback(async () => {
-    await refreshAccount();
+    // Read the fresh account directly (state setters are async) so we can route
+    // an OAuth sign-in that still needs an org straight to the picker.
+    const acct = await getAccount().catch(() => null);
+    const oauthState = await oauthStatus().catch(() => null);
+    setAccount(acct);
+    setOAuth(oauthState);
     track("signed_in");
-    setScreen("success");
-  }, [refreshAccount]);
+    if (needsOrg(acct, oauthState)) {
+      setOrgPickerReturn("success");
+      setScreen("orgpicker");
+    } else {
+      setScreen("success");
+    }
+  }, []);
+
+  // Org chosen (or auto-selected): refresh account state and return where the
+  // picker was entered from.
+  const onOrgChosen = useCallback(async () => {
+    await refreshAccount();
+    setScreen(orgPickerReturn);
+  }, [refreshAccount, orgPickerReturn]);
 
   // `takeover: true` (the home-screen toggle) surfaces the result as the
   // full-popover routing notice; the Routing screen's toggle keeps its
@@ -394,6 +504,14 @@ export function App() {
     }
   }, [proxyBusy]);
 
+  // Legacy key accounts can switch to Constellation sign-in from Settings; the
+  // OAuth flow flips auth_mode to OAuth on success, then onConnected routes to
+  // the org picker.
+  const upgradeToOAuth = useCallback(async () => {
+    await oauthBeginLogin();
+    await onConnected();
+  }, [onConnected]);
+
   const replaceKey = useCallback(
     async (key: string) => {
       const base = account?.gateway_base_url;
@@ -414,7 +532,7 @@ export function App() {
     await relaunch();
   }, []);
 
-  const disconnect = useCallback(async () => {
+  const forget = useCallback(async () => {
     if (proxy?.running) {
       // A failed disable can leave system HTTPS pointed at a dead engine
       // port - abort the sign-out and surface it instead of silently
@@ -434,7 +552,7 @@ export function App() {
     // if that fails we are still signed in, so let the rejection reach
     // Settings instead of showing first-run over a half-signed-out state.
     await clearAccount();
-    track("disconnected");
+    track("workspace_forgotten");
     setAccount(null);
     setScreen("firstrun");
   }, [proxy]);
@@ -459,7 +577,24 @@ export function App() {
       </div>
     );
   } else if (screen === "firstrun") {
-    body = <FirstRun onConnected={onConnected} initialGateway={account?.gateway_base_url} />;
+    body = (
+      <FirstRun
+        onConnected={onConnected}
+        initialGateway={account?.gateway_base_url}
+        // An existing OAuth account here means a prior session that's no longer
+        // signed in (silent refresh failed / explicit sign-out): show the
+        // welcome-back re-auth copy rather than the first-run welcome.
+        reauth={!!account && account.auth_mode === "oauth"}
+      />
+    );
+  } else if (screen === "orgpicker") {
+    body = (
+      <OrgPicker
+        onDone={onOrgChosen}
+        onBack={orgPickerReturn === "settings" ? () => setScreen("settings") : undefined}
+        onReauth={signOut}
+      />
+    );
   } else if (screen === "success") {
     body = (
       <Success
@@ -494,9 +629,13 @@ export function App() {
     body = (
       <Settings
         account={account}
+        oauth={oauth}
         onBack={() => setScreen("home")}
         onReplaceKey={replaceKey}
-        onDisconnect={disconnect}
+        onUpgradeToOAuth={upgradeToOAuth}
+        onForget={forget}
+        onSignOut={signOut}
+        onSwitchOrg={switchOrg}
         onSwitchGateway={switchGatewayServer}
         onReplayTour={() => {
           openOnboardingWindow("settings").catch(() => {});
