@@ -67,6 +67,14 @@ pub mod system_proxy;
 #[path = "system_proxy_linux.rs"]
 pub mod system_proxy;
 
+// The env-var half of the macOS proxy wiring: `networksetup` (above) reaches
+// GUI apps, but CLI tools - Node-based ones especially - only read
+// HTTP(S)_PROXY / NODE_EXTRA_CA_CERTS, which macOS never sets for them. A
+// managed ~/.zshenv block closes that gap (Linux gets the same via its
+// environment.d drop-in).
+#[cfg(target_os = "macos")]
+pub mod system_proxy_macos_env;
+
 #[cfg(target_os = "macos")]
 mod manager;
 #[cfg(target_os = "windows")]

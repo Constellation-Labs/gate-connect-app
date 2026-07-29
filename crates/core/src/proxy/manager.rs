@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 
-use super::{ca, config, engine, system_proxy, ProxyDomain, ProxyState};
+use super::{ca, config, engine, system_proxy, system_proxy_macos_env, ProxyDomain, ProxyState};
 use crate::account;
 
 pub struct ProxyManager {
@@ -143,6 +143,15 @@ impl ProxyManager {
             return Err(e).context("enabling system proxy");
         }
 
+        // CLI reach: the PAC only helps GUI apps; CLI tools (Node-based ones
+        // especially) read HTTP(S)_PROXY / NODE_EXTRA_CA_CERTS instead, so
+        // export them for new shells via a managed ~/.zshenv block.
+        // Best-effort: the system proxy above still serves GUI apps if the
+        // write fails.
+        if let Err(e) = system_proxy_macos_env::enable(running.port()) {
+            eprintln!("gate proxy: could not write the ~/.zshenv proxy block: {e:#}");
+        }
+
         *guard = Some(running);
 
         // The crash fail-safe defers while we hold the lock; if the engine
@@ -164,6 +173,7 @@ impl ProxyManager {
                 }
             }
             let _ = system_proxy::clear_snapshot();
+            let _ = system_proxy_macos_env::disable();
             anyhow::bail!("proxy engine exited unexpectedly while enabling");
         }
         drop(guard);
@@ -211,6 +221,12 @@ impl ProxyManager {
                 let services = system_proxy::active_services()?;
                 system_proxy::force_off(&services)?;
             }
+        }
+        // Strip the ~/.zshenv proxy block so new shells stop routing at the
+        // (about to be dead) engine. Best-effort: a failed strip must not
+        // abort the engine stop below.
+        if let Err(e) = system_proxy_macos_env::disable() {
+            eprintln!("gate proxy: could not strip the ~/.zshenv proxy block: {e:#}");
         }
         if let Some(running) = running {
             running.stop();
@@ -329,6 +345,7 @@ impl ProxyManager {
             _ => system_proxy::active_services().and_then(|s| system_proxy::force_off(&s)),
         };
         let _ = system_proxy::clear_snapshot();
+        let _ = system_proxy_macos_env::disable();
     }
 
     /// Called once at app startup to undo a system proxy left pointing at an
@@ -364,6 +381,12 @@ impl ProxyManager {
                 "[gate-proxy] startup: cleared stranded loopback proxy on {}",
                 cleared.join(", ")
             );
+        }
+        // Strip any ~/.zshenv proxy block a crashed session left behind, so a
+        // dead-port proxy env doesn't break new shells. Best-effort; a clean
+        // prior disable makes it a no-op.
+        if let Err(e) = system_proxy_macos_env::disable() {
+            eprintln!("gate proxy: could not strip the ~/.zshenv proxy block: {e:#}");
         }
         Ok(())
     }
