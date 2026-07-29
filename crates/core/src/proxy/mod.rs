@@ -368,6 +368,50 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             supported: true,
         },
         ProxyDomain {
+            slug: "google".into(),
+            display_name: "Google / Gemini".into(),
+            // Gemini's generative-language API (AI Studio). Opt-in like
+            // OpenAI/OpenRouter. Note Gemini authenticates with an API key in
+            // the `x-goog-api-key` header (or a `?key=` query param), not a
+            // Bearer token - Gate forwards whatever the client sends per
+            // X-Gate-Upstream-Url.
+            hosts: vec!["generativelanguage.googleapis.com".into()],
+            upstream_url: "https://generativelanguage.googleapis.com".into(),
+            // Model-scoped inference calls only, same reasoning as Anthropic /
+            // OpenAI above: the bare list endpoint (/v1beta/models) carries no
+            // model, so the gateway can't classify it and 503s. The trailing
+            // slash keeps the list endpoint from prefix-matching while
+            // /v1beta/models/<model>:generateContent (and :streamGenerateContent)
+            // still rewrite. Do NOT widen back to "/v1beta/".
+            rewrite_prefixes: vec!["/v1beta/models/".into(), "/v1/models/".into()],
+            passthrough_prefixes: vec![],
+            enabled: false,
+            supported: true,
+        },
+        ProxyDomain {
+            slug: "google-codeassist".into(),
+            display_name: "Google / Gemini (Code Assist)".into(),
+            // The Gemini CLI's OAuth / "login with Google" flow talks to the
+            // Code Assist backend on a distinct host - not the generative-
+            // language API above. Endpoints are colon-RPC methods under
+            // /v1internal (`:generateContent`, `:streamGenerateContent`, but
+            // also model-less onboarding calls like `:loadCodeAssist` and
+            // `:onboardUser` that the gateway would 503 on). The full colon
+            // paths below act as exact matches under `starts_with`, so only
+            // the two inference methods rewrite; onboarding passes through to
+            // the real host. Auth is a Google OAuth bearer token; Gate
+            // forwards whatever the client sends per X-Gate-Upstream-Url.
+            hosts: vec!["cloudcode-pa.googleapis.com".into()],
+            upstream_url: "https://cloudcode-pa.googleapis.com".into(),
+            rewrite_prefixes: vec![
+                "/v1internal:generateContent".into(),
+                "/v1internal:streamGenerateContent".into(),
+            ],
+            passthrough_prefixes: vec![],
+            enabled: false,
+            supported: true,
+        },
+        ProxyDomain {
             slug: "openrouter".into(),
             display_name: "OpenRouter".into(),
             // OpenRouter's API lives at openrouter.ai/api/v1/* (OpenAI-shaped
@@ -534,6 +578,88 @@ mod tests {
             }
         );
         assert!(should_intercept_host(&d, "OPENROUTER.AI"));
+    }
+
+    #[test]
+    fn gemini_is_supported() {
+        let d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "google")
+            .unwrap();
+        assert!(d.supported, "google/gemini must be a supported upstream");
+    }
+
+    #[test]
+    fn rewrites_gemini_paths() {
+        let mut d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "google")
+            .expect("google domain present in catalog");
+        d.enabled = true; // catalog default is opt-in; enable for the test
+        let d = vec![d];
+        // Model-scoped generate calls on generativelanguage.googleapis.com
+        // must rewrite to the gateway with the Google upstream injected.
+        for path in [
+            "/v1beta/models/gemini-pro:generateContent",
+            "/v1beta/models/gemini-pro:streamGenerateContent",
+            "/v1/models/gemini-pro:generateContent",
+        ] {
+            assert_eq!(
+                decide(&d, "generativelanguage.googleapis.com", path),
+                Decision::Rewrite {
+                    upstream_url: "https://generativelanguage.googleapis.com".into()
+                },
+                "path {path} must rewrite"
+            );
+        }
+        // The bare list endpoint carries no model - the gateway would 503 on
+        // it, so it must pass through to real Google, not rewrite.
+        for path in ["/v1beta/models", "/v1/models"] {
+            assert_eq!(
+                decide(&d, "generativelanguage.googleapis.com", path),
+                Decision::Passthrough,
+                "model-less path {path} must pass through"
+            );
+        }
+        assert!(should_intercept_host(
+            &d,
+            "GENERATIVELANGUAGE.GOOGLEAPIS.COM"
+        ));
+    }
+
+    #[test]
+    fn rewrites_gemini_code_assist_paths() {
+        let mut d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "google-codeassist")
+            .expect("google-codeassist domain present in catalog");
+        d.enabled = true; // catalog default is opt-in; enable for the test
+        let d = vec![d];
+        // The Gemini CLI's OAuth flow hits cloudcode-pa.googleapis.com on
+        // /v1internal:<method>. Only the inference methods rewrite to the
+        // gateway with the Code Assist upstream.
+        for path in [
+            "/v1internal:generateContent",
+            "/v1internal:streamGenerateContent",
+        ] {
+            assert_eq!(
+                decide(&d, "cloudcode-pa.googleapis.com", path),
+                Decision::Rewrite {
+                    upstream_url: "https://cloudcode-pa.googleapis.com".into()
+                },
+                "path {path} must rewrite"
+            );
+        }
+        // The model-less onboarding RPCs would 503 at the gateway; they must
+        // pass through to the real host.
+        for path in ["/v1internal:loadCodeAssist", "/v1internal:onboardUser"] {
+            assert_eq!(
+                decide(&d, "cloudcode-pa.googleapis.com", path),
+                Decision::Passthrough,
+                "model-less path {path} must pass through"
+            );
+        }
+        assert!(should_intercept_host(&d, "CLOUDCODE-PA.GOOGLEAPIS.COM"));
     }
 
     #[test]

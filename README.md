@@ -19,7 +19,7 @@ ChatGPT desktop), routes their traffic through a built-in proxy instead.
  (`sk-gw-...`) lives in the OS secret store (macOS Keychain, Windows
  Credential Manager, Linux Secret Service). It never lands in a config file.
 - **Providers** (the user-facing switches): Claude Code / Cowork, OpenAI /
- Codex, and OpenRouter. Each provider orchestrates its
+ Codex, OpenRouter, and Google / Gemini. Each provider orchestrates its
  config-file tool integrations and, when the proxy is running, its proxy
  domains - so the UI shows one toggle instead of the proxy-vs-config split.
 - **Tools** (config-file integrations): Claude Code, Codex, OpenCode,
