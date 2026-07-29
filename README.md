@@ -89,7 +89,11 @@ Platform specifics: CA trust and system-proxy wiring are per-OS - macOS via
 `security` + `networksetup` (auto-proxy URL / PAC), Windows via `certutil` +
 the per-user WinINET registry settings (`AutoConfigURL` / PAC), Linux via the
 system trust store (`update-ca-certificates` / `update-ca-trust`) + a
-user-scoped systemd `environment.d` drop-in.
+user-scoped systemd `environment.d` drop-in. Because CLI tools (Node-based
+ones especially) ignore the system proxy and read `HTTP(S)_PROXY` /
+`NODE_EXTRA_CA_CERTS` instead, routing-on also injects those for new shells:
+the Linux drop-in already carries them, macOS gets a managed `~/.zshenv`
+block, and Windows gets per-user env vars under `HKCU\Environment`.
 
 Provider policy is **config-first, proxy-if-already-on**: flipping a provider on
 always configures its installed tools, and additionally flips its proxy domains

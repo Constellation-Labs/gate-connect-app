@@ -145,6 +145,15 @@ impl ProxyManager {
             return Err(e).context("enabling system proxy");
         }
 
+        // CLI reach: the PAC only steers apps that honor the system proxy;
+        // CLI tools (Node-based ones especially) read HTTP(S)_PROXY /
+        // NODE_EXTRA_CA_CERTS instead, so inject them as per-user env vars.
+        // Best-effort: the PAC above still serves GUI apps if the write
+        // fails, and restore/force_off undo it via the snapshot's prior_env.
+        if let Err(e) = system_proxy::enable_env(running.port()) {
+            eprintln!("gate proxy: could not set the HKCU proxy env vars: {e:#}");
+        }
+
         *guard = Some(running);
 
         // The crash fail-safe defers while we hold the lock; if the engine

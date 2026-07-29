@@ -12,7 +12,19 @@
 //! with `InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED + _REFRESH)` -
 //! otherwise already-running apps keep using the stale settings until the next
 //! logon.
+//!
+//! The PAC only steers apps that honor the system proxy. CLI tools - Node-based
+//! ones especially (the Gemini CLI) - read the `HTTP(S)_PROXY` env vars and
+//! trust only `NODE_EXTRA_CA_CERTS` instead, so enabling also injects those as
+//! per-user env vars under `HKCU\Environment` (the Windows analog of the macOS
+//! `~/.zshenv` block / Linux `environment.d` drop-in), broadcast via
+//! `WM_SETTINGCHANGE` so new terminals pick them up. The snapshot captures the
+//! prior values so disable puts back exactly what was there. Note this is
+//! all-or-nothing for CLI processes - unlike the PAC, an env-var proxy routes
+//! *all* their traffic through the engine (non-intercepted hosts are
+//! blind-tunnelled), matching the Linux model.
 
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fs;
 use std::path::PathBuf;
@@ -26,9 +38,32 @@ use crate::env;
 
 const INTERNET_SETTINGS: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
+/// Per-user environment block, read (merged under the machine block) into the
+/// environment of every process the user starts afterwards.
+const USER_ENV: &str = r"Environment";
+
+/// The env vars we own under `HKCU\Environment` while the proxy is on.
+/// `HTTP(S)_PROXY` point CLIs at the engine; `NO_PROXY` keeps loopback traffic
+/// off the proxy; `NODE_EXTRA_CA_CERTS` makes Node trust the engine's minted
+/// leaf certs (it ships its own bundle and ignores the system store). Windows
+/// env names are case-insensitive, so no lowercase aliases are needed.
+const ENV_VARS: [&str; 4] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+];
+
 // INTERNET_OPTION_* constants from wininet.h.
 const INTERNET_OPTION_REFRESH: u32 = 37;
 const INTERNET_OPTION_SETTINGS_CHANGED: u32 = 39;
+
+// Broadcast constants from winuser.h, used to tell Explorer (and anything else
+// listening) that the user environment changed - otherwise new terminals
+// launched from the shell keep the stale environment until the next logon.
+const HWND_BROADCAST: usize = 0xffff;
+const WM_SETTINGCHANGE: u32 = 0x001A;
+const SMTO_ABORTIFHUNG: u32 = 0x0002;
 
 #[link(name = "wininet")]
 extern "system" {
@@ -38,6 +73,19 @@ extern "system" {
         lp_buffer: *mut c_void,
         dw_buffer_length: u32,
     ) -> i32;
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn SendMessageTimeoutW(
+        hwnd: *mut c_void,
+        msg: u32,
+        wparam: usize,
+        lparam: *const u16,
+        flags: u32,
+        timeout: u32,
+        result: *mut usize,
+    ) -> isize;
 }
 
 /// Snapshot of the user's WinINET proxy configuration - the three values we
@@ -54,6 +102,13 @@ pub struct ProxySnapshot {
     /// snapshot written by an older build (before PAC mode) still loads.
     #[serde(default)]
     pub auto_config_url: String,
+    /// Prior values of the `HKCU\Environment` vars we inject ([`ENV_VARS`]):
+    /// present keys are re-set on restore, absent keys are deleted. `None`
+    /// (the `serde(default)` for a snapshot written by an older build) means
+    /// that build never injected env vars, so restore leaves the user
+    /// environment untouched rather than deleting vars it never owned.
+    #[serde(default)]
+    pub prior_env: Option<BTreeMap<String, String>>,
 }
 
 fn snapshot_path() -> Result<PathBuf> {
@@ -111,6 +166,7 @@ pub fn snapshot() -> Result<ProxySnapshot> {
         server: key.get_value("ProxyServer").unwrap_or_default(),
         bypass: key.get_value("ProxyOverride").unwrap_or_default(),
         auto_config_url: key.get_value("AutoConfigURL").unwrap_or_default(),
+        prior_env: Some(read_user_env()?),
     })
 }
 
@@ -197,6 +253,116 @@ fn set_auto_config(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Path to our CA cert, mirrored from [`super::ca`] - used for
+/// `NODE_EXTRA_CA_CERTS` so Node CLIs trust the engine's leaf certs.
+fn ca_cert_path() -> Result<PathBuf> {
+    Ok(env::app_support_dir()?.join("proxy").join("ca-cert.pem"))
+}
+
+fn env_key(write: bool) -> Result<RegKey> {
+    let access = if write {
+        KEY_READ | KEY_SET_VALUE
+    } else {
+        KEY_READ
+    };
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(USER_ENV, access)
+        .with_context(|| format!("opening HKCU\\{USER_ENV}"))
+}
+
+/// Tell Explorer (and anything else listening) that the user environment
+/// changed, so terminals launched from the shell afterwards see the new vars.
+/// Already-running processes keep their environment until relaunched.
+fn broadcast_env_change() {
+    let param: Vec<u16> = "Environment\0".encode_utf16().collect();
+    let mut result: usize = 0;
+    // SAFETY: the documented broadcast of an environment change - a valid
+    // NUL-terminated wide string and a writable result out-param; the message
+    // carries no other buffers. `param` outlives the call.
+    unsafe {
+        SendMessageTimeoutW(
+            HWND_BROADCAST as *mut c_void,
+            WM_SETTINGCHANGE,
+            0,
+            param.as_ptr(),
+            SMTO_ABORTIFHUNG,
+            5000,
+            &mut result,
+        );
+    }
+}
+
+/// Current values of the env vars we manage ([`ENV_VARS`]). A missing var is
+/// simply absent from the map, not an error. Non-privileged.
+fn read_user_env() -> Result<BTreeMap<String, String>> {
+    let key = env_key(false)?;
+    let mut map = BTreeMap::new();
+    for var in ENV_VARS {
+        if let Ok(value) = key.get_value::<String, _>(var) {
+            map.insert(var.to_string(), value);
+        }
+    }
+    Ok(map)
+}
+
+fn delete_env_value(key: &RegKey, var: &str) -> Result<()> {
+    match key.delete_value(var) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("deleting {var}")),
+    }
+}
+
+/// Put the managed env vars back exactly as `prior` recorded them: re-set the
+/// ones that existed, delete the ones we added. Broadcasts the change.
+fn restore_user_env(prior: &BTreeMap<String, String>) -> Result<()> {
+    let key = env_key(true)?;
+    for var in ENV_VARS {
+        match prior.get(var) {
+            Some(value) => key
+                .set_value(var, value)
+                .with_context(|| format!("restoring {var}"))?,
+            None => delete_env_value(&key, var)?,
+        }
+    }
+    broadcast_env_change();
+    Ok(())
+}
+
+/// Delete every managed env var. Fail-safe used when no snapshot is available,
+/// so new CLI processes never inherit a proxy pointed at a dead engine.
+/// Broadcasts the change.
+fn clear_user_env() -> Result<()> {
+    let key = env_key(true)?;
+    for var in ENV_VARS {
+        delete_env_value(&key, var)?;
+    }
+    broadcast_env_change();
+    Ok(())
+}
+
+/// Inject the proxy + CA env vars for CLI tools into `HKCU\Environment` and
+/// broadcast the change. The env-var counterpart of [`enable_pac`]: WinINET
+/// only steers apps that honor the system proxy, while CLI tools (Node-based
+/// ones especially) read `HTTP(S)_PROXY` / `NODE_EXTRA_CA_CERTS` instead.
+/// Only processes started after the broadcast see the vars; open terminals
+/// keep their environment until relaunched. Promptless (HKCU).
+pub fn enable_env(port: u16) -> Result<()> {
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let ca = ca_cert_path()?.display().to_string();
+    let key = env_key(true)?;
+    key.set_value("HTTP_PROXY", &endpoint)
+        .context("setting HTTP_PROXY")?;
+    key.set_value("HTTPS_PROXY", &endpoint)
+        .context("setting HTTPS_PROXY")?;
+    key.set_value("NO_PROXY", &"localhost,127.0.0.1,::1".to_string())
+        .context("setting NO_PROXY")?;
+    key.set_value("NODE_EXTRA_CA_CERTS", &ca)
+        .context("setting NODE_EXTRA_CA_CERTS")?;
+    broadcast_env_change();
+    Ok(())
+}
+
 /// The user's pre-existing upstream proxy as a `host:port` string suitable for
 /// a PAC `PROXY` directive, so non-Gate traffic keeps flowing through it while
 /// routing is on. Returns `None` (PAC falls back to DIRECT) when there was no
@@ -243,16 +409,57 @@ pub fn enable_pac(pac_url: &str) -> Result<()> {
 /// Restore the user's proxy config from a snapshot. Promptless; safety-critical.
 pub fn restore(snapshot: &ProxySnapshot) -> Result<()> {
     set_values(snapshot.enable, &snapshot.server, &snapshot.bypass)?;
-    set_auto_config(&snapshot.auto_config_url)
+    set_auto_config(&snapshot.auto_config_url)?;
+    // A pre-upgrade snapshot (None) was written by a build that never injected
+    // env vars, so there is nothing of ours to undo - leave the user's
+    // environment alone rather than deleting vars we never owned.
+    snapshot
+        .prior_env
+        .as_ref()
+        .map_or(Ok(()), |prior| restore_user_env(prior))
 }
 
-/// Turn the WinINET proxy off (leaving the server string intact) and clear any
-/// PAC URL we set. Promptless fail-safe used when no snapshot is available, so
-/// a dead engine never strands traffic at our proxy or a dead PAC.
+/// Turn the WinINET proxy off (leaving the server string intact), clear any
+/// PAC URL we set, and delete the managed env vars. Promptless fail-safe used
+/// when no snapshot is available, so a dead engine never strands traffic at
+/// our proxy, a dead PAC, or a dead-port env proxy.
 pub fn force_off() -> Result<()> {
     let key = settings_key(true)?;
     key.set_value("ProxyEnable", &0u32)
         .context("setting ProxyEnable")?;
     notify_wininet();
-    set_auto_config("")
+    set_auto_config("")?;
+    clear_user_env()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pre_upgrade_snapshot_without_prior_env_loads_as_none() {
+        // A snapshot written before the env-var injection existed has no
+        // `prior_env` key; it must load as None (leave the environment
+        // untouched on restore), not as an empty map (delete everything).
+        let raw = r#"{ "enable": 1, "server": "proxy:8080", "bypass": "<local>" }"#;
+        let snapshot: ProxySnapshot = serde_json::from_str(raw).unwrap();
+        assert_eq!(snapshot.prior_env, None);
+        assert_eq!(snapshot.auto_config_url, "");
+    }
+
+    #[test]
+    fn snapshot_round_trips_prior_env() {
+        let mut prior = BTreeMap::new();
+        prior.insert("HTTP_PROXY".to_string(), "http://corp:3128".to_string());
+        let snapshot = ProxySnapshot {
+            enable: 0,
+            server: String::new(),
+            bypass: String::new(),
+            auto_config_url: String::new(),
+            prior_env: Some(prior.clone()),
+        };
+        let raw = serde_json::to_string(&snapshot).unwrap();
+        let loaded: ProxySnapshot = serde_json::from_str(&raw).unwrap();
+        assert_eq!(loaded.prior_env, Some(prior));
+    }
 }
