@@ -30,7 +30,7 @@ Reach is via the injected `HTTP(S)_PROXY` + `NODE_EXTRA_CA_CERTS` env
 | Gemini API-key clients / SDKs | `generativelanguage.googleapis.com` | Yes (`google` domain) |
 | Gemini CLI (login with Google) | `cloudcode-pa.googleapis.com` | Yes (`google-codeassist`) |
 | `agy` CLI (Antigravity's standalone CLI) | `cloudcode-pa` + `daily-cloudcode-pa` | Yes (prod + daily domains) |
-| Gemini Code Assist VS Code extension | `cloudcode-pa.googleapis.com` | Yes (`google-codeassist`; extension is proxy-and-CA-aware via `https-proxy-agent`) |
+| Gemini Code Assist VS Code extension | `cloudcode-pa.googleapis.com` | Yes (`google-codeassist`; extension is proxy-and-CA-aware, and its `:generateChat` / `:completeCode` / `:generateCode` / `:internalAtomicAgenticChat` methods are now in the rewrite set) |
 | Antigravity desktop App / IDE | `cloudcode-pa` + `daily-cloudcode-pa` | **No (not routable)** |
 
 **Why the Antigravity App / IDE can't route.** Their Go language server, in

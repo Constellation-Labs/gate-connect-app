@@ -407,19 +407,28 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // the Antigravity desktop app / IDE hit these same hosts but are
             // NOT routable - their Go language server builds its client with an
             // explicit (empty) proxy URL that ignores the environment, so no
-            // proxy/env/setting we control reaches it. Endpoints are colon-RPC
-            // methods under /v1internal (`:generateContent`,
-            // `:streamGenerateContent`, plus model-less onboarding calls like
-            // `:loadCodeAssist` / `:onboardUser` that the gateway would 503
-            // on). The full colon paths below act as exact matches under
-            // `starts_with`, so only the two inference methods rewrite;
-            // onboarding passes through. Auth is a Google OAuth bearer token;
+            // proxy/env/setting we control reaches it.
+            //
+            // Endpoints are colon-RPC methods under /v1internal. We rewrite the
+            // inference methods only: `:generateContent` / `:streamGenerateContent`
+            // (the CLIs) plus `:generateChat`, `:completeCode`, `:generateCode`,
+            // and `:internalAtomicAgenticChat` (the VS Code extension's chat,
+            // inline-completion, code-gen, and agentic surfaces). Control-plane
+            // methods (`:loadCodeAssist`, `:onboardUser`, `:fetchAvailableModels`,
+            // `:listExperiments`, ...) are deliberately NOT listed, so they pass
+            // through straight to Google - they carry no model content and the
+            // client's own OAuth handles them. The full colon paths act as exact
+            // matches under `starts_with`. Auth is a Google OAuth bearer token;
             // Gate forwards whatever the client sends per X-Gate-Upstream-Url.
             hosts: vec!["cloudcode-pa.googleapis.com".into()],
             upstream_url: "https://cloudcode-pa.googleapis.com".into(),
             rewrite_prefixes: vec![
                 "/v1internal:generateContent".into(),
                 "/v1internal:streamGenerateContent".into(),
+                "/v1internal:generateChat".into(),
+                "/v1internal:completeCode".into(),
+                "/v1internal:generateCode".into(),
+                "/v1internal:internalAtomicAgenticChat".into(),
             ],
             passthrough_prefixes: vec![],
             enabled: false,
@@ -433,12 +442,16 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // sibling of `google-codeassist` rather than an extra host on it,
             // because a domain carries one upstream_url and daily-channel
             // traffic must rewrite to the daily upstream, not prod. Same
-            // narrowed method prefixes for the same 503 reason.
+            // inference method set as prod (see the comment above).
             hosts: vec!["daily-cloudcode-pa.googleapis.com".into()],
             upstream_url: "https://daily-cloudcode-pa.googleapis.com".into(),
             rewrite_prefixes: vec![
                 "/v1internal:generateContent".into(),
                 "/v1internal:streamGenerateContent".into(),
+                "/v1internal:generateChat".into(),
+                "/v1internal:completeCode".into(),
+                "/v1internal:generateCode".into(),
+                "/v1internal:internalAtomicAgenticChat".into(),
             ],
             passthrough_prefixes: vec![],
             enabled: false,
@@ -668,12 +681,18 @@ mod tests {
             .expect("google-codeassist domain present in catalog");
         d.enabled = true; // catalog default is opt-in; enable for the test
         let d = vec![d];
-        // The Gemini CLI's OAuth flow hits cloudcode-pa.googleapis.com on
-        // /v1internal:<method>. Only the inference methods rewrite to the
-        // gateway with the Code Assist upstream.
+        // Code Assist clients hit cloudcode-pa.googleapis.com on
+        // /v1internal:<method>. The inference methods rewrite to the gateway:
+        // generateContent/streamGenerateContent (the CLIs) and the VS Code
+        // Gemini Code Assist extension's chat / completion / code-gen / agentic
+        // surfaces.
         for path in [
             "/v1internal:generateContent",
             "/v1internal:streamGenerateContent",
+            "/v1internal:generateChat",
+            "/v1internal:completeCode",
+            "/v1internal:generateCode",
+            "/v1internal:internalAtomicAgenticChat",
         ] {
             assert_eq!(
                 decide(&d, "cloudcode-pa.googleapis.com", path),
@@ -683,13 +702,18 @@ mod tests {
                 "path {path} must rewrite"
             );
         }
-        // The model-less onboarding RPCs would 503 at the gateway; they must
-        // pass through to the real host.
-        for path in ["/v1internal:loadCodeAssist", "/v1internal:onboardUser"] {
+        // Control-plane RPCs are not inference; they must pass through to the
+        // real host (carry no model content, handled by the client's OAuth).
+        for path in [
+            "/v1internal:loadCodeAssist",
+            "/v1internal:onboardUser",
+            "/v1internal:fetchAvailableModels",
+            "/v1internal:listExperiments",
+        ] {
             assert_eq!(
                 decide(&d, "cloudcode-pa.googleapis.com", path),
                 Decision::Passthrough,
-                "model-less path {path} must pass through"
+                "control-plane path {path} must pass through"
             );
         }
         assert!(should_intercept_host(&d, "CLOUDCODE-PA.GOOGLEAPIS.COM"));
@@ -703,18 +727,21 @@ mod tests {
             .expect("google-codeassist-daily domain present in catalog");
         d.enabled = true; // catalog default is opt-in; enable for the test
         let d = vec![d];
-        // The pre-release channel mirrors the prod Code Assist behavior, but
-        // must rewrite to the daily upstream - never to prod.
-        assert_eq!(
-            decide(
-                &d,
-                "daily-cloudcode-pa.googleapis.com",
-                "/v1internal:streamGenerateContent"
-            ),
-            Decision::Rewrite {
-                upstream_url: "https://daily-cloudcode-pa.googleapis.com".into()
-            },
-        );
+        // The pre-release channel mirrors the prod Code Assist behavior
+        // (same inference method set), but must rewrite to the daily upstream -
+        // never to prod.
+        for path in [
+            "/v1internal:streamGenerateContent",
+            "/v1internal:generateChat",
+        ] {
+            assert_eq!(
+                decide(&d, "daily-cloudcode-pa.googleapis.com", path),
+                Decision::Rewrite {
+                    upstream_url: "https://daily-cloudcode-pa.googleapis.com".into()
+                },
+                "path {path} must rewrite to the daily upstream"
+            );
+        }
         assert_eq!(
             decide(
                 &d,
