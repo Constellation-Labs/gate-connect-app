@@ -399,16 +399,22 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         ProxyDomain {
             slug: "google-codeassist".into(),
             display_name: "Google / Gemini (Code Assist)".into(),
-            // The Gemini CLI's OAuth / "login with Google" flow talks to the
-            // Code Assist backend on a distinct host - not the generative-
-            // language API above. Endpoints are colon-RPC methods under
-            // /v1internal (`:generateContent`, `:streamGenerateContent`, but
-            // also model-less onboarding calls like `:loadCodeAssist` and
-            // `:onboardUser` that the gateway would 503 on). The full colon
-            // paths below act as exact matches under `starts_with`, so only
-            // the two inference methods rewrite; onboarding passes through to
-            // the real host. Auth is a Google OAuth bearer token; Gate
-            // forwards whatever the client sends per X-Gate-Upstream-Url.
+            // The Code Assist "login with Google" backend, on a distinct host
+            // from the generative-language API above. Routes the proxy-and-CA-
+            // aware Code Assist clients: the Gemini CLI, the standalone `agy`
+            // CLI, and the Gemini Code Assist VS Code extension (all reached
+            // via the injected HTTP(S)_PROXY + NODE_EXTRA_CA_CERTS env). NOTE:
+            // the Antigravity desktop app / IDE hit these same hosts but are
+            // NOT routable - their Go language server builds its client with an
+            // explicit (empty) proxy URL that ignores the environment, so no
+            // proxy/env/setting we control reaches it. Endpoints are colon-RPC
+            // methods under /v1internal (`:generateContent`,
+            // `:streamGenerateContent`, plus model-less onboarding calls like
+            // `:loadCodeAssist` / `:onboardUser` that the gateway would 503
+            // on). The full colon paths below act as exact matches under
+            // `starts_with`, so only the two inference methods rewrite;
+            // onboarding passes through. Auth is a Google OAuth bearer token;
+            // Gate forwards whatever the client sends per X-Gate-Upstream-Url.
             hosts: vec!["cloudcode-pa.googleapis.com".into()],
             upstream_url: "https://cloudcode-pa.googleapis.com".into(),
             rewrite_prefixes: vec![
@@ -423,11 +429,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             slug: "google-codeassist-daily".into(),
             display_name: "Google / Gemini (Code Assist, daily)".into(),
             // The Code Assist pre-release channel: same v1internal API on a
-            // `daily-` host (used by e.g. Antigravity's `agy` CLI on the daily
-            // track). A sibling of `google-codeassist` rather than an extra
-            // host on it, because a domain carries one upstream_url and
-            // daily-channel traffic must rewrite to the daily upstream, not
-            // prod. Same narrowed method prefixes for the same 503 reason.
+            // `daily-` host, used by the `agy` CLI on its daily track. A
+            // sibling of `google-codeassist` rather than an extra host on it,
+            // because a domain carries one upstream_url and daily-channel
+            // traffic must rewrite to the daily upstream, not prod. Same
+            // narrowed method prefixes for the same 503 reason.
             hosts: vec!["daily-cloudcode-pa.googleapis.com".into()],
             upstream_url: "https://daily-cloudcode-pa.googleapis.com".into(),
             rewrite_prefixes: vec![
