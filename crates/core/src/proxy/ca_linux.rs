@@ -123,7 +123,14 @@ pub fn load_or_create() -> Result<Ca> {
     };
 
     if let (Some(key_pem), Some(cert_pem)) = (existing_key, existing_cert) {
-        return Ok(Ca { cert_pem, key_pem });
+        // Reuse the persisted pair only if its Name Constraints still permit
+        // every catalog host. If the catalog grew since this CA was minted,
+        // fall through to reissue so the new hosts become routable; the next
+        // `ensure_trusted` self-heals the anchor (it compares `anchor == cert`
+        // and re-installs on mismatch).
+        if cert_authority::ca_covers_catalog(&cert_pem) {
+            return Ok(Ca { cert_pem, key_pem });
+        }
     }
 
     let (cert_pem, key_pem) = generate()?;

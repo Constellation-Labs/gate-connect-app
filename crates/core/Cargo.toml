@@ -26,6 +26,13 @@ tracing-subscriber.workspace = true
 http.workspace = true
 time.workspace = true
 
+# `x509-parser` reads the permitted DNS names out of the persisted CA cert so
+# `ca::load_or_create` can detect when the built-in domain catalog has grown
+# past the constraints an existing CA was minted with, and reissue it. Already
+# in the tree via rcgen; pinned to match. It decodes the PEM itself, so no
+# extra `pem` dependency is needed on the non-Windows platforms.
+x509-parser = "0.18"
+
 # Cognito OAuth (`oauth` module) for the app's own gateway auth. `reqwest`
 # (blocking, rustls) calls the Cognito token endpoint; `sha2` + `base64`
 # derive the PKCE S256 challenge; `rand` mints the verifier + CSRF state.

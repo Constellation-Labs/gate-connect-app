@@ -95,7 +95,13 @@ pub fn load_or_create() -> Result<Ca> {
     };
 
     if let (Some(key_pem), Some(cert_pem)) = (existing_key, existing_cert) {
-        return Ok(Ca { cert_pem, key_pem });
+        // Reuse the persisted pair only if its Name Constraints still permit
+        // every catalog host. If the catalog grew since this CA was minted,
+        // fall through to reissue so the new hosts become routable (the delete
+        // below clears the stale trusted root; ensure_trusted re-installs).
+        if cert_authority::ca_covers_catalog(&cert_pem) {
+            return Ok(Ca { cert_pem, key_pem });
+        }
     }
 
     // Regenerating must not leave the *old* root trusted: trust is keyed

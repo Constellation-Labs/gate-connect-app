@@ -1558,6 +1558,7 @@ dependencies = [
  "toml_edit 0.22.27",
  "tracing-subscriber",
  "winreg 0.52.0",
+ "x509-parser",
 ]
 
 [[package]]

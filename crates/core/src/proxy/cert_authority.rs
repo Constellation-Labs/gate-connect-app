@@ -46,8 +46,9 @@ pub(crate) const CA_COMMON_NAME: &str = "Gate Connect Local CA";
 /// built-in domain catalog: even as a fully trusted root it cannot mint
 /// acceptable certs for any other domain, shrinking the blast radius of a
 /// CA-key compromise to the providers the proxy actually intercepts.
-/// Adding a host to the catalog later requires regenerating the CA
-/// (`load_or_create` re-trusts a regenerated pair).
+/// Growing the catalog later widens this set; [`ca_covers_catalog`] detects a
+/// persisted CA whose constraints predate the growth so `load_or_create`
+/// reissues it automatically.
 pub(crate) fn ca_certificate_params() -> Result<CertificateParams> {
     let mut params =
         CertificateParams::new(Vec::<String>::new()).context("building CA certificate params")?;
@@ -64,14 +65,61 @@ pub(crate) fn ca_certificate_params() -> Result<CertificateParams> {
         KeyUsagePurpose::DigitalSignature,
     ];
     params.name_constraints = Some(NameConstraints {
-        permitted_subtrees: crate::proxy::default_domains()
-            .iter()
-            .flat_map(|d| d.hosts.iter())
-            .map(|h| GeneralSubtree::DnsName(h.clone()))
+        permitted_subtrees: required_permitted_hosts()
+            .into_iter()
+            .map(GeneralSubtree::DnsName)
             .collect(),
         excluded_subtrees: Vec::new(),
     });
     Ok(params)
+}
+
+/// The hosts the CA must be authorized to mint leaves for: the flattened host
+/// list from the built-in domain catalog. Single source for both the CA's
+/// permitted subtrees ([`ca_certificate_params`]) and the drift check
+/// ([`ca_covers_catalog`]), so the two cannot disagree.
+pub(crate) fn required_permitted_hosts() -> Vec<String> {
+    crate::proxy::default_domains()
+        .iter()
+        .flat_map(|d| d.hosts.iter())
+        .map(|h| h.to_ascii_lowercase())
+        .collect()
+}
+
+/// Whether `cert_pem`'s Name Constraints permit every host in the current
+/// catalog. A CA minted before a host joined the catalog is missing that
+/// entry, so this returns false and [`ca::load_or_create`] reissues the CA
+/// with the widened constraints. Any parse failure (unreadable PEM, no Name
+/// Constraints extension, malformed cert) also returns false: a CA we cannot
+/// prove covers the catalog must be reissued rather than trusted to route it.
+pub(crate) fn ca_covers_catalog(cert_pem: &str) -> bool {
+    use x509_parser::prelude::*;
+
+    let permitted: std::collections::HashSet<String> = match parse_x509_pem(cert_pem.as_bytes()) {
+        Ok((_, pem)) => match pem.parse_x509() {
+            Ok(cert) => match cert.name_constraints() {
+                Ok(Some(nc)) => nc
+                    .value
+                    .permitted_subtrees
+                    .iter()
+                    .flatten()
+                    .filter_map(|subtree| match subtree.base {
+                        GeneralName::DNSName(dns) => Some(dns.to_ascii_lowercase()),
+                        _ => None,
+                    })
+                    .collect(),
+                // No Name Constraints extension (or an error reading it): an
+                // unconstrained or unreadable CA is not one this build minted.
+                _ => return false,
+            },
+            Err(_) => return false,
+        },
+        Err(_) => return false,
+    };
+
+    required_permitted_hosts()
+        .iter()
+        .all(|host| permitted.contains(host))
 }
 
 pub struct GateCa {
@@ -187,5 +235,61 @@ impl CertificateAuthority for GateCa {
                 },
             );
         cfg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Self-sign `params` into a CA cert PEM, the shape `load_or_create`
+    /// persists and `ca_covers_catalog` reads back.
+    fn self_signed_ca_pem(params: CertificateParams) -> String {
+        let key = KeyPair::generate().expect("generating test CA key");
+        params
+            .self_signed(&key)
+            .expect("self-signing test CA")
+            .pem()
+    }
+
+    #[test]
+    fn covers_catalog_true_for_current_params() {
+        let pem = self_signed_ca_pem(ca_certificate_params().unwrap());
+        assert!(
+            ca_covers_catalog(&pem),
+            "a CA minted from the current params must cover the current catalog"
+        );
+    }
+
+    #[test]
+    fn covers_catalog_false_when_a_host_is_missing() {
+        // Simulate a CA minted before the catalog grew: permit only one host.
+        let mut params = ca_certificate_params().unwrap();
+        params.name_constraints = Some(NameConstraints {
+            permitted_subtrees: vec![GeneralSubtree::DnsName("api.anthropic.com".to_string())],
+            excluded_subtrees: Vec::new(),
+        });
+        let pem = self_signed_ca_pem(params);
+        assert!(
+            !ca_covers_catalog(&pem),
+            "a CA missing catalog hosts must be reported as not covering"
+        );
+    }
+
+    #[test]
+    fn covers_catalog_false_without_name_constraints() {
+        let mut params = ca_certificate_params().unwrap();
+        params.name_constraints = None;
+        let pem = self_signed_ca_pem(params);
+        assert!(
+            !ca_covers_catalog(&pem),
+            "an unconstrained CA is not one this build minted; reissue"
+        );
+    }
+
+    #[test]
+    fn covers_catalog_false_for_garbage_pem() {
+        assert!(!ca_covers_catalog("not a certificate"));
+        assert!(!ca_covers_catalog(""));
     }
 }
