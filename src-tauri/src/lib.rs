@@ -929,6 +929,38 @@ fn drain_backend_errors() -> Vec<BackendError> {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
 
+/// Visit every running agent process (see [`AGENT_PROCESS_NAMES`]), skipping
+/// our own pid. Shared by the close command and the count probe so both match
+/// the exact same process set.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
+    use sysinfo::{ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let own_pid = sysinfo::get_current_pid().ok();
+    for (pid, process) in sys.processes() {
+        if Some(*pid) == own_pid {
+            continue;
+        }
+        let name = process.name().to_string_lossy().to_lowercase();
+        let name = name.strip_suffix(".exe").unwrap_or(&name);
+        if AGENT_PROCESS_NAMES.contains(&name) {
+            f(process);
+        }
+    }
+}
+
+/// Count running agent processes without touching them. Lets the frontend
+/// skip the "close running agents" routing takeover when there is nothing to
+/// close.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn running_agents_count() -> u32 {
+    let mut count = 0u32;
+    for_each_agent_process(|_| count += 1);
+    count
+}
+
 /// Terminate running agent processes (CLIs and desktop apps, see
 /// [`AGENT_PROCESS_NAMES`]) so their next launch picks up the routing change.
 /// Graceful where the platform allows it (SIGTERM on
@@ -939,20 +971,9 @@ const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn close_running_agents() -> u32 {
-    use sysinfo::{ProcessesToUpdate, Signal, System};
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-    let own_pid = sysinfo::get_current_pid().ok();
+    use sysinfo::Signal;
     let mut closed = 0u32;
-    for (pid, process) in sys.processes() {
-        if Some(*pid) == own_pid {
-            continue;
-        }
-        let name = process.name().to_string_lossy().to_lowercase();
-        let name = name.strip_suffix(".exe").unwrap_or(&name);
-        if !AGENT_PROCESS_NAMES.contains(&name) {
-            continue;
-        }
+    for_each_agent_process(|process| {
         // kill_with(Term) is None on platforms without signal support
         // (Windows); fall back to the hard kill there.
         let signalled = process
@@ -961,7 +982,7 @@ fn close_running_agents() -> u32 {
         if signalled {
             closed += 1;
         }
-    }
+    });
     closed
 }
 
@@ -1226,6 +1247,7 @@ pub fn run() {
                     set_launch_at_login,
                     set_updater_relaunching,
                     routed_clients_stale,
+                    running_agents_count,
                     close_running_agents,
                     drain_backend_errors,
                 ]
