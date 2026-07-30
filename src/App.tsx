@@ -26,6 +26,7 @@ import {
   unpinPopover,
   openOnboardingWindow,
   routedClientsStale,
+  runningAgentsCount,
   drainBackendErrors,
   pendingQuitTools,
 } from "./lib/api";
@@ -195,13 +196,16 @@ export function App() {
       const provs = await listProviders().catch(() => []);
       const toolList = await listTools().catch(() => []);
       const stale = await routedClientsStale().catch(() => false);
+      // The takeover only says "close your running agents", so skip it when
+      // none are running; a failed probe defaults to showing.
+      const agents = px?.running ? await runningAgentsCount().catch(() => 1) : 0;
       if (!alive) return;
       setProxy(px);
       setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
       if (px?.running) {
-        setRoutingNotice("on");
+        if (agents > 0) setRoutingNotice("on");
         // The backend only emits this nudge after its startup auto-enable, so
         // routing coming up here is a restored session, not a user toggle.
         track("proxy_enabled", { source: "restored" });
@@ -240,6 +244,9 @@ export function App() {
       });
       // Analytics-only dimension on app_launched; omitted when unreadable.
       const lal = await launchAtLoginStatus().catch(() => null);
+      // Same gate as the proxy-state-changed listener: no running agents, no
+      // takeover; a failed probe defaults to showing.
+      const agents = px?.running ? await runningAgentsCount().catch(() => 1) : 0;
       if (!alive) return;
       setAccount(acct);
       setOAuth(oauthState);
@@ -247,7 +254,7 @@ export function App() {
       setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
-      if (px?.running) setRoutingNotice("on");
+      if (px?.running && agents > 0) setRoutingNotice("on");
       let resolved: Screen;
       if (isSignedIn(acct, oauthState)) {
         resolved = "home";
@@ -428,7 +435,10 @@ export function App() {
         // The takeover and the inline hints say the same thing ("restart your
         // agents"), so show one or the other, never both.
         if (takeover) {
-          setRoutingNotice(next.running ? "on" : "off");
+          // Nothing running means nothing to close: skip the takeover
+          // entirely; a failed probe defaults to showing.
+          const agents = await runningAgentsCount().catch(() => 1);
+          if (agents > 0) setRoutingNotice(next.running ? "on" : "off");
         } else {
           setRestartHint(true);
           if (next.running) setRelaunchHint(true);

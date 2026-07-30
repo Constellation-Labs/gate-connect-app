@@ -229,6 +229,11 @@ export const setUpdaterRelaunching = (relaunching: boolean) =>
  * at the dead old port, so the popover shows a restart notice. */
 export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
 
+/** Count running AI tools (same process set as {@link closeRunningAgents})
+ * without touching them. Used to skip the routing-change takeover when there
+ * is nothing to close. */
+export const runningAgentsCount = () => invoke<number>("running_agents_count");
+
 /** Terminate running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up
  * the routing change. Resolves to how many processes were signalled; 0 means
