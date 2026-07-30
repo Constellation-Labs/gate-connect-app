@@ -87,6 +87,19 @@ pub fn providers() -> Vec<Provider> {
             tool_ids: &[],
             proxy_domain_slugs: &["google", "google-codeassist", "google-codeassist-daily"],
         },
+        Provider {
+            slug: "google-vertex",
+            display_name: "Google / Vertex AI",
+            // Vertex AI (rebranded "Gemini Enterprise Agent Platform" in
+            // 2026; the API endpoints are unchanged). A separate switch from
+            // "Google / Gemini" above: different GCP surface, auth (OAuth
+            // bearer vs API key), and billing. Proxy-only, like OpenRouter -
+            // the client's tooling (Vertex/GenAI SDKs, gcloud, Gemini CLI in
+            // Vertex mode) mints its own credentials; nothing to configure.
+            subtitle: "Vertex AI (Gemini Enterprise) API",
+            tool_ids: &[],
+            proxy_domain_slugs: &["google-vertex"],
+        },
     ]
 }
 
@@ -619,6 +632,19 @@ mod tests {
             p.proxy_domain_slugs,
             &["google", "google-codeassist", "google-codeassist-daily"]
         );
+    }
+
+    #[test]
+    fn vertex_provider_is_proxy_only_and_separate_from_gemini() {
+        let p = find("google-vertex").expect("google-vertex provider present");
+        assert_eq!(p.display_name, "Google / Vertex AI");
+        assert!(
+            p.tool_ids.is_empty(),
+            "Vertex has no CLI integration - it's proxy-only"
+        );
+        // A distinct switch from "google": different GCP surface, auth, and
+        // billing (spec §4 option A).
+        assert_eq!(p.proxy_domain_slugs, &["google-vertex"]);
     }
 
     #[test]

@@ -124,8 +124,18 @@ export interface ProxyDomain {
   slug: string;
   display_name: string;
   hosts: string[];
+  /** Regional-wildcard hostnames: a suffix matches its bare form or any
+   * `<region>-`-prefixed sibling (e.g. `aiplatform.googleapis.com` also
+   * matches `us-central1-aiplatform.googleapis.com`). */
+  host_suffixes: string[];
   upstream_url: string;
+  /** When true the engine echoes the intercepted host as the upstream,
+   * preserving the region the client chose. */
+  same_host_upstream: boolean;
   rewrite_prefixes: string[];
+  /** Path suffixes that are inference calls, for colon-RPC APIs that carry
+   * the model in the path (e.g. `:generateContent`). */
+  rewrite_suffixes: string[];
   passthrough_prefixes: string[];
   enabled: boolean;
   /** Whether Gate can upstream this provider yet. Unsupported domains

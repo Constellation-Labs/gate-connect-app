@@ -196,11 +196,23 @@ pub fn validate_domains(domains: &[ProxyDomain]) -> Result<()> {
         if d.hosts != known.hosts {
             anyhow::bail!("intercept domain {:?} has hosts not in the catalog", d.slug);
         }
+        if d.host_suffixes != known.host_suffixes {
+            anyhow::bail!(
+                "intercept domain {:?} has host suffixes not in the catalog",
+                d.slug
+            );
+        }
         if d.upstream_url != known.upstream_url {
             anyhow::bail!(
                 "intercept domain {:?} upstream {:?} does not match the catalog",
                 d.slug,
                 d.upstream_url
+            );
+        }
+        if d.same_host_upstream != known.same_host_upstream {
+            anyhow::bail!(
+                "intercept domain {:?} same-host upstream flag does not match the catalog",
+                d.slug
             );
         }
     }
@@ -245,6 +257,22 @@ mod tests {
     fn validate_rejects_unknown_slug() {
         let mut d = default_domains();
         d[0].slug = "evil".into();
+        assert!(validate_domains(&d).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_tampered_host_suffixes() {
+        let mut d = default_domains();
+        d[0].host_suffixes.push("evil.example".into());
+        assert!(validate_domains(&d).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_tampered_same_host_upstream() {
+        // Flipping same-host on redirects a static domain's traffic to
+        // whatever host was intercepted - the guard must pin it.
+        let mut d = default_domains();
+        d[0].same_host_upstream = !d[0].same_host_upstream;
         assert!(validate_domains(&d).is_err());
     }
 

@@ -198,12 +198,32 @@ pub struct ProxyDomain {
     /// Exact hostnames to intercept (e.g. `api.anthropic.com`). A CONNECT
     /// to any other host is blind-tunnelled.
     pub hosts: Vec<String>,
+    /// Regional-wildcard hostnames: a suffix `aiplatform.googleapis.com`
+    /// matches the bare host itself (the `global` endpoint) or any
+    /// `<region>-aiplatform.googleapis.com`. The match anchors on the `-`
+    /// region separator, so `evil-aiplatform.googleapis.com.attacker.com`
+    /// (suffix not at the end) and `notaiplatform.googleapis.com` (no
+    /// separator) never match. Empty for single-host providers.
+    #[serde(default)]
+    pub host_suffixes: Vec<String>,
     /// Value injected as `X-Gate-Upstream-Url` - where Gate forwards the
     /// rewritten request (e.g. `https://api.anthropic.com`).
     pub upstream_url: String,
+    /// When true, `decide` echoes the intercepted host (`https://<host>`)
+    /// as the upstream instead of the static `upstream_url` - required for
+    /// suffix-matched regional hosts, where the correct upstream is whichever
+    /// regional host the client chose.
+    #[serde(default)]
+    pub same_host_upstream: bool,
     /// Path prefixes that are inference calls and should be rewritten to
     /// the gateway (e.g. `/v1/`).
     pub rewrite_prefixes: Vec<String>,
+    /// Path suffixes that are inference calls, for colon-RPC APIs that put
+    /// the model in the path (e.g. `:generateContent` catches
+    /// `/v1/projects/{p}/.../models/{m}:generateContent` at any depth,
+    /// where no prefix can isolate the inference methods).
+    #[serde(default)]
+    pub rewrite_suffixes: Vec<String>,
     /// Path prefixes on an intercepted host that must NOT be rewritten -
     /// they pass through to the real upstream (e.g. an app's
     /// `/api/desktop/` auto-updater channel).
@@ -217,7 +237,14 @@ pub struct ProxyDomain {
 
 impl ProxyDomain {
     fn matches_host(&self, host: &str) -> bool {
-        self.hosts.iter().any(|h| h.eq_ignore_ascii_case(host))
+        if self.hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+            return true;
+        }
+        let host = host.to_ascii_lowercase();
+        self.host_suffixes.iter().any(|s| {
+            let s = s.to_ascii_lowercase();
+            host == s || host.ends_with(&format!("-{s}"))
+        })
     }
 }
 
@@ -272,12 +299,22 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
         {
             return Decision::Passthrough;
         }
-        if d.rewrite_prefixes
+        let inference = d
+            .rewrite_prefixes
             .iter()
             .any(|p| path.starts_with(p.as_str()))
-        {
+            || d.rewrite_suffixes
+                .iter()
+                .any(|s| path.ends_with(s.as_str()));
+        if inference {
             return Decision::Rewrite {
-                upstream_url: d.upstream_url.clone(),
+                // Suffix-matched regional hosts echo the host the request
+                // came in on, preserving the region the client chose.
+                upstream_url: if d.same_host_upstream {
+                    format!("https://{}", host.to_ascii_lowercase())
+                } else {
+                    d.upstream_url.clone()
+                },
             };
         }
         return Decision::Passthrough;
@@ -301,9 +338,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // and claude.ai is the web/login surface - both are deliberately
             // left tunnelled, never intercepted.
             hosts: vec!["api.anthropic.com".into()],
+            host_suffixes: vec![],
             // Applies to every host above. Only group hosts that genuinely
             // share this upstream - never collapse distinct API hosts onto one.
             upstream_url: "https://api.anthropic.com".into(),
+            same_host_upstream: false,
             // Only genuine inference endpoints are rewritten to the gateway.
             // Scoped deliberately narrow: Claude Desktop / Cowork also make
             // OAuth + account calls on this same host under /v1/ (e.g.
@@ -314,6 +353,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // path fall through to `decide`'s default Passthrough and reach the
             // real host unchanged. Do NOT widen this back to "/v1/".
             rewrite_prefixes: vec!["/v1/messages".into(), "/v1/complete".into()],
+            rewrite_suffixes: vec![],
             // Paths outside the inference set already pass through; this keeps
             // the Squirrel auto-updater explicit. Other /api/* paths
             // (claude_code, event_logging, bootstrap) also reach the real host
@@ -332,7 +372,9 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // directly, so the proxy can't capture them - route Codex via the
             // manual integration (config.toml base_url) instead.
             hosts: vec!["api.openai.com".into()],
+            host_suffixes: vec![],
             upstream_url: "https://api.openai.com".into(),
+            same_host_upstream: false,
             // Inference endpoints only, same reasoning as Anthropic above: a
             // client's non-inference /v1/ calls (e.g. /v1/models preflight)
             // carry no model, so the gateway can't classify them and 503s.
@@ -344,6 +386,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
                 "/v1/responses".into(),
                 "/v1/embeddings".into(),
             ],
+            rewrite_suffixes: vec![],
             passthrough_prefixes: vec![],
             enabled: false,
             supported: true,
@@ -359,6 +402,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // proxy, so the MITM engine never captures this traffic. This entry
             // exists so the relay recognizes the tool-supplied upstream hint.
             hosts: vec!["chatgpt.com".into()],
+            host_suffixes: vec![],
             // Shape matches integrations/codex.rs exactly, because the relay
             // exact-matches the `X-Gate-Upstream-Url` header codex.rs writes:
             // the `/backend-api` segment rides in the upstream here, and the
@@ -370,7 +414,9 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // `/backend-api/codex/responses` path) because the relay sees
             // Codex's rewritten path, not the real upstream path.
             upstream_url: "https://chatgpt.com/backend-api".into(),
+            same_host_upstream: false,
             rewrite_prefixes: vec!["/codex/responses".into()],
+            rewrite_suffixes: vec![],
             passthrough_prefixes: vec![],
             enabled: false,
             supported: true,
@@ -384,7 +430,9 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // Bearer token - Gate forwards whatever the client sends per
             // X-Gate-Upstream-Url.
             hosts: vec!["generativelanguage.googleapis.com".into()],
+            host_suffixes: vec![],
             upstream_url: "https://generativelanguage.googleapis.com".into(),
+            same_host_upstream: false,
             // Model-scoped inference calls only, same reasoning as Anthropic /
             // OpenAI above: the bare list endpoint (/v1beta/models) carries no
             // model, so the gateway can't classify it and 503s. The trailing
@@ -392,6 +440,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // /v1beta/models/<model>:generateContent (and :streamGenerateContent)
             // still rewrite. Do NOT widen back to "/v1beta/".
             rewrite_prefixes: vec!["/v1beta/models/".into(), "/v1/models/".into()],
+            rewrite_suffixes: vec![],
             passthrough_prefixes: vec![],
             enabled: false,
             supported: true,
@@ -421,7 +470,9 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // matches under `starts_with`. Auth is a Google OAuth bearer token;
             // Gate forwards whatever the client sends per X-Gate-Upstream-Url.
             hosts: vec!["cloudcode-pa.googleapis.com".into()],
+            host_suffixes: vec![],
             upstream_url: "https://cloudcode-pa.googleapis.com".into(),
+            same_host_upstream: false,
             rewrite_prefixes: vec![
                 "/v1internal:generateContent".into(),
                 "/v1internal:streamGenerateContent".into(),
@@ -430,6 +481,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
                 "/v1internal:generateCode".into(),
                 "/v1internal:internalAtomicAgenticChat".into(),
             ],
+            rewrite_suffixes: vec![],
             passthrough_prefixes: vec![],
             enabled: false,
             supported: true,
@@ -444,7 +496,9 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // traffic must rewrite to the daily upstream, not prod. Same
             // inference method set as prod (see the comment above).
             hosts: vec!["daily-cloudcode-pa.googleapis.com".into()],
+            host_suffixes: vec![],
             upstream_url: "https://daily-cloudcode-pa.googleapis.com".into(),
+            same_host_upstream: false,
             rewrite_prefixes: vec![
                 "/v1internal:generateContent".into(),
                 "/v1internal:streamGenerateContent".into(),
@@ -452,6 +506,45 @@ pub fn default_domains() -> Vec<ProxyDomain> {
                 "/v1internal:completeCode".into(),
                 "/v1internal:generateCode".into(),
                 "/v1internal:internalAtomicAgenticChat".into(),
+            ],
+            rewrite_suffixes: vec![],
+            passthrough_prefixes: vec![],
+            enabled: false,
+            supported: true,
+        },
+        ProxyDomain {
+            slug: "google-vertex".into(),
+            display_name: "Google / Vertex AI".into(),
+            // Vertex AI (rebranded "Gemini Enterprise Agent Platform" in
+            // 2026; the API kept its aiplatform.googleapis.com endpoints).
+            // Vertex serves from regional hosts
+            // ({region}-aiplatform.googleapis.com) plus the bare host for the
+            // `global` endpoint, so this entry matches by host suffix and
+            // echoes the intercepted host as the upstream
+            // (same_host_upstream) - region-preserving BYOK passthrough.
+            // Auth is the client's own short-lived OAuth bearer (gcloud /
+            // ADC), forwarded untouched; Gate Connect stores nothing.
+            hosts: vec![],
+            host_suffixes: vec!["aiplatform.googleapis.com".into()],
+            upstream_url: "https://aiplatform.googleapis.com".into(),
+            same_host_upstream: true,
+            // Vertex is colon-RPC with the model in the path
+            // (/v1/projects/{p}/locations/{r}/publishers/google/models/{m}:generateContent),
+            // so inference is scoped by method suffix, not prefix: Gemini
+            // generate calls, Claude-on-Vertex rawPredict, embeddings/media
+            // predict, and the Model-Garden OpenAI-compat chat/completions
+            // path. Discovery / operations-polling calls on the same host
+            // carry no model and must pass through to real Google (the
+            // gateway 503s model-less calls) - same trap as the "Do NOT
+            // widen" warnings above.
+            rewrite_prefixes: vec![],
+            rewrite_suffixes: vec![
+                ":generateContent".into(),
+                ":streamGenerateContent".into(),
+                ":rawPredict".into(),
+                ":streamRawPredict".into(),
+                ":predict".into(),
+                "/endpoints/openapi/chat/completions".into(),
             ],
             passthrough_prefixes: vec![],
             enabled: false,
@@ -464,8 +557,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // chat/completions). Opt-in like OpenAI; intercepts OpenRouter
             // clients that honor the system proxy.
             hosts: vec!["openrouter.ai".into()],
+            host_suffixes: vec![],
             upstream_url: "https://openrouter.ai".into(),
+            same_host_upstream: false,
             rewrite_prefixes: vec!["/api/".into()],
+            rewrite_suffixes: vec![],
             passthrough_prefixes: vec![],
             enabled: false,
             supported: true,
@@ -757,6 +853,138 @@ mod tests {
             &d,
             "DAILY-CLOUDCODE-PA.GOOGLEAPIS.COM"
         ));
+    }
+
+    /// The Vertex AI domain (spec: docs/vertex-ai-proxy-spec.md), enabled for
+    /// tests: regional wildcard hosts + same-host upstream + method-suffix
+    /// path scoping.
+    fn vertex() -> Vec<ProxyDomain> {
+        let mut d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "google-vertex")
+            .expect("google-vertex domain present in catalog");
+        d.enabled = true; // catalog default is opt-in; enable for the test
+        vec![d]
+    }
+
+    #[test]
+    fn vertex_is_supported() {
+        let d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "google-vertex")
+            .unwrap();
+        assert!(d.supported, "vertex must be a supported upstream");
+        assert!(!d.enabled, "vertex is opt-in");
+    }
+
+    #[test]
+    fn vertex_matches_regional_and_global_hosts() {
+        let d = vertex();
+        // The bare host (global endpoint) and any regional sibling match,
+        // case-insensitively.
+        for host in [
+            "aiplatform.googleapis.com",
+            "us-central1-aiplatform.googleapis.com",
+            "europe-west4-aiplatform.googleapis.com",
+            "US-CENTRAL1-AIPLATFORM.GOOGLEAPIS.COM",
+        ] {
+            assert!(should_intercept_host(&d, host), "host {host} must match");
+        }
+        // The suffix is anchored at the end of the host and on the `-` region
+        // separator: neither a lookalike parent nor an unhyphenated run-on
+        // may match.
+        for host in [
+            "evil-aiplatform.googleapis.com.attacker.com",
+            "aiplatform.googleapis.com.attacker.com",
+            "notaiplatform.googleapis.com",
+            "googleapis.com",
+        ] {
+            assert!(
+                !should_intercept_host(&d, host),
+                "host {host} must NOT match"
+            );
+        }
+    }
+
+    #[test]
+    fn vertex_rewrites_inference_methods_to_the_region_the_client_chose() {
+        let d = vertex();
+        // The upstream echoes the intercepted host (same_host_upstream), so
+        // one domain entry covers every region without redirecting traffic
+        // cross-region.
+        let cases = [
+            (
+                "us-central1-aiplatform.googleapis.com",
+                "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent",
+            ),
+            (
+                "europe-west4-aiplatform.googleapis.com",
+                "/v1/projects/p/locations/europe-west4/publishers/google/models/gemini-2.5-pro:streamGenerateContent",
+            ),
+            (
+                "aiplatform.googleapis.com",
+                "/v1/projects/p/locations/global/publishers/google/models/gemini-2.5-pro:generateContent",
+            ),
+            // Claude on Vertex.
+            (
+                "us-east5-aiplatform.googleapis.com",
+                "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-fable-5:rawPredict",
+            ),
+            (
+                "us-east5-aiplatform.googleapis.com",
+                "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-fable-5:streamRawPredict",
+            ),
+            // Embeddings, and the beta API surface.
+            (
+                "us-central1-aiplatform.googleapis.com",
+                "/v1beta1/projects/p/locations/us-central1/publishers/google/models/text-embedding-005:predict",
+            ),
+            // Model-Garden MaaS (OpenAI-shaped).
+            (
+                "us-central1-aiplatform.googleapis.com",
+                "/v1/projects/p/locations/us-central1/endpoints/openapi/chat/completions",
+            ),
+        ];
+        for (host, path) in cases {
+            assert_eq!(
+                decide(&d, host, path),
+                Decision::Rewrite {
+                    upstream_url: format!("https://{host}")
+                },
+                "path {path} on {host} must rewrite to the same host"
+            );
+        }
+        // A client sending an uppercase authority still gets a lowercase
+        // upstream echo.
+        assert_eq!(
+            decide(
+                &d,
+                "US-CENTRAL1-AIPLATFORM.GOOGLEAPIS.COM",
+                "/v1/projects/p/locations/us-central1/publishers/google/models/m:generateContent"
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://us-central1-aiplatform.googleapis.com".into()
+            }
+        );
+    }
+
+    #[test]
+    fn vertex_passes_through_discovery_and_operations() {
+        let d = vertex();
+        // Non-inference calls on the same host carry no model - the gateway
+        // would 503 them - so they must reach real Google untouched.
+        for path in [
+            "/v1/projects/p/locations",
+            "/v1/projects/p/locations/us-central1/publishers/google/models",
+            "/v1/projects/p/locations/us-central1/operations/op-123",
+            "/v1/projects/p/locations/us-central1/models/m",
+        ] {
+            assert_eq!(
+                decide(&d, "us-central1-aiplatform.googleapis.com", path),
+                Decision::Passthrough,
+                "non-inference path {path} must pass through"
+            );
+        }
     }
 
     #[test]

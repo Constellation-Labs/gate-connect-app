@@ -583,7 +583,8 @@ fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
 /// Enabled Gate hosts route to the loopback proxy; everything else falls to
 /// `upstream` when the user already had a proxy (preserving a corporate proxy),
 /// or DIRECT otherwise. Host matching mirrors [`ProxyDomain::matches_host`]:
-/// exact, case-insensitive hostnames.
+/// exact, case-insensitive hostnames, plus the bare-or-`<region>-` forms of
+/// each host suffix.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) -> String {
     let mut s = String::from("function FindProxyForURL(url, host) {\n");
@@ -592,6 +593,12 @@ fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) 
         s.push_str(&format!(
             "  if (h === \"{}\") return \"PROXY 127.0.0.1:{proxy_port}\";\n",
             host.to_ascii_lowercase()
+        ));
+    }
+    for suffix in domains.iter().flat_map(|d| d.host_suffixes.iter()) {
+        let suffix = suffix.to_ascii_lowercase();
+        s.push_str(&format!(
+            "  if (h === \"{suffix}\" || shExpMatch(h, \"*-{suffix}\")) return \"PROXY 127.0.0.1:{proxy_port}\";\n",
         ));
     }
     match upstream {
@@ -948,8 +955,11 @@ mod tests {
             slug: "anthropic".into(),
             display_name: "Anthropic".into(),
             hosts: vec!["api.anthropic.com".into(), "API.OTHER.com".into()],
+            host_suffixes: vec!["aiplatform.googleapis.com".into()],
             upstream_url: "https://api.anthropic.com".into(),
+            same_host_upstream: false,
             rewrite_prefixes: vec!["/v1/".into()],
+            rewrite_suffixes: vec![],
             passthrough_prefixes: vec![],
             enabled: true,
             supported: true,
@@ -959,6 +969,10 @@ mod tests {
         let pac = pac_script(&domains, 8123, None);
         assert!(pac.contains("if (h === \"api.anthropic.com\") return \"PROXY 127.0.0.1:8123\";"));
         assert!(pac.contains("if (h === \"api.other.com\") return \"PROXY 127.0.0.1:8123\";"));
+        // Suffix-matched regional hosts: bare form or any `<region>-` prefix.
+        assert!(pac.contains(
+            "if (h === \"aiplatform.googleapis.com\" || shExpMatch(h, \"*-aiplatform.googleapis.com\")) return \"PROXY 127.0.0.1:8123\";"
+        ));
         assert!(pac.trim_end().ends_with("return \"DIRECT\";\n}"));
         assert!(!pac.contains("teams"));
 

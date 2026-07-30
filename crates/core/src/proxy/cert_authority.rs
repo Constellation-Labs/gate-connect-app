@@ -75,15 +75,37 @@ pub(crate) fn ca_certificate_params() -> Result<CertificateParams> {
 }
 
 /// The hosts the CA must be authorized to mint leaves for: the flattened host
-/// list from the built-in domain catalog. Single source for both the CA's
+/// list from the built-in domain catalog, plus one constraint per host
+/// suffix (see [`suffix_constraint`]). Single source for both the CA's
 /// permitted subtrees ([`ca_certificate_params`]) and the drift check
 /// ([`ca_covers_catalog`]), so the two cannot disagree.
 pub(crate) fn required_permitted_hosts() -> Vec<String> {
     crate::proxy::default_domains()
         .iter()
-        .flat_map(|d| d.hosts.iter())
-        .map(|h| h.to_ascii_lowercase())
+        .flat_map(|d| {
+            d.hosts
+                .iter()
+                .map(|h| h.to_ascii_lowercase())
+                .chain(d.host_suffixes.iter().map(|s| suffix_constraint(s)))
+                .collect::<Vec<_>>()
+        })
         .collect()
+}
+
+/// The X.509 dNSName constraint covering a catalog host suffix. A dNSName
+/// constraint permits a host only when it equals the constraint or is a
+/// *dot-separated* subdomain of it - but suffix-matched regional hosts
+/// (`us-central1-aiplatform.googleapis.com`) are hyphenated *siblings* of the
+/// bare `aiplatform.googleapis.com`, not subdomains, so the narrowest single
+/// constraint covering all of them is the suffix's parent domain
+/// (`googleapis.com`). That is deliberately wider than the intercept set:
+/// enumerating regions instead would hard-fail TLS for any region Google adds
+/// after this build's CA was minted.
+fn suffix_constraint(suffix: &str) -> String {
+    let s = suffix.to_ascii_lowercase();
+    s.split_once('.')
+        .map(|(_, parent)| parent.to_string())
+        .unwrap_or(s)
 }
 
 /// Whether `cert_pem`'s Name Constraints permit every host in the current
@@ -258,6 +280,17 @@ mod tests {
         assert!(
             ca_covers_catalog(&pem),
             "a CA minted from the current params must cover the current catalog"
+        );
+    }
+
+    /// A host suffix (Vertex's regional `*-aiplatform.googleapis.com`) must
+    /// surface in the permitted set as its parent domain - the only dNSName
+    /// constraint that covers hyphenated regional siblings.
+    #[test]
+    fn permitted_hosts_cover_host_suffixes_via_parent_domain() {
+        assert!(
+            required_permitted_hosts().contains(&"googleapis.com".to_string()),
+            "the Vertex host suffix must widen the constraints to googleapis.com"
         );
     }
 
