@@ -420,6 +420,25 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             supported: true,
         },
         ProxyDomain {
+            slug: "google-codeassist-daily".into(),
+            display_name: "Google / Gemini (Code Assist, daily)".into(),
+            // The Code Assist pre-release channel: same v1internal API on a
+            // `daily-` host (used by e.g. Antigravity's `agy` CLI on the daily
+            // track). A sibling of `google-codeassist` rather than an extra
+            // host on it, because a domain carries one upstream_url and
+            // daily-channel traffic must rewrite to the daily upstream, not
+            // prod. Same narrowed method prefixes for the same 503 reason.
+            hosts: vec!["daily-cloudcode-pa.googleapis.com".into()],
+            upstream_url: "https://daily-cloudcode-pa.googleapis.com".into(),
+            rewrite_prefixes: vec![
+                "/v1internal:generateContent".into(),
+                "/v1internal:streamGenerateContent".into(),
+            ],
+            passthrough_prefixes: vec![],
+            enabled: false,
+            supported: true,
+        },
+        ProxyDomain {
             slug: "openrouter".into(),
             display_name: "OpenRouter".into(),
             // OpenRouter's API lives at openrouter.ai/api/v1/* (OpenAI-shaped
@@ -668,6 +687,43 @@ mod tests {
             );
         }
         assert!(should_intercept_host(&d, "CLOUDCODE-PA.GOOGLEAPIS.COM"));
+    }
+
+    #[test]
+    fn rewrites_gemini_code_assist_daily_paths() {
+        let mut d = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "google-codeassist-daily")
+            .expect("google-codeassist-daily domain present in catalog");
+        d.enabled = true; // catalog default is opt-in; enable for the test
+        let d = vec![d];
+        // The pre-release channel mirrors the prod Code Assist behavior, but
+        // must rewrite to the daily upstream - never to prod.
+        assert_eq!(
+            decide(
+                &d,
+                "daily-cloudcode-pa.googleapis.com",
+                "/v1internal:streamGenerateContent"
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://daily-cloudcode-pa.googleapis.com".into()
+            },
+        );
+        assert_eq!(
+            decide(
+                &d,
+                "daily-cloudcode-pa.googleapis.com",
+                "/v1internal:loadCodeAssist"
+            ),
+            Decision::Passthrough,
+            "model-less path must pass through"
+        );
+        // The daily domain must not capture the prod host (and vice versa).
+        assert!(!should_intercept_host(&d, "cloudcode-pa.googleapis.com"));
+        assert!(should_intercept_host(
+            &d,
+            "DAILY-CLOUDCODE-PA.GOOGLEAPIS.COM"
+        ));
     }
 
     #[test]
