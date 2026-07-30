@@ -513,7 +513,18 @@ pub fn restore_all() -> Result<()> {
     let mut failed = Vec::new();
     for slug in load_snapshot(PROVIDER_SNAPSHOT)? {
         if let Err(e) = enable(&slug) {
-            eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
+            // A domain-only provider (no config tool) can't be enabled until
+            // the engine is up, so the pre-proxy restore pass is *expected* to
+            // defer it to the post-proxy pass. Keep it queued without logging
+            // that expected deferral as a failure; a genuine failure (config
+            // tool, or any provider once the proxy is running) still logs.
+            let deferred = !proxy_running()
+                && find(&slug)
+                    .map(|p| p.tool_ids.is_empty() && !p.proxy_domain_slugs.is_empty())
+                    .unwrap_or(false);
+            if !deferred {
+                eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
+            }
             failed.push(slug);
         }
     }
