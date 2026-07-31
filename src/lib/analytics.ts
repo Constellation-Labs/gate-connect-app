@@ -25,6 +25,7 @@ export type AnalyticsEvent =
   | "proxy_enabled"
   | "proxy_disabled"
   | "provider_toggled"
+  | "domain_toggled"
   | "tool_toggled"
   | "ca_trusted"
   | "ca_untrusted"
@@ -54,6 +55,7 @@ const ALLOWED_PROP_KEYS = new Set<string>([
   "codex_drifted",
   "provider",
   "provider_count",
+  "domain",
   "tool",
   "routed",
   "enabled",

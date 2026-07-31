@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, OAuthStatus, ProxyState, ProviderState, Tool } from "./lib/api";
+import type { Account, OAuthStatus, ProxyState, Tool } from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -18,9 +18,8 @@ import {
   proxyDisable,
   proxyTrustCa,
   proxyUntrustCa,
+  proxySetDomain,
   listProviders,
-  providerEnable,
-  providerDisable,
   listTools,
   connectTool,
   disconnectTool,
@@ -35,7 +34,6 @@ import {
 import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
-import { ProxyScreen } from "./screens/ProxyScreen";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { ToolDetail } from "./screens/ToolDetail";
@@ -56,13 +54,14 @@ type Screen =
   | "firstrun"
   | "orgpicker"
   | "home"
-  | "proxy"
   | "settings"
   | "success"
   | "tool";
 
-// Providers hidden from the UI for now. Slugs match the backend provider list.
-const HIDDEN_PROVIDER_SLUGS = new Set<string>([]);
+// Proxy domains hidden from the Apps ledger. "chatgpt" exists so the relay
+// recognizes the Codex integration's upstream hint - it's plumbing for the
+// Codex tool, not an app the user routes independently.
+const HIDDEN_DOMAIN_SLUGS = new Set<string>(["chatgpt"]);
 
 function hostOf(url: string | undefined): string {
   if (!url) return "";
@@ -129,15 +128,10 @@ export function App() {
   const [orgPickerReturn, setOrgPickerReturn] = useState<Screen>("home");
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
-  const [providers, setProviders] = useState<ProviderState[]>([]);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
   // Which tool the "tool" screen shows; set by tapping a ledger row on Home.
   const [toolSlug, setToolSlug] = useState<string | null>(null);
-  // Codex drift usually means a hand-written Gate setup (the manual PAYG
-  // instructions); enabling its provider adopts it one-way, so the Routing
-  // screen shows a heads-up while this is true.
-  const codexDrifted = tools.some((t) => t.slug === "codex" && t.status.kind === "drifted");
   // Set after a successful routing change; Home and the Routing screen show a
   // "restart your agents" note. The advice holds until the agents actually
   // restart (which we can't observe), so the note stays until the user
@@ -223,7 +217,6 @@ export function App() {
     let alive = true;
     const unlisten = listen("proxy-state-changed", async () => {
       const px = await proxyStatus().catch(() => null);
-      const provs = await listProviders().catch(() => []);
       const toolList = await listTools().catch(() => []);
       const stale = await routedClientsStale().catch(() => false);
       // The hint only says "restart your agents", so skip it when none are
@@ -231,7 +224,6 @@ export function App() {
       const agents = px?.running ? await runningAgentsCount().catch(() => 1) : 0;
       if (!alive) return;
       setProxy(px);
-      setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
       if (px?.running) {
@@ -260,6 +252,9 @@ export function App() {
         trackError(err, "startup");
         px = null;
       }
+      // Analytics-only: the provider layer still exists in core/CLI, and
+      // provider_count keeps the app_launched dimension comparable across
+      // releases even though the UI no longer shows providers.
       const provs = await listProviders().catch((err) => {
         trackError(err, "startup");
         return [];
@@ -281,7 +276,6 @@ export function App() {
       setAccount(acct);
       setOAuth(oauthState);
       setProxy(px);
-      setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
       if (px?.running && agents > 0) setStartupRoutingHint(true);
@@ -439,7 +433,7 @@ export function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
       if (quitTools !== null || routingNotice !== null) return;
-      if (screen === "settings" || screen === "proxy" || screen === "tool") {
+      if (screen === "settings" || screen === "tool") {
         setProviderError(null);
         setScreen("home");
       }
@@ -520,11 +514,11 @@ export function App() {
           setRestartHint(true);
           if (next.running) setRelaunchHint(true);
         }
-        // The backend owns the provider set across a master toggle: turning off
-        // snapshots the on-providers and disables all; turning on restores that
-        // snapshot. Just reflect the result - don't force every available
-        // provider on, which would clobber the ones the user deliberately left off.
-        setProviders(await listProviders().catch(() => []));
+        // The backend owns the routed set across a master toggle: turning off
+        // snapshots what was on and disables all; turning on restores that
+        // snapshot. Just reflect the result (the returned ProxyState already
+        // carries the restored domains) and refresh the tool ledger.
+        setTools(await listTools().catch(() => []));
       } catch (e) {
         trackError(e, "proxy_toggle");
         // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
@@ -537,7 +531,6 @@ export function App() {
         } catch {
           /* noop */
         }
-        setProviders(await listProviders().catch(() => []));
       } finally {
         setProxyBusy(false);
       }
@@ -545,30 +538,25 @@ export function App() {
     [proxy, proxyBusy],
   );
 
-  const setProvider = useCallback(
+  // Toggle one proxy domain (an "Apps" ledger row). Applied live by the
+  // engine - no agent restart involved, so no hint.
+  const setDomain = useCallback(
     async (slug: string, enabled: boolean) => {
       if (proxyBusy) return;
       setProxyBusy(true);
       setProviderError(null);
       try {
-        if (enabled) await providerEnable(slug);
-        else await providerDisable(slug);
-        track("provider_toggled", { provider: slug, enabled });
-        setRestartHint(true);
-        if (enabled) setRelaunchHint(true);
-        // Refresh provider state and proxy (enabling may have flipped a domain).
-        setProviders(await listProviders().catch(() => []));
-        setTools(await listTools().catch(() => []));
+        setProxy(await proxySetDomain(slug, enabled));
+        track("domain_toggled", { domain: slug, enabled });
+      } catch (e) {
+        setProviderError(classifyError(e, "provider_toggle"));
+        trackError(e, "provider_toggle", { domain: slug, enabled });
+        // Re-sync the switch to its true state after a failed toggle.
         try {
           setProxy(await proxyStatus());
         } catch {
-          /* non-macOS: no proxy subsystem */
+          /* noop */
         }
-      } catch (e) {
-        setProviderError(classifyError(e, "provider_toggle"));
-        trackError(e, "provider_toggle", { provider: slug, enabled });
-        // Re-sync the switch to its true state after a failed toggle.
-        setProviders(await listProviders().catch(() => []));
       } finally {
         setProxyBusy(false);
       }
@@ -595,7 +583,6 @@ export function App() {
         throw e;
       } finally {
         setTools(await listTools().catch(() => tools));
-        setProviders(await listProviders().catch(() => []));
         try {
           setProxy(await proxyStatus());
         } catch {
@@ -704,10 +691,11 @@ export function App() {
 
   const workspace = hostOf(account?.gateway_base_url);
   const proxyOn = proxy?.running ?? false;
-  const providerCount = providers.filter(
-    (p) => p.enabled && !HIDDEN_PROVIDER_SLUGS.has(p.slug),
-  ).length;
   const showProxy = proxy !== null;
+  // The Apps ledger: proxy domains minus internal plumbing entries.
+  const visibleDomains = (proxy?.domains ?? []).filter(
+    (d) => !HIDDEN_DOMAIN_SLUGS.has(d.slug),
+  );
 
   let body: ReactNode;
   if (screen === "loading") {
@@ -757,30 +745,6 @@ export function App() {
         onOpenSettings={() => setScreen("settings")}
       />
     );
-  } else if (screen === "proxy" && proxy) {
-    body = (
-      <ProxyScreen
-        proxy={proxy}
-        providers={providers.filter((p) => !HIDDEN_PROVIDER_SLUGS.has(p.slug))}
-        tools={tools}
-        busy={proxyBusy}
-        error={providerError}
-        restartHint={restartHint}
-        onDismissRestartHint={() => setRestartHint(false)}
-        relaunchHint={relaunchHint}
-        onDismissRelaunchHint={() => setRelaunchHint(false)}
-        codexDrifted={codexDrifted}
-        onBack={() => {
-          setProviderError(null);
-          // Keep restart/relaunch hints alive so a change made here still
-          // reminds the user on the home screen until dismissed.
-          setScreen("home");
-        }}
-        onToggleProxy={() => toggleProxy(false)}
-        onSetProvider={setProvider}
-        onTrustCa={trustCa}
-      />
-    );
   } else if (screen === "settings" && account) {
     body = (
       <Settings
@@ -806,7 +770,6 @@ export function App() {
     body = (
       <ToolDetail
         tool={tools.find((t) => t.slug === toolSlug)!}
-        providers={providers}
         busy={proxyBusy}
         onSetRouted={(routed) => setToolRouted(toolSlug, routed)}
         onBack={() => setScreen("home")}
@@ -819,9 +782,10 @@ export function App() {
         workspace={workspace}
         proxyOn={proxyOn}
         caTrusted={proxy?.ca_trusted ?? true}
-        providerCount={providerCount}
         showProxy={showProxy}
         tools={tools}
+        domains={visibleDomains}
+        busy={proxyBusy}
         error={providerError}
         restartHint={restartHint}
         onDismissRestartHint={() => setRestartHint(false)}
@@ -835,12 +799,21 @@ export function App() {
         onCloseAgents={() => setRoutingNotice({ dir: "on", confirming: true })}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
-        onOpenProxy={() => setScreen("proxy")}
+        onToggleProxy={() => toggleProxy(true)}
+        onTrustCa={trustCa}
+        // From a ledger row the failure lands in the shared error note (the
+        // row has no room of its own); ToolDetail keeps its local catch.
+        onToggleTool={(slug, routed) => {
+          setProviderError(null);
+          void setToolRouted(slug, routed).catch((e) =>
+            setProviderError(classifyError(e, "connect")),
+          );
+        }}
+        onSetDomain={setDomain}
         onOpenTool={(slug) => {
           setToolSlug(slug);
           setScreen("tool");
         }}
-        onToggleProxy={() => toggleProxy(true)}
         onOpenSettings={() => setScreen("settings")}
       />
     );

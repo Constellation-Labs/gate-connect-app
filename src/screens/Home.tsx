@@ -1,20 +1,67 @@
-import type { Tool } from "../lib/api";
+import { useEffect, useState } from "react";
+import type { Tool, ProxyDomain } from "../lib/api";
 import type { ClassifiedError } from "../lib/errors";
+import { launchAtLoginStatus } from "../lib/api";
 import { PopHeader } from "../components/gc/PopHeader";
-import { Switch, IconButton, SectionLabel, ErrorNote } from "../components/gc/ui";
+import { Switch, IconButton, SectionLabel, ErrorNote, Button } from "../components/gc/ui";
 import { ToolPill, toolSubtitle } from "../components/ToolPill";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
 
-/** Connected home - the Routing card (toggle + drill-in) above the tools
- * ledger: one row per detected tool, each carrying its status pill. */
+/** One truthful pill per proxy-routed app row. Mirrors ToolPill's grammar:
+ * wash + dot, ink text where the color alone can't carry AA. */
+function DomainPill({
+  domain,
+  proxyOn,
+  caTrusted,
+}: {
+  domain: ProxyDomain;
+  proxyOn: boolean;
+  caTrusted: boolean;
+}) {
+  if (!domain.supported) {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-3">
+        <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-5" />
+        Coming soon
+      </span>
+    );
+  }
+  if (domain.enabled && proxyOn && !caTrusted) {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-warning-wash px-2 py-1 text-[11px] font-medium text-gc-ink-2">
+        <span className="h-1.5 w-1.5 rounded-full bg-gc-warning" />
+        Needs trust
+      </span>
+    );
+  }
+  if (domain.enabled && proxyOn) {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-success-wash px-2 py-1 text-[11px] font-medium text-gc-success-deep">
+        <span className="h-1.5 w-1.5 rounded-full bg-gc-success" />
+        Routed
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-3">
+      <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-5" />
+      Not routed
+    </span>
+  );
+}
+
+/** Connected home - the one room: the master Routing card, the certificate
+ * step when it blocks coverage, and the full ledger (config tools + proxy-
+ * routed apps), each row with its truthful pill and its own switch. */
 export function Home({
   workspace,
   proxyOn,
   caTrusted,
-  providerCount,
   showProxy,
   tools,
+  domains,
+  busy,
   error,
   restartHint,
   onDismissRestartHint,
@@ -25,17 +72,20 @@ export function Home({
   onCloseAgents,
   staleAgentsHint,
   onDismissStaleAgents,
-  onOpenProxy,
-  onOpenTool,
   onToggleProxy,
+  onTrustCa,
+  onToggleTool,
+  onSetDomain,
+  onOpenTool,
   onOpenSettings,
 }: {
   workspace: string;
   proxyOn: boolean;
   caTrusted: boolean;
-  providerCount: number;
   showProxy: boolean;
   tools: Tool[];
+  domains: ProxyDomain[];
+  busy: boolean;
   error?: ClassifiedError | null;
   restartHint: boolean;
   onDismissRestartHint: () => void;
@@ -46,16 +96,40 @@ export function Home({
   onCloseAgents: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
-  onOpenProxy: () => void;
-  onOpenTool: (slug: string) => void;
   onToggleProxy: () => void;
+  onTrustCa: () => void;
+  onToggleTool: (slug: string, routed: boolean) => void;
+  onSetDomain: (slug: string, enabled: boolean) => void;
+  onOpenTool: (slug: string) => void;
   onOpenSettings: () => void;
 }) {
   const platform = usePlatform();
+  const trustStore = platform === "windows" ? "certificate store" : "keychain";
   const installedTools = tools.filter((t) => t.status.kind !== "not_installed");
-  // Routing up but the CA untrusted means config tools route while
-  // proxy-routed apps silently don't: half-on, and the pill says so.
-  const partial = proxyOn && !caTrusted;
+  // The certificate only gates proxy-routed apps, so the partial state (and
+  // the trust card) only exist while at least one app row is switched on.
+  const anyDomainOn = domains.some((d) => d.enabled && d.supported);
+  const partial = proxyOn && !caTrusted && anyDomainOn;
+  const routedCount =
+    installedTools.filter((t) => t.status.kind === "connected").length +
+    (proxyOn && caTrusted ? domains.filter((d) => d.enabled && d.supported).length : 0);
+
+  // Whether Launch at login is on, so the keep-routing tip only shows when
+  // it would actually help (read the state, don't send the user to Settings
+  // to check it). null while loading = no tip.
+  const [launchAtLogin, setLaunchAtLogin] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    launchAtLoginStatus()
+      .then((status) => {
+        if (alive) setLaunchAtLogin(status.enabled);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   return (
     <div className="flex flex-col">
       <PopHeader
@@ -65,39 +139,64 @@ export function Home({
       />
       <div className="flex flex-col gap-2.5 p-3.5">
         {showProxy && (
-          <div className="relative flex items-center gap-3 rounded-[10px] bg-gc-surface p-3.5 shadow-border transition hover:shadow-border-hover">
-            {/* Stretch button carries the drill-in (real button semantics:
-                Enter and Space both work); the switch is a sibling, not a
-                nested control. */}
-            <button
-              type="button"
-              onClick={onOpenProxy}
-              aria-label="Routing details"
-              className="absolute inset-0 cursor-pointer rounded-[10px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent"
-            />
+          <div className="flex items-center gap-3 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
             <div
-              className={`pointer-events-none relative flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
                 proxyOn ? "bg-gc-accent-wash text-gc-accent" : "bg-gc-sunken text-gc-ink-4"
               }`}
             >
               <Icon name="shieldCheck" size={19} />
             </div>
-            <div className="pointer-events-none relative min-w-0 flex-1">
+            <div className="min-w-0 flex-1">
               <div className="text-[13.5px] font-semibold text-gc-ink">Routing</div>
               <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
                 {!proxyOn
                   ? "Off · not routing"
                   : partial
                     ? "On · certificate not trusted yet"
-                    : `On · ${providerCount} provider${providerCount === 1 ? "" : "s"}`}
+                    : routedCount > 0
+                      ? `On · ${routedCount} routing`
+                      : "On · nothing enabled yet"}
+              </div>
+              {proxyOn && launchAtLogin === false && (
+                <div className="mt-1 text-[11px] leading-snug text-gc-ink-3">
+                  Turn on Launch at login in Settings to keep routing on after
+                  a restart.
+                </div>
+              )}
+            </div>
+            <Switch
+              on={proxyOn}
+              label="Route through Gate"
+              busy={busy}
+              onClick={onToggleProxy}
+            />
+          </div>
+        )}
+
+        {showProxy && proxyOn && !caTrusted && (
+          <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning">
+                <Icon name="shieldCheck" size={16} />
+              </div>
+              <div className="text-[13px] font-semibold text-gc-ink">
+                Trust the Gate certificate
               </div>
             </div>
-            <div className="relative flex shrink-0 items-center gap-1.5">
-              <Switch on={proxyOn} label="Route through Gate" onClick={onToggleProxy} />
-              <span className="pointer-events-none">
-                <Icon name="chevronRight" size={15} stroke={2} className="text-gc-ink-4" />
-              </span>
-            </div>
+            <p className="mt-2 text-[11.5px] leading-snug text-gc-ink-2">
+              Desktop apps with no gateway setting route through Gate&rsquo;s
+              local proxy, which needs a certificate your {trustStore} trusts.
+              The certificate and its private key are created on this machine
+              and never leave it. Until it&rsquo;s trusted, those apps
+              don&rsquo;t route.
+            </p>
+            <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
+              You can remove it anytime in Settings under Certificate.
+            </p>
+            <Button variant="accent" full className="mt-2.5" disabled={busy} onClick={onTrustCa}>
+              Trust certificate
+            </Button>
           </div>
         )}
 
@@ -182,30 +281,82 @@ export function Home({
       <SectionLabel>Tools</SectionLabel>
       {installedTools.length > 0 ? (
         <div className="flex flex-col border-t border-gc-line">
-          {installedTools.map((tool) => (
-            <button
-              key={tool.slug}
-              type="button"
-              onClick={() => onOpenTool(tool.slug)}
-              className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5 text-left transition hover:bg-gc-subtle focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium text-gc-ink">{tool.name}</div>
-                <div className="mt-0.5 truncate text-[11px] text-gc-ink-3">
-                  {toolSubtitle(tool)}
+          {installedTools.map((tool) => {
+            const routed = tool.status.kind === "connected";
+            return (
+              <div
+                key={tool.slug}
+                className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-2.5 transition hover:bg-gc-subtle"
+              >
+                {/* Stretch button carries the drill-in; the switch is a
+                    sibling above it, so one flip routes the tool and the row
+                    body opens its detail. */}
+                <button
+                  type="button"
+                  onClick={() => onOpenTool(tool.slug)}
+                  aria-label={`${tool.name} details`}
+                  className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
+                />
+                <div className="pointer-events-none relative min-w-0 flex-1">
+                  <div className="text-[13px] font-medium text-gc-ink">{tool.name}</div>
+                  <div className="mt-0.5 truncate text-[11px] text-gc-ink-3">
+                    {toolSubtitle(tool)}
+                  </div>
                 </div>
+                <span className="pointer-events-none relative">
+                  <ToolPill status={tool.status} />
+                </span>
+                <span className="relative">
+                  <Switch
+                    on={routed}
+                    label={`Route ${tool.name} through Gate`}
+                    busy={busy}
+                    onClick={() => onToggleTool(tool.slug, !routed)}
+                  />
+                </span>
+                <span className="pointer-events-none relative">
+                  <Icon name="chevronRight" size={14} stroke={2} className="text-gc-ink-4" />
+                </span>
               </div>
-              <ToolPill status={tool.status} />
-              <Icon name="chevronRight" size={14} stroke={2} className="text-gc-ink-4" />
-            </button>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <p className="px-3.5 pb-3 text-[11.5px] leading-snug text-gc-ink-3">
           No AI tools detected yet. Tools like Claude Code, Codex, and OpenCode
-          show up here once installed; the Claude and ChatGPT desktop apps are
-          covered by Routing without needing a row.
+          show up here once installed.
         </p>
+      )}
+
+      {showProxy && domains.length > 0 && (
+        <>
+          <SectionLabel>Apps</SectionLabel>
+          <div className="flex flex-col border-t border-gc-line">
+            {domains.map((d) => (
+              <div
+                key={d.slug}
+                className="flex items-center gap-2.5 border-b border-gc-line px-3.5 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-medium text-gc-ink">
+                    {d.display_name}
+                  </div>
+                  <div className="mt-0.5 truncate font-mono text-[10.5px] text-gc-ink-3">
+                    {d.hosts.join(" · ")}
+                  </div>
+                </div>
+                <DomainPill domain={d} proxyOn={proxyOn} caTrusted={caTrusted} />
+                <Switch
+                  on={d.enabled && d.supported}
+                  label={`Route ${d.display_name} through Gate`}
+                  busy={busy}
+                  disabled={!d.supported}
+                  onClick={() => onSetDomain(d.slug, !d.enabled)}
+                />
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
