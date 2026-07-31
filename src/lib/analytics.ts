@@ -27,6 +27,7 @@ export type AnalyticsEvent =
   | "provider_toggled"
   | "domain_toggled"
   | "tool_toggled"
+  | "group_toggled"
   | "ca_trusted"
   | "ca_untrusted"
   | "tour_completed"

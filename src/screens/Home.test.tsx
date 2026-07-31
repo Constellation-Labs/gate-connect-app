@@ -20,11 +20,16 @@ vi.mock("../lib/api", async (importOriginal) => {
   };
 });
 
-function makeTool(slug: string, name: string, status: Tool["status"]): Tool {
+function makeTool(
+  slug: string,
+  name: string,
+  status: Tool["status"],
+  upstream = "Anthropic",
+): Tool {
   return {
     slug,
     name,
-    upstream_provider_name: "Anthropic",
+    upstream_provider_name: upstream,
     default_upstream_url: "https://api.anthropic.com",
     requires_upstream_credential: false,
     status,
@@ -68,9 +73,8 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       onDismissStaleAgents={vi.fn()}
       onToggleProxy={vi.fn()}
       onTrustCa={vi.fn()}
-      onToggleTool={vi.fn()}
-      onSetDomain={vi.fn()}
-      onOpenTool={vi.fn()}
+      onToggleGroup={vi.fn()}
+      onOpenGroup={vi.fn()}
       onOpenSettings={vi.fn()}
       {...props}
     />,
@@ -138,75 +142,73 @@ describe("Home master toggle", () => {
   });
 });
 
-describe("Home tools ledger", () => {
-  it("renders a row per installed tool with its pill, hiding not_installed", () => {
+describe("Home model-family ledger", () => {
+  it("collapses tools and apps into one row per family", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "connected" }),
         makeTool("opencode", "OpenCode", { kind: "detected" }),
         makeTool("hermes", "Hermes", { kind: "not_installed" }),
+        makeTool("codex", "Codex", { kind: "detected" }, "OpenAI"),
+      ],
+      domains: [makeDomain()],
+    });
+    // Two families, not four tool rows; not_installed stays out.
+    expect(screen.getByText("Claude")).toBeTruthy();
+    expect(screen.getByText("OpenAI")).toBeTruthy();
+    expect(screen.queryByText("Claude Code")).toBeNull();
+    expect(screen.queryByText("Hermes")).toBeNull();
+    // Claude: Claude Code + Cowork routing, OpenCode not.
+    expect(screen.getByText(/2 of 3 routing/)).toBeTruthy();
+    expect(screen.getByText(/0 of 1 routing/)).toBeTruthy();
+  });
+
+  it("reports a partly-routed family without rounding up", () => {
+    renderHome({
+      tools: [
+        makeTool("claude-code", "Claude Code", { kind: "connected" }),
+        makeTool("opencode", "OpenCode", { kind: "detected" }),
       ],
     });
-    expect(screen.getByText("Claude Code")).toBeTruthy();
-    expect(screen.getByText("Routed")).toBeTruthy();
-    expect(screen.getByText("OpenCode")).toBeTruthy();
-    expect(screen.getByText("Not routed")).toBeTruthy();
-    expect(screen.queryByText("Hermes")).toBeNull();
+    expect(screen.getByText("Partly routed")).toBeTruthy();
   });
 
-  it("routes a tool with one flip from its row switch", () => {
-    const onToggleTool = vi.fn();
+  it("names an exception in the sub-line instead of hijacking the pill", () => {
+    renderHome({
+      tools: [
+        makeTool("claude-code", "Claude Code", { kind: "connected" }),
+        makeTool("openclaw", "OpenClaw", { kind: "error", message: "bad json" }),
+      ],
+    });
+    // The pill still answers "is this routing?"; the failure is named below.
+    expect(screen.getByText("Partly routed")).toBeTruthy();
+    expect(screen.getByText(/OpenClaw failed/)).toBeTruthy();
+  });
+
+  it("flags a hand-written setup without calling the family broken", () => {
+    renderHome({
+      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
+    });
+    expect(screen.getByText(/Codex set up elsewhere/)).toBeTruthy();
+  });
+
+  it("routes a whole family with one flip", () => {
+    const onToggleGroup = vi.fn();
     renderHome({
       tools: [makeTool("opencode", "OpenCode", { kind: "detected" })],
-      onToggleTool,
+      onToggleGroup,
     });
-    fireEvent.click(screen.getByRole("switch", { name: "Route OpenCode through Gate" }));
-    expect(onToggleTool).toHaveBeenCalledWith("opencode", true);
+    fireEvent.click(screen.getByRole("switch", { name: "Route Claude through Gate" }));
+    expect(onToggleGroup).toHaveBeenCalledWith("anthropic", true);
   });
 
-  it("opens the tool detail from the row body", () => {
-    const onOpenTool = vi.fn();
+  it("opens the family detail from the row body", () => {
+    const onOpenGroup = vi.fn();
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
-      onOpenTool,
+      onOpenGroup,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Claude Code details" }));
-    expect(onOpenTool).toHaveBeenCalledWith("claude-code");
-  });
-});
-
-describe("Home apps ledger", () => {
-  it("renders a domain row with its hosts and calls onSetDomain on flip", () => {
-    const onSetDomain = vi.fn();
-    renderHome({ domains: [makeDomain()], onSetDomain });
-    expect(screen.getByText("Claude Desktop / Cowork")).toBeTruthy();
-    expect(screen.getByText("api.anthropic.com")).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("switch", {
-        name: "Route Claude Desktop / Cowork through Gate",
-      }),
-    );
-    expect(onSetDomain).toHaveBeenCalledWith("anthropic", false);
-  });
-
-  it("shows Routed only when the domain is enabled, routing is on, and the CA is trusted", () => {
-    renderHome({ domains: [makeDomain()] });
-    expect(screen.getByText("Routed")).toBeTruthy();
-    cleanup();
-    renderHome({ domains: [makeDomain()], caTrusted: false });
-    expect(screen.getByText("Needs trust")).toBeTruthy();
-    cleanup();
-    renderHome({ domains: [makeDomain()], proxyOn: false });
-    expect(screen.getByText("Not routed")).toBeTruthy();
-  });
-
-  it("disables the switch on unsupported domains", () => {
-    renderHome({ domains: [makeDomain({ supported: false, enabled: false })] });
-    expect(screen.getByText("Not supported")).toBeTruthy();
-    expect(
-      screen.getByRole("switch", {
-        name: "Route Claude Desktop / Cowork through Gate",
-      }),
-    ).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: "Claude details" }));
+    expect(onOpenGroup).toHaveBeenCalledWith("anthropic");
   });
 });

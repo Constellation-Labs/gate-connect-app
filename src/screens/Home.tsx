@@ -2,58 +2,17 @@ import { useEffect, useState } from "react";
 import type { Tool, ProxyDomain } from "../lib/api";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
+import { buildGroups, groupSummary } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, SectionLabel, ErrorNote, Button } from "../components/gc/ui";
-import { ToolPill, toolSubtitle } from "../components/ToolPill";
+import { GroupPill } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
 
-/** One truthful pill per proxy-routed app row. Mirrors ToolPill's grammar:
- * wash + dot, ink text where the color alone can't carry AA. */
-function DomainPill({
-  domain,
-  proxyOn,
-  caTrusted,
-}: {
-  domain: ProxyDomain;
-  proxyOn: boolean;
-  caTrusted: boolean;
-}) {
-  if (!domain.supported) {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-3">
-        <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-5" />
-        Not supported
-      </span>
-    );
-  }
-  if (domain.enabled && proxyOn && !caTrusted) {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-warning-wash px-2 py-1 text-[11px] font-medium text-gc-ink-2">
-        <span className="h-1.5 w-1.5 rounded-full bg-gc-warning" />
-        Needs trust
-      </span>
-    );
-  }
-  if (domain.enabled && proxyOn) {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-success-wash px-2 py-1 text-[11px] font-medium text-gc-success-deep">
-        <span className="h-1.5 w-1.5 rounded-full bg-gc-success" />
-        Routed
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-3">
-      <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-5" />
-      Not routed
-    </span>
-  );
-}
-
 /** Connected home - the one room: the master Routing card, the certificate
- * step when it blocks coverage, and the full ledger (config tools + proxy-
- * routed apps), each row with its truthful pill and its own switch. */
+ * step when it blocks coverage, and one row per model family. The families
+ * keep the ledger three rows tall however many tools are installed; the
+ * config-vs-proxy mechanism lives one tap in, on the group detail. */
 export function Home({
   workspace,
   proxyOn,
@@ -74,9 +33,8 @@ export function Home({
   onDismissStaleAgents,
   onToggleProxy,
   onTrustCa,
-  onToggleTool,
-  onSetDomain,
-  onOpenTool,
+  onToggleGroup,
+  onOpenGroup,
   onOpenSettings,
 }: {
   workspace: string;
@@ -98,24 +56,21 @@ export function Home({
   onDismissStaleAgents: () => void;
   onToggleProxy: () => void;
   onTrustCa: () => void;
-  onToggleTool: (slug: string, routed: boolean) => void;
-  onSetDomain: (slug: string, enabled: boolean) => void;
-  onOpenTool: (slug: string) => void;
+  onToggleGroup: (id: string, on: boolean) => void;
+  onOpenGroup: (id: string) => void;
   onOpenSettings: () => void;
 }) {
   const platform = usePlatform();
   const trustStore = platform === "windows" ? "certificate store" : "keychain";
-  const installedTools = tools.filter((t) => t.status.kind !== "not_installed");
+  const groups = buildGroups(tools, domains, { proxyOn, caTrusted });
   // The certificate only gates proxy-routed apps, so the partial state (and
   // the trust card) only exist while at least one app row is switched on.
   const anyDomainOn = domains.some((d) => d.enabled && d.supported);
   const partial = proxyOn && !caTrusted && anyDomainOn;
   // Denominator included so "3 of 8" answers "and what about the rest?"
-  // without a scroll; the ledger below is the itemization.
-  const routableCount = installedTools.length + domains.filter((d) => d.supported).length;
-  const routedCount =
-    installedTools.filter((t) => t.status.kind === "connected").length +
-    (proxyOn && caTrusted ? domains.filter((d) => d.enabled && d.supported).length : 0);
+  // without a scroll; the families below are the itemization.
+  const routableCount = groups.reduce((n, g) => n + g.members.length, 0);
+  const routedCount = groups.reduce((n, g) => n + g.routed, 0);
 
   // At most one banner at a time, most actionable first: transient chrome
   // must never bury the ledger (the pills are the point of the screen).
@@ -297,47 +252,46 @@ export function Home({
         {error && <ErrorNote error={error} />}
       </div>
 
-      <SectionLabel>Tools</SectionLabel>
-      {installedTools.length > 0 ? (
+      <SectionLabel>Models</SectionLabel>
+      {groups.length > 0 ? (
         <div className="flex flex-col border-t border-gc-line">
-          {installedTools.map((tool) => {
-            const routed = tool.status.kind === "connected";
+          {groups.map((group) => {
+            const { count, exception } = groupSummary(group);
             return (
               <div
-                key={tool.slug}
-                className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-2.5 transition hover:bg-gc-subtle"
+                key={group.id}
+                className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-3 transition hover:bg-gc-subtle"
               >
                 {/* Stretch button carries the drill-in; the switch is a
-                    sibling above it, so one flip routes the tool and the row
-                    body opens its detail. */}
+                    sibling above it, so one flip routes the whole family and
+                    the row body opens the fine grain. */}
                 <button
                   type="button"
-                  onClick={() => onOpenTool(tool.slug)}
-                  aria-label={`${tool.name} details`}
+                  onClick={() => onOpenGroup(group.id)}
+                  aria-label={`${group.name} details`}
                   className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
                 />
                 <div className="pointer-events-none relative min-w-0 flex-1">
-                  <div className="text-[13px] font-medium text-gc-ink">{tool.name}</div>
+                  <div className="text-[13.5px] font-medium text-gc-ink">{group.name}</div>
                   <div className="mt-0.5 truncate text-[11px] text-gc-ink-3">
-                    {toolSubtitle(tool)}
+                    {count}
+                    {exception && (
+                      <>
+                        {" · "}
+                        <span className="text-gc-ink-2">{exception}</span>
+                      </>
+                    )}
                   </div>
                 </div>
                 <span className="pointer-events-none relative">
-                  <ToolPill status={tool.status} />
+                  <GroupPill group={group} />
                 </span>
                 <span className="relative">
                   <Switch
-                    on={routed}
-                    label={`Route ${tool.name} through Gate`}
+                    on={group.routed > 0}
+                    label={`Route ${group.name} through Gate`}
                     busy={busy}
-                    onClick={() =>
-                      // Adopting a drifted (hand-written) setup deserves its
-                      // explanation and confirm, which live on the detail
-                      // screen; a bare row flip would replace it silently.
-                      tool.status.kind === "drifted" && !routed
-                        ? onOpenTool(tool.slug)
-                        : onToggleTool(tool.slug, !routed)
-                    }
+                    onClick={() => onToggleGroup(group.id, group.routed === 0)}
                   />
                 </span>
                 <span className="pointer-events-none relative">
@@ -349,40 +303,9 @@ export function Home({
         </div>
       ) : (
         <p className="px-3.5 pb-3 text-[11.5px] leading-snug text-gc-ink-3">
-          No AI tools detected yet. Tools like Claude Code, Codex, and OpenCode
+          Nothing to route yet. Tools like Claude Code, Codex, and OpenCode
           show up here once installed.
         </p>
-      )}
-
-      {showProxy && domains.length > 0 && (
-        <>
-          <SectionLabel>Apps</SectionLabel>
-          <div className="flex flex-col border-t border-gc-line">
-            {domains.map((d) => (
-              <div
-                key={d.slug}
-                className="flex items-center gap-2.5 border-b border-gc-line px-3.5 py-2.5"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px] font-medium text-gc-ink">
-                    {d.display_name}
-                  </div>
-                  <div className="mt-0.5 truncate font-mono text-[10.5px] text-gc-ink-3">
-                    {d.hosts.join(" · ")}
-                  </div>
-                </div>
-                <DomainPill domain={d} proxyOn={proxyOn} caTrusted={caTrusted} />
-                <Switch
-                  on={d.enabled && d.supported}
-                  label={`Route ${d.display_name} through Gate`}
-                  busy={busy}
-                  disabled={!d.supported}
-                  onClick={() => onSetDomain(d.slug, !d.enabled)}
-                />
-              </div>
-            ))}
-          </div>
-        </>
       )}
     </div>
   );

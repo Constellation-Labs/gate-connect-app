@@ -35,6 +35,7 @@ import {
 import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
+import { GroupDetail } from "./screens/GroupDetail";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { ToolDetail } from "./screens/ToolDetail";
@@ -45,6 +46,7 @@ import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { track, trackError } from "./lib/analytics";
 import { backendErrorContext, classifyError, type ClassifiedError } from "./lib/errors";
+import { buildGroups } from "./lib/groups";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { usePlatform } from "./lib/platform";
@@ -57,6 +59,7 @@ type Screen =
   | "home"
   | "settings"
   | "success"
+  | "group"
   | "tool";
 
 // Proxy domains hidden from the Apps ledger. "chatgpt" exists so the relay
@@ -131,8 +134,11 @@ export function App() {
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
-  // Which tool the "tool" screen shows; set by tapping a ledger row on Home.
+  // Which tool the "tool" screen shows; set by tapping a member row inside a
+  // group. Tool detail returns to the group it was opened from.
   const [toolSlug, setToolSlug] = useState<string | null>(null);
+  // Which model family the "group" screen shows; set from the Home ledger.
+  const [groupId, setGroupId] = useState<string | null>(null);
   // Set after a successful routing change; Home shows a "restart your tools
   // and apps" note. The advice holds until they actually restart (which we
   // can't observe), so the note stays until the user dismisses it rather
@@ -434,14 +440,17 @@ export function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
       if (quitTools !== null || routingNotice !== null) return;
-      if (screen === "settings" || screen === "tool") {
+      if (screen === "tool" && groupId) {
+        // Step back up the hierarchy rather than all the way out.
+        setScreen("group");
+      } else if (screen === "settings" || screen === "tool" || screen === "group") {
         setProviderError(null);
         setScreen("home");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [screen, quitTools, routingNotice]);
+  }, [screen, groupId, quitTools, routingNotice]);
 
   // OAuth sign-out: forget the stored tokens but keep the account, so the
   // popover returns to the sign-in prompt (not first-run) and routing config /
@@ -595,6 +604,57 @@ export function App() {
     [proxyBusy, tools],
   );
 
+  // Route (or unroute) a whole model family from one switch. Runs the same
+  // per-member commands the detail screen uses rather than the backend's
+  // provider_enable, because the provider catalog only maps Claude Code to
+  // Anthropic - OpenCode and friends would be silently left behind.
+  //
+  // Turning a family on deliberately skips members with a hand-written Gate
+  // setup: adopting one replaces someone's config, which stays an explicit
+  // act on the tool's own screen. Turning off touches only what is actually
+  // routing.
+  const setGroupRouted = useCallback(
+    async (id: string, on: boolean) => {
+      if (proxyBusy) return;
+      const group = buildGroups(tools, proxy?.domains ?? [], {
+        proxyOn: proxy?.running ?? false,
+        caTrusted: proxy?.ca_trusted ?? false,
+      }).find((g) => g.id === id);
+      if (!group) return;
+      setProxyBusy(true);
+      setProviderError(null);
+      try {
+        for (const member of group.members) {
+          if (member.kind === "config" && member.tool) {
+            if (on && !member.routed && member.attention !== "drifted") {
+              await connectTool(member.key, member.tool.default_upstream_url);
+            } else if (!on && member.routed) {
+              await disconnectTool(member.key);
+            }
+          } else if (member.domain) {
+            if (on && !member.domain.enabled) await proxySetDomain(member.key, true);
+            else if (!on && member.domain.enabled) await proxySetDomain(member.key, false);
+          }
+        }
+        track("group_toggled", { provider: id, enabled: on });
+        setRestartHint(true);
+        if (on) setRelaunchHint(true);
+      } catch (e) {
+        trackError(e, "connect", { provider: id, enabled: on });
+        setProviderError(classifyError(e, "connect"));
+      } finally {
+        setTools(await listTools().catch(() => tools));
+        try {
+          setProxy(await proxyStatus());
+        } catch {
+          /* non-macOS: no proxy subsystem */
+        }
+        setProxyBusy(false);
+      }
+    },
+    [proxyBusy, tools, proxy],
+  );
+
   const trustCa = useCallback(async () => {
     if (proxyBusy) return;
     setProxyBusy(true);
@@ -693,10 +753,16 @@ export function App() {
   const workspace = hostOf(account?.gateway_base_url);
   const proxyOn = proxy?.running ?? false;
   const showProxy = proxy !== null;
-  // The Apps ledger: proxy domains minus internal plumbing entries.
+  // Proxy domains minus internal plumbing entries.
   const visibleDomains = (proxy?.domains ?? []).filter(
     (d) => !HIDDEN_DOMAIN_SLUGS.has(d.slug),
   );
+  // The ledger, grouped by model family; the group screen reads the same
+  // shape Home renders so both stay in step after a toggle.
+  const groups = buildGroups(tools, visibleDomains, {
+    proxyOn,
+    caTrusted: proxy?.ca_trusted ?? false,
+  });
 
   let body: ReactNode;
   if (screen === "loading") {
@@ -773,7 +839,28 @@ export function App() {
         tool={tools.find((t) => t.slug === toolSlug)!}
         busy={proxyBusy}
         onSetRouted={(routed) => setToolRouted(toolSlug, routed)}
+        // Back goes up one level, to the family it was opened from.
+        onBack={() => setScreen(groupId ? "group" : "home")}
+      />
+    );
+  } else if (screen === "group" && groups.some((g) => g.id === groupId)) {
+    body = (
+      <GroupDetail
+        group={groups.find((g) => g.id === groupId)!}
+        busy={proxyBusy}
         onBack={() => setScreen("home")}
+        onToggleGroup={(id, on) => void setGroupRouted(id, on)}
+        onToggleTool={(slug, routed) => {
+          setProviderError(null);
+          void setToolRouted(slug, routed).catch((e) =>
+            setProviderError(classifyError(e, "connect")),
+          );
+        }}
+        onSetDomain={setDomain}
+        onOpenTool={(slug) => {
+          setToolSlug(slug);
+          setScreen("tool");
+        }}
       />
     );
   } else {
@@ -802,18 +889,10 @@ export function App() {
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onToggleProxy={() => toggleProxy(true)}
         onTrustCa={trustCa}
-        // From a ledger row the failure lands in the shared error note (the
-        // row has no room of its own); ToolDetail keeps its local catch.
-        onToggleTool={(slug, routed) => {
-          setProviderError(null);
-          void setToolRouted(slug, routed).catch((e) =>
-            setProviderError(classifyError(e, "connect")),
-          );
-        }}
-        onSetDomain={setDomain}
-        onOpenTool={(slug) => {
-          setToolSlug(slug);
-          setScreen("tool");
+        onToggleGroup={(id, on) => void setGroupRouted(id, on)}
+        onOpenGroup={(id) => {
+          setGroupId(id);
+          setScreen("group");
         }}
         onOpenSettings={() => setScreen("settings")}
       />
