@@ -91,6 +91,10 @@ pub struct ProviderState {
     /// config route) or the proxy is running (the domain route). When false
     /// the UI should render the switch disabled.
     pub available: bool,
+    /// Slugs of the config-file tools this provider's switch governs, so the
+    /// UI can show the coupling between the provider switch and the per-tool
+    /// switches (proxy-domain coverage is not listed here).
+    pub tool_slugs: Vec<String>,
 }
 
 /// What [`enable`] should do, given the two facts that drive the locked
@@ -178,6 +182,7 @@ pub fn state(p: &Provider) -> ProviderState {
         subtitle: p.subtitle.into(),
         enabled,
         available: any_detected || proxy_running(),
+        tool_slugs: p.tool_ids.iter().map(|id| id.slug().to_string()).collect(),
     }
 }
 

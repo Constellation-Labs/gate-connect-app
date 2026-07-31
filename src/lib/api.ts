@@ -189,6 +189,9 @@ export interface ProviderState {
   /** Whether the switch can act now (a tool is installed or the proxy is
    * running). When false the UI should render the switch disabled. */
   available: boolean;
+  /** Slugs of the config-file tools this provider's switch governs, so the
+   * UI can show the coupling with the per-tool switches. */
+  tool_slugs: string[];
 }
 
 export const listProviders = () => invoke<ProviderState[]>("list_providers");

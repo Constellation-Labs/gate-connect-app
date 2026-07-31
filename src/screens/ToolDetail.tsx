@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Tool } from "../lib/api";
+import type { Tool, ProviderState } from "../lib/api";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { SubHeader, SectionLabel, Switch, ErrorNote } from "../components/gc/ui";
 import { ToolPill } from "../components/ToolPill";
@@ -12,11 +12,14 @@ import { Icon } from "../components/gc/Icon";
  * the popover. */
 export function ToolDetail({
   tool,
+  providers = [],
   busy,
   onSetRouted,
   onBack,
 }: {
   tool: Tool;
+  /** For the coupling note: which provider switch also governs this tool. */
+  providers?: ProviderState[];
   busy: boolean;
   /** Connect (true) or disconnect (false) this tool; rejects on failure. */
   onSetRouted: (routed: boolean) => Promise<void>;
@@ -24,6 +27,7 @@ export function ToolDetail({
 }) {
   const { status } = tool;
   const routed = status.kind === "connected";
+  const provider = providers.find((p) => p.tool_slugs.includes(tool.slug));
   const [error, setError] = useState<ClassifiedError | null>(null);
   // A change made here should carry its restart advice here too - the user
   // may close the popover before ever seeing Home's banner.
@@ -54,7 +58,7 @@ export function ToolDetail({
         <Switch
           on={routed}
           label={`Route ${tool.name} through Gate`}
-          disabled={busy}
+          busy={busy}
           onClick={() => void toggle()}
         />
       </div>
@@ -125,18 +129,27 @@ export function ToolDetail({
       <SectionLabel>Details</SectionLabel>
       <div className="flex flex-col border-t border-gc-line">
         <div className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5">
-          <div className="min-w-0 flex-1 text-[12px] text-gc-ink-3">Provider</div>
+          <div className="min-w-0 flex-1 text-[12px] text-gc-ink-3">Upstream provider</div>
           <div className="text-[12px] font-medium text-gc-ink">
             {tool.upstream_provider_name}
           </div>
         </div>
         <div className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5">
-          <div className="min-w-0 flex-1 text-[12px] text-gc-ink-3">Upstream</div>
+          <div className="min-w-0 flex-1 text-[12px] text-gc-ink-3">Upstream URL</div>
           <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
             {tool.default_upstream_url}
           </div>
         </div>
       </div>
+
+      {provider && (
+        <p className="px-3.5 pt-2 text-[11px] leading-snug text-gc-ink-3">
+          {tool.name} belongs to the{" "}
+          <span className="font-medium text-gc-ink-2">{provider.display_name}</span>{" "}
+          provider. The provider switch under Routing flips it together with
+          the rest of that group; this switch moves {tool.name} alone.
+        </p>
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ProxyState, ProviderState } from "../lib/api";
+import type { ProxyState, ProviderState, Tool } from "../lib/api";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import { SubHeader, Switch, SectionLabel, Button, IconButton, ErrorNote } from "../components/gc/ui";
@@ -14,6 +14,7 @@ import { usePlatform } from "../lib/platform";
 export function ProxyScreen({
   proxy,
   providers,
+  tools,
   busy,
   error,
   onBack,
@@ -28,6 +29,7 @@ export function ProxyScreen({
 }: {
   proxy: ProxyState;
   providers: ProviderState[];
+  tools: Tool[];
   busy: boolean;
   error: ClassifiedError | null;
   onBack: () => void;
@@ -87,7 +89,7 @@ export function ProxyScreen({
         <Switch
           on={proxy.running}
           label="Route through Gate"
-          disabled={busy}
+          busy={busy}
           onClick={onToggleProxy}
         />
       </div>
@@ -152,23 +154,48 @@ export function ProxyScreen({
 
       <SectionLabel>Providers</SectionLabel>
       <div className="flex flex-col border-t border-gc-line">
-        {providers.map((p) => (
-          <div
-            key={p.slug}
-            className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5"
-          >
-            <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-medium text-gc-ink">{p.display_name}</div>
-              <div className="mt-0.5 truncate text-[11px] text-gc-ink-3">{p.subtitle}</div>
+        {providers.map((p) => {
+          // Installed config tools this switch governs, with their live
+          // per-tool state - the visible coupling between this switch and
+          // the per-tool switches on the Home ledger.
+          const covered = tools.filter(
+            (t) => p.tool_slugs.includes(t.slug) && t.status.kind !== "not_installed",
+          );
+          return (
+            <div
+              key={p.slug}
+              className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-medium text-gc-ink">{p.display_name}</div>
+                <div className="mt-0.5 truncate text-[11px] text-gc-ink-3">{p.subtitle}</div>
+                {covered.length > 0 && (
+                  <div className="mt-0.5 truncate font-mono text-[10.5px] lowercase text-gc-ink-3">
+                    {covered
+                      .map(
+                        (t) =>
+                          `${t.name}: ${
+                            t.status.kind === "connected"
+                              ? "routed"
+                              : t.status.kind === "drifted"
+                                ? "set up elsewhere"
+                                : "off"
+                          }`,
+                      )
+                      .join(" · ")}
+                  </div>
+                )}
+              </div>
+              <Switch
+                on={p.enabled}
+                label={p.display_name}
+                busy={busy}
+                disabled={!p.available}
+                onClick={() => onSetProvider(p.slug, !p.enabled)}
+              />
             </div>
-            <Switch
-              on={p.enabled}
-              label={p.display_name}
-              disabled={busy || !p.available}
-              onClick={() => onSetProvider(p.slug, !p.enabled)}
-            />
-          </div>
-        ))}
+          );
+        })}
         {providers.length === 0 && (
           <div className="px-3.5 py-3 text-[11.5px] text-gc-ink-3">No providers available.</div>
         )}

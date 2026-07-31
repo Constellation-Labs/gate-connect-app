@@ -37,6 +37,7 @@ function renderOn(platform: Platform, relaunchHint = false, props: Partial<React
     <ProxyScreen
       proxy={proxy}
       providers={[]}
+      tools={[]}
       busy={false}
       error={null}
       onBack={vi.fn()}
@@ -145,13 +146,18 @@ describe("ProxyScreen interactions", () => {
     expect(screen.getByText("Try again.")).toBeTruthy();
   });
 
-  it("disables controls when busy", () => {
-    renderOn("macos", false, { busy: true });
+  it("marks controls busy without ejecting keyboard focus", () => {
+    const onToggleProxy = vi.fn();
+    renderOn("macos", false, { busy: true, onToggleProxy });
     const toggle = screen.getByRole("switch");
     const trustButton = screen.getByText("Trust certificate").closest("button");
     const backButton = screen.getByLabelText("Back");
 
-    expect(toggle).toHaveProperty("disabled", true);
+    // Busy switches stay focusable (aria-busy) but ignore clicks.
+    expect(toggle.getAttribute("aria-busy")).toBe("true");
+    expect(toggle).toHaveProperty("disabled", false);
+    fireEvent.click(toggle);
+    expect(onToggleProxy).not.toHaveBeenCalled();
     expect(trustButton).toHaveProperty("disabled", true);
     expect(backButton).toHaveProperty("disabled", false); // Back button stays active
   });

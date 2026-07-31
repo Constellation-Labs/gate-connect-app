@@ -75,7 +75,7 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
           {names} still {plural ? "route" : "routes"} through Gate. If you quit now,{" "}
           {plural ? "they" : "it"} can't connect until Gate Connect runs again.
         </p>
-        <p className="text-[11.5px] leading-snug text-gc-ink-4">
+        <p className="text-[11.5px] leading-snug text-gc-ink-3">
           Disconnecting restores {plural ? "their" : "its"} own settings for the
           downtime and reconnects {plural ? "them" : "it"} at the next start.
         </p>

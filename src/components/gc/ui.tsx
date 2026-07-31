@@ -58,13 +58,19 @@ export function Switch({
   label,
   onClick,
   disabled,
+  busy,
 }: {
   on: boolean;
   /** Accessible name: what this switch controls ("Route through Gate",
    * a provider's display name, "Launch at login"). */
   label: string;
   onClick?: () => void;
+  /** Structurally unusable (nothing installed, still loading): removed from
+   * the tab order. */
   disabled?: boolean;
+  /** An operation is in flight: clicks are ignored but the switch keeps
+   * keyboard focus, so toggling never ejects a keyboard user mid-flip. */
+  busy?: boolean;
 }) {
   return (
     <button
@@ -72,9 +78,11 @@ export function Switch({
       role="switch"
       aria-checked={on}
       aria-label={label}
+      aria-busy={busy || undefined}
+      aria-disabled={busy || undefined}
       disabled={disabled}
-      onClick={onClick}
-      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-50 ${on ? "bg-gc-accent" : "bg-gc-line-strong"}`}
+      onClick={busy ? undefined : onClick}
+      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-50 ${busy ? "opacity-70" : ""} ${on ? "bg-gc-accent" : "bg-gc-line-strong"}`}
     >
       <span
         className={`absolute flex h-[18px] w-[18px] items-center justify-center rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[18px]" : "translate-x-[2px]"}`}
@@ -105,9 +113,9 @@ export function CardButton({
 
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="px-3.5 pb-1.5 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+    <h2 className="px-3.5 pb-1.5 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
       {children}
-    </div>
+    </h2>
   );
 }
 
@@ -179,16 +187,25 @@ export function SubHeader({
   return (
     <div className="sticky top-0 z-[5] flex items-center gap-1.5 border-b border-gc-line bg-gc-surface px-2.5 py-2.5">
       <IconButton icon="chevronLeft" size={18} onClick={onBack} aria-label="Back" />
-      <span className="text-[14px] font-semibold tracking-[-0.01em] text-gc-ink">
+      {/* Real heading + programmatic focus target: App moves focus here on
+          panel entry so screen changes are announced and Tab starts at the
+          top of the new panel. */}
+      <h1
+        tabIndex={-1}
+        data-screen-focus
+        className="text-[14px] font-semibold tracking-[-0.01em] text-gc-ink outline-none"
+      >
         {title}
-      </span>
+      </h1>
     </div>
   );
 }
 
 /** Failure surfaced in plain language: what failed, what to do, with the raw
  * backend payload tucked behind a disclosure for reporting. Pair with
- * classifyError so no screen ever prints String(e) directly. */
+ * classifyError so no screen ever prints String(e) directly. Per the
+ * Wash-First rule the status color rides the icon, not the text: the title
+ * stays ink so it holds AA at this size. */
 export function ErrorNote({
   error,
   className = "",
@@ -197,17 +214,20 @@ export function ErrorNote({
   className?: string;
 }) {
   return (
-    <div role="alert" className={`rounded bg-gc-sunken px-3 py-2.5 text-left ${className}`}>
-      <div className="text-[11.5px] font-medium leading-snug text-gc-error">{error.title}</div>
-      <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-2">{error.hint}</div>
-      {error.raw && error.raw !== error.title && (
-        <details className="mt-1">
-          <summary className="cursor-pointer text-[11px] text-gc-ink-4">Details</summary>
-          <div className="mt-1 break-all font-mono text-[10.5px] leading-snug text-gc-ink-3">
-            {error.raw}
-          </div>
-        </details>
-      )}
+    <div role="alert" className={`flex gap-2.5 rounded bg-gc-sunken px-3 py-2.5 text-left ${className}`}>
+      <Icon name="info" size={15} className="mt-px shrink-0 text-gc-error" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[11.5px] font-semibold leading-snug text-gc-ink">{error.title}</div>
+        <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-2">{error.hint}</div>
+        {error.raw && error.raw !== error.title && (
+          <details className="mt-1">
+            <summary className="cursor-pointer py-0.5 text-[11px] text-gc-ink-3">Details</summary>
+            <div className="mt-1 break-all font-mono text-[10.5px] leading-snug text-gc-ink-3">
+              {error.raw}
+            </div>
+          </details>
+        )}
+      </div>
     </div>
   );
 }

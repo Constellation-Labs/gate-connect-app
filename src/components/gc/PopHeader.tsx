@@ -15,13 +15,17 @@ export function PopHeader({
   return (
     <div className="sticky top-0 z-[5] flex items-center gap-2 bg-gc-surface px-3.5 pb-2 pt-3.5">
       <div className="flex min-w-0 flex-1 flex-col gap-[3px] leading-none">
-        <span className="inline-flex items-center gap-2">
+        <h1
+          tabIndex={-1}
+          data-screen-focus
+          className="inline-flex items-center gap-2 outline-none"
+        >
           <ConstellationHexMark size={17} fill="#002a5f" />
           <span className="whitespace-nowrap text-[14.5px] font-semibold tracking-[-0.02em] text-gc-navy">
             Gate <span className="text-gc-accent">Connect</span>
           </span>
-        </span>
-        <span className="truncate pl-[25px] font-mono text-[10.5px] text-gc-ink-4">
+        </h1>
+        <span className="truncate pl-[25px] font-mono text-[10.5px] text-gc-ink-3">
           {workspace}
         </span>
       </div>

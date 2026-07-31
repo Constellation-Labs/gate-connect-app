@@ -61,9 +61,14 @@ describe("ToolDetail switch", () => {
     expect(screen.queryByText(/Restart Claude Code/)).toBeNull();
   });
 
-  it("disables the switch while busy", () => {
-    renderDetail({ kind: "connected" }, { busy: true });
-    expect(screen.getByRole("switch")).toHaveProperty("disabled", true);
+  it("marks the switch busy without ejecting keyboard focus", () => {
+    const onSetRouted = vi.fn(() => Promise.resolve());
+    renderDetail({ kind: "connected" }, { busy: true, onSetRouted });
+    const sw = screen.getByRole("switch");
+    expect(sw.getAttribute("aria-busy")).toBe("true");
+    expect(sw).toHaveProperty("disabled", false);
+    fireEvent.click(sw);
+    expect(onSetRouted).not.toHaveBeenCalled();
   });
 });
 

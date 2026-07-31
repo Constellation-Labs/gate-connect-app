@@ -136,12 +136,15 @@ export function App() {
   const [staleAgentsDismissed, setStaleAgentsDismissed] = useState(false);
 
   // Set when routing flips on/off in a way worth a full-popover takeover: the
-  // user toggled the proxy from the home screen while agents were running.
-  // Holds the direction so the takeover can word on vs off; shown until
-  // dismissed. Routing that comes up on its own at startup (restore) is not a
-  // state change the user made just now, so it gets the calm inline
-  // `startupRoutingHint` on Home instead of a takeover.
-  const [routingNotice, setRoutingNotice] = useState<"on" | "off" | null>(null);
+  // user toggled the proxy from the home screen while agents were running, or
+  // asked for it from the startup banner's "Close agents…" action (which
+  // opens straight on the confirm step - the banner click already declared
+  // the intent). Shown until dismissed. Routing that comes up on its own at
+  // startup gets the calm inline `startupRoutingHint` on Home instead.
+  const [routingNotice, setRoutingNotice] = useState<{
+    dir: "on" | "off";
+    confirming: boolean;
+  } | null>(null);
   // The takeover teaches its lesson once per session; after the first
   // acknowledgment, later toggles fall back to the inline restart hint that
   // carries the same advice, so the daily user isn't re-interrupted.
@@ -324,7 +327,7 @@ export function App() {
   }, [startupRoutingHint]);
   useEffect(() => {
     if (routingNotice !== null) {
-      track("routing_notice_shown", { enabled: routingNotice === "on" });
+      track("routing_notice_shown", { enabled: routingNotice.dir === "on" });
     }
   }, [routingNotice]);
   useEffect(() => {
@@ -391,6 +394,21 @@ export function App() {
     setAccount(await getAccount().catch(() => null));
     setOAuth(await oauthStatus().catch(() => null));
   }, []);
+
+  // Move focus to the incoming panel's heading on every screen change, so
+  // assistive tech announces where the user landed and Tab starts at the top
+  // of the new panel instead of dying on the unmounted control they clicked.
+  // Skips the initial resolve (loading -> first screen): stealing focus the
+  // moment the popover opens would fight the OS.
+  const prevScreen = useRef<Screen>("loading");
+  useEffect(() => {
+    const prev = prevScreen.current;
+    prevScreen.current = screen;
+    if (prev === "loading" || prev === screen || screen === "loading") return;
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>("[data-screen-focus]")?.focus();
+    });
+  }, [screen]);
 
   // Escape steps back out of the sub-screens (Settings, Routing), the same
   // exit the header back button offers. The takeovers own Escape themselves
@@ -473,7 +491,7 @@ export function App() {
           if (agents > 0) {
             if (!routingNoticeSeen.current) {
               routingNoticeSeen.current = true;
-              setRoutingNotice(next.running ? "on" : "off");
+              setRoutingNotice({ dir: next.running ? "on" : "off", confirming: false });
             } else {
               setRestartHint(true);
               if (next.running) setRelaunchHint(true);
@@ -725,6 +743,7 @@ export function App() {
       <ProxyScreen
         proxy={proxy}
         providers={providers.filter((p) => !HIDDEN_PROVIDER_SLUGS.has(p.slug))}
+        tools={tools}
         busy={proxyBusy}
         error={providerError}
         restartHint={restartHint}
@@ -768,6 +787,7 @@ export function App() {
     body = (
       <ToolDetail
         tool={tools.find((t) => t.slug === toolSlug)!}
+        providers={providers}
         busy={proxyBusy}
         onSetRouted={(routed) => setToolRouted(toolSlug, routed)}
         onBack={() => setScreen("home")}
@@ -790,9 +810,10 @@ export function App() {
         onDismissRelaunchHint={() => setRelaunchHint(false)}
         startupRoutingHint={startupRoutingHint}
         onDismissStartupRoutingHint={() => setStartupRoutingHint(false)}
-        // User-initiated, so the full takeover (confirm + result) is earned
-        // here even though startup itself no longer opens it.
-        onCloseAgents={() => setRoutingNotice("on")}
+        // User-initiated, so the full takeover is earned here even though
+        // startup itself no longer opens it - and since the banner click
+        // already declared the intent, land directly on the confirm step.
+        onCloseAgents={() => setRoutingNotice({ dir: "on", confirming: true })}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onOpenProxy={() => setScreen("proxy")}
@@ -825,14 +846,16 @@ export function App() {
           the slim update banner in-flow at the top of the popover - hence its
           placement above the body. The takeover defers while the quit or
           routing takeover is up, so it can never mount under one (z-20 vs
-          z-30) and trap focus in a hidden panel. */}
+          the quit takeover's z-30 / over the routing notice's z-10) and trap
+          focus in a hidden panel. */}
       <UpdatePanel
         suppressTakeover={quitTools !== null || routingNotice !== null}
         onTakeoverVisibleChange={setUpdateTakeoverVisible}
       />
       {routingNotice !== null && screen !== "loading" && (
         <StartupRoutingNotice
-          routingOn={routingNotice === "on"}
+          routingOn={routingNotice.dir === "on"}
+          startConfirming={routingNotice.confirming}
           onDismiss={() => setRoutingNotice(null)}
           onAgentsClosed={() => setStartupRoutingHint(false)}
         />

@@ -14,10 +14,15 @@ import { Icon } from "./gc/Icon";
  *  takeover (z-20) so an update prompt still wins. */
 export function StartupRoutingNotice({
   routingOn,
+  startConfirming = false,
   onDismiss,
   onAgentsClosed,
 }: {
   routingOn: boolean;
+  /** Open directly on the close-agents confirm step - used when the entry
+   * point (the Home banner's "Close agents…") already declared the intent,
+   * so the informational step would just be a third click. */
+  startConfirming?: boolean;
   onDismiss: () => void;
   /** Fired after a successful close, so a surface that opened this takeover
    * (the Home startup banner) can retire advice the user just acted on. */
@@ -26,7 +31,7 @@ export function StartupRoutingNotice({
   const [closing, setClosing] = useState(false);
   // Clicking "Close running agents" arms this inline confirm step first; the
   // popover never stacks dialogs, so the panel itself swaps its copy/buttons.
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState(startConfirming);
   // Signalled-process count once the close ran; null until then.
   const [closed, setClosed] = useState<number | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);

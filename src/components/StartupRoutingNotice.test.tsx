@@ -39,6 +39,16 @@ describe("StartupRoutingNotice copy", () => {
 });
 
 describe("StartupRoutingNotice close-agents flow", () => {
+  it("opens directly on the confirm step when startConfirming is set", () => {
+    render(
+      <StartupRoutingNotice routingOn startConfirming onDismiss={vi.fn()} />,
+    );
+    // No informational detour: the confirm copy and action are already up.
+    expect(screen.getByText(/including desktop apps like Claude/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close agents" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Got it" })).toBeNull();
+  });
+
   it("arms an inline confirm step first, and Cancel backs out without closing", () => {
     renderNotice(true);
     fireEvent.click(screen.getByRole("button", { name: "Close running agents" }));
