@@ -34,7 +34,7 @@ function makeTool(slug: string, name: string, status: Tool["status"]): Tool {
 function makeDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
   return {
     slug: "anthropic",
-    display_name: "Anthropic (Claude Desktop / Cowork)",
+    display_name: "Claude Desktop / Cowork",
     hosts: ["api.anthropic.com"],
     upstream_url: "https://api.anthropic.com",
     rewrite_prefixes: ["/v1/messages"],
@@ -165,11 +165,11 @@ describe("Home apps ledger", () => {
   it("renders a domain row with its hosts and calls onSetDomain on flip", () => {
     const onSetDomain = vi.fn();
     renderHome({ domains: [makeDomain()], onSetDomain });
-    expect(screen.getByText("Anthropic (Claude Desktop / Cowork)")).toBeTruthy();
+    expect(screen.getByText("Claude Desktop / Cowork")).toBeTruthy();
     expect(screen.getByText("api.anthropic.com")).toBeTruthy();
     fireEvent.click(
       screen.getByRole("switch", {
-        name: "Route Anthropic (Claude Desktop / Cowork) through Gate",
+        name: "Route Claude Desktop / Cowork through Gate",
       }),
     );
     expect(onSetDomain).toHaveBeenCalledWith("anthropic", false);
@@ -191,7 +191,7 @@ describe("Home apps ledger", () => {
     expect(screen.getByText("Coming soon")).toBeTruthy();
     expect(
       screen.getByRole("switch", {
-        name: "Route Anthropic (Claude Desktop / Cowork) through Gate",
+        name: "Route Claude Desktop / Cowork through Gate",
       }),
     ).toHaveProperty("disabled", true);
   });
