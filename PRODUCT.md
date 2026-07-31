@@ -73,6 +73,19 @@ sensitive and makes you feel like grown-ups are running the kitchen.
 ## Capabilities and Constraints
 
 - Platforms: macOS (primary design target), Windows, Linux.
+- The gateway, not this app, is what inspects traffic: prompt-injection
+  attempts stopped, sensitive values redacted, compression trimming token
+  spend. The onboarding tour may claim these because they are real Gate
+  capabilities; the popover does not evidence them yet. Surfacing gate
+  status in the app is planned for a future iteration, and is the honest
+  home for that proof.
+- Gate Connect can close running tools and apps; it cannot start them.
+  Copy says "close", never promises a restart, and never implies the app
+  will reopen anything. A routing change takes effect the next time the
+  user opens the tool or app themselves.
+- The onboarding tour's "Do not show this intro again" checkbox starts
+  clear: opting out of the intro is a choice the user makes, not a default
+  they discover afterwards.
 - Routable surfaces: config tools (Claude Code, Codex, OpenCode, OpenClaw,
   Hermes) and proxy-routed app domains (Anthropic for Claude Desktop /
   Cowork, OpenAI, OpenRouter). Provider-level switches live in the CLI and

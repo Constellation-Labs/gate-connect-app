@@ -132,7 +132,9 @@ export function Onboarding() {
   const steps = buildSteps(platform);
   const [index, setIndex] = useState(0);
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
-  const [dontShow, setDontShow] = useState(true);
+  // Starts clear: opting out of the intro should be a choice the user makes,
+  // not a default they discover after it stops appearing.
+  const [dontShow, setDontShow] = useState(false);
 
   // First launch vs a replay from Settings, threaded through the window URL
   // by `open_onboarding_window` as a hash fragment (query strings can fail to
@@ -179,11 +181,16 @@ export function Onboarding() {
     // from escaping the click handler.
     void getCurrentWindow().close();
     try {
-      setTourSeen(dontShow);
+      // Finishing the tour is itself the "seen" signal, so it records the
+      // flag whatever the checkbox says: the checkbox only decides what
+      // happens when someone leaves early. (It used to be the sole writer,
+      // which is why it had to start checked; now that it doesn't, it can
+      // start clear without replaying the intro on every launch.)
+      setTourSeen(true);
       track("tour_completed", { source });
       // Tell the popover window to record the flag in its own storage too, in
       // case the platform doesn't share localStorage between webviews.
-      if (dontShow) void emit(TOUR_SEEN_EVENT);
+      void emit(TOUR_SEEN_EVENT);
     } catch (e) {
       console.warn("[gate] tour completion bookkeeping failed", e);
     }

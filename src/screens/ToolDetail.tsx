@@ -114,8 +114,8 @@ export function ToolDetail({
         <div role="status" className="mx-3.5 mb-2 flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
           <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
           <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-            <span className="font-semibold">Restart {tool.name}</span> to apply
-            the change.
+            <span className="font-semibold">Close {tool.name}</span> to apply
+            the change; it picks this up the next time you open it.
           </div>
         </div>
       )}

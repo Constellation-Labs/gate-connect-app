@@ -48,7 +48,7 @@ describe("ToolDetail switch", () => {
     expect(sw.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(sw);
     await waitFor(() => expect(onSetRouted).toHaveBeenCalledWith(true));
-    expect(await screen.findByText(/Restart Claude Code/)).toBeTruthy();
+    expect(await screen.findByText(/Close Claude Code/)).toBeTruthy();
   });
 
   it("shows a classified error when the toggle fails, with the raw detail", async () => {
@@ -58,7 +58,7 @@ describe("ToolDetail switch", () => {
     renderDetail({ kind: "detected" }, { onSetRouted });
     fireEvent.click(screen.getByRole("switch"));
     expect(await screen.findByText("Couldn't connect this tool")).toBeTruthy();
-    expect(screen.queryByText(/Restart Claude Code/)).toBeNull();
+    expect(screen.queryByText(/Close Claude Code/)).toBeNull();
   });
 
   it("marks the switch busy without ejecting keyboard focus", () => {

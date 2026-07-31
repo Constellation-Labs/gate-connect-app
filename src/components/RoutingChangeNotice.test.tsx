@@ -22,13 +22,13 @@ describe("RoutingChangeNotice copy", () => {
   it("words the takeover for routing on", () => {
     renderNotice(true);
     expect(screen.getByText("Routing is on")).toBeTruthy();
-    expect(screen.getByText(/won't route through Gate/i)).toBeTruthy();
+    expect(screen.getByText(/isn't routing through Gate yet/i)).toBeTruthy();
   });
 
   it("words the takeover for routing off", () => {
     renderNotice(false);
     expect(screen.getByText("Routing is off")).toBeTruthy();
-    expect(screen.getByText(/still point at Gate/i)).toBeTruthy();
+    expect(screen.getByText(/still points at Gate/i)).toBeTruthy();
   });
 
   it("dismisses via Got it", () => {
@@ -65,7 +65,7 @@ describe("RoutingChangeNotice close-agents flow", () => {
     renderNotice(true);
     fireEvent.click(screen.getByRole("button", { name: "Close them now" }));
     fireEvent.click(screen.getByRole("button", { name: "Close everything" }));
-    expect(await screen.findByText(/Closed 3\. Start them again/)).toBeTruthy();
+    expect(await screen.findByText(/Closed 3\. Open them again/)).toBeTruthy();
     expect(track).toHaveBeenCalledWith("agents_closed", { count: 3 });
     // The takeover ends with Done once the close has run.
     expect(screen.getByRole("button", { name: "Done" })).toBeTruthy();
@@ -76,7 +76,7 @@ describe("RoutingChangeNotice close-agents flow", () => {
     renderNotice(true);
     fireEvent.click(screen.getByRole("button", { name: "Close them now" }));
     fireEvent.click(screen.getByRole("button", { name: "Close everything" }));
-    expect(await screen.findByText(/Closed 1\. Start them again/)).toBeTruthy();
+    expect(await screen.findByText(/Closed 1\. Open them again/)).toBeTruthy();
   });
 
   it("says when no agents were running", async () => {

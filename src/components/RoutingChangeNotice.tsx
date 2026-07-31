@@ -84,13 +84,13 @@ export function RoutingChangeNotice({
             {confirming
               ? "Close everything still running, including desktop apps like Claude? Anything they're working on will be interrupted."
               : routingOn
-                ? "Tools and apps that were already running won't route through Gate until restarted. Close them and start them again."
-                : "Tools and apps that were already running still point at Gate. Close them and start them again."}
+                ? "Anything already open isn't routing through Gate yet. Close it and it picks Gate up the next time you open it."
+                : "Anything already open still points at Gate. Close it and it goes back to normal the next time you open it."}
           </p>
         ) : (
           <p className="text-[12.5px] leading-snug text-gc-ink-3">
             {closed > 0
-              ? `Closed ${closed}. Start them again when you're ready.`
+              ? `Closed ${closed}. Open them again whenever you need them.`
               : "Nothing was running."}
           </p>
         )}

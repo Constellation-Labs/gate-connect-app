@@ -225,8 +225,8 @@ export function Home({
             <Icon name="info" size={15} className="shrink-0 text-gc-error" />
             <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
               Gate&rsquo;s local address changed.{" "}
-              <span className="font-semibold">Restart your tools and apps</span>{" "}
-              to reconnect.
+              <span className="font-semibold">Close your apps</span>; they
+              reconnect the next time you open them.
             </div>
             <IconButton
               icon="x"
@@ -241,9 +241,7 @@ export function Home({
           <div role="status" className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
             <Icon name="info" size={15} className="shrink-0 text-gc-ink" />
             <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-              Routing is on, but some tools and apps were launched before it
-              and won&rsquo;t route until{" "}
-              <span className="font-semibold">restarted</span>.
+              Routing is on. Anything already open isn&rsquo;t routing yet.
             </div>
             {/* Opens the full takeover (confirm step, close, result); the
                 ellipsis signals more steps follow. */}
@@ -267,9 +265,9 @@ export function Home({
           <div role="status" className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
             <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
             <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-              Tools and apps already running won’t route through Gate.{" "}
-              <span className="font-semibold">Reopen them</span> and they’ll pick
-              up the proxy at launch.
+              Anything already open isn&rsquo;t routing yet.{" "}
+              <span className="font-semibold">Close your apps</span> and
+              they&rsquo;ll pick up Gate when you open them again.
             </div>
             <IconButton
               icon="x"
@@ -284,8 +282,8 @@ export function Home({
           <div role="status" className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
             <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
             <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-              <span className="font-semibold">Restart your tools and apps</span>{" "}
-              to apply the change.
+              <span className="font-semibold">Close your apps</span> to apply
+              the change; they pick it up the next time you open them.
             </div>
             <IconButton
               icon="x"
