@@ -1,13 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability set for Gate Connect's windows.",
+  "description": "Default capability set for Gate Connect's windows. allow-destroy rides with allow-close on purpose: the onboarding window listens for close-requested from JS, which makes Tauri prevent the native close and hand the decision to @tauri-apps/api, whose handler closes the window by calling destroy().",
   "windows": ["main", "onboarding"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
     "core:window:allow-hide",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "core:window:allow-start-dragging",
     "updater:default",
     "process:allow-restart",

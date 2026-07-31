@@ -150,12 +150,14 @@ export function Onboarding() {
   const indexRef = useRef(index);
   indexRef.current = index;
   useEffect(() => {
-    // This handler decides whether the window may close. Tauri prevents the
-    // native close whenever JS listens for close-requested and only destroys
-    // the window if this resolves without preventDefault (tauri
-    // manager/window.rs + onCloseRequested in @tauri-apps/api), so a throw
-    // here leaves a window the user cannot close. Nothing in it may fail
-    // loudly.
+    // Registering this listener takes over the window's close semantics:
+    // Tauri prevents the native close whenever JS listens for close-requested
+    // (has_js_listener in manager/window.rs) and the window then closes only
+    // because @tauri-apps/api's wrapper calls destroy() once this resolves
+    // without preventDefault. Two consequences worth keeping in mind before
+    // editing: the capability set must keep `core:window:allow-destroy` (an
+    // unpermitted destroy leaves a window nobody can close), and a throw in
+    // here strands the user the same way - so nothing may fail loudly.
     const unlisten = getCurrentWindow().onCloseRequested(() => {
       try {
         if (finishedRef.current) return;
