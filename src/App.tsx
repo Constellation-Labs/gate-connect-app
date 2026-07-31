@@ -22,6 +22,8 @@ import {
   providerEnable,
   providerDisable,
   listTools,
+  connectTool,
+  disconnectTool,
   launchAtLoginStatus,
   unpinPopover,
   openOnboardingWindow,
@@ -537,6 +539,37 @@ export function App() {
     [proxyBusy],
   );
 
+  // Connect or disconnect one tool from its detail screen. Rethrows so the
+  // caller can classify and display the failure in place; either way the
+  // finally block re-syncs to backend truth (the toggle can flip the
+  // provider headline, and connect auto-enables the proxy engine).
+  const setToolRouted = useCallback(
+    async (slug: string, routed: boolean) => {
+      if (proxyBusy) return;
+      setProxyBusy(true);
+      try {
+        const tool = tools.find((t) => t.slug === slug);
+        if (routed) await connectTool(slug, tool?.default_upstream_url ?? "");
+        else await disconnectTool(slug);
+        track("tool_toggled", { tool: slug, routed });
+        setRestartHint(true);
+      } catch (e) {
+        trackError(e, "connect", { tool: slug, routed });
+        throw e;
+      } finally {
+        setTools(await listTools().catch(() => tools));
+        setProviders(await listProviders().catch(() => []));
+        try {
+          setProxy(await proxyStatus());
+        } catch {
+          /* non-macOS: no proxy subsystem */
+        }
+        setProxyBusy(false);
+      }
+    },
+    [proxyBusy, tools],
+  );
+
   const trustCa = useCallback(async () => {
     if (proxyBusy) return;
     setProxyBusy(true);
@@ -735,8 +768,9 @@ export function App() {
     body = (
       <ToolDetail
         tool={tools.find((t) => t.slug === toolSlug)!}
+        busy={proxyBusy}
+        onSetRouted={(routed) => setToolRouted(toolSlug, routed)}
         onBack={() => setScreen("home")}
-        onOpenRouting={() => setScreen("proxy")}
       />
     );
   } else {
