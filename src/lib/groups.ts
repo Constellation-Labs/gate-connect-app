@@ -1,27 +1,22 @@
-import type { ProxyDomain, Tool } from "./api";
+import type { ProviderState, ProxyDomain, Tool } from "./api";
 
 /**
- * Home's ledger groups everything routable by the model family it talks to
+ * Home's ledger groups everything routable by the model family it belongs to
  * (Claude, OpenAI, OpenRouter) instead of by mechanism (config file vs local
- * proxy). Three rows that stay three as tools are installed, with the
- * mechanism kept for the detail screen where it actually helps.
+ * proxy). Three or four rows that stay that way as tools are installed, with
+ * the mechanism kept for the group detail where it actually helps.
  *
- * Grouping is derived here rather than read from the backend's provider
- * catalog on purpose: that catalog maps only Claude Code to Anthropic, so
- * OpenCode / OpenClaw / Hermes would have no home. A tool's own
- * `upstream_provider_name` is the honest family key, and an unrecognised
- * upstream still gets a group of its own rather than disappearing.
+ * Membership comes from the backend provider catalog (`tool_slugs` +
+ * `domain_slugs`), never from `Tool.upstream_provider_name`: that field is
+ * display prose, and for OpenCode and OpenClaw it is literally "your existing
+ * providers", because those tools route whatever providers the user has
+ * configured rather than one model family. Tools the catalog claims for no
+ * provider are exactly those multi-provider tools, so they get their own
+ * group rather than being wedged into a family they don't belong to.
  */
 
-/** Family id -> the name a user would recognise. */
-const FAMILY_NAMES: Record<string, string> = {
-  anthropic: "Claude",
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-};
-
-/** Stable ordering; unknown families sort after these, alphabetically. */
-const FAMILY_ORDER = ["anthropic", "openai", "openrouter"];
+/** The catch-all family for tools that route every provider you've set up. */
+export const MULTI_PROVIDER_ID = "any-provider";
 
 export type MemberAttention = "error" | "drifted" | "needs-trust" | null;
 
@@ -33,7 +28,7 @@ export interface GroupMember {
   name: string;
   routed: boolean;
   attention: MemberAttention;
-  /** Present for config members; drives the per-tool detail screen. */
+  /** Present for config members. */
   tool?: Tool;
   /** Present for proxy members. */
   domain?: ProxyDomain;
@@ -42,82 +37,95 @@ export interface GroupMember {
 export interface Group {
   id: string;
   name: string;
+  /** One line on what the family covers, shown on its detail screen. */
+  blurb: string;
   members: GroupMember[];
   routed: number;
 }
 
-function familyId(raw: string): string {
-  return raw.trim().toLowerCase().replace(/\s+/g, "-");
+function memberFromTool(tool: Tool): GroupMember {
+  return {
+    key: tool.slug,
+    kind: "config",
+    name: tool.name,
+    routed: tool.status.kind === "connected",
+    attention:
+      tool.status.kind === "error"
+        ? "error"
+        : tool.status.kind === "drifted"
+          ? "drifted"
+          : null,
+    tool,
+  };
 }
 
-function familyName(id: string): string {
-  return FAMILY_NAMES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
+function memberFromDomain(
+  domain: ProxyDomain,
+  { proxyOn, caTrusted }: { proxyOn: boolean; caTrusted: boolean },
+): GroupMember {
+  return {
+    key: domain.slug,
+    kind: "proxy",
+    name: domain.display_name,
+    // An enabled domain behind an untrusted certificate is not carrying
+    // traffic, so it does not count as routed - same rule as the header's
+    // "Partly routed".
+    routed: domain.enabled && proxyOn && caTrusted,
+    attention: domain.enabled && proxyOn && !caTrusted ? "needs-trust" : null,
+    domain,
+  };
 }
 
 /**
  * Build the Home ledger. Not-installed tools and unsupported domains are left
- * out: the ledger lists what the user could actually route today.
- *
- * A proxy member only counts as routed when the engine is up *and* the
- * certificate is trusted, matching the "Partly routed" rule - an enabled
- * domain behind an untrusted certificate is not carrying traffic.
+ * out: the ledger lists what could actually route today.
  */
 export function buildGroups(
+  providers: ProviderState[],
   tools: Tool[],
   domains: ProxyDomain[],
-  { proxyOn, caTrusted }: { proxyOn: boolean; caTrusted: boolean },
+  opts: { proxyOn: boolean; caTrusted: boolean },
 ): Group[] {
-  const byFamily = new Map<string, GroupMember[]>();
-  const push = (id: string, member: GroupMember) => {
-    const list = byFamily.get(id);
-    if (list) list.push(member);
-    else byFamily.set(id, [member]);
-  };
+  const installed = tools.filter((t) => t.status.kind !== "not_installed");
+  const routable = domains.filter((d) => d.supported);
+  const claimed = new Set<string>();
 
-  for (const tool of tools) {
-    if (tool.status.kind === "not_installed") continue;
-    push(familyId(tool.upstream_provider_name), {
-      key: tool.slug,
-      kind: "config",
-      name: tool.name,
-      routed: tool.status.kind === "connected",
-      attention:
-        tool.status.kind === "error"
-          ? "error"
-          : tool.status.kind === "drifted"
-            ? "drifted"
-            : null,
-      tool,
-    });
-  }
-
-  for (const domain of domains) {
-    if (!domain.supported) continue;
-    push(familyId(domain.slug), {
-      key: domain.slug,
-      kind: "proxy",
-      name: domain.display_name,
-      routed: domain.enabled && proxyOn && caTrusted,
-      attention: domain.enabled && proxyOn && !caTrusted ? "needs-trust" : null,
-      domain,
-    });
-  }
-
-  return [...byFamily.entries()]
-    .map(([id, members]) => ({
-      id,
-      name: familyName(id),
+  const groups: Group[] = providers.map((provider) => {
+    const members: GroupMember[] = [];
+    for (const tool of installed) {
+      if (provider.tool_slugs.includes(tool.slug)) {
+        claimed.add(tool.slug);
+        members.push(memberFromTool(tool));
+      }
+    }
+    for (const domain of routable) {
+      if (provider.domain_slugs.includes(domain.slug)) {
+        members.push(memberFromDomain(domain, opts));
+      }
+    }
+    return {
+      id: provider.slug,
+      name: provider.display_name,
+      blurb: `Everything that talks to ${provider.display_name}.`,
       members,
       routed: members.filter((m) => m.routed).length,
-    }))
-    .sort((a, b) => {
-      const ai = FAMILY_ORDER.indexOf(a.id);
-      const bi = FAMILY_ORDER.indexOf(b.id);
-      if (ai !== -1 && bi !== -1) return ai - bi;
-      if (ai !== -1) return -1;
-      if (bi !== -1) return 1;
-      return a.name.localeCompare(b.name);
+    };
+  });
+
+  // Whatever the catalog didn't claim: the multi-provider tools.
+  const leftovers = installed.filter((t) => !claimed.has(t.slug)).map(memberFromTool);
+  if (leftovers.length > 0) {
+    groups.push({
+      id: MULTI_PROVIDER_ID,
+      name: "Any provider",
+      blurb:
+        "Tools that route whichever providers you have configured in them, not one model family.",
+      members: leftovers,
+      routed: leftovers.filter((m) => m.routed).length,
     });
+  }
+
+  return groups.filter((g) => g.members.length > 0);
 }
 
 /** "2 of 4 routing", plus whatever needs a human, named rather than counted

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Tool, ProxyDomain } from "../lib/api";
+import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import { buildGroups, groupSummary } from "../lib/groups";
@@ -18,6 +18,7 @@ export function Home({
   proxyOn,
   caTrusted,
   showProxy,
+  providers,
   tools,
   domains,
   busy,
@@ -41,6 +42,7 @@ export function Home({
   proxyOn: boolean;
   caTrusted: boolean;
   showProxy: boolean;
+  providers: ProviderState[];
   tools: Tool[];
   domains: ProxyDomain[];
   busy: boolean;
@@ -62,7 +64,7 @@ export function Home({
 }) {
   const platform = usePlatform();
   const trustStore = platform === "windows" ? "certificate store" : "keychain";
-  const groups = buildGroups(tools, domains, { proxyOn, caTrusted });
+  const groups = buildGroups(providers, tools, domains, { proxyOn, caTrusted });
   // The certificate only gates proxy-routed apps, so the partial state (and
   // the trust card) only exist while at least one app row is switched on.
   const anyDomainOn = domains.some((d) => d.enabled && d.supported);

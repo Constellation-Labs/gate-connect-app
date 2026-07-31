@@ -192,6 +192,9 @@ export interface ProviderState {
   /** Slugs of the config-file tools this provider's switch governs, so the
    * UI can show the coupling with the per-tool switches. */
   tool_slugs: string[];
+  /** Slugs of the proxy domains this provider covers. With `tool_slugs`,
+   * a family's whole membership - what Home's ledger groups by. */
+  domain_slugs: string[];
 }
 
 export const listProviders = () => invoke<ProviderState[]>("list_providers");

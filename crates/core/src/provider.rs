@@ -49,14 +49,14 @@ pub fn providers() -> Vec<Provider> {
     vec![
         Provider {
             slug: "anthropic",
-            display_name: "Claude Code / Cowork",
+            display_name: "Claude",
             subtitle: "Claude Code + Claude Desktop",
             tool_ids: &[ToolId::ClaudeCode],
             proxy_domain_slugs: &["anthropic"],
         },
         Provider {
             slug: "openai",
-            display_name: "OpenAI / Codex",
+            display_name: "OpenAI",
             subtitle: "Codex + OpenAI API",
             tool_ids: &[ToolId::Codex],
             proxy_domain_slugs: &["openai"],
@@ -93,8 +93,14 @@ pub struct ProviderState {
     pub available: bool,
     /// Slugs of the config-file tools this provider's switch governs, so the
     /// UI can show the coupling between the provider switch and the per-tool
-    /// switches (proxy-domain coverage is not listed here).
+    /// switches.
     pub tool_slugs: Vec<String>,
+    /// Slugs of the proxy domains this provider covers. With `tool_slugs` this
+    /// is a family's whole membership, which is what the popover's ledger
+    /// groups by - keyed on real ids rather than the display prose in
+    /// `Integration::upstream_provider_name`, which is deliberately "your
+    /// existing providers" for the multi-provider tools.
+    pub domain_slugs: Vec<String>,
 }
 
 /// What [`enable`] should do, given the two facts that drive the locked
@@ -183,6 +189,7 @@ pub fn state(p: &Provider) -> ProviderState {
         enabled,
         available: any_detected || proxy_running(),
         tool_slugs: p.tool_ids.iter().map(|id| id.slug().to_string()).collect(),
+        domain_slugs: p.proxy_domain_slugs.iter().map(|s| s.to_string()).collect(),
     }
 }
 
@@ -561,7 +568,7 @@ mod tests {
     #[test]
     fn openai_provider_maps_to_codex_and_openai_domain() {
         let p = find("openai").expect("openai provider present");
-        assert_eq!(p.display_name, "OpenAI / Codex");
+        assert_eq!(p.display_name, "OpenAI");
         assert!(p.tool_ids.contains(&ToolId::Codex));
         assert_eq!(p.proxy_domain_slugs, &["openai"]);
     }
@@ -569,7 +576,7 @@ mod tests {
     #[test]
     fn anthropic_provider_maps_to_claude_code_and_anthropic_domain() {
         let p = find("anthropic").expect("anthropic provider present");
-        assert_eq!(p.display_name, "Claude Code / Cowork");
+        assert_eq!(p.display_name, "Claude");
         assert!(p.tool_ids.contains(&ToolId::ClaudeCode));
         assert_eq!(p.proxy_domain_slugs, &["anthropic"]);
     }

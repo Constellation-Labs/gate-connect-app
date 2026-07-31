@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, OAuthStatus, ProxyState, Tool } from "./lib/api";
+import type { Account, OAuthStatus, ProviderState, ProxyState, Tool } from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -38,7 +38,6 @@ import { Home } from "./screens/Home";
 import { GroupDetail } from "./screens/GroupDetail";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
-import { ToolDetail } from "./screens/ToolDetail";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
@@ -59,8 +58,7 @@ type Screen =
   | "home"
   | "settings"
   | "success"
-  | "group"
-  | "tool";
+  | "group";
 
 // Proxy domains hidden from the Apps ledger. "chatgpt" exists so the relay
 // recognizes the Codex integration's upstream hint - it's plumbing for the
@@ -134,9 +132,9 @@ export function App() {
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
-  // Which tool the "tool" screen shows; set by tapping a member row inside a
-  // group. Tool detail returns to the group it was opened from.
-  const [toolSlug, setToolSlug] = useState<string | null>(null);
+  // The provider catalog is the grouping contract for Home's ledger
+  // (tool_slugs + domain_slugs), not just an analytics dimension.
+  const [providers, setProviders] = useState<ProviderState[]>([]);
   // Which model family the "group" screen shows; set from the Home ledger.
   const [groupId, setGroupId] = useState<string | null>(null);
   // Set after a successful routing change; Home shows a "restart your tools
@@ -224,6 +222,7 @@ export function App() {
     const unlisten = listen("proxy-state-changed", async () => {
       const px = await proxyStatus().catch(() => null);
       const toolList = await listTools().catch(() => []);
+      const provs = await listProviders().catch(() => []);
       const stale = await routedClientsStale().catch(() => false);
       // Only agents that predate routing genuinely need a restart; a healthy
       // restored session (agents launched after routing came up) stays
@@ -232,6 +231,7 @@ export function App() {
       if (!alive) return;
       setProxy(px);
       setTools(toolList);
+      setProviders(provs);
       if (stale) setStaleAgentsHint(true);
       if (px?.running) {
         if (agents > 0) setStartupRoutingHint(true);
@@ -284,6 +284,7 @@ export function App() {
       setOAuth(oauthState);
       setProxy(px);
       setTools(toolList);
+      setProviders(provs);
       if (stale) setStaleAgentsHint(true);
       if (px?.running && agents > 0) setStartupRoutingHint(true);
       let resolved: Screen;
@@ -440,17 +441,14 @@ export function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
       if (quitTools !== null || routingNotice !== null) return;
-      if (screen === "tool" && groupId) {
-        // Step back up the hierarchy rather than all the way out.
-        setScreen("group");
-      } else if (screen === "settings" || screen === "tool" || screen === "group") {
+      if (screen === "settings" || screen === "group") {
         setProviderError(null);
         setScreen("home");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [screen, groupId, quitTools, routingNotice]);
+  }, [screen, quitTools, routingNotice]);
 
   // OAuth sign-out: forget the stored tokens but keep the account, so the
   // popover returns to the sign-in prompt (not first-run) and routing config /
@@ -559,7 +557,6 @@ export function App() {
         setProxy(await proxySetDomain(slug, enabled));
         track("domain_toggled", { domain: slug, enabled });
       } catch (e) {
-        setProviderError(classifyError(e, "provider_toggle"));
         trackError(e, "provider_toggle", { domain: slug, enabled });
         // Re-sync the switch to its true state after a failed toggle.
         try {
@@ -567,6 +564,9 @@ export function App() {
         } catch {
           /* noop */
         }
+        // Rethrow: the group row that asked for this shows the failure next
+        // to the member it belongs to, rather than in a screen-level note.
+        throw e;
       } finally {
         setProxyBusy(false);
       }
@@ -616,7 +616,7 @@ export function App() {
   const setGroupRouted = useCallback(
     async (id: string, on: boolean) => {
       if (proxyBusy) return;
-      const group = buildGroups(tools, proxy?.domains ?? [], {
+      const group = buildGroups(providers, tools, proxy?.domains ?? [], {
         proxyOn: proxy?.running ?? false,
         caTrusted: proxy?.ca_trusted ?? false,
       }).find((g) => g.id === id);
@@ -652,7 +652,7 @@ export function App() {
         setProxyBusy(false);
       }
     },
-    [proxyBusy, tools, proxy],
+    [proxyBusy, providers, tools, proxy],
   );
 
   const trustCa = useCallback(async () => {
@@ -759,7 +759,7 @@ export function App() {
   );
   // The ledger, grouped by model family; the group screen reads the same
   // shape Home renders so both stay in step after a toggle.
-  const groups = buildGroups(tools, visibleDomains, {
+  const groups = buildGroups(providers, tools, visibleDomains, {
     proxyOn,
     caTrusted: proxy?.ca_trusted ?? false,
   });
@@ -833,16 +833,6 @@ export function App() {
         onUntrustCa={untrustCa}
       />
     );
-  } else if (screen === "tool" && toolSlug && tools.some((t) => t.slug === toolSlug)) {
-    body = (
-      <ToolDetail
-        tool={tools.find((t) => t.slug === toolSlug)!}
-        busy={proxyBusy}
-        onSetRouted={(routed) => setToolRouted(toolSlug, routed)}
-        // Back goes up one level, to the family it was opened from.
-        onBack={() => setScreen(groupId ? "group" : "home")}
-      />
-    );
   } else if (screen === "group" && groups.some((g) => g.id === groupId)) {
     body = (
       <GroupDetail
@@ -850,17 +840,8 @@ export function App() {
         busy={proxyBusy}
         onBack={() => setScreen("home")}
         onToggleGroup={(id, on) => void setGroupRouted(id, on)}
-        onToggleTool={(slug, routed) => {
-          setProviderError(null);
-          void setToolRouted(slug, routed).catch((e) =>
-            setProviderError(classifyError(e, "connect")),
-          );
-        }}
+        onToggleTool={setToolRouted}
         onSetDomain={setDomain}
-        onOpenTool={(slug) => {
-          setToolSlug(slug);
-          setScreen("tool");
-        }}
       />
     );
   } else {
@@ -871,6 +852,7 @@ export function App() {
         proxyOn={proxyOn}
         caTrusted={proxy?.ca_trusted ?? true}
         showProxy={showProxy}
+        providers={providers}
         tools={tools}
         domains={visibleDomains}
         busy={proxyBusy}

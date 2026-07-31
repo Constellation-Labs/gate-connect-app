@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
-import type { Tool, ProxyDomain } from "../lib/api";
+import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
 import { Home } from "./Home";
 
 // The CA-trust card swaps the trust-store name by platform; drive it by
@@ -50,6 +50,29 @@ function makeDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
   };
 }
 
+/** Mirrors the real catalog: Claude Code and Codex are claimed; OpenCode and
+ * OpenClaw deliberately are not, so they land in "Any provider". */
+const CATALOG: ProviderState[] = [
+  {
+    slug: "anthropic",
+    display_name: "Claude",
+    subtitle: "",
+    enabled: false,
+    available: true,
+    tool_slugs: ["claude-code"],
+    domain_slugs: ["anthropic"],
+  },
+  {
+    slug: "openai",
+    display_name: "OpenAI",
+    subtitle: "",
+    enabled: false,
+    available: true,
+    tool_slugs: ["codex"],
+    domain_slugs: ["openai"],
+  },
+];
+
 function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, platform: Platform = "macos") {
   (usePlatform as Mock).mockReturnValue(platform);
   render(
@@ -58,6 +81,7 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       proxyOn={true}
       caTrusted={true}
       showProxy={true}
+      providers={CATALOG}
       tools={[]}
       domains={[]}
       busy={false}
@@ -147,47 +171,59 @@ describe("Home model-family ledger", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "connected" }),
-        makeTool("opencode", "OpenCode", { kind: "detected" }),
         makeTool("hermes", "Hermes", { kind: "not_installed" }),
         makeTool("codex", "Codex", { kind: "detected" }, "OpenAI"),
       ],
       domains: [makeDomain()],
     });
-    // Two families, not four tool rows; not_installed stays out.
+    // Families, not tool rows; not_installed stays out entirely.
     expect(screen.getByText("Claude")).toBeTruthy();
     expect(screen.getByText("OpenAI")).toBeTruthy();
     expect(screen.queryByText("Claude Code")).toBeNull();
     expect(screen.queryByText("Hermes")).toBeNull();
-    // Claude: Claude Code + Cowork routing, OpenCode not.
-    expect(screen.getByText(/2 of 3 routing/)).toBeTruthy();
+    // Claude: Claude Code + Cowork both routing. OpenAI: Codex only, off.
+    expect(screen.getByText(/2 of 2 routing/)).toBeTruthy();
     expect(screen.getByText(/0 of 1 routing/)).toBeTruthy();
+  });
+
+  it("gives the multi-provider tools an honest home, not a wrong family", () => {
+    renderHome({
+      // The real backend calls their upstream "your existing providers".
+      tools: [
+        makeTool("opencode", "OpenCode", { kind: "detected" }, "your existing providers"),
+        makeTool("openclaw", "OpenClaw", { kind: "detected" }, "your existing providers"),
+      ],
+      domains: [],
+    });
+    expect(screen.getByText("Any provider")).toBeTruthy();
+    expect(screen.queryByText(/existing providers/)).toBeNull();
   });
 
   it("reports a partly-routed family without rounding up", () => {
     renderHome({
-      tools: [
-        makeTool("claude-code", "Claude Code", { kind: "connected" }),
-        makeTool("opencode", "OpenCode", { kind: "detected" }),
-      ],
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      // Its sibling app row is switched off, so the family is half on.
+      domains: [makeDomain({ enabled: false })],
     });
     expect(screen.getByText("Partly routed")).toBeTruthy();
+    // Exact: the Routing card says "On · 1 of 2 routing", the row just the count.
+    expect(screen.getByText("1 of 2 routing")).toBeTruthy();
   });
 
   it("names an exception in the sub-line instead of hijacking the pill", () => {
     renderHome({
-      tools: [
-        makeTool("claude-code", "Claude Code", { kind: "connected" }),
-        makeTool("openclaw", "OpenClaw", { kind: "error", message: "bad json" }),
-      ],
+      tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
+      domains: [makeDomain()],
     });
     // The pill still answers "is this routing?"; the failure is named below.
     expect(screen.getByText("Partly routed")).toBeTruthy();
-    expect(screen.getByText(/OpenClaw failed/)).toBeTruthy();
+    expect(screen.getByText(/Claude Code failed/)).toBeTruthy();
   });
 
   it("flags a hand-written setup without calling the family broken", () => {
     renderHome({
       tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
+      domains: [],
     });
     expect(screen.getByText(/Codex set up elsewhere/)).toBeTruthy();
   });
@@ -195,7 +231,8 @@ describe("Home model-family ledger", () => {
   it("routes a whole family with one flip", () => {
     const onToggleGroup = vi.fn();
     renderHome({
-      tools: [makeTool("opencode", "OpenCode", { kind: "detected" })],
+      tools: [makeTool("claude-code", "Claude Code", { kind: "detected" })],
+      domains: [],
       onToggleGroup,
     });
     fireEvent.click(screen.getByRole("switch", { name: "Route Claude through Gate" }));
@@ -206,6 +243,7 @@ describe("Home model-family ledger", () => {
     const onOpenGroup = vi.fn();
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [],
       onOpenGroup,
     });
     fireEvent.click(screen.getByRole("button", { name: "Claude details" }));

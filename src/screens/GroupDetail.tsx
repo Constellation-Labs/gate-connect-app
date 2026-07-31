@@ -1,13 +1,47 @@
-import type { Group } from "../lib/groups";
-import { SubHeader, SectionLabel, Switch } from "../components/gc/ui";
+import { useState } from "react";
+import type { Group, GroupMember } from "../lib/groups";
+import { classifyError, type ClassifiedError } from "../lib/errors";
+import { trackError } from "../lib/analytics";
+import { SubHeader, SectionLabel, Switch, ErrorNote, IconButton } from "../components/gc/ui";
 import { MemberPill } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 
-/** One model family's fine grain. This is where the mechanism finally earns
- * its keep: each member says whether it routes by its own config file or
- * through the local proxy, which is the fact you need when one of them
- * isn't working. Config members drill in one more level for the full error
- * text; proxy members have nothing more to say than their hosts. */
+/** What a member's current state means, in plain language. This is the copy
+ * that used to live on a separate tool screen; it belongs next to the row it
+ * describes, not a level deeper. */
+function explain(member: GroupMember): string {
+  if (member.kind === "proxy") {
+    return member.attention === "needs-trust"
+      ? `${member.name} is switched on, but the local certificate isn't trusted yet, so its traffic isn't routing.`
+      : member.routed
+        ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
+        : `${member.name} routes through Gate's local proxy once you switch it on.`;
+  }
+  switch (member.tool?.status.kind) {
+    case "connected":
+      return `${member.name}'s own config points at your Gate gateway. Requests carry the key from your keychain; the key itself never lands in the config file.`;
+    case "drifted":
+      return `${member.name} has a Gate setup written outside this app. Switching it on replaces that configuration and manages the key from your keychain.`;
+    case "error":
+      return `Gate Connect couldn't read ${member.name}'s routing state. Try again after restarting Gate Connect; the details below help when reporting it.`;
+    default:
+      return `${member.name} is installed, but its config doesn't point at Gate. Switch it on and Gate Connect will write the config for you.`;
+  }
+}
+
+/** The raw payload worth showing: a failure's whole message, or the evidence
+ * behind a drift verdict. */
+function rawDetail(member: GroupMember): string | null {
+  const status = member.tool?.status;
+  if (status?.kind === "error") return status.message;
+  if (status?.kind === "drifted") return status.reason || null;
+  return null;
+}
+
+/** One model family's fine grain, two levels deep and no further: the members
+ * expand in place rather than pushing the user into a third screen. This is
+ * also the only screen that shows the mechanism (config file vs proxy), which
+ * is the fact you need when one member isn't working. */
 export function GroupDetail({
   group,
   busy,
@@ -15,17 +49,48 @@ export function GroupDetail({
   onToggleGroup,
   onToggleTool,
   onSetDomain,
-  onOpenTool,
 }: {
   group: Group;
   busy: boolean;
   onBack: () => void;
   onToggleGroup: (id: string, on: boolean) => void;
-  onToggleTool: (slug: string, routed: boolean) => void;
-  onSetDomain: (slug: string, enabled: boolean) => void;
-  onOpenTool: (slug: string) => void;
+  /** Rejects on failure so the row can surface it in place. */
+  onToggleTool: (slug: string, routed: boolean) => Promise<void>;
+  onSetDomain: (slug: string, enabled: boolean) => Promise<void>;
 }) {
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [error, setError] = useState<ClassifiedError | null>(null);
+  const [changed, setChanged] = useState<string | null>(null);
+  // Adopting a hand-written setup replaces someone's config, so the first
+  // flip arms a confirm instead of writing.
+  const [confirmingAdopt, setConfirmingAdopt] = useState<string | null>(null);
   const drifted = group.members.filter((m) => m.attention === "drifted");
+
+  function toggleOpen(key: string) {
+    setOpenKey((k) => (k === key ? null : key));
+    setError(null);
+  }
+
+  async function toggleMember(member: GroupMember) {
+    setError(null);
+    if (member.kind === "config" && !member.routed && member.attention === "drifted") {
+      if (confirmingAdopt !== member.key) {
+        setConfirmingAdopt(member.key);
+        setOpenKey(member.key);
+        return;
+      }
+    }
+    setConfirmingAdopt(null);
+    try {
+      if (member.kind === "proxy") await onSetDomain(member.key, !member.domain?.enabled);
+      else await onToggleTool(member.key, !member.routed);
+      setChanged(member.key);
+    } catch (e) {
+      trackError(e, "connect", { tool: member.key });
+      setError(classifyError(e, "connect"));
+      setOpenKey(member.key);
+    }
+  }
 
   return (
     <div className="flex flex-col">
@@ -37,8 +102,7 @@ export function GroupDetail({
             Route {group.name} through Gate
           </div>
           <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
-            {group.routed} of {group.members.length} routing. This switch moves
-            the whole group; each one below moves on its own.
+            {group.blurb} {group.routed} of {group.members.length} routing.
           </div>
         </div>
         <Switch
@@ -55,68 +119,128 @@ export function GroupDetail({
           <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
             {drifted.length === 1 ? `${drifted[0].name} has` : `${drifted.length} of these have`}{" "}
             a Gate setup written outside this app. The group switch leaves{" "}
-            {drifted.length === 1 ? "it" : "them"} alone; open{" "}
-            {drifted.length === 1 ? "it" : "each one"} to replace that setup.
+            {drifted.length === 1 ? "it" : "them"} alone; switch{" "}
+            {drifted.length === 1 ? "it" : "each"} on below to replace that setup.
           </div>
         </div>
       )}
 
       <SectionLabel>In this group</SectionLabel>
       <div className="flex flex-col border-t border-gc-line">
-        {group.members.map((m) => {
-          const drillable = m.kind === "config" && m.tool;
+        {group.members.map((member) => {
+          const open = openKey === member.key;
+          const raw = rawDetail(member);
           return (
-            <div
-              key={m.key}
-              className={`relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-2.5 ${
-                drillable ? "transition hover:bg-gc-subtle" : ""
-              }`}
-            >
-              {drillable && (
+            <div key={member.key} className="border-b border-gc-line">
+              <div
+                className={`relative flex items-center gap-2.5 px-3.5 py-2.5 transition ${
+                  open ? "bg-gc-subtle" : "hover:bg-gc-subtle"
+                }`}
+              >
                 <button
                   type="button"
-                  onClick={() => onOpenTool(m.key)}
-                  aria-label={`${m.name} details`}
+                  onClick={() => toggleOpen(member.key)}
+                  aria-expanded={open}
+                  aria-label={`${member.name} details`}
                   className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
                 />
-              )}
-              <div className="pointer-events-none relative min-w-0 flex-1">
-                <div className="truncate text-[13px] font-medium text-gc-ink">{m.name}</div>
-                <div className="mt-0.5 flex items-center gap-1.5">
-                  <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10px] text-gc-ink-3">
-                    {m.kind === "config" ? "config file" : "proxy"}
-                  </span>
-                  <span className="truncate font-mono text-[10px] text-gc-ink-3">
-                    {m.kind === "proxy"
-                      ? (m.domain?.hosts ?? []).join(" · ")
-                      : m.tool?.default_upstream_url}
-                  </span>
+                <div className="pointer-events-none relative min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-medium text-gc-ink">{member.name}</div>
+                  <div className="mt-0.5 flex items-center gap-1.5">
+                    <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10px] text-gc-ink-3">
+                      {member.kind === "config" ? "config file" : "proxy"}
+                    </span>
+                    <span className="truncate font-mono text-[10px] text-gc-ink-3">
+                      {member.kind === "proxy"
+                        ? (member.domain?.hosts ?? []).join(" · ")
+                        : member.tool?.default_upstream_url}
+                    </span>
+                  </div>
                 </div>
-              </div>
-              <span className="pointer-events-none relative">
-                <MemberPill member={m} />
-              </span>
-              <span className="relative">
-                <Switch
-                  on={m.routed}
-                  label={`Route ${m.name} through Gate`}
-                  busy={busy}
-                  onClick={() => {
-                    if (m.kind === "proxy") {
-                      onSetDomain(m.key, !m.domain?.enabled);
-                      return;
-                    }
-                    // Adopting a hand-written setup deserves its explanation
-                    // and confirm, both of which live on the tool detail.
-                    if (m.attention === "drifted" && !m.routed) onOpenTool(m.key);
-                    else onToggleTool(m.key, !m.routed);
-                  }}
-                />
-              </span>
-              {drillable && (
                 <span className="pointer-events-none relative">
-                  <Icon name="chevronRight" size={14} stroke={2} className="text-gc-ink-4" />
+                  <MemberPill member={member} />
                 </span>
+                <span className="relative">
+                  <Switch
+                    on={member.routed}
+                    label={`Route ${member.name} through Gate`}
+                    busy={busy}
+                    onClick={() => void toggleMember(member)}
+                  />
+                </span>
+                <span className="pointer-events-none relative">
+                  <Icon
+                    name="chevronRight"
+                    size={14}
+                    stroke={2}
+                    className={`text-gc-ink-4 transition-transform ${open ? "rotate-90" : ""}`}
+                  />
+                </span>
+              </div>
+
+              {open && (
+                <div className="bg-gc-subtle px-3.5 pb-3">
+                  <p className="text-[11.5px] leading-snug text-gc-ink-2">{explain(member)}</p>
+
+                  {raw && (
+                    <div
+                      role={member.attention === "error" ? "alert" : undefined}
+                      className="mt-2 rounded bg-gc-surface px-3 py-2.5 font-mono text-[10.5px] leading-snug text-gc-ink-2 shadow-border [overflow-wrap:anywhere]"
+                    >
+                      {raw}
+                    </div>
+                  )}
+
+                  {confirmingAdopt === member.key && (
+                    <div className="mt-2 rounded bg-gc-surface p-3 shadow-border">
+                      <div className="text-[11.5px] leading-snug text-gc-ink-2">
+                        Replace {member.name}&rsquo;s existing Gate setup? Switching it
+                        off later restores {member.name}&rsquo;s own settings.
+                      </div>
+                      <div className="mt-2.5 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void toggleMember(member)}
+                          disabled={busy}
+                          className="text-[12.5px] font-medium text-gc-accent disabled:opacity-50"
+                        >
+                          Replace setup
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingAdopt(null)}
+                          disabled={busy}
+                          className="ml-auto text-[12.5px] font-medium text-gc-ink-3"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {error && openKey === member.key && (
+                    <ErrorNote error={error} className="mt-2 bg-gc-surface shadow-border" />
+                  )}
+
+                  {changed === member.key && !error && (
+                    <div
+                      role="status"
+                      className="mt-2 flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border"
+                    >
+                      <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
+                      <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
+                        <span className="font-semibold">Close {member.name}</span> to
+                        apply the change; it picks this up the next time you open it.
+                      </div>
+                      <IconButton
+                        icon="x"
+                        size={13}
+                        onClick={() => setChanged(null)}
+                        aria-label="Dismiss restart hint"
+                      />
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           );

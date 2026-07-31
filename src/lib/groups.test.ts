@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ProxyDomain, Tool } from "./api";
-import { buildGroups, groupSummary } from "./groups";
+import type { ProviderState, ProxyDomain, Tool } from "./api";
+import { buildGroups, groupSummary, MULTI_PROVIDER_ID } from "./groups";
 
-function tool(
-  slug: string,
-  name: string,
-  status: Tool["status"],
-  upstream = "Anthropic",
-): Tool {
+function tool(slug: string, name: string, status: Tool["status"], upstream = "Anthropic"): Tool {
   return {
     slug,
     name,
@@ -32,28 +27,74 @@ function domain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
   };
 }
 
+function provider(
+  slug: string,
+  display_name: string,
+  tool_slugs: string[],
+  domain_slugs: string[],
+): ProviderState {
+  return {
+    slug,
+    display_name,
+    subtitle: "",
+    enabled: false,
+    available: true,
+    tool_slugs,
+    domain_slugs,
+  };
+}
+
+/** Mirrors the real catalog: Claude Code and Codex are each claimed by one
+ * provider; OpenCode / OpenClaw / Hermes deliberately are not. */
+const CATALOG = [
+  provider("anthropic", "Claude", ["claude-code"], ["anthropic"]),
+  provider("openai", "OpenAI", ["codex"], ["openai"]),
+  provider("openrouter", "OpenRouter", [], ["openrouter"]),
+];
+
 const ON = { proxyOn: true, caTrusted: true };
 
 describe("buildGroups", () => {
-  it("groups tools and domains by model family", () => {
+  it("groups by the catalog, not by the tool's display prose", () => {
     const groups = buildGroups(
+      CATALOG,
       [
         tool("claude-code", "Claude Code", { kind: "connected" }),
         tool("codex", "Codex", { kind: "detected" }, "OpenAI"),
       ],
-      [domain(), domain({ slug: "openrouter", display_name: "OpenRouter apps", enabled: false })],
+      [domain()],
       ON,
     );
-    expect(groups.map((g) => g.name)).toEqual(["Claude", "OpenAI", "OpenRouter"]);
+    expect(groups.map((g) => g.name)).toEqual(["Claude", "OpenAI"]);
     expect(groups[0].members.map((m) => m.name)).toEqual([
       "Claude Code",
       "Claude Desktop / Cowork",
     ]);
   });
 
-  it("leaves out what cannot be routed today", () => {
+  it("gives the multi-provider tools their own group instead of a wrong family", () => {
+    // Their upstream_provider_name is literally "your existing providers":
+    // display prose that must never become a family name.
     const groups = buildGroups(
-      [tool("hermes", "Hermes", { kind: "not_installed" })],
+      CATALOG,
+      [
+        tool("opencode", "OpenCode", { kind: "detected" }, "your existing providers"),
+        tool("openclaw", "OpenClaw", { kind: "detected" }, "your existing providers"),
+      ],
+      [],
+      ON,
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0].id).toBe(MULTI_PROVIDER_ID);
+    expect(groups[0].name).toBe("Any provider");
+    expect(groups[0].members.map((m) => m.name)).toEqual(["OpenCode", "OpenClaw"]);
+    expect(groups[0].name).not.toContain("existing providers");
+  });
+
+  it("drops families with nothing routable and leaves out what cannot route", () => {
+    const groups = buildGroups(
+      CATALOG,
+      [tool("hermes", "Hermes", { kind: "not_installed" }, "openrouter")],
       [domain({ slug: "openai", display_name: "OpenAI apps", supported: false })],
       ON,
     );
@@ -61,33 +102,23 @@ describe("buildGroups", () => {
   });
 
   it("does not count an enabled domain as routed while the CA is untrusted", () => {
-    const trusted = buildGroups([], [domain()], ON);
+    const trusted = buildGroups(CATALOG, [], [domain()], ON);
     expect(trusted[0].routed).toBe(1);
 
-    const untrusted = buildGroups([], [domain()], { proxyOn: true, caTrusted: false });
+    const untrusted = buildGroups(CATALOG, [], [domain()], { proxyOn: true, caTrusted: false });
     expect(untrusted[0].routed).toBe(0);
     expect(untrusted[0].members[0].attention).toBe("needs-trust");
 
-    const off = buildGroups([], [domain()], { proxyOn: false, caTrusted: true });
+    const off = buildGroups(CATALOG, [], [domain()], { proxyOn: false, caTrusted: true });
     expect(off[0].routed).toBe(0);
-  });
-
-  it("keeps an unknown upstream rather than dropping the tool", () => {
-    const groups = buildGroups(
-      [tool("mystery", "Mystery", { kind: "detected" }, "Acme Labs")],
-      [],
-      ON,
-    );
-    expect(groups).toHaveLength(1);
-    expect(groups[0].id).toBe("acme-labs");
-    expect(groups[0].name).toBe("Acme-labs");
   });
 
   it("marks drifted and errored members for the summary", () => {
     const groups = buildGroups(
+      CATALOG,
       [
         tool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI"),
-        tool("openclaw", "OpenClaw", { kind: "error", message: "m" }),
+        tool("claude-code", "Claude Code", { kind: "error", message: "m" }),
       ],
       [],
       ON,
@@ -101,24 +132,23 @@ describe("buildGroups", () => {
 describe("groupSummary", () => {
   it("counts, and names a single failure", () => {
     const [group] = buildGroups(
-      [
-        tool("claude-code", "Claude Code", { kind: "connected" }),
-        tool("openclaw", "OpenClaw", { kind: "error", message: "m" }),
-      ],
-      [],
+      CATALOG,
+      [tool("claude-code", "Claude Code", { kind: "error", message: "m" })],
+      [domain()],
       ON,
     );
     expect(groupSummary(group)).toEqual({
       count: "1 of 2 routing",
-      exception: "OpenClaw failed",
+      exception: "Claude Code failed",
     });
   });
 
   it("aggregates several failures rather than naming one", () => {
     const [group] = buildGroups(
+      CATALOG,
       [
-        tool("openclaw", "OpenClaw", { kind: "error", message: "m" }),
-        tool("opencode", "OpenCode", { kind: "error", message: "m" }),
+        tool("opencode", "OpenCode", { kind: "error", message: "m" }, "your existing providers"),
+        tool("openclaw", "OpenClaw", { kind: "error", message: "m" }, "your existing providers"),
       ],
       [],
       ON,
@@ -128,13 +158,19 @@ describe("groupSummary", () => {
 
   it("prefers the certificate over a drifted setup, and reports nothing when all is well", () => {
     const [blocked] = buildGroups(
+      CATALOG,
       [tool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
       [domain({ slug: "openai", display_name: "OpenAI apps" })],
       { proxyOn: true, caTrusted: false },
     );
     expect(groupSummary(blocked).exception).toBe("certificate not trusted");
 
-    const [clean] = buildGroups([tool("claude-code", "Claude Code", { kind: "connected" })], [], ON);
+    const [clean] = buildGroups(
+      CATALOG,
+      [tool("claude-code", "Claude Code", { kind: "connected" })],
+      [],
+      ON,
+    );
     expect(groupSummary(clean)).toEqual({ count: "1 of 1 routing", exception: null });
   });
 });
