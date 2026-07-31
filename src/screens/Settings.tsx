@@ -325,7 +325,7 @@ export function Settings({
           <div className="truncate text-[13px] font-medium text-gc-ink">
             {hostOf(account.gateway_base_url)}
           </div>
-          <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
+          <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
             {account.gateway_base_url}
           </div>
         </div>
@@ -623,7 +623,7 @@ export function Settings({
                     >
                       <div className="min-w-0 flex-1">
                         <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
-                        <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
+                        <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
                           {hostOf(server.url)}
                         </div>
                       </div>

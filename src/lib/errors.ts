@@ -159,7 +159,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     forget: "Couldn't reset Gate Connect",
     save_api_key: "Couldn't save the API key",
     update: "Couldn't install the update",
-    close_agents: "Couldn't close the running agents",
+    close_agents: "Couldn't close the running tools and apps",
     quit_disable: "Couldn't disconnect the tools",
     proxy_toggle: "Couldn't toggle routing",
     provider_toggle: "Couldn't toggle the provider",

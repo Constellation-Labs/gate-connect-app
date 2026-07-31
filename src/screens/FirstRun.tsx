@@ -188,7 +188,7 @@ export function FirstRun({
       <div className="mt-5">
         {!devMode ? (
           <div className="flex items-baseline justify-center gap-2 text-center">
-            <span className="font-mono text-[10.5px] text-gc-ink-4">{gateway}</span>
+            <span className="font-mono text-[10.5px] text-gc-ink-3">{gateway}</span>
             <button
               type="button"
               onClick={() => setDevMode(true)}
@@ -224,7 +224,7 @@ export function FirstRun({
                   >
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
-                      <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
+                      <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
                         {hostOf(server.url)}
                       </div>
                     </div>

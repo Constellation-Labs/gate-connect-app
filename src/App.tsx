@@ -28,6 +28,7 @@ import {
   openOnboardingWindow,
   routedClientsStale,
   runningAgentsCount,
+  staleAgentsCount,
   drainBackendErrors,
   pendingQuitTools,
 } from "./lib/api";
@@ -219,9 +220,10 @@ export function App() {
       const px = await proxyStatus().catch(() => null);
       const toolList = await listTools().catch(() => []);
       const stale = await routedClientsStale().catch(() => false);
-      // The hint only says "restart your agents", so skip it when none are
-      // running; a failed probe defaults to showing.
-      const agents = px?.running ? await runningAgentsCount().catch(() => 1) : 0;
+      // Only agents that predate routing genuinely need a restart; a healthy
+      // restored session (agents launched after routing came up) stays
+      // quiet. A failed probe defaults to showing.
+      const agents = px?.running ? await staleAgentsCount().catch(() => 1) : 0;
       if (!alive) return;
       setProxy(px);
       setTools(toolList);
@@ -269,9 +271,9 @@ export function App() {
       });
       // Analytics-only dimension on app_launched; omitted when unreadable.
       const lal = await launchAtLoginStatus().catch(() => null);
-      // Same gate as the proxy-state-changed listener: no running agents,
-      // nothing to restart, no hint; a failed probe defaults to showing.
-      const agents = px?.running ? await runningAgentsCount().catch(() => 1) : 0;
+      // Same gate as the proxy-state-changed listener: only agents that
+      // predate routing warrant the hint; a failed probe defaults to showing.
+      const agents = px?.running ? await staleAgentsCount().catch(() => 1) : 0;
       if (!alive) return;
       setAccount(acct);
       setOAuth(oauthState);

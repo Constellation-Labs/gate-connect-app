@@ -84,25 +84,25 @@ afterEach(() => {
 
 describe("Home CA-trust card", () => {
   it("appears when routing is on with the CA untrusted, naming the keychain on macOS", () => {
-    renderHome({ caTrusted: false });
+    renderHome({ caTrusted: false, domains: [makeDomain()] });
     expect(screen.getByText(/certificate your keychain trusts/)).toBeTruthy();
     expect(screen.getByText(/created on this machine/)).toBeTruthy();
   });
 
   it("names the certificate store on Windows", () => {
-    renderHome({ caTrusted: false }, "windows");
+    renderHome({ caTrusted: false, domains: [makeDomain()] }, "windows");
     expect(screen.getByText(/certificate your certificate store trusts/)).toBeTruthy();
   });
 
   it("calls onTrustCa from the accent button", () => {
     const onTrustCa = vi.fn();
-    renderHome({ caTrusted: false, onTrustCa });
+    renderHome({ caTrusted: false, domains: [makeDomain()], onTrustCa });
     fireEvent.click(screen.getByText("Trust certificate"));
     expect(onTrustCa).toHaveBeenCalledTimes(1);
   });
 
   it("is absent while routing is off or the CA is trusted", () => {
-    renderHome({ proxyOn: false, caTrusted: false });
+    renderHome({ proxyOn: false, caTrusted: false, domains: [makeDomain()] });
     expect(screen.queryByText("Trust certificate")).toBeNull();
     cleanup();
     renderHome({ caTrusted: true });

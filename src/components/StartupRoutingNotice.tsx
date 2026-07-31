@@ -82,16 +82,16 @@ export function StartupRoutingNotice({
         {closed === null ? (
           <p className="text-[12.5px] leading-snug text-gc-ink-3">
             {confirming
-              ? "Close all running agents, including desktop apps like Claude? Anything they're working on will be interrupted."
+              ? "Close everything still running, including desktop apps like Claude? Anything they're working on will be interrupted."
               : routingOn
-                ? "Agents that were already running won't route through Gate until restarted. Close them and start them again."
-                : "Agents that were already running still point at Gate. Close them and start them again."}
+                ? "Tools and apps that were already running won't route through Gate until restarted. Close them and start them again."
+                : "Tools and apps that were already running still point at Gate. Close them and start them again."}
           </p>
         ) : (
           <p className="text-[12.5px] leading-snug text-gc-ink-3">
             {closed > 0
-              ? `Closed ${closed} agent${closed === 1 ? "" : "s"}. Start them again when you're ready.`
-              : "No running agents found."}
+              ? `Closed ${closed}. Start them again when you're ready.`
+              : "Nothing was running."}
           </p>
         )}
         {error && <ErrorNote error={error} />}
@@ -104,14 +104,14 @@ export function StartupRoutingNotice({
               Got it
             </Button>
             <Button variant="secondary" full onClick={() => setConfirming(true)}>
-              Close running agents
+              Close them now
             </Button>
           </>
         )}
         {closed === null && confirming && (
           <>
             <Button variant="accent" full disabled={closing} onClick={() => void closeAgents()}>
-              {closing ? "Closing…" : "Close agents"}
+              {closing ? "Closing…" : "Close everything"}
             </Button>
             <button
               type="button"

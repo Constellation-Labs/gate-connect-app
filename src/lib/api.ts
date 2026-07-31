@@ -245,6 +245,11 @@ export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
  * is nothing to close. */
 export const runningAgentsCount = () => invoke<number>("running_agents_count");
 
+/** Running agent processes started *before* routing last came up - the ones
+ * that genuinely need a restart to route. Drives the startup hint, so a
+ * healthy restored session (agents launched after routing) stays quiet. */
+export const staleAgentsCount = () => invoke<number>("stale_agents_count");
+
 /** Terminate running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up
  * the routing change. Resolves to how many processes were signalled; 0 means

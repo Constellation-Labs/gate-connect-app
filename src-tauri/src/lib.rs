@@ -6,7 +6,7 @@
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
@@ -129,9 +129,12 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
         // tool configs point at the loopback relay, which only exists while the
         // engine runs. Idempotent if the proxy is already on.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        gate_connect_core::proxy::manager()
-            .enable()
-            .map_err(|e| format!("{e:#}"))?;
+        {
+            gate_connect_core::proxy::manager()
+                .enable()
+                .map_err(|e| format!("{e:#}"))?;
+            mark_routing_enabled();
+        }
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url,
             upstream_url,
@@ -578,6 +581,7 @@ async fn proxy_enable(
         gate_connect_core::proxy::manager()
             .enable()
             .map_err(|e| format!("{e:#}"))?;
+        mark_routing_enabled();
         // Second restore pass now that the proxy is up: domain-only providers
         // (no installed tool) have nothing to configure before the engine is
         // running, so the pre-enable pass leaves them in the snapshot.
@@ -929,6 +933,23 @@ fn drain_backend_errors() -> Vec<BackendError> {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
 
+/// Unix seconds of the most recent successful engine enable in this process
+/// (user toggle, startup restore, or a connect_tool auto-enable). 0 = never;
+/// `stale_agents_count` then falls back to our own process start, the
+/// conservative bound for the Linux case where the detached engine outlived
+/// a previous GUI session. Lets the frontend show its "restart your tools"
+/// startup hint only for processes that genuinely predate routing, instead
+/// of nagging every launch.
+static ROUTING_ENABLED_AT_UNIX: AtomicU64 = AtomicU64::new(0);
+
+fn mark_routing_enabled() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    ROUTING_ENABLED_AT_UNIX.store(now, Ordering::Release);
+}
+
 /// Visit every running agent process (see [`AGENT_PROCESS_NAMES`]), skipping
 /// our own pid. Shared by the close command and the count probe so both match
 /// the exact same process set.
@@ -958,6 +979,39 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
 fn running_agents_count() -> u32 {
     let mut count = 0u32;
     for_each_agent_process(|_| count += 1);
+    count
+}
+
+/// Count running agent processes that were started *before* routing last came
+/// up, i.e. the ones that resolved their connection pre-Gate and genuinely
+/// need a restart to route. Same process set as `running_agents_count`; the
+/// bound is the last in-process enable, falling back to our own process start
+/// when routing was already up before we launched (detached Linux engine).
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn stale_agents_count() -> u32 {
+    use sysinfo::{ProcessesToUpdate, System};
+    let mut bound = ROUTING_ENABLED_AT_UNIX.load(Ordering::Acquire);
+    if bound == 0 {
+        let mut sys = System::new();
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        bound = sysinfo::get_current_pid()
+            .ok()
+            .and_then(|pid| sys.process(pid))
+            .map(|p| p.start_time())
+            .unwrap_or(0);
+    }
+    if bound == 0 {
+        // No usable bound: degrade to "every running agent counts", the
+        // pre-timestamp behavior, rather than silently claiming freshness.
+        return running_agents_count();
+    }
+    let mut count = 0u32;
+    for_each_agent_process(|process| {
+        if process.start_time() < bound {
+            count += 1;
+        }
+    });
     count
 }
 
@@ -1248,6 +1302,7 @@ pub fn run() {
                     set_updater_relaunching,
                     routed_clients_stale,
                     running_agents_count,
+                    stale_agents_count,
                     close_running_agents,
                     drain_backend_errors,
                 ]
@@ -1568,6 +1623,7 @@ pub fn run() {
                     let prior_pac_port = gate_connect_core::proxy::system_proxy::load_pac_port();
                     match gate_connect_core::proxy::manager().enable() {
                         Ok(state) => {
+                            mark_routing_enabled();
                             // Engine port changed (or none was persisted - the
                             // first launch after upgrading from a build without
                             // port persistence): clients that resolved the

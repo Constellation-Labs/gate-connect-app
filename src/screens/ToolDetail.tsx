@@ -28,9 +28,17 @@ export function ToolDetail({
   // A change made here should carry its restart advice here too - the user
   // may close the popover before ever seeing Home's banner.
   const [changed, setChanged] = useState(false);
+  // Adopting a drifted (hand-written) Gate setup replaces someone's config;
+  // that gets an inline confirm step, armed by the first flip.
+  const [confirmingAdopt, setConfirmingAdopt] = useState(false);
 
   async function toggle() {
     setError(null);
+    if (!routed && status.kind === "drifted" && !confirmingAdopt) {
+      setConfirmingAdopt(true);
+      return;
+    }
+    setConfirmingAdopt(false);
     try {
       await onSetRouted(!routed);
       setChanged(true);
@@ -58,6 +66,35 @@ export function ToolDetail({
           onClick={() => void toggle()}
         />
       </div>
+
+      {confirmingAdopt && (
+        <div className="mx-3.5 mb-2 rounded bg-gc-subtle p-3 shadow-border">
+          <div className="text-[11.5px] leading-snug text-gc-ink-2">
+            Replace {tool.name}&rsquo;s existing Gate setup? Gate Connect
+            rewrites the config and manages the key from your keychain;
+            turning the switch off later restores {tool.name}&rsquo;s own
+            settings.
+          </div>
+          <div className="mt-2.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void toggle()}
+              disabled={busy}
+              className="text-[12.5px] font-medium text-gc-accent disabled:opacity-50"
+            >
+              Replace setup
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingAdopt(false)}
+              disabled={busy}
+              className="ml-auto text-[12.5px] font-medium text-gc-ink-3"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {changed && !error && (
         <div role="status" className="mx-3.5 mb-2 flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
