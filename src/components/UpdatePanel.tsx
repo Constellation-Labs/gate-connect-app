@@ -15,7 +15,18 @@ import { Icon } from "./gc/Icon";
  *  surface as a slim top banner instead - a mid-task reopen shouldn't be
  *  blocked by a takeover. Both offer the same one-click "install & relaunch".
  *  The check is silent - offline or an unreachable endpoint shows nothing. */
-export function UpdatePanel() {
+export function UpdatePanel({
+  suppressTakeover = false,
+  onTakeoverVisibleChange,
+}: {
+  /** True while another (higher z) takeover owns the popover; the startup
+   * update takeover defers until it clears rather than mounting beneath it
+   * and stealing focus into a hidden panel. */
+  suppressTakeover?: boolean;
+  /** Lets the shell mark the background aria-hidden while the startup
+   * takeover is mounted. */
+  onTakeoverVisibleChange?: (visible: boolean) => void;
+}) {
   const [update, setUpdate] = useState<Update | null>(null);
   const [current, setCurrent] = useState("");
   const [installing, setInstalling] = useState(false);
@@ -96,6 +107,15 @@ export function UpdatePanel() {
     }
   }
 
+  // The startup takeover is visible when an update exists, no reopen has
+  // demoted it to the banner, it hasn't been dismissed, and no higher
+  // takeover suppresses it. Reported on the edge so the shell can hide the
+  // background from assistive tech.
+  const takeoverVisible = !!update && !reopened && !panelDismissed && !suppressTakeover;
+  useEffect(() => {
+    onTakeoverVisibleChange?.(takeoverVisible);
+  }, [takeoverVisible, onTakeoverVisibleChange]);
+
   if (!update) return null;
 
   // After a reopen, surface the quiet top banner instead of the takeover.
@@ -138,8 +158,9 @@ export function UpdatePanel() {
     );
   }
 
-  // Startup: full-panel takeover.
-  if (panelDismissed) return null;
+  // Startup: full-panel takeover. Deferred (not dismissed) while a higher
+  // takeover is up; it mounts once that clears.
+  if (panelDismissed || suppressTakeover) return null;
   return (
     <UpdateTakeover
       version={update.version}

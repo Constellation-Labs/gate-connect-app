@@ -20,9 +20,11 @@ colors:
   ink-5: "#a1a6bb"
   success: "#2ecc71"
   success-wash: "rgba(46,204,113,0.14)"
-  success-deep: "#1f8a4c"
+  success-deep: "#177a42"
   warning: "#f39c12"
+  warning-wash: "rgba(243,156,18,0.12)"
   error: "#e74c3c"
+  error-wash: "rgba(231,76,60,0.12)"
 typography:
   title:
     fontFamily: "Geist, ui-sans-serif, system-ui, sans-serif"
@@ -151,8 +153,10 @@ small, wash-backed status colors.
 ### Neutral
 - **Ink** (#0f1222): primary text and headings on white.
 - **Ink 2** (#2a2d3f): strong secondary text, hover state of icon buttons.
-- **Ink 3** (#55596f): body-secondary, row descriptions.
-- **Ink 4** (#7a7f93): placeholders, section labels, muted icons.
+- **Ink 3** (#55596f): body-secondary, row descriptions, section labels,
+  idle pill text. The AA floor: the smallest ink that may carry real text.
+- **Ink 4** (#7a7f93): placeholders, muted icons, and incidental mono
+  identifiers only; never sentence copy or labels.
 - **Ink 5** (#a1a6bb): faintest text, idle status dots.
 - **Surface** (#ffffff): the popover card and every elevated surface.
 - **Subtle** (#f8f9fc): hover fill for icon buttons and quiet rows.
@@ -165,10 +169,14 @@ small, wash-backed status colors.
 
 ### Status
 - **Success** (#2ecc71) with **Success Wash** (rgba(46,204,113,0.14)) and
-  **Success Deep** (#1f8a4c) for pill text: the connected state.
-- **Warning** (#f39c12): degraded, attention-worthy but working.
-- **Error** (#e74c3c): failures and destructive actions, used as text and
-  icon color on sunken or plain backgrounds.
+  **Success Deep** (#177a42) for pill text: the connected state. Success
+  Deep is tuned to hold 4.5:1 on the wash over white at pill size.
+- **Warning** (#f39c12) with **Warning Wash** (rgba(243,156,18,0.12)):
+  degraded or partial states. Warning is never text; on a wash the text is
+  ink-2 and the dot carries the color.
+- **Error** (#e74c3c) with **Error Wash** (rgba(231,76,60,0.12)):
+  failures and destructive actions. Same rule: dot and icon in the color,
+  body-sized text in ink.
 
 ### Named Rules
 **The Provisional Indigo Rule.** The Gate Indigo palette is the incumbent
@@ -310,10 +318,15 @@ Quiet and precise: color states, not size or shadow theatrics.
 ### Status Pills
 - **Style:** 48px-radius capsule, 11px medium text, 6px status dot,
   8px horizontal padding.
-- **Connected:** Success Wash background, Success Deep (#1f8a4c) text,
-  solid Success dot.
-- **Idle / Signed out:** sunken (#eef0f6) background, ink-4 text, ink-5
-  dot. Pills report system state truthfully; they are never decorative.
+- **Connected / Routed:** Success Wash background, Success Deep (#177a42)
+  text, solid Success dot.
+- **Partial:** Warning Wash background, ink-2 text, solid Warning dot.
+  The honest third state for a system that is genuinely half-on (routing
+  up, certificate untrusted).
+- **Idle / Signed out / Not routed:** sunken (#eef0f6) background, ink-3
+  text, ink-5 dot.
+- Pills report system state truthfully; they are never decorative, and a
+  pill on a tool row is a door (opens the tool detail), not a verdict.
 
 ### Cards / Rows
 - **Corner Style:** 10px radius.

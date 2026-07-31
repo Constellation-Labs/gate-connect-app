@@ -150,8 +150,14 @@ export default {
           "ink-5": "#a1a6bb",
           navy: "#002a5f",
           success: "#2ecc71",
+          // Text-on-wash partners for the status colors: dark enough to hold
+          // WCAG AA (4.5:1) at pill size on their washes over white.
+          "success-deep": "#177a42",
+          "success-wash": "rgba(46,204,113,0.14)",
           warning: "#f39c12",
+          "warning-wash": "rgba(243,156,18,0.12)",
           error: "#e74c3c",
+          "error-wash": "rgba(231,76,60,0.12)",
           menubar: "#181a30",
         },
       },

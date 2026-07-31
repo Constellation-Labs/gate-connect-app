@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { oauthBeginLogin, saveAccount } from "../lib/api";
 import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS } from "../lib/config";
@@ -46,10 +46,17 @@ export function FirstRun({
   const busy = submitting || signingIn;
   const canSubmitKey = key.trim().length > 0 && !busy;
 
+  // Bumped by Cancel so a stale sign-in attempt can't re-lock the screen or
+  // surface its error after the user has moved on. There is no backend abort
+  // for the pending browser flow; if the user does finish it in the browser,
+  // onConnected still fires - completing is never wrong.
+  const signInAttempt = useRef(0);
+
   async function signIn() {
     if (busy) return;
     setError(null);
     setSigningIn(true);
+    const attempt = ++signInAttempt.current;
     try {
       // Persist the gateway first (no key) so the account exists on disk; the
       // sign-in then records OAuth as the auth mode against it.
@@ -57,10 +64,17 @@ export function FirstRun({
       await oauthBeginLogin();
       onConnected();
     } catch (err) {
-      setError(classifyError(err, "sign_in"));
       trackError(err, "sign_in");
-      setSigningIn(false);
+      if (attempt === signInAttempt.current) {
+        setError(classifyError(err, "sign_in"));
+        setSigningIn(false);
+      }
     }
+  }
+
+  function cancelSignIn() {
+    signInAttempt.current++;
+    setSigningIn(false);
   }
 
   async function connectWithKey() {
@@ -102,9 +116,18 @@ export function FirstRun({
         {signingIn ? "Waiting for browser…" : "Sign in with Constellation"}
       </Button>
       {signingIn && (
-        <p className="mt-2 text-center text-[11px] text-gc-ink-3">
-          Finish signing in on the page that just opened in your browser.
-        </p>
+        <div className="mt-2 flex flex-col items-center gap-1.5">
+          <p className="text-center text-[11px] text-gc-ink-3">
+            Finish signing in on the page that just opened in your browser.
+          </p>
+          <button
+            type="button"
+            onClick={cancelSignIn}
+            className="text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            Cancel
+          </button>
+        </div>
       )}
 
       {!showKey ? (
@@ -165,11 +188,11 @@ export function FirstRun({
       <div className="mt-5">
         {!devMode ? (
           <div className="flex items-baseline justify-center gap-2 text-center">
-            <span className="font-mono text-[10.5px] text-gc-ink-5">{gateway}</span>
+            <span className="font-mono text-[10.5px] text-gc-ink-4">{gateway}</span>
             <button
               type="button"
               onClick={() => setDevMode(true)}
-              className="text-[10.5px] font-medium text-gc-ink-5 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink-3"
+              className="text-[10.5px] font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink"
             >
               change
             </button>

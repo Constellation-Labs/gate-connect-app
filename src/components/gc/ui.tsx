@@ -105,7 +105,7 @@ export function CardButton({
 
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="px-3.5 pb-1.5 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
+    <div className="px-3.5 pb-1.5 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
       {children}
     </div>
   );
@@ -136,7 +136,7 @@ export function ConnPill({
   state = "connected",
   label,
 }: {
-  state?: "connected" | "idle" | "signedout";
+  state?: "connected" | "partial" | "idle" | "signedout";
   /** Overrides the default pill text so each surface can say what the state
    * actually means there ("Routing on" in the header, "Signed in" in
    * Settings) instead of an ambiguous "Connected". */
@@ -144,15 +144,25 @@ export function ConnPill({
 }) {
   if (state === "connected") {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-[rgba(46,204,113,0.14)] px-2 py-1 text-[11px] font-medium text-[#1f8a4c]">
+      <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-success-wash px-2 py-1 text-[11px] font-medium text-gc-success-deep">
         <span className="h-1.5 w-1.5 rounded-full bg-gc-success" />
         {label ?? "Connected"}
       </span>
     );
   }
+  // Partial: the system is genuinely half-on (routing up, CA untrusted), so
+  // the pill tells that truth instead of rounding up to green.
+  if (state === "partial") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-warning-wash px-2 py-1 text-[11px] font-medium text-gc-ink-2">
+        <span className="h-1.5 w-1.5 rounded-full bg-gc-warning" />
+        {label ?? "Partly routed"}
+      </span>
+    );
+  }
   const fallback = state === "idle" ? "Idle" : "Signed out";
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-4">
+    <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-3">
       <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-5" />
       {label ?? fallback}
     </span>

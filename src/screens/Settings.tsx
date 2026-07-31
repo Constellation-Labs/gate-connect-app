@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Account, OAuthStatus } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
@@ -274,16 +274,28 @@ export function Settings({
     }
   }
 
+  // Same stale-attempt guard as FirstRun: Cancel releases the button; a
+  // browser flow the user finishes anyway still lands via onUpgradeToOAuth.
+  const upgradeAttempt = useRef(0);
+
   async function handleUpgrade() {
     setError(null);
     setUpgrading(true);
+    const attempt = ++upgradeAttempt.current;
     try {
       await onUpgradeToOAuth();
     } catch (err) {
-      setError(classifyError(err, "sign_in"));
       trackError(err, "sign_in");
-      setUpgrading(false);
+      if (attempt === upgradeAttempt.current) {
+        setError(classifyError(err, "sign_in"));
+        setUpgrading(false);
+      }
     }
+  }
+
+  function cancelUpgrade() {
+    upgradeAttempt.current++;
+    setUpgrading(false);
   }
 
   return (
@@ -381,9 +393,18 @@ export function Settings({
           {upgrading ? "Waiting for browser…" : "Sign in with Constellation"}
         </Button>
         {upgrading && (
-          <p className="mt-2 text-[11px] leading-snug text-gc-ink-4">
-            Finish signing in on the page that opened in your browser.
-          </p>
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <p className="text-[11px] leading-snug text-gc-ink-3">
+              Finish signing in on the page that opened in your browser.
+            </p>
+            <button
+              type="button"
+              onClick={cancelUpgrade}
+              className="shrink-0 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            >
+              Cancel
+            </button>
+          </div>
         )}
       </div>
       <SectionLabel>Gate API Key</SectionLabel>

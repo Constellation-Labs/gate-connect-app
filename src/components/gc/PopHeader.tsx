@@ -9,7 +9,7 @@ export function PopHeader({
   onGear,
 }: {
   workspace: string;
-  pill?: "connected" | "idle" | "signedout";
+  pill?: "connected" | "partial" | "idle" | "signedout";
   onGear?: () => void;
 }) {
   return (
@@ -27,8 +27,19 @@ export function PopHeader({
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {/* The header pill answers exactly one question: is traffic routing
-            through Gate right now? (Signed-in state lives in Settings.) */}
-        <ConnPill state={pill} label={pill === "connected" ? "Routing on" : "Routing off"} />
+            through Gate right now? (Signed-in state lives in Settings.)
+            "Partly routed" is the honest answer while the CA is untrusted:
+            config tools route, proxy-routed apps don't yet. */}
+        <ConnPill
+          state={pill}
+          label={
+            pill === "connected"
+              ? "Routing on"
+              : pill === "partial"
+                ? "Partly routed"
+                : "Routing off"
+          }
+        />
         {onGear && (
           <IconButton icon="settings" size={15} onClick={onGear} aria-label="Settings" />
         )}

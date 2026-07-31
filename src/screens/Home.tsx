@@ -2,63 +2,16 @@ import type { Tool } from "../lib/api";
 import type { ClassifiedError } from "../lib/errors";
 import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, SectionLabel, ErrorNote } from "../components/gc/ui";
+import { ToolPill, toolSubtitle } from "../components/ToolPill";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
-
-/** One truthful pill per tool row. Wash background with a solid dot; the
- * text stays ink where the status color alone can't carry AA contrast. */
-function ToolPill({ status }: { status: Tool["status"] }) {
-  if (status.kind === "connected") {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-[rgba(46,204,113,0.14)] px-2 py-1 text-[11px] font-medium text-[#1f8a4c]">
-        <span className="h-1.5 w-1.5 rounded-full bg-gc-success" />
-        Routed
-      </span>
-    );
-  }
-  if (status.kind === "drifted") {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-[rgba(243,156,18,0.12)] px-2 py-1 text-[11px] font-medium text-gc-ink-2">
-        <span className="h-1.5 w-1.5 rounded-full bg-gc-warning" />
-        Drifted
-      </span>
-    );
-  }
-  if (status.kind === "error") {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-[rgba(231,76,60,0.12)] px-2 py-1 text-[11px] font-medium text-gc-ink-2">
-        <span className="h-1.5 w-1.5 rounded-full bg-gc-error" />
-        Error
-      </span>
-    );
-  }
-  // detected: installed but not routed through Gate.
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-4">
-      <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-5" />
-      Not routed
-    </span>
-  );
-}
-
-function toolSubtitle(tool: Tool): string {
-  switch (tool.status.kind) {
-    case "connected":
-      return "Routing through Gate";
-    case "drifted":
-      return "Configured outside Gate Connect";
-    case "error":
-      return tool.status.message;
-    default:
-      return "Installed · not routing";
-  }
-}
 
 /** Connected home - the Routing card (toggle + drill-in) above the tools
  * ledger: one row per detected tool, each carrying its status pill. */
 export function Home({
   workspace,
   proxyOn,
+  caTrusted,
   providerCount,
   showProxy,
   tools,
@@ -72,11 +25,13 @@ export function Home({
   staleAgentsHint,
   onDismissStaleAgents,
   onOpenProxy,
+  onOpenTool,
   onToggleProxy,
   onOpenSettings,
 }: {
   workspace: string;
   proxyOn: boolean;
+  caTrusted: boolean;
   providerCount: number;
   showProxy: boolean;
   tools: Tool[];
@@ -90,16 +45,20 @@ export function Home({
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
   onOpenProxy: () => void;
+  onOpenTool: (slug: string) => void;
   onToggleProxy: () => void;
   onOpenSettings: () => void;
 }) {
   const platform = usePlatform();
   const installedTools = tools.filter((t) => t.status.kind !== "not_installed");
+  // Routing up but the CA untrusted means config tools route while
+  // proxy-routed apps silently don't: half-on, and the pill says so.
+  const partial = proxyOn && !caTrusted;
   return (
     <div className="flex flex-col">
       <PopHeader
         workspace={workspace}
-        pill={proxyOn ? "connected" : "idle"}
+        pill={proxyOn ? (partial ? "partial" : "connected") : "idle"}
         onGear={onOpenSettings}
       />
       <div className="flex flex-col gap-2.5 p-3.5">
@@ -124,9 +83,11 @@ export function Home({
             <div className="pointer-events-none relative min-w-0 flex-1">
               <div className="text-[13.5px] font-semibold text-gc-ink">Routing</div>
               <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
-                {proxyOn
-                  ? `On · ${providerCount} provider${providerCount === 1 ? "" : "s"}`
-                  : "Off · not routing"}
+                {!proxyOn
+                  ? "Off · not routing"
+                  : partial
+                    ? "On · certificate not trusted yet"
+                    : `On · ${providerCount} provider${providerCount === 1 ? "" : "s"}`}
               </div>
             </div>
             <div className="relative flex shrink-0 items-center gap-1.5">
@@ -211,9 +172,11 @@ export function Home({
       {installedTools.length > 0 ? (
         <div className="flex flex-col border-t border-gc-line">
           {installedTools.map((tool) => (
-            <div
+            <button
               key={tool.slug}
-              className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5"
+              type="button"
+              onClick={() => onOpenTool(tool.slug)}
+              className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5 text-left transition hover:bg-gc-subtle focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
             >
               <div className="min-w-0 flex-1">
                 <div className="text-[13px] font-medium text-gc-ink">{tool.name}</div>
@@ -222,13 +185,15 @@ export function Home({
                 </div>
               </div>
               <ToolPill status={tool.status} />
-            </div>
+              <Icon name="chevronRight" size={14} stroke={2} className="text-gc-ink-4" />
+            </button>
           ))}
         </div>
       ) : (
         <p className="px-3.5 pb-3 text-[11.5px] leading-snug text-gc-ink-3">
-          No AI tools detected yet. Install Claude Code, Codex, or OpenCode and
-          it will show up here.
+          No AI tools detected yet. Tools like Claude Code, Codex, and OpenCode
+          show up here once installed; desktop apps such as Claude and ChatGPT
+          route through the proxy without a row.
         </p>
       )}
     </div>

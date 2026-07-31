@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Account, OAuthStatus, ProxyState, ProviderState, Tool } from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -36,6 +36,7 @@ import { Home } from "./screens/Home";
 import { ProxyScreen } from "./screens/ProxyScreen";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
+import { ToolDetail } from "./screens/ToolDetail";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { StartupRoutingNotice } from "./components/StartupRoutingNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
@@ -55,7 +56,8 @@ type Screen =
   | "home"
   | "proxy"
   | "settings"
-  | "success";
+  | "success"
+  | "tool";
 
 // Providers hidden from the UI for now. Slugs match the backend provider list.
 const HIDDEN_PROVIDER_SLUGS = new Set<string>([]);
@@ -107,6 +109,8 @@ export function App() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
+  // Which tool the "tool" screen shows; set by tapping a ledger row on Home.
+  const [toolSlug, setToolSlug] = useState<string | null>(null);
   // Codex drift usually means a hand-written Gate setup (the manual PAYG
   // instructions); enabling its provider adopts it one-way, so the Routing
   // screen shows a heads-up while this is true.
@@ -136,6 +140,13 @@ export function App() {
   // state change the user made just now, so it gets the calm inline
   // `startupRoutingHint` on Home instead of a takeover.
   const [routingNotice, setRoutingNotice] = useState<"on" | "off" | null>(null);
+  // The takeover teaches its lesson once per session; after the first
+  // acknowledgment, later toggles fall back to the inline restart hint that
+  // carries the same advice, so the daily user isn't re-interrupted.
+  const routingNoticeSeen = useRef(false);
+  // Whether the update panel's startup takeover is currently mounted, so the
+  // background can go aria-hidden while any takeover is up.
+  const [updateTakeoverVisible, setUpdateTakeoverVisible] = useState(false);
 
   // Routing came back on its own as the app started (initial load read it
   // running, or the backend's startup auto-enable announced itself) while
@@ -389,7 +400,7 @@ export function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
       if (quitTools !== null || routingNotice !== null) return;
-      if (screen === "settings" || screen === "proxy") {
+      if (screen === "settings" || screen === "proxy" || screen === "tool") {
         setProviderError(null);
         setScreen("home");
       }
@@ -453,9 +464,19 @@ export function App() {
         // agents"), so show one or the other, never both.
         if (takeover) {
           // Nothing running means nothing to close: skip the takeover
-          // entirely; a failed probe defaults to showing.
+          // entirely; a failed probe defaults to showing. After the first
+          // acknowledged takeover this session, degrade to the inline hint -
+          // both carry the same "restart your agents" advice.
           const agents = await runningAgentsCount().catch(() => 1);
-          if (agents > 0) setRoutingNotice(next.running ? "on" : "off");
+          if (agents > 0) {
+            if (!routingNoticeSeen.current) {
+              routingNoticeSeen.current = true;
+              setRoutingNotice(next.running ? "on" : "off");
+            } else {
+              setRestartHint(true);
+              if (next.running) setRelaunchHint(true);
+            }
+          }
         } else {
           setRestartHint(true);
           if (next.running) setRelaunchHint(true);
@@ -710,12 +731,21 @@ export function App() {
         onUntrustCa={untrustCa}
       />
     );
+  } else if (screen === "tool" && toolSlug && tools.some((t) => t.slug === toolSlug)) {
+    body = (
+      <ToolDetail
+        tool={tools.find((t) => t.slug === toolSlug)!}
+        onBack={() => setScreen("home")}
+        onOpenRouting={() => setScreen("proxy")}
+      />
+    );
   } else {
     // home (and any fallback once loaded)
     body = (
       <Home
         workspace={workspace}
         proxyOn={proxyOn}
+        caTrusted={proxy?.ca_trusted ?? true}
         providerCount={providerCount}
         showProxy={showProxy}
         tools={tools}
@@ -729,6 +759,10 @@ export function App() {
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onOpenProxy={() => setScreen("proxy")}
+        onOpenTool={(slug) => {
+          setToolSlug(slug);
+          setScreen("tool");
+        }}
         onToggleProxy={() => toggleProxy(true)}
         onOpenSettings={() => setScreen("settings")}
       />
@@ -752,8 +786,13 @@ export function App() {
       {platform === "linux" && <LinuxTitleBar />}
       {/* Renders the startup takeover as an absolute overlay, or (on reopen)
           the slim update banner in-flow at the top of the popover - hence its
-          placement above the body. */}
-      <UpdatePanel />
+          placement above the body. The takeover defers while the quit or
+          routing takeover is up, so it can never mount under one (z-20 vs
+          z-30) and trap focus in a hidden panel. */}
+      <UpdatePanel
+        suppressTakeover={quitTools !== null || routingNotice !== null}
+        onTakeoverVisibleChange={setUpdateTakeoverVisible}
+      />
       {routingNotice !== null && screen !== "loading" && (
         <StartupRoutingNotice
           routingOn={routingNotice === "on"}
@@ -763,12 +802,24 @@ export function App() {
       {quitTools !== null && (
         <QuitConfirm tools={quitTools} onCancel={() => setQuitTools(null)} />
       )}
-      {body}
-      {version && (
-        <p className="mt-auto shrink-0 px-3.5 py-2 text-center font-mono text-[10.5px] text-gc-ink-5">
-          v{version}
-        </p>
-      )}
+      {/* While any takeover is up, the obscured content goes aria-hidden so
+          a screen reader's virtual cursor can't wander under the dialog (the
+          focus traps already handle Tab). */}
+      <div
+        className="flex grow flex-col"
+        aria-hidden={
+          quitTools !== null || routingNotice !== null || updateTakeoverVisible
+            ? true
+            : undefined
+        }
+      >
+        {body}
+        {version && (
+          <p className="mt-auto shrink-0 px-3.5 py-2 text-center font-mono text-[10.5px] text-gc-ink-4">
+            v{version}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
