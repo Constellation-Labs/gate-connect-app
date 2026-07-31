@@ -117,7 +117,7 @@ onReauth,
               disabled={choosing !== null}
               className="flex items-center gap-3 rounded-[10px] bg-gc-surface p-3.5 text-left shadow-border transition hover:shadow-border-hover disabled:opacity-60"
             >
-              <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-gc-accent-wash text-gc-accent">
+              <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
                 <Icon name="cube" size={16} />
               </div>
               <div className="min-w-0 flex-1">
@@ -137,6 +137,18 @@ onReauth,
             No organizations are available for your account. Ask an admin to add
             you to one, then try again.
           </p>
+        )}
+
+        {/* The post-login flow has no back button (an org must be chosen to
+            route), but wrong-account is a real dead end without an exit. */}
+        {!onBack && !loading && !error && (
+          <button
+            type="button"
+            onClick={onReauth}
+            className="mx-auto mt-1 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            Wrong account? Sign out
+          </button>
         )}
       </div>
     </div>

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Account, OAuthStatus } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { GATEWAY_SERVERS } from "../lib/config";
-import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch, ErrorNote } from "../components/gc/ui";
+import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch, ErrorNote, IconButton } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
 
@@ -124,6 +125,19 @@ export function Settings({
   // Set when a pre-prefix account has no stored prefix, so revealing must fall
   // back to a keychain read. We ask first, since that read can prompt.
   const [confirmReveal, setConfirmReveal] = useState(false);
+  // Copy-to-clipboard feedback on the gateway URL (flashes the icon to a
+  // check). Identifiers should never need retyping by hand.
+  const [copiedUrl, setCopiedUrl] = useState(false);
+
+  async function copyGatewayUrl() {
+    try {
+      await navigator.clipboard.writeText(account.gateway_base_url);
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 1500);
+    } catch (err) {
+      trackError(err, "generic");
+    }
+  }
 
   async function revealKeyPrefix() {
     try {
@@ -304,7 +318,7 @@ export function Settings({
 
       <SectionLabel>Workspace</SectionLabel>
       <div className="flex items-center gap-3 px-3.5 py-2.5">
-        <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-gc-accent-wash text-gc-accent">
+        <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
           <Icon name="cube" size={16} />
         </div>
         <div className="min-w-0 flex-1">
@@ -319,13 +333,19 @@ export function Settings({
           state={connected ? "connected" : "signedout"}
           label={connected ? "Signed in" : "Signed out"}
         />
+        <IconButton
+          icon={copiedUrl ? "check" : "copy"}
+          size={14}
+          onClick={() => void copyGatewayUrl()}
+          aria-label="Copy gateway URL"
+        />
       </div>
 
       {isOAuth && (
         <>
           <SectionLabel>Signed in</SectionLabel>
           <div className="flex items-center gap-3 px-3.5 py-2.5">
-            <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-gc-accent-wash text-gc-accent">
+            <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
               <Icon name="shieldCheck" size={16} />
             </div>
             <div className="min-w-0 flex-1">
@@ -626,7 +646,7 @@ export function Settings({
 
       <div className="mt-auto">
         <SectionLabel>Help</SectionLabel>
-        <div className="px-3.5 pb-1">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3.5 pb-1">
           <button
             type="button"
             onClick={onReplayTour}
@@ -634,6 +654,16 @@ export function Settings({
           >
             <Icon name="info" size={14} />
             Replay tour
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void openUrl("https://app.constellationgate.ai");
+            }}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            <Icon name="cube" size={14} />
+            Open Gate dashboard
           </button>
         </div>
       </div>

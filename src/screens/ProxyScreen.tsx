@@ -185,6 +185,11 @@ export function ProxyScreen({
                       .join(" · ")}
                   </div>
                 )}
+                {!p.available && (
+                  <div className="mt-0.5 text-[11px] leading-snug text-gc-ink-3">
+                    Nothing to switch yet: no tool installed and routing is off.
+                  </div>
+                )}
               </div>
               <Switch
                 on={p.enabled}

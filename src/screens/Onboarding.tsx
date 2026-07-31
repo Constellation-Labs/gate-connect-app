@@ -261,7 +261,7 @@ export function Onboarding() {
                 setIndex((i) => i + 1);
               }
             }}
-            className="h-[30px] min-w-[74px] rounded-md bg-gc-ink px-[14px] text-[11.5px] font-medium text-white transition-colors hover:bg-gc-ink-2"
+            className="h-[30px] min-w-[74px] rounded-md bg-gc-accent px-[14px] text-[11.5px] font-medium text-white transition-colors hover:bg-gc-accent-ink"
           >
             {last ? "Get started" : "Next"}
           </button>

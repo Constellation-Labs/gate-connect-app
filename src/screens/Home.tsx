@@ -203,8 +203,8 @@ export function Home({
       ) : (
         <p className="px-3.5 pb-3 text-[11.5px] leading-snug text-gc-ink-3">
           No AI tools detected yet. Tools like Claude Code, Codex, and OpenCode
-          show up here once installed; desktop apps such as Claude and ChatGPT
-          route through the proxy without a row.
+          show up here once installed; the Claude and ChatGPT desktop apps are
+          covered by Routing without needing a row.
         </p>
       )}
     </div>

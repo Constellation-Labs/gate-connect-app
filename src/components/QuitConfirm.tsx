@@ -61,7 +61,9 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
       className="gc-panel-in absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center"
     >
       <div className="flex h-14 w-14 items-center justify-center rounded-gc-lg bg-gc-sunken text-gc-ink-3">
-        <Icon name="shieldCheck" size={26} />
+        {/* Leaving, not protecting: the shield stays with routing states so
+            its meaning doesn't dilute across every takeover. */}
+        <Icon name="logOut" size={26} />
       </div>
 
       <div className="flex flex-col gap-1.5">

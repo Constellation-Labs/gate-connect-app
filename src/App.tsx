@@ -81,6 +81,27 @@ async function forwardBackendErrors(): Promise<void> {
   for (const e of errs) trackError(e.message, backendErrorContext(e.context));
 }
 
+// The routing takeover teaches its lesson once per install; after the first
+// acknowledgment (persisted like the tour flag), later toggles fall back to
+// the inline restart hint that carries the same advice, so the daily user
+// isn't re-interrupted every session. Storage failures degrade to "already
+// seen" - never trap the user in a recurring takeover.
+const ROUTING_TAKEOVER_SEEN_KEY = "gc.routing-takeover.v1.seen";
+function hasSeenRoutingTakeover(): boolean {
+  try {
+    return localStorage.getItem(ROUTING_TAKEOVER_SEEN_KEY) === "1";
+  } catch {
+    return true;
+  }
+}
+function markRoutingTakeoverSeen(): void {
+  try {
+    localStorage.setItem(ROUTING_TAKEOVER_SEEN_KEY, "1");
+  } catch {
+    /* noop */
+  }
+}
+
 /** Whether the account is fully usable right now: a stored key in legacy mode,
  *  or a live OAuth session *with an org selected* in OAuth mode (the gateway
  *  rejects OAuth requests that carry no org). Drives home-vs-sign-in/picker. */
@@ -145,10 +166,8 @@ export function App() {
     dir: "on" | "off";
     confirming: boolean;
   } | null>(null);
-  // The takeover teaches its lesson once per session; after the first
-  // acknowledgment, later toggles fall back to the inline restart hint that
-  // carries the same advice, so the daily user isn't re-interrupted.
-  const routingNoticeSeen = useRef(false);
+  // The takeover teaches its lesson once per install; see
+  // hasSeenRoutingTakeover above.
   // Whether the update panel's startup takeover is currently mounted, so the
   // background can go aria-hidden while any takeover is up.
   const [updateTakeoverVisible, setUpdateTakeoverVisible] = useState(false);
@@ -489,8 +508,8 @@ export function App() {
           // both carry the same "restart your agents" advice.
           const agents = await runningAgentsCount().catch(() => 1);
           if (agents > 0) {
-            if (!routingNoticeSeen.current) {
-              routingNoticeSeen.current = true;
+            if (!hasSeenRoutingTakeover()) {
+              markRoutingTakeoverSeen();
               setRoutingNotice({ dir: next.running ? "on" : "off", confirming: false });
             } else {
               setRestartHint(true);
