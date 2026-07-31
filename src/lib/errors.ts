@@ -128,7 +128,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
   ) {
     return {
       title: "Couldn't reach the gateway",
-      hint: "Check that you're online and that the gateway URL in the menu → Edit account is right, then try again.",
+      hint: "Check that you're online and that the gateway URL in Settings is right, then try again.",
       raw,
     };
   }
@@ -137,7 +137,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
   if (lc.includes("401") || lc.includes("unauthorized")) {
     return {
       title: "Gateway rejected the API key",
-      hint: "Update your gateway API key from the menu → Edit account.",
+      hint: "Replace your Gate API key in Settings.",
       raw,
     };
   }
@@ -160,7 +160,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     save_api_key: "Couldn't save the API key",
     update: "Couldn't install the update",
     close_agents: "Couldn't close the running agents",
-    quit_disable: "Couldn't turn off integrations",
+    quit_disable: "Couldn't disconnect the tools",
     proxy_toggle: "Couldn't toggle routing",
     provider_toggle: "Couldn't toggle the provider",
     trust_ca: "Couldn't trust the certificate",

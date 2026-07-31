@@ -21,13 +21,13 @@ function renderNotice(routingOn: boolean, onDismiss = vi.fn()) {
 describe("StartupRoutingNotice copy", () => {
   it("words the takeover for routing on", () => {
     renderNotice(true);
-    expect(screen.getByText(/is redirecting traffic/i)).toBeTruthy();
+    expect(screen.getByText("Routing is on")).toBeTruthy();
     expect(screen.getByText(/won't route through Gate/i)).toBeTruthy();
   });
 
   it("words the takeover for routing off", () => {
     renderNotice(false);
-    expect(screen.getByText(/stopped redirecting traffic/i)).toBeTruthy();
+    expect(screen.getByText("Routing is off")).toBeTruthy();
     expect(screen.getByText(/still point at Gate/i)).toBeTruthy();
   });
 

@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import type { Org } from "../lib/api";
 import { oauthListOrgs, setOrg } from "../lib/api";
 import { trackError } from "../lib/analytics";
+import { classifyError, type ClassifiedError } from "../lib/errors";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
-import { Button, SubHeader } from "../components/gc/ui";
+import { Button, SubHeader, ErrorNote } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
 /** Org-selection step, shown right after an OAuth sign-in (and reused by the
@@ -23,7 +24,7 @@ onReauth,
   onReauth: () => void;
 }) {
   const [orgs, setOrgs] = useState<Org[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ClassifiedError | null>(null);
   const [choosing, setChoosing] = useState<string | null>(null);
   // Guard so the single-org auto-select fires at most once.
   const autoSelected = useRef(false);
@@ -36,7 +37,7 @@ onReauth,
       await setOrg(org.orgId, org.name);
       onDone();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(classifyError(err, "generic"));
       trackError(err, "generic");
       setChoosing(null);
     }
@@ -57,7 +58,7 @@ onReauth,
       })
       .catch((err) => {
         if (!alive) return;
-        setError(err instanceof Error ? err.message : String(err));
+        setError(classifyError(err, "generic"));
         trackError(err, "generic");
       });
     return () => {
@@ -77,7 +78,7 @@ onReauth,
       ) : (
         <div className="flex flex-col items-center px-5 pt-7 text-center">
           <ConstellationHexMark size={40} fill="#002a5f" />
-          <div className="mt-3 text-[19px] font-semibold tracking-[-0.025em] text-gc-navy">
+          <div className="mt-3 text-[17px] font-semibold tracking-[-0.02em] text-gc-navy">
             Choose an organization
           </div>
           <p className="mt-1.5 max-w-[290px] text-[12.5px] leading-[1.45] text-gc-ink-3">
@@ -88,15 +89,18 @@ onReauth,
 
       <div className="flex flex-col gap-2 px-5 pb-5 pt-4">
         {loading && !error && (
-          <div className="flex items-center justify-center gap-2 py-8 text-[12.5px] text-gc-ink-4">
-            <Icon name="refresh" size={14} />
+          <div
+            role="status"
+            className="flex items-center justify-center gap-2 py-8 text-[12.5px] text-gc-ink-3"
+          >
+            <Icon name="refresh" size={14} className="animate-spin" />
             Loading organizations…
           </div>
         )}
 
         {error && (
           <div className="flex flex-col gap-2 py-2">
-            <p className="text-[11.5px] leading-snug text-gc-error">{error}</p>
+            <ErrorNote error={error} />
             <Button variant="accent" full onClick={onReauth}>
               Sign in again
             </Button>

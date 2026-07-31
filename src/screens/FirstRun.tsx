@@ -3,8 +3,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { oauthBeginLogin, saveAccount } from "../lib/api";
 import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS } from "../lib/config";
 import { trackError } from "../lib/analytics";
+import { classifyError, type ClassifiedError } from "../lib/errors";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
-import { Button, Input } from "../components/gc/ui";
+import { Button, Input, ErrorNote } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
 function hostOf(url: string): string {
@@ -36,7 +37,7 @@ export function FirstRun({
   const [submitting, setSubmitting] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [showKey, setShowKey] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ClassifiedError | null>(null);
   const [devMode, setDevMode] = useState(
     !!initialGateway && initialGateway !== DEFAULT_GATEWAY_BASE_URL,
   );
@@ -56,7 +57,7 @@ export function FirstRun({
       await oauthBeginLogin();
       onConnected();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(classifyError(err, "sign_in"));
       trackError(err, "sign_in");
       setSigningIn(false);
     }
@@ -70,7 +71,7 @@ export function FirstRun({
       await saveAccount(gateway, key.trim());
       onConnected();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(classifyError(err, "sign_in"));
       trackError(err, "sign_in");
       setSubmitting(false);
     }
@@ -80,7 +81,7 @@ export function FirstRun({
     <div className="flex flex-col px-5 pb-5 pt-7">
       <div className="flex flex-col items-center text-center">
         <ConstellationHexMark size={40} fill="#002a5f" />
-        <div className="mt-3 text-[19px] font-semibold tracking-[-0.025em] text-gc-navy">
+        <div className="mt-3 text-[17px] font-semibold tracking-[-0.02em] text-gc-navy">
           {reauth ? (
             "Welcome back"
           ) : (
@@ -101,7 +102,7 @@ export function FirstRun({
         {signingIn ? "Waiting for browser…" : "Sign in with Constellation"}
       </Button>
       {signingIn && (
-        <p className="mt-2 text-center text-[11px] text-gc-ink-4">
+        <p className="mt-2 text-center text-[11px] text-gc-ink-3">
           Finish signing in on the page that just opened in your browser.
         </p>
       )}
@@ -121,7 +122,7 @@ export function FirstRun({
           <div className="mb-1.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
             Gate API Key
           </div>
-          <p className="mb-2 text-[11px] leading-snug text-gc-ink-4">
+          <p className="mb-2 text-[11px] leading-snug text-gc-ink-3">
             Best for CI or headless machines where browser sign-in isn't
             practical. Otherwise, sign in with Constellation - nothing to
             paste, and it refreshes on its own.
@@ -137,7 +138,7 @@ export function FirstRun({
               if (e.key === "Enter") connectWithKey();
             }}
           />
-          <p className="mt-1 text-[11px] text-gc-ink-4">
+          <p className="mt-1 text-[11px] text-gc-ink-3">
             Find it under{" "}
             <button
               type="button"
@@ -156,30 +157,36 @@ export function FirstRun({
         </div>
       )}
 
-      {error && (
-        <p className="mt-3 text-[11.5px] leading-snug text-gc-error">{error}</p>
-      )}
+      {error && <ErrorNote error={error} className="mt-3" />}
 
-      <div className="mt-4">
-        <div className="flex justify-center">
-          <button
-            type="button"
-            onClick={() => setDevMode((v) => !v)}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3"
-          >
-            <Icon name="settings" size={14} />
-            Dev mode
-          </button>
-        </div>
-
+      {/* Environment picker for people working on Gate itself; kept out of
+          the main flow's visual hierarchy (footer-quiet, no icon) so the
+          sign-in decision stays a two-option screen. */}
+      <div className="mt-5">
         {!devMode ? (
-          <div className="mt-3 text-center font-mono text-[10.5px] text-gc-ink-5">
-            {gateway}
+          <div className="flex items-baseline justify-center gap-2 text-center">
+            <span className="font-mono text-[10.5px] text-gc-ink-5">{gateway}</span>
+            <button
+              type="button"
+              onClick={() => setDevMode(true)}
+              className="text-[10.5px] font-medium text-gc-ink-5 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink-3"
+            >
+              change
+            </button>
           </div>
         ) : (
           <>
-            <div className="mb-1.5 mt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
-              Gateway server
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
+                Gateway server
+              </span>
+              <button
+                type="button"
+                onClick={() => setDevMode(false)}
+                className="text-[10.5px] font-medium text-gc-ink-4 transition hover:text-gc-ink-3"
+              >
+                Hide
+              </button>
             </div>
             <div className="flex flex-col gap-2">
               {GATEWAY_SERVERS.map((server) => {

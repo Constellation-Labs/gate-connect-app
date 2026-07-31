@@ -180,7 +180,7 @@ export function Onboarding() {
         >
           <div className="mb-4">{step.hero}</div>
           <h1 className="text-balance text-[27px] font-semibold leading-tight">{step.title}</h1>
-          <p className="mt-[7px] text-[13.5px] text-gc-ink-4">{step.sub}</p>
+          <p className="mt-[7px] text-[13.5px] text-gc-ink-3">{step.sub}</p>
           <div className="mb-[14px] mt-[17px] h-px w-full bg-gc-line" aria-hidden />
           <div className="mx-auto max-w-[620px] space-y-3 text-left text-[14px] leading-[1.62] text-pretty text-gc-ink-2">
             {step.body.map((p) => (
@@ -193,7 +193,7 @@ export function Onboarding() {
               onClick={() => void invoke("reveal_popover")}
               className="mt-4 inline-flex h-[34px] items-center rounded-lg bg-gc-accent-wash px-[18px] text-[12.5px] font-semibold text-gc-accent shadow-border transition-colors hover:bg-gc-accent-wash-2"
             >
-              Click Here to Locate Gate Connect
+              Show me where Gate Connect lives
             </button>
           )}
         </div>

@@ -36,14 +36,13 @@ import { Home } from "./screens/Home";
 import { ProxyScreen } from "./screens/ProxyScreen";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
-import { ComingSoon } from "./screens/ComingSoon";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { StartupRoutingNotice } from "./components/StartupRoutingNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { track, trackError } from "./lib/analytics";
-import { backendErrorContext } from "./lib/errors";
+import { backendErrorContext, classifyError, type ClassifiedError } from "./lib/errors";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { usePlatform } from "./lib/platform";
@@ -56,8 +55,7 @@ type Screen =
   | "home"
   | "proxy"
   | "settings"
-  | "success"
-  | "coming-soon";
+  | "success";
 
 // Providers hidden from the UI for now. Slugs match the backend provider list.
 const HIDDEN_PROVIDER_SLUGS = new Set<string>([]);
@@ -107,29 +105,20 @@ export function App() {
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providers, setProviders] = useState<ProviderState[]>([]);
-  const [providerError, setProviderError] = useState<string | null>(null);
+  const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
   // Codex drift usually means a hand-written Gate setup (the manual PAYG
   // instructions); enabling its provider adopts it one-way, so the Routing
   // screen shows a heads-up while this is true.
   const codexDrifted = tools.some((t) => t.slug === "codex" && t.status.kind === "drifted");
-  // Set after a successful routing change; the Routing screen shows a
-  // "restart your agent" note that auto-dismisses (also cleared when the
-  // user leaves the screen).
+  // Set after a successful routing change; Home and the Routing screen show a
+  // "restart your agents" note. The advice holds until the agents actually
+  // restart (which we can't observe), so the note stays until the user
+  // dismisses it rather than vanishing on a timer.
   const [restartHint, setRestartHint] = useState(false);
-  useEffect(() => {
-    if (!restartHint) return;
-    const t = setTimeout(() => setRestartHint(false), 15000);
-    return () => clearTimeout(t);
-  }, [restartHint]);
-  // Flashed briefly when routing is turned on; the Routing screen shows a
-  // Linux-only "relaunch your already-open apps" note that auto-dismisses.
+  // Flashed when routing is turned on; the Linux-only "reopen your
+  // already-open apps" note, dismissible like the restart hint.
   const [relaunchHint, setRelaunchHint] = useState(false);
-  useEffect(() => {
-    if (!relaunchHint) return;
-    const t = setTimeout(() => setRelaunchHint(false), 15000);
-    return () => clearTimeout(t);
-  }, [relaunchHint]);
 
   // Set when the startup auto-enable brought routing back on a different
   // local port than the previous session (first launch after upgrading from
@@ -140,13 +129,19 @@ export function App() {
   const [staleAgentsHint, setStaleAgentsHint] = useState(false);
   const [staleAgentsDismissed, setStaleAgentsDismissed] = useState(false);
 
-  // Set when routing flips on/off in a way worth a full-popover takeover:
-  // either routing is already on as the app comes up (the initial load reads
-  // it running, or the backend's startup auto-enable lands and announces
-  // itself via `proxy-state-changed`), or the user toggles the proxy from the
-  // home screen. Holds the direction so the takeover can word on vs off;
-  // shown until dismissed.
+  // Set when routing flips on/off in a way worth a full-popover takeover: the
+  // user toggled the proxy from the home screen while agents were running.
+  // Holds the direction so the takeover can word on vs off; shown until
+  // dismissed. Routing that comes up on its own at startup (restore) is not a
+  // state change the user made just now, so it gets the calm inline
+  // `startupRoutingHint` on Home instead of a takeover.
   const [routingNotice, setRoutingNotice] = useState<"on" | "off" | null>(null);
+
+  // Routing came back on its own as the app started (initial load read it
+  // running, or the backend's startup auto-enable announced itself) while
+  // agents were running. Informational, not an alarm: surfaces as a
+  // dismissible Home banner.
+  const [startupRoutingHint, setStartupRoutingHint] = useState(false);
 
   // The tray Quit defers to the popover when config-routed CLI tools are
   // still managed (their configs point at the loopback relay, which dies
@@ -196,8 +191,8 @@ export function App() {
       const provs = await listProviders().catch(() => []);
       const toolList = await listTools().catch(() => []);
       const stale = await routedClientsStale().catch(() => false);
-      // The takeover only says "close your running agents", so skip it when
-      // none are running; a failed probe defaults to showing.
+      // The hint only says "restart your agents", so skip it when none are
+      // running; a failed probe defaults to showing.
       const agents = px?.running ? await runningAgentsCount().catch(() => 1) : 0;
       if (!alive) return;
       setProxy(px);
@@ -205,7 +200,7 @@ export function App() {
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
       if (px?.running) {
-        if (agents > 0) setRoutingNotice("on");
+        if (agents > 0) setStartupRoutingHint(true);
         // The backend only emits this nudge after its startup auto-enable, so
         // routing coming up here is a restored session, not a user toggle.
         track("proxy_enabled", { source: "restored" });
@@ -244,8 +239,8 @@ export function App() {
       });
       // Analytics-only dimension on app_launched; omitted when unreadable.
       const lal = await launchAtLoginStatus().catch(() => null);
-      // Same gate as the proxy-state-changed listener: no running agents, no
-      // takeover; a failed probe defaults to showing.
+      // Same gate as the proxy-state-changed listener: no running agents,
+      // nothing to restart, no hint; a failed probe defaults to showing.
       const agents = px?.running ? await runningAgentsCount().catch(() => 1) : 0;
       if (!alive) return;
       setAccount(acct);
@@ -254,7 +249,7 @@ export function App() {
       setProviders(provs);
       setTools(toolList);
       if (stale) setStaleAgentsHint(true);
-      if (px?.running && agents > 0) setRoutingNotice("on");
+      if (px?.running && agents > 0) setStartupRoutingHint(true);
       let resolved: Screen;
       if (isSignedIn(acct, oauthState)) {
         resolved = "home";
@@ -311,6 +306,9 @@ export function App() {
   useEffect(() => {
     if (staleAgentsHint) track("stale_agents_shown");
   }, [staleAgentsHint]);
+  useEffect(() => {
+    if (startupRoutingHint) track("routing_notice_shown", { enabled: true, inline: true });
+  }, [startupRoutingHint]);
   useEffect(() => {
     if (routingNotice !== null) {
       track("routing_notice_shown", { enabled: routingNotice === "on" });
@@ -380,6 +378,25 @@ export function App() {
     setAccount(await getAccount().catch(() => null));
     setOAuth(await oauthStatus().catch(() => null));
   }, []);
+
+  // Escape steps back out of the sub-screens (Settings, Routing), the same
+  // exit the header back button offers. The takeovers own Escape themselves
+  // via their focus traps, and text fields keep it (clearing/IME), so this
+  // only fires when neither is in play.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      if (quitTools !== null || routingNotice !== null) return;
+      if (screen === "settings" || screen === "proxy") {
+        setProviderError(null);
+        setScreen("home");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [screen, quitTools, routingNotice]);
 
   // OAuth sign-out: forget the stored tokens but keep the account, so the
   // popover returns to the sign-in prompt (not first-run) and routing config /
@@ -453,7 +470,7 @@ export function App() {
         // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
         // or a missing network service) instead of silently reverting - a
         // swallowed error reads as "the toggle does nothing".
-        setProviderError(typeof e === "string" ? e : String(e));
+        setProviderError(classifyError(e, "proxy_toggle"));
         // Re-sync to the true state after the failed toggle.
         try {
           setProxy(await proxyStatus());
@@ -488,7 +505,7 @@ export function App() {
           /* non-macOS: no proxy subsystem */
         }
       } catch (e) {
-        setProviderError(typeof e === "string" ? e : String(e));
+        setProviderError(classifyError(e, "provider_toggle"));
         trackError(e, "provider_toggle", { provider: slug, enabled });
         // Re-sync the switch to its true state after a failed toggle.
         setProviders(await listProviders().catch(() => []));
@@ -608,7 +625,7 @@ export function App() {
     body = (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
         <ConstellationHexMark size={40} fill="#002a5f" />
-        <span className="text-[15px] font-semibold tracking-[-0.02em] text-gc-navy">
+        <span className="text-[14.5px] font-semibold tracking-[-0.02em] text-gc-navy">
           Gate <span className="text-gc-accent">Connect</span>
         </span>
       </div>
@@ -637,6 +654,14 @@ export function App() {
       <Success
         workspace={workspace}
         proxyOn={proxyOn}
+        showProxy={showProxy}
+        busy={proxyBusy}
+        onTurnOnRouting={async () => {
+          // Inline hints (not the takeover): the user is mid-flow and lands on
+          // Home right after, where the restart hint carries the follow-up.
+          await toggleProxy(false);
+          setScreen("home");
+        }}
         onDone={() => setScreen("home")}
         onOpenSettings={() => setScreen("settings")}
       />
@@ -649,12 +674,14 @@ export function App() {
         busy={proxyBusy}
         error={providerError}
         restartHint={restartHint}
+        onDismissRestartHint={() => setRestartHint(false)}
         relaunchHint={relaunchHint}
+        onDismissRelaunchHint={() => setRelaunchHint(false)}
         codexDrifted={codexDrifted}
         onBack={() => {
           setProviderError(null);
           // Keep restart/relaunch hints alive so a change made here still
-          // reminds the user on the home screen; their timers auto-dismiss.
+          // reminds the user on the home screen until dismissed.
           setScreen("home");
         }}
         onToggleProxy={() => toggleProxy(false)}
@@ -683,8 +710,6 @@ export function App() {
         onUntrustCa={untrustCa}
       />
     );
-  } else if (screen === "coming-soon") {
-    body = <ComingSoon onBack={() => setScreen("home")} />;
   } else {
     // home (and any fallback once loaded)
     body = (
@@ -693,14 +718,18 @@ export function App() {
         proxyOn={proxyOn}
         providerCount={providerCount}
         showProxy={showProxy}
+        tools={tools}
         error={providerError}
         restartHint={restartHint}
+        onDismissRestartHint={() => setRestartHint(false)}
         relaunchHint={relaunchHint}
+        onDismissRelaunchHint={() => setRelaunchHint(false)}
+        startupRoutingHint={startupRoutingHint}
+        onDismissStartupRoutingHint={() => setStartupRoutingHint(false)}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onOpenProxy={() => setScreen("proxy")}
         onToggleProxy={() => toggleProxy(true)}
-        onOpenDirectGateway={() => setScreen("coming-soon")}
         onOpenSettings={() => setScreen("settings")}
       />
     );

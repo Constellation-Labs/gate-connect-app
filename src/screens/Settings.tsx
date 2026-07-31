@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import type { Account, OAuthStatus } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
+import { classifyError, type ClassifiedError } from "../lib/errors";
 import { GATEWAY_SERVERS } from "../lib/config";
-import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch } from "../components/gc/ui";
+import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch, ErrorNote } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
 
@@ -13,6 +14,47 @@ function hostOf(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** Inline confirm step for the destructive actions (the popover never stacks
+ * dialogs): names exactly what is about to be lost, then a confirm/cancel
+ * pair. Same pattern as the key-reveal confirm below. */
+function ConfirmPanel({
+  message,
+  confirmLabel,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  message: string;
+  confirmLabel: string;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="mx-3.5 mt-2 rounded bg-gc-subtle p-3 shadow-border">
+      <div className="text-[11.5px] leading-snug text-gc-ink-2">{message}</div>
+      <div className="mt-2.5 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={busy}
+          className="text-[12.5px] font-medium text-gc-error disabled:opacity-50"
+        >
+          {confirmLabel}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="ml-auto text-[12.5px] font-medium text-gc-ink-3"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /** Settings - workspace + Gate API key management. The key itself is held in
@@ -57,8 +99,16 @@ export function Settings({
   const trustStore = platform === "windows" ? "certificate store" : "keychain";
   const [newKey, setNewKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ClassifiedError | null>(null);
   const [upgrading, setUpgrading] = useState(false);
+  // Armed by the Reset buttons; the destructive clear only runs from the
+  // inline confirm panel.
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  // Armed by picking a different Dev-mode gateway server; holds the choice
+  // until the confirm panel approves the forget-key-and-relaunch.
+  const [confirmingServer, setConfirmingServer] = useState<{ url: string; label: string } | null>(
+    null,
+  );
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
   const [laLoaded, setLaLoaded] = useState(false);
   // The launch-at-login toggle is off but the OS login item is still
@@ -143,7 +193,7 @@ export function Settings({
       await setLaunchAtLogin(next);
     } catch (err) {
       setLaunchAtLoginState(!next); // revert on failure
-      setError(err instanceof Error ? err.message : String(err));
+      setError(classifyError(err, "launch_at_login"));
       trackError(err, "launch_at_login");
       return;
     }
@@ -173,7 +223,7 @@ export function Settings({
       setRevealedPrefix(null);
       setConfirmReveal(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(classifyError(err, "save_api_key"));
       trackError(err, "save_api_key");
     } finally {
       setSubmitting(false);
@@ -187,10 +237,11 @@ export function Settings({
     try {
       await onForget();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(classifyError(err, "forget"));
       trackError(err, "forget");
     } finally {
       setSubmitting(false);
+      setConfirmingReset(false);
     }
   }
 
@@ -201,24 +252,25 @@ export function Settings({
     try {
       await onSignOut();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(classifyError(err, "sign_out"));
       trackError(err, "sign_out");
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function selectServer(url: string) {
+  async function switchServer(url: string) {
     if (url === account.gateway_base_url || submitting) return;
     setError(null);
     setSubmitting(true);
     try {
       await onSwitchGateway(url); // relaunches the app on success; nothing below runs
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(classifyError(err, "generic"));
       trackError(err, "generic");
     } finally {
       setSubmitting(false);
+      setConfirmingServer(null);
     }
   }
 
@@ -228,7 +280,7 @@ export function Settings({
     try {
       await onUpgradeToOAuth();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(classifyError(err, "sign_in"));
       trackError(err, "sign_in");
       setUpgrading(false);
     }
@@ -251,7 +303,10 @@ export function Settings({
             {account.gateway_base_url}
           </div>
         </div>
-        <ConnPill state={connected ? "connected" : "signedout"} />
+        <ConnPill
+          state={connected ? "connected" : "signedout"}
+          label={connected ? "Signed in" : "Signed out"}
+        />
       </div>
 
       {isOAuth && (
@@ -265,7 +320,7 @@ export function Settings({
               <div className="truncate text-[13px] font-medium text-gc-ink">
                 {oauth?.email ?? (connected ? "Signed in" : "Session expired")}
               </div>
-              <div className="truncate text-[11.5px] text-gc-ink-4">
+              <div className="truncate text-[11.5px] text-gc-ink-3">
                 {account.org_name ?? "No organization selected"}
               </div>
             </div>
@@ -286,12 +341,12 @@ export function Settings({
               disabled={submitting}
               className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
             >
-              <Icon name="refresh" size={14} />
+              <Icon name="logOut" size={14} />
               Sign out
             </button>
             <button
               type="button"
-              onClick={forget}
+              onClick={() => setConfirmingReset(true)}
               disabled={submitting}
               className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
             >
@@ -299,7 +354,16 @@ export function Settings({
               Reset
             </button>
           </div>
-          {error && <p className="mt-2 px-3.5 text-[11.5px] text-gc-error">{error}</p>}
+          {confirmingReset && (
+            <ConfirmPanel
+              message="Reset Gate Connect? This turns routing off, disconnects your tools, and forgets this account. You'll start over from sign-in."
+              confirmLabel={submitting ? "Resetting…" : "Reset everything"}
+              busy={submitting}
+              onConfirm={() => void forget()}
+              onCancel={() => setConfirmingReset(false)}
+            />
+          )}
+          {error && <ErrorNote error={error} className="mx-3.5 mt-2" />}
         </>
       )}
 
@@ -380,9 +444,9 @@ export function Settings({
             </div>
           </div>
         )}
-        {error && <p className="mt-2 text-[11.5px] text-gc-error">{error}</p>}
+        {error && <ErrorNote error={error} className="mt-2" />}
         {account.has_api_key && !replacing && (
-          <p className="mt-1.5 text-[11px] text-gc-ink-4">Stored in your keychain.</p>
+          <p className="mt-1.5 text-[11px] text-gc-ink-3">Stored in your keychain.</p>
         )}
         {confirmReveal && (
           <div className="mt-2 rounded bg-gc-subtle p-3 shadow-border">
@@ -422,7 +486,7 @@ export function Settings({
           </button>
           <button
             type="button"
-            onClick={forget}
+            onClick={() => setConfirmingReset(true)}
             disabled={submitting}
             className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
           >
@@ -430,6 +494,15 @@ export function Settings({
             Reset
           </button>
         </div>
+      )}
+      {confirmingReset && !replacing && (
+        <ConfirmPanel
+          message="Reset Gate Connect? This turns routing off, disconnects your tools, and removes your key from the keychain. You'll start over from sign-in."
+          confirmLabel={submitting ? "Resetting…" : "Reset everything"}
+          busy={submitting}
+          onConfirm={() => void forget()}
+          onCancel={() => setConfirmingReset(false)}
+        />
       )}
         </>
       )}
@@ -442,7 +515,12 @@ export function Settings({
             Open Gate Connect automatically when you log in. Keeps routing on after a restart.
           </div>
         </div>
-        <Switch on={launchAtLogin} disabled={!laLoaded} onClick={toggleLaunchAtLogin} />
+        <Switch
+          on={launchAtLogin}
+          label="Launch at login"
+          disabled={!laLoaded}
+          onClick={toggleLaunchAtLogin}
+        />
       </div>
       {laPendingDisable && (
         <div className="mx-3.5 mb-1 flex items-start gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
@@ -498,7 +576,7 @@ export function Settings({
                     <button
                         key={server.url}
                         type="button"
-                        onClick={() => selectServer(server.url)}
+                        onClick={() => setConfirmingServer({ url: server.url, label: server.label })}
                         disabled={active || submitting}
                         className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
                     >
@@ -513,6 +591,15 @@ export function Settings({
                 );
               })}
             </div>
+            {confirmingServer && (
+              <ConfirmPanel
+                message={`Switch to ${confirmingServer.label}? This forgets your stored key, disconnects your tools, and relaunches Gate Connect against the new server.`}
+                confirmLabel={submitting ? "Switching…" : "Switch and relaunch"}
+                busy={submitting}
+                onConfirm={() => void switchServer(confirmingServer.url)}
+                onCancel={() => setConfirmingServer(null)}
+              />
+            )}
           </>
       )}
 

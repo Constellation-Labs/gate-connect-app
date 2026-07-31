@@ -13,7 +13,7 @@ export function PopHeader({
   onGear?: () => void;
 }) {
   return (
-    <div className="flex items-center gap-2 px-3.5 pb-2 pt-3.5">
+    <div className="sticky top-0 z-[5] flex items-center gap-2 bg-gc-surface px-3.5 pb-2 pt-3.5">
       <div className="flex min-w-0 flex-1 flex-col gap-[3px] leading-none">
         <span className="inline-flex items-center gap-2">
           <ConstellationHexMark size={17} fill="#002a5f" />
@@ -26,7 +26,9 @@ export function PopHeader({
         </span>
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
-        <ConnPill state={pill} />
+        {/* The header pill answers exactly one question: is traffic routing
+            through Gate right now? (Signed-in state lives in Settings.) */}
+        <ConnPill state={pill} label={pill === "connected" ? "Routing on" : "Routing off"} />
         {onGear && (
           <IconButton icon="settings" size={15} onClick={onGear} aria-label="Settings" />
         )}

@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { disconnectToolsForQuit, quitApp } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
-import { Button } from "./gc/ui";
+import { classifyError, type ClassifiedError } from "../lib/errors";
+import { useFocusTrap } from "../lib/useFocusTrap";
+import { Button, ErrorNote } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
 /** "Claude Code", "Claude Code and Codex", "Claude Code, Codex, and OpenCode". */
@@ -14,14 +16,16 @@ function joinNames(names: string[]): string {
 /** Full-popover takeover shown when the user picks Quit from the tray while
  *  config-routed CLI tools are still connected. Their configs point at the
  *  loopback relay, which dies with the app, so those tools can't connect
- *  until Gate Connect runs again. Offer to turn the integrations off for the
+ *  until Gate Connect runs again. Offer to disconnect the tools for the
  *  downtime (snapshot + disconnect, routing intent untouched, so the startup
  *  restore reapplies them) or quit with them in place. Sits above the other
  *  takeovers (z-30) - a pending quit decision should never be obscured by an
  *  update prompt or routing notice. */
 export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: () => void }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ClassifiedError | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(panelRef, onCancel);
 
   async function turnOffAndQuit() {
     setBusy(true);
@@ -34,7 +38,7 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
       // A failed disconnect can leave tool configs half-reverted; surface it
       // and stay open rather than quitting with routing in an unknown state.
       trackError(e, "quit_disable");
-      setError(typeof e === "string" ? e : String(e));
+      setError(classifyError(e, "quit_disable"));
       setBusy(false);
     }
   }
@@ -49,28 +53,38 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
   const plural = tools.length > 1;
 
   return (
-    <div className="gc-panel-in absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center">
+    <div
+      ref={panelRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="quit-confirm-title"
+      className="gc-panel-in absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center"
+    >
       <div className="flex h-14 w-14 items-center justify-center rounded-gc-lg bg-gc-sunken text-gc-ink-3">
         <Icon name="shieldCheck" size={26} />
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <h1 className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink">
+        <h1
+          id="quit-confirm-title"
+          className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink"
+        >
           Quit Gate Connect?
         </h1>
         <p className="text-[12.5px] leading-snug text-gc-ink-3">
-          {names} {plural ? "are" : "is"} set up to route through Gate. If you quit now,{" "}
-          {plural ? "they" : "it"} can't connect until Gate Connect runs again. Turning
-          integrations off restores {plural ? "their" : "its"} original settings for the
-          downtime and reapplies them at the next start; restart any running CLI agents
-          to pick up the change.
+          {names} still {plural ? "route" : "routes"} through Gate. If you quit now,{" "}
+          {plural ? "they" : "it"} can't connect until Gate Connect runs again.
         </p>
-        {error && <p className="text-[12.5px] leading-snug text-gc-error">{error}</p>}
+        <p className="text-[11.5px] leading-snug text-gc-ink-4">
+          Disconnecting restores {plural ? "their" : "its"} own settings for the
+          downtime and reconnects {plural ? "them" : "it"} at the next start.
+        </p>
+        {error && <ErrorNote error={error} />}
       </div>
 
       <div className="mt-1 flex w-full flex-col gap-2">
         <Button variant="accent" full disabled={busy} onClick={() => void turnOffAndQuit()}>
-          {busy ? "Working…" : "Turn off integrations and quit"}
+          {busy ? "Working…" : "Disconnect tools and quit"}
         </Button>
         <Button variant="secondary" full disabled={busy} onClick={() => void quitAnyway()}>
           Quit anyway

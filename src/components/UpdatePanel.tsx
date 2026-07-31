@@ -4,6 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { setUpdaterRelaunching } from "../lib/api";
 import { useWindowReopen } from "../lib/useWindowReopen";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { track, trackError } from "../lib/analytics";
 import { Button, IconButton } from "./gc/ui";
 import { Icon } from "./gc/Icon";
@@ -140,13 +141,58 @@ export function UpdatePanel() {
   // Startup: full-panel takeover.
   if (panelDismissed) return null;
   return (
-    <div className="gc-panel-in absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center">
+    <UpdateTakeover
+      version={update.version}
+      current={current}
+      installing={installing}
+      failed={failed}
+      onInstall={() => void install()}
+      onLater={() => {
+        setPanelDismissed(true);
+        track("update_dismissed", { source: "panel" });
+      }}
+    />
+  );
+}
+
+/** The startup takeover lives in its own component so its focus trap mounts
+ *  exactly when the panel does (the parent renders long before, as null). */
+function UpdateTakeover({
+  version,
+  current,
+  installing,
+  failed,
+  onInstall,
+  onLater,
+}: {
+  version: string;
+  current: string;
+  installing: boolean;
+  failed: boolean;
+  onInstall: () => void;
+  onLater: () => void;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Escape defers the update, matching "Later" - but not mid-install, when
+  // there is no safe dismissal.
+  useFocusTrap(panelRef, installing ? undefined : onLater);
+  return (
+    <div
+      ref={panelRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="update-panel-title"
+      className="gc-panel-in absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center"
+    >
       <div className="flex h-14 w-14 items-center justify-center rounded-gc-lg bg-gc-accent-wash text-gc-accent">
         <Icon name="refresh" size={26} />
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <h1 className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink">
+        <h1
+          id="update-panel-title"
+          className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink"
+        >
           Update ready
         </h1>
         <p className="text-[12.5px] leading-snug text-gc-ink-3">
@@ -160,28 +206,18 @@ export function UpdatePanel() {
         {current && <span className="text-gc-ink-4">v{current}</span>}
         {current && <Icon name="chevronRight" size={13} className="text-gc-ink-5" />}
         <span className="rounded-gc-pill bg-gc-highlight px-2 py-0.5 font-medium text-gc-ink">
-          v{update.version}
+          v{version}
         </span>
       </div>
 
       <div className="mt-1 flex w-full flex-col gap-2">
-        <Button
-          variant="accent"
-          full
-          disabled={installing}
-          onClick={() => {
-            void install();
-          }}
-        >
+        <Button variant="accent" full disabled={installing} onClick={onInstall}>
           {installing ? "Installing…" : failed ? "Retry update" : "Install & relaunch"}
         </Button>
         {!installing && (
           <button
             type="button"
-            onClick={() => {
-              setPanelDismissed(true);
-              track("update_dismissed", { source: "panel" });
-            }}
+            onClick={onLater}
             className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             Later

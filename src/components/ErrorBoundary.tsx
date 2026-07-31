@@ -32,7 +32,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
     return (
       <div className="flex h-full flex-col gap-3 overflow-y-auto bg-gc-surface p-6 text-gc-ink">
-        <h1 className="text-[17px] font-bold tracking-[-0.01em]">Something went wrong</h1>
+        <h1 className="text-[17px] font-semibold tracking-[-0.01em]">Something went wrong</h1>
         <p className="text-[13px] text-gc-ink-4">
           The window hit an unexpected error while loading. Details below.
         </p>
