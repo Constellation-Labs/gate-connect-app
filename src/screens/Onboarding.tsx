@@ -150,10 +150,20 @@ export function Onboarding() {
   const indexRef = useRef(index);
   indexRef.current = index;
   useEffect(() => {
+    // This handler decides whether the window may close. Tauri prevents the
+    // native close whenever JS listens for close-requested and only destroys
+    // the window if this resolves without preventDefault (tauri
+    // manager/window.rs + onCloseRequested in @tauri-apps/api), so a throw
+    // here leaves a window the user cannot close. Nothing in it may fail
+    // loudly.
     const unlisten = getCurrentWindow().onCloseRequested(() => {
-      if (finishedRef.current) return;
-      finishedRef.current = true;
-      track("tour_skipped", { source, step: indexRef.current + 1 });
+      try {
+        if (finishedRef.current) return;
+        finishedRef.current = true;
+        track("tour_skipped", { source, step: indexRef.current + 1 });
+      } catch (e) {
+        console.warn("[gate] tour skip tracking failed", e);
+      }
     });
     return () => {
       void unlisten.then((f) => f());
@@ -162,12 +172,19 @@ export function Onboarding() {
 
   const finish = () => {
     finishedRef.current = true;
-    setTourSeen(dontShow);
-    track("tour_completed", { source });
-    // Tell the popover window to record the flag in its own storage too, in
-    // case the platform doesn't share localStorage between webviews.
-    if (dontShow) void emit(TOUR_SEEN_EVENT);
+    // Close first, then do the bookkeeping: none of it is worth trapping the
+    // user in a window that won't close, and the guard keeps a failed write
+    // from escaping the click handler.
     void getCurrentWindow().close();
+    try {
+      setTourSeen(dontShow);
+      track("tour_completed", { source });
+      // Tell the popover window to record the flag in its own storage too, in
+      // case the platform doesn't share localStorage between webviews.
+      if (dontShow) void emit(TOUR_SEEN_EVENT);
+    } catch (e) {
+      console.warn("[gate] tour completion bookkeeping failed", e);
+    }
   };
 
   return (

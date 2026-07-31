@@ -13,6 +13,7 @@ export function Button({
   variant = "secondary",
   size = "md",
   full,
+  type = "button",
   className = "",
   children,
   ...rest
@@ -31,6 +32,9 @@ export function Button({
     size === "sm" ? "h-8 px-3.5 text-[12.5px]" : "h-10 px-4 text-[13.5px]";
   return (
     <button
+      // Never inherit the implicit "submit": these sit next to inputs (the
+      // key form), where a stray submit would reload the webview.
+      type={type}
       className={`inline-flex items-center justify-center gap-2 rounded font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:pointer-events-none disabled:opacity-45 ${sizing} ${styles} ${full ? "w-full" : ""} ${className}`}
       {...rest}
     >
