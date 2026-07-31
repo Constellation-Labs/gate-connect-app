@@ -22,6 +22,7 @@ export function Home({
   onDismissRelaunchHint,
   startupRoutingHint,
   onDismissStartupRoutingHint,
+  onCloseAgents,
   staleAgentsHint,
   onDismissStaleAgents,
   onOpenProxy,
@@ -42,6 +43,7 @@ export function Home({
   onDismissRelaunchHint: () => void;
   startupRoutingHint: boolean;
   onDismissStartupRoutingHint: () => void;
+  onCloseAgents: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
   onOpenProxy: () => void;
@@ -124,6 +126,15 @@ export function Home({
               Connect started may not route until{" "}
               <span className="font-semibold">restarted</span>.
             </div>
+            {/* Opens the full takeover (confirm step, close, result); the
+                ellipsis signals more steps follow. */}
+            <button
+              type="button"
+              onClick={onCloseAgents}
+              className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink"
+            >
+              Close agents…
+            </button>
             <IconButton
               icon="x"
               size={13}

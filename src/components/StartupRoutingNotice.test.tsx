@@ -98,4 +98,28 @@ describe("StartupRoutingNotice close-agents flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
+
+  it("notifies onAgentsClosed only after a successful close", async () => {
+    (closeRunningAgents as Mock).mockResolvedValue(2);
+    const onAgentsClosed = vi.fn();
+    render(
+      <StartupRoutingNotice routingOn onDismiss={vi.fn()} onAgentsClosed={onAgentsClosed} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close running agents" }));
+    expect(onAgentsClosed).not.toHaveBeenCalled(); // arming the confirm isn't acting
+    fireEvent.click(screen.getByRole("button", { name: "Close agents" }));
+    await waitFor(() => expect(onAgentsClosed).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not notify onAgentsClosed when the close fails", async () => {
+    (closeRunningAgents as Mock).mockRejectedValue("SIGTERM not permitted");
+    const onAgentsClosed = vi.fn();
+    render(
+      <StartupRoutingNotice routingOn onDismiss={vi.fn()} onAgentsClosed={onAgentsClosed} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close running agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close agents" }));
+    await screen.findByText(/Couldn't close the running agents/);
+    expect(onAgentsClosed).not.toHaveBeenCalled();
+  });
 });

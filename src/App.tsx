@@ -756,6 +756,9 @@ export function App() {
         onDismissRelaunchHint={() => setRelaunchHint(false)}
         startupRoutingHint={startupRoutingHint}
         onDismissStartupRoutingHint={() => setStartupRoutingHint(false)}
+        // User-initiated, so the full takeover (confirm + result) is earned
+        // here even though startup itself no longer opens it.
+        onCloseAgents={() => setRoutingNotice("on")}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onOpenProxy={() => setScreen("proxy")}
@@ -797,6 +800,7 @@ export function App() {
         <StartupRoutingNotice
           routingOn={routingNotice === "on"}
           onDismiss={() => setRoutingNotice(null)}
+          onAgentsClosed={() => setStartupRoutingHint(false)}
         />
       )}
       {quitTools !== null && (

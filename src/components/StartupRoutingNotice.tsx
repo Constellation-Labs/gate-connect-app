@@ -15,9 +15,13 @@ import { Icon } from "./gc/Icon";
 export function StartupRoutingNotice({
   routingOn,
   onDismiss,
+  onAgentsClosed,
 }: {
   routingOn: boolean;
   onDismiss: () => void;
+  /** Fired after a successful close, so a surface that opened this takeover
+   * (the Home startup banner) can retire advice the user just acted on. */
+  onAgentsClosed?: () => void;
 }) {
   const [closing, setClosing] = useState(false);
   // Clicking "Close running agents" arms this inline confirm step first; the
@@ -36,6 +40,7 @@ export function StartupRoutingNotice({
       const count = await closeRunningAgents();
       setClosed(count);
       track("agents_closed", { count });
+      onAgentsClosed?.();
     } catch (e) {
       trackError(e, "close_agents");
       setError(classifyError(e, "close_agents"));
