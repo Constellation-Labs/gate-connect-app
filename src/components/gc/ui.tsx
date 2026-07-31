@@ -11,21 +11,27 @@ import { Icon, type IconName } from "./Icon";
 
 export function Button({
   variant = "secondary",
+  size = "md",
   full,
   className = "",
   children,
   ...rest
 }: {
   variant?: "accent" | "secondary";
+  /** `sm` is for dense chrome (the onboarding window's 52px footer), not the
+   * popover, where buttons stay `md`. */
+  size?: "sm" | "md";
   full?: boolean;
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
   const styles =
     variant === "accent"
       ? "bg-gc-accent text-white hover:bg-gc-accent-ink active:bg-gc-accent-ink"
       : "bg-gc-surface text-gc-ink shadow-border hover:shadow-border-hover";
+  const sizing =
+    size === "sm" ? "h-8 px-3.5 text-[12.5px]" : "h-10 px-4 text-[13.5px]";
   return (
     <button
-      className={`inline-flex h-10 items-center justify-center gap-2 rounded px-4 text-[13.5px] font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:pointer-events-none disabled:opacity-45 ${styles} ${full ? "w-full" : ""} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 rounded font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:pointer-events-none disabled:opacity-45 ${sizing} ${styles} ${full ? "w-full" : ""} ${className}`}
       {...rest}
     >
       {children}

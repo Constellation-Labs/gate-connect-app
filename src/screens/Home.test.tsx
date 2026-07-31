@@ -122,6 +122,20 @@ describe("Home master toggle", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] });
     expect(screen.getByText("On · certificate not trusted yet")).toBeTruthy();
   });
+
+  it("counts what is routing against everything routable", () => {
+    renderHome({
+      tools: [
+        makeTool("claude-code", "Claude Code", { kind: "connected" }),
+        makeTool("opencode", "OpenCode", { kind: "detected" }),
+        makeTool("hermes", "Hermes", { kind: "not_installed" }),
+      ],
+      // One enabled app row plus one available-but-off row.
+      domains: [makeDomain(), makeDomain({ slug: "openai", display_name: "OpenAI apps", enabled: false })],
+    });
+    // 1 routed tool + 1 routed app, out of 2 installed tools + 2 domains.
+    expect(screen.getByText("On · 2 of 4 routing")).toBeTruthy();
+  });
 });
 
 describe("Home tools ledger", () => {
@@ -188,7 +202,7 @@ describe("Home apps ledger", () => {
 
   it("disables the switch on unsupported domains", () => {
     renderHome({ domains: [makeDomain({ supported: false, enabled: false })] });
-    expect(screen.getByText("Coming soon")).toBeTruthy();
+    expect(screen.getByText("Not supported")).toBeTruthy();
     expect(
       screen.getByRole("switch", {
         name: "Route Claude Desktop / Cowork through Gate",

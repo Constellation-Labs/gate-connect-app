@@ -7,12 +7,12 @@ import { Button, ErrorNote } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
 /** Full-popover takeover shown when the user flips routing from the home
- *  screen while agents are running. Agents keep the connection they resolved
- *  at their own launch, so offer to close them; the user starts them again
- *  when ready. Routing that comes back on its own at startup is NOT this
- *  surface - that's the calm inline hint on Home. Sits under the UpdatePanel
- *  takeover (z-20) so an update prompt still wins. */
-export function StartupRoutingNotice({
+ *  screen while tools and apps are running. They keep the connection they
+ *  resolved at their own launch, so offer to close them; the user starts them
+ *  again when ready. Routing that comes back on its own at startup is NOT
+ *  this surface - that's the calm inline hint on Home. Sits under the
+ *  UpdatePanel takeover (z-20) so an update prompt still wins. */
+export function RoutingChangeNotice({
   routingOn,
   startConfirming = false,
   onDismiss,

@@ -122,7 +122,10 @@ export function UpdatePanel({
   if (reopened) {
     if (bannerDismissed) return null;
     return (
-      <div className="flex shrink-0 items-center gap-2 border-b border-gc-line bg-gc-accent-wash-2 py-1.5 pl-3 pr-1.5">
+      <div
+        role="status"
+        className="flex shrink-0 items-center gap-2 border-b border-gc-line bg-gc-accent-wash-2 py-1.5 pl-3 pr-1.5"
+      >
         <Icon name="refresh" size={13} className="shrink-0 text-gc-accent" />
         <div className="min-w-0 flex-1 text-[11.5px] text-gc-ink-2">
           {failed ? (

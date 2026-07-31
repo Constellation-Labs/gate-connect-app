@@ -4,6 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { track } from "../lib/analytics";
 import { setTourSeen } from "../lib/tour";
+import { Button } from "../components/gc/ui";
 import { usePlatform, type Platform } from "../lib/platform";
 import appIcon from "../assets/app-icon.png";
 import routingScreen from "../assets/app-integrations.png";
@@ -240,19 +241,21 @@ export function Onboarding() {
           ))}
         </div>
         <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
+          <Button
+            size="sm"
+            className="min-w-[74px]"
             disabled={index === 0}
             onClick={() => {
               setDir("back");
               setIndex((i) => Math.max(0, i - 1));
             }}
-            className="h-[30px] min-w-[74px] rounded-md bg-gc-sunken px-[14px] text-[11.5px] font-medium text-gc-ink-2 transition-colors enabled:hover:bg-gc-line disabled:opacity-55"
           >
             Previous
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="accent"
+            size="sm"
+            className="min-w-[74px]"
             onClick={() => {
               if (last) {
                 finish();
@@ -261,10 +264,9 @@ export function Onboarding() {
                 setIndex((i) => i + 1);
               }
             }}
-            className="h-[30px] min-w-[74px] rounded-md bg-gc-accent px-[14px] text-[11.5px] font-medium text-white transition-colors hover:bg-gc-accent-ink"
           >
             {last ? "Get started" : "Next"}
-          </button>
+          </Button>
         </div>
       </footer>
     </div>

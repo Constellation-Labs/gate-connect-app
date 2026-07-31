@@ -23,7 +23,7 @@ function DomainPill({
     return (
       <span className="inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-3">
         <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-5" />
-        Coming soon
+        Not supported
       </span>
     );
   }
@@ -110,6 +110,9 @@ export function Home({
   // the trust card) only exist while at least one app row is switched on.
   const anyDomainOn = domains.some((d) => d.enabled && d.supported);
   const partial = proxyOn && !caTrusted && anyDomainOn;
+  // Denominator included so "3 of 8" answers "and what about the rest?"
+  // without a scroll; the ledger below is the itemization.
+  const routableCount = installedTools.length + domains.filter((d) => d.supported).length;
   const routedCount =
     installedTools.filter((t) => t.status.kind === "connected").length +
     (proxyOn && caTrusted ? domains.filter((d) => d.enabled && d.supported).length : 0);
@@ -167,7 +170,7 @@ export function Home({
                   : partial
                     ? "On · certificate not trusted yet"
                     : routedCount > 0
-                      ? `On · ${routedCount} routing`
+                      ? `On · ${routedCount} of ${routableCount} routing`
                       : "On · nothing enabled yet"}
               </div>
               {/* The keep-routing tip only speaks in the quiet room: any

@@ -39,7 +39,7 @@ import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { ToolDetail } from "./screens/ToolDetail";
 import { UpdatePanel } from "./components/UpdatePanel";
-import { StartupRoutingNotice } from "./components/StartupRoutingNotice";
+import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
@@ -133,10 +133,10 @@ export function App() {
   const [tools, setTools] = useState<Tool[]>([]);
   // Which tool the "tool" screen shows; set by tapping a ledger row on Home.
   const [toolSlug, setToolSlug] = useState<string | null>(null);
-  // Set after a successful routing change; Home and the Routing screen show a
-  // "restart your agents" note. The advice holds until the agents actually
-  // restart (which we can't observe), so the note stays until the user
-  // dismisses it rather than vanishing on a timer.
+  // Set after a successful routing change; Home shows a "restart your tools
+  // and apps" note. The advice holds until they actually restart (which we
+  // can't observe), so the note stays until the user dismisses it rather
+  // than vanishing on a timer.
   const [restartHint, setRestartHint] = useState(false);
   // Flashed when routing is turned on; the Linux-only "reopen your
   // already-open apps" note, dismissible like the restart hint.
@@ -152,17 +152,16 @@ export function App() {
   const [staleAgentsDismissed, setStaleAgentsDismissed] = useState(false);
 
   // Set when routing flips on/off in a way worth a full-popover takeover: the
-  // user toggled the proxy from the home screen while agents were running, or
-  // asked for it from the startup banner's "Close agents…" action (which
-  // opens straight on the confirm step - the banner click already declared
-  // the intent). Shown until dismissed. Routing that comes up on its own at
-  // startup gets the calm inline `startupRoutingHint` on Home instead.
+  // user toggled the proxy from the home screen while tools were running, or
+  // asked for it from the startup banner's "Close them…" action (which opens
+  // straight on the confirm step - the banner click already declared the
+  // intent). Shown until dismissed. Routing that comes up on its own at
+  // startup gets the calm inline `startupRoutingHint` on Home instead (and
+  // only when something predates it; see stale_agents_count).
   const [routingNotice, setRoutingNotice] = useState<{
     dir: "on" | "off";
     confirming: boolean;
   } | null>(null);
-  // The takeover teaches its lesson once per install; see
-  // hasSeenRoutingTakeover above.
   // Whether the update panel's startup takeover is currently mounted, so the
   // background can go aria-hidden while any takeover is up.
   const [updateTakeoverVisible, setUpdateTakeoverVisible] = useState(false);
@@ -847,7 +846,7 @@ export function App() {
         onTakeoverVisibleChange={setUpdateTakeoverVisible}
       />
       {routingNotice !== null && screen !== "loading" && (
-        <StartupRoutingNotice
+        <RoutingChangeNotice
           routingOn={routingNotice.dir === "on"}
           startConfirming={routingNotice.confirming}
           onDismiss={() => setRoutingNotice(null)}

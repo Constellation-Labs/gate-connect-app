@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { Mock } from "vitest";
-import { StartupRoutingNotice } from "./StartupRoutingNotice";
+import { RoutingChangeNotice } from "./RoutingChangeNotice";
 
 vi.mock("../lib/api", () => ({ closeRunningAgents: vi.fn() }));
 vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
@@ -14,11 +14,11 @@ afterEach(() => {
 });
 
 function renderNotice(routingOn: boolean, onDismiss = vi.fn()) {
-  render(<StartupRoutingNotice routingOn={routingOn} onDismiss={onDismiss} />);
+  render(<RoutingChangeNotice routingOn={routingOn} onDismiss={onDismiss} />);
   return onDismiss;
 }
 
-describe("StartupRoutingNotice copy", () => {
+describe("RoutingChangeNotice copy", () => {
   it("words the takeover for routing on", () => {
     renderNotice(true);
     expect(screen.getByText("Routing is on")).toBeTruthy();
@@ -38,10 +38,10 @@ describe("StartupRoutingNotice copy", () => {
   });
 });
 
-describe("StartupRoutingNotice close-agents flow", () => {
+describe("RoutingChangeNotice close-agents flow", () => {
   it("opens directly on the confirm step when startConfirming is set", () => {
     render(
-      <StartupRoutingNotice routingOn startConfirming onDismiss={vi.fn()} />,
+      <RoutingChangeNotice routingOn startConfirming onDismiss={vi.fn()} />,
     );
     // No informational detour: the confirm copy and action are already up.
     expect(screen.getByText(/including desktop apps like Claude/i)).toBeTruthy();
@@ -113,7 +113,7 @@ describe("StartupRoutingNotice close-agents flow", () => {
     (closeRunningAgents as Mock).mockResolvedValue(2);
     const onAgentsClosed = vi.fn();
     render(
-      <StartupRoutingNotice routingOn onDismiss={vi.fn()} onAgentsClosed={onAgentsClosed} />,
+      <RoutingChangeNotice routingOn onDismiss={vi.fn()} onAgentsClosed={onAgentsClosed} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Close them now" }));
     expect(onAgentsClosed).not.toHaveBeenCalled(); // arming the confirm isn't acting
@@ -125,7 +125,7 @@ describe("StartupRoutingNotice close-agents flow", () => {
     (closeRunningAgents as Mock).mockRejectedValue("SIGTERM not permitted");
     const onAgentsClosed = vi.fn();
     render(
-      <StartupRoutingNotice routingOn onDismiss={vi.fn()} onAgentsClosed={onAgentsClosed} />,
+      <RoutingChangeNotice routingOn onDismiss={vi.fn()} onAgentsClosed={onAgentsClosed} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Close them now" }));
     fireEvent.click(screen.getByRole("button", { name: "Close everything" }));

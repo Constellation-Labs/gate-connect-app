@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { Tool } from "../lib/api";
 import { classifyError, type ClassifiedError } from "../lib/errors";
-import { SubHeader, SectionLabel, Switch, ErrorNote } from "../components/gc/ui";
+import { trackError } from "../lib/analytics";
+import { SubHeader, SectionLabel, Switch, ErrorNote, IconButton } from "../components/gc/ui";
 import { ToolPill } from "../components/ToolPill";
 import { Icon } from "../components/gc/Icon";
 
@@ -31,6 +32,19 @@ export function ToolDetail({
   // Adopting a drifted (hand-written) Gate setup replaces someone's config;
   // that gets an inline confirm step, armed by the first flip.
   const [confirmingAdopt, setConfirmingAdopt] = useState(false);
+  // Copy feedback on the upstream URL (icon flashes to a check), matching
+  // the gateway URL in Settings: identifiers are never retyped by hand.
+  const [copiedUrl, setCopiedUrl] = useState(false);
+
+  async function copyUpstreamUrl() {
+    try {
+      await navigator.clipboard.writeText(tool.default_upstream_url);
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 1500);
+    } catch (e) {
+      trackError(e, "generic");
+    }
+  }
 
   async function toggle() {
     setError(null);
@@ -167,11 +181,17 @@ export function ToolDetail({
             {tool.upstream_provider_name}
           </div>
         </div>
-        <div className="flex items-center gap-3 border-b border-gc-line px-3.5 py-2.5">
+        <div className="flex items-center gap-2 border-b border-gc-line px-3.5 py-2.5">
           <div className="min-w-0 flex-1 text-[12px] text-gc-ink-3">Upstream URL</div>
           <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
             {tool.default_upstream_url}
           </div>
+          <IconButton
+            icon={copiedUrl ? "check" : "copy"}
+            size={13}
+            onClick={() => void copyUpstreamUrl()}
+            aria-label="Copy upstream URL"
+          />
         </div>
       </div>
     </div>

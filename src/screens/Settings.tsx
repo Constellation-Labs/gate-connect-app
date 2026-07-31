@@ -588,7 +588,10 @@ export function Settings({
               type="button"
               onClick={onUntrustCa}
               disabled={proxyBusy}
-              className="shrink-0 text-[12px] font-medium text-gc-accent disabled:opacity-40"
+              // Neutral, not accent: removing trust is reversible maintenance,
+              // not an encouraged action, and not destructive enough for the
+              // error-red-plus-confirm grammar Reset uses.
+              className="shrink-0 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink disabled:opacity-40"
             >
               Remove
             </button>
