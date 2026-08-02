@@ -274,3 +274,10 @@ describe("Home routing-change notice", () => {
     expect(screen.queryByText(/Routing is off\./)).toBeNull();
   });
 });
+
+describe("Home dashboard link", () => {
+  it("reaches the dashboard from the ledger, not from behind the gear", () => {
+    renderHome();
+    expect(screen.getByRole("button", { name: "Open Gate dashboard" })).toBeTruthy();
+  });
+});

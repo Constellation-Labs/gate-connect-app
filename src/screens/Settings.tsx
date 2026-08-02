@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Account, OAuthStatus } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
@@ -657,16 +656,6 @@ export function Settings({
           >
             <Icon name="info" size={14} />
             Replay tour
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              void openUrl("https://app.constellationgate.ai");
-            }}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
-          >
-            <Icon name="cube" size={14} />
-            Open Gate dashboard
           </button>
         </div>
       </div>

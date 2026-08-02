@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
@@ -273,6 +274,23 @@ export function Home({
           show up here once installed.
         </p>
       )}
+
+      {/* The dashboard is where the traffic this screen routes actually ends
+          up - keys, usage, org. That belongs one click from the ledger, not
+          behind the gear. Quiet weight: it leaves the app, so it must not
+          compete with the switches. */}
+      <div className="px-3.5 pt-3">
+        <button
+          type="button"
+          onClick={() => {
+            void openUrl("https://app.constellationgate.ai");
+          }}
+          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+        >
+          <Icon name="cube" size={14} />
+          Open Gate dashboard
+        </button>
+      </div>
     </div>
   );
 }
