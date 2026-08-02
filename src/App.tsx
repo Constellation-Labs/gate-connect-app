@@ -137,14 +137,14 @@ export function App() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   // Which model family the "group" screen shows; set from the Home ledger.
   const [groupId, setGroupId] = useState<string | null>(null);
-  // Set after a successful routing change; Home shows a "restart your tools
-  // and apps" note. The advice holds until they actually restart (which we
-  // can't observe), so the note stays until the user dismisses it rather
-  // than vanishing on a timer.
-  const [restartHint, setRestartHint] = useState(false);
-  // Flashed when routing is turned on; the Linux-only "reopen your
-  // already-open apps" note, dismissible like the restart hint.
-  const [relaunchHint, setRelaunchHint] = useState(false);
+  // Set after any routing change, and by the startup auto-enable. One state,
+  // not one per flavour of advice: three independent booleans meant a fast
+  // on/off flip left the "on" notice standing over the "off" one, telling the
+  // user the opposite of what just happened. Holds the direction of the last
+  // change so the banner's wording follows the switch. The advice holds until
+  // they actually close their tools (which we can't observe), so it stays
+  // until dismissed rather than vanishing on a timer.
+  const [changeNotice, setChangeNotice] = useState<"on" | "off" | null>(null);
 
   // Set when the startup auto-enable brought routing back on a different
   // local port than the previous session (first launch after upgrading from
@@ -157,10 +157,10 @@ export function App() {
 
   // Set when routing flips on/off in a way worth a full-popover takeover: the
   // user toggled the proxy from the home screen while tools were running, or
-  // asked for it from the startup banner's "Close them…" action (which opens
+  // asked for it from the Home banner's "Close them…" action (which opens
   // straight on the confirm step - the banner click already declared the
   // intent). Shown until dismissed. Routing that comes up on its own at
-  // startup gets the calm inline `startupRoutingHint` on Home instead (and
+  // startup gets the calm inline `changeNotice` banner on Home instead (and
   // only when something predates it; see stale_agents_count).
   const [routingNotice, setRoutingNotice] = useState<{
     dir: "on" | "off";
@@ -169,12 +169,6 @@ export function App() {
   // Whether the update panel's startup takeover is currently mounted, so the
   // background can go aria-hidden while any takeover is up.
   const [updateTakeoverVisible, setUpdateTakeoverVisible] = useState(false);
-
-  // Routing came back on its own as the app started (initial load read it
-  // running, or the backend's startup auto-enable announced itself) while
-  // agents were running. Informational, not an alarm: surfaces as a
-  // dismissible Home banner.
-  const [startupRoutingHint, setStartupRoutingHint] = useState(false);
 
   // The tray Quit defers to the popover when config-routed CLI tools are
   // still managed (their configs point at the loopback relay, which dies
@@ -234,7 +228,7 @@ export function App() {
       setProviders(provs);
       if (stale) setStaleAgentsHint(true);
       if (px?.running) {
-        if (agents > 0) setStartupRoutingHint(true);
+        if (agents > 0) setChangeNotice("on");
         // The backend only emits this nudge after its startup auto-enable, so
         // routing coming up here is a restored session, not a user toggle.
         track("proxy_enabled", { source: "restored" });
@@ -286,7 +280,7 @@ export function App() {
       setTools(toolList);
       setProviders(provs);
       if (stale) setStaleAgentsHint(true);
-      if (px?.running && agents > 0) setStartupRoutingHint(true);
+      if (px?.running && agents > 0) setChangeNotice("on");
       let resolved: Screen;
       if (isSignedIn(acct, oauthState)) {
         resolved = "home";
@@ -344,8 +338,10 @@ export function App() {
     if (staleAgentsHint) track("stale_agents_shown");
   }, [staleAgentsHint]);
   useEffect(() => {
-    if (startupRoutingHint) track("routing_notice_shown", { enabled: true, inline: true });
-  }, [startupRoutingHint]);
+    if (changeNotice) {
+      track("routing_notice_shown", { enabled: changeNotice === "on", inline: true });
+    }
+  }, [changeNotice]);
   useEffect(() => {
     if (routingNotice !== null) {
       track("routing_notice_shown", { enabled: routingNotice.dir === "on" });
@@ -514,13 +510,11 @@ export function App() {
               markRoutingTakeoverSeen();
               setRoutingNotice({ dir: next.running ? "on" : "off", confirming: false });
             } else {
-              setRestartHint(true);
-              if (next.running) setRelaunchHint(true);
+              setChangeNotice(next.running ? "on" : "off");
             }
           }
         } else {
-          setRestartHint(true);
-          if (next.running) setRelaunchHint(true);
+          setChangeNotice(next.running ? "on" : "off");
         }
         // The backend owns the routed set across a master toggle: turning off
         // snapshots what was on and disables all; turning on restores that
@@ -587,7 +581,7 @@ export function App() {
         if (routed) await connectTool(slug, tool?.default_upstream_url ?? "");
         else await disconnectTool(slug);
         track("tool_toggled", { tool: slug, routed });
-        setRestartHint(true);
+        setChangeNotice(routed ? "on" : "off");
       } catch (e) {
         trackError(e, "connect", { tool: slug, routed });
         throw e;
@@ -637,8 +631,7 @@ export function App() {
           }
         }
         track("group_toggled", { provider: id, enabled: on });
-        setRestartHint(true);
-        if (on) setRelaunchHint(true);
+        setChangeNotice(on ? "on" : "off");
       } catch (e) {
         trackError(e, "connect", { provider: id, enabled: on });
         setProviderError(classifyError(e, "connect"));
@@ -857,16 +850,16 @@ export function App() {
         domains={visibleDomains}
         busy={proxyBusy}
         error={providerError}
-        restartHint={restartHint}
-        onDismissRestartHint={() => setRestartHint(false)}
-        relaunchHint={relaunchHint}
-        onDismissRelaunchHint={() => setRelaunchHint(false)}
-        startupRoutingHint={startupRoutingHint}
-        onDismissStartupRoutingHint={() => setStartupRoutingHint(false)}
+        changeNotice={changeNotice}
+        onDismissChangeNotice={() => setChangeNotice(null)}
         // User-initiated, so the full takeover is earned here even though
         // startup itself no longer opens it - and since the banner click
         // already declared the intent, land directly on the confirm step.
-        onCloseAgents={() => setRoutingNotice({ dir: "on", confirming: true })}
+        // Carries the banner's direction so the takeover doesn't announce
+        // "Routing is on" over a switch the user just turned off.
+        onCloseAgents={() =>
+          setRoutingNotice({ dir: changeNotice ?? "on", confirming: true })
+        }
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onToggleProxy={() => toggleProxy(true)}
@@ -911,7 +904,7 @@ export function App() {
           routingOn={routingNotice.dir === "on"}
           startConfirming={routingNotice.confirming}
           onDismiss={() => setRoutingNotice(null)}
-          onAgentsClosed={() => setStartupRoutingHint(false)}
+          onAgentsClosed={() => setChangeNotice(null)}
         />
       )}
       {quitTools !== null && (

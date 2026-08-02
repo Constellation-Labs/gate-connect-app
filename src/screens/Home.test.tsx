@@ -86,12 +86,8 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       domains={[]}
       busy={false}
       error={null}
-      restartHint={false}
-      onDismissRestartHint={vi.fn()}
-      relaunchHint={false}
-      onDismissRelaunchHint={vi.fn()}
-      startupRoutingHint={false}
-      onDismissStartupRoutingHint={vi.fn()}
+      changeNotice={null}
+      onDismissChangeNotice={vi.fn()}
       onCloseAgents={vi.fn()}
       staleAgentsHint={false}
       onDismissStaleAgents={vi.fn()}
@@ -248,5 +244,33 @@ describe("Home model-family ledger", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Claude details" }));
     expect(onOpenGroup).toHaveBeenCalledWith("anthropic");
+  });
+});
+
+describe("Home routing-change notice", () => {
+  it("words the same notice by direction", () => {
+    renderHome({ changeNotice: "on" });
+    expect(screen.getByText(/Routing is on\./)).toBeTruthy();
+    cleanup();
+
+    renderHome({ changeNotice: "off" });
+    expect(screen.getByText(/Routing is off\./)).toBeTruthy();
+    expect(screen.queryByText(/Routing is on\./)).toBeNull();
+  });
+
+  it("offers to close the running tools in both directions, not just at startup", () => {
+    const onCloseAgents = vi.fn();
+    renderHome({ changeNotice: "off", onCloseAgents });
+    fireEvent.click(screen.getByRole("button", { name: "Close them…" }));
+    expect(onCloseAgents).toHaveBeenCalled();
+  });
+
+  it("shows one notice at a time, so a fast flip can't stack them", () => {
+    // The regression this replaced: three independent hint booleans, so the
+    // "on" notice stayed up over the "off" one after an on/off flip.
+    renderHome({ changeNotice: "off", staleAgentsHint: true });
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByText(/local address changed/)).toBeTruthy();
+    expect(screen.queryByText(/Routing is off\./)).toBeNull();
   });
 });

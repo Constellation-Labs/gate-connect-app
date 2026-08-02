@@ -23,12 +23,8 @@ export function Home({
   domains,
   busy,
   error,
-  restartHint,
-  onDismissRestartHint,
-  relaunchHint,
-  onDismissRelaunchHint,
-  startupRoutingHint,
-  onDismissStartupRoutingHint,
+  changeNotice,
+  onDismissChangeNotice,
   onCloseAgents,
   staleAgentsHint,
   onDismissStaleAgents,
@@ -47,12 +43,9 @@ export function Home({
   domains: ProxyDomain[];
   busy: boolean;
   error?: ClassifiedError | null;
-  restartHint: boolean;
-  onDismissRestartHint: () => void;
-  relaunchHint: boolean;
-  onDismissRelaunchHint: () => void;
-  startupRoutingHint: boolean;
-  onDismissStartupRoutingHint: () => void;
+  /** Direction of the last routing change, or null once dismissed. */
+  changeNotice: "on" | "off" | null;
+  onDismissChangeNotice: () => void;
   onCloseAgents: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
@@ -75,16 +68,14 @@ export function Home({
   const routedCount = groups.reduce((n, g) => n + g.routed, 0);
 
   // At most one banner at a time, most actionable first: transient chrome
-  // must never bury the ledger (the pills are the point of the screen).
-  const banner: "stale" | "startup" | "relaunch" | "restart" | null = staleAgentsHint
+  // must never bury the ledger (the pills are the point of the screen). The
+  // stale-port notice outranks the change notice because it means the user's
+  // tools are broken right now, not merely out of date.
+  const banner: "stale" | "change" | null = staleAgentsHint
     ? "stale"
-    : startupRoutingHint
-      ? "startup"
-      : platform === "linux" && relaunchHint
-        ? "relaunch"
-        : restartHint
-          ? "restart"
-          : null;
+    : changeNotice
+      ? "change"
+      : null;
 
   // Whether Launch at login is on, so the keep-routing tip only shows when
   // it would actually help (read the state, don't send the user to Settings
@@ -194,11 +185,17 @@ export function Home({
           </div>
         )}
 
-        {banner === "startup" && (
+        {/* One notice for every routing change, worded by direction. Both
+            directions carry the same remedy - close what's already open - so
+            both offer the same action, rather than the close route existing
+            only for the notice raised at startup. */}
+        {banner === "change" && (
           <div role="status" className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
             <Icon name="info" size={15} className="shrink-0 text-gc-ink" />
             <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-              Routing is on. Anything already open isn&rsquo;t routing yet.
+              {changeNotice === "on"
+                ? "Routing is on. Anything already open isn't routing through Gate yet."
+                : "Routing is off. Anything already open still points at Gate."}
             </div>
             {/* Opens the full takeover (confirm step, close, result); the
                 ellipsis signals more steps follow. */}
@@ -212,41 +209,8 @@ export function Home({
             <IconButton
               icon="x"
               size={13}
-              onClick={onDismissStartupRoutingHint}
+              onClick={onDismissChangeNotice}
               aria-label="Dismiss routing notice"
-            />
-          </div>
-        )}
-
-        {banner === "relaunch" && (
-          <div role="status" className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
-            <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
-            <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-              Anything already open isn&rsquo;t routing yet.{" "}
-              <span className="font-semibold">Close your apps</span> and
-              they&rsquo;ll pick up Gate when you open them again.
-            </div>
-            <IconButton
-              icon="x"
-              size={13}
-              onClick={onDismissRelaunchHint}
-              aria-label="Dismiss reopen notice"
-            />
-          </div>
-        )}
-
-        {banner === "restart" && (
-          <div role="status" className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
-            <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
-            <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-              <span className="font-semibold">Close your apps</span> to apply
-              the change; they pick it up the next time you open them.
-            </div>
-            <IconButton
-              icon="x"
-              size={13}
-              onClick={onDismissRestartHint}
-              aria-label="Dismiss restart hint"
             />
           </div>
         )}
