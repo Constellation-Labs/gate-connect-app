@@ -219,7 +219,10 @@ export function Home({
         {error && <ErrorNote error={error} />}
       </div>
 
-      <SectionLabel>Models</SectionLabel>
+      {/* Not "Models": the last row is a tool category, not a model family,
+          and a label the list contradicts is worse than a plain one. This
+          names the question every row answers. */}
+      <SectionLabel>What routes through Gate</SectionLabel>
       {groups.length > 0 ? (
         <div className="flex flex-col border-t border-gc-line">
           {groups.map((group) => {
