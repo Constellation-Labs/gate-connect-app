@@ -73,6 +73,15 @@ describe("GroupDetail", () => {
     expect(screen.getByText("api.anthropic.com")).toBeTruthy();
   });
 
+  it("names no upstream host for a harness, whose default_upstream_url is a placeholder", () => {
+    // OpenCode is claimed by no provider and its default_upstream_url is the
+    // constant api.anthropic.com, which is wrong the moment the user has
+    // OpenAI configured in it.
+    renderDetail([tool("opencode", "OpenCode", { kind: "detected" })], []);
+    expect(screen.getByText("all your providers")).toBeTruthy();
+    expect(screen.queryByText("https://api.anthropic.com")).toBeNull();
+  });
+
   it("toggles one member without touching the rest", async () => {
     const onToggleTool = vi.fn(() => Promise.resolve());
     const onSetDomain = vi.fn(() => Promise.resolve());

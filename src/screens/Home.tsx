@@ -291,7 +291,7 @@ export function Home({
                 <span className="relative">
                   <Switch
                     on={group.routed > 0}
-                    label={`Route ${group.name} through Gate`}
+                    label={group.switchLabel}
                     busy={busy}
                     onClick={() => onToggleGroup(group.id, group.routed === 0)}
                   />

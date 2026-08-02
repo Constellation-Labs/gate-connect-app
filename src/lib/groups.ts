@@ -15,7 +15,9 @@ import type { ProviderState, ProxyDomain, Tool } from "./api";
  * group rather than being wedged into a family they don't belong to.
  */
 
-/** The catch-all family for tools that route every provider you've set up. */
+/** Agent harnesses: the tools whose provider set is decided by the user's
+ * config, not by the tool. Connecting one rewrites every well-known provider
+ * block it finds, so it can't sit under a single family. */
 export const MULTI_PROVIDER_ID = "any-provider";
 
 export type MemberAttention = "error" | "drifted" | "needs-trust" | null;
@@ -32,11 +34,17 @@ export interface GroupMember {
   tool?: Tool;
   /** Present for proxy members. */
   domain?: ProxyDomain;
+  /** This tool routes every provider configured in it, so there is no one
+   * upstream host to name for it. */
+  coversAllProviders?: boolean;
 }
 
 export interface Group {
   id: string;
   name: string;
+  /** The group's name inside a sentence. Family names are proper nouns and
+   * stay capitalised; "agent harnesses" is a common noun and must not. */
+  switchLabel: string;
   /** One line on what the family covers, shown on its detail screen. */
   blurb: string;
   members: GroupMember[];
@@ -106,20 +114,23 @@ export function buildGroups(
     return {
       id: provider.slug,
       name: provider.display_name,
+      switchLabel: `Route ${provider.display_name} through Gate`,
       blurb: `Everything that talks to ${provider.display_name}.`,
       members,
       routed: members.filter((m) => m.routed).length,
     };
   });
 
-  // Whatever the catalog didn't claim: the multi-provider tools.
-  const leftovers = installed.filter((t) => !claimed.has(t.slug)).map(memberFromTool);
+  // Whatever the catalog didn't claim: the agent harnesses.
+  const leftovers = installed
+    .filter((t) => !claimed.has(t.slug))
+    .map((t) => ({ ...memberFromTool(t), coversAllProviders: true }));
   if (leftovers.length > 0) {
     groups.push({
       id: MULTI_PROVIDER_ID,
-      name: "Any provider",
-      blurb:
-        "Tools that route whichever providers you have configured in them, not one model family.",
+      name: "Agent harnesses",
+      switchLabel: "Route agent harnesses through Gate",
+      blurb: "Tools that route every provider you’ve set up in them, not one model family.",
       members: leftovers,
       routed: leftovers.filter((m) => m.routed).length,
     });

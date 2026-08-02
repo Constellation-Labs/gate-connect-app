@@ -98,16 +98,14 @@ export function GroupDetail({
 
       <div className="flex items-start gap-3 px-3.5 py-3.5">
         <div className="min-w-0 flex-1">
-          <div className="text-[14px] font-semibold text-gc-ink">
-            Route {group.name} through Gate
-          </div>
+          <div className="text-[14px] font-semibold text-gc-ink">{group.switchLabel}</div>
           <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
             {group.blurb} {group.routed} of {group.members.length} routing.
           </div>
         </div>
         <Switch
           on={group.routed > 0}
-          label={`Route ${group.name} through Gate`}
+          label={group.switchLabel}
           busy={busy}
           onClick={() => onToggleGroup(group.id, group.routed === 0)}
         />
@@ -150,11 +148,21 @@ export function GroupDetail({
                     <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10px] text-gc-ink-3">
                       {member.kind === "config" ? "config file" : "proxy"}
                     </span>
-                    <span className="truncate font-mono text-[10px] text-gc-ink-3">
-                      {member.kind === "proxy"
-                        ? (member.domain?.hosts ?? []).join(" · ")
-                        : member.tool?.default_upstream_url}
-                    </span>
+                    {/* Mono is for identifiers only. A harness has no single
+                        upstream to name - its `default_upstream_url` is a
+                        placeholder constant, not what it actually routes - so
+                        say so in prose rather than print a host that lies. */}
+                    {member.coversAllProviders ? (
+                      <span className="truncate text-[10px] text-gc-ink-3">
+                        all your providers
+                      </span>
+                    ) : (
+                      <span className="truncate font-mono text-[10px] text-gc-ink-3">
+                        {member.kind === "proxy"
+                          ? (member.domain?.hosts ?? []).join(" · ")
+                          : member.tool?.default_upstream_url}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <span className="pointer-events-none relative">
