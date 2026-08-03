@@ -70,14 +70,18 @@ describe("Settings certificate section", () => {
   it("offers Remove when routing is off but the CA is still trusted", async () => {
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true });
-    expect(screen.getByText(/still trusted in your keychain/i)).toBeTruthy();
+    expect(screen.getByText(/Trusted on this machine/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
-  it("names the certificate store on Windows", async () => {
+  it("names the certificate store on Windows, in the explanation", async () => {
+    // Not on the collapsed line: "certificate store" is 8 characters longer
+    // than "keychain" and wrapped it to two lines.
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("windows", { caTrusted: true });
-    expect(screen.getByText(/still trusted in your certificate store/i)).toBeTruthy();
+    expect(screen.queryByText(/certificate store/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
+    expect(screen.getByText(/trusted in your certificate store/i)).toBeTruthy();
   });
 
   it("offers removal only while routing is off", async () => {
@@ -87,9 +91,8 @@ describe("Settings certificate section", () => {
     // hunting for what Home told them was there.
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true, routingOn: true });
-    expect(screen.getByText(/still trusted in your keychain/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
-    expect(screen.getByText(/Turn routing off to remove it/)).toBeTruthy();
+    expect(screen.getByText(/Turn routing off to remove\./)).toBeTruthy();
   });
 
   it("keeps the explanation collapsed until asked", async () => {
@@ -97,7 +100,7 @@ describe("Settings certificate section", () => {
     await renderOn("macos", { caTrusted: true, routingOn: true });
     // The scannable line stays; the four-line consequence is behind the
     // disclosure, so it does not cost room on every visit to Settings.
-    expect(screen.getByText(/Turn routing off to remove it/)).toBeTruthy();
+    expect(screen.getByText(/Turn routing off to remove\./)).toBeTruthy();
     expect(screen.queryByText(/never leaves this machine/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));

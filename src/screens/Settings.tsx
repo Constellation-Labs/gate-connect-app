@@ -577,9 +577,13 @@ export function Settings({
                   it is trusted and whether they can remove it; the consequence
                   of removing it is four lines they only need once, and it was
                   taking that room on every visit. */}
+              {/* One line, no wrap, on both platforms and in both states. The
+                  trust-store name is 8 characters longer on Windows
+                  ("certificate store"), which is what pushed this to two lines;
+                  it lives in the explanation now, and the pinned footer names
+                  it on every screen anyway. */}
               <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
-                Still trusted in your {trustStore}.
-                {routingOn && " Turn routing off to remove it."}{" "}
+                {routingOn ? "Trusted. Turn routing off to remove." : "Trusted on this machine."}{" "}
                 <button
                   type="button"
                   onClick={() => setCertExplain((v) => !v)}
@@ -615,8 +619,8 @@ export function Settings({
           {certExplain && (
             <p className="px-3.5 pb-1 text-[11.5px] leading-snug text-gc-ink-2">
               {routingOn
-                ? `Gate created this certificate on this machine so apps with no gateway setting of their own can route through the local proxy. Pulling it while routing is on stops every one of them, so removal waits until routing is off. The private key never leaves this machine.`
-                : `Gate created this certificate on this machine so apps with no gateway setting of their own can route through the local proxy. Removing it deletes the certificate and its private key from this machine; you can trust a new one anytime.`}
+                ? `Gate created this certificate on this machine, trusted in your ${trustStore}, so apps with no gateway setting of their own can route through the local proxy. Pulling it while routing is on stops every one of them, so removal waits until routing is off. The private key never leaves this machine.`
+                : `Gate created this certificate on this machine, trusted in your ${trustStore}, so apps with no gateway setting of their own can route through the local proxy. Removing it deletes the certificate and its private key from this machine; you can trust a new one anytime.`}
             </p>
           )}
           {confirmingUntrust && (
