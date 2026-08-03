@@ -143,6 +143,9 @@ export function App() {
   // Where the org picker returns to when done: "home" (startup re-pick),
   // "success" (fresh sign-in), or "settings" (Switch organization).
   const [orgPickerReturn, setOrgPickerReturn] = useState<Screen>("home");
+  // Set when the org picker hands a user to the API-key fallback, so FirstRun
+  // opens on the key form instead of making them find the disclosure again.
+  const [startOnKey, setStartOnKey] = useState(false);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
@@ -817,6 +820,7 @@ export function App() {
       <FirstRun
         onConnected={onConnected}
         initialGateway={account?.gateway_base_url}
+        startOnKey={startOnKey}
         // An existing OAuth account here means a prior session that's no longer
         // signed in (silent refresh failed / explicit sign-out): show the
         // welcome-back re-auth copy rather than the first-run welcome.
@@ -829,6 +833,10 @@ export function App() {
         onDone={onOrgChosen}
         onBack={orgPickerReturn === "settings" ? () => setScreen("settings") : undefined}
         onReauth={signOut}
+        onUseApiKey={() => {
+          setStartOnKey(true);
+          void signOut();
+        }}
       />
     );
   } else if (screen === "success") {

@@ -25,6 +25,12 @@ function RoutingHero() {
         src={routingScreen}
         alt="The Gate Connect popover: a Routing switch above one row per model family"
         className="mx-auto block w-full max-w-[256px]"
+        // The capture is cropped mid-card, so a square bottom edge reads as a
+        // rendering bug. Same fade the platform mockups below already use.
+        style={{
+          maskImage: "linear-gradient(180deg,#000 92%,transparent 100%)",
+          WebkitMaskImage: "linear-gradient(180deg,#000 92%,transparent 100%)",
+        }}
       />
       <figcaption className="mt-1.5 text-[10.5px] text-gc-ink-3">
         The Gate Connect popover

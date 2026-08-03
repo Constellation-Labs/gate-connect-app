@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Org } from "../lib/api";
 import { oauthListOrgs, setOrg } from "../lib/api";
 import { trackError } from "../lib/analytics";
@@ -17,11 +18,15 @@ import { Icon } from "../components/gc/Icon";
 export function OrgPicker({
   onDone,
   onBack,
-onReauth,
+  onReauth,
+  onUseApiKey,
 }: {
   onDone: () => void;
   onBack?: () => void;
   onReauth: () => void;
+  /** Fall back to the API-key path. The only route forward for a user with no
+   * organization and no admin to ask. */
+  onUseApiKey?: () => void;
 }) {
   const [orgs, setOrgs] = useState<Org[] | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
@@ -140,11 +145,34 @@ onReauth,
             </button>
           ))}
 
+        {/* PRODUCT.md: "No provisioned org can be assumed; the app must
+            self-explain without organizational hand-holding." This state used
+            to say "Ask an admin" and offer only sign-out, which for a solo
+            developer is no admin and no way forward. Both real options are
+            now on the screen. */}
         {!loading && !error && orgs?.length === 0 && (
-          <p className="py-6 text-center text-[12.5px] leading-snug text-gc-ink-3">
-            No organizations are available for your account. Ask an admin to add
-            you to one, then try again.
-          </p>
+          <div className="flex flex-col items-center gap-3 py-5 text-center">
+            <p className="max-w-[280px] text-[12.5px] leading-snug text-gc-ink-3">
+              This account isn&rsquo;t in an organization yet. Create one in the
+              Gate dashboard, or use a Gate API key instead.
+            </p>
+            <div className="flex w-full flex-col gap-2">
+              <Button
+                variant="accent"
+                full
+                onClick={() => {
+                  void openUrl("https://app.constellationgate.ai");
+                }}
+              >
+                Create an organization
+              </Button>
+              {onUseApiKey && (
+                <Button variant="secondary" full onClick={onUseApiKey}>
+                  Use a Gate API key instead
+                </Button>
+              )}
+            </div>
+          </div>
         )}
 
         {/* The post-login flow has no back button (an org must be chosen to

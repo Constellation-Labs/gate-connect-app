@@ -27,16 +27,22 @@ function hostOf(url: string): string {
 export function FirstRun({
   onConnected,
   initialGateway,
+  startOnKey,
   reauth = false,
 }: {
   onConnected: () => void;
   initialGateway?: string;
+  /** Open directly on the API-key form. */
+  startOnKey?: boolean;
   reauth?: boolean;
 }) {
   const [key, setKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
-  const [showKey, setShowKey] = useState(false);
+  // Seeded so the org-picker dead end can hand a user straight to the key
+  // form: for someone with no organization and no admin to ask, that is the
+  // only path forward, and making them find the disclosure again is a tax.
+  const [showKey, setShowKey] = useState(startOnKey ?? false);
   const [error, setError] = useState<ClassifiedError | null>(null);
   const [devMode, setDevMode] = useState(
     !!initialGateway && initialGateway !== DEFAULT_GATEWAY_BASE_URL,

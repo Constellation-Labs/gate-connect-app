@@ -138,7 +138,11 @@ export function Home({
               <Icon name="shieldCheck" size={19} />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-[13.5px] font-semibold text-gc-ink">Routing</div>
+              {/* A heading, not a styled div: this is the screen's primary
+                  control and it was absent from the document outline, so the
+                  outline read h1 -> h2 "What routes through Gate" with the
+                  master switch unheaded. */}
+              <h2 className="text-[13.5px] font-semibold text-gc-ink">Routing</h2>
               <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
                 {/* The count survives the certificate state. Dropping it was
                     backwards: that is exactly when the user wants to know how
@@ -153,21 +157,6 @@ export function Home({
                         ? "On · nothing installed to route"
                         : "On · nothing enabled yet"}
               </div>
-              {/* The keep-routing tip only speaks in the quiet room: any
-                  warning card or banner outranks a tip. */}
-              {proxyOn && launchAtLogin === false && !partial && banner === null && !error && (
-                <div className="mt-1 text-[11px] leading-snug text-gc-ink-3">
-                  {/* It named a control and left the user to find it. */}
-                  <button
-                    type="button"
-                    onClick={onOpenSettings}
-                    className="relative z-[1] font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
-                  >
-                    Turn on Launch at login
-                  </button>{" "}
-                  to keep routing on after a restart.
-                </div>
-              )}
             </div>
             <Switch
               on={proxyOn}
@@ -178,16 +167,26 @@ export function Home({
           </div>
         )}
 
+        {/* Its own line, not a footnote inside the routing card: that card
+            holds the switch that routes traffic, and a link into Settings is
+            an unrelated errand. Still only speaks in the quiet room - any
+            warning card or banner outranks a tip. */}
+        {proxyOn && launchAtLogin === false && !partial && banner === null && !error && (
+          <div className="text-[11px] leading-snug text-gc-ink-3">
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
+            >
+              Turn on Launch at login
+            </button>{" "}
+            to keep routing on after a restart.
+          </div>
+        )}
+
         {/* Gated on `partial`, not just an untrusted CA: with no app rows
             switched on the certificate blocks nothing, and a warning card
             would contradict the green header pill. */}
-        {/* Compact by default. This state used to open with a 60-word card and
-            a full-width button, which pushed every ledger row off-screen in
-            the one state where the pills matter most: the untrusted CA is the
-            usual answer to "why isn't my tool routing?", and the answer sat
-            below a fold in a window with no visible scrollbar. The full
-            explanation is one tap away, before consent, because a root CA
-            deserves it - but it no longer taxes the user who already knows. */}
         {showProxy && partial && (
           <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
             <div className="flex items-center gap-2.5">
