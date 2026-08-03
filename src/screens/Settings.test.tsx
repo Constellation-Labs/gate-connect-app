@@ -80,26 +80,28 @@ describe("Settings certificate section", () => {
     expect(screen.getByText(/still trusted in your certificate store/i)).toBeTruthy();
   });
 
-  it("stays available while routing is on, because Home promises it does", async () => {
-    // Home tells the user "You can remove it anytime in Settings under
-    // Certificate" in the untrusted-CA state, i.e. with routing on. Hiding the
-    // section behind !routingOn broke that promise the moment they acted on
-    // it, for a root CA on their machine.
+  it("offers removal only while routing is off", async () => {
+    // Pulling the certificate mid-routing stops every app with no gateway
+    // setting of its own, so the action is withheld - but the section stays
+    // visible and says why, rather than vanishing and leaving the user
+    // hunting for what Home told them was there.
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true, routingOn: true });
     expect(screen.getByText(/still trusted in your keychain/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(screen.getByText(/Turn routing off to remove it/)).toBeTruthy();
   });
 
-  it("warns what removal costs only while routing is on", async () => {
+  it("explains the cost of removal only when it is withheld", async () => {
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true, routingOn: true });
-    expect(screen.getByText(/stop routing/i)).toBeTruthy();
+    expect(screen.getByText(/stops every app/i)).toBeTruthy();
     cleanup();
 
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true });
-    expect(screen.queryByText(/stop routing/i)).toBeNull();
+    expect(screen.queryByText(/stops every app/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
   it("is hidden when the CA is not trusted", async () => {

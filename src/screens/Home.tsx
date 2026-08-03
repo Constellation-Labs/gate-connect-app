@@ -255,7 +255,12 @@ export function Home({
                   trusted, those apps don&rsquo;t route.
                 </p>
                 <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
-                  You can remove it anytime in Settings under Certificate.
+                  {/* Not "anytime": removal is offered only while routing is
+                      off, because pulling the certificate mid-routing stops
+                      every app that has no gateway setting of its own. Naming
+                      the condition here keeps the promise true. */}
+                  You can remove it in Settings under Certificate whenever
+                  routing is off.
                 </p>
               </>
             )}

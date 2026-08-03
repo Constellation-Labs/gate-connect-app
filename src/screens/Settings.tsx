@@ -571,11 +571,12 @@ export function Settings({
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-medium text-gc-ink">Gate certificate</div>
               <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
-                Still trusted in your {trustStore}. Removing it clears the
-                certificate and private key from this machine
-                {routingOn && ", and apps with no gateway setting of their own stop routing"}.
+                {routingOn
+                  ? `Still trusted in your ${trustStore}. Turn routing off to remove it - pulling it while routing is on stops every app that has no gateway setting of its own.`
+                  : `Still trusted in your ${trustStore}. Removing it clears the certificate and private key from this machine.`}
               </div>
             </div>
+            {!routingOn && (
             <button
               type="button"
               onClick={() => setConfirmingUntrust(true)}
@@ -591,10 +592,11 @@ export function Settings({
             >
               Remove
             </button>
+            )}
           </div>
           {confirmingUntrust && (
             <ConfirmPanel
-              message={`Remove the Gate certificate? This deletes it and its private key from this machine${routingOn ? ", and apps with no gateway setting of their own stop routing" : ""}. You can trust a new one anytime.`}
+              message="Remove the Gate certificate? This deletes it and its private key from this machine. You can trust a new one anytime."
               confirmLabel="Remove certificate"
               busy={proxyBusy}
               onConfirm={() => {

@@ -122,7 +122,8 @@ describe("Home CA-trust card", () => {
     fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
     expect(screen.getByText(/certificate your keychain trusts/)).toBeTruthy();
     expect(screen.getByText(/created on this machine/)).toBeTruthy();
-    expect(screen.getByText(/remove it anytime in Settings/)).toBeTruthy();
+    // Names the condition, because removal is only offered with routing off.
+    expect(screen.getByText(/remove it in Settings under Certificate whenever/)).toBeTruthy();
   });
 
   it("names the certificate store on Windows", () => {
