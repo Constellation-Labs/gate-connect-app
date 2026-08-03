@@ -89,6 +89,7 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       changeNotice={null}
       onDismissChangeNotice={vi.fn()}
       onCloseAgents={vi.fn()}
+      onEnableRouting={vi.fn()}
       staleAgentsHint={false}
       onDismissStaleAgents={vi.fn()}
       onToggleProxy={vi.fn()}
@@ -325,5 +326,26 @@ describe("Home ledger accessibility", () => {
     renderHome({ tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] });
     expect(screen.getByRole("list")).toBeTruthy();
     expect(screen.getAllByRole("listitem").length).toBeGreaterThan(0);
+  });
+});
+
+describe("Home pending notice", () => {
+  it("does not claim routing is on when nothing can route", () => {
+    renderHome({ proxyOn: false, changeNotice: "pending" });
+    // The round-7 P0: the notice came from the toggle's direction, so
+    // enabling a proxy-only family with the engine down announced
+    // "Routing is on" directly above "Off · not routing".
+    expect(screen.queryByText(/Routing is on\./)).toBeNull();
+    expect(screen.getByText(/nothing is going through Gate yet/)).toBeTruthy();
+  });
+
+  it("offers the remedy instead of asking the user to close nothing", () => {
+    const onEnableRouting = vi.fn();
+    const onCloseAgents = vi.fn();
+    renderHome({ proxyOn: false, changeNotice: "pending", onEnableRouting, onCloseAgents });
+    expect(screen.queryByRole("button", { name: "Close them…" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Turn on routing" }));
+    expect(onEnableRouting).toHaveBeenCalledTimes(1);
+    expect(onCloseAgents).not.toHaveBeenCalled();
   });
 });

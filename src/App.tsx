@@ -104,6 +104,20 @@ function markRoutingTakeoverSeen(): void {
   }
 }
 
+/** Which change notice a member/group toggle earned, from the engine state
+ * that actually resulted rather than from the direction of the click.
+ *
+ * `on`/`off` both mean traffic is flowing, so the close-your-apps advice
+ * applies and only the wording differs. `pending` is the case the old
+ * two-value notice had no room for: the user switched something on, the engine
+ * is down, nothing routes, and telling them to close their apps would be
+ * false. Turning something off while the engine is already down changed
+ * nothing observable, so it earns no notice at all. */
+function noticeFor(turnedOn: boolean, engineRunning: boolean): "on" | "off" | "pending" | null {
+  if (engineRunning) return turnedOn ? "on" : "off";
+  return turnedOn ? "pending" : null;
+}
+
 /** Whether the account is fully usable right now: a stored key in legacy mode,
  *  or a live OAuth session *with an org selected* in OAuth mode (the gateway
  *  rejects OAuth requests that carry no org). Drives home-vs-sign-in/picker. */
@@ -145,7 +159,13 @@ export function App() {
   // change so the banner's wording follows the switch. The advice holds until
   // they actually close their tools (which we can't observe), so it stays
   // until dismissed rather than vanishing on a timer.
-  const [changeNotice, setChangeNotice] = useState<"on" | "off" | null>(null);
+  // "pending" is the state the old two-value notice could not express: the
+  // user switched something on and the engine is not running, so nothing
+  // routes and the close-your-apps advice is simply wrong. Deriving the
+  // notice from the toggle's direction produced "Routing is on" over a card
+  // reading "Off · not routing", because proxy_set_domain never starts the
+  // engine while connect_tool does.
+  const [changeNotice, setChangeNotice] = useState<"on" | "off" | "pending" | null>(null);
 
   // Set when the startup auto-enable brought routing back on a different
   // local port than the previous session (first launch after upgrading from
@@ -582,17 +602,20 @@ export function App() {
         if (routed) await connectTool(slug, tool?.default_upstream_url ?? "");
         else await disconnectTool(slug);
         track("tool_toggled", { tool: slug, routed });
-        setChangeNotice(routed ? "on" : "off");
       } catch (e) {
         trackError(e, "connect", { tool: slug, routed });
         throw e;
       } finally {
         setTools(await listTools().catch(() => tools));
+        let running = false;
         try {
-          setProxy(await proxyStatus());
+          const fresh = await proxyStatus();
+          setProxy(fresh);
+          running = fresh.running;
         } catch {
           /* non-macOS: no proxy subsystem */
         }
+        setChangeNotice(noticeFor(routed, running));
         setProxyBusy(false);
       }
     },
@@ -618,33 +641,52 @@ export function App() {
       if (!group) return;
       setProxyBusy(true);
       setProviderError(null);
-      try {
-        for (const member of group.members) {
+      // One member failing used to abort the loop and surface "Couldn't
+      // connect this tool", naming nobody, reporting no partial success, and
+      // pushing the culprit row below the fold. Now every member is attempted
+      // and the failures are named.
+      const failed: string[] = [];
+      let lastError: unknown = null;
+      for (const member of group.members) {
+        try {
           if (member.kind === "config" && member.tool) {
-            if (on && !member.routed && member.attention !== "drifted") {
+            if (on && !member.desired && member.attention !== "drifted") {
               await connectTool(member.key, member.tool.default_upstream_url);
-            } else if (!on && member.routed) {
+            } else if (!on && member.desired) {
               await disconnectTool(member.key);
             }
           } else if (member.domain) {
             if (on && !member.domain.enabled) await proxySetDomain(member.key, true);
             else if (!on && member.domain.enabled) await proxySetDomain(member.key, false);
           }
+        } catch (e) {
+          failed.push(member.name);
+          lastError = e;
+          trackError(e, "connect", { provider: id, enabled: on, tool: member.key });
         }
-        track("group_toggled", { provider: id, enabled: on });
-        setChangeNotice(on ? "on" : "off");
-      } catch (e) {
-        trackError(e, "connect", { provider: id, enabled: on });
-        setProviderError(classifyError(e, "connect"));
-      } finally {
-        setTools(await listTools().catch(() => tools));
-        try {
-          setProxy(await proxyStatus());
-        } catch {
-          /* non-macOS: no proxy subsystem */
-        }
-        setProxyBusy(false);
       }
+      track("group_toggled", { provider: id, enabled: on });
+      if (lastError !== null) {
+        const classified = classifyError(lastError, "connect");
+        setProviderError({
+          ...classified,
+          title:
+            failed.length === 1
+              ? `Couldn't ${on ? "connect" : "disconnect"} ${failed[0]}`
+              : `Couldn't ${on ? "connect" : "disconnect"} ${failed.length} of ${group.members.length}: ${failed.join(", ")}`,
+        });
+      }
+      setTools(await listTools().catch(() => tools));
+      let running = false;
+      try {
+        const fresh = await proxyStatus();
+        setProxy(fresh);
+        running = fresh.running;
+      } catch {
+        /* non-macOS: no proxy subsystem */
+      }
+      setChangeNotice(noticeFor(on, running));
+      setProxyBusy(false);
     },
     [proxyBusy, providers, tools, proxy],
   );
@@ -837,6 +879,8 @@ export function App() {
         onToggleTool={setToolRouted}
         onSetDomain={setDomain}
         onTrustCa={() => void trustCa()}
+        proxyOn={proxy?.running ?? false}
+        onEnableRouting={() => void toggleProxy(false)}
       />
     );
   } else {
@@ -859,9 +903,15 @@ export function App() {
         // already declared the intent, land directly on the confirm step.
         // Carries the banner's direction so the takeover doesn't announce
         // "Routing is on" over a switch the user just turned off.
+        // "pending" can never reach here: that banner offers Turn on routing,
+        // not Close them, because nothing is running to close.
         onCloseAgents={() =>
-          setRoutingNotice({ dir: changeNotice ?? "on", confirming: true })
+          setRoutingNotice({
+            dir: changeNotice === "off" ? "off" : "on",
+            confirming: true,
+          })
         }
+        onEnableRouting={() => void toggleProxy(false)}
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onToggleProxy={() => toggleProxy(true)}

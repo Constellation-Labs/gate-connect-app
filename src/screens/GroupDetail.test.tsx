@@ -55,6 +55,8 @@ function renderDetail(
       onToggleTool={vi.fn(() => Promise.resolve())}
       onSetDomain={vi.fn(() => Promise.resolve())}
       onTrustCa={vi.fn()}
+      proxyOn={true}
+      onEnableRouting={vi.fn()}
       {...props}
     />,
   );
@@ -169,6 +171,8 @@ describe("GroupDetail intent versus flow", () => {
         onToggleTool={vi.fn(() => Promise.resolve())}
         onSetDomain={vi.fn(() => Promise.resolve())}
         onTrustCa={vi.fn()}
+      proxyOn={true}
+      onEnableRouting={vi.fn()}
         {...props}
       />,
     );
@@ -198,5 +202,55 @@ describe("GroupDetail intent versus flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
     fireEvent.click(screen.getByRole("button", { name: "Trust certificate" }));
     expect(onTrustCa).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GroupDetail master-off remedy", () => {
+  /** Switched on, engine down: the state round 6 introduced with prose only. */
+  function renderMasterOff(props: Partial<React.ComponentProps<typeof GroupDetail>> = {}) {
+    const [group] = buildGroups(
+      CATALOG,
+      [tool("claude-code", "Claude Code", { kind: "connected" })],
+      [],
+      { proxyOn: false, caTrusted: true },
+    );
+    render(
+      <GroupDetail
+        group={group}
+        busy={false}
+        onBack={vi.fn()}
+        onToggleGroup={vi.fn()}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={vi.fn(() => Promise.resolve())}
+        onTrustCa={vi.fn()}
+        proxyOn={false}
+        onEnableRouting={vi.fn()}
+        {...props}
+      />,
+    );
+    return group;
+  }
+
+  it("names the state on the member", () => {
+    renderMasterOff();
+    expect(screen.getByText("Waiting on routing")).toBeTruthy();
+  });
+
+  it("offers the way out from the expanded member, not just prose", () => {
+    const onEnableRouting = vi.fn();
+    renderMasterOff({ onEnableRouting });
+    fireEvent.click(screen.getByRole("button", { name: "Claude Code details" }));
+    const buttons = screen.getAllByRole("button", { name: "Turn on routing" });
+    fireEvent.click(buttons[buttons.length - 1]);
+    expect(onEnableRouting).toHaveBeenCalled();
+  });
+
+  it("does not tell the user to close an app that was never routing", async () => {
+    const onToggleTool = vi.fn(() => Promise.resolve());
+    renderMasterOff({ onToggleTool });
+    fireEvent.click(screen.getByRole("switch", { name: "Route Claude Code through Gate" }));
+    await waitFor(() => expect(onToggleTool).toHaveBeenCalled());
+    // Closing and reopening changes nothing while the engine is down.
+    expect(screen.queryByText(/to apply the change/)).toBeNull();
   });
 });

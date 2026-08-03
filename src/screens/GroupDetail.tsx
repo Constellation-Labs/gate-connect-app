@@ -55,6 +55,8 @@ export function GroupDetail({
   onToggleTool,
   onSetDomain,
   onTrustCa,
+  proxyOn,
+  onEnableRouting,
 }: {
   group: Group;
   busy: boolean;
@@ -66,6 +68,12 @@ export function GroupDetail({
   /** The remedy for a needs-trust member, offered where the problem is named
    * rather than back on Home. */
   onTrustCa: () => void;
+  /** Whether the engine is running. A member can be switched on and still not
+   * route, which is what the master-off state is. */
+  proxyOn: boolean;
+  /** The remedy for the master-off state, for the same reason `onTrustCa`
+   * exists: naming a problem without offering the fix is half a screen. */
+  onEnableRouting: () => void;
 }) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
@@ -124,6 +132,19 @@ export function GroupDetail({
           onClick={() => onToggleGroup(group.id, group.desired === 0)}
         />
       </div>
+
+      {group.desired > 0 && !proxyOn && (
+        <div className="mx-3.5 mb-2 flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
+          <Icon name="info" size={15} className="shrink-0 text-gc-ink-3" />
+          <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+            Switched on, but routing is off, so nothing here is going through
+            Gate.
+          </div>
+          <Button variant="accent" size="sm" disabled={busy} onClick={onEnableRouting}>
+            Turn on routing
+          </Button>
+        </div>
+      )}
 
       {drifted.length > 0 && (
         <div className="mx-3.5 mb-2 flex items-start gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
@@ -223,6 +244,22 @@ export function GroupDetail({
                     </Button>
                   )}
 
+                  {/* Same reasoning as the Trust button above. This state was
+                      introduced with prose only, so the one attention state
+                      most reachable by accident was also the only one with no
+                      way out of the screen. */}
+                  {member.attention === "master-off" && (
+                    <Button
+                      variant="accent"
+                      size="sm"
+                      className="mt-2.5"
+                      disabled={busy}
+                      onClick={onEnableRouting}
+                    >
+                      Turn on routing
+                    </Button>
+                  )}
+
                   {raw && (
                     <div
                       role={member.attention === "error" ? "alert" : undefined}
@@ -263,7 +300,10 @@ export function GroupDetail({
                     <ErrorNote error={error} className="mt-2 bg-gc-surface shadow-border" />
                   )}
 
-                  {changed === member.key && !error && (
+                  {/* Only when the change actually put traffic in flight.
+                      Closing and reopening the app changes nothing while the
+                      engine is down, so the advice would be busywork. */}
+                  {changed === member.key && !error && member.routed && (
                     <div
                       role="status"
                       className="mt-2 flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border"

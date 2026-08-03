@@ -27,6 +27,7 @@ export function Home({
   changeNotice,
   onDismissChangeNotice,
   onCloseAgents,
+  onEnableRouting,
   staleAgentsHint,
   onDismissStaleAgents,
   onToggleProxy,
@@ -44,10 +45,15 @@ export function Home({
   domains: ProxyDomain[];
   busy: boolean;
   error?: ClassifiedError | null;
-  /** Direction of the last routing change, or null once dismissed. */
-  changeNotice: "on" | "off" | null;
+  /** What the last routing change actually resulted in, or null once
+   * dismissed. "pending" means something is switched on but the engine is
+   * down, so nothing routes. */
+  changeNotice: "on" | "off" | "pending" | null;
   onDismissChangeNotice: () => void;
   onCloseAgents: () => void;
+  /** Turn the master on from the pending banner: the remedy belongs on the
+   * notice that reports the problem. */
+  onEnableRouting: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
   onToggleProxy: () => void;
@@ -233,19 +239,32 @@ export function Home({
           <div role="status" className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
             <Icon name="info" size={15} className="shrink-0 text-gc-ink" />
             <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-              {changeNotice === "on"
-                ? "Routing is on. Anything already open isn't routing through Gate yet."
-                : "Routing is off. Anything already open still points at Gate."}
+              {changeNotice === "pending"
+                ? "Set to route, but routing is off, so nothing is going through Gate yet."
+                : changeNotice === "on"
+                  ? "Routing is on. Anything already open isn't routing through Gate yet."
+                  : "Routing is off. Anything already open still points at Gate."}
             </div>
-            {/* Opens the full takeover (confirm step, close, result); the
-                ellipsis signals more steps follow. */}
-            <button
-              type="button"
-              onClick={onCloseAgents}
-              className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink"
-            >
-              Close them…
-            </button>
+            {/* Pending has a different remedy: there is nothing running to
+                close, so offering "Close them…" would be busywork. The
+                ellipsis on the close action signals more steps follow. */}
+            {changeNotice === "pending" ? (
+              <button
+                type="button"
+                onClick={onEnableRouting}
+                className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink"
+              >
+                Turn on routing
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onCloseAgents}
+                className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink"
+              >
+                Close them…
+              </button>
+            )}
             <IconButton
               icon="x"
               size={13}
