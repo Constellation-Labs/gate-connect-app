@@ -107,11 +107,15 @@ describe("Settings certificate section", () => {
     expect(screen.queryByText(/still trusted/i)).toBeNull();
   });
 
-  it("calls onUntrustCa when Remove is clicked", async () => {
+  it("confirms before removing the certificate, and only then removes it", async () => {
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     const onUntrustCa = vi.fn();
     await renderOn("macos", { caTrusted: true, onUntrustCa });
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    // It deletes a private key by its own copy, so the first click only arms.
+    expect(onUntrustCa).not.toHaveBeenCalled();
+    expect(screen.getByText(/deletes it and its private key/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove certificate" }));
     expect(onUntrustCa).toHaveBeenCalledTimes(1);
   });
 });

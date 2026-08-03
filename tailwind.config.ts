@@ -161,6 +161,10 @@ export default {
           "success-deep": "#177a42",
           "success-wash": "rgba(46,204,113,0.14)",
           warning: "#f39c12",
+          // Same role as success-deep / error-deep: dark enough to carry meaning
+          // on its own wash. The status dots use the deep variants so the dot
+          // clears SC 1.4.11's 3:1 instead of relying on the label beside it.
+          "warning-deep": "#a25f02",
           "warning-wash": "rgba(243,156,18,0.12)",
           error: "#e74c3c",
           // Text-weight red, mirroring success-deep: #e74c3c is 3.8:1 on

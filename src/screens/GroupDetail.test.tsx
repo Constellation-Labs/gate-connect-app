@@ -185,7 +185,12 @@ describe("GroupDetail intent versus flow", () => {
     renderUntrusted();
     const sw = screen.getByRole("switch", { name: "Route Claude Desktop / Cowork through Gate" });
     expect(sw.getAttribute("aria-checked")).toBe("true");
-    expect(screen.getByText("Needs trust")).toBeTruthy();
+    // Twice: the aria-hidden pill, and the sr-only node the switch points at
+    // so a screen reader doesn't hear "on" for something that isn't flowing.
+    expect(screen.getAllByText("Needs trust")).toHaveLength(2);
+    expect(document.getElementById(sw.getAttribute("aria-describedby")!)?.textContent).toBe(
+      "Needs trust",
+    );
   });
 
   it("turns a needs-trust member OFF when clicked, not off again", async () => {
@@ -236,7 +241,7 @@ describe("GroupDetail master-off remedy", () => {
 
   it("names the state on the member", () => {
     renderMasterOff();
-    expect(screen.getByText("Waiting on routing")).toBeTruthy();
+    expect(screen.getAllByText("Waiting on routing")).toHaveLength(2);
   });
 
   it("offers the way out from the expanded member, not just prose", () => {

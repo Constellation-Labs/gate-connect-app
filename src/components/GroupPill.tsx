@@ -27,10 +27,10 @@ export function GroupPill({ group }: { group: Group }) {
   const label = groupPillLabel(group);
   const skin =
     label === "Routed"
-      ? { wrap: "bg-gc-success-wash text-gc-success-deep", dot: "bg-gc-success" }
+      ? { wrap: "bg-gc-success-wash text-gc-success-deep", dot: "bg-gc-success-deep" }
       : label === "Partly routed"
-        ? { wrap: "bg-gc-warning-wash text-gc-ink-2", dot: "bg-gc-warning" }
-        : { wrap: "bg-gc-sunken text-gc-ink-3", dot: "bg-gc-ink-5" };
+        ? { wrap: "bg-gc-warning-wash text-gc-ink-2", dot: "bg-gc-warning-deep" }
+        : { wrap: "bg-gc-sunken text-gc-ink-3", dot: "bg-gc-ink-3" };
   return (
     <span aria-hidden className={`${PILL} ${skin.wrap}`}>
       <span className={`${DOT} ${skin.dot}`} />
@@ -39,59 +39,43 @@ export function GroupPill({ group }: { group: Group }) {
   );
 }
 
-/** Per-member pill inside a group. Same grammar as the family pill, with the
- * states only an individual can be in. The pill reports whether traffic is
- * flowing; the switch beside it reports what the user asked for. Those are
- * different facts, and the "Needs trust" and "Waiting on routing" states are
- * exactly where they diverge. */
-export function MemberPill({ member }: { member: GroupMember }) {
-  if (member.attention === "error") {
-    return (
-      <span className={`${PILL} bg-gc-error-wash text-gc-ink-2`}>
-        <span className={`${DOT} bg-gc-error`} />
-        Error
-      </span>
-    );
-  }
-  if (member.attention === "drifted") {
-    return (
-      <span className={`${PILL} bg-gc-warning-wash text-gc-ink-2`}>
-        <span className={`${DOT} bg-gc-warning`} />
-        Set up elsewhere
-      </span>
-    );
-  }
-  if (member.attention === "needs-trust") {
-    return (
-      <span className={`${PILL} bg-gc-warning-wash text-gc-ink-2`}>
-        <span className={`${DOT} bg-gc-warning`} />
-        Needs trust
-      </span>
-    );
-  }
+/** A member's observable state as a word. Exported so the switch beside the
+ * pill can point at the same sentence: the switch reports intent and can read
+ * "on" while nothing is flowing, so without this a screen-reader user hears
+ * "on" for something that is not working. One rule, two renderings. */
+export function memberPillLabel(member: GroupMember): string {
+  if (member.attention === "error") return "Error";
+  if (member.attention === "drifted") return "Set up elsewhere";
+  if (member.attention === "needs-trust") return "Needs trust";
   // Switched on, master off: the config still points at a relay that isn't
   // running. Not "Routed" (nothing flows) and not "Not routed" (the user
   // didn't turn it off).
-  if (member.attention === "master-off") {
-    return (
-      <span className={`${PILL} bg-gc-sunken text-gc-ink-2`}>
-        <span className={`${DOT} bg-gc-ink-4`} />
-        Waiting on routing
-      </span>
-    );
-  }
-  if (member.routed) {
-    return (
-      <span className={`${PILL} bg-gc-success-wash text-gc-success-deep`}>
-        <span className={`${DOT} bg-gc-success`} />
-        Routed
-      </span>
-    );
-  }
+  if (member.attention === "master-off") return "Waiting on routing";
+  return member.routed ? "Routed" : "Not routed";
+}
+
+/** Per-member pill inside a group. Same grammar as the family pill, with the
+ * states only an individual can be in. The pill reports whether traffic is
+ * flowing; the switch beside it reports what the user asked for.
+ *
+ * `aria-hidden`: the row description and the switch's own `aria-describedby`
+ * already carry this text, so exposing it here would say the state twice. */
+export function MemberPill({ member }: { member: GroupMember }) {
+  const label = memberPillLabel(member);
+  const skin =
+    label === "Error"
+      ? { wrap: "bg-gc-error-wash text-gc-ink-2", dot: "bg-gc-error-deep" }
+      : label === "Set up elsewhere" || label === "Needs trust"
+        ? { wrap: "bg-gc-warning-wash text-gc-ink-2", dot: "bg-gc-warning-deep" }
+        : label === "Waiting on routing"
+          ? { wrap: "bg-gc-sunken text-gc-ink-2", dot: "bg-gc-ink-3" }
+          : label === "Routed"
+            ? { wrap: "bg-gc-success-wash text-gc-success-deep", dot: "bg-gc-success-deep" }
+            : { wrap: "bg-gc-sunken text-gc-ink-3", dot: "bg-gc-ink-3" };
   return (
-    <span className={`${PILL} bg-gc-sunken text-gc-ink-3`}>
-      <span className={`${DOT} bg-gc-ink-5`} />
-      Not routed
+    <span aria-hidden className={`${PILL} ${skin.wrap}`}>
+      <span className={`${DOT} ${skin.dot}`} />
+      {label}
     </span>
   );
 }

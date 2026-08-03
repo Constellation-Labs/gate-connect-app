@@ -3,7 +3,7 @@ import type { Group, GroupMember } from "../lib/groups";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { trackError } from "../lib/analytics";
 import { SubHeader, SectionLabel, Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
-import { MemberPill } from "../components/GroupPill";
+import { MemberPill, memberPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 
 /** Host only, for the mono identifier slot. */
@@ -222,12 +222,19 @@ export function GroupDetail({
                       Driving it from `routed` meant an enabled domain behind
                       an untrusted certificate rendered off, and clicking it
                       turned the domain off while the switch never moved. */}
+                  {/* The switch reports intent, so it can read "on" while the
+                      pill beside it says the traffic isn't flowing. Point it at
+                      the same description so a screen reader hears both. */}
                   <Switch
                     on={member.desired}
                     label={`Route ${member.name} through Gate`}
+                    describedBy={`member-state-${member.key}`}
                     busy={busy}
                     onClick={() => void toggleMember(member)}
                   />
+                  <span id={`member-state-${member.key}`} className="sr-only">
+                    {memberPillLabel(member)}
+                  </span>
                 </span>
                 <span className="pointer-events-none relative">
                   <Icon
@@ -289,23 +296,28 @@ export function GroupDetail({
                         Replace {member.name}&rsquo;s existing Gate setup? Switching it
                         off later restores {member.name}&rsquo;s own settings.
                       </div>
+                      {/* One destructive grammar across the app. This confirm
+                          overwrites a config the user wrote by hand - the most
+                          destructive of the three confirms - and it wore the
+                          lightest treatment: an indigo text link beside a grey
+                          one. */}
                       <div className="mt-2.5 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void toggleMember(member)}
+                        <Button
+                          variant="danger"
+                          size="sm"
                           disabled={busy}
-                          className="text-[12.5px] font-medium text-gc-accent disabled:opacity-50"
+                          onClick={() => void toggleMember(member)}
                         >
                           Replace setup
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmingAdopt(null)}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           disabled={busy}
-                          className="ml-auto text-[12.5px] font-medium text-gc-ink-3"
+                          onClick={() => setConfirmingAdopt(null)}
                         >
                           Cancel
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   )}

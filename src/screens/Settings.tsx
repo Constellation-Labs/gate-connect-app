@@ -117,6 +117,9 @@ export function Settings({
   // Set when a pre-prefix account has no stored prefix, so revealing must fall
   // back to a keychain read. We ask first, since that read can prompt.
   const [confirmReveal, setConfirmReveal] = useState(false);
+  // Armed by the certificate Remove button; the untrust only runs from the
+  // inline confirm.
+  const [confirmingUntrust, setConfirmingUntrust] = useState(false);
   // Copy-to-clipboard feedback on the gateway URL (flashes the icon to a
   // check). Identifiers should never need retyping by hand.
   const [copiedUrl, setCopiedUrl] = useState(false);
@@ -586,16 +589,29 @@ export function Settings({
             </div>
             <button
               type="button"
-              onClick={onUntrustCa}
+              onClick={() => setConfirmingUntrust(true)}
               disabled={proxyBusy}
-              // Neutral, not accent: removing trust is reversible maintenance,
-              // not an encouraged action, and not destructive enough for the
-              // error-red-plus-confirm grammar Reset uses.
+              // Neutral: removing trust is reversible maintenance, not an
+              // encouraged action. It still gets a confirm, because by its own
+              // copy it deletes a private key and can stop apps routing - it
+              // was the only state-destroying action in the app without one.
               className="shrink-0 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink disabled:opacity-40"
             >
               Remove
             </button>
           </div>
+          {confirmingUntrust && (
+            <ConfirmPanel
+              message={`Remove the Gate certificate? This deletes it and its private key from this machine${routingOn ? ", and apps with no gateway setting of their own stop routing" : ""}. You can trust a new one anytime.`}
+              confirmLabel="Remove certificate"
+              busy={proxyBusy}
+              onConfirm={() => {
+                setConfirmingUntrust(false);
+                onUntrustCa();
+              }}
+              onCancel={() => setConfirmingUntrust(false)}
+            />
+          )}
         </>
       )}
 

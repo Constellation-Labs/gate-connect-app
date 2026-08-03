@@ -72,11 +72,15 @@ export function IconButton({
 export function Switch({
   on,
   label,
+  describedBy,
   onClick,
   disabled,
   busy,
 }: {
   on: boolean;
+  /** Id of a node describing what is actually happening, for the cases where
+   * the switch's own state (intent) and the observable result differ. */
+  describedBy?: string;
   /** Accessible name: what this switch controls ("Route through Gate",
    * a provider's display name, "Launch at login"). */
   label: string;
@@ -94,6 +98,7 @@ export function Switch({
       role="switch"
       aria-checked={on}
       aria-label={label}
+      aria-describedby={describedBy}
       aria-busy={busy || undefined}
       aria-disabled={busy || undefined}
       disabled={disabled}
@@ -169,7 +174,7 @@ export function ConnPill({
   if (state === "connected") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-success-wash px-2 py-1 text-[11px] font-medium text-gc-success-deep">
-        <span className="h-1.5 w-1.5 rounded-full bg-gc-success" />
+        <span className="h-1.5 w-1.5 rounded-full bg-gc-success-deep" />
         {label ?? "Connected"}
       </span>
     );
@@ -179,7 +184,7 @@ export function ConnPill({
   if (state === "partial") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-warning-wash px-2 py-1 text-[11px] font-medium text-gc-ink-2">
-        <span className="h-1.5 w-1.5 rounded-full bg-gc-warning" />
+        <span className="h-1.5 w-1.5 rounded-full bg-gc-warning-deep" />
         {label ?? "Partly routed"}
       </span>
     );
@@ -187,7 +192,7 @@ export function ConnPill({
   const fallback = state === "idle" ? "Idle" : "Signed out";
   return (
     <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-3">
-      <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-5" />
+      <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-3" />
       {label ?? fallback}
     </span>
   );

@@ -23,6 +23,7 @@ colors:
   success-wash: "rgba(46,204,113,0.14)"
   success-deep: "#177a42"
   warning: "#f39c12"
+  warning-deep: "#a25f02"
   warning-wash: "rgba(243,156,18,0.12)"
   error: "#e74c3c"
   error-deep: "#c0392b"

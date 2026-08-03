@@ -116,6 +116,17 @@ export function Home({
         pill={proxyOn ? (partial ? "partial" : "connected") : "idle"}
         onGear={onOpenSettings}
       />
+      {/* Flipping any switch rewrites the header pill, the master sub-line and
+          every row description at once, all of it silently. One polite live
+          region carries the headline so the change is announced without
+          reading the whole screen back. */}
+      <span aria-live="polite" className="sr-only">
+        {proxyOn
+          ? partial
+            ? "Routing on, certificate not trusted"
+            : `Routing on, ${routedCount} of ${routableCount} routing`
+          : "Routing off"}
+      </span>
       <div className="flex flex-col gap-2.5 p-3.5">
         {showProxy && (
           <div className="flex items-center gap-3 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
