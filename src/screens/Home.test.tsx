@@ -119,11 +119,15 @@ describe("Home CA-trust card", () => {
 
   it("explains before consent, naming the keychain on macOS", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] });
+    // The reassurance is on the card itself now; only the mechanism and the
+    // removal condition stay behind the disclosure.
+    expect(screen.getByText(/never leaves this machine/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
     expect(screen.getByText(/certificate your keychain trusts/)).toBeTruthy();
-    expect(screen.getByText(/created on this machine/)).toBeTruthy();
-    // Names the condition, because removal is only offered with routing off.
-    expect(screen.getByText(/remove it in Settings under Certificate whenever/)).toBeTruthy();
+    // "This machine" is the section that exists; "Certificate" was renamed
+    // away when Settings collapsed to four headings, and this reference
+    // survived it. Names the condition too: removal needs routing off.
+    expect(screen.getByText(/Settings under This machine whenever/)).toBeTruthy();
   });
 
   it("names the certificate store on Windows", () => {
@@ -162,11 +166,14 @@ describe("Home master toggle", () => {
     expect(onToggleProxy).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the count while saying the certificate blocks coverage", () => {
+  it("keeps the count and lets the card carry the certificate message", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] });
-    // The count used to disappear in this state, which is the one state where
-    // the user most wants to know how much is still working.
-    expect(screen.getByText("On · 0 of 1 routing · certificate not trusted")).toBeTruthy();
+    // The count used to disappear here, which is the state where the user most
+    // wants to know how much still works. The certificate clause left with it:
+    // the trust card directly below is that sentence, louder, and saying it
+    // twice within 300px was this state's worst habit.
+    expect(screen.getByText("On · 0 of 1 routing")).toBeTruthy();
+    expect(screen.getByText(/Apps with no gateway setting need/)).toBeTruthy();
   });
 
   it("counts what is routing against everything routable", () => {

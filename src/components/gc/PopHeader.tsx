@@ -6,10 +6,15 @@ import { ConnPill, IconButton } from "./ui";
 export function PopHeader({
   workspace,
   pill = "connected",
+  pillLabel,
   onGear,
 }: {
   workspace: string;
   pill?: "connected" | "partial" | "idle" | "signedout";
+  /** Overrides the pill text. Used when routing is on but there is nothing
+   * installed to route, where "Routing on" over "nothing installed to route"
+   * is technically true and reads as a contradiction. */
+  pillLabel?: string;
   onGear?: () => void;
 }) {
   return (
@@ -37,11 +42,12 @@ export function PopHeader({
         <ConnPill
           state={pill}
           label={
-            pill === "connected"
+            pillLabel ??
+            (pill === "connected"
               ? "Routing on"
               : pill === "partial"
                 ? "Needs trust"
-                : "Routing off"
+                : "Routing off")
           }
         />
         {onGear && (

@@ -331,19 +331,7 @@ export function Settings({
           <Icon name="cube" size={16} />
         </div>
         <div className="min-w-0 flex-1">
-          {/* Host only. The full URL sat right under it and both truncated
-              ("gateway.constellationgat…" over "https://gateway.constell…"),
-              so the second line spent a row saying less exactly the same
-              thing. The copy button is what guarantees exactness. */}
-          {/* 10.5px mono on its own line, matching the dev-mode server cards
-              which fit the full host in the same 360px. At 13px sans beside a
-              pill and a copy button this truncated to
-              "gateway.constellationga…", and DESIGN.md's mono rule exists
-              because identity and precision matter for exactly this string. */}
           <div className="text-[11px] font-medium text-gc-ink">Gateway</div>
-          <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
-            {hostOf(account.gateway_base_url)}
-          </div>
         </div>
         <ConnPill
           state={connected ? "connected" : "signedout"}
@@ -356,6 +344,14 @@ export function Settings({
           onClick={() => void copyGatewayUrl()}
           aria-label="Copy gateway URL"
         />
+      </div>
+      {/* Full-bleed, beneath the row. Sharing the row with the pill and the
+          copy button left 155px for a 176px string, so the one identifier that
+          answers "am I pointed at production or staging?" rendered as
+          "gateway.constellationga…". The dev-mode server cards already fit the
+          full host at this size in the same 360px. */}
+      <div className="px-3.5 pb-1 font-mono text-[10.5px] text-gc-ink-3">
+        {hostOf(account.gateway_base_url)}
       </div>
 
       {isOAuth && (

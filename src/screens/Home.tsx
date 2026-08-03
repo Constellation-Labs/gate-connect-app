@@ -131,7 +131,10 @@ export function Home({
     <div className="flex flex-col">
       <PopHeader
         workspace={workspace}
-        pill={proxyOn ? (partial ? "partial" : "connected") : "idle"}
+        pill={proxyOn && routableCount > 0 ? (partial ? "partial" : "connected") : "idle"}
+        pillLabel={
+          proxyOn && routableCount === 0 ? "Nothing to route" : undefined
+        }
         onGear={onOpenSettings}
       />
       {/* Flipping any switch rewrites the header pill, the master sub-line and
@@ -170,7 +173,7 @@ export function Home({
                     ? `Off · ${waitingCount} waiting`
                     : "Off · not routing"
                   : partial
-                    ? `On · ${routedCount} of ${routableCount} routing · certificate not trusted`
+                    ? `On · ${routedCount} of ${routableCount} routing`
                     : routableCount === 0
                       ? "On · nothing installed to route"
                       : routedCount === 0 && stuckCount === 0
@@ -193,7 +196,12 @@ export function Home({
             holds the switch that routes traffic, and a link into Settings is
             an unrelated errand. Still only speaks in the quiet room - any
             warning card or banner outranks a tip. */}
-        {proxyOn && launchAtLogin === false && !partial && banner === null && !error && (
+        {proxyOn &&
+          routableCount > 0 &&
+          launchAtLogin === false &&
+          !partial &&
+          banner === null &&
+          !error && (
           <div className="text-[11px] leading-snug text-gc-ink-3">
             <button
               type="button"
@@ -213,10 +221,16 @@ export function Home({
           <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
             <div className="flex items-center gap-2.5">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning">
-                <Icon name="shieldCheck" size={16} />
+                {/* Not shieldCheck: the master card's tile directly above is
+                    already that glyph, and two shields 40px apart in the same
+                    column read as one repeated thing rather than two. */}
+                <Icon name="info" size={16} />
               </div>
               <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-gc-ink">
                 Apps with no gateway setting need the Gate certificate.{" "}
+                <span className="font-normal text-gc-ink-3">
+                  It never leaves this machine.
+                </span>{" "}
                 {/* Inline, not its own row: the explanation is a footnote to
                     this sentence and a separate line cost 27px in the state
                     that already has the least room. */}
@@ -250,16 +264,16 @@ export function Home({
                 <p className="mt-2 text-[11.5px] leading-snug text-gc-ink-2">
                   Desktop apps with no gateway setting route through
                   Gate&rsquo;s local proxy, which needs a certificate your{" "}
-                  {trustStore} trusts. The certificate and its private key are
-                  created on this machine and never leave it. Until it&rsquo;s
-                  trusted, those apps don&rsquo;t route.
+                  {trustStore} trusts. Until it&rsquo;s trusted, those apps
+                  don&rsquo;t route.
                 </p>
                 <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
-                  {/* Not "anytime": removal is offered only while routing is
-                      off, because pulling the certificate mid-routing stops
-                      every app that has no gateway setting of its own. Naming
-                      the condition here keeps the promise true. */}
-                  You can remove it in Settings under Certificate whenever
+                  {/* "This machine", not "Certificate": that section stopped
+                      existing when Settings collapsed from six headings to
+                      four, and this cross-reference survived the rename.
+                      Not "anytime" either - removal is offered only while
+                      routing is off. */}
+                  You can remove it in Settings under This machine whenever
                   routing is off.
                 </p>
               </>
@@ -335,9 +349,10 @@ export function Home({
       {/* Not "Models": the last row is a tool category, not a model family,
           and a label the list contradicts is worse than a plain one. This
           names the question every row answers.
-          `dense` because Home is exactly at the 487px frame with four
-          families. */}
-      <SectionLabel dense>What routes through Gate</SectionLabel>
+          No longer `dense`: that was tuned when four families put Home exactly
+          at the frame, and the harnesses are hidden now, so the ledger is three
+          rows with room to spare. */}
+      <SectionLabel>What routes through Gate</SectionLabel>
       {groups.length > 0 ? (
         <div role="list" className="flex flex-col border-t border-gc-line">
           {groups.map((group) => {
@@ -346,10 +361,9 @@ export function Home({
               <div
                 key={group.id}
                 role="listitem"
-                // py-2.5, not py-3: four families is the design's stated shape and this is
-                // the last 16px between the ledger and the 487px frame. Rows stay
-                // 59px, well over the 44px touch minimum.
-                className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-2.5 transition hover:bg-gc-subtle"
+                // Back to py-3. The 16px this saved bought the fourth family
+                // room it no longer needs.
+                className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-3 transition hover:bg-gc-subtle"
               >
                 {/* Stretch button carries the drill-in; the switch is a
                     sibling above it, so one flip routes the whole family and

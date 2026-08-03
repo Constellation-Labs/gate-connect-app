@@ -202,34 +202,6 @@ export function GroupDetail({
                 />
                 <div className="pointer-events-none relative min-w-0 flex-1">
                   <div className="truncate text-[13px] font-medium text-gc-ink">{member.name}</div>
-                  {/* Shares its row with the pill and the switch, so a wide
-                      pill ("Waiting on routing") squeezed the host down to
-                      "api.an…". min-w-0 lets the name truncate first; the
-                      identifier is the thing that must survive. */}
-                  <div className="mt-0.5 flex items-center gap-1.5">
-                    <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10px] text-gc-ink-3">
-                      {member.kind === "config" ? "config file" : "proxy"}
-                    </span>
-                    {/* Mono is for identifiers only. A harness has no single
-                        upstream to name - its `default_upstream_url` is a
-                        placeholder constant, not what it actually routes - so
-                        say so in prose rather than print a host that lies. */}
-                    {member.coversAllProviders ? (
-                      <span className="truncate text-[10px] text-gc-ink-3">
-                        all your providers
-                      </span>
-                    ) : (
-                      <span className="truncate font-mono text-[10px] text-gc-ink-3">
-                        {/* hostOf, not the raw URL: the full URL with scheme
-                            truncated to `https://api.ant…` in the same slot
-                            where a proxy member prints a clean host, and
-                            DESIGN.md's mono rule is identity and precision. */}
-                        {member.kind === "proxy"
-                          ? (member.domain?.hosts ?? []).join(" · ")
-                          : hostOf(member.tool?.default_upstream_url)}
-                      </span>
-                    )}
-                  </div>
                 </div>
                 <span className="pointer-events-none relative">
                   <MemberPill member={member} />
@@ -263,6 +235,35 @@ export function GroupDetail({
                 </span>
               </div>
 
+              {/* Its own full-width line, below the name/pill/switch row. In
+                  that row the host shared width with the pill, so the wider
+                  the pill the shorter the identifier: "Set up elsewhere" left
+                  49px and rendered "api.ope…", "Waiting on routing" left 44px
+                  and rendered "api.an…". The identifier was cut hardest in
+                  exactly the two states that report a problem. */}
+              <div
+                className={`pointer-events-none flex items-center gap-1.5 px-3.5 pb-2 ${
+                  open ? "bg-gc-subtle" : ""
+                }`}
+              >
+                <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10px] text-gc-ink-3">
+                  {member.kind === "config" ? "config file" : "proxy"}
+                </span>
+                {/* Mono is for identifiers only. A harness has no single
+                    upstream to name - its `default_upstream_url` is a
+                    placeholder constant, not what it actually routes - so say
+                    so in prose rather than print a host that lies. */}
+                {member.coversAllProviders ? (
+                  <span className="truncate text-[10px] text-gc-ink-3">all your providers</span>
+                ) : (
+                  <span className="truncate font-mono text-[10px] text-gc-ink-3">
+                    {member.kind === "proxy"
+                      ? (member.domain?.hosts ?? []).join(" · ")
+                      : hostOf(member.tool?.default_upstream_url)}
+                  </span>
+                )}
+              </div>
+
               {open && (
                 <div className="bg-gc-subtle px-3.5 pb-3">
                   <p className="text-[11.5px] leading-snug text-gc-ink-2">{explain(member)}</p>
@@ -286,7 +287,11 @@ export function GroupDetail({
                       introduced with prose only, so the one attention state
                       most reachable by accident was also the only one with no
                       way out of the screen. */}
-                  {member.attention === "master-off" && (
+                  {/* Suppressed when the group banner above already offers it:
+                      with two members expanded the screen showed three
+                      identical "Turn on routing" buttons for one action. The
+                      remedy-travels-with-the-problem rule needs this clause. */}
+                  {member.attention === "master-off" && !(group.desired > 0 && !proxyOn) && (
                     <Button
                       variant="accent"
                       size="sm"

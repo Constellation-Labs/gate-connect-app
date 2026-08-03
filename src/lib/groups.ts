@@ -3,8 +3,13 @@ import type { ProviderState, ProxyDomain, Tool } from "./api";
 /**
  * Home's ledger groups everything routable by the model family it belongs to
  * (Claude, OpenAI, OpenRouter) instead of by mechanism (config file vs local
- * proxy). Three or four rows that stay that way as tools are installed, with
- * the mechanism kept for the group detail where it actually helps.
+ * proxy). Three rows today, and they stay that way as tools are installed,
+ * with the mechanism kept for the group detail where it actually helps.
+ *
+ * Sizing note for the next reader: comments elsewhere used to describe a
+ * four-family ledger and tune spacing for it. Every agent harness is hidden
+ * (see docs/harness-integration-validation.md), so the fourth family cannot
+ * currently occur.
  *
  * Membership comes from the backend provider catalog (`tool_slugs` +
  * `domain_slugs`), never from `Tool.upstream_provider_name`: that field is
