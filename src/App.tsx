@@ -1081,14 +1081,19 @@ export function App() {
                 common Home. Pinned, it is always reachable and Home gets its
                 height back. The version moved to Settings > Help; two items
                 is all this strip can carry at 360px. */}
+            {/* Accent and a step up in size: at 10.5px ink-3 it matched the
+                credential line beside it and read as a second label rather
+                than the only action on the strip. Indigo is defined as
+                affordance, which is what this is. The footer is pinned, so
+                the extra weight costs Home no height. */}
             <button
               type="button"
               onClick={() => {
                 void openUrl("https://app.constellationgate.ai");
               }}
-              className="ml-auto flex shrink-0 items-center gap-1.5 text-[10.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+              className="-mr-1 ml-auto flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
             >
-              <Icon name="cube" size={11} />
+              <Icon name="cube" size={13} />
               Gate dashboard
             </button>
           </div>
