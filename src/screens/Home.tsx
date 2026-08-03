@@ -419,7 +419,8 @@ export function Home({
             </div>
             <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
               Gate Connect picks up Claude Code and Codex once they&rsquo;re
-              installed. Install one and reopen this window.
+              installed. Install one, then reopen this window from the menu bar
+              and it will show up.
             </p>
           </div>
         </div>

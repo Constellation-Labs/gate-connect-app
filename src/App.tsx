@@ -252,34 +252,49 @@ export function App() {
   //
   // The backend can flip routing on by itself at startup (restart
   // persistence: it re-enables what the user last left on) and announces it
-  // with a single `proxy-state-changed` nudge; our status poll stays idle
-  // while routing reads as off, and nothing re-reads when the popover is
-  // reopened from the tray. Registering the listener *before* the first
+  // with a single `proxy-state-changed` nudge. Reopening the popover from the
+  // tray also re-reads, via `refreshState` below - it used to do neither, and
+  // this comment used to claim a status poll that had never existed.
+  // Registering the listener *before* the first
   // status read (and awaiting the registration) closes the gap where the
   // enable lands after the read but before the listener is live - that
   // one-shot nudge would otherwise be missed for the webview's lifetime.
+  // Re-read everything the ledger renders. Nothing else in the app does this:
+  // the mount effect reads once, and the mutation callbacks only re-read what
+  // they just changed. So without a caller here, a webview that has been alive
+  // since morning renders morning's truth - a tool installed since launch never
+  // appears, a config edited by hand still reads Routed, and a dead helper
+  // daemon still shows "Routing on".
+  //
+  // `announce` separates the two callers: the backend's startup nudge is a
+  // state *change* worth a banner and an analytics event, whereas reopening the
+  // popover is just the user looking, and must stay silent.
+  const refreshState = useCallback(async (announce: boolean) => {
+    const px = await proxyStatus().catch(() => null);
+    const toolList = await listTools().catch(() => []);
+    const provs = await listProviders().catch(() => []);
+    const stale = await routedClientsStale().catch(() => false);
+    // Only agents that predate routing genuinely need a restart; a healthy
+    // restored session (agents launched after routing came up) stays
+    // quiet. A failed probe defaults to showing.
+    const agents = px?.running && announce ? await staleAgentsCount().catch(() => 1) : 0;
+    setProxy(px);
+    setTools(toolList);
+    setProviders(provs);
+    if (stale) setStaleAgentsHint(true);
+    if (announce && px?.running) {
+      if (agents > 0) setChangeNotice("on");
+      // The backend only emits this nudge after its startup auto-enable, so
+      // routing coming up here is a restored session, not a user toggle.
+      track("proxy_enabled", { source: "restored" });
+    }
+  }, []);
+
   useEffect(() => {
     let alive = true;
     const unlisten = listen("proxy-state-changed", async () => {
-      const px = await proxyStatus().catch(() => null);
-      const toolList = await listTools().catch(() => []);
-      const provs = await listProviders().catch(() => []);
-      const stale = await routedClientsStale().catch(() => false);
-      // Only agents that predate routing genuinely need a restart; a healthy
-      // restored session (agents launched after routing came up) stays
-      // quiet. A failed probe defaults to showing.
-      const agents = px?.running ? await staleAgentsCount().catch(() => 1) : 0;
       if (!alive) return;
-      setProxy(px);
-      setTools(toolList);
-      setProviders(provs);
-      if (stale) setStaleAgentsHint(true);
-      if (px?.running) {
-        if (agents > 0) setChangeNotice("on");
-        // The backend only emits this nudge after its startup auto-enable, so
-        // routing coming up here is a restored session, not a user toggle.
-        track("proxy_enabled", { source: "restored" });
-      }
+      await refreshState(true);
     });
     (async () => {
       // A failed registration shouldn't block the popover from loading.
@@ -378,7 +393,14 @@ export function App() {
 
   // Reopens from the tray: the launch itself is app_launched; only returns
   // count here.
-  useWindowReopen(() => track("popover_opened"));
+  // Reopening from the tray is the one moment the user is asking what is true
+  // now, so it is the right refresh trigger. Deliberately not a timer: reading
+  // status walks every integration's config on disk, and a popover that is
+  // closed most of the time has nothing to keep warm.
+  useWindowReopen(() => {
+    track("popover_opened");
+    void refreshState(false);
+  });
 
   // Backend failures buffer Rust-side because they can predate this webview
   // (the startup auto-enable runs before the popover mounts). Sweep the

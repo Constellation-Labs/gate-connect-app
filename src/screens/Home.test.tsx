@@ -409,3 +409,13 @@ describe("Home says what is waiting", () => {
     expect(screen.getByText(/Nothing to route yet/)).toBeTruthy();
   });
 });
+
+describe("Home empty state tells the truth about refreshing", () => {
+  it("names an action that actually re-reads the ledger", () => {
+    renderHome({ tools: [], domains: [] });
+    // Reopening from the tray now refreshes (App wires useWindowReopen to
+    // refreshState). Before that it did not, so this copy was instructing the
+    // user to perform the one action that provably changed nothing.
+    expect(screen.getByText(/reopen this window from the menu bar/)).toBeTruthy();
+  });
+});
