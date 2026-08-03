@@ -110,6 +110,9 @@ export function Home({
   // Whether the certificate explanation is open. Collapsed by default; see the
   // card below for why.
   const [caExplain, setCaExplain] = useState(false);
+  // Session-scoped: the tip is already rare (quiet room only), so forgetting
+  // the dismissal on relaunch is a smaller cost than another persisted flag.
+  const [launchTipDismissed, setLaunchTipDismissed] = useState(false);
 
   // Whether Launch at login is on, so the keep-routing tip only shows when
   // it would actually help (read the state, don't send the user to Settings
@@ -198,19 +201,31 @@ export function Home({
             warning card or banner outranks a tip. */}
         {proxyOn &&
           routableCount > 0 &&
+          !launchTipDismissed &&
           launchAtLogin === false &&
           !partial &&
           banner === null &&
           !error && (
-          <div className="text-[11px] leading-snug text-gc-ink-3">
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
-            >
-              Turn on Launch at login
-            </button>{" "}
-            to keep routing on after a restart.
+          <div className="flex items-start gap-2 text-[11px] leading-snug text-gc-ink-3">
+            <span className="min-w-0 flex-1">
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
+              >
+                Turn on Launch at login
+              </button>{" "}
+              to keep routing on after a restart.
+            </span>
+            {/* A tip the user has read and declined should stop asking. It had
+                no dismissal at all, so someone who does not want launch-at-login
+                saw this under their routing card on every quiet launch. */}
+            <IconButton
+              icon="x"
+              size={12}
+              onClick={() => setLaunchTipDismissed(true)}
+              aria-label="Dismiss launch at login tip"
+            />
           </div>
         )}
 

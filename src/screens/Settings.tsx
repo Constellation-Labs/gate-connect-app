@@ -487,7 +487,11 @@ export function Settings({
           <button
             type="button"
             onClick={() => setReplacing(true)}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent"
+            // ink, not accent. This is routine maintenance and the auth upsell
+            // sits directly beneath it; two indigo rows 4px apart read as a
+            // pair of equals, and the offer was winning attention from the
+            // thing the user came to do.
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-2 transition hover:text-gc-ink"
           >
             <Icon name="refresh" size={14} />
             Replace key

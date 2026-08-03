@@ -3,6 +3,7 @@ import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
 import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import { launchAtLoginStatus } from "../lib/api";
 import { Home } from "./Home";
 
 // The CA-trust card swaps the trust-store name by platform; drive it by
@@ -424,5 +425,29 @@ describe("Home empty state tells the truth about refreshing", () => {
     // refreshState). Before that it did not, so this copy was instructing the
     // user to perform the one action that provably changed nothing.
     expect(screen.getByText(/reopen this window from the menu bar/)).toBeTruthy();
+  });
+});
+
+describe("Home quiet-state honesty", () => {
+  it("does not fly a green pill over an empty ledger", () => {
+    renderHome({ tools: [], domains: [] });
+    // "Routing on" above "nothing installed to route" is technically true and
+    // reads as a contradiction.
+    expect(screen.getByText("Nothing to route")).toBeTruthy();
+    expect(screen.queryByText("Routing on")).toBeNull();
+  });
+
+  it("keeps the launch-at-login tip dismissible", async () => {
+    // Once, so the file-level never-resolving default (which keeps the tip
+    // hidden and other tests free of act warnings) is restored afterwards.
+    (launchAtLoginStatus as Mock).mockResolvedValueOnce({
+      enabled: false,
+      pending_disable: false,
+    });
+    renderHome({ tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] });
+    const tip = await screen.findByRole("button", { name: /Turn on Launch at login/ });
+    expect(tip).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss launch at login tip" }));
+    expect(screen.queryByRole("button", { name: /Turn on Launch at login/ })).toBeNull();
   });
 });
