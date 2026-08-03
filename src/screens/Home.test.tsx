@@ -272,18 +272,18 @@ describe("Home model-family ledger", () => {
 
 describe("Home routing-change notice", () => {
   it("words the same notice by direction", () => {
-    renderHome({ changeNotice: "on" });
+    renderHome({ changeNotice: "on", domains: [makeDomain()] });
     expect(screen.getByText(/Routing is on\./)).toBeTruthy();
     cleanup();
 
-    renderHome({ changeNotice: "off" });
+    renderHome({ changeNotice: "off", domains: [makeDomain()] });
     expect(screen.getByText(/Routing is off\./)).toBeTruthy();
     expect(screen.queryByText(/Routing is on\./)).toBeNull();
   });
 
   it("offers to close the running tools in both directions, not just at startup", () => {
     const onCloseAgents = vi.fn();
-    renderHome({ changeNotice: "off", onCloseAgents });
+    renderHome({ changeNotice: "off", onCloseAgents, domains: [makeDomain()] });
     fireEvent.click(screen.getByRole("button", { name: "Close them…" }));
     expect(onCloseAgents).toHaveBeenCalled();
   });
@@ -291,7 +291,7 @@ describe("Home routing-change notice", () => {
   it("shows one notice at a time, so a fast flip can't stack them", () => {
     // The regression this replaced: three independent hint booleans, so the
     // "on" notice stayed up over the "off" one after an on/off flip.
-    renderHome({ changeNotice: "off", staleAgentsHint: true });
+    renderHome({ changeNotice: "off", staleAgentsHint: true, domains: [makeDomain()] });
     expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(screen.getByText(/local address changed/)).toBeTruthy();
     expect(screen.queryByText(/Routing is off\./)).toBeNull();
@@ -333,7 +333,7 @@ describe("Home ledger accessibility", () => {
 
 describe("Home pending notice", () => {
   it("does not claim routing is on when nothing can route", () => {
-    renderHome({ proxyOn: false, changeNotice: "pending" });
+    renderHome({ proxyOn: false, changeNotice: "pending", domains: [makeDomain()] });
     // The round-7 P0: the notice came from the toggle's direction, so
     // enabling a proxy-only family with the engine down announced
     // "Routing is on" directly above "Off · not routing".
@@ -344,7 +344,13 @@ describe("Home pending notice", () => {
   it("offers the remedy instead of asking the user to close nothing", () => {
     const onEnableRouting = vi.fn();
     const onCloseAgents = vi.fn();
-    renderHome({ proxyOn: false, changeNotice: "pending", onEnableRouting, onCloseAgents });
+    renderHome({
+      proxyOn: false,
+      changeNotice: "pending",
+      onEnableRouting,
+      onCloseAgents,
+      domains: [makeDomain()],
+    });
     expect(screen.queryByRole("button", { name: "Close them…" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Turn on routing" }));
     expect(onEnableRouting).toHaveBeenCalledTimes(1);
@@ -354,7 +360,7 @@ describe("Home pending notice", () => {
 
 describe("Home master card is a control that owns up", () => {
   it("says so when a family switch turned routing on as well", () => {
-    renderHome({ changeNotice: "started" });
+    renderHome({ changeNotice: "started", domains: [makeDomain()] });
     // The master is a control and a family switch may start it (connecting a
     // config tool has to). The rule is do it and say so, so this must not hide
     // inside the generic "Routing is on".
@@ -381,5 +387,24 @@ describe("Home master card is a control that owns up", () => {
     });
     expect(screen.getByText("On · 2 of 2 routing")).toBeTruthy();
     expect(screen.queryByText(/attention/)).toBeNull();
+  });
+});
+
+describe("Home says what is waiting", () => {
+  it("names what a switch-on would revive, instead of just saying off", () => {
+    renderHome({
+      proxyOn: false,
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [],
+    });
+    // "Off · not routing" while two families read "waiting on routing" is the
+    // fact that makes flipping the switch feel safe rather than speculative.
+    expect(screen.getByText("Off · 1 waiting")).toBeTruthy();
+  });
+
+  it("does not offer to close apps when nothing is installed", () => {
+    renderHome({ changeNotice: "on", tools: [], domains: [] });
+    expect(screen.queryByText(/Routing is on\./)).toBeNull();
+    expect(screen.getByText(/Nothing to route yet/)).toBeTruthy();
   });
 });

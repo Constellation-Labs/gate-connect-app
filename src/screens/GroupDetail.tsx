@@ -22,8 +22,8 @@ function hostOf(url: string | undefined): string {
 function explain(member: GroupMember): string {
   if (member.attention === "master-off") {
     return member.kind === "proxy"
-      ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet. Turn routing on from Home.`
-      : `${member.name}'s config points at Gate, but routing is off, so it can't reach the gateway. Turn routing on from Home.`;
+      ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
+      : `${member.name}'s config points at Gate, but routing is off, so it can't reach the gateway.`;
   }
   if (member.kind === "proxy") {
     return member.attention === "needs-trust"
@@ -202,6 +202,10 @@ export function GroupDetail({
                 />
                 <div className="pointer-events-none relative min-w-0 flex-1">
                   <div className="truncate text-[13px] font-medium text-gc-ink">{member.name}</div>
+                  {/* Shares its row with the pill and the switch, so a wide
+                      pill ("Waiting on routing") squeezed the host down to
+                      "api.an…". min-w-0 lets the name truncate first; the
+                      identifier is the thing that must survive. */}
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10px] text-gc-ink-3">
                       {member.kind === "config" ? "config file" : "proxy"}

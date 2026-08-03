@@ -220,14 +220,19 @@ export function Onboarding() {
               <p key={p.slice(0, 24)}>{p}</p>
             ))}
           </div>
+          {/* The button kit, not a fourth skin. This was accent-wash fill
+              with accent text and a seam - a shape DESIGN.md's vocabulary
+              does not contain, and the Provisional Indigo rule says not to
+              invent new indigo surfaces. */}
           {step.locate && (
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
+              className="mt-4"
               onClick={() => void invoke("reveal_popover")}
-              className="mt-4 inline-flex h-[34px] items-center rounded-lg bg-gc-accent-wash px-[18px] text-[12.5px] font-semibold text-gc-accent shadow-border transition-colors hover:bg-gc-accent-wash-2"
             >
               Show me where Gate Connect lives
-            </button>
+            </Button>
           )}
         </div>
       </div>

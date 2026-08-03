@@ -45,7 +45,9 @@ export function RoutingChangeNotice({
     setClosing(true);
     setError(null);
     try {
-      const count = await closeRunningAgents();
+      // `closed === null` is the not-yet-run sentinel, so a nullish resolve
+      // would leave the confirm step up with no feedback.
+      const count = (await closeRunningAgents()) ?? 0;
       setClosed(count);
       track("agents_closed", { count });
       onAgentsClosed?.();

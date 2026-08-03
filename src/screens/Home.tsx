@@ -76,6 +76,12 @@ export function Home({
   // skips a hand-written setup, and an errored tool can't be connected at all.
   // Without naming them the denominator sets a target the controls cannot
   // reach, which reads as the app failing rather than as work to do.
+  // Switched on but not flowing because the master is off. Saying so is what
+  // makes flipping the switch feel safe rather than speculative.
+  const waitingCount = groups.reduce(
+    (n, g) => n + g.members.filter((m) => m.attention === "master-off").length,
+    0,
+  );
   const stuckCount = groups.reduce(
     (n, g) =>
       n + g.members.filter((m) => m.attention === "drifted" || m.attention === "error").length,
@@ -89,7 +95,11 @@ export function Home({
   // outranks both: it is the reason nothing is routing, so a change notice
   // stacked under it would just be a second thing to read first.
   const banner: "stale" | "change" | null =
-    showProxy && partial
+    // Nothing installed means nothing can be routing, so an offer to close
+    // running apps is an offer to close nothing.
+    routableCount === 0
+      ? null
+      : showProxy && partial
       ? null
       : staleAgentsHint
         ? "stale"
@@ -156,7 +166,9 @@ export function Home({
                     backwards: that is exactly when the user wants to know how
                     much is still working. */}
                 {!proxyOn
-                  ? "Off · not routing"
+                  ? waitingCount > 0
+                    ? `Off · ${waitingCount} waiting`
+                    : "Off · not routing"
                   : partial
                     ? `On · ${routedCount} of ${routableCount} routing · certificate not trusted`
                     : routableCount === 0
@@ -360,15 +372,11 @@ export function Home({
                       already answers "is this routing?", so the count is the
                       half that can afford to go. */}
                   <div className="mt-0.5 truncate text-[11px] text-gc-ink-3">
-                    {exception ? (
-                      <>
-                        <span className="text-gc-ink-2">{exception}</span>
-                        {" · "}
-                        {count}
-                      </>
-                    ) : (
-                      count
-                    )}
+                    {/* No count alongside an exception: concatenated, the
+                        line truncated to "Codex set up elsewhere · 0 of 2…",
+                        and a half-printed number is worse than none. The pill
+                        already answers "is this routing?". */}
+                    {exception ? <span className="text-gc-ink-2">{exception}</span> : count}
                   </div>
                 </div>
                 {/* The visible text truncates at 360px; this carries the whole

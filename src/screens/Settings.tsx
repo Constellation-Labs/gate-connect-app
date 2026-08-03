@@ -333,7 +333,13 @@ export function Settings({
               ("gateway.constellationgat…" over "https://gateway.constell…"),
               so the second line spent a row saying less exactly the same
               thing. The copy button is what guarantees exactness. */}
-          <div className="truncate text-[13px] font-medium text-gc-ink">
+          {/* 10.5px mono on its own line, matching the dev-mode server cards
+              which fit the full host in the same 360px. At 13px sans beside a
+              pill and a copy button this truncated to
+              "gateway.constellationga…", and DESIGN.md's mono rule exists
+              because identity and precision matter for exactly this string. */}
+          <div className="text-[11px] font-medium text-gc-ink">Gateway</div>
+          <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
             {hostOf(account.gateway_base_url)}
           </div>
         </div>
@@ -574,11 +580,14 @@ export function Settings({
               type="button"
               onClick={() => setConfirmingUntrust(true)}
               disabled={proxyBusy}
+              // error-deep like every other destructive entry point. It was
+              // ink-3 with no underline or border - a label, not an action -
+              // on the one control that deletes a private key.
               // Neutral: removing trust is reversible maintenance, not an
               // encouraged action. It still gets a confirm, because by its own
               // copy it deletes a private key and can stop apps routing - it
               // was the only state-destroying action in the app without one.
-              className="shrink-0 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink disabled:opacity-40"
+              className="shrink-0 text-[12px] font-medium text-gc-error-deep transition hover:brightness-90 disabled:opacity-40"
             >
               Remove
             </button>
@@ -627,7 +636,12 @@ export function Settings({
         )}
         {devMode && !replacing && (
             <>
-              <SectionLabel>Gateway server</SectionLabel>
+              {/* Not a SectionLabel: this is a sub-panel of Help, and an h2
+                  here made the document outline gain and lose a top-level
+                  section every time Dev mode toggled. */}
+              <div className="px-3.5 pb-1.5 pt-1 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+                Gateway server
+              </div>
               <div className="flex flex-col gap-2 px-3.5 pb-1">
                 {GATEWAY_SERVERS.map((server) => {
                   const active = server.url === account.gateway_base_url;
