@@ -129,6 +129,8 @@ export function Settings({
   // Armed by the certificate Remove button; the untrust only runs from the
   // inline confirm.
   const [confirmingUntrust, setConfirmingUntrust] = useState(false);
+  // Whether the certificate explanation is open. Collapsed on entry.
+  const [certExplain, setCertExplain] = useState(false);
   // Copy-to-clipboard feedback on the gateway URL (flashes the icon to a
   // check). Identifiers should never need retyping by hand.
   const [copiedUrl, setCopiedUrl] = useState(false);
@@ -567,13 +569,25 @@ export function Settings({
 
       {caTrusted && (
         <>
-          <div className="flex items-center gap-3 px-3.5 py-2.5">
+          <div className="flex items-start gap-3 px-3.5 py-2.5">
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-medium text-gc-ink">Gate certificate</div>
+              {/* Collapsed by default, same disclosure Home's certificate card
+                  uses. The one line a user scanning Settings needs is whether
+                  it is trusted and whether they can remove it; the consequence
+                  of removing it is four lines they only need once, and it was
+                  taking that room on every visit. */}
               <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
-                {routingOn
-                  ? `Still trusted in your ${trustStore}. Turn routing off to remove it - pulling it while routing is on stops every app that has no gateway setting of its own.`
-                  : `Still trusted in your ${trustStore}. Removing it clears the certificate and private key from this machine.`}
+                Still trusted in your {trustStore}.
+                {routingOn && " Turn routing off to remove it."}{" "}
+                <button
+                  type="button"
+                  onClick={() => setCertExplain((v) => !v)}
+                  aria-expanded={certExplain}
+                  className="font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink"
+                >
+                  What&rsquo;s this?
+                </button>
               </div>
             </div>
             {!routingOn && (
@@ -594,6 +608,17 @@ export function Settings({
             </button>
             )}
           </div>
+          {/* Below the row, not inside it: in the flex row the paragraph was
+              squeezed into the column Remove left over, and Remove floated
+              vertically centred against five lines of text, detached from the
+              heading it belongs to. */}
+          {certExplain && (
+            <p className="px-3.5 pb-1 text-[11.5px] leading-snug text-gc-ink-2">
+              {routingOn
+                ? `Gate created this certificate on this machine so apps with no gateway setting of their own can route through the local proxy. Pulling it while routing is on stops every one of them, so removal waits until routing is off. The private key never leaves this machine.`
+                : `Gate created this certificate on this machine so apps with no gateway setting of their own can route through the local proxy. Removing it deletes the certificate and its private key from this machine; you can trust a new one anytime.`}
+            </p>
+          )}
           {confirmingUntrust && (
             <ConfirmPanel
               message="Remove the Gate certificate? This deletes it and its private key from this machine. You can trust a new one anytime."

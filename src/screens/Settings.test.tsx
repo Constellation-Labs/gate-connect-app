@@ -92,15 +92,29 @@ describe("Settings certificate section", () => {
     expect(screen.getByText(/Turn routing off to remove it/)).toBeTruthy();
   });
 
-  it("explains the cost of removal only when it is withheld", async () => {
+  it("keeps the explanation collapsed until asked", async () => {
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true, routingOn: true });
-    expect(screen.getByText(/stops every app/i)).toBeTruthy();
+    // The scannable line stays; the four-line consequence is behind the
+    // disclosure, so it does not cost room on every visit to Settings.
+    expect(screen.getByText(/Turn routing off to remove it/)).toBeTruthy();
+    expect(screen.queryByText(/never leaves this machine/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
+    expect(screen.getByText(/never leaves this machine/)).toBeTruthy();
+  });
+
+  it("explains the withheld removal differently from an available one", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos", { caTrusted: true, routingOn: true });
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
+    expect(screen.getByText(/removal waits until routing is off/)).toBeTruthy();
     cleanup();
 
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true });
-    expect(screen.queryByText(/stops every app/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
+    expect(screen.getByText(/you can trust a new one anytime/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
