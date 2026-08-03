@@ -104,6 +104,11 @@ function markRoutingTakeoverSeen(): void {
   }
 }
 
+/** What the last routing change resulted in. "started" means the change
+ * turned the master on as a side effect; "pending" means it did not and
+ * nothing is routing. */
+export type ChangeNotice = "on" | "off" | "started" | "pending" | null;
+
 /** Which change notice a member/group toggle earned, from the engine state
  * that actually resulted rather than from the direction of the click.
  *
@@ -113,7 +118,17 @@ function markRoutingTakeoverSeen(): void {
  * is down, nothing routes, and telling them to close their apps would be
  * false. Turning something off while the engine is already down changed
  * nothing observable, so it earns no notice at all. */
-function noticeFor(turnedOn: boolean, engineRunning: boolean): "on" | "off" | "pending" | null {
+function noticeFor(
+  turnedOn: boolean,
+  engineRunning: boolean,
+  engineWasRunning: boolean,
+): ChangeNotice {
+  // The master is a control, and a family switch is allowed to turn it on:
+  // connecting a config tool has to, because the tool's file points at the
+  // loopback relay and the relay only exists while the engine runs. The rule
+  // is do it and say so, so a side-effect start gets its own notice rather
+  // than hiding inside the generic "Routing is on".
+  if (engineRunning && !engineWasRunning && turnedOn) return "started";
   if (engineRunning) return turnedOn ? "on" : "off";
   return turnedOn ? "pending" : null;
 }
@@ -168,7 +183,7 @@ export function App() {
   // notice from the toggle's direction produced "Routing is on" over a card
   // reading "Off · not routing", because proxy_set_domain never starts the
   // engine while connect_tool does.
-  const [changeNotice, setChangeNotice] = useState<"on" | "off" | "pending" | null>(null);
+  const [changeNotice, setChangeNotice] = useState<ChangeNotice>(null);
 
   // Set when the startup auto-enable brought routing back on a different
   // local port than the previous session (first launch after upgrading from
@@ -599,6 +614,7 @@ export function App() {
   const setToolRouted = useCallback(
     async (slug: string, routed: boolean) => {
       if (proxyBusy) return;
+      const wasRunning = proxy?.running ?? false;
       setProxyBusy(true);
       try {
         const tool = tools.find((t) => t.slug === slug);
@@ -618,11 +634,11 @@ export function App() {
         } catch {
           /* non-macOS: no proxy subsystem */
         }
-        setChangeNotice(noticeFor(routed, running));
+        setChangeNotice(noticeFor(routed, running, wasRunning));
         setProxyBusy(false);
       }
     },
-    [proxyBusy, tools],
+    [proxyBusy, tools, proxy],
   );
 
   // Route (or unroute) a whole model family from one switch. Runs the same
@@ -642,6 +658,7 @@ export function App() {
         caTrusted: proxy?.ca_trusted ?? false,
       }).find((g) => g.id === id);
       if (!group) return;
+      const wasRunning = proxy?.running ?? false;
       setProxyBusy(true);
       setProviderError(null);
       // One member failing used to abort the loop and surface "Couldn't
@@ -688,7 +705,7 @@ export function App() {
       } catch {
         /* non-macOS: no proxy subsystem */
       }
-      setChangeNotice(noticeFor(on, running));
+      setChangeNotice(noticeFor(on, running, wasRunning));
       setProxyBusy(false);
     },
     [proxyBusy, providers, tools, proxy],

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import { buildGroups, groupSummary } from "../lib/groups";
@@ -46,9 +47,8 @@ export function Home({
   busy: boolean;
   error?: ClassifiedError | null;
   /** What the last routing change actually resulted in, or null once
-   * dismissed. "pending" means something is switched on but the engine is
-   * down, so nothing routes. */
-  changeNotice: "on" | "off" | "pending" | null;
+   * dismissed. */
+  changeNotice: ChangeNotice;
   onDismissChangeNotice: () => void;
   onCloseAgents: () => void;
   /** Turn the master on from the pending banner: the remedy belongs on the
@@ -73,6 +73,15 @@ export function Home({
   // without a scroll; the families below are the itemization.
   const routableCount = groups.reduce((n, g) => n + g.members.length, 0);
   const routedCount = groups.reduce((n, g) => n + g.routed, 0);
+  // Members no switch on this screen can fix: a family switch deliberately
+  // skips a hand-written setup, and an errored tool can't be connected at all.
+  // Without naming them the denominator sets a target the controls cannot
+  // reach, which reads as the app failing rather than as work to do.
+  const stuckCount = groups.reduce(
+    (n, g) =>
+      n + g.members.filter((m) => m.attention === "drifted" || m.attention === "error").length,
+    0,
+  );
 
   // At most one banner at a time, most actionable first: transient chrome
   // must never bury the ledger (the pills are the point of the screen). The
@@ -151,11 +160,13 @@ export function Home({
                   ? "Off · not routing"
                   : partial
                     ? `On · ${routedCount} of ${routableCount} routing · certificate not trusted`
-                    : routedCount > 0
-                      ? `On · ${routedCount} of ${routableCount} routing`
-                      : routableCount === 0
-                        ? "On · nothing installed to route"
-                        : "On · nothing enabled yet"}
+                    : routableCount === 0
+                      ? "On · nothing installed to route"
+                      : routedCount === 0 && stuckCount === 0
+                        ? "On · nothing enabled yet"
+                        : stuckCount > 0
+                          ? `On · ${routedCount} of ${routableCount} routing · ${stuckCount} need${stuckCount === 1 ? "s" : ""} attention`
+                          : `On · ${routedCount} of ${routableCount} routing`}
               </div>
             </div>
             <Switch
@@ -253,9 +264,11 @@ export function Home({
             <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
               {changeNotice === "pending"
                 ? "Set to route, but routing is off, so nothing is going through Gate yet."
-                : changeNotice === "on"
-                  ? "Routing is on. Anything already open isn't routing through Gate yet."
-                  : "Routing is off. Anything already open still points at Gate."}
+                : changeNotice === "started"
+                  ? "That turned routing on too. Anything already open isn't routing through Gate yet."
+                  : changeNotice === "on"
+                    ? "Routing is on. Anything already open isn't routing through Gate yet."
+                    : "Routing is off. Anything already open still points at Gate."}
             </div>
             {/* Pending has a different remedy: there is nothing running to
                 close, so offering "Close them…" would be busywork. The

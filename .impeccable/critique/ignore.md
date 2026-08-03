@@ -6,15 +6,17 @@ not drift. Critique runs drop matches silently.
 Matching is by file + value, not line, so these survive the code moving.
 Line numbers are recorded as of 2026-08-03 and are a navigation aid only.
 
-- `design-system-color` on `src/screens/Onboarding.tsx:106` and `:110`:
-  the `#000` literals sit inside `mask-image` alpha gradients, where the
-  color channel is never painted; only opacity matters.
-- `design-system-font-size` 27px on `src/screens/Onboarding.tsx:209`: the
+- `design-system-color` on `src/screens/Onboarding.tsx:31`, `:112` and
+  `:116`: the `#000` literals sit inside `mask-image` alpha gradients,
+  where the color channel is never painted; only opacity matters. Two fade
+  the platform mockups on tour step 3; the third fades the step 2 hero,
+  whose capture is cropped mid-card.
+- `design-system-font-size` 27px on `src/screens/Onboarding.tsx:215`: the
   onboarding tour renders in its own larger window and uses a 27px display
   heading, documented in DESIGN.md's Typography section. The popover ramp
   tops out at Panel Title (17px).
-- `design-system-color` `oklch(0.165 0 0)` on `tailwind.config.ts:182` and
-  `:186`: this is `ink.800` (defined at line 71) and it only ever appears
+- `design-system-color` `oklch(0.165 0 0)` on `tailwind.config.ts:186` and
+  `:190`: this is `ink.800` (defined at line 71) and it only ever appears
   inside `color-mix(in oklch, ... 4-9%, transparent)`, so it is never
   painted as a color, only as a seam alpha. The four shadow strings that
   contain it are reproduced verbatim in DESIGN.md's Shadows section. The

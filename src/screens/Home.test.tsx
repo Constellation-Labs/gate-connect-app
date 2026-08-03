@@ -349,3 +349,35 @@ describe("Home pending notice", () => {
     expect(onCloseAgents).not.toHaveBeenCalled();
   });
 });
+
+describe("Home master card is a control that owns up", () => {
+  it("says so when a family switch turned routing on as well", () => {
+    renderHome({ changeNotice: "started" });
+    // The master is a control and a family switch may start it (connecting a
+    // config tool has to). The rule is do it and say so, so this must not hide
+    // inside the generic "Routing is on".
+    expect(screen.getByText(/turned routing on too/)).toBeTruthy();
+  });
+
+  it("names members its own switches cannot reach", () => {
+    renderHome({
+      tools: [
+        makeTool("claude-code", "Claude Code", { kind: "connected" }),
+        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI"),
+      ],
+      domains: [makeDomain()],
+    });
+    // A family switch skips a hand-written setup, so without this the
+    // denominator sets a target the controls can't hit.
+    expect(screen.getByText(/needs attention/)).toBeTruthy();
+  });
+
+  it("stays quiet about attention when everything is reachable", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [makeDomain()],
+    });
+    expect(screen.getByText("On · 2 of 2 routing")).toBeTruthy();
+    expect(screen.queryByText(/attention/)).toBeNull();
+  });
+});
