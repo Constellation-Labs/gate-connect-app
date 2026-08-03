@@ -203,16 +203,17 @@ describe("Settings launch at login", () => {
 });
 
 describe("Settings hierarchy", () => {
-  it("groups nine controls under three subjects plus the destructive one", async () => {
+  it("groups the controls under three subjects", async () => {
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true });
     // Was six: Workspace / Signed in / Gate API Key were all "my account", and
-    // Startup / Certificate were both "this machine".
+    // Startup / Certificate were both "this machine". Reset lost its heading
+    // too - it is the last row of the screen, and position plus error-deep
+    // carry it without a section of its own.
     expect([...document.querySelectorAll("h2")].map((h) => h.textContent)).toEqual([
       "Account",
       "This machine",
       "Help",
-      "Reset",
     ]);
   });
 
@@ -228,14 +229,15 @@ describe("Settings hierarchy", () => {
     expect(screen.getByRole("button", { name: /Switch to Constellation sign-in/ })).toBeTruthy();
   });
 
-  it("offers Reset once, last, and not beside Replace key", async () => {
+  it("offers Reset once, last, and paired with Dev mode rather than Replace key", async () => {
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos");
-    const labels = [...document.querySelectorAll("h2, button")]
-      .map((e) => (e.tagName === "H2" ? `# ${e.textContent}` : e.textContent?.trim()))
-      .filter((t) => t === "# Reset" || t === "Reset Gate Connect" || t === "Replace key");
+    const labels = [...document.querySelectorAll("button")]
+      .map((e) => e.textContent?.trim())
+      .filter((t) => t === "Reset Gate Connect" || t === "Replace key" || t === "Dev mode");
     // It used to render twice, once per auth branch, adjacent to Replace key.
-    expect(labels).toEqual(["Replace key", "# Reset", "Reset Gate Connect"]);
+    // Now once, on the screen's last row, with Dev mode on the other side.
+    expect(labels).toEqual(["Replace key", "Dev mode", "Reset Gate Connect"]);
   });
 
   it("keeps Dev mode inside Help instead of floating unlabelled", async () => {

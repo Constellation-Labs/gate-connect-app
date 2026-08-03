@@ -388,15 +388,6 @@ export function Settings({
               <Icon name="logOut" size={14} />
               Sign out
             </button>
-            <button
-              type="button"
-              onClick={() => setDevMode((v) => !v)}
-              aria-expanded={devMode}
-              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
-            >
-              <Icon name="settings" size={14} />
-              Dev mode
-            </button>
           </div>
           {errorFor("account")}
         </>
@@ -505,15 +496,6 @@ export function Settings({
             <Icon name="refresh" size={14} />
             Replace key
           </button>
-          <button
-            type="button"
-            onClick={() => setDevMode((v) => !v)}
-            aria-expanded={devMode}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
-          >
-            <Icon name="settings" size={14} />
-            Dev mode
-          </button>
         </div>
       )}
 
@@ -553,48 +535,6 @@ export function Settings({
         </>
       )}
 
-      {devMode && !replacing && (
-          <>
-            {/* Not a SectionLabel: this is a sub-panel of Help, and an h2
-                here made the document outline gain and lose a top-level
-                section every time Dev mode toggled. */}
-            <div className="px-3.5 pb-1.5 pt-1 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
-              Gateway server
-            </div>
-            <div className="flex flex-col gap-2 px-3.5 pb-1">
-              {GATEWAY_SERVERS.map((server) => {
-                const active = server.url === account.gateway_base_url;
-                return (
-                    <button
-                        key={server.url}
-                        type="button"
-                        onClick={() => setConfirmingServer({ url: server.url, label: server.label })}
-                        disabled={active || submitting}
-                        className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
-                        <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
-                          {hostOf(server.url)}
-                        </div>
-                      </div>
-                      {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
-                    </button>
-                );
-              })}
-            </div>
-            {errorFor("server")}
-            {confirmingServer && (
-              <ConfirmPanel
-                message={`Switch to ${confirmingServer.label}? This forgets your stored key, disconnects your tools, and relaunches Gate Connect against the new server.`}
-                confirmLabel={submitting ? "Switching…" : "Switch and relaunch"}
-                busy={submitting}
-                onConfirm={() => void switchServer(confirmingServer.url)}
-                onCancel={() => setConfirmingServer(null)}
-              />
-            )}
-          </>
-      )}
 
       <SectionLabel>This machine</SectionLabel>
       <div className="flex items-center gap-3 px-3.5 py-2.5">
@@ -714,11 +654,21 @@ export function Settings({
         {version && (
           <p className="px-3.5 pt-1.5 font-mono text-[10.5px] text-gc-ink-3">v{version}</p>
         )}
-        {/* Last, and under its own heading. Reset used to appear twice - once
-            in each auth branch - sitting beside routine actions like Replace
-            key, separated from them only by colour. */}
-        <SectionLabel>Reset</SectionLabel>
-        <div className="px-3.5 pb-1">
+        {/* The last row of the screen: the two things you only reach on
+            purpose. Reset stays last and keeps error-deep - it lost its own
+            heading, so colour and position are now the whole signal. Dev mode
+            pairs with it because both change which environment you are
+            pointed at; it is not part of Help. */}
+        <div className="mt-2.5 flex items-center justify-between border-t border-gc-line px-3.5 pb-1 pt-2.5">
+          <button
+            type="button"
+            onClick={() => setDevMode((v) => !v)}
+            aria-expanded={devMode}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            <Icon name="settings" size={14} />
+            Dev mode
+          </button>
           <button
             type="button"
             onClick={() => setConfirmingReset(true)}
@@ -729,6 +679,48 @@ export function Settings({
             Reset Gate Connect
           </button>
         </div>
+      {devMode && !replacing && (
+          <>
+            {/* Not a SectionLabel: this is a sub-panel of Help, and an h2
+                here made the document outline gain and lose a top-level
+                section every time Dev mode toggled. */}
+            <div className="px-3.5 pb-1.5 pt-1 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+              Gateway server
+            </div>
+            <div className="flex flex-col gap-2 px-3.5 pb-1">
+              {GATEWAY_SERVERS.map((server) => {
+                const active = server.url === account.gateway_base_url;
+                return (
+                    <button
+                        key={server.url}
+                        type="button"
+                        onClick={() => setConfirmingServer({ url: server.url, label: server.label })}
+                        disabled={active || submitting}
+                        className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
+                        <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
+                          {hostOf(server.url)}
+                        </div>
+                      </div>
+                      {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
+                    </button>
+                );
+              })}
+            </div>
+            {errorFor("server")}
+            {confirmingServer && (
+              <ConfirmPanel
+                message={`Switch to ${confirmingServer.label}? This forgets your stored key, disconnects your tools, and relaunches Gate Connect against the new server.`}
+                confirmLabel={submitting ? "Switching…" : "Switch and relaunch"}
+                busy={submitting}
+                onConfirm={() => void switchServer(confirmingServer.url)}
+                onCancel={() => setConfirmingServer(null)}
+              />
+            )}
+          </>
+      )}
         {errorFor("reset")}
         {confirmingReset && (
           <ConfirmPanel
