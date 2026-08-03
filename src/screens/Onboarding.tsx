@@ -23,11 +23,11 @@ function RoutingHero() {
     <figure>
       <img
         src={routingScreen}
-        alt="Gate Connect routing screen: a Route through Gate toggle above per-app toggles"
+        alt="The Gate Connect popover: a Routing switch above one row per model family"
         className="mx-auto block w-full max-w-[256px]"
       />
       <figcaption className="mt-1.5 text-[10.5px] text-gc-ink-3">
-        The Routing screen in Gate Connect
+        The Gate Connect popover
       </figcaption>
     </figure>
   );
@@ -82,9 +82,9 @@ function buildSteps(platform: Platform): Step[] {
     {
       hero: <RoutingHero />,
       title: "How to turn it on",
-      sub: "Protection is a per-app choice: turn on the apps you want Gate to cover.",
+      sub: "Routing is a per-app choice: turn on the apps you want Gate to cover.",
       body: [
-        "For Claude Code, Codex, and opencode, Gate Connect points the app's own config at your gateway and restores it when you disconnect. For apps like Claude Desktop or ChatGPT, it routes the provider's domain through a local proxy.",
+        "For Claude Code, Codex, and OpenCode, Gate Connect points the app's own config at your gateway and restores it when you disconnect. For apps like Claude Desktop or ChatGPT, it routes the provider's domain through a local proxy.",
         "Connected apps route through Gate; unselected apps stay unchanged. Your Gate key stays in the operating system keychain, not a plain file.",
       ],
     },

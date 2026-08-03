@@ -123,7 +123,7 @@ onReauth,
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px] font-medium text-gc-ink">{org.name}</div>
                 <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
-                  {org.slug} · {org.role}
+                  {[org.slug, org.role].filter(Boolean).join(" · ")}
                 </div>
               </div>
               {choosing === org.orgId && (

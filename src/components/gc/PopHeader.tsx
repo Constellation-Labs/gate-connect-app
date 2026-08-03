@@ -40,7 +40,7 @@ export function PopHeader({
             pill === "connected"
               ? "Routing on"
               : pill === "partial"
-                ? "Partly routed"
+                ? "Needs trust"
                 : "Routing off"
           }
         />

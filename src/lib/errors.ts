@@ -146,7 +146,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
   if (lc.includes("no space") || lc.includes("disk full")) {
     return {
       title: "Not enough disk space",
-      hint: "Free up some space on your Mac and try again.",
+      hint: "Free up some disk space and try again.",
       raw,
     };
   }
@@ -162,7 +162,7 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     close_agents: "Couldn't close the running tools and apps",
     quit_disable: "Couldn't disconnect the tools",
     proxy_toggle: "Couldn't toggle routing",
-    provider_toggle: "Couldn't toggle the provider",
+    provider_toggle: "Couldn't change that app's routing",
     trust_ca: "Couldn't trust the certificate",
     untrust_ca: "Couldn't remove the certificate trust",
     startup: "Couldn't load state at startup",

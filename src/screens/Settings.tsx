@@ -321,11 +321,12 @@ export function Settings({
           <Icon name="cube" size={16} />
         </div>
         <div className="min-w-0 flex-1">
+          {/* Host only. The full URL sat right under it and both truncated
+              ("gateway.constellationgat…" over "https://gateway.constell…"),
+              so the second line spent a row saying less exactly the same
+              thing. The copy button is what guarantees exactness. */}
           <div className="truncate text-[13px] font-medium text-gc-ink">
             {hostOf(account.gateway_base_url)}
-          </div>
-          <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
-            {account.gateway_base_url}
           </div>
         </div>
         <ConnPill
