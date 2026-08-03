@@ -71,12 +71,21 @@ export function Home({
   // At most one banner at a time, most actionable first: transient chrome
   // must never bury the ledger (the pills are the point of the screen). The
   // stale-port notice outranks the change notice because it means the user's
-  // tools are broken right now, not merely out of date.
-  const banner: "stale" | "change" | null = staleAgentsHint
-    ? "stale"
-    : changeNotice
-      ? "change"
-      : null;
+  // tools are broken right now, not merely out of date. The trust card
+  // outranks both: it is the reason nothing is routing, so a change notice
+  // stacked under it would just be a second thing to read first.
+  const banner: "stale" | "change" | null =
+    showProxy && partial
+      ? null
+      : staleAgentsHint
+        ? "stale"
+        : changeNotice
+          ? "change"
+          : null;
+
+  // Whether the certificate explanation is open. Collapsed by default; see the
+  // card below for why.
+  const [caExplain, setCaExplain] = useState(false);
 
   // Whether Launch at login is on, so the keep-routing tip only shows when
   // it would actually help (read the state, don't send the user to Settings
@@ -143,29 +152,49 @@ export function Home({
         {/* Gated on `partial`, not just an untrusted CA: with no app rows
             switched on the certificate blocks nothing, and a warning card
             would contradict the green header pill. */}
+        {/* Compact by default. This state used to open with a 60-word card and
+            a full-width button, which pushed every ledger row off-screen in
+            the one state where the pills matter most: the untrusted CA is the
+            usual answer to "why isn't my tool routing?", and the answer sat
+            below a fold in a window with no visible scrollbar. The full
+            explanation is one tap away, before consent, because a root CA
+            deserves it - but it no longer taxes the user who already knows. */}
         {showProxy && partial && (
           <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
             <div className="flex items-center gap-2.5">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning">
                 <Icon name="shieldCheck" size={16} />
               </div>
-              <div className="text-[13px] font-semibold text-gc-ink">
-                Trust the Gate certificate
+              <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-gc-ink">
+                Apps with no gateway setting need the Gate certificate.
               </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setCaExplain((v) => !v)}
+                aria-expanded={caExplain}
+                className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink disabled:opacity-40"
+              >
+                Trust it…
+              </button>
             </div>
-            <p className="mt-2 text-[11.5px] leading-snug text-gc-ink-2">
-              Desktop apps with no gateway setting route through Gate&rsquo;s
-              local proxy, which needs a certificate your {trustStore} trusts.
-              The certificate and its private key are created on this machine
-              and never leave it. Until it&rsquo;s trusted, those apps
-              don&rsquo;t route.
-            </p>
-            <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
-              You can remove it anytime in Settings under Certificate.
-            </p>
-            <Button variant="accent" full className="mt-2.5" disabled={busy} onClick={onTrustCa}>
-              Trust certificate
-            </Button>
+            {caExplain && (
+              <>
+                <p className="mt-2.5 text-[11.5px] leading-snug text-gc-ink-2">
+                  Desktop apps with no gateway setting route through
+                  Gate&rsquo;s local proxy, which needs a certificate your{" "}
+                  {trustStore} trusts. The certificate and its private key are
+                  created on this machine and never leave it. Until it&rsquo;s
+                  trusted, those apps don&rsquo;t route.
+                </p>
+                <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
+                  You can remove it anytime in Settings under Certificate.
+                </p>
+                <Button variant="accent" full className="mt-2.5" disabled={busy} onClick={onTrustCa}>
+                  Trust certificate
+                </Button>
+              </>
+            )}
           </div>
         )}
 

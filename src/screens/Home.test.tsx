@@ -107,30 +107,49 @@ afterEach(() => {
 });
 
 describe("Home CA-trust card", () => {
-  it("appears when routing is on with the CA untrusted, naming the keychain on macOS", () => {
+  it("opens compact, so the ledger survives the one state that explains it", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] });
+    expect(screen.getByText(/Apps with no gateway setting need/)).toBeTruthy();
+    // The 60-word explanation and the button are behind the action, not in
+    // the user's way: this state used to push every row off-screen.
+    expect(screen.queryByText(/created on this machine/)).toBeNull();
+    expect(screen.queryByText("Trust certificate")).toBeNull();
+  });
+
+  it("explains before consent, naming the keychain on macOS", () => {
+    renderHome({ caTrusted: false, domains: [makeDomain()] });
+    fireEvent.click(screen.getByRole("button", { name: "Trust it…" }));
     expect(screen.getByText(/certificate your keychain trusts/)).toBeTruthy();
     expect(screen.getByText(/created on this machine/)).toBeTruthy();
+    expect(screen.getByText(/remove it anytime in Settings/)).toBeTruthy();
   });
 
   it("names the certificate store on Windows", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] }, "windows");
+    fireEvent.click(screen.getByRole("button", { name: "Trust it…" }));
     expect(screen.getByText(/certificate your certificate store trusts/)).toBeTruthy();
   });
 
   it("calls onTrustCa from the accent button", () => {
     const onTrustCa = vi.fn();
     renderHome({ caTrusted: false, domains: [makeDomain()], onTrustCa });
+    fireEvent.click(screen.getByRole("button", { name: "Trust it…" }));
     fireEvent.click(screen.getByText("Trust certificate"));
     expect(onTrustCa).toHaveBeenCalledTimes(1);
   });
 
+  it("suppresses the change notice, so the blocker is the only thing to read", () => {
+    renderHome({ caTrusted: false, domains: [makeDomain()], changeNotice: "on" });
+    expect(screen.getByText(/Apps with no gateway setting need/)).toBeTruthy();
+    expect(screen.queryByText(/Routing is on\./)).toBeNull();
+  });
+
   it("is absent while routing is off or the CA is trusted", () => {
     renderHome({ proxyOn: false, caTrusted: false, domains: [makeDomain()] });
-    expect(screen.queryByText("Trust certificate")).toBeNull();
+    expect(screen.queryByText(/Apps with no gateway setting need/)).toBeNull();
     cleanup();
     renderHome({ caTrusted: true });
-    expect(screen.queryByText("Trust certificate")).toBeNull();
+    expect(screen.queryByText(/Apps with no gateway setting need/)).toBeNull();
   });
 });
 
