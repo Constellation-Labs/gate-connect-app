@@ -258,7 +258,10 @@ export function Onboarding() {
           </span>
           Do not show this intro again
         </label>
-        <div className="flex items-center gap-[7px]" aria-hidden>
+        {/* Decorative dots, but the position they encode is not: without the
+            label the tour never tells a screen-reader user how far along they
+            are. */}
+        <div className="flex items-center gap-[7px]" role="img" aria-label={`Step ${index + 1} of ${steps.length}`}>
           {steps.map((_, i) => (
             <span
               key={i}

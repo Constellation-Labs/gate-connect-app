@@ -161,9 +161,11 @@ describe("Home master toggle", () => {
     expect(onToggleProxy).toHaveBeenCalledTimes(1);
   });
 
-  it("says the certificate blocks coverage when partial", () => {
+  it("keeps the count while saying the certificate blocks coverage", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] });
-    expect(screen.getByText("On · certificate not trusted yet")).toBeTruthy();
+    // The count used to disappear in this state, which is the one state where
+    // the user most wants to know how much is still working.
+    expect(screen.getByText("On · 0 of 1 routing · certificate not trusted")).toBeTruthy();
   });
 
   it("counts what is routing against everything routable", () => {

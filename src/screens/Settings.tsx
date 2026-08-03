@@ -324,7 +324,8 @@ export function Settings({
         </div>
         <ConnPill
           state={connected ? "connected" : "signedout"}
-          label={connected ? "Signed in" : "Signed out"}
+          // A stored key is not a session. Only OAuth is "Signed in".
+          label={isOAuth ? (connected ? "Signed in" : "Signed out") : connected ? "Key stored" : "No key"}
         />
         <IconButton
           icon={copiedUrl ? "check" : "copy"}

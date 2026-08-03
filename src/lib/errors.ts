@@ -93,18 +93,32 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     };
   }
 
-  // macOS auth prompt canceled (osascript exits -128 on user cancel).
+  // Auth prompt cancelled (macOS osascript exits -128; the Windows and Linux
+  // credential prompts report their own cancels through the same branch).
   if (
     lc.includes("user canceled") ||
     lc.includes("user cancelled") ||
     lc.includes("-128") ||
     (lc.includes("authorization") && lc.includes("denied"))
   ) {
+    // The verb has to name the button the user actually pressed. A cancelled
+    // certificate prompt used to say "Click Connect again" next to a button
+    // labelled Trust certificate.
     const verb =
-      context === "forget" ? "Reset" : context === "sign_out" ? "Sign out" : "Connect";
+      context === "forget"
+        ? "Reset"
+        : context === "sign_out"
+          ? "Sign out"
+          : context === "trust_ca"
+            ? "Trust certificate"
+            : context === "untrust_ca"
+              ? "Remove"
+              : context === "close_agents" || context === "quit_disable"
+                ? "Close everything"
+                : "Connect";
     return {
-      title: "macOS prompt canceled",
-      hint: `Click ${verb} again and approve the macOS password prompt.`,
+      title: "The system prompt was cancelled",
+      hint: `Click ${verb} again and approve your system password prompt.`,
       raw,
     };
   }
@@ -112,8 +126,8 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
   // macOS denied keychain access entirely (rare - system-level block).
   if (lc.includes("user interaction is not allowed") || lc.includes("errsecinteraction")) {
     return {
-      title: "macOS blocked keychain access",
-      hint: "Open System Settings → Privacy & Security and allow Gate Connect to use the keychain, then try again.",
+      title: "The system blocked keychain access",
+      hint: "Allow Gate Connect to use your system credential store in your OS privacy settings, then try again.",
       raw,
     };
   }

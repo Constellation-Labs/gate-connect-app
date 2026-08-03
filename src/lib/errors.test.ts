@@ -36,9 +36,20 @@ describe("classifyError", () => {
       expect(result.title.toLowerCase()).toContain("api key");
     });
 
-    it("classifies a user-canceled macOS prompt", () => {
+    it("classifies a cancelled system prompt without naming one OS", () => {
       const result = classifyError("User canceled (-128)", "generic");
-      expect(result.title.toLowerCase()).toContain("canceled");
+      expect(result.title.toLowerCase()).toContain("cancelled");
+      // The branch fires on Windows and Linux too, so the copy must not say
+      // "macOS" the way it used to.
+      expect(result.title.toLowerCase()).not.toContain("macos");
+      expect(result.hint.toLowerCase()).not.toContain("macos");
+    });
+
+    it("names the button the user actually pressed", () => {
+      expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain(
+        "Trust certificate",
+      );
+      expect(classifyError("User canceled (-128)", "forget").hint).toContain("Reset");
     });
 
     it("falls back to a context-specific generic title when nothing matches", () => {

@@ -38,9 +38,13 @@ export function Success({
             <Icon name="check" size={11} stroke={3} />
           </span>
         </div>
-        <div className="text-[17px] font-semibold tracking-[-0.02em] text-gc-ink">
+        <h1
+          tabIndex={-1}
+          data-screen-focus
+          className="text-[17px] font-semibold tracking-[-0.02em] text-gc-ink outline-none"
+        >
           You’re connected
-        </div>
+        </h1>
         <p className="mt-1.5 max-w-[280px] text-[12.5px] leading-[1.45] text-gc-ink-3">
           {offerRouting
             ? "Gate Connect is linked to your workspace. One step left: turn on routing to send your agents through Gate."

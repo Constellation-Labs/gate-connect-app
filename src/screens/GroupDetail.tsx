@@ -107,7 +107,12 @@ export function GroupDetail({
 
       <div className="flex items-start gap-3 px-3.5 py-3.5">
         <div className="min-w-0 flex-1">
-          <div className="text-[14px] font-semibold text-gc-ink">{group.switchLabel}</div>
+          {/* aria-hidden: this is verbatim the adjacent switch's accessible
+              name, so leaving it exposed made AT read the same sentence
+              twice in a row. */}
+          <div aria-hidden className="text-[14px] font-semibold text-gc-ink">
+            {group.switchLabel}
+          </div>
           <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
             {group.blurb} {group.routed} of {group.members.length} routing.
           </div>

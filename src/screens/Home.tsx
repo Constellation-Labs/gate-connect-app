@@ -123,10 +123,13 @@ export function Home({
             <div className="min-w-0 flex-1">
               <div className="text-[13.5px] font-semibold text-gc-ink">Routing</div>
               <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
+                {/* The count survives the certificate state. Dropping it was
+                    backwards: that is exactly when the user wants to know how
+                    much is still working. */}
                 {!proxyOn
                   ? "Off · not routing"
                   : partial
-                    ? "On · certificate not trusted yet"
+                    ? `On · ${routedCount} of ${routableCount} routing · certificate not trusted`
                     : routedCount > 0
                       ? `On · ${routedCount} of ${routableCount} routing`
                       : "On · nothing enabled yet"}
@@ -135,8 +138,15 @@ export function Home({
                   warning card or banner outranks a tip. */}
               {proxyOn && launchAtLogin === false && !partial && banner === null && !error && (
                 <div className="mt-1 text-[11px] leading-snug text-gc-ink-3">
-                  Turn on Launch at login in Settings to keep routing on after
-                  a restart.
+                  {/* It named a control and left the user to find it. */}
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="relative z-[1] font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
+                  >
+                    Turn on Launch at login
+                  </button>{" "}
+                  to keep routing on after a restart.
                 </div>
               )}
             </div>
@@ -317,10 +327,20 @@ export function Home({
           })}
         </div>
       ) : (
-        <p className="px-3.5 pb-3 text-[11.5px] leading-snug text-gc-ink-3">
-          Nothing to route yet. Tools like Claude Code, Codex, and OpenCode
-          show up here once installed.
-        </p>
+        <div className="mx-3.5 mb-1 flex items-start gap-2.5 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-4">
+            <Icon name="search" size={16} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[12.5px] font-medium text-gc-ink">
+              Nothing to route yet
+            </div>
+            <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
+              Gate Connect picks up Claude Code, Codex, OpenCode and friends
+              once they&rsquo;re installed. Install one and reopen this window.
+            </p>
+          </div>
+        </div>
       )}
 
       {/* The dashboard is where the traffic this screen routes actually ends

@@ -119,3 +119,11 @@
     transform: none;
   }
 }
+
+/* Keyboard focus must never land under the sticky panel header. Tab-wrap
+   inside the scroll region used to scroll the target flush to the top of the
+   container, which is exactly where PopHeader/SubHeader sits. */
+.gc-scroll :is(a, button, input, select, textarea, [tabindex]):focus-visible {
+  scroll-margin-top: 56px;
+  scroll-margin-bottom: 16px;
+}

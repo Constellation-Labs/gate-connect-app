@@ -78,9 +78,17 @@ onReauth,
       ) : (
         <div className="flex flex-col items-center px-5 pt-7 text-center">
           <ConstellationHexMark size={40} fill="#002a5f" />
-          <div className="mt-3 text-[17px] font-semibold tracking-[-0.02em] text-gc-navy">
+          {/* A real, focusable heading: App moves focus to
+              [data-screen-focus] on every screen change, and this screen had
+              neither PopHeader nor SubHeader, so focus fell to body and the
+              screen announced nothing. */}
+          <h1
+            tabIndex={-1}
+            data-screen-focus
+            className="mt-3 text-[17px] font-semibold tracking-[-0.02em] text-gc-navy outline-none"
+          >
             Choose an organization
-          </div>
+          </h1>
           <p className="mt-1.5 max-w-[290px] text-[12.5px] leading-[1.45] text-gc-ink-3">
             Pick which organization to route your Gate traffic through.
           </p>

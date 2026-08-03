@@ -43,6 +43,7 @@ import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
+import { Icon } from "./components/gc/Icon";
 import { track, trackError } from "./lib/analytics";
 import { backendErrorContext, classifyError, type ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
@@ -875,9 +876,21 @@ export function App() {
     );
   }
 
+  // Named per platform, the way `trustStore` already is elsewhere: the
+  // reassurance is worthless if it names the wrong vault. Only shown once
+  // there is actually a credential to reassure about.
+  const credentialStore =
+    account && (account.has_api_key || (oauth?.signed_in ?? false))
+      ? platform === "windows"
+        ? "Credential Manager"
+        : platform === "linux"
+          ? "secret service"
+          : "keychain"
+      : null;
+
   return (
     <div
-      className={`relative flex h-full w-full flex-col overflow-y-auto overflow-x-hidden bg-gc-surface text-gc-ink${
+      className={`relative flex h-full w-full flex-col overflow-hidden bg-gc-surface text-gc-ink${
         // Linux runs as a borderless, opaque window, so a rounded card just
         // exposes the square window corners behind it. macOS/Windows round the
         // window itself, so the card rounds to match.
@@ -915,18 +928,40 @@ export function App() {
           a screen reader's virtual cursor can't wander under the dialog (the
           focus traps already handle Tab). */}
       <div
-        className="flex grow flex-col"
+        className="flex min-h-0 grow flex-col"
         aria-hidden={
           quitTools !== null || routingNotice !== null || updateTakeoverVisible
             ? true
             : undefined
         }
       >
-        {body}
-        {version && (
-          <p className="mt-auto shrink-0 px-3.5 py-2 text-center font-mono text-[10.5px] text-gc-ink-3">
-            v{version}
-          </p>
+        {/* Only the body scrolls. The version line used to live inside the
+            scroll container, so it drifted with the content - PRODUCT.md says
+            header and footer never scroll, and on Home it meant the footer
+            and the dashboard link both sat below an invisible fold. */}
+        <div className="gc-scroll min-h-0 grow overflow-y-auto overflow-x-hidden">{body}</div>
+        {/* PRODUCT.md's first principle is that every screen should make the
+            user feel where the key lives. Home never said "keychain" once -
+            the claim lived in the tour, one line of Settings, and two taps
+            into a group detail, i.e. everywhere except the screen people
+            actually look at. Now it is pinned, so it is on every screen and
+            costs the scroll budget nothing. */}
+        {(credentialStore || version) && (
+          <div className="flex shrink-0 items-center gap-2 border-t border-gc-line px-3.5 py-2">
+            {credentialStore && (
+              <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-gc-ink-3">
+                <Icon name="key" size={11} className="shrink-0" />
+                <span className="truncate">
+                  {account?.auth_mode === "oauth" ? "Session" : "Key"} in your {credentialStore}
+                </span>
+              </span>
+            )}
+            {version && (
+              <span className="ml-auto shrink-0 font-mono text-[10.5px] text-gc-ink-3">
+                v{version}
+              </span>
+            )}
+          </div>
         )}
       </div>
     </div>
