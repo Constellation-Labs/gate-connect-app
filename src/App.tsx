@@ -1097,8 +1097,12 @@ export function App() {
             {credentialStore && (
               <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-gc-ink-3">
                 <Icon name="key" size={11} className="shrink-0" />
+                {/* No "your": the longest form this can produce is Windows
+                    with OAuth, and "Session in your Credential Manager" was
+                    170px into a 153px slot. Dropping the possessive buys 17px
+                    and fits all six platform / auth-mode combinations. */}
                 <span className="truncate">
-                  {account?.auth_mode === "oauth" ? "Session" : "Key"} in your {credentialStore}
+                  {account?.auth_mode === "oauth" ? "Session" : "Key"} in {credentialStore}
                 </span>
               </span>
             )}
