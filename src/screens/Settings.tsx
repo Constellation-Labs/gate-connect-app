@@ -64,7 +64,6 @@ export function Settings({
   onSwitchOrg,
   onSwitchGateway,
   onReplayTour,
-  version,
   routingOn,
   caTrusted,
   proxyBusy,
@@ -80,8 +79,6 @@ export function Settings({
   onSwitchOrg: () => void;
   onSwitchGateway: (url: string) => Promise<void>;
   onReplayTour: () => void;
-  /** Shown under Help; the popover footer has no room for it. */
-  version: string;
   routingOn: boolean;
   caTrusted: boolean;
   proxyBusy: boolean;
@@ -651,9 +648,6 @@ export function Settings({
             Replay tour
           </button>
         </div>
-        {version && (
-          <p className="px-3.5 pt-1.5 font-mono text-[10.5px] text-gc-ink-3">v{version}</p>
-        )}
         {/* The last row of the screen: the two things you only reach on
             purpose. Reset stays last and keeps error-deep - it lost its own
             heading, so colour and position are now the whole signal. Dev mode

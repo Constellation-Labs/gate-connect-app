@@ -936,7 +936,6 @@ export function App() {
         onSignOut={signOut}
         onSwitchOrg={switchOrg}
         onSwitchGateway={switchGatewayServer}
-        version={version}
         onReplayTour={() => {
           openOnboardingWindow("settings").catch(() => {});
         }}
@@ -1011,7 +1010,11 @@ export function App() {
       ? platform === "windows"
         ? "Credential Manager"
         : platform === "linux"
-          ? "secret service"
+          ? // "keyring", not "secret service". The latter is the freedesktop
+            // D-Bus API we store through; the former is what GNOME calls the
+            // thing in its own UI, and it parallels "keychain". Nobody has
+            // ever seen "secret service" in a settings window.
+            "keyring"
           : "keychain"
       : null;
 
@@ -1109,16 +1112,21 @@ export function App() {
                 than the only action on the strip. Indigo is defined as
                 affordance, which is what this is. The footer is pinned, so
                 the extra weight costs Home no height. */}
-            <button
-              type="button"
-              onClick={() => {
-                void openExternal(GATE_DASHBOARD_URL);
-              }}
-              className="-mr-1 ml-auto flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
-            >
-              <Icon name="cube" size={13} />
-              Gate dashboard
-            </button>
+            <span className="ml-auto flex shrink-0 items-center gap-2">
+              {version && (
+                <span className="font-mono text-[10.5px] text-gc-ink-3">v{version}</span>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  void openExternal(GATE_DASHBOARD_URL);
+                }}
+                className="-mr-1 flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+              >
+                <Icon name="cube" size={13} />
+                Gate dashboard
+              </button>
+            </span>
           </div>
         )}
       </div>

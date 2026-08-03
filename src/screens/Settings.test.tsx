@@ -48,7 +48,6 @@ async function renderOn(platform: Platform, props: Partial<React.ComponentProps<
       onSwitchOrg={vi.fn()}
       onSwitchGateway={vi.fn()}
       onReplayTour={vi.fn()}
-      version="0.4.2"
       routingOn={false}
       caTrusted={false}
       proxyBusy={false}
