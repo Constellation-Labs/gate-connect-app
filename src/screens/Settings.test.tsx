@@ -79,10 +79,26 @@ describe("Settings certificate section", () => {
     expect(screen.getByText(/still trusted in your certificate store/i)).toBeTruthy();
   });
 
-  it("is hidden while routing is running", async () => {
+  it("stays available while routing is on, because Home promises it does", async () => {
+    // Home tells the user "You can remove it anytime in Settings under
+    // Certificate" in the untrusted-CA state, i.e. with routing on. Hiding the
+    // section behind !routingOn broke that promise the moment they acted on
+    // it, for a root CA on their machine.
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true, routingOn: true });
-    expect(screen.queryByText(/still trusted/i)).toBeNull();
+    expect(screen.getByText(/still trusted in your keychain/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+  });
+
+  it("warns what removal costs only while routing is on", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos", { caTrusted: true, routingOn: true });
+    expect(screen.getByText(/stop routing/i)).toBeTruthy();
+    cleanup();
+
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos", { caTrusted: true });
+    expect(screen.queryByText(/stop routing/i)).toBeNull();
   });
 
   it("is hidden when the CA is not trusted", async () => {

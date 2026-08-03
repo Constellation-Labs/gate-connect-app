@@ -674,11 +674,14 @@ async fn proxy_disable(
     // Off the main thread: disable runs system-proxy subprocesses and joins
     // the engine thread.
     let state = tauri::async_runtime::spawn_blocking(|| {
-        // Global OFF: snapshot + disconnect all providers BEFORE the proxy
-        // stops, so config-based tools (Codex) also stop and their domains
-        // are still flippable. Best-effort so it never blocks the kill
-        // switch.
-        if let Err(e) = gate_connect_core::provider::snapshot_and_disable_all() {
+        // Global OFF: snapshot + disconnect everything managed BEFORE the
+        // proxy stops, so config-based tools (Codex) also stop and their
+        // domains are still flippable. The full sweep, not the provider-only
+        // pass: the catalog maps no provider to OpenCode and friends, and
+        // leaving them pointed at the relay we are about to kill would strand
+        // them while the UI reports "not routing". Best-effort so it never
+        // blocks the kill switch.
+        if let Err(e) = gate_connect_core::provider::snapshot_and_disable_everything() {
             eprintln!("[gate] disabling providers on proxy disable failed: {e}");
             report_backend_error("provider_disable", format!("{e:#}"));
         }
@@ -1203,8 +1206,7 @@ fn quit_app(app: tauri::AppHandle) {
 async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> {
     // Off the main thread: disconnect does config-file I/O.
     tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::provider::snapshot_and_disable_all_for_quit()
-            .map_err(|e| format!("{e:#}"))
+        gate_connect_core::provider::snapshot_and_disable_everything().map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("disconnect join error: {e}"))??;

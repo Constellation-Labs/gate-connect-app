@@ -572,7 +572,12 @@ export function Settings({
           </div>
         </div>
       )}
-      {caTrusted && !routingOn && (
+      {/* Gated on trust alone, not on routing being off. Home promises "You
+          can remove it anytime in Settings under Certificate" while routing is
+          on, which is exactly the state the user reads it in; hiding the
+          section behind !routingOn broke that promise at the moment they acted
+          on it, for a root CA. The consequence goes in the copy instead. */}
+      {caTrusted && (
         <>
           <SectionLabel>Certificate</SectionLabel>
           <div className="flex items-center gap-3 px-3.5 py-2.5">
@@ -580,7 +585,8 @@ export function Settings({
               <div className="text-[13px] font-medium text-gc-ink">Gate certificate</div>
               <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
                 Still trusted in your {trustStore}. Removing it clears the
-                certificate and private key from this machine.
+                certificate and private key from this machine
+                {routingOn && ", and apps with no gateway setting of their own stop routing"}.
               </div>
             </div>
             <button

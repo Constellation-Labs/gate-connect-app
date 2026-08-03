@@ -382,8 +382,8 @@ pub fn reconcile_enabled() -> Result<()> {
 /// Provider slugs to re-enable on master-on.
 const PROVIDER_SNAPSHOT: &str = "restore-snapshot.json";
 /// Tool slugs no provider maps (OpenCode and friends), disconnected by the
-/// quit-time teardown and reconnected alongside the provider snapshot.
-const QUIT_TOOLS_SNAPSHOT: &str = "restore-tools-snapshot.json";
+/// master-off sweep and reconnected alongside the provider snapshot.
+const SWEPT_TOOLS_SNAPSHOT: &str = "restore-tools-snapshot.json";
 
 fn snapshot_path(file: &str) -> Result<PathBuf> {
     Ok(crate::env::app_support_dir()?.join("provider").join(file))
@@ -428,15 +428,15 @@ fn master_flow_guard() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Master OFF: record every currently-enabled provider, then disconnect them
-/// all. Call this *before* stopping the proxy so each provider's domain is
-/// still flippable. Best-effort per provider so one failure can't strand the
-/// rest. The snapshot survives until the master is turned back on.
-pub fn snapshot_and_disable_all() -> Result<()> {
-    let _guard = master_flow_guard();
-    snapshot_and_disable_all_locked()
-}
-
+/// The provider half of master-off: record every currently-enabled provider,
+/// then disconnect them all. Runs *before* the proxy stops so each provider's
+/// domain is still flippable. Best-effort per provider so one failure can't
+/// strand the rest. The snapshot survives until the master is turned back on.
+///
+/// Deliberately not public: on its own it only covers tools the catalog
+/// claims, and every caller wants [`snapshot_and_disable_everything`]. Master
+/// off used to call the provider pass alone, which is how OpenCode and friends
+/// ended up stranded on a dead relay.
 fn snapshot_and_disable_all_locked() -> Result<()> {
     let enabled: Vec<String> = list()
         .into_iter()
@@ -462,15 +462,21 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
     Ok(())
 }
 
-/// Quit-time master-off (the "turn off integrations and quit" choice): the
-/// provider snapshot + disable, then a sweep that disconnects every registry
-/// tool still managed (Connected or Drifted) afterwards - standalone tools no
-/// provider maps (OpenCode and friends), and provider tools the provider pass
-/// missed (a drifted config, a failed disable). Their configs point at the
-/// loopback relay, which dies with the app. Swept tools are recorded in their
-/// own snapshot so [`restore_all`] reconnects them alongside the providers.
-/// Best-effort per tool, mirroring the provider pass.
-pub fn snapshot_and_disable_all_for_quit() -> Result<()> {
+/// Master OFF, in full: the provider snapshot + disable, then a sweep that
+/// disconnects every registry tool still managed (Connected or Drifted)
+/// afterwards - standalone tools no provider maps (OpenCode and friends), and
+/// provider tools the provider pass missed (a drifted config, a failed
+/// disable). Their configs point at the loopback relay, which dies with the
+/// engine. Swept tools are recorded in their own snapshot so [`restore_all`]
+/// reconnects them alongside the providers. Best-effort per tool, mirroring
+/// the provider pass.
+///
+/// Both master-off paths use this: the routing switch and the quit-time "turn
+/// off integrations and quit" choice. They are the same event as far as the
+/// user's tools are concerned - the relay stops either way - and using the
+/// narrower [`snapshot_and_disable_all`] for the switch left the harnesses
+/// pointed at a dead port while the UI reported "not routing".
+pub fn snapshot_and_disable_everything() -> Result<()> {
     let _guard = master_flow_guard();
     snapshot_and_disable_all_locked()?;
     let mut disconnected = Vec::new();
@@ -487,17 +493,17 @@ pub fn snapshot_and_disable_all_for_quit() -> Result<()> {
         }
     }
     // Union for the same reason as the provider snapshot.
-    let mut snapshot = load_snapshot(QUIT_TOOLS_SNAPSHOT)?;
+    let mut snapshot = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
     for slug in disconnected {
         if !snapshot.contains(&slug) {
             snapshot.push(slug);
         }
     }
-    save_snapshot(QUIT_TOOLS_SNAPSHOT, &snapshot)
+    save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)
 }
 
 /// Master ON: re-enable every provider that was on when routing was last
-/// turned off, then reconnect any standalone tools the quit-time teardown
+/// turned off, then reconnect any standalone tools the master-off sweep
 /// disconnected. Entries that fail to restore stay in their snapshot so a
 /// later call can retry them; each snapshot is cleared once everything in it
 /// is back. Idempotent; a missing snapshot is a no-op. Callers run this twice
@@ -518,17 +524,17 @@ pub fn restore_all() -> Result<()> {
     } else {
         save_snapshot(PROVIDER_SNAPSHOT, &failed)?;
     }
-    restore_quit_tools()
+    restore_swept_tools()
 }
 
-/// Reconnect the standalone tools the quit-time teardown disconnected (see
-/// [`snapshot_and_disable_all_for_quit`]). Same retry semantics as the
+/// Reconnect the standalone tools the master-off sweep disconnected (see
+/// [`snapshot_and_disable_everything`]). Same retry semantics as the
 /// provider snapshot: failures stay recorded, the file clears once every tool
 /// is back. Tools uninstalled (or slugs unknown) since the quit are dropped.
 /// Signed out since the quit: leave the snapshot for a later signed-in
 /// restore - there's no gateway to point the tools at.
-fn restore_quit_tools() -> Result<()> {
-    let slugs = load_snapshot(QUIT_TOOLS_SNAPSHOT)?;
+fn restore_swept_tools() -> Result<()> {
+    let slugs = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
     if slugs.is_empty() {
         return Ok(());
     }
@@ -555,9 +561,9 @@ fn restore_quit_tools() -> Result<()> {
         }
     }
     if failed.is_empty() {
-        clear_snapshot(QUIT_TOOLS_SNAPSHOT)
+        clear_snapshot(SWEPT_TOOLS_SNAPSHOT)
     } else {
-        save_snapshot(QUIT_TOOLS_SNAPSHOT, &failed)
+        save_snapshot(SWEPT_TOOLS_SNAPSHOT, &failed)
     }
 }
 
