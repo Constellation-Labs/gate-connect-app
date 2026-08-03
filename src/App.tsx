@@ -41,6 +41,7 @@ import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
+import { OAuthOffer } from "./components/OAuthOffer";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
@@ -88,6 +89,26 @@ async function forwardBackendErrors(): Promise<void> {
 // the inline restart hint that carries the same advice, so the daily user
 // isn't re-interrupted every session. Storage failures degrade to "already
 // seen" - never trap the user in a recurring takeover.
+// Shown once to accounts still on a pasted key. FirstRun already leads with
+// OAuth, so this exists for installs that predate it (or chose the key path
+// once) and would otherwise never revisit the decision. Same fail-safe: a
+// storage failure reads as seen.
+const OAUTH_OFFER_SEEN_KEY = "gc.oauth-offer.v1.seen";
+function hasSeenOAuthOffer(): boolean {
+  try {
+    return localStorage.getItem(OAUTH_OFFER_SEEN_KEY) === "1";
+  } catch {
+    return true;
+  }
+}
+function markOAuthOfferSeen(): void {
+  try {
+    localStorage.setItem(OAUTH_OFFER_SEEN_KEY, "1");
+  } catch {
+    /* noop */
+  }
+}
+
 const ROUTING_TAKEOVER_SEEN_KEY = "gc.routing-takeover.v1.seen";
 function hasSeenRoutingTakeover(): boolean {
   try {
@@ -208,6 +229,8 @@ export function App() {
   // Whether the update panel's startup takeover is currently mounted, so the
   // background can go aria-hidden while any takeover is up.
   const [updateTakeoverVisible, setUpdateTakeoverVisible] = useState(false);
+  // Whether the one-time OAuth offer is up. Armed on load, never re-armed.
+  const [oauthOffer, setOAuthOffer] = useState(false);
 
   // The tray Quit defers to the popover when config-routed CLI tools are
   // still managed (their configs point at the loopback relay, which dies
@@ -323,6 +346,18 @@ export function App() {
       let resolved: Screen;
       if (isSignedIn(acct, oauthState)) {
         resolved = "home";
+        // Offer OAuth once to a working key-based account. Gated on being
+        // signed in so it never lands over first-run, and on the tour so a
+        // brand-new install isn't asked twice about the same decision - that
+        // user just chose the key path deliberately on FirstRun.
+        if (
+          acct?.auth_mode === "api_key" &&
+          acct.has_api_key &&
+          hasSeenTour() &&
+          !hasSeenOAuthOffer()
+        ) {
+          setOAuthOffer(true);
+        }
       } else if (needsOrg(acct, oauthState)) {
         // Signed in via OAuth but no org picked yet - go straight to the picker
         // (returning home once chosen), not back through sign-in.
@@ -376,6 +411,9 @@ export function App() {
   useEffect(() => {
     if (staleAgentsHint) track("stale_agents_shown");
   }, [staleAgentsHint]);
+  useEffect(() => {
+    if (oauthOffer) track("oauth_offer_shown");
+  }, [oauthOffer]);
   useEffect(() => {
     if (changeNotice) {
       track("routing_notice_shown", { enabled: changeNotice === "on", inline: true });
@@ -985,7 +1023,7 @@ export function App() {
           the quit takeover's z-30 / over the routing notice's z-10) and trap
           focus in a hidden panel. */}
       <UpdatePanel
-        suppressTakeover={quitTools !== null || routingNotice !== null}
+        suppressTakeover={quitTools !== null || routingNotice !== null || oauthOffer}
         onTakeoverVisibleChange={setUpdateTakeoverVisible}
       />
       {routingNotice !== null && screen !== "loading" && (
@@ -999,13 +1037,29 @@ export function App() {
       {quitTools !== null && (
         <QuitConfirm tools={quitTools} onCancel={() => setQuitTools(null)} />
       )}
+      {/* Lowest-priority takeover: anything the user just did, or a pending
+          update, outranks an offer they did not ask for. Dismissing marks it
+          seen whichever way they leave, so it never returns. */}
+      {oauthOffer &&
+        screen === "home" &&
+        quitTools === null &&
+        routingNotice === null &&
+        !updateTakeoverVisible && (
+          <OAuthOffer
+            onUpgrade={upgradeToOAuth}
+            onDismiss={() => {
+              markOAuthOfferSeen();
+              setOAuthOffer(false);
+            }}
+          />
+        )}
       {/* While any takeover is up, the obscured content goes aria-hidden so
           a screen reader's virtual cursor can't wander under the dialog (the
           focus traps already handle Tab). */}
       <div
         className="flex min-h-0 grow flex-col"
         aria-hidden={
-          quitTools !== null || routingNotice !== null || updateTakeoverVisible
+          quitTools !== null || routingNotice !== null || updateTakeoverVisible || oauthOffer
             ? true
             : undefined
         }

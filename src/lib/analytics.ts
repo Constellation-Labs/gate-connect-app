@@ -39,6 +39,8 @@ export type AnalyticsEvent =
   | "stale_agents_shown"
   | "routing_notice_shown"
   | "quit_warning_shown"
+  | "oauth_offer_shown"
+  | "oauth_offer_accepted"
   | "quit_confirmed"
   | "launch_at_login_toggled"
   | "error_shown";
