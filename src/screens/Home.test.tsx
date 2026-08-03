@@ -119,7 +119,7 @@ describe("Home CA-trust card", () => {
 
   it("explains before consent, naming the keychain on macOS", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] });
-    fireEvent.click(screen.getByRole("button", { name: "Trust it…" }));
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
     expect(screen.getByText(/certificate your keychain trusts/)).toBeTruthy();
     expect(screen.getByText(/created on this machine/)).toBeTruthy();
     expect(screen.getByText(/remove it anytime in Settings/)).toBeTruthy();
@@ -127,14 +127,14 @@ describe("Home CA-trust card", () => {
 
   it("names the certificate store on Windows", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] }, "windows");
-    fireEvent.click(screen.getByRole("button", { name: "Trust it…" }));
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
     expect(screen.getByText(/certificate your certificate store trusts/)).toBeTruthy();
   });
 
   it("calls onTrustCa from the accent button", () => {
     const onTrustCa = vi.fn();
     renderHome({ caTrusted: false, domains: [makeDomain()], onTrustCa });
-    fireEvent.click(screen.getByRole("button", { name: "Trust it…" }));
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
     fireEvent.click(screen.getByText("Trust certificate"));
     expect(onTrustCa).toHaveBeenCalledTimes(1);
   });

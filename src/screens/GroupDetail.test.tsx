@@ -73,7 +73,10 @@ describe("GroupDetail", () => {
     renderDetail([tool("claude-code", "Claude Code", { kind: "connected" })]);
     expect(screen.getByText("config file")).toBeTruthy();
     expect(screen.getByText("proxy")).toBeTruthy();
-    expect(screen.getByText("api.anthropic.com")).toBeTruthy();
+    // Both members now print a bare host: the config member used to print the
+    // full URL and truncate to `https://api.ant…` in the same slot.
+    expect(screen.getAllByText("api.anthropic.com")).toHaveLength(2);
+    expect(screen.queryByText("https://api.anthropic.com")).toBeNull();
   });
 
   it("names no upstream host for a harness, whose default_upstream_url is a placeholder", () => {

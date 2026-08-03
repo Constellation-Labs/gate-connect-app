@@ -104,6 +104,23 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     // The verb has to name the button the user actually pressed. A cancelled
     // certificate prompt used to say "Click Connect again" next to a button
     // labelled Trust certificate.
+    // The two toggle contexts fire from a role=switch, not a button, and they
+    // are the paths a user actually hits: the enable path prompts for admin
+    // every time the system proxy changes. They fell through to "Connect",
+    // which names no control on Home. Switches get "Flip", buttons get
+    // "Click".
+    const switchNames: Partial<Record<ErrorContext, string>> = {
+      proxy_toggle: "the Routing switch",
+      provider_toggle: "that switch",
+    };
+    const switchName = switchNames[context];
+    if (switchName) {
+      return {
+        title: "The system prompt was cancelled",
+        hint: `Flip ${switchName} again and approve your system password prompt.`,
+        raw,
+      };
+    }
     const verb =
       context === "forget"
         ? "Reset"

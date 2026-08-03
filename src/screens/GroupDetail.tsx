@@ -6,6 +6,16 @@ import { SubHeader, SectionLabel, Switch, ErrorNote, IconButton, Button } from "
 import { MemberPill } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 
+/** Host only, for the mono identifier slot. */
+function hostOf(url: string | undefined): string {
+  if (!url) return "";
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 /** What a member's current state means, in plain language. This is the copy
  * that used to live on a separate tool screen; it belongs next to the row it
  * describes, not a level deeper. */
@@ -193,9 +203,13 @@ export function GroupDetail({
                       </span>
                     ) : (
                       <span className="truncate font-mono text-[10px] text-gc-ink-3">
+                        {/* hostOf, not the raw URL: the full URL with scheme
+                            truncated to `https://api.ant…` in the same slot
+                            where a proxy member prints a clean host, and
+                            DESIGN.md's mono rule is identity and precision. */}
                         {member.kind === "proxy"
                           ? (member.domain?.hosts ?? []).join(" · ")
-                          : member.tool?.default_upstream_url}
+                          : hostOf(member.tool?.default_upstream_url)}
                       </span>
                     )}
                   </div>

@@ -138,7 +138,9 @@ export function Home({
                     ? `On · ${routedCount} of ${routableCount} routing · certificate not trusted`
                     : routedCount > 0
                       ? `On · ${routedCount} of ${routableCount} routing`
-                      : "On · nothing enabled yet"}
+                      : routableCount === 0
+                        ? "On · nothing installed to route"
+                        : "On · nothing enabled yet"}
               </div>
               {/* The keep-routing tip only speaks in the quiet room: any
                   warning card or banner outranks a tip. */}
@@ -191,7 +193,7 @@ export function Home({
                 aria-expanded={caExplain}
                 className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink disabled:opacity-40"
               >
-                Trust it…
+                What&rsquo;s this?
               </button>
             </div>
             {caExplain && (
@@ -311,13 +313,20 @@ export function Home({
                 />
                 <div className="pointer-events-none relative min-w-0 flex-1">
                   <div className="text-[13.5px] font-medium text-gc-ink">{group.name}</div>
+                  {/* Exception first. Concatenated as `count · exception` the
+                      line truncated at 360px and the actionable half was what
+                      got cut ("0 of 2 routing · Codex set up els…"). The pill
+                      already answers "is this routing?", so the count is the
+                      half that can afford to go. */}
                   <div className="mt-0.5 truncate text-[11px] text-gc-ink-3">
-                    {count}
-                    {exception && (
+                    {exception ? (
                       <>
-                        {" · "}
                         <span className="text-gc-ink-2">{exception}</span>
+                        {" · "}
+                        {count}
                       </>
+                    ) : (
+                      count
                     )}
                   </div>
                 </div>

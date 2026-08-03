@@ -175,6 +175,10 @@ export function buildGroups(
 /** "2 of 4 routing", plus whatever needs a human, named rather than counted
  * away: the row is a summary, but an exception should never hide inside it. */
 export function groupSummary(group: Group): { count: string; exception: string | null } {
+  // When there is an exception, the count is the half that survives
+  // truncation at 360px and the exception is the half that gets cut - the
+  // wrong way round, since the pill already answers "is this routing?".
+  // Callers render `count` only when `exception` is null.
   const count = `${group.routed} of ${group.members.length} routing`;
   const errors = group.members.filter((m) => m.attention === "error");
   const drifted = group.members.filter((m) => m.attention === "drifted");

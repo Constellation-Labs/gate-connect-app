@@ -142,3 +142,29 @@ describe("backendErrorContext", () => {
     expect(backendErrorContext("proxy_toggle")).toBe("generic");
   });
 });
+
+describe("cancelled prompt names the control the user actually touched", () => {
+  // These two contexts fire from a role=switch, not a button, and they are the
+  // paths users actually hit: the enable path prompts for admin every time the
+  // system proxy changes. They used to fall through to "Click Connect again",
+  // and there is no Connect button on Home.
+  it("names the Routing switch for the master toggle", () => {
+    const hint = classifyError("User canceled (-128)", "proxy_toggle").hint;
+    expect(hint).toContain("the Routing switch");
+    expect(hint).not.toContain("Connect");
+    expect(hint).not.toContain("Click");
+  });
+
+  it("names a switch for a member toggle", () => {
+    const hint = classifyError("User canceled (-128)", "provider_toggle").hint;
+    expect(hint).toContain("switch");
+    expect(hint).not.toContain("Connect");
+  });
+
+  it("still says Click for the paths that really are buttons", () => {
+    expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain(
+      "Click Trust certificate",
+    );
+    expect(classifyError("User canceled (-128)", "forget").hint).toContain("Click Reset");
+  });
+});
