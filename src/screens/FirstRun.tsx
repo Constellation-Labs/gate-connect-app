@@ -4,6 +4,7 @@ import { oauthBeginLogin, saveAccount } from "../lib/api";
 import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS } from "../lib/config";
 import { trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
+import { markOAuthOfferSeen } from "../lib/oauthOffer";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
 import { Button, Input, ErrorNote } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
@@ -89,6 +90,10 @@ export function FirstRun({
     setSubmitting(true);
     try {
       await saveAccount(gateway, key.trim());
+      // Choosing the key here answers the "would you rather sign in?" question.
+      // Without this the one-time offer arrives on the next launch and reverses
+      // a decision the user just made on purpose.
+      markOAuthOfferSeen();
       onConnected();
     } catch (err) {
       setError(classifyError(err, "sign_in"));

@@ -49,6 +49,7 @@ import { track, trackError } from "./lib/analytics";
 import { backendErrorContext, classifyError, type ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
+import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { usePlatform } from "./lib/platform";
 import { useWindowReopen } from "./lib/useWindowReopen";
@@ -89,26 +90,6 @@ async function forwardBackendErrors(): Promise<void> {
 // the inline restart hint that carries the same advice, so the daily user
 // isn't re-interrupted every session. Storage failures degrade to "already
 // seen" - never trap the user in a recurring takeover.
-// Shown once to accounts still on a pasted key. FirstRun already leads with
-// OAuth, so this exists for installs that predate it (or chose the key path
-// once) and would otherwise never revisit the decision. Same fail-safe: a
-// storage failure reads as seen.
-const OAUTH_OFFER_SEEN_KEY = "gc.oauth-offer.v1.seen";
-function hasSeenOAuthOffer(): boolean {
-  try {
-    return localStorage.getItem(OAUTH_OFFER_SEEN_KEY) === "1";
-  } catch {
-    return true;
-  }
-}
-function markOAuthOfferSeen(): void {
-  try {
-    localStorage.setItem(OAUTH_OFFER_SEEN_KEY, "1");
-  } catch {
-    /* noop */
-  }
-}
-
 const ROUTING_TAKEOVER_SEEN_KEY = "gc.routing-takeover.v1.seen";
 function hasSeenRoutingTakeover(): boolean {
   try {
@@ -347,15 +328,16 @@ export function App() {
       if (isSignedIn(acct, oauthState)) {
         resolved = "home";
         // Offer OAuth once to a working key-based account. Gated on being
-        // signed in so it never lands over first-run, and on the tour so a
-        // brand-new install isn't asked twice about the same decision - that
-        // user just chose the key path deliberately on FirstRun.
-        if (
-          acct?.auth_mode === "api_key" &&
-          acct.has_api_key &&
-          hasSeenTour() &&
-          !hasSeenOAuthOffer()
-        ) {
+        // signed in so it never lands over first-run.
+        //
+        // This used to also test hasSeenTour(), with a comment claiming it
+        // spared someone who had just chosen the key on FirstRun. It did not:
+        // the tour window opens and completes before FirstRun renders, so the
+        // flag is already set by the time they paste a key, and they got the
+        // offer on their next launch anyway. FirstRun stamps the seen flag
+        // itself now, which is the only place that knows the choice was
+        // deliberate.
+        if (acct?.auth_mode === "api_key" && acct.has_api_key && !hasSeenOAuthOffer()) {
           setOAuthOffer(true);
         }
       } else if (needsOrg(acct, oauthState)) {

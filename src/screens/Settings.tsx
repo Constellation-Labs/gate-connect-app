@@ -92,7 +92,13 @@ export function Settings({
   const trustStore = platform === "windows" ? "certificate store" : "keychain";
   const [newKey, setNewKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<ClassifiedError | null>(null);
+  // Where a failure belongs on screen. One shared slot rendered under
+  // "Account" meant a launch-at-login failure printed its reason ~250px above
+  // the switch that reverted, usually outside the 487px viewport.
+  type ErrorSlot = "account" | "machine" | "server" | "reset";
+  const [error, setError] = useState<{ slot: ErrorSlot; error: ClassifiedError } | null>(null);
+  const errorFor = (slot: ErrorSlot) =>
+    error?.slot === slot ? <ErrorNote error={error.error} className="mx-3.5 mt-2" /> : null;
   const [upgrading, setUpgrading] = useState(false);
   // Armed by the Reset buttons; the destructive clear only runs from the
   // inline confirm panel.
@@ -202,7 +208,7 @@ export function Settings({
       await setLaunchAtLogin(next);
     } catch (err) {
       setLaunchAtLoginState(!next); // revert on failure
-      setError(classifyError(err, "launch_at_login"));
+      setError({ slot: "machine", error: classifyError(err, "launch_at_login") });
       trackError(err, "launch_at_login");
       return;
     }
@@ -232,7 +238,7 @@ export function Settings({
       setRevealedPrefix(null);
       setConfirmReveal(false);
     } catch (err) {
-      setError(classifyError(err, "save_api_key"));
+      setError({ slot: "account", error: classifyError(err, "save_api_key") });
       trackError(err, "save_api_key");
     } finally {
       setSubmitting(false);
@@ -246,7 +252,7 @@ export function Settings({
     try {
       await onForget();
     } catch (err) {
-      setError(classifyError(err, "forget"));
+      setError({ slot: "reset", error: classifyError(err, "forget") });
       trackError(err, "forget");
     } finally {
       setSubmitting(false);
@@ -261,7 +267,7 @@ export function Settings({
     try {
       await onSignOut();
     } catch (err) {
-      setError(classifyError(err, "sign_out"));
+      setError({ slot: "account", error: classifyError(err, "sign_out") });
       trackError(err, "sign_out");
     } finally {
       setSubmitting(false);
@@ -275,7 +281,7 @@ export function Settings({
     try {
       await onSwitchGateway(url); // relaunches the app on success; nothing below runs
     } catch (err) {
-      setError(classifyError(err, "generic"));
+      setError({ slot: "server", error: classifyError(err, "generic") });
       trackError(err, "generic");
     } finally {
       setSubmitting(false);
@@ -296,7 +302,7 @@ export function Settings({
     } catch (err) {
       trackError(err, "sign_in");
       if (attempt === upgradeAttempt.current) {
-        setError(classifyError(err, "sign_in"));
+        setError({ slot: "account", error: classifyError(err, "sign_in") });
         setUpgrading(false);
       }
     }
@@ -376,7 +382,7 @@ export function Settings({
               Sign out
             </button>
           </div>
-          {error && <ErrorNote error={error} className="mx-3.5 mt-2" />}
+          {errorFor("account")}
         </>
       )}
 
@@ -439,7 +445,7 @@ export function Settings({
             </div>
           </div>
         )}
-        {error && <ErrorNote error={error} className="mt-2" />}
+        {errorFor("account")}
         {account.has_api_key && !replacing && (
           <p className="mt-1.5 text-[11px] text-gc-ink-3">Stored in your keychain.</p>
         )}
@@ -548,6 +554,8 @@ export function Settings({
           on, which is exactly the state the user reads it in; hiding the
           section behind !routingOn broke that promise at the moment they acted
           on it, for a root CA. The consequence goes in the copy instead. */}
+      {errorFor("machine")}
+
       {caTrusted && (
         <>
           <div className="flex items-center gap-3 px-3.5 py-2.5">
@@ -636,6 +644,7 @@ export function Settings({
                   );
                 })}
               </div>
+              {errorFor("server")}
               {confirmingServer && (
                 <ConfirmPanel
                   message={`Switch to ${confirmingServer.label}? This forgets your stored key, disconnects your tools, and relaunches Gate Connect against the new server.`}
@@ -662,6 +671,7 @@ export function Settings({
             Reset Gate Connect
           </button>
         </div>
+        {errorFor("reset")}
         {confirmingReset && (
           <ConfirmPanel
             message={`Reset Gate Connect? This turns routing off, disconnects your tools, and ${isOAuth ? "forgets this account" : "removes your key from the keychain"}. You'll start over from sign-in.`}

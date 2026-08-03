@@ -228,3 +228,25 @@ describe("Settings hierarchy", () => {
     expect(screen.getByText("Gateway server")).toBeTruthy();
   });
 });
+
+describe("Settings error placement", () => {
+  it("puts a launch-at-login failure under This machine, not up in Account", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    (setLaunchAtLogin as Mock).mockRejectedValue(new Error("no login items API"));
+    await renderOn("macos", { caTrusted: true });
+    fireEvent.click(screen.getByRole("switch"));
+    const note = await screen.findByRole("alert");
+
+    // One shared slot rendered under Account meant the reason for a reverted
+    // switch printed ~250px above it, usually outside the 487px viewport.
+    const headings = [...document.querySelectorAll("h2")];
+    const machine = headings.find((h) => h.textContent === "This machine")!;
+    const account = headings.find((h) => h.textContent === "Account")!;
+    const after = (a: Element, b: Element) =>
+      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(after(machine, note)).toBeTruthy();
+    expect(after(account, note)).toBeTruthy();
+    // and specifically below "This machine", not merely below Account.
+    expect(after(account, machine)).toBeTruthy();
+  });
+});
