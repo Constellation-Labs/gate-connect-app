@@ -1004,18 +1004,19 @@ export function App() {
 
   // Named per platform, the way `trustStore` already is elsewhere: the
   // reassurance is worthless if it names the wrong vault. Only shown once
-  // there is actually a credential to reassure about.
+  // there is actually a credential to reassure about. Carries its own
+  // possessive because Windows does not take one (see the render site).
   const credentialStore =
     account && (account.has_api_key || (oauth?.signed_in ?? false))
       ? platform === "windows"
-        ? "Cred. Manager"
+        ? "Credential Manager"
         : platform === "linux"
           ? // "keyring", not "secret service". The latter is the freedesktop
             // D-Bus API we store through; the former is what GNOME calls the
             // thing in its own UI, and it parallels "keychain". Nobody has
             // ever seen "secret service" in a settings window.
-            "keyring"
-          : "keychain"
+            "your keyring"
+          : "your keychain"
       : null;
 
   return (
@@ -1097,14 +1098,15 @@ export function App() {
             {credentialStore && (
               <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-gc-ink-3">
                 <Icon name="key" size={11} className="shrink-0" />
-                {/* The longest form is Windows with OAuth, and the full
-                    "Session in your Credential Manager" was 170px into a 153px
-                    slot. Abbreviating the store name rather than dropping the
-                    possessive keeps the line reading like a sentence and still
-                    fits: 146px, all six platform / auth-mode combinations
-                    clear. */}
+                {/* The longest form is Windows with OAuth, and "Session in
+                    your Credential Manager" was 170px into a 153px slot. The
+                    possessive is what goes, and only on Windows: "keychain"
+                    and "keyring" are common nouns that want one, but
+                    Credential Manager is the product's actual name and reads
+                    like "in Keychain Access" without it. 146px, and all six
+                    platform / auth-mode combinations clear. */}
                 <span className="truncate">
-                  {account?.auth_mode === "oauth" ? "Session" : "Key"} in your {credentialStore}
+                  {account?.auth_mode === "oauth" ? "Session" : "Key"} in {credentialStore}
                 </span>
               </span>
             )}
