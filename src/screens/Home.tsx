@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
 import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
@@ -205,7 +204,19 @@ export function Home({
                 <Icon name="shieldCheck" size={16} />
               </div>
               <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-gc-ink">
-                Apps with no gateway setting need the Gate certificate.
+                Apps with no gateway setting need the Gate certificate.{" "}
+                {/* Inline, not its own row: the explanation is a footnote to
+                    this sentence and a separate line cost 27px in the state
+                    that already has the least room. */}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setCaExplain((v) => !v)}
+                  aria-expanded={caExplain}
+                  className="font-normal text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink disabled:opacity-40"
+                >
+                  What&rsquo;s this?
+                </button>
               </div>
               {/* The action, not the explanation. This card names the reason
                   nothing is routing, and the fix used to be inside a
@@ -222,15 +233,6 @@ export function Home({
                 Trust
               </Button>
             </div>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setCaExplain((v) => !v)}
-              aria-expanded={caExplain}
-              className="mt-2 text-[11px] font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink disabled:opacity-40"
-            >
-              What&rsquo;s this?
-            </button>
             {caExplain && (
               <>
                 <p className="mt-2 text-[11.5px] leading-snug text-gc-ink-2">
@@ -270,9 +272,9 @@ export function Home({
             both offer the same action, rather than the close route existing
             only for the notice raised at startup. */}
         {banner === "change" && (
-          <div role="status" className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
-            <Icon name="info" size={15} className="shrink-0 text-gc-ink" />
-            <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
+          <div role="status" className="flex items-center gap-2 rounded bg-gc-highlight px-3 py-2 shadow-border">
+            <Icon name="info" size={14} className="shrink-0 text-gc-ink" />
+            <div className="min-w-0 flex-1 text-[11.5px] font-medium leading-snug text-gc-ink">
               {changeNotice === "pending"
                 ? "Set to route, but routing is off, so nothing is going through Gate yet."
                 : changeNotice === "started"
@@ -315,8 +317,10 @@ export function Home({
 
       {/* Not "Models": the last row is a tool category, not a model family,
           and a label the list contradicts is worse than a plain one. This
-          names the question every row answers. */}
-      <SectionLabel>What routes through Gate</SectionLabel>
+          names the question every row answers.
+          `dense` because Home is exactly at the 487px frame with four
+          families. */}
+      <SectionLabel dense>What routes through Gate</SectionLabel>
       {groups.length > 0 ? (
         <div role="list" className="flex flex-col border-t border-gc-line">
           {groups.map((group) => {
@@ -325,7 +329,10 @@ export function Home({
               <div
                 key={group.id}
                 role="listitem"
-                className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-3 transition hover:bg-gc-subtle"
+                // py-2.5, not py-3: four families is the design's stated shape and this is
+                // the last 16px between the ledger and the 487px frame. Rows stay
+                // 59px, well over the 44px touch minimum.
+                className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-2.5 transition hover:bg-gc-subtle"
               >
                 {/* Stretch button carries the drill-in; the switch is a
                     sibling above it, so one flip routes the whole family and
@@ -405,22 +412,6 @@ export function Home({
         </div>
       )}
 
-      {/* The dashboard is where the traffic this screen routes actually ends
-          up - keys, usage, org. That belongs one click from the ledger, not
-          behind the gear. Quiet weight: it leaves the app, so it must not
-          compete with the switches. */}
-      <div className="px-3.5 pt-3">
-        <button
-          type="button"
-          onClick={() => {
-            void openUrl("https://app.constellationgate.ai");
-          }}
-          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
-        >
-          <Icon name="cube" size={14} />
-          Open Gate dashboard
-        </button>
-      </div>
     </div>
   );
 }

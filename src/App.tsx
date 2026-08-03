@@ -45,6 +45,7 @@ import { OAuthOffer } from "./components/OAuthOffer";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { track, trackError } from "./lib/analytics";
 import { backendErrorContext, classifyError, type ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
@@ -235,8 +236,10 @@ export function App() {
     };
   }, []);
 
-  // App version, stamped into the bundle at release time and shown quietly
-  // in the footer. Best-effort: stays empty (footer hidden) if it can't load.
+  // App version, stamped into the bundle at release time. Shown in Settings
+  // under Help rather than the popover footer: the footer strip carries two
+  // items at 360px and the credential line and the dashboard link both earn
+  // their place there more than a build number does. Best-effort.
   const [version, setVersion] = useState("");
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
@@ -910,6 +913,7 @@ export function App() {
         onSignOut={signOut}
         onSwitchOrg={switchOrg}
         onSwitchGateway={switchGatewayServer}
+        version={version}
         onReplayTour={() => {
           openOnboardingWindow("settings").catch(() => {});
         }}
@@ -1062,7 +1066,7 @@ export function App() {
             into a group detail, i.e. everywhere except the screen people
             actually look at. Now it is pinned, so it is on every screen and
             costs the scroll budget nothing. */}
-        {(credentialStore || version) && (
+        {credentialStore && (
           <div className="flex shrink-0 items-center gap-2 border-t border-gc-line px-3.5 py-2">
             {credentialStore && (
               <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-gc-ink-3">
@@ -1072,11 +1076,21 @@ export function App() {
                 </span>
               </span>
             )}
-            {version && (
-              <span className="ml-auto shrink-0 font-mono text-[10.5px] text-gc-ink-3">
-                v{version}
-              </span>
-            )}
+            {/* The dashboard link used to sit at the bottom of the ledger,
+                inside the scroll, which put it below the fold on the most
+                common Home. Pinned, it is always reachable and Home gets its
+                height back. The version moved to Settings > Help; two items
+                is all this strip can carry at 360px. */}
+            <button
+              type="button"
+              onClick={() => {
+                void openUrl("https://app.constellationgate.ai");
+              }}
+              className="ml-auto flex shrink-0 items-center gap-1.5 text-[10.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            >
+              <Icon name="cube" size={11} />
+              Gate dashboard
+            </button>
           </div>
         )}
       </div>

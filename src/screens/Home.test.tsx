@@ -299,9 +299,12 @@ describe("Home routing-change notice", () => {
 });
 
 describe("Home dashboard link", () => {
-  it("reaches the dashboard from the ledger, not from behind the gear", () => {
+  it("is not in the scroll area", () => {
+    // It moved to the pinned footer in App: inside the ledger it sat below
+    // the fold on the most common Home, and it was costing ~34px of a screen
+    // that has none to spare.
     renderHome();
-    expect(screen.getByRole("button", { name: "Open Gate dashboard" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Gate dashboard/ })).toBeNull();
   });
 });
 

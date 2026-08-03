@@ -132,9 +132,23 @@ export function CardButton({
   );
 }
 
-export function SectionLabel({ children }: { children: ReactNode }) {
+export function SectionLabel({
+  children,
+  dense,
+}: {
+  children: ReactNode;
+  /** Tighter leading room, for a screen with no vertical budget left. Home
+   * sits exactly at the 487px frame with four families, and 12px of top
+   * padding to restate what the pills already say is the cheapest thing to
+   * give back. */
+  dense?: boolean;
+}) {
   return (
-    <h2 className="px-3.5 pb-1.5 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+    <h2
+      className={`px-3.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3 ${
+        dense ? "pb-1 pt-1.5" : "pb-1.5 pt-3"
+      }`}
+    >
       {children}
     </h2>
   );
