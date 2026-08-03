@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternal } from "../lib/openExternal";
+import { GATE_DASHBOARD_URL } from "../lib/config";
 import type { Org } from "../lib/api";
 import { oauthListOrgs, setOrg } from "../lib/api";
 import { trackError } from "../lib/analytics";
@@ -161,7 +162,7 @@ export function OrgPicker({
                 variant="accent"
                 full
                 onClick={() => {
-                  void openUrl("https://app.constellationgate.ai");
+                  void openExternal(GATE_DASHBOARD_URL);
                 }}
               >
                 Create an organization

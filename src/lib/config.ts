@@ -32,3 +32,18 @@ export const GATEWAY_SERVERS: GatewayServer[] = [
   { label: "Production", url: "https://gateway.constellationgate.ai" },
   { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
 ];
+
+/** The Gate dashboard.
+ *
+ * The trailing slash is load-bearing. `openUrl` is gated by the opener ACL in
+ * `src-tauri/capabilities/default.json`, whose pattern is
+ * `https://*.constellationgate.ai/*`, and that is matched with `glob::Pattern`
+ * against the raw string we pass. A bare origin has no `/` for the pattern's
+ * literal separator, so `https://app.constellationgate.ai` is rejected and the
+ * link silently does nothing. Verified: the bare form matches `false`, both
+ * slashed forms match `true`.
+ *
+ * Exported as constants so the three call sites cannot drift apart, which is
+ * how two of them ended up with the unslashed form. */
+export const GATE_DASHBOARD_URL = "https://app.constellationgate.ai/";
+export const GATE_API_KEYS_URL = "https://app.constellationgate.ai/api-keys";

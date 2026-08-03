@@ -45,7 +45,8 @@ import { OAuthOffer } from "./components/OAuthOffer";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternal } from "./lib/openExternal";
+import { GATE_DASHBOARD_URL } from "./lib/config";
 import { track, trackError } from "./lib/analytics";
 import { backendErrorContext, classifyError, type ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
@@ -1089,7 +1090,7 @@ export function App() {
             <button
               type="button"
               onClick={() => {
-                void openUrl("https://app.constellationgate.ai");
+                void openExternal(GATE_DASHBOARD_URL);
               }}
               className="-mr-1 ml-auto flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
             >
