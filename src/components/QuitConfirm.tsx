@@ -28,7 +28,8 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
   // The user asked to quit, but Enter on an unread panel should not decide
   // how. Cancel takes focus; both quit paths stay one Tab away.
   const safeRef = useRef<HTMLButtonElement>(null);
-  useFocusTrap(panelRef, onCancel, safeRef);
+  // `busy` empties the panel of focusable controls.
+  useFocusTrap(panelRef, onCancel, safeRef, busy);
 
   async function turnOffAndQuit() {
     setBusy(true);

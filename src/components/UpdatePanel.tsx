@@ -201,7 +201,9 @@ function UpdateTakeover({
   // there is no safe dismissal.
   // "Install & relaunch" restarts the app under the user; Later takes focus.
   const safeRef = useRef<HTMLButtonElement>(null);
-  useFocusTrap(panelRef, installing ? undefined : onLater, safeRef);
+  // `installing` unmounts Later and disables Install, leaving nothing
+  // focusable in the panel.
+  useFocusTrap(panelRef, installing ? undefined : onLater, safeRef, installing);
   return (
     <div
       ref={panelRef}

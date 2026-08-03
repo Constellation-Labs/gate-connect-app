@@ -39,7 +39,8 @@ export function RoutingChangeNotice({
   // Focus the way out, not the way through: this panel can be reached by
   // pressing Enter on the Home banner, and its primary is "Close everything".
   const safeRef = useRef<HTMLButtonElement>(null);
-  useFocusTrap(panelRef, onDismiss, safeRef);
+  // `confirming`/`closed` are the step: each swaps the buttons out.
+  useFocusTrap(panelRef, onDismiss, safeRef, `${confirming}:${closed}`);
 
   async function closeAgents() {
     setClosing(true);
