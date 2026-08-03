@@ -418,8 +418,8 @@ export function Home({
               Nothing to route yet
             </div>
             <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
-              Gate Connect picks up Claude Code, Codex, OpenCode and friends
-              once they&rsquo;re installed. Install one and reopen this window.
+              Gate Connect picks up Claude Code and Codex once they&rsquo;re
+              installed. Install one and reopen this window.
             </p>
           </div>
         </div>

@@ -17,7 +17,12 @@ import type { ProviderState, ProxyDomain, Tool } from "./api";
 
 /** Agent harnesses: the tools whose provider set is decided by the user's
  * config, not by the tool. Connecting one rewrites every well-known provider
- * block it finds, so it can't sit under a single family. */
+ * block it finds, so it can't sit under a single family.
+ *
+ * Currently dormant: every harness is hidden from the ledger pending
+ * validation (see docs/harness-integration-validation.md), so `list_tools`
+ * returns none and this group is never built. The logic stays because it is
+ * correct and is needed the moment one comes back. */
 export const MULTI_PROVIDER_ID = "any-provider";
 
 export type MemberAttention = "error" | "drifted" | "needs-trust" | "master-off" | null;

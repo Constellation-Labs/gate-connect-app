@@ -236,20 +236,27 @@ mod tests {
         }
     }
 
-    /// The two harnesses whose config strategy failed validation against
-    /// upstream docs (docs/harness-integration-validation.md).
+    /// Every multi-provider harness is hidden: each one's config strategy
+    /// failed validation against upstream docs, and in all three cases the
+    /// failure mode is a config file that looks right while something else
+    /// decides the wire (docs/harness-integration-validation.md).
     #[test]
-    fn openclaw_and_hermes_are_hidden_pending_validation() {
+    fn agent_harnesses_are_hidden_pending_validation() {
         let hidden = hidden_in_ui_slugs();
-        assert!(hidden.contains(&"openclaw"), "got {hidden:?}");
-        assert!(hidden.contains(&"hermes"), "got {hidden:?}");
+        for slug in ["opencode", "openclaw", "hermes"] {
+            assert!(
+                hidden.contains(&slug),
+                "{slug} should be hidden, got {hidden:?}"
+            );
+        }
     }
 
-    /// The validated integrations must stay visible.
+    /// The single-provider integrations, whose config strategy is a plain
+    /// documented override, stay visible.
     #[test]
-    fn validated_integrations_stay_visible() {
+    fn single_provider_integrations_stay_visible() {
         let hidden = hidden_in_ui_slugs();
-        for slug in ["claude-code", "codex", "opencode"] {
+        for slug in ["claude-code", "codex"] {
             assert!(!hidden.contains(&slug), "{slug} must remain in the ledger");
         }
     }

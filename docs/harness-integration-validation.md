@@ -2,9 +2,23 @@
 
 Validated 2026-08-03 against upstream documentation.
 
-Status as of this document: **OpenClaw and Hermes are hidden from the popover
-UI**; **OpenCode is still visible** pending a decision on O1. All three remain
-in `registry::registry()` and in the `gate-connect` CLI.
+Status as of this document: **all three agent harnesses - OpenCode, OpenClaw
+and Hermes - are hidden from the popover UI.** They remain in
+`registry::registry()` and in the `gate-connect` CLI.
+
+Because they were the only members of the "Agent harnesses" family, that row no
+longer appears at all: `buildGroups` drops a group with no members. The
+grouping code for it stays - the logic is right and is needed the moment any
+harness comes back - it is simply dormant.
+
+The common thread across all three is worth stating once: in every case the
+config file we write is correct, and something else decides the wire. Hermes
+ignores our header on the native-Anthropic transport (H1), OpenClaw looks for
+auth profiles somewhere we do not read (H2), and OpenCode lets a
+higher-precedence config layer override us per repo (O1). In all three
+`status()` reads the file we wrote and reports Connected. A single fix -
+verifying the *effective* configuration rather than our own write - addresses
+the class.
 
 Why hidden rather than removed: anyone who already connected one of these
 tools with an earlier build has a config pointing at the loopback relay.
@@ -144,8 +158,8 @@ whether the signal works (see H2).
 
 ## OpenCode
 
-Validated 2026-08-03. **Config shape is correct; layering is not.** OpenCode is
-still visible in the UI pending a decision on O1 below.
+Validated 2026-08-03. **Config shape is correct; layering is not.** Hidden on
+O1.
 
 ### What validated cleanly
 
