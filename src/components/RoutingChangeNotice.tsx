@@ -75,7 +75,15 @@ export function RoutingChangeNotice({
           id="routing-notice-title"
           className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink"
         >
-          {routingOn ? "Routing is on" : "Routing is off"}
+          {/* The heading is the `aria-labelledby` target, so it has to move
+              when the step does. It used to read "Routing is off" through all
+              three steps, which meant a screen reader entering the confirm
+              heard no change at all. */}
+          {confirming && closed === null
+            ? "Close everything that's running?"
+            : routingOn
+              ? "Routing is on"
+              : "Routing is off"}
         </h1>
         {/* Informational state, so ink - error red stays reserved for
             failures (the ErrorNote below). */}
@@ -94,7 +102,7 @@ export function RoutingChangeNotice({
           // every running agent and hears nothing back.
           <p role="status" aria-live="polite" className="text-[12.5px] leading-snug text-gc-ink-3">
             {closed > 0
-              ? `Closed ${closed}. Open them again whenever you need them.`
+              ? `Closed ${closed} ${closed === 1 ? "app" : "apps"}. Open them again whenever you need them.`
               : "Nothing was running."}
           </p>
         )}
@@ -114,17 +122,16 @@ export function RoutingChangeNotice({
         )}
         {closed === null && confirming && (
           <>
-            <Button variant="accent" full disabled={closing} onClick={() => void closeAgents()}>
+            {/* Not accent: this interrupts the user's in-flight work, and
+                step 1 already trained the reflex to hit the accent button.
+                Same grammar as Settings' Reset. Cancel is a full secondary
+                button, not a text link, so the safe option is its equal. */}
+            <Button variant="danger" full disabled={closing} onClick={() => void closeAgents()}>
               {closing ? "Closing…" : "Close everything"}
             </Button>
-            <button
-              type="button"
-              disabled={closing}
-              onClick={() => setConfirming(false)}
-              className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink disabled:opacity-60"
-            >
+            <Button variant="secondary" full disabled={closing} onClick={() => setConfirming(false)}>
               Cancel
-            </button>
+            </Button>
           </>
         )}
         {closed !== null && (

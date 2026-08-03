@@ -36,22 +36,15 @@ function ConfirmPanel({
     <div className="mx-3.5 mt-2 rounded bg-gc-subtle p-3 shadow-border">
       <div className="text-[11.5px] leading-snug text-gc-ink-2">{message}</div>
       <div className="mt-2.5 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onConfirm}
-          disabled={busy}
-          className="text-[12.5px] font-medium text-gc-error-deep disabled:opacity-50"
-        >
+        {/* Same destructive grammar as the routing takeover: the action that
+            destroys something is never the encouraged indigo, and Cancel is
+            its visual equal rather than an afterthought. */}
+        <Button variant="danger" size="sm" disabled={busy} onClick={onConfirm}>
           {confirmLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={busy}
-          className="ml-auto text-[12.5px] font-medium text-gc-ink-3"
-        >
+        </Button>
+        <Button variant="secondary" size="sm" disabled={busy} onClick={onCancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );

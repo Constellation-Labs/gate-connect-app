@@ -18,16 +18,22 @@ export function Button({
   children,
   ...rest
 }: {
-  variant?: "accent" | "secondary";
+  variant?: "accent" | "secondary" | "danger";
   /** `sm` is for dense chrome (the onboarding window's 52px footer), not the
    * popover, where buttons stay `md`. */
   size?: "sm" | "md";
   full?: boolean;
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
+  // Indigo is defined as affordance and live state - the encouraged path - so
+  // it must never be the thing that destroys work. `danger` gives the two
+  // destructive confirms (close everything, reset everything) one grammar of
+  // their own instead of borrowing the primary skin.
   const styles =
     variant === "accent"
       ? "bg-gc-accent text-white hover:bg-gc-accent-ink active:bg-gc-accent-ink"
-      : "bg-gc-surface text-gc-ink shadow-border hover:shadow-border-hover";
+      : variant === "danger"
+        ? "bg-gc-error-deep text-white hover:brightness-95 active:brightness-90"
+        : "bg-gc-surface text-gc-ink shadow-border hover:shadow-border-hover";
   const sizing =
     size === "sm" ? "h-8 px-3.5 text-[12.5px]" : "h-10 px-4 text-[13.5px]";
   return (
@@ -92,7 +98,7 @@ export function Switch({
       aria-disabled={busy || undefined}
       disabled={disabled}
       onClick={busy ? undefined : onClick}
-      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-50 ${busy ? "opacity-70" : ""} ${on ? "bg-gc-accent" : "bg-gc-line-strong"}`}
+      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-50 ${busy ? "opacity-70" : ""} ${on ? "bg-gc-accent" : "bg-gc-switch-off"}`}
     >
       <span
         className={`absolute flex h-[18px] w-[18px] items-center justify-center rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[18px]" : "translate-x-[2px]"}`}

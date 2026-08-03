@@ -13,6 +13,7 @@ colors:
   highlight: "#f6ffe3"
   line: "#e8eaef"
   line-strong: "#d4d7e3"
+  switch-off: "#8b91a6"
   ink: "#0f1222"
   ink-2: "#2a2d3f"
   ink-3: "#55596f"

@@ -65,7 +65,7 @@ describe("RoutingChangeNotice close-agents flow", () => {
     renderNotice(true);
     fireEvent.click(screen.getByRole("button", { name: "Close them now" }));
     fireEvent.click(screen.getByRole("button", { name: "Close everything" }));
-    expect(await screen.findByText(/Closed 3\. Open them again/)).toBeTruthy();
+    expect(await screen.findByText(/Closed 3 apps\. Open them again/)).toBeTruthy();
     expect(track).toHaveBeenCalledWith("agents_closed", { count: 3 });
     // The takeover ends with Done once the close has run.
     expect(screen.getByRole("button", { name: "Done" })).toBeTruthy();
@@ -76,7 +76,7 @@ describe("RoutingChangeNotice close-agents flow", () => {
     renderNotice(true);
     fireEvent.click(screen.getByRole("button", { name: "Close them now" }));
     fireEvent.click(screen.getByRole("button", { name: "Close everything" }));
-    expect(await screen.findByText(/Closed 1\. Open them again/)).toBeTruthy();
+    expect(await screen.findByText(/Closed 1 app\. Open them again/)).toBeTruthy();
   });
 
   it("says when no agents were running", async () => {
@@ -131,5 +131,32 @@ describe("RoutingChangeNotice close-agents flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close everything" }));
     await screen.findByText(/Couldn't close the running tools and apps/);
     expect(onAgentsClosed).not.toHaveBeenCalled();
+  });
+});
+
+describe("RoutingChangeNotice destructive grammar", () => {
+  it("moves the heading to the question on the confirm step", async () => {
+    render(<RoutingChangeNotice routingOn={false} onDismiss={vi.fn()} />);
+    const dialog = screen.getByRole("dialog");
+    const titleId = dialog.getAttribute("aria-labelledby")!;
+    expect(document.getElementById(titleId)?.textContent).toBe("Routing is off");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close them now" }));
+    // The heading is the aria-labelledby target; if it never moves, a screen
+    // reader entering the confirm hears no change at all.
+    expect(document.getElementById(titleId)?.textContent).toBe(
+      "Close everything that's running?",
+    );
+  });
+
+  it("does not dress the destructive action as the encouraged one", () => {
+    render(<RoutingChangeNotice routingOn={false} onDismiss={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Close them now" }));
+    const destroy = screen.getByRole("button", { name: "Close everything" });
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(destroy.className).not.toContain("bg-gc-accent");
+    expect(destroy.className).toContain("bg-gc-error-deep");
+    // Cancel is a full button, not a text link, so the safe path is its equal.
+    expect(cancel.className).toContain("w-full");
   });
 });
