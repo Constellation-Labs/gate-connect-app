@@ -197,8 +197,10 @@ describe("Home model-family ledger", () => {
     expect(screen.queryByText("Claude Code")).toBeNull();
     expect(screen.queryByText("Hermes")).toBeNull();
     // Claude: Claude Code + Cowork both routing. OpenAI: Codex only, off.
-    expect(screen.getByText(/2 of 2 routing/)).toBeTruthy();
-    expect(screen.getByText(/0 of 1 routing/)).toBeTruthy();
+    // Twice each: the visible sub-line, and the sr-only description the
+    // stretch button points at (the visible copy truncates at 360px).
+    expect(screen.getAllByText(/2 of 2 routing/)).toHaveLength(2);
+    expect(screen.getAllByText(/0 of 1 routing/)).toHaveLength(2);
   });
 
   it("gives the multi-provider tools an honest home, not a wrong family", () => {
@@ -232,7 +234,7 @@ describe("Home model-family ledger", () => {
     });
     // The pill still answers "is this routing?"; the failure is named below.
     expect(screen.getByText("Partly routed")).toBeTruthy();
-    expect(screen.getByText(/Claude Code failed/)).toBeTruthy();
+    expect(screen.getAllByText(/Claude Code failed/).length).toBeGreaterThan(0);
   });
 
   it("flags a hand-written setup without calling the family broken", () => {
@@ -240,7 +242,7 @@ describe("Home model-family ledger", () => {
       tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
       domains: [],
     });
-    expect(screen.getByText(/Codex set up elsewhere/)).toBeTruthy();
+    expect(screen.getAllByText(/Codex set up elsewhere/).length).toBeGreaterThan(0);
   });
 
   it("routes a whole family with one flip", () => {
@@ -298,5 +300,28 @@ describe("Home dashboard link", () => {
   it("reaches the dashboard from the ledger, not from behind the gear", () => {
     renderHome();
     expect(screen.getByRole("button", { name: "Open Gate dashboard" })).toBeTruthy();
+  });
+});
+
+describe("Home ledger accessibility", () => {
+  it("gives the row's whole sentence to the drill-in button, pill state included", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
+      domains: [makeDomain()],
+    });
+    const row = screen.getByRole("button", { name: "Claude details" });
+    const described = document.getElementById(row.getAttribute("aria-describedby")!);
+    // Without this the row announced "Claude details, button" and nothing
+    // else: the count, the pill and the failure were all in pointer-events-none
+    // spans under the stretch button.
+    expect(described?.textContent).toContain("Partly routed");
+    expect(described?.textContent).toContain("1 of 2 routing");
+    expect(described?.textContent).toContain("Claude Code failed");
+  });
+
+  it("exposes the ledger as a list", () => {
+    renderHome({ tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] });
+    expect(screen.getByRole("list")).toBeTruthy();
+    expect(screen.getAllByRole("listitem").length).toBeGreaterThan(0);
   });
 });

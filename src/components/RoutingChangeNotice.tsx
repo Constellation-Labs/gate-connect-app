@@ -88,7 +88,11 @@ export function RoutingChangeNotice({
                 : "Anything already open still points at Gate. Close it and it goes back to normal the next time you open it."}
           </p>
         ) : (
-          <p className="text-[12.5px] leading-snug text-gc-ink-3">
+          // The one line that reports the result of a destructive action, and
+          // it arrives by swapping a <p> inside an already-open dialog. Without
+          // a live region nothing announces it, so a screen-reader user closes
+          // every running agent and hears nothing back.
+          <p role="status" aria-live="polite" className="text-[12.5px] leading-snug text-gc-ink-3">
             {closed > 0
               ? `Closed ${closed}. Open them again whenever you need them.`
               : "Nothing was running."}

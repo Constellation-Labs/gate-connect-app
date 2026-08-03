@@ -24,6 +24,7 @@ colors:
   warning: "#f39c12"
   warning-wash: "rgba(243,156,18,0.12)"
   error: "#e74c3c"
+  error-deep: "#c0392b"
   error-wash: "rgba(231,76,60,0.12)"
 typography:
   title:
@@ -344,10 +345,10 @@ Quiet and precise: color states, not size or shadow theatrics.
   ink-4.
 - **Focus:** the wrapper moves to Seam Hover on focus-within; no glow,
   no accent ring.
-- **Placeholder:** ink-4.
+- **Placeholder:** ink-3. It carries real instruction ("Enter new sk-gw-… key"), and ink-4 is 4.0:1 on white.
 
 ### Section Labels
-- **Style:** Geist Mono, 10.5px, 500, uppercase, 0.08em tracking, ink-4,
+- **Style:** Geist Mono, 10.5px, 500, uppercase, 0.08em tracking, ink-3,
   padded 14px sides / 12px top / 6px bottom. The ledger's column
   headings.
 

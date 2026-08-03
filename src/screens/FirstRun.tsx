@@ -95,7 +95,10 @@ export function FirstRun({
     <div className="flex flex-col px-5 pb-5 pt-7">
       <div className="flex flex-col items-center text-center">
         <ConstellationHexMark size={40} fill="#002a5f" />
-        <div className="mt-3 text-[17px] font-semibold tracking-[-0.02em] text-gc-navy">
+        {/* An h1, not a div: this is the first screen of the app and it had no
+            heading at all, so a screen reader landed in an unlabelled region
+            with nothing to orient by. */}
+        <h1 className="mt-3 text-[17px] font-semibold tracking-[-0.02em] text-gc-navy">
           {reauth ? (
             "Welcome back"
           ) : (
@@ -103,7 +106,7 @@ export function FirstRun({
               Welcome to Gate <span className="text-gc-accent">Connect</span>
             </>
           )}
-        </div>
+        </h1>
         <p className="mt-1.5 max-w-[290px] text-[12.5px] leading-[1.45] text-gc-ink-3">
           {reauth
             ? "Your session expired. Sign in again to keep routing your desktop agents through Gate."
@@ -142,7 +145,7 @@ export function FirstRun({
         </div>
       ) : (
         <div className="mt-5">
-          <div className="mb-1.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
+          <div className="mb-1.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
             Gate API Key
           </div>
           <p className="mb-2 text-[11px] leading-snug text-gc-ink-3">
@@ -200,13 +203,13 @@ export function FirstRun({
         ) : (
           <>
             <div className="mb-1.5 flex items-center justify-between">
-              <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-4">
+              <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
                 Gateway server
               </span>
               <button
                 type="button"
                 onClick={() => setDevMode(false)}
-                className="text-[10.5px] font-medium text-gc-ink-4 transition hover:text-gc-ink-3"
+                className="text-[10.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
               >
                 Hide
               </button>

@@ -26,7 +26,7 @@ function RoutingHero() {
         alt="Gate Connect routing screen: a Route through Gate toggle above per-app toggles"
         className="mx-auto block w-full max-w-[256px]"
       />
-      <figcaption className="mt-1.5 text-[10.5px] text-gc-ink-4">
+      <figcaption className="mt-1.5 text-[10.5px] text-gc-ink-3">
         The Routing screen in Gate Connect
       </figcaption>
     </figure>

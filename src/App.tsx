@@ -923,7 +923,7 @@ export function App() {
       >
         {body}
         {version && (
-          <p className="mt-auto shrink-0 px-3.5 py-2 text-center font-mono text-[10.5px] text-gc-ink-4">
+          <p className="mt-auto shrink-0 px-3.5 py-2 text-center font-mono text-[10.5px] text-gc-ink-3">
             v{version}
           </p>
         )}

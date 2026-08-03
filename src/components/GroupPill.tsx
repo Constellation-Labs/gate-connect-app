@@ -4,31 +4,37 @@ const PILL =
   "inline-flex shrink-0 items-center gap-1.5 rounded-gc-pill px-2 py-1 text-[11px] font-medium";
 const DOT = "h-1.5 w-1.5 rounded-full";
 
+/** A family's headline state as a word. Exported so the ledger row's
+ * screen-reader description says exactly what the pill says: the pill is a
+ * `pointer-events-none` span sitting under a stretch button, so it reaches
+ * nobody listening unless the row repeats it. Two copies of this rule would
+ * drift; there is one. */
+export function groupPillLabel(group: Group): "Routed" | "Partly routed" | "Not routed" {
+  if (group.members.length === 0 || group.routed === 0) return "Not routed";
+  if (group.routed === group.members.length) return "Routed";
+  return "Partly routed";
+}
+
 /** A family's headline state. It answers one question - is this routing? -
  * and never rounds up: "some" reads as partly, never as all. Exceptions are
  * named in the row's sub-line instead of hijacking the pill, so a mostly
- * working group doesn't read as broken. */
+ * working group doesn't read as broken.
+ *
+ * `aria-hidden`: the row's own description carries this text (see
+ * [`groupPillLabel`]), so leaving it visible to a screen reader would say the
+ * state twice. */
 export function GroupPill({ group }: { group: Group }) {
-  if (group.members.length === 0 || group.routed === 0) {
-    return (
-      <span className={`${PILL} bg-gc-sunken text-gc-ink-3`}>
-        <span className={`${DOT} bg-gc-ink-5`} />
-        Not routed
-      </span>
-    );
-  }
-  if (group.routed === group.members.length) {
-    return (
-      <span className={`${PILL} bg-gc-success-wash text-gc-success-deep`}>
-        <span className={`${DOT} bg-gc-success`} />
-        Routed
-      </span>
-    );
-  }
+  const label = groupPillLabel(group);
+  const skin =
+    label === "Routed"
+      ? { wrap: "bg-gc-success-wash text-gc-success-deep", dot: "bg-gc-success" }
+      : label === "Partly routed"
+        ? { wrap: "bg-gc-warning-wash text-gc-ink-2", dot: "bg-gc-warning" }
+        : { wrap: "bg-gc-sunken text-gc-ink-3", dot: "bg-gc-ink-5" };
   return (
-    <span className={`${PILL} bg-gc-warning-wash text-gc-ink-2`}>
-      <span className={`${DOT} bg-gc-warning`} />
-      Partly routed
+    <span aria-hidden className={`${PILL} ${skin.wrap}`}>
+      <span className={`${DOT} ${skin.dot}`} />
+      {label}
     </span>
   );
 }

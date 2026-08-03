@@ -157,6 +157,11 @@ export default {
           warning: "#f39c12",
           "warning-wash": "rgba(243,156,18,0.12)",
           error: "#e74c3c",
+          // Text-weight red, mirroring success-deep: #e74c3c is 3.8:1 on
+          // white, which is fine for a dot or an icon and short of AA for the
+          // words next to it. Dots and washes keep `error`; anything the user
+          // reads uses this.
+          "error-deep": "#c0392b",
           "error-wash": "rgba(231,76,60,0.12)",
           menubar: "#181a30",
         },

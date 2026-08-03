@@ -142,7 +142,7 @@ export function Input({
     <div className="flex h-9 items-center gap-2 rounded bg-gc-surface px-3 shadow-border transition focus-within:shadow-border-hover">
       {leadingIcon && <span className="shrink-0 text-gc-ink-4">{leadingIcon}</span>}
       <input
-        className={`min-w-0 flex-1 bg-transparent text-[13px] text-gc-ink outline-none placeholder:text-gc-ink-4 ${className}`}
+        className={`min-w-0 flex-1 bg-transparent text-[13px] text-gc-ink outline-none placeholder:text-gc-ink-3 ${className}`}
         {...rest}
       />
       {trailing && <span className="flex shrink-0 items-center gap-0.5">{trailing}</span>}

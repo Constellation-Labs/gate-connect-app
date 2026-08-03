@@ -40,7 +40,7 @@ function ConfirmPanel({
           type="button"
           onClick={onConfirm}
           disabled={busy}
-          className="text-[12.5px] font-medium text-gc-error disabled:opacity-50"
+          className="text-[12.5px] font-medium text-gc-error-deep disabled:opacity-50"
         >
           {confirmLabel}
         </button>
@@ -379,7 +379,7 @@ export function Settings({
               type="button"
               onClick={() => setConfirmingReset(true)}
               disabled={submitting}
-              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep"
             >
               <Icon name="trash" size={14} />
               Reset
@@ -528,7 +528,7 @@ export function Settings({
             type="button"
             onClick={() => setConfirmingReset(true)}
             disabled={submitting}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep"
           >
             <Icon name="trash" size={14} />
             Reset

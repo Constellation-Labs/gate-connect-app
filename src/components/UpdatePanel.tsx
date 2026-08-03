@@ -227,7 +227,7 @@ function UpdateTakeover({
       </div>
 
       <div className="flex items-center gap-2 font-mono text-[11.5px]">
-        {current && <span className="text-gc-ink-4">v{current}</span>}
+        {current && <span className="text-gc-ink-3">v{current}</span>}
         {current && <Icon name="chevronRight" size={13} className="text-gc-ink-5" />}
         <span className="rounded-gc-pill bg-gc-highlight px-2 py-0.5 font-medium text-gc-ink">
           v{version}

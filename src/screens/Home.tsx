@@ -6,7 +6,7 @@ import { launchAtLoginStatus } from "../lib/api";
 import { buildGroups, groupSummary } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, SectionLabel, ErrorNote, Button } from "../components/gc/ui";
-import { GroupPill } from "../components/GroupPill";
+import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 import { usePlatform } from "../lib/platform";
 
@@ -253,21 +253,31 @@ export function Home({
           names the question every row answers. */}
       <SectionLabel>What routes through Gate</SectionLabel>
       {groups.length > 0 ? (
-        <div className="flex flex-col border-t border-gc-line">
+        <div role="list" className="flex flex-col border-t border-gc-line">
           {groups.map((group) => {
             const { count, exception } = groupSummary(group);
             return (
               <div
                 key={group.id}
+                role="listitem"
                 className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-3 transition hover:bg-gc-subtle"
               >
                 {/* Stretch button carries the drill-in; the switch is a
                     sibling above it, so one flip routes the whole family and
-                    the row body opens the fine grain. */}
+                    the row body opens the fine grain.
+
+                    `aria-describedby` is what makes the row readable without
+                    eyes. The count, the pill and the exception are all in
+                    `pointer-events-none` spans so the stretch button can sit
+                    over them, which also hid them from the accessibility tree:
+                    the row announced "Claude details, button" and never
+                    "OpenClaw failed", which is the one thing the row exists to
+                    say. */}
                 <button
                   type="button"
                   onClick={() => onOpenGroup(group.id)}
                   aria-label={`${group.name} details`}
+                  aria-describedby={`group-desc-${group.id}`}
                   className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
                 />
                 <div className="pointer-events-none relative min-w-0 flex-1">
@@ -282,6 +292,12 @@ export function Home({
                     )}
                   </div>
                 </div>
+                {/* The visible text truncates at 360px; this carries the whole
+                    sentence, pill state included, to anyone listening. */}
+                <span id={`group-desc-${group.id}`} className="sr-only">
+                  {groupPillLabel(group)}. {count}
+                  {exception ? `. ${exception}` : ""}
+                </span>
                 <span className="pointer-events-none relative">
                   <GroupPill group={group} />
                 </span>
