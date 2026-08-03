@@ -143,12 +143,14 @@ export default {
           highlight: "#f6ffe3",
           line: "#e8eaef",
           "line-strong": "#d4d7e3",
-          // The switch's off track. Deliberately darker than line-strong:
-          // WCAG 2.1 SC 1.4.11 wants 3:1 for a component state indicator, and
-          // #d4d7e3 is 1.44:1 on white - both against the page and against the
-          // white knob, so the control had no perceivable off state at all.
-          // #8b91a6 is 3.13:1 on both.
-          "switch-off": "#8b91a6",
+          // The switch's off track. SC 1.4.11 wants 3:1 for a component state
+          // indicator, and it has to clear that on every surface the switch
+          // lands on - not just white. #8b91a6 measured 3.13:1 on white but
+          // 2.98:1 on `subtle`, which is what an expanded or hovered member row
+          // uses, so the most-used control in the app failed exactly where the
+          // user was interacting with it. #868c9e is 3.36:1 on white and
+          // 3.19:1 on subtle.
+          "switch-off": "#868c9e",
           ink: "#0f1222",
           "ink-2": "#2a2d3f",
           "ink-3": "#55596f",

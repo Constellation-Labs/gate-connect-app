@@ -16,6 +16,18 @@
   #root {
     height: 100%;
   }
+  /* One focus ring for the whole app. The Button/IconButton/Switch primitives
+     carry their own `focus-visible:outline-*` utilities, but most of the
+     product's controls are inline text buttons written by hand - 32 of 38 at
+     last count - and those were falling back to Chrome's 1px black UA ring.
+     Keyboard users saw two different focus vocabularies depending on which
+     control they landed on, including the two that the takeover focus traps
+     deliberately target. Declaring it here covers every button, present and
+     future, without asking each call site to remember. */
+  button:focus-visible {
+    outline: 2px solid theme("colors.gc.accent");
+    outline-offset: 2px;
+  }
   /* Transparent shell so the Tauri window's rounded-corner transparency
      shows through; the visible card lives inside #root. */
   html,

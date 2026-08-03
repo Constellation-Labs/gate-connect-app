@@ -13,7 +13,7 @@ colors:
   highlight: "#f6ffe3"
   line: "#e8eaef"
   line-strong: "#d4d7e3"
-  switch-off: "#8b91a6"
+  switch-off: "#868c9e"
   ink: "#0f1222"
   ink-2: "#2a2d3f"
   ink-3: "#55596f"
@@ -167,8 +167,8 @@ small, wash-backed status colors.
   disabled tiles.
 - **Highlight** (#f6ffe3): the one warm tint; reserved for restart/reopen
   hint banners.
-- **Line** (#e8eaef) / **Line Strong** (#d4d7e3): structural dividers and
-  the off-state switch track. Never card borders.
+- **Line** (#e8eaef) / **Line Strong** (#d4d7e3): structural dividers.
+  Never card borders, and never the off-state switch track - see Switch.
 
 ### Status
 - **Success** (#2ecc71) with **Success Wash** (rgba(46,204,113,0.14)) and
@@ -314,9 +314,13 @@ Quiet and precise: color states, not size or shadow theatrics.
 
 ### Switch
 - **Style:** 38x22px pill track; on-state Gate Indigo, off-state
-  Line Strong (#d4d7e3). 18px white thumb slides 16px and carries an
+  Switch Off (#868c9e). 18px white thumb slides 16px and carries an
   11px indigo check when on. The check is the confirmation: state is
   readable without color.
+- **Why not Line Strong:** the off track is a component state indicator
+  under SC 1.4.11, so it needs 3:1 against every surface it sits on.
+  #d4d7e3 is 1.44:1 on white; #868c9e is 3.36:1 on white and 3.19:1 on
+  Subtle, which is what an expanded or hovered row uses.
 
 ### Status Pills
 - **Style:** 48px-radius capsule, 11px medium text, 6px status dot,
