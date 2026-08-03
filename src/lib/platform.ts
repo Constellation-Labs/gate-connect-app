@@ -32,16 +32,43 @@ export function usePlatform(): Platform {
   return p;
 }
 
-/** Human name of the OS secret store where credentials live. */
-export function secretStoreName(p: Platform): string {
+/** Where credentials live, as a noun phrase ready to drop after "in" / "from".
+ *
+ *  Returns the determiner too, because Windows does not take one: "keychain"
+ *  and "keyring" are common nouns that want "your", but Credential Manager is
+ *  the store's actual name and reads like "in Keychain Access" without it.
+ *
+ *  Not "secret service" on Linux: that is the freedesktop D-Bus API we store
+ *  through, whereas "keyring" is what GNOME calls the thing in its own UI, and
+ *  it parallels "keychain". Nobody has ever seen "secret service" in a
+ *  settings window.
+ *
+ *  PRODUCT.md's first principle is that the user should always feel where the
+ *  key lives, which is worth nothing if we name the wrong vault - so every
+ *  string that says this goes through here rather than hardcoding "keychain".
+ *
+ *  @param determiner "the" where a nearby "your" would already be doing the
+ *  work ("your session lives in the keyring"), "your" otherwise. */
+export function secretStoreName(p: Platform, determiner: "your" | "the" = "your"): string {
   switch (p) {
     case "windows":
-      return "Windows Credential Manager";
+      return "Credential Manager";
     case "linux":
-      return "the system secret service";
+      return `${determiner} keyring`;
     case "macos":
-      return "the macOS keychain";
+      return `${determiner} keychain`;
     default:
-      return "your system's secure store";
+      return `${determiner} system's secure store`;
   }
+}
+
+/** Where the local proxy's CA has to be trusted. A bare noun: callers supply
+ *  the determiner, since this one is a common noun everywhere.
+ *
+ *  Distinct from `secretStoreName` - different vault, different question. On
+ *  Linux this is the system CA trust store (`ca_linux.rs` writes to
+ *  `/usr/local/share/ca-certificates` or `/etc/pki/ca-trust/source/anchors`),
+ *  which is emphatically not a keyring. */
+export function trustStoreName(p: Platform): string {
+  return p === "macos" ? "keychain" : "certificate store";
 }

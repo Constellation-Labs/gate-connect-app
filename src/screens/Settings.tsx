@@ -6,7 +6,7 @@ import { classifyError, type ClassifiedError } from "../lib/errors";
 import { GATEWAY_SERVERS } from "../lib/config";
 import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch, ErrorNote, IconButton } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
-import { usePlatform } from "../lib/platform";
+import { secretStoreName, trustStoreName, usePlatform } from "../lib/platform";
 
 function hostOf(url: string): string {
   try {
@@ -89,7 +89,11 @@ export function Settings({
   const [replacing, setReplacing] = useState(false);
   const [devMode, setDevMode] = useState(false);
   const platform = usePlatform();
-  const trustStore = platform === "windows" ? "certificate store" : "keychain";
+  const trustStore = trustStoreName(platform);
+  // Two different vaults: the CA is trusted in the trust store above, the key
+  // lives in the secret store here. Saying "keychain" for both was wrong on
+  // every platform but macOS.
+  const secretStore = secretStoreName(platform);
   const [newKey, setNewKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
   // Where a failure belongs on screen. One shared slot rendered under
@@ -451,12 +455,12 @@ export function Settings({
         )}
         {errorFor("account")}
         {account.has_api_key && !replacing && (
-          <p className="mt-1.5 text-[11px] text-gc-ink-3">Stored in your keychain.</p>
+          <p className="mt-1.5 text-[11px] text-gc-ink-3">Stored in {secretStore}.</p>
         )}
         {confirmReveal && (
           <div className="mt-2 rounded bg-gc-subtle p-3 shadow-border">
             <div className="text-[11.5px] leading-snug text-gc-ink-2">
-              Showing the start of your key reads it from your keychain, which
+              Showing the start of your key reads it from {secretStore}, which
               may ask for permission.
             </div>
             <div className="mt-2.5 flex items-center gap-2">
@@ -511,8 +515,9 @@ export function Settings({
           {upgrading ? "Waiting for browser…" : "Switch to Constellation sign-in"}
         </button>
         <p className="mt-1 text-[11px] leading-snug text-gc-ink-3">
-          Nothing to paste or rotate; your session lives in the keychain and
-          refreshes on its own. You can switch back anytime.
+          Nothing to paste or rotate; your session lives in{" "}
+          {secretStoreName(platform, "the")} and refreshes on its own. You can
+          switch back anytime.
         </p>
         {upgrading && (
           <div className="mt-2 flex items-center justify-between gap-2">
@@ -718,7 +723,7 @@ export function Settings({
         {errorFor("reset")}
         {confirmingReset && (
           <ConfirmPanel
-            message={`Reset Gate Connect? This turns routing off, disconnects your tools, and ${isOAuth ? "forgets this account" : "removes your key from the keychain"}. You'll start over from sign-in.`}
+            message={`Reset Gate Connect? This turns routing off, disconnects your tools, and ${isOAuth ? "forgets this account" : `removes your key from ${secretStoreName(platform, "the")}`}. You'll start over from sign-in.`}
             confirmLabel={submitting ? "Resetting…" : "Reset everything"}
             busy={submitting}
             onConfirm={() => void forget()}

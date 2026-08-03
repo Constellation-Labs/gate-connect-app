@@ -5,6 +5,13 @@ import { buildGroups } from "../lib/groups";
 import { GroupDetail } from "./GroupDetail";
 
 vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
+// GroupDetail names the secret store in two of its explainers. Pin the
+// platform so that copy is deterministic, and so the real hook's async
+// resolve does not settle outside act().
+vi.mock("../lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/platform")>()),
+  usePlatform: () => "macos",
+}));
 
 function tool(slug: string, name: string, status: Tool["status"]): Tool {
   return {

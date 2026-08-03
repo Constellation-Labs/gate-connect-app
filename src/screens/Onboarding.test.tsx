@@ -13,7 +13,10 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("../lib/platform", () => ({ usePlatform: () => "macos" }));
+vi.mock("../lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/platform")>()),
+  usePlatform: () => "macos",
+}));
 vi.mock("../lib/analytics", () => ({ track: vi.fn() }));
 vi.mock("../lib/tour", () => ({ setTourSeen: vi.fn(), TOUR_SEEN_EVENT: "gc:tour-seen" }));
 

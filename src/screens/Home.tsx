@@ -8,7 +8,7 @@ import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, SectionLabel, ErrorNote, Button } from "../components/gc/ui";
 import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
-import { usePlatform } from "../lib/platform";
+import { trustStoreName, usePlatform } from "../lib/platform";
 
 /** Connected home - the one room: the master Routing card, the certificate
  * step when it blocks coverage, and one row per model family. The families
@@ -62,7 +62,7 @@ export function Home({
   onOpenSettings: () => void;
 }) {
   const platform = usePlatform();
-  const trustStore = platform === "windows" ? "certificate store" : "keychain";
+  const trustStore = trustStoreName(platform);
   const groups = buildGroups(providers, tools, domains, { proxyOn, caTrusted });
   // The certificate only gates proxy-routed apps, so the partial state (and
   // the trust card) only exist while at least one app row is switched on.

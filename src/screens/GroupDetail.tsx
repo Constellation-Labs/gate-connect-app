@@ -4,6 +4,7 @@ import { classifyError, type ClassifiedError } from "../lib/errors";
 import { trackError } from "../lib/analytics";
 import { SubHeader, SectionLabel, Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
 import { MemberPill, memberPillLabel } from "../components/GroupPill";
+import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
 import { Icon } from "../components/gc/Icon";
 
 /** Host only, for the mono identifier slot. */
@@ -18,8 +19,11 @@ function hostOf(url: string | undefined): string {
 
 /** What a member's current state means, in plain language. This is the copy
  * that used to live on a separate tool screen; it belongs next to the row it
- * describes, not a level deeper. */
-function explain(member: GroupMember): string {
+ * describes, not a level deeper.
+ *
+ * Takes the platform because two of these branches name the secret store, and
+ * naming the wrong vault undoes the reassurance they exist to give. */
+function explain(member: GroupMember, platform: Platform): string {
   if (member.attention === "master-off") {
     return member.kind === "proxy"
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
@@ -34,9 +38,9 @@ function explain(member: GroupMember): string {
   }
   switch (member.tool?.status.kind) {
     case "connected":
-      return `${member.name}'s own config points at your Gate gateway. Requests carry the key from your keychain; the key itself never lands in the config file.`;
+      return `${member.name}'s own config points at your Gate gateway. Requests carry the key from ${secretStoreName(platform)}; the key itself never lands in the config file.`;
     case "drifted":
-      return `${member.name} has a Gate setup written outside this app. Switching it on replaces that configuration and manages the key from your keychain.`;
+      return `${member.name} has a Gate setup written outside this app. Switching it on replaces that configuration and manages the key from ${secretStoreName(platform)}.`;
     case "error":
       return `Gate Connect couldn't read ${member.name}'s routing state. Try again after restarting Gate Connect; the details below help when reporting it.`;
     default:
@@ -85,6 +89,7 @@ export function GroupDetail({
    * exists: naming a problem without offering the fix is half a screen. */
   onEnableRouting: () => void;
 }) {
+  const platform = usePlatform();
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
   const [changed, setChanged] = useState<string | null>(null);
@@ -266,7 +271,9 @@ export function GroupDetail({
 
               {open && (
                 <div className="bg-gc-subtle px-3.5 pb-3">
-                  <p className="text-[11.5px] leading-snug text-gc-ink-2">{explain(member)}</p>
+                  <p className="text-[11.5px] leading-snug text-gc-ink-2">
+                    {explain(member, platform)}
+                  </p>
 
                   {/* The remedy belongs where the problem is named. Without
                       this the user reads "the certificate isn't trusted yet"

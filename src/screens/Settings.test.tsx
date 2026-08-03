@@ -7,7 +7,13 @@ import { Settings } from "./Settings";
 
 // The certificate section swaps the trust-store name by platform; drive it by
 // mocking usePlatform rather than the async Tauri lookup.
-vi.mock("../lib/platform", () => ({ usePlatform: vi.fn() }));
+// Partial: only the async OS lookup needs faking. `secretStoreName` and
+// `trustStoreName` are pure and the copy assertions below should see the real
+// strings, not a stub's.
+vi.mock("../lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/platform")>()),
+  usePlatform: vi.fn(),
+}));
 vi.mock("../lib/api", () => ({
   launchAtLoginStatus: vi.fn(),
   setLaunchAtLogin: vi.fn(),

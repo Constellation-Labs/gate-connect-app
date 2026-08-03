@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { useFocusTrap } from "../lib/useFocusTrap";
+import { secretStoreName, usePlatform } from "../lib/platform";
 import { Button, ErrorNote } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
@@ -28,6 +29,7 @@ export function OAuthOffer({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ClassifiedError | null>(null);
+  const platform = usePlatform();
   const panelRef = useRef<HTMLDivElement>(null);
   // An offer the user did not ask for should not open with its accept
   // focused: Space or Enter would launch a browser sign-in flow.
@@ -68,9 +70,10 @@ export function OAuthOffer({
           Sign in instead of pasting a key
         </h1>
         <p className="text-[12.5px] leading-snug text-gc-ink-3">
-          Constellation sign-in keeps your session in the keychain and refreshes
-          it on its own, so there&rsquo;s nothing to rotate when a key expires.
-          Your gateway and your routing stay exactly as they are.
+          Constellation sign-in keeps your session in{" "}
+          {secretStoreName(platform, "the")} and refreshes it on its own, so
+          there&rsquo;s nothing to rotate when a key expires. Your gateway and
+          your routing stay exactly as they are.
         </p>
         {error && <ErrorNote error={error} />}
       </div>

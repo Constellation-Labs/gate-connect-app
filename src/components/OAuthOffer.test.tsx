@@ -3,6 +3,12 @@ import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/re
 import { OAuthOffer } from "./OAuthOffer";
 
 vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
+// The offer names the secret store. Pin the platform so the copy is
+// deterministic and the real hook's async resolve stays inside act().
+vi.mock("../lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/platform")>()),
+  usePlatform: () => "macos",
+}));
 
 afterEach(() => {
   cleanup();

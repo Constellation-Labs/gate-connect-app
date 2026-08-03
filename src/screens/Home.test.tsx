@@ -8,7 +8,10 @@ import { Home } from "./Home";
 
 // The CA-trust card swaps the trust-store name by platform; drive it by
 // mocking usePlatform rather than the async Tauri lookup.
-vi.mock("../lib/platform", () => ({ usePlatform: vi.fn() }));
+vi.mock("../lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/platform")>()),
+  usePlatform: vi.fn(),
+}));
 import { usePlatform } from "../lib/platform";
 
 // Home reads launch-at-login state for its keep-routing tip; a pending

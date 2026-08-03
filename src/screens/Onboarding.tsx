@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { track } from "../lib/analytics";
 import { setTourSeen } from "../lib/tour";
 import { Button } from "../components/gc/ui";
-import { usePlatform, type Platform } from "../lib/platform";
+import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
 import appIcon from "../assets/app-icon.png";
 import routingScreen from "../assets/app-integrations.png";
 import whereMacos from "../assets/where-is-gate-connect-macos.png";
@@ -91,7 +91,7 @@ function buildSteps(platform: Platform): Step[] {
       sub: "Routing is a per-app choice: turn on the apps you want Gate to cover.",
       body: [
         "For Claude Code and Codex, Gate Connect points the app's own config at your gateway and restores it when you disconnect. For apps like Claude Desktop or ChatGPT, it routes the provider's domain through a local proxy.",
-        "Connected apps route through Gate; unselected apps stay unchanged. Your Gate key stays in the operating system keychain, not a plain file.",
+        `Connected apps route through Gate; unselected apps stay unchanged. Your Gate key stays in ${secretStoreName(platform)}, not a plain file.`,
       ],
     },
     {
