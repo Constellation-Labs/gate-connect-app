@@ -108,13 +108,13 @@ afterEach(() => {
 });
 
 describe("Home CA-trust card", () => {
-  it("opens compact, so the ledger survives the one state that explains it", () => {
+  it("opens compact, with the action visible and the lecture optional", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()] });
     expect(screen.getByText(/Apps with no gateway setting need/)).toBeTruthy();
-    // The 60-word explanation and the button are behind the action, not in
-    // the user's way: this state used to push every row off-screen.
+    // The fix is on the card; only the explanation is behind the disclosure.
+    // It used to be the other way round.
+    expect(screen.getByRole("button", { name: "Trust" })).toBeTruthy();
     expect(screen.queryByText(/created on this machine/)).toBeNull();
-    expect(screen.queryByText("Trust certificate")).toBeNull();
   });
 
   it("explains before consent, naming the keychain on macOS", () => {
@@ -131,11 +131,10 @@ describe("Home CA-trust card", () => {
     expect(screen.getByText(/certificate your certificate store trusts/)).toBeTruthy();
   });
 
-  it("calls onTrustCa from the accent button", () => {
+  it("calls onTrustCa without making the user open the explanation first", () => {
     const onTrustCa = vi.fn();
     renderHome({ caTrusted: false, domains: [makeDomain()], onTrustCa });
-    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
-    fireEvent.click(screen.getByText("Trust certificate"));
+    fireEvent.click(screen.getByRole("button", { name: "Trust" }));
     expect(onTrustCa).toHaveBeenCalledTimes(1);
   });
 

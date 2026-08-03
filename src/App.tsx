@@ -751,20 +751,25 @@ export function App() {
 
   const trustCa = useCallback(async () => {
     if (proxyBusy) return;
+    setProviderError(null);
     setProxyBusy(true);
     try {
       setProxy(await proxyTrustCa());
       track("ca_trusted");
     } catch (err) {
-      // a cancelled trust dialog rejects; re-sync instead of leaking an
-      // unhandled rejection with the banner stuck in its old state. Tracked
-      // so a genuine keychain failure is visible (cancels classify apart).
+      // Surface it, don't just log it. This used to call trackError alone, so
+      // a cancelled admin prompt - the likeliest failure in the app - produced
+      // a screen that appeared to do nothing, while classifyError's carefully
+      // worded trust_ca branch went to PostHog and nowhere else. Rethrown so
+      // the member-level button on GroupDetail can show it in place.
       trackError(err, "trust_ca");
+      setProviderError(classifyError(err, "trust_ca"));
       try {
         setProxy(await proxyStatus());
       } catch {
         /* noop */
       }
+      throw err;
     } finally {
       setProxyBusy(false);
     }
@@ -772,15 +777,15 @@ export function App() {
 
   const untrustCa = useCallback(async () => {
     if (proxyBusy) return;
+    setProviderError(null);
     setProxyBusy(true);
     try {
       setProxy(await proxyUntrustCa());
       track("ca_untrusted");
     } catch (err) {
-      // a cancelled removal dialog rejects; re-sync instead of leaking an
-      // unhandled rejection with the banner stuck in its old state. Tracked
-      // so a genuine keychain failure is visible (cancels classify apart).
+      // Same as trustCa: the classified untrust_ca string reached no screen.
       trackError(err, "untrust_ca");
+      setProviderError(classifyError(err, "untrust_ca"));
       try {
         setProxy(await proxyStatus());
       } catch {
@@ -941,7 +946,7 @@ export function App() {
         onToggleGroup={(id, on) => void setGroupRouted(id, on)}
         onToggleTool={setToolRouted}
         onSetDomain={setDomain}
-        onTrustCa={() => void trustCa()}
+        onTrustCa={trustCa}
         proxyOn={proxy?.running ?? false}
         onEnableRouting={() => void toggleProxy(false)}
       />

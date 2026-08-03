@@ -207,19 +207,33 @@ export function Home({
               <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-gc-ink">
                 Apps with no gateway setting need the Gate certificate.
               </div>
-              <button
-                type="button"
+              {/* The action, not the explanation. This card names the reason
+                  nothing is routing, and the fix used to be inside a
+                  disclosure labelled "What's this?" - so a user who already
+                  knows what a root CA is had to open a four-sentence lecture
+                  to find the button. */}
+              <Button
+                variant="accent"
+                size="sm"
+                className="shrink-0"
                 disabled={busy}
-                onClick={() => setCaExplain((v) => !v)}
-                aria-expanded={caExplain}
-                className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink disabled:opacity-40"
+                onClick={onTrustCa}
               >
-                What&rsquo;s this?
-              </button>
+                Trust
+              </Button>
             </div>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setCaExplain((v) => !v)}
+              aria-expanded={caExplain}
+              className="mt-2 text-[11px] font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink disabled:opacity-40"
+            >
+              What&rsquo;s this?
+            </button>
             {caExplain && (
               <>
-                <p className="mt-2.5 text-[11.5px] leading-snug text-gc-ink-2">
+                <p className="mt-2 text-[11.5px] leading-snug text-gc-ink-2">
                   Desktop apps with no gateway setting route through
                   Gate&rsquo;s local proxy, which needs a certificate your{" "}
                   {trustStore} trusts. The certificate and its private key are
@@ -229,9 +243,6 @@ export function Home({
                 <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
                   You can remove it anytime in Settings under Certificate.
                 </p>
-                <Button variant="accent" full className="mt-2.5" disabled={busy} onClick={onTrustCa}>
-                  Trust certificate
-                </Button>
               </>
             )}
           </div>

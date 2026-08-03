@@ -199,7 +199,9 @@ function UpdateTakeover({
   const panelRef = useRef<HTMLDivElement>(null);
   // Escape defers the update, matching "Later" - but not mid-install, when
   // there is no safe dismissal.
-  useFocusTrap(panelRef, installing ? undefined : onLater);
+  // "Install & relaunch" restarts the app under the user; Later takes focus.
+  const safeRef = useRef<HTMLButtonElement>(null);
+  useFocusTrap(panelRef, installing ? undefined : onLater, safeRef);
   return (
     <div
       ref={panelRef}
@@ -240,6 +242,7 @@ function UpdateTakeover({
         </Button>
         {!installing && (
           <button
+            ref={safeRef}
             type="button"
             onClick={onLater}
             className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"

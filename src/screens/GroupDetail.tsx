@@ -76,8 +76,8 @@ export function GroupDetail({
   onToggleTool: (slug: string, routed: boolean) => Promise<void>;
   onSetDomain: (slug: string, enabled: boolean) => Promise<void>;
   /** The remedy for a needs-trust member, offered where the problem is named
-   * rather than back on Home. */
-  onTrustCa: () => void;
+   * rather than back on Home. Rejects on failure so the row can show it. */
+  onTrustCa: () => Promise<void>;
   /** Whether the engine is running. A member can be switched on and still not
    * route, which is what the master-off state is. */
   proxyOn: boolean;
@@ -96,6 +96,19 @@ export function GroupDetail({
   function toggleOpen(key: string) {
     setOpenKey((k) => (k === key ? null : key));
     setError(null);
+  }
+
+  /** Trusting can fail (a cancelled admin prompt is the common case), so the
+   * failure belongs next to the button that caused it, exactly like a member
+   * toggle failure. */
+  async function trustFromRow(member: GroupMember) {
+    setError(null);
+    try {
+      await onTrustCa();
+    } catch (e) {
+      setError(classifyError(e, "trust_ca"));
+      setOpenKey(member.key);
+    }
   }
 
   async function toggleMember(member: GroupMember) {
@@ -259,7 +272,7 @@ export function GroupDetail({
                       size="sm"
                       className="mt-2.5"
                       disabled={busy}
-                      onClick={onTrustCa}
+                      onClick={() => void trustFromRow(member)}
                     >
                       Trust certificate
                     </Button>

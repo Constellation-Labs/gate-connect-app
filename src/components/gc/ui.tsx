@@ -1,3 +1,4 @@
+import { forwardRef } from "react";
 import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
@@ -9,21 +10,19 @@ import { Icon, type IconName } from "./Icon";
 /** Shared primitives for the Gate Connect popover, built on the `gc-*`
  *  Tailwind tokens. Visual port of the prototype's primitives/kit. */
 
-export function Button({
-  variant = "secondary",
-  size = "md",
-  full,
-  type = "button",
-  className = "",
-  children,
-  ...rest
-}: {
+/** `forwardRef` so a panel can point its focus trap at a specific button -
+ * the confirms need focus to land on the safe choice, not on whichever
+ * destructive action happens to come first in DOM order. */
+export const Button = forwardRef<HTMLButtonElement, {
   variant?: "accent" | "secondary" | "danger";
   /** `sm` is for dense chrome (the onboarding window's 52px footer), not the
    * popover, where buttons stay `md`. */
   size?: "sm" | "md";
   full?: boolean;
-} & ButtonHTMLAttributes<HTMLButtonElement>) {
+} & ButtonHTMLAttributes<HTMLButtonElement>>(function Button(
+  { variant = "secondary", size = "md", full, type = "button", className = "", children, ...rest },
+  ref,
+) {
   // Indigo is defined as affordance and live state - the encouraged path - so
   // it must never be the thing that destroys work. `danger` gives the two
   // destructive confirms (close everything, reset everything) one grammar of
@@ -38,6 +37,7 @@ export function Button({
     size === "sm" ? "h-8 px-3.5 text-[12.5px]" : "h-10 px-4 text-[13.5px]";
   return (
     <button
+      ref={ref}
       // Never inherit the implicit "submit": these sit next to inputs (the
       // key form), where a stray submit would reload the webview.
       type={type}
@@ -47,7 +47,7 @@ export function Button({
       {children}
     </button>
   );
-}
+});
 
 export function IconButton({
   icon,

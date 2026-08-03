@@ -262,3 +262,27 @@ describe("GroupDetail master-off remedy", () => {
     expect(screen.queryByText(/to apply the change/)).toBeNull();
   });
 });
+
+describe("GroupDetail certificate failure", () => {
+  it("shows a failed trust next to the button that failed", async () => {
+    const [group] = buildGroups(CATALOG, [], [domain], { proxyOn: true, caTrusted: false });
+    render(
+      <GroupDetail
+        group={group}
+        busy={false}
+        onBack={vi.fn()}
+        onToggleGroup={vi.fn()}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={vi.fn(() => Promise.resolve())}
+        // A cancelled admin prompt: the likeliest failure in the app, and it
+        // used to produce no on-screen feedback at all.
+        onTrustCa={() => Promise.reject("User canceled (-128)")}
+        proxyOn={true}
+        onEnableRouting={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Trust certificate" }));
+    expect(await screen.findByText("The system prompt was cancelled")).toBeTruthy();
+  });
+});

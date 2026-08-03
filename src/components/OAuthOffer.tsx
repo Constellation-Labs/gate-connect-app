@@ -29,7 +29,10 @@ export function OAuthOffer({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ClassifiedError | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(panelRef, onDismiss);
+  // An offer the user did not ask for should not open with its accept
+  // focused: Space or Enter would launch a browser sign-in flow.
+  const safeRef = useRef<HTMLButtonElement>(null);
+  useFocusTrap(panelRef, onDismiss, safeRef);
 
   async function upgrade() {
     setBusy(true);
@@ -79,7 +82,7 @@ export function OAuthOffer({
         </Button>
         {/* Not a throwaway "Not now": a pasted key is a supported choice, and
             this says so rather than implying the user is postponing. */}
-        <Button variant="secondary" full disabled={busy} onClick={onDismiss}>
+        <Button ref={safeRef} variant="secondary" full disabled={busy} onClick={onDismiss}>
           Keep using my API key
         </Button>
       </div>

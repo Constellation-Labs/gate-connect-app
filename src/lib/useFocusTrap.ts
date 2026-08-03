@@ -11,6 +11,12 @@ const FOCUSABLE =
 export function useFocusTrap(
   ref: RefObject<HTMLElement>,
   onEscape?: () => void,
+  /** Where focus lands on mount. Without it the trap takes the first
+   * focusable in DOM order, which on every confirm panel here is the
+   * destructive button - so a keyboard user who opened the panel with Enter
+   * destroys something by pressing Enter again. Point this at the safe
+   * choice whenever the primary action is `variant="danger"`. */
+  initialFocus?: RefObject<HTMLElement>,
 ): void {
   // Keep the latest onEscape without re-running the trap effect (callers pass
   // inline closures).
@@ -24,7 +30,7 @@ export function useFocusTrap(
 
     const focusables = () =>
       Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
-    (focusables()[0] ?? panel).focus();
+    (initialFocus?.current ?? focusables()[0] ?? panel).focus();
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && escapeRef.current) {

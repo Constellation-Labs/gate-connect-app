@@ -59,3 +59,10 @@ describe("OAuthOffer", () => {
     expect(onUpgrade).not.toHaveBeenCalled();
   });
 });
+
+describe("OAuthOffer focus", () => {
+  it("opens focused on the decline, not on a browser flow the user didn't ask for", () => {
+    render(<OAuthOffer onUpgrade={vi.fn(() => Promise.resolve())} onDismiss={vi.fn()} />);
+    expect((document.activeElement as HTMLElement).textContent).toBe("Keep using my API key");
+  });
+});

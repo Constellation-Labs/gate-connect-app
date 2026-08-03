@@ -25,7 +25,10 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ClassifiedError | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(panelRef, onCancel);
+  // The user asked to quit, but Enter on an unread panel should not decide
+  // how. Cancel takes focus; both quit paths stay one Tab away.
+  const safeRef = useRef<HTMLButtonElement>(null);
+  useFocusTrap(panelRef, onCancel, safeRef);
 
   async function turnOffAndQuit() {
     setBusy(true);
@@ -92,6 +95,7 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
           Quit anyway
         </Button>
         <button
+          ref={safeRef}
           type="button"
           disabled={busy}
           onClick={onCancel}

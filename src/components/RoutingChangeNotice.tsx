@@ -36,7 +36,10 @@ export function RoutingChangeNotice({
   const [closed, setClosed] = useState<number | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(panelRef, onDismiss);
+  // Focus the way out, not the way through: this panel can be reached by
+  // pressing Enter on the Home banner, and its primary is "Close everything".
+  const safeRef = useRef<HTMLButtonElement>(null);
+  useFocusTrap(panelRef, onDismiss, safeRef);
 
   async function closeAgents() {
     setClosing(true);
@@ -129,7 +132,13 @@ export function RoutingChangeNotice({
             <Button variant="danger" full disabled={closing} onClick={() => void closeAgents()}>
               {closing ? "Closing…" : "Close everything"}
             </Button>
-            <Button variant="secondary" full disabled={closing} onClick={() => setConfirming(false)}>
+            <Button
+              ref={safeRef}
+              variant="secondary"
+              full
+              disabled={closing}
+              onClick={() => setConfirming(false)}
+            >
               Cancel
             </Button>
           </>
