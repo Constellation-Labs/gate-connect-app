@@ -303,10 +303,10 @@ export function Home({
                 </span>
                 <span className="relative">
                   <Switch
-                    on={group.routed > 0}
+                    on={group.desired > 0}
                     label={group.switchLabel}
                     busy={busy}
-                    onClick={() => onToggleGroup(group.id, group.routed === 0)}
+                    onClick={() => onToggleGroup(group.id, group.desired === 0)}
                   />
                 </span>
                 <span className="pointer-events-none relative">

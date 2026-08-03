@@ -54,6 +54,7 @@ function renderDetail(
       onToggleGroup={vi.fn()}
       onToggleTool={vi.fn(() => Promise.resolve())}
       onSetDomain={vi.fn(() => Promise.resolve())}
+      onTrustCa={vi.fn()}
       {...props}
     />,
   );
@@ -152,5 +153,50 @@ describe("GroupDetail inline expansion", () => {
   it("says the group switch will leave a hand-written setup alone", () => {
     renderDetail([tool("codex", "Codex", { kind: "drifted", reason: "r" })], []);
     expect(screen.getByText(/group switch leaves/)).toBeTruthy();
+  });
+});
+
+describe("GroupDetail intent versus flow", () => {
+  /** Routing on, certificate untrusted: the state that produced the round-6 P0. */
+  function renderUntrusted(props: Partial<React.ComponentProps<typeof GroupDetail>> = {}) {
+    const [group] = buildGroups(CATALOG, [], [domain], { proxyOn: true, caTrusted: false });
+    render(
+      <GroupDetail
+        group={group}
+        busy={false}
+        onBack={vi.fn()}
+        onToggleGroup={vi.fn()}
+        onToggleTool={vi.fn(() => Promise.resolve())}
+        onSetDomain={vi.fn(() => Promise.resolve())}
+        onTrustCa={vi.fn()}
+        {...props}
+      />,
+    );
+  }
+
+  it("shows a needs-trust member as switched on, because it is", () => {
+    renderUntrusted();
+    const sw = screen.getByRole("switch", { name: "Route Claude Desktop / Cowork through Gate" });
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByText("Needs trust")).toBeTruthy();
+  });
+
+  it("turns a needs-trust member OFF when clicked, not off again", async () => {
+    const onSetDomain = vi.fn(() => Promise.resolve());
+    renderUntrusted({ onSetDomain });
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Route Claude Desktop / Cowork through Gate" }),
+    );
+    // The old code also sent `false` here, but from a switch that read off, so
+    // the user believed they were switching it on.
+    await waitFor(() => expect(onSetDomain).toHaveBeenCalledWith("anthropic", false));
+  });
+
+  it("offers the certificate remedy where the problem is named", () => {
+    const onTrustCa = vi.fn();
+    renderUntrusted({ onTrustCa });
+    fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Trust certificate" }));
+    expect(onTrustCa).toHaveBeenCalledTimes(1);
   });
 });

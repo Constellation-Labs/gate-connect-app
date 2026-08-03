@@ -835,6 +835,7 @@ export function App() {
         onToggleGroup={(id, on) => void setGroupRouted(id, on)}
         onToggleTool={setToolRouted}
         onSetDomain={setDomain}
+        onTrustCa={() => void trustCa()}
       />
     );
   } else {

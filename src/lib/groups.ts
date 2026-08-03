@@ -20,7 +20,7 @@ import type { ProviderState, ProxyDomain, Tool } from "./api";
  * block it finds, so it can't sit under a single family. */
 export const MULTI_PROVIDER_ID = "any-provider";
 
-export type MemberAttention = "error" | "drifted" | "needs-trust" | null;
+export type MemberAttention = "error" | "drifted" | "needs-trust" | "master-off" | null;
 
 export interface GroupMember {
   /** Tool slug or domain slug - unique within a group. */
@@ -28,7 +28,20 @@ export interface GroupMember {
   /** How this one routes: its own config file, or the local proxy. */
   kind: "config" | "proxy";
   name: string;
+  /** Traffic is actually flowing through Gate right now. Drives the pill.
+   * Strictly narrower than `desired`: a member can be switched on and still
+   * not be routing, because the master is off or the certificate is not
+   * trusted. */
   routed: boolean;
+  /** What the user asked for: the persisted `enabled` / connected value.
+   * Drives the switch.
+   *
+   * These were one field, and conflating them made the switch destructive.
+   * With an untrusted certificate an enabled domain has `routed === false`,
+   * so the switch rendered off; clicking it sent `!enabled === false` and
+   * turned off the setting the user was trying to turn on, without the
+   * switch ever moving. Display state is `routed`; intent is `desired`. */
+  desired: boolean;
   attention: MemberAttention;
   /** Present for config members. */
   tool?: Tool;
@@ -48,21 +61,34 @@ export interface Group {
   /** One line on what the family covers, shown on its detail screen. */
   blurb: string;
   members: GroupMember[];
+  /** How many members are actually carrying traffic. Drives the pill. */
   routed: number;
+  /** How many are switched on. Drives the switch, for the same
+   * intent-vs-flow reason as `GroupMember.desired`. */
+  desired: number;
 }
 
-function memberFromTool(tool: Tool): GroupMember {
+function memberFromTool(tool: Tool, { proxyOn }: { proxyOn: boolean }): GroupMember {
+  const connected = tool.status.kind === "connected";
   return {
     key: tool.slug,
     kind: "config",
     name: tool.name,
-    routed: tool.status.kind === "connected",
+    // A config tool points at the loopback relay. With the master off that
+    // relay is dead, so the tool is broken, not routed - the same reasoning
+    // that already gated proxy members. Master-off disconnects tools now, but
+    // the sweep is best-effort per tool, so a tool that fails to disconnect
+    // must not keep reporting itself as routing.
+    routed: connected && proxyOn,
+    desired: connected,
     attention:
       tool.status.kind === "error"
         ? "error"
         : tool.status.kind === "drifted"
           ? "drifted"
-          : null,
+          : connected && !proxyOn
+            ? "master-off"
+            : null,
     tool,
   };
 }
@@ -79,7 +105,12 @@ function memberFromDomain(
     // traffic, so it does not count as routed - same rule as the header's
     // "Partly routed".
     routed: domain.enabled && proxyOn && caTrusted,
-    attention: domain.enabled && proxyOn && !caTrusted ? "needs-trust" : null,
+    desired: domain.enabled,
+    attention: domain.enabled && proxyOn && !caTrusted
+      ? "needs-trust"
+      : domain.enabled && !proxyOn
+        ? "master-off"
+        : null,
     domain,
   };
 }
@@ -103,7 +134,7 @@ export function buildGroups(
     for (const tool of installed) {
       if (provider.tool_slugs.includes(tool.slug)) {
         claimed.add(tool.slug);
-        members.push(memberFromTool(tool));
+        members.push(memberFromTool(tool, opts));
       }
     }
     for (const domain of routable) {
@@ -118,13 +149,14 @@ export function buildGroups(
       blurb: `Everything that talks to ${provider.display_name}.`,
       members,
       routed: members.filter((m) => m.routed).length,
+      desired: members.filter((m) => m.desired).length,
     };
   });
 
   // Whatever the catalog didn't claim: the agent harnesses.
   const leftovers = installed
     .filter((t) => !claimed.has(t.slug))
-    .map((t) => ({ ...memberFromTool(t), coversAllProviders: true }));
+    .map((t) => ({ ...memberFromTool(t, opts), coversAllProviders: true }));
   if (leftovers.length > 0) {
     groups.push({
       id: MULTI_PROVIDER_ID,
@@ -133,6 +165,7 @@ export function buildGroups(
       blurb: "Tools that route every provider you’ve set up in them, not one model family.",
       members: leftovers,
       routed: leftovers.filter((m) => m.routed).length,
+      desired: leftovers.filter((m) => m.desired).length,
     });
   }
 
@@ -146,6 +179,7 @@ export function groupSummary(group: Group): { count: string; exception: string |
   const errors = group.members.filter((m) => m.attention === "error");
   const drifted = group.members.filter((m) => m.attention === "drifted");
   const untrusted = group.members.filter((m) => m.attention === "needs-trust");
+  const masterOff = group.members.filter((m) => m.attention === "master-off");
   const exception =
     errors.length > 0
       ? errors.length === 1
@@ -153,10 +187,12 @@ export function groupSummary(group: Group): { count: string; exception: string |
         : `${errors.length} failed`
       : untrusted.length > 0
         ? "certificate not trusted"
-        : drifted.length > 0
-          ? drifted.length === 1
-            ? `${drifted[0].name} set up elsewhere`
-            : `${drifted.length} set up elsewhere`
-          : null;
+        : masterOff.length > 0
+          ? "waiting on routing"
+          : drifted.length > 0
+            ? drifted.length === 1
+              ? `${drifted[0].name} set up elsewhere`
+              : `${drifted.length} set up elsewhere`
+            : null;
   return { count, exception };
 }

@@ -179,3 +179,47 @@ describe("groupSummary", () => {
     expect(groupSummary(clean)).toEqual({ count: "1 of 1 routing", exception: null });
   });
 });
+
+describe("intent versus flow", () => {
+  it("keeps an enabled domain switched on while the certificate blocks it", () => {
+    // The round-6 P0: these were one field. `routed` false made the switch
+    // render off, and clicking it sent `!enabled` = false, disabling the very
+    // thing the user was trying to enable.
+    const [group] = buildGroups(CATALOG, [], [domain()], { proxyOn: true, caTrusted: false });
+    const m = group.members[0];
+    expect(m.desired).toBe(true);
+    expect(m.routed).toBe(false);
+    expect(m.attention).toBe("needs-trust");
+    expect(group.desired).toBe(1);
+    expect(group.routed).toBe(0);
+  });
+
+  it("does not call a config tool routed while the master is off", () => {
+    const [group] = buildGroups(
+      CATALOG,
+      [tool("claude-code", "Claude Code", { kind: "connected" })],
+      [],
+      { proxyOn: false, caTrusted: true },
+    );
+    const m = group.members[0];
+    // Its config points at a relay that isn't running: switched on, not routing.
+    expect(m.desired).toBe(true);
+    expect(m.routed).toBe(false);
+    expect(m.attention).toBe("master-off");
+    expect(groupSummary(group)).toEqual({
+      count: "0 of 1 routing",
+      exception: "waiting on routing",
+    });
+  });
+
+  it("still reports a tool as routing when the master is on", () => {
+    const [group] = buildGroups(
+      CATALOG,
+      [tool("claude-code", "Claude Code", { kind: "connected" })],
+      [],
+      ON,
+    );
+    expect(group.members[0].routed).toBe(true);
+    expect(group.members[0].attention).toBeNull();
+  });
+});

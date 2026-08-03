@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Group, GroupMember } from "../lib/groups";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { trackError } from "../lib/analytics";
-import { SubHeader, SectionLabel, Switch, ErrorNote, IconButton } from "../components/gc/ui";
+import { SubHeader, SectionLabel, Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
 import { MemberPill } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 
@@ -10,6 +10,11 @@ import { Icon } from "../components/gc/Icon";
  * that used to live on a separate tool screen; it belongs next to the row it
  * describes, not a level deeper. */
 function explain(member: GroupMember): string {
+  if (member.attention === "master-off") {
+    return member.kind === "proxy"
+      ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet. Turn routing on from Home.`
+      : `${member.name}'s config points at Gate, but routing is off, so it can't reach the gateway. Turn routing on from Home.`;
+  }
   if (member.kind === "proxy") {
     return member.attention === "needs-trust"
       ? `${member.name} is switched on, but the local certificate isn't trusted yet, so its traffic isn't routing.`
@@ -49,6 +54,7 @@ export function GroupDetail({
   onToggleGroup,
   onToggleTool,
   onSetDomain,
+  onTrustCa,
 }: {
   group: Group;
   busy: boolean;
@@ -57,6 +63,9 @@ export function GroupDetail({
   /** Rejects on failure so the row can surface it in place. */
   onToggleTool: (slug: string, routed: boolean) => Promise<void>;
   onSetDomain: (slug: string, enabled: boolean) => Promise<void>;
+  /** The remedy for a needs-trust member, offered where the problem is named
+   * rather than back on Home. */
+  onTrustCa: () => void;
 }) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
@@ -73,7 +82,7 @@ export function GroupDetail({
 
   async function toggleMember(member: GroupMember) {
     setError(null);
-    if (member.kind === "config" && !member.routed && member.attention === "drifted") {
+    if (member.kind === "config" && !member.desired && member.attention === "drifted") {
       if (confirmingAdopt !== member.key) {
         setConfirmingAdopt(member.key);
         setOpenKey(member.key);
@@ -82,8 +91,8 @@ export function GroupDetail({
     }
     setConfirmingAdopt(null);
     try {
-      if (member.kind === "proxy") await onSetDomain(member.key, !member.domain?.enabled);
-      else await onToggleTool(member.key, !member.routed);
+      if (member.kind === "proxy") await onSetDomain(member.key, !member.desired);
+      else await onToggleTool(member.key, !member.desired);
       setChanged(member.key);
     } catch (e) {
       trackError(e, "connect", { tool: member.key });
@@ -104,10 +113,10 @@ export function GroupDetail({
           </div>
         </div>
         <Switch
-          on={group.routed > 0}
+          on={group.desired > 0}
           label={group.switchLabel}
           busy={busy}
-          onClick={() => onToggleGroup(group.id, group.routed === 0)}
+          onClick={() => onToggleGroup(group.id, group.desired === 0)}
         />
       </div>
 
@@ -169,8 +178,12 @@ export function GroupDetail({
                   <MemberPill member={member} />
                 </span>
                 <span className="relative">
+                  {/* `desired`, not `routed`: the switch is the user's intent.
+                      Driving it from `routed` meant an enabled domain behind
+                      an untrusted certificate rendered off, and clicking it
+                      turned the domain off while the switch never moved. */}
                   <Switch
-                    on={member.routed}
+                    on={member.desired}
                     label={`Route ${member.name} through Gate`}
                     busy={busy}
                     onClick={() => void toggleMember(member)}
@@ -189,6 +202,21 @@ export function GroupDetail({
               {open && (
                 <div className="bg-gc-subtle px-3.5 pb-3">
                   <p className="text-[11.5px] leading-snug text-gc-ink-2">{explain(member)}</p>
+
+                  {/* The remedy belongs where the problem is named. Without
+                      this the user reads "the certificate isn't trusted yet"
+                      and has to navigate back to Home to act on it. */}
+                  {member.attention === "needs-trust" && (
+                    <Button
+                      variant="accent"
+                      size="sm"
+                      className="mt-2.5"
+                      disabled={busy}
+                      onClick={onTrustCa}
+                    >
+                      Trust certificate
+                    </Button>
+                  )}
 
                   {raw && (
                     <div

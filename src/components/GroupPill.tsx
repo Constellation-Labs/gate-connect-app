@@ -40,7 +40,10 @@ export function GroupPill({ group }: { group: Group }) {
 }
 
 /** Per-member pill inside a group. Same grammar as the family pill, with the
- * two states only an individual can be in. */
+ * states only an individual can be in. The pill reports whether traffic is
+ * flowing; the switch beside it reports what the user asked for. Those are
+ * different facts, and the "Needs trust" and "Waiting on routing" states are
+ * exactly where they diverge. */
 export function MemberPill({ member }: { member: GroupMember }) {
   if (member.attention === "error") {
     return (
@@ -63,6 +66,17 @@ export function MemberPill({ member }: { member: GroupMember }) {
       <span className={`${PILL} bg-gc-warning-wash text-gc-ink-2`}>
         <span className={`${DOT} bg-gc-warning`} />
         Needs trust
+      </span>
+    );
+  }
+  // Switched on, master off: the config still points at a relay that isn't
+  // running. Not "Routed" (nothing flows) and not "Not routed" (the user
+  // didn't turn it off).
+  if (member.attention === "master-off") {
+    return (
+      <span className={`${PILL} bg-gc-sunken text-gc-ink-2`}>
+        <span className={`${DOT} bg-gc-ink-4`} />
+        Waiting on routing
       </span>
     );
   }
