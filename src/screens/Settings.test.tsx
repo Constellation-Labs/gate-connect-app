@@ -181,3 +181,50 @@ describe("Settings launch at login", () => {
     expect(screen.getByText(/no login items API/i)).toBeTruthy();
   });
 });
+
+describe("Settings hierarchy", () => {
+  it("groups nine controls under three subjects plus the destructive one", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos", { caTrusted: true });
+    // Was six: Workspace / Signed in / Gate API Key were all "my account", and
+    // Startup / Certificate were both "this machine".
+    expect([...document.querySelectorAll("h2")].map((h) => h.textContent)).toEqual([
+      "Account",
+      "This machine",
+      "Help",
+      "Reset",
+    ]);
+  });
+
+  it("does not dress the auth upsell as the screen's primary action", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos");
+    // Indigo is affordance and live state; a conversion prompt was the loudest
+    // pixel on a screen an API-key user opens to check their key.
+    const accent = [...document.querySelectorAll("button")].filter((b) =>
+      b.className.includes("bg-gc-accent"),
+    );
+    expect(accent).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /Switch to Constellation sign-in/ })).toBeTruthy();
+  });
+
+  it("offers Reset once, last, and not beside Replace key", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos");
+    const labels = [...document.querySelectorAll("h2, button")]
+      .map((e) => (e.tagName === "H2" ? `# ${e.textContent}` : e.textContent?.trim()))
+      .filter((t) => t === "# Reset" || t === "Reset Gate Connect" || t === "Replace key");
+    // It used to render twice, once per auth branch, adjacent to Replace key.
+    expect(labels).toEqual(["Replace key", "# Reset", "Reset Gate Connect"]);
+  });
+
+  it("keeps Dev mode inside Help instead of floating unlabelled", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos");
+    const dev = screen.getByRole("button", { name: "Dev mode" });
+    expect(dev.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(dev);
+    expect(dev.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Gateway server")).toBeTruthy();
+  });
+});

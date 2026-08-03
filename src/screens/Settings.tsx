@@ -311,7 +311,10 @@ export function Settings({
     <div className="flex grow flex-col">
       <SubHeader title="Settings" onBack={onBack} />
 
-      <SectionLabel>Workspace</SectionLabel>
+      {/* Three sections, not six: Workspace / Signed in / Gate API Key were
+          all "my account", and Startup / Certificate were both "this machine".
+          Same controls, half the chunking. */}
+      <SectionLabel>Account</SectionLabel>
       <div className="flex items-center gap-3 px-3.5 py-2.5">
         <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
           <Icon name="cube" size={16} />
@@ -340,7 +343,6 @@ export function Settings({
 
       {isOAuth && (
         <>
-          <SectionLabel>Signed in</SectionLabel>
           <div className="flex items-center gap-3 px-3.5 py-2.5">
             <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
               <Icon name="shieldCheck" size={16} />
@@ -373,58 +375,13 @@ export function Settings({
               <Icon name="logOut" size={14} />
               Sign out
             </button>
-            <button
-              type="button"
-              onClick={() => setConfirmingReset(true)}
-              disabled={submitting}
-              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep"
-            >
-              <Icon name="trash" size={14} />
-              Reset
-            </button>
           </div>
-          {confirmingReset && (
-            <ConfirmPanel
-              message="Reset Gate Connect? This turns routing off, disconnects your tools, and forgets this account. You'll start over from sign-in."
-              confirmLabel={submitting ? "Resetting…" : "Reset everything"}
-              busy={submitting}
-              onConfirm={() => void forget()}
-              onCancel={() => setConfirmingReset(false)}
-            />
-          )}
           {error && <ErrorNote error={error} className="mx-3.5 mt-2" />}
         </>
       )}
 
       {!isOAuth && (
         <>
-      <SectionLabel>Sign in with Constellation</SectionLabel>
-      <div className="mb-4 px-3.5">
-        <p className="mb-2.5 text-[12px] leading-snug text-gc-ink-3">
-          Switch to Constellation sign-in and there's nothing to paste or
-          rotate - your session lives in the keychain and refreshes on its
-          own. You can switch back to an API key anytime.
-        </p>
-        <Button variant="accent" full disabled={upgrading} onClick={handleUpgrade}>
-          <Icon name="shieldCheck" size={15} />
-          {upgrading ? "Waiting for browser…" : "Sign in with Constellation"}
-        </Button>
-        {upgrading && (
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <p className="text-[11px] leading-snug text-gc-ink-3">
-              Finish signing in on the page that opened in your browser.
-            </p>
-            <button
-              type="button"
-              onClick={cancelUpgrade}
-              className="shrink-0 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
-            >
-              Cancel
-            </button>
-          </div>
-        )}
-      </div>
-      <SectionLabel>Gate API Key</SectionLabel>
       <div className="px-3.5">
         {!replacing ? (
           <div className="flex h-9 items-center gap-2 rounded bg-gc-subtle px-3 text-gc-ink-3 shadow-border">
@@ -522,30 +479,46 @@ export function Settings({
             <Icon name="refresh" size={14} />
             Replace key
           </button>
-          <button
-            type="button"
-            onClick={() => setConfirmingReset(true)}
-            disabled={submitting}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep"
-          >
-            <Icon name="trash" size={14} />
-            Reset
-          </button>
         </div>
       )}
-      {confirmingReset && !replacing && (
-        <ConfirmPanel
-          message="Reset Gate Connect? This turns routing off, disconnects your tools, and removes your key from the keychain. You'll start over from sign-in."
-          confirmLabel={submitting ? "Resetting…" : "Reset everything"}
-          busy={submitting}
-          onConfirm={() => void forget()}
-          onCancel={() => setConfirmingReset(false)}
-        />
-      )}
+
+      {/* A quiet row, not a full-width accent button. Indigo is affordance
+          and live state; this is a conversion prompt, and it was the loudest
+          thing on a screen an API-key user opens to check their key - sitting
+          above the key itself. */}
+      <div className="mb-3 px-3.5">
+        <button
+          type="button"
+          disabled={upgrading}
+          onClick={handleUpgrade}
+          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent transition hover:text-gc-accent-ink disabled:opacity-50"
+        >
+          <Icon name="shieldCheck" size={14} />
+          {upgrading ? "Waiting for browser…" : "Switch to Constellation sign-in"}
+        </button>
+        <p className="mt-1 text-[11px] leading-snug text-gc-ink-3">
+          Nothing to paste or rotate; your session lives in the keychain and
+          refreshes on its own. You can switch back anytime.
+        </p>
+        {upgrading && (
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <p className="text-[11px] leading-snug text-gc-ink-3">
+              Finish signing in on the page that opened in your browser.
+            </p>
+            <button
+              type="button"
+              onClick={cancelUpgrade}
+              className="shrink-0 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
         </>
       )}
 
-      <SectionLabel>Startup</SectionLabel>
+      <SectionLabel>This machine</SectionLabel>
       <div className="flex items-center gap-3 px-3.5 py-2.5">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-medium text-gc-ink">Launch at login</div>
@@ -577,7 +550,6 @@ export function Settings({
           on it, for a root CA. The consequence goes in the copy instead. */}
       {caTrusted && (
         <>
-          <SectionLabel>Certificate</SectionLabel>
           <div className="flex items-center gap-3 px-3.5 py-2.5">
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-medium text-gc-ink">Gate certificate</div>
@@ -615,56 +587,11 @@ export function Settings({
         </>
       )}
 
-      <div className="px-3.5 pb-1 pt-1">
-        <button
-            type="button"
-            onClick={() => setDevMode((v) => !v)}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3"
-        >
-          <Icon name="settings" size={14} />
-          Dev mode
-        </button>
-      </div>
-
-      {devMode && !replacing && (
-          <>
-            <SectionLabel>Gateway server</SectionLabel>
-            <div className="flex flex-col gap-2 px-3.5 pb-1">
-              {GATEWAY_SERVERS.map((server) => {
-                const active = server.url === account.gateway_base_url;
-                return (
-                    <button
-                        key={server.url}
-                        type="button"
-                        onClick={() => setConfirmingServer({ url: server.url, label: server.label })}
-                        disabled={active || submitting}
-                        className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
-                        <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
-                          {hostOf(server.url)}
-                        </div>
-                      </div>
-                      {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
-                    </button>
-                );
-              })}
-            </div>
-            {confirmingServer && (
-              <ConfirmPanel
-                message={`Switch to ${confirmingServer.label}? This forgets your stored key, disconnects your tools, and relaunches Gate Connect against the new server.`}
-                confirmLabel={submitting ? "Switching…" : "Switch and relaunch"}
-                busy={submitting}
-                onConfirm={() => void switchServer(confirmingServer.url)}
-                onCancel={() => setConfirmingServer(null)}
-              />
-            )}
-          </>
-      )}
-
       <div className="mt-auto">
         <SectionLabel>Help</SectionLabel>
+        {/* Dev mode lives here now. It used to float between the certificate
+            and Help with no label, the only unlabelled control on a screen
+            built entirely of labelled sections. */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3.5 pb-1">
           <button
             type="button"
@@ -674,7 +601,76 @@ export function Settings({
             <Icon name="info" size={14} />
             Replay tour
           </button>
+          <button
+            type="button"
+            onClick={() => setDevMode((v) => !v)}
+            aria-expanded={devMode}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            <Icon name="settings" size={14} />
+            Dev mode
+          </button>
         </div>
+        {devMode && !replacing && (
+            <>
+              <SectionLabel>Gateway server</SectionLabel>
+              <div className="flex flex-col gap-2 px-3.5 pb-1">
+                {GATEWAY_SERVERS.map((server) => {
+                  const active = server.url === account.gateway_base_url;
+                  return (
+                      <button
+                          key={server.url}
+                          type="button"
+                          onClick={() => setConfirmingServer({ url: server.url, label: server.label })}
+                          disabled={active || submitting}
+                          className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
+                          <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
+                            {hostOf(server.url)}
+                          </div>
+                        </div>
+                        {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
+                      </button>
+                  );
+                })}
+              </div>
+              {confirmingServer && (
+                <ConfirmPanel
+                  message={`Switch to ${confirmingServer.label}? This forgets your stored key, disconnects your tools, and relaunches Gate Connect against the new server.`}
+                  confirmLabel={submitting ? "Switching…" : "Switch and relaunch"}
+                  busy={submitting}
+                  onConfirm={() => void switchServer(confirmingServer.url)}
+                  onCancel={() => setConfirmingServer(null)}
+                />
+              )}
+            </>
+        )}
+        {/* Last, and under its own heading. Reset used to appear twice - once
+            in each auth branch - sitting beside routine actions like Replace
+            key, separated from them only by colour. */}
+        <SectionLabel>Reset</SectionLabel>
+        <div className="px-3.5 pb-1">
+          <button
+            type="button"
+            onClick={() => setConfirmingReset(true)}
+            disabled={submitting}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep disabled:opacity-50"
+          >
+            <Icon name="trash" size={14} />
+            Reset Gate Connect
+          </button>
+        </div>
+        {confirmingReset && (
+          <ConfirmPanel
+            message={`Reset Gate Connect? This turns routing off, disconnects your tools, and ${isOAuth ? "forgets this account" : "removes your key from the keychain"}. You'll start over from sign-in.`}
+            confirmLabel={submitting ? "Resetting…" : "Reset everything"}
+            busy={submitting}
+            onConfirm={() => void forget()}
+            onCancel={() => setConfirmingReset(false)}
+          />
+        )}
       </div>
     </div>
   );
