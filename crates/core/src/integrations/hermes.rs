@@ -270,6 +270,15 @@ impl Integration for Hermes {
         )
     }
 
+    /// Hidden from the popover: `model.default_headers` applies on the OpenAI
+    /// wire only, and we never read `api_mode`. On a native-Anthropic setup the
+    /// `X-Gate-Upstream-Url` hint is silently not sent and the relay rejects
+    /// the request outright, while `status()` still reports Connected.
+    /// See docs/harness-integration-validation.md H1.
+    fn hidden_in_ui(&self) -> bool {
+        true
+    }
+
     fn has_upstream_credential(&self) -> Result<bool> {
         Ok(true)
     }

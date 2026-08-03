@@ -86,8 +86,12 @@ fn status_for(integ: &dyn gate_connect_core::Integration) -> StatusDto {
 
 #[tauri::command]
 fn list_tools() -> Vec<ToolDto> {
+    // The UI boundary is where hiding happens. The registry itself keeps every
+    // integration so the sweep, restore and sign-out paths still clean up a
+    // tool someone connected with an earlier build.
     registry::registry()
         .iter()
+        .filter(|integ| !integ.hidden_in_ui())
         .map(|integ| ToolDto {
             slug: integ.id().to_string(),
             name: integ.display_name().to_string(),
