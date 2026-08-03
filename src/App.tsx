@@ -1008,7 +1008,7 @@ export function App() {
   const credentialStore =
     account && (account.has_api_key || (oauth?.signed_in ?? false))
       ? platform === "windows"
-        ? "Credential Manager"
+        ? "Cred. Manager"
         : platform === "linux"
           ? // "keyring", not "secret service". The latter is the freedesktop
             // D-Bus API we store through; the former is what GNOME calls the
@@ -1097,12 +1097,14 @@ export function App() {
             {credentialStore && (
               <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-gc-ink-3">
                 <Icon name="key" size={11} className="shrink-0" />
-                {/* No "your": the longest form this can produce is Windows
-                    with OAuth, and "Session in your Credential Manager" was
-                    170px into a 153px slot. Dropping the possessive buys 17px
-                    and fits all six platform / auth-mode combinations. */}
+                {/* The longest form is Windows with OAuth, and the full
+                    "Session in your Credential Manager" was 170px into a 153px
+                    slot. Abbreviating the store name rather than dropping the
+                    possessive keeps the line reading like a sentence and still
+                    fits: 146px, all six platform / auth-mode combinations
+                    clear. */}
                 <span className="truncate">
-                  {account?.auth_mode === "oauth" ? "Session" : "Key"} in {credentialStore}
+                  {account?.auth_mode === "oauth" ? "Session" : "Key"} in your {credentialStore}
                 </span>
               </span>
             )}
