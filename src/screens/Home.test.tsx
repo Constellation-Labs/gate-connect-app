@@ -241,14 +241,58 @@ describe("Home model-family ledger", () => {
     expect(screen.getByText("1 of 2 routing")).toBeTruthy();
   });
 
-  it("names an exception in the sub-line instead of hijacking the pill", () => {
+  it("names an exception in the sub-line instead of hijacking the family pill", () => {
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
       domains: [makeDomain()],
     });
-    // The pill still answers "is this routing?"; the failure is named below.
-    expect(screen.getByText("Partly routed")).toBeTruthy();
+    // The family pill still answers "is this routing?": the app row beside the
+    // failed tool is carrying traffic, so the family reads partly routed and
+    // the failure is named below rather than taking the pill. Read off the row
+    // description, because the header now carries these words too.
+    expect(document.getElementById("group-desc-anthropic")?.textContent).toContain(
+      "Partly routed",
+    );
     expect(screen.getAllByText(/Claude Code failed/).length).toBeGreaterThan(0);
+  });
+
+  it("stops the header claiming green while a tool is failing", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
+      domains: [makeDomain()],
+    });
+    // Traffic is flowing (the app row routes) and something failed, so the
+    // header reports the honest half-state. It used to fly green "Routing on"
+    // over a family whose own pill read grey "Not routed", which is the one
+    // screen a user opens *because* a tool stopped working.
+    expect(screen.queryByText("Routing on")).toBeNull();
+    // Both pills carry the words now: the header and the family row.
+    expect(screen.getAllByText("Partly routed").length).toBe(2);
+  });
+
+  it("says Error, not Not routed, when a family is dark because a tool failed", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
+      domains: [],
+    });
+    // Grey "Not routed" is what this pill says for a switch the user set;
+    // a failure must not borrow it.
+    expect(screen.getByText("Error")).toBeTruthy();
+    expect(screen.queryByText("Not routed")).toBeNull();
+    // Nothing is routing, so the header keeps the same words as before - but
+    // amber rather than grey, because the cause is a failure.
+    expect(screen.getByText("Nothing routing")).toBeTruthy();
+  });
+
+  it("leaves a hand-written setup out of the header pill", () => {
+    renderHome({
+      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
+      domains: [makeDomain()],
+    });
+    // Drift is a setup the user chose and the family switch deliberately
+    // respects, not a failure, so it must not demote the header the way an
+    // error does.
+    expect(screen.getByText("Routing on")).toBeTruthy();
   });
 
   it("flags a hand-written setup without calling the family broken", () => {

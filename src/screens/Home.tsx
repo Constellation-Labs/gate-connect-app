@@ -89,6 +89,14 @@ export function Home({
       n + g.members.filter((m) => m.attention === "drifted" || m.attention === "error").length,
     0,
   );
+  // Errors only, separate from `stuckCount`: a hand-written setup elsewhere is
+  // a choice the user made and the family switch deliberately respects, so it
+  // must not turn the header amber. A failure is not a choice. This is the
+  // count that decides whether the header may still claim health.
+  const errorCount = groups.reduce(
+    (n, g) => n + g.members.filter((m) => m.attention === "error").length,
+    0,
+  );
 
   // At most one banner at a time, most actionable first: transient chrome
   // must never bury the ledger (the pills are the point of the screen). The
@@ -145,8 +153,21 @@ export function Home({
         // the one place the app claimed something it could not back up.
         // `partial` still outranks the count: "certificate not trusted" is a
         // reason, and demoting it to a bare "Nothing routing" would hide it.
+        // A failed tool demotes it too. The pill flew green over an errored
+        // family whose own pill read grey "Not routed", so the screen the user
+        // opened *because* a tool stopped working answered in the colours it
+        // uses for a healthy, deliberately-off setup. The words below are
+        // unchanged; what changes is that they stop arriving in green.
         pill={
-          proxyOn ? (partial ? "partial" : routedCount > 0 ? "connected" : "idle") : "idle"
+          proxyOn
+            ? partial
+              ? "partial"
+              : errorCount > 0
+                ? "partial"
+                : routedCount > 0
+                  ? "connected"
+                  : "idle"
+            : "idle"
         }
         pillLabel={
           !proxyOn || partial
@@ -155,7 +176,12 @@ export function Home({
               ? "Nothing to route"
               : routedCount === 0
                 ? "Nothing routing"
-                : undefined
+                : errorCount > 0
+                  ? // The amber default is "Needs trust", which is a different
+                    // and specific reason. Traffic is flowing here and
+                    // something failed, so say the honest half-state.
+                    "Partly routed"
+                  : undefined
         }
         onGear={onOpenSettings}
       />
@@ -454,7 +480,13 @@ export function Home({
                       got cut ("0 of 2 routing · Codex set up els…"). The pill
                       already answers "is this routing?", so the count is the
                       half that can afford to go. */}
-                  <div className="mt-0.5 truncate text-[11px] text-gc-ink-3">
+                  {/* Two lines, not `truncate`. The exception is a sentence
+                      whose verb is at the end, so a production-length tool
+                      name ate it: "Codex Command Line Interfa…" reported that
+                      something involved Codex and nothing about what. The
+                      count never needs the second line, so the row only grows
+                      in the state that has something to say. */}
+                  <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
                     {/* No count alongside an exception: concatenated, the
                         line truncated to "Codex set up elsewhere · 0 of 2…",
                         and a half-printed number is worse than none. The pill

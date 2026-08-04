@@ -9,16 +9,30 @@ const DOT = "h-1.5 w-1.5 rounded-full";
  * `pointer-events-none` span sitting under a stretch button, so it reaches
  * nobody listening unless the row repeats it. Two copies of this rule would
  * drift; there is one. */
-export function groupPillLabel(group: Group): "Routed" | "Partly routed" | "Not routed" {
-  if (group.members.length === 0 || group.routed === 0) return "Not routed";
+export function groupPillLabel(
+  group: Group,
+): "Routed" | "Partly routed" | "Error" | "Not routed" {
+  if (group.members.length === 0 || group.routed === 0) {
+    // Nothing is flowing, so the only question left is why. Grey "Not routed"
+    // is the same answer this pill gives for "you switched this off", and a
+    // family that is dark because a tool failed must not borrow it: the user
+    // who opens the popover mid-task is here *because* something stopped
+    // working, and that was the state the ledger reported most quietly.
+    return group.members.some((m) => m.attention === "error") ? "Error" : "Not routed";
+  }
   if (group.routed === group.members.length) return "Routed";
+  // A failure inside a family that is otherwise carrying traffic stays out of
+  // the pill and rides the row's exception line instead - see the note below
+  // on not letting one exception make a mostly working group read as broken.
   return "Partly routed";
 }
 
 /** A family's headline state. It answers one question - is this routing? -
- * and never rounds up: "some" reads as partly, never as all. Exceptions are
- * named in the row's sub-line instead of hijacking the pill, so a mostly
- * working group doesn't read as broken.
+ * and never rounds up: "some" reads as partly, never as all. A group that is
+ * routing nothing because something failed says so, because grey is what this
+ * pill says for a switch the user set and a failure is not that. Exceptions
+ * inside a group that is otherwise working stay in the row's sub-line instead
+ * of hijacking the pill, so a mostly working group doesn't read as broken.
  *
  * `aria-hidden`: the row's own description carries this text (see
  * [`groupPillLabel`]), so leaving it visible to a screen reader would say the
@@ -30,7 +44,11 @@ export function GroupPill({ group }: { group: Group }) {
       ? { wrap: "bg-gc-success-wash text-gc-success-deep", dot: "bg-gc-success-deep" }
       : label === "Partly routed"
         ? { wrap: "bg-gc-warning-wash text-gc-ink-2", dot: "bg-gc-warning-deep" }
-        : { wrap: "bg-gc-sunken text-gc-ink-3", dot: "bg-gc-ink-3" };
+        : label === "Error"
+          ? // Same skin as the member pill's error state: one vocabulary for
+            // one condition, at both levels of the ledger.
+            { wrap: "bg-gc-error-wash text-gc-ink-2", dot: "bg-gc-error-deep" }
+          : { wrap: "bg-gc-sunken text-gc-ink-3", dot: "bg-gc-ink-3" };
   return (
     <span aria-hidden className={`${PILL} ${skin.wrap}`}>
       <span className={`${DOT} ${skin.dot}`} />
