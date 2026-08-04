@@ -239,8 +239,8 @@ export function Home({
             radius. */}
         {(showProxy || gatewayHost || groups.length > 0) && (
           <div className="overflow-hidden rounded-[10px] bg-gc-surface shadow-border">
-            {(showProxy || gatewayHost) && (
-              <div className="flex items-center gap-3 p-3.5">
+            {showProxy && (
+              <div className="flex items-center gap-3 px-3.5 pb-2.5 pt-3.5">
                 {showProxy && (
                   <div
                     className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
@@ -278,24 +278,6 @@ export function Home({
                       </div>
                     </>
                   )}
-                  {/* The host under the status it belongs to. Outside the card it
-                      was a loose line between two boxes, standing for a fact
-                      about the very thing the card above it reports.
-
-                      `line-clamp-2` with `[overflow-wrap:anywhere]`, not
-                      `truncate`: a hostname is one long token, and at a raised
-                      platform minimum font size truncating dropped the end of
-                      it. Breaking loses nothing. `title` because two lines still
-                      is not enough for a long staging host, and the ellipsis
-                      truncation paints lives in no attribute. */}
-                  {gatewayHost && (
-                    <div
-                      title={gatewayHost}
-                      className="mt-1 line-clamp-2 font-mono text-[10.5px] text-gc-ink-3 [overflow-wrap:anywhere]"
-                    >
-                      {gatewayHost}
-                    </div>
-                  )}
                 </div>
                 {showProxy && (
                   <Switch
@@ -311,10 +293,30 @@ export function Home({
               </div>
             )}
 
+            {/* Its own full-width line inside the card, not a third line in the
+                text column: there it shared 234px with the 36px tile and the
+                switch and a production host was already close to wrapping. Here
+                it gets the card's whole 332px, which fits a 52-character host on
+                one line, so `truncate` costs nothing real and never wraps.
+                `title` keeps a staging host recoverable. */}
+            {gatewayHost && (
+              <div
+                title={gatewayHost}
+                className={`truncate px-3.5 pb-2.5 font-mono text-[10.5px] text-gc-ink-3${
+                  showProxy ? "" : " pt-3.5"
+                }`}
+              >
+                {gatewayHost}
+              </div>
+            )}
+
             {/* The door to the ledger, not the ledger. One room cannot hold a
                 routing card, a certificate ceremony, a wire line, a banner, a
                 launch tip and an itemized list; the list is the part that reads
-                the same whether or not the user came looking for it.
+                the same whether or not the user came looking for it. No rule
+                above it either: a hairline inside a card reads as a card edge
+                however it is inset, and the chevron plus the hover fill already
+                say the row is a door.
 
                 It carries the exception when there is one. Moving the pills a
                 navigation away would otherwise let a mid-task user open the
@@ -327,9 +329,6 @@ export function Home({
                 two things rather than one thing and its detail. */}
             {groups.length > 0 && (
               <>
-                {(showProxy || gatewayHost) && (
-                  <div className="mx-3.5 h-px bg-gc-line" aria-hidden />
-                )}
                 <button
                   type="button"
                   onClick={onOpenRoutes}
