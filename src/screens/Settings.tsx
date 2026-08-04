@@ -244,7 +244,9 @@ export function Settings({
       setRevealedPrefix(null);
       setConfirmReveal(false);
     } catch (err) {
-      setError({ slot: "account", error: classifyError(err, "save_api_key") });
+      // Saving a key is by definition the key path, so a 401 here always
+      // means "this key is wrong", never "your session expired".
+      setError({ slot: "account", error: classifyError(err, "save_api_key", "api_key") });
       trackError(err, "save_api_key");
     } finally {
       setSubmitting(false);
@@ -423,6 +425,7 @@ export function Settings({
             <Input
               leadingIcon={<Icon name="key" size={14} />}
               placeholder="Enter new sk-gw-… key"
+              secret
               value={newKey}
               autoFocus
               spellCheck={false}
@@ -457,6 +460,15 @@ export function Settings({
         {account.has_api_key && !replacing && (
           <p className="mt-1.5 text-[11px] text-gc-ink-3">Stored in {secretStore}.</p>
         )}
+        {/* Same promise, forward tense, while the new key is in the field.
+            The reassurance is worth least when the key is already safe and
+            most while the user is handing one over. */}
+        {replacing && (
+          <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
+            Saved to {secretStore}. Your config files get the gateway URL,
+            never the key.
+          </p>
+        )}
         {confirmReveal && (
           <div className="mt-2 rounded bg-gc-subtle p-3 shadow-border">
             <div className="text-[11.5px] leading-snug text-gc-ink-2">
@@ -488,11 +500,12 @@ export function Settings({
           <button
             type="button"
             onClick={() => setReplacing(true)}
-            // ink, not accent. This is routine maintenance and the auth upsell
-            // sits directly beneath it; two indigo rows 4px apart read as a
-            // pair of equals, and the offer was winning attention from the
-            // thing the user came to do.
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-2 transition hover:text-gc-ink"
+            // ink-3, the neutral rank every routine inline action on this
+            // screen now shares. Seven actions in four different colours read
+            // as seven different kinds of thing; the vocabulary is accent for
+            // the one encouraged action in a section, ink-3 for the rest, and
+            // error-deep reserved for the two that destroy something.
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             <Icon name="refresh" size={14} />
             Replace key
@@ -504,7 +517,11 @@ export function Settings({
           and live state; this is a conversion prompt, and it was the loudest
           thing on a screen an API-key user opens to check their key - sitting
           above the key itself. */}
-      <div className="mb-3 px-3.5">
+      {/* Hairline above it: the key, its store line, Replace key and this
+          offer were one undelimited run of seven items, which is the whole
+          Account section asking to be read as a single chunk. The rule splits
+          "your key" from "a different way to sign in" without a heading. */}
+      <div className="mb-3 mt-2 border-t border-gc-line px-3.5 pt-3">
         <button
           type="button"
           disabled={upgrading}
@@ -643,6 +660,11 @@ export function Settings({
 
       <div className="mt-auto">
         <SectionLabel>Help</SectionLabel>
+        {/* Dev mode sits here, with Replay tour, because both are things you
+            open on purpose and neither changes anything by itself. It used to
+            share a row with Reset Gate Connect at the same size, weight and
+            icon treatment, so a debug disclosure and the action that forgets
+            the account were literal visual peers. */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3.5 pb-1">
           <button
             type="button"
@@ -652,13 +674,6 @@ export function Settings({
             <Icon name="info" size={14} />
             Replay tour
           </button>
-        </div>
-        {/* The last row of the screen: the two things you only reach on
-            purpose. Reset stays last and keeps error-deep - it lost its own
-            heading, so colour and position are now the whole signal. Dev mode
-            pairs with it because both change which environment you are
-            pointed at; it is not part of Help. */}
-        <div className="mt-2.5 flex items-center justify-between border-t border-gc-line px-3.5 pb-1 pt-2.5">
           <button
             type="button"
             onClick={() => setDevMode((v) => !v)}
@@ -667,15 +682,6 @@ export function Settings({
           >
             <Icon name="settings" size={14} />
             Dev mode
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmingReset(true)}
-            disabled={submitting}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep disabled:opacity-50"
-          >
-            <Icon name="trash" size={14} />
-            Reset Gate Connect
           </button>
         </div>
       {devMode && !replacing && (
@@ -720,6 +726,22 @@ export function Settings({
             )}
           </>
       )}
+        {/* The last row of the screen, and the only thing on it. Reset keeps
+            error-deep, and now position and isolation carry the rest of the
+            signal: nothing sits beside it to be mistaken for it. It stays
+            below the Dev mode panel so it is genuinely last in both states,
+            rather than splitting a disclosure from its own trigger. */}
+        <div className="mt-2.5 flex items-center border-t border-gc-line px-3.5 pb-1 pt-2.5">
+          <button
+            type="button"
+            onClick={() => setConfirmingReset(true)}
+            disabled={submitting}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep disabled:opacity-50"
+          >
+            <Icon name="trash" size={14} />
+            Reset Gate Connect
+          </button>
+        </div>
         {errorFor("reset")}
         {confirmingReset && (
           <ConfirmPanel
