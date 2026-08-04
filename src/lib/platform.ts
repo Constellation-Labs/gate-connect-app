@@ -17,6 +17,14 @@ export async function fetchPlatform(): Promise<Platform> {
   return cached;
 }
 
+/** The resolved OS, read synchronously, for the non-React callers that need
+ *  to name the secret store in a string (`classifyError`). `unknown` until the
+ *  first `fetchPlatform` lands, which happens on the app's first render, so by
+ *  the time an error is being classified this is the real platform. */
+export function currentPlatform(): Platform {
+  return cached ?? "unknown";
+}
+
 /** Current OS, resolved once. `unknown` only during the first async tick. */
 export function usePlatform(): Platform {
   const [p, setP] = useState<Platform>(cached ?? "unknown");

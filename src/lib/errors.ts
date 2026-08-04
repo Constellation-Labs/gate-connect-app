@@ -7,6 +7,9 @@
  * modes we see in practice - if nothing matches, the fallback names the
  * action that failed and tells the user the details below may help.
  */
+import type { AuthMode } from "./api";
+import { currentPlatform, secretStoreName } from "./platform";
+
 export type ErrorContext =
   | "sign_in"
   | "sign_out"
@@ -75,7 +78,15 @@ function rawToString(rawInput: unknown): string {
   return String(rawInput);
 }
 
-export function classifyError(rawInput: unknown, context: ErrorContext): ClassifiedError {
+export function classifyError(
+  rawInput: unknown,
+  context: ErrorContext,
+  /** The account's auth mode, where the caller knows it. The gateway's 401 is
+   * the same string for a revoked OAuth session and a bad API key, but the
+   * remedies are different screens - and telling an OAuth user to replace a
+   * key points them at a control Settings does not render for them. */
+  authMode?: AuthMode,
+): ClassifiedError {
   const raw = rawToString(rawInput);
   const lc = raw.toLowerCase();
 
@@ -140,11 +151,12 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     };
   }
 
-  // macOS denied keychain access entirely (rare - system-level block).
+  // The OS denied secret-store access entirely (rare - system-level block).
   if (lc.includes("user interaction is not allowed") || lc.includes("errsecinteraction")) {
+    const store = secretStoreName(currentPlatform(), "the");
     return {
-      title: "The system blocked keychain access",
-      hint: "Allow Gate Connect to use your system credential store in your OS privacy settings, then try again.",
+      title: `The system blocked access to ${store}`,
+      hint: `Allow Gate Connect to use ${store} in your OS privacy settings, then try again.`,
       raw,
     };
   }
@@ -164,11 +176,16 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     };
   }
 
-  // Gateway 401 - wrong API key.
+  // Gateway 401 - the session or the key was rejected.
   if (lc.includes("401") || lc.includes("unauthorized")) {
     return {
-      title: "Gateway rejected the API key",
-      hint: "Replace your Gate API key in Settings.",
+      title: authMode === "oauth" ? "Gateway rejected your session" : "Gateway rejected the API key",
+      hint:
+        authMode === "oauth"
+          ? "Sign in again from Settings."
+          : authMode === "api_key"
+            ? "Replace your Gate API key in Settings."
+            : "Open Settings and reconnect: sign in again, or replace your Gate API key.",
       raw,
     };
   }
