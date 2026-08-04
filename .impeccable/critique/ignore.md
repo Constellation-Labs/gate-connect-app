@@ -4,7 +4,8 @@ Findings the mechanical detector reports that are documented exceptions,
 not drift. Critique runs drop matches silently.
 
 Matching is by file + value, not line, so these survive the code moving.
-Line numbers are recorded as of 2026-08-03 and are a navigation aid only.
+Line numbers are recorded as of 2026-08-03 (verified after that day's
+critique fixes) and are a navigation aid only.
 
 - `design-system-color` on `src/screens/Onboarding.tsx:31`, `:112` and
   `:116`: the `#000` literals sit inside `mask-image` alpha gradients,
@@ -15,8 +16,8 @@ Line numbers are recorded as of 2026-08-03 and are a navigation aid only.
   onboarding tour renders in its own larger window and uses a 27px display
   heading, documented in DESIGN.md's Typography section. The popover ramp
   tops out at Panel Title (17px).
-- `design-system-color` `oklch(0.165 0 0)` on `tailwind.config.ts:186` and
-  `:190`: this is `ink.800` (defined at line 71) and it only ever appears
+- `design-system-color` `oklch(0.165 0 0)` on `tailwind.config.ts:188` and
+  `:192`: this is `ink.800` (defined at line 71) and it only ever appears
   inside `color-mix(in oklch, ... 4-9%, transparent)`, so it is never
   painted as a color, only as a seam alpha. The four shadow strings that
   contain it are reproduced verbatim in DESIGN.md's Shadows section. The
