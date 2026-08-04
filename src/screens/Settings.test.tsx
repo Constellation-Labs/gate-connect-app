@@ -143,6 +143,21 @@ describe("Settings certificate section", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove certificate" }));
     expect(onUntrustCa).toHaveBeenCalledTimes(1);
   });
+
+  it("brings the armed confirm into view and puts focus on its safe half", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    await renderOn("macos", { caTrusted: true });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    // The confirm renders after the control that arms it, so on the Reset
+    // trigger - the last element in this screen's scroll container - it mounted
+    // entirely below the fold and pressing the button that wipes the account
+    // returned a pixel-identical screen. It reports itself instead.
+    expect(scrollIntoView).toHaveBeenCalled();
+    // Focus is an invitation, so the destructive half never gets it.
+    expect(document.activeElement?.textContent).toBe("Cancel");
+  });
 });
 
 describe("Settings launch at login", () => {

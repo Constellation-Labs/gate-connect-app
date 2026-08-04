@@ -18,7 +18,14 @@ function hostOf(url: string): string {
 
 /** Inline confirm step for the destructive actions (the popover never stacks
  * dialogs): names exactly what is about to be lost, then a confirm/cancel
- * pair. Same pattern as the key-reveal confirm below. */
+ * pair. Same pattern as the key-reveal confirm below.
+ *
+ * It scrolls itself into view and takes focus on mount, because it is rendered
+ * *after* the control that arms it. Reset is the last element in this screen's
+ * scroll container, so pressing it used to mount this panel entirely below the
+ * fold: the user pressed the button that wipes their account and got a
+ * pixel-identical screen back, which is the exact shape of "press it again".
+ * Same was true of the certificate and gateway-server confirms. */
 function ConfirmPanel({
   message,
   confirmLabel,
@@ -32,8 +39,25 @@ function ConfirmPanel({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    // `nearest` so an already-visible confirm doesn't jump the screen under a
+    // user who could see it all along. The reduced-motion contract in
+    // index.css forces `scroll-behavior: auto`, and nothing sets smooth, so
+    // this is instant for everyone.
+    panelRef.current?.scrollIntoView({ block: "nearest" });
+    // Cancel, never the destructive button: focus is an invitation, and the
+    // safe half of a confirm is the one that gets it. Matches the takeovers.
+    cancelRef.current?.focus();
+  }, []);
   return (
-    <div className="mx-3.5 mt-2 rounded bg-gc-subtle p-3 shadow-border">
+    <div
+      ref={panelRef}
+      role="group"
+      aria-label="Confirm"
+      className="mx-3.5 mt-2 rounded bg-gc-subtle p-3 shadow-border"
+    >
       <div className="text-[11.5px] leading-snug text-gc-ink-2">{message}</div>
       <div className="mt-2.5 flex items-center gap-2">
         {/* Same destructive grammar as the routing takeover: the action that
@@ -42,7 +66,7 @@ function ConfirmPanel({
         <Button variant="danger" size="sm" disabled={busy} onClick={onConfirm}>
           {confirmLabel}
         </Button>
-        <Button variant="secondary" size="sm" disabled={busy} onClick={onCancel}>
+        <Button ref={cancelRef} variant="secondary" size="sm" disabled={busy} onClick={onCancel}>
           Cancel
         </Button>
       </div>
