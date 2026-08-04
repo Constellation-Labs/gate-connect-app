@@ -29,6 +29,14 @@
 //! Codex reads `config.toml` at startup, so the user must restart any
 //! running `codex` sessions after connecting/disconnecting.
 //!
+//! `disconnect` is the one place we stop short of zero residue: it leaves a
+//! `[model_providers.gate]` passthrough stub pointed at OpenAI (see
+//! [`passthrough_stub`]). Codex writes the provider *name* into every thread's
+//! session metadata, so deleting the block outright makes every thread started
+//! while routed unresumable ("Model provider `gate` not found"). The stub
+//! carries no credential, no gateway URL and no upstream hint, so it leaks
+//! nothing and routes nothing through Gate.
+//!
 //! [`requires_upstream_credential`]: crate::Integration::requires_upstream_credential
 
 use anyhow::{Context, Result};
@@ -160,6 +168,15 @@ const APIKEY_UPSTREAM_URL: &str = "https://api.openai.com";
 const PROVIDER_ID: &str = "gate";
 const PROVIDER_DISPLAY_NAME: &str = "Constellation Gate";
 
+/// `name` on the passthrough stub [`disconnect`] leaves behind, so a user
+/// reading their config sees the block is no longer routed through Gate.
+const PASSTHROUGH_DISPLAY_NAME: &str = "OpenAI (direct)";
+
+/// Key inside `[_gate_connect]` marking the `gate` provider block as the
+/// post-disconnect passthrough stub rather than a routed one. Without it
+/// [`status`] would read the stub as leftover Gate residue and report drift.
+const PASSTHROUGH_MARKER: &str = "passthrough_stub";
+
 const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
 
 /// Common install locations for the `codex` binary. Detection also falls
@@ -227,6 +244,14 @@ impl Integration for Codex {
         let Some(provider_block) = provider_block else {
             return Ok(Status::Detected);
         };
+        // The passthrough stub `disconnect` leaves behind (see
+        // [`passthrough_stub`]) is a `gate` block that routes nowhere near
+        // Gate, so it is not residue: the machine is disconnected. Only trust
+        // the marker while the pointer is off `gate` - a config still pointing
+        // at us falls through to the drift checks below.
+        if is_passthrough_stub(&doc) && model_provider != PROVIDER_ID {
+            return Ok(Status::Detected);
+        }
         // Our provider block (with the embedded Gate key) is still present
         // even though the pointer was changed - that's drift, not a clean
         // machine; reporting Detected here would make sign-out skip the
@@ -406,6 +431,10 @@ impl Integration for Codex {
         let marker = marker_entry
             .as_table_mut()
             .context("`_gate_connect` must be a TOML table")?;
+        // The block we just wrote is the managed one again; a passthrough
+        // marker left by an earlier disconnect would make `status` report this
+        // connected config as merely Detected.
+        marker.remove(PASSTHROUGH_MARKER);
         if !marker_has_prev {
             match previous_model_provider {
                 Some(s) => {
@@ -432,22 +461,33 @@ impl Integration for Codex {
         }
         let mut doc = read_doc(&path)?;
 
-        // Remove our model_providers.gate block. Use `as_table_like_mut`
-        // so inline-table forms (`model_providers = { ... }`) are also
-        // handled - `as_table_mut` would silently skip them and leave
-        // our entry behind.
-        let mut model_providers_empty = false;
-        if let Some(model_providers) = doc
-            .get_mut("model_providers")
-            .and_then(|i| i.as_table_like_mut())
-        {
-            model_providers.remove(PROVIDER_ID);
-            model_providers_empty = model_providers.is_empty();
-        }
-        if model_providers_empty {
-            // Drop the table so the file doesn't end up with an orphan
-            // `[model_providers]` header / empty inline value.
-            doc.remove("model_providers");
+        // Replace our model_providers.gate block with a passthrough stub
+        // rather than deleting it. Codex records the provider *name* in every
+        // thread's session metadata (`"model_provider":"gate"`), so a thread
+        // started while routed re-resolves `gate` on resume and dies with
+        // "Model provider `gate` not found" once the name is gone. The stub
+        // keeps those threads resumable and sends them straight to OpenAI.
+        // Read the shape before mutating so `as_table_like` also sees
+        // inline-table forms (`model_providers = { ... }`), which the insert
+        // below then upgrades - `as_table_mut` alone would skip them and leave
+        // our routed entry behind.
+        let had_gate_block = doc
+            .get("model_providers")
+            .and_then(|i| i.as_table_like())
+            .map(|t| t.contains_key(PROVIDER_ID))
+            .unwrap_or(false);
+        if had_gate_block {
+            let entry = doc
+                .get_mut("model_providers")
+                .context("`model_providers` vanished mid-disconnect")?;
+            upgrade_inline_to_table(entry);
+            let model_providers = entry
+                .as_table_mut()
+                .context("`model_providers` must be a TOML table")?;
+            // auth.json may be gone by now (the user logged out of Codex);
+            // fall back to ChatGPT mode for the same reason `status` does.
+            let mode = read_auth_mode().unwrap_or(AuthMode::Chatgpt);
+            model_providers.insert(PROVIDER_ID, Item::Table(passthrough_stub(mode)));
         }
 
         // Restore the prior `model_provider` (or remove the key entirely
@@ -479,14 +519,22 @@ impl Integration for Codex {
                 }
             }
         }
-        doc.remove("_gate_connect");
+        if had_gate_block {
+            // Keep exactly one marker key so `status` can tell the stub from a
+            // routed block; the undo-log keys are spent and must not survive.
+            let mut marker = new_table();
+            marker.insert(PASSTHROUGH_MARKER, value(true));
+            doc.insert("_gate_connect", Item::Table(marker));
+        } else {
+            doc.remove("_gate_connect");
+        }
 
         // Write the restored config before removing the helper script: a
         // failed write must not leave config.toml pointing `[auth] command`
         // at a script that no longer exists.
         if doc.as_table().is_empty() {
-            // The user had nothing but our config; remove the file so we
-            // truly leave no residue.
+            // Nothing of the user's - and no stub to preserve - is left;
+            // remove the file rather than leave an empty one behind.
             fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
         } else {
             write_doc(&path, &doc)?;
@@ -538,6 +586,40 @@ fn new_table() -> Table {
     let mut t = Table::new();
     t.set_implicit(false);
     t
+}
+
+/// The `[model_providers.gate]` block [`disconnect`] leaves behind: the same
+/// provider name Codex baked into every thread it started while routed, but
+/// pointed straight at OpenAI. Resuming such a thread then goes direct instead
+/// of failing on a missing provider. Deliberately carries no `http_headers`,
+/// no gateway URL, and no credential - it mirrors what Codex's own built-in
+/// `openai` provider would have done, `requires_openai_auth` included so the
+/// `codex login` session still supplies the bearer.
+fn passthrough_stub(mode: AuthMode) -> Table {
+    let mut t = Table::new();
+    t.decor_mut().set_prefix(
+        "\n# Left by Constellation Gate Connect when Codex was disconnected.\n\
+         # Codex stores the provider name in each thread, so threads started\n\
+         # while routing was on still need `gate` to resolve; this sends them\n\
+         # straight to OpenAI. Safe to delete once those threads are done.\n",
+    );
+    t.insert("name", value(PASSTHROUGH_DISPLAY_NAME));
+    t.insert(
+        "base_url",
+        value(compute_base_url(mode.upstream_url(), mode).as_str()),
+    );
+    t.insert("wire_api", value("responses"));
+    t.insert("requires_openai_auth", value(true));
+    t
+}
+
+/// Is the `gate` provider block in `doc` the post-disconnect passthrough stub?
+fn is_passthrough_stub(doc: &DocumentMut) -> bool {
+    doc.get("_gate_connect")
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get(PASSTHROUGH_MARKER))
+        .and_then(|i| i.as_bool())
+        .unwrap_or(false)
 }
 
 /// Upgrade `Item::Value(Value::InlineTable(_))` to `Item::Table(_)` in
@@ -647,6 +729,39 @@ mod tests {
         assert!(rendered.contains("\"https://chatgpt.com/backend-api\""));
         // And specifically NOT the double-codex shape that produced 404s.
         assert!(!rendered.contains("https://chatgpt.com/backend-api/codex"));
+    }
+
+    #[test]
+    fn passthrough_stub_points_at_the_upstream_with_no_gate_traces() {
+        // ChatGPT mode: the /codex segment Codex appends /responses to has to
+        // be in the base_url, since nothing rewrites the path now.
+        let mut doc = DocumentMut::new();
+        let model_providers = doc
+            .entry("model_providers")
+            .or_insert_with(|| Item::Table(new_table()))
+            .as_table_mut()
+            .unwrap();
+        model_providers.insert(
+            PROVIDER_ID,
+            Item::Table(passthrough_stub(AuthMode::Chatgpt)),
+        );
+        let rendered = doc.to_string();
+        assert!(rendered.contains("[model_providers.gate]"));
+        assert!(rendered.contains(r#"base_url = "https://chatgpt.com/backend-api/codex""#));
+        assert!(rendered.contains("requires_openai_auth = true"));
+        // Nothing Gate-flavoured survives: no relay/gateway URL, no upstream
+        // hint header, no credential.
+        assert!(!rendered.contains(UPSTREAM_URL_HEADER));
+        assert!(!rendered.contains("http_headers"));
+        assert!(!rendered.contains("X-Gate-Api-Key"));
+        assert!(!rendered.contains("127.0.0.1"));
+
+        // API-key mode lands on the standard /v1 path instead.
+        let stub = passthrough_stub(AuthMode::Apikey);
+        assert_eq!(
+            stub.get("base_url").and_then(|i| i.as_str()),
+            Some("https://api.openai.com/v1")
+        );
     }
 
     #[test]

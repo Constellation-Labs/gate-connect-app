@@ -4,6 +4,12 @@
 //! key-scoped marker inside the config is the undo log - no separate
 //! backup file is ever written.
 //!
+//! Codex is the one documented exception: it keeps a `[model_providers.gate]`
+//! passthrough stub pointed at OpenAI, because Codex stores the provider name
+//! in each thread and would otherwise refuse to resume any thread started
+//! while routing was on. No credential, gateway URL or Gate header survives
+//! there either - see `crates/core/src/integrations/codex.rs`.
+//!
 //! These exercise the real path resolution, which reads `$HOME` via `dirs`, so
 //! each test overrides `HOME` to a throwaway dir. It lives in its own test
 //! binary so that override can't race the in-crate unit tests, and a `Mutex`
@@ -14,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use gate_connect_core::env;
-use gate_connect_core::registry::{find, ToolId};
+use gate_connect_core::registry::{find, Status, ToolId};
 
 static HOME_LOCK: Mutex<()> = Mutex::new(());
 
@@ -182,18 +188,36 @@ previous_model_provider = "openai"
         Some("gpt-5.2"),
         "unrelated settings must survive disconnect untouched"
     );
-    assert!(
-        doc.get("model_providers").is_none(),
-        "gate provider must be removed from config.toml"
+    // The gate block survives as a passthrough stub so Codex threads started
+    // while routed can still resume - but with nothing of Gate in it.
+    let stub = doc
+        .get("model_providers")
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get("gate"))
+        .and_then(|i| i.as_table_like())
+        .expect("passthrough stub must remain under [model_providers.gate]");
+    assert_eq!(
+        stub.get("base_url").and_then(|i| i.as_str()),
+        Some("https://chatgpt.com/backend-api/codex"),
+        "the stub must point straight at the upstream"
     );
     assert!(
-        doc.get("_gate_connect").is_none(),
-        "Gate marker must be removed from config.toml"
+        stub.get("http_headers").is_none(),
+        "the stub must carry no Gate headers: {after}"
+    );
+    assert!(
+        !after.contains("X-Gate-Api-Key") && !after.contains("gw.example.com"),
+        "no Gate credential or gateway URL may survive disconnect: {after}"
+    );
+    // Only the stub marker survives; the undo-log keys are spent.
+    assert!(
+        !after.contains("previous_model_provider"),
+        "the undo-log keys must be removed from config.toml: {after}"
     );
 }
 
 #[test]
-fn codex_disconnect_leaves_no_gate_residue() {
+fn codex_disconnect_leaves_only_a_passthrough_stub() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
 
@@ -220,15 +244,71 @@ previous_model_provider_absent = true
 
     find(ToolId::Codex).unwrap().disconnect().unwrap();
 
-    // The user had nothing but Gate's config, so disconnect removes the file
-    // entirely; either way no Gate residue may remain.
-    let after = fs::read_to_string(&config).unwrap_or_default();
+    // The user had nothing but Gate's config, yet the file stays: the gate
+    // provider name has to keep resolving or every Codex thread started while
+    // routed becomes unresumable. What's left routes direct to OpenAI.
+    let after = fs::read_to_string(&config).unwrap();
     assert!(
-        !after.contains("model_providers.gate"),
-        "gate provider must be removed from config.toml"
+        !after.contains(r#"model_provider = "gate""#),
+        "the pointer must not survive disconnect: {after}"
     );
     assert!(
-        !after.contains("_gate_connect"),
-        "Gate marker must be removed from config.toml"
+        after.contains("[model_providers.gate]")
+            && after.contains(r#"base_url = "https://chatgpt.com/backend-api/codex""#),
+        "the passthrough stub must remain: {after}"
+    );
+    assert!(
+        !after.contains("X-Gate-Api-Key")
+            && !after.contains("X-Gate-Upstream-Url")
+            && !after.contains("gw.example.com"),
+        "no Gate credential, header or gateway URL may survive disconnect: {after}"
+    );
+
+    // And the stub must read as a disconnected machine, not as drift - drift
+    // is what surfaces a config warning in the UI and blocks sign-out.
+    assert!(
+        matches!(find(ToolId::Codex).unwrap().status(), Ok(Status::Detected)),
+        "a stubbed config must report Detected, got {:?}",
+        find(ToolId::Codex).unwrap().status()
+    );
+}
+
+/// Disconnecting twice must be a no-op on the stub, not an accumulation of
+/// comment blocks or a resurrected pointer.
+#[test]
+fn codex_disconnect_is_idempotent_over_the_stub() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let config = env::codex_config_toml_path().unwrap();
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        r#"model_provider = "gate"
+
+[model_providers.gate]
+name = "Constellation Gate"
+base_url = "http://127.0.0.1:45981/codex"
+requires_openai_auth = true
+
+[model_providers.gate.http_headers]
+X-Gate-Upstream-Url = "https://chatgpt.com/backend-api"
+
+[_gate_connect]
+previous_model_provider_absent = true
+"#,
+    )
+    .unwrap();
+
+    let codex = find(ToolId::Codex).unwrap();
+    codex.disconnect().unwrap();
+    let once = fs::read_to_string(&config).unwrap();
+    codex.disconnect().unwrap();
+    let twice = fs::read_to_string(&config).unwrap();
+
+    assert_eq!(once, twice, "a second disconnect must change nothing");
+    assert!(
+        !twice.contains("127.0.0.1"),
+        "the relay URL must not survive disconnect: {twice}"
     );
 }
