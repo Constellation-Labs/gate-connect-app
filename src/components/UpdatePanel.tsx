@@ -230,8 +230,18 @@ function UpdateTakeover({
 
       <div className="flex items-center gap-2 font-mono text-[11.5px]">
         {current && <span className="text-gc-ink-3">v{current}</span>}
-        {current && <Icon name="chevronRight" size={13} className="text-gc-ink-5" />}
-        <span className="rounded-gc-pill bg-gc-highlight px-2 py-0.5 font-medium text-gc-ink">
+        {/* ink-4, the weight every other chevron in the app carries. ink-5 was
+            the only use of that step in the product and it measures 2.42:1 on
+            white, under the 3:1 bar for a graphic that turns two version numbers
+            into a direction. */}
+        {current && <Icon name="chevronRight" size={13} className="text-gc-ink-4" />}
+        {/* Sunken, not highlight. `gc-highlight` is the hint-banner surface in
+            DESIGN.md, spent on the one thing this app has to say when routing
+            state and running apps disagree; a version number is not that, and
+            borrowing the colour dilutes it. Sunken is the neutral chip surface
+            the mechanism chips and the idle pill already use, and ink at medium
+            still ranks this above the outgoing version beside it. */}
+        <span className="rounded-gc-pill bg-gc-sunken px-2 py-0.5 font-medium text-gc-ink">
           v{version}
         </span>
       </div>

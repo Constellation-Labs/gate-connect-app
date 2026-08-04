@@ -1,4 +1,4 @@
-import { forwardRef, useState } from "react";
+import { forwardRef, useEffect, useState } from "react";
 import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
@@ -62,6 +62,10 @@ export function IconButton({
 }: {
   icon: IconName;
   size?: number;
+  /** Required: the button's only content is a glyph, so without this it has no
+   * accessible name at all. Every call site already passes one; the type is
+   * what stops the next one from forgetting. */
+  "aria-label": string;
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
@@ -108,7 +112,16 @@ export function Switch({
       aria-disabled={busy || undefined}
       disabled={disabled}
       onClick={busy ? undefined : onClick}
-      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-45 ${busy ? "opacity-70" : ""} ${on ? "bg-gc-accent" : "bg-gc-switch-off"}`}
+      // `before:`: the visible track is the locked 38x22 from DESIGN.md, which
+      // is 2px under the 24px target minimum, and in both ledgers it paints on
+      // top of a sibling `absolute inset-0` button covering the whole row. A
+      // 24px circle centered on it therefore always intersects another target,
+      // so neither the Inline nor the Spacing exception applies, and the
+      // consequence is real: missing the family switch by 2px opens the detail
+      // panel instead of routing the family, with no error either way. The
+      // pseudo-element takes 4px back from the row's padding to make the hit
+      // area 30px without moving a pixel of the switch or its focus ring.
+      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-45 ${busy ? "opacity-70" : ""} ${on ? "bg-gc-accent" : "bg-gc-switch-off"}`}
     >
       <span
         className={`absolute flex h-[18px] w-[18px] items-center justify-center rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[18px]" : "translate-x-[2px]"}`}
@@ -147,13 +160,11 @@ export function SectionLabel({ children }: { children: ReactNode }) {
 
 export function Input({
   leadingIcon,
-  trailing,
   secret,
   className = "",
   ...rest
 }: {
   leadingIcon?: ReactNode;
-  trailing?: ReactNode;
   /** Masks the value and adds a reveal toggle. For the `sk-gw-` field: a live
    * gateway key is the one string in this app worth hiding while it is being
    * pasted, and Settings already puts a confirm in front of revealing the
@@ -169,20 +180,19 @@ export function Input({
         className={`min-w-0 flex-1 bg-transparent text-[13px] text-gc-ink outline-none placeholder:text-gc-ink-3 ${className}`}
         {...rest}
       />
-      {(trailing || secret) && (
-        <span className="flex shrink-0 items-center gap-0.5">
-          {trailing}
-          {secret && (
-            <button
-              type="button"
-              onClick={() => setRevealed((v) => !v)}
-              aria-label={revealed ? "Hide key" : "Show key"}
-              className="text-gc-ink-4 transition hover:text-gc-ink-2"
-            >
-              <Icon name={revealed ? "eyeOff" : "eye"} size={14} />
-            </button>
-          )}
-        </span>
+      {/* `IconButton`, not a bare button: this was a 14px glyph with no box at
+          all, half the size of every other icon control in the app, for the
+          action that decides whether a live key is on screen. The negative
+          margin keeps the glyph optically where it was while the hit area grows
+          to 28px around it. */}
+      {secret && (
+        <IconButton
+          icon={revealed ? "eyeOff" : "eye"}
+          size={14}
+          onClick={() => setRevealed((v) => !v)}
+          aria-label={revealed ? "Hide key" : "Show key"}
+          className="-mr-1.5 shrink-0"
+        />
       )}
     </div>
   );
@@ -262,6 +272,14 @@ export function ErrorNote({
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
+  // Timed reset with a cleanup, rather than a bare setTimeout in the handler:
+  // dismissing the note inside the 1.6s window set state on an unmounted
+  // component, and the note is dismissed by whatever the user does next.
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(t);
+  }, [copied]);
   return (
     <div role="alert" className={`flex gap-2.5 rounded bg-gc-sunken px-3 py-2.5 text-left ${className}`}>
       <Icon name="info" size={15} className="mt-px shrink-0 text-gc-error" />
@@ -280,10 +298,7 @@ export function ErrorNote({
             <button
               type="button"
               onClick={() => {
-                void navigator.clipboard.writeText(error.raw).then(() => {
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1600);
-                });
+                void navigator.clipboard.writeText(error.raw).then(() => setCopied(true));
               }}
               className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
             >

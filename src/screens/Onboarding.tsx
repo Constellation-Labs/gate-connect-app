@@ -24,7 +24,11 @@ function RoutingHero() {
       <img
         src={routingScreen}
         alt="The Gate Connect popover: a Routing switch above one row per model family"
-        className="mx-auto block w-full max-w-[256px]"
+        // Intrinsic size of the capture, so the box is reserved before the PNG
+        // decodes; `w-full` still drives the rendered width.
+        width={402}
+        height={442}
+        className="mx-auto block h-auto w-full max-w-[256px]"
         // The capture is cropped mid-card, so a square bottom edge reads as a
         // rendering bug. Same fade the platform mockups below already use.
         style={{
@@ -75,7 +79,7 @@ function buildSteps(platform: Platform): Step[] {
           alt="The Gate Connect app icon"
           width={128}
           height={128}
-          className="mx-auto rounded-[28px] drop-shadow-[0_14px_34px_rgba(20,38,102,0.5)]"
+          className="mx-auto rounded-[28px] drop-shadow-[0_14px_34px_rgba(0,42,95,0.5)]"
         />
       ),
       title: "Welcome to Gate Connect",

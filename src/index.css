@@ -134,8 +134,28 @@
 
 /* Keyboard focus must never land under the sticky panel header. Tab-wrap
    inside the scroll region used to scroll the target flush to the top of the
-   container, which is exactly where PopHeader/SubHeader sits. */
+   container, which is exactly where PopHeader/SubHeader sits. The bottom margin
+   clears the 22px fold fade below, so a control tabbed to the bottom edge keeps
+   its focus ring at full strength instead of arriving half-faded. */
 .gc-scroll :is(a, button, input, select, textarea, [tabindex]):focus-visible {
   scroll-margin-top: 56px;
-  scroll-margin-bottom: 16px;
+  scroll-margin-bottom: 28px;
+}
+
+/* The fold. The body is the only scrolling region in the popover and the
+   credential footer sits directly beneath it wearing a hairline, so a row that
+   ran past the bottom was cut by a hard line: at 360x520 a key account's
+   Settings hides 120px of 607 (Help, and Reset Gate Connect) behind what reads
+   as the end of the content, and Home's fourth family survived as a 6px sliver
+   between two borders. Fading the last 22px says "there is more" in the one
+   vocabulary this app already uses for a cropped edge (see the tour's
+   mask-image crops), rather than adding a scrim, an arrow, or a shadow the
+   design system does not own.
+
+   Applied only while something is actually below, so a fully-scrolled panel
+   keeps its last line at full strength. Both spellings: WKWebView needs the
+   prefix. */
+.gc-scroll-more {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
 }

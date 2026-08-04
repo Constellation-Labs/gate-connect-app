@@ -348,6 +348,20 @@ describe("Home model-family ledger", () => {
     expect(screen.getAllByText("gateway.constellationgate.ai").length).toBe(1);
   });
 
+  it("leaves a way to read an identifier its slot truncates", () => {
+    // The header's org line gets 195-206px depending on how wide the pill
+    // renders, and the wire line's host gets 211px; both are `truncate`, and the
+    // ellipsis truncation paints exists in no attribute. Without a title the
+    // full value is unrecoverable from the screen that names it.
+    renderHome({
+      workspace: "Constellation Networks Advanced Research and Platform Engineering",
+    });
+    expect(
+      screen.getByTitle("Constellation Networks Advanced Research and Platform Engineering"),
+    ).toBeTruthy();
+    expect(screen.getByTitle("gateway.constellationgate.ai")).toBeTruthy();
+  });
+
   it("flags a hand-written setup without calling the family broken", () => {
     renderHome({
       tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],

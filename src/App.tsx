@@ -921,7 +921,7 @@ export function App() {
     // dialog reads the key) - show the brand lockup instead of a blank popover.
     body = (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
-        <ConstellationHexMark size={40} fill="#002a5f" />
+        <ConstellationHexMark size={40} />
         <span className="text-[14.5px] font-semibold tracking-[-0.02em] text-gc-navy">
           Gate <span className="text-gc-accent">Connect</span>
         </span>
@@ -1067,6 +1067,30 @@ export function App() {
   const obscured =
     quitTools !== null || routingNotice !== null || updateTakeoverVisible || oauthOffer;
 
+  // Whether the body has content below the fold, so the scroll region can fade
+  // its bottom edge instead of letting the footer's hairline cut a row in half.
+  // Recomputed on scroll and whenever the content resizes: a banner mounting, a
+  // member row expanding and a screen change all move the fold without any
+  // scrolling happening.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [moreBelow, setMoreBelow] = useState(false);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const sync = () => setMoreBelow(el.scrollHeight - el.scrollTop - el.clientHeight > 1);
+    sync();
+    el.addEventListener("scroll", sync, { passive: true });
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    // The keyed child is what actually grows; the container's own box only
+    // changes when the window does.
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => {
+      el.removeEventListener("scroll", sync);
+      ro.disconnect();
+    };
+  }, [screen]);
+
   return (
     <div
       className={`relative flex h-full w-full flex-col overflow-hidden bg-gc-surface text-gc-ink${
@@ -1134,7 +1158,12 @@ export function App() {
             scroll container, so it drifted with the content - PRODUCT.md says
             header and footer never scroll, and on Home it meant the footer
             and the dashboard link both sat below an invisible fold. */}
-        <div className="gc-scroll min-h-0 grow overflow-y-auto overflow-x-hidden">
+        <div
+          ref={scrollRef}
+          className={`gc-scroll min-h-0 grow overflow-y-auto overflow-x-hidden${
+            moreBelow ? " gc-scroll-more" : ""
+          }`}
+        >
           {/* Keyed by screen so the slide replays on every navigation and not
               on ordinary re-renders. The reduced-motion guard in index.css
               collapses both classes to instant. */}

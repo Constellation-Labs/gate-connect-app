@@ -107,7 +107,7 @@ export function FirstRun({
   return (
     <div className="flex flex-col px-5 pb-5 pt-7">
       <div className="flex flex-col items-center text-center">
-        <ConstellationHexMark size={40} fill="#002a5f" />
+        <ConstellationHexMark size={40} />
         {/* An h1, not a div: this is the first screen of the app and it had no
             heading at all, so a screen reader landed in an unlabelled region
             with nothing to orient by. */}

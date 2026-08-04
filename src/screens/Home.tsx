@@ -270,7 +270,13 @@ export function Home({
             something. */}
         {gatewayHost && (
           <div className="flex items-center gap-2 px-0.5">
-            <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-gc-ink-3">
+            {/* `title` for the same reason the header's org line carries one: a
+                staging host runs past the 211px this slot gets, and the
+                ellipsis truncation paints lives in no attribute. */}
+            <span
+              title={gatewayHost}
+              className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-gc-ink-3"
+            >
               {gatewayHost}
             </span>
             <button

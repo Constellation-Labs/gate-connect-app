@@ -2,7 +2,14 @@ import { ConstellationHexMark } from "./ConstellationHexMark";
 import { ConnPill, IconButton } from "./ui";
 
 /** Popover header - hex mark + "Gate Connect" wordmark, workspace sub-label,
- *  connection pill, and the settings gear. Port of the prototype's PopHeader. */
+ *  connection pill, and the settings gear. Port of the prototype's PopHeader.
+ *
+ *  Carries `border-b` for the same reason `SubHeader` and the credential footer
+ *  do: the popover has three fixed zones and the hairlines are what mark them.
+ *  This header had none, so a scrolled body slid under an identical white
+ *  background and the row at the top of the viewport was cut mid-glyph by
+ *  nothing at all. The Seam Rule reserves solid hairlines for exactly this
+ *  case, dividers between fixed zones, and forbids them only on cards. */
 export function PopHeader({
   workspace,
   pill = "connected",
@@ -23,20 +30,33 @@ export function PopHeader({
   onGear?: () => void;
 }) {
   return (
-    <div className="sticky top-0 z-[5] flex items-center gap-2 bg-gc-surface px-3.5 pb-2 pt-3.5">
-      <div className="flex min-w-0 flex-1 flex-col gap-[3px] leading-none">
+    <div className="sticky top-0 z-[5] flex items-center gap-2 border-b border-gc-line bg-gc-surface px-3.5 pb-2 pt-3.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-1 leading-none">
         <h1
           tabIndex={-1}
           data-screen-focus
           className="inline-flex items-center gap-2 outline-none"
         >
-          <ConstellationHexMark size={17} fill="#002a5f" />
+          <ConstellationHexMark size={17} />
           <span className="whitespace-nowrap text-[14.5px] font-semibold tracking-[-0.02em] text-gc-navy">
             Gate <span className="text-gc-accent">Connect</span>
           </span>
         </h1>
         {workspace && (
-          <span className="truncate pl-[25px] font-mono text-[10.5px] text-gc-ink-3">
+          // `title`: the slot is 195-206px wide depending on how wide the pill
+          // beside it renders, and an org name is a proper noun with no
+          // shortening the app is entitled to invent. Truncation paints an
+          // ellipsis that exists in no attribute, so without this the full
+          // value is unrecoverable from the screen it is named on.
+          //
+          // `pl-[25px]` is derived, not arbitrary: the hex mark is 17px and the
+          // h1's gap is 8px, so this is the wordmark's own left edge. It reads
+          // as an off-grid value and is the one place in the header that must
+          // not be rounded to the 4px scale.
+          <span
+            title={workspace}
+            className="truncate pl-[25px] font-mono text-[10.5px] text-gc-ink-3"
+          >
             {workspace}
           </span>
         )}

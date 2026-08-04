@@ -4,15 +4,21 @@ Findings the mechanical detector reports that are documented exceptions,
 not drift. Critique runs drop matches silently.
 
 Matching is by file + value, not line, so these survive the code moving.
-Line numbers are recorded as of 2026-08-03 (verified after that day's
-critique fixes) and are a navigation aid only.
+Line numbers are recorded as of 2026-08-04 (re-verified after that day's
+polish pass, which shifted the Onboarding ones by four lines) and are a
+navigation aid only.
 
-- `design-system-color` on `src/screens/Onboarding.tsx:31`, `:112` and
-  `:116`: the `#000` literals sit inside `mask-image` alpha gradients,
+- `design-system-color` on `src/screens/Onboarding.tsx:35`, `:116` and
+  `:120`: the `#000` literals sit inside `mask-image` alpha gradients,
   where the color channel is never painted; only opacity matters. Two fade
   the platform mockups on tour step 3; the third fades the step 2 hero,
   whose capture is cropped mid-card.
-- `design-system-font-size` 27px on `src/screens/Onboarding.tsx:215`: the
+- `design-system-color` `#000` on `src/index.css:159`: the same case one
+  layer down. `.gc-scroll-more` is the fold cue on the body's scroll
+  container, and its `mask-image` gradient uses `#000` as the opaque stop.
+  Nothing paints it; the gradient only decides where content fades. Added
+  2026-08-04 with the layout pass.
+- `design-system-font-size` 27px on `src/screens/Onboarding.tsx:219`: the
   onboarding tour renders in its own larger window and uses a 27px display
   heading, documented in DESIGN.md's Typography section. The popover ramp
   tops out at Panel Title (17px).

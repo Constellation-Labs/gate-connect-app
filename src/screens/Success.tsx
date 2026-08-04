@@ -33,7 +33,7 @@ export function Success({
       />
       <div className="flex flex-col items-center px-5 pb-5 pt-4 text-center">
         <div className="relative mb-3">
-          <ConstellationHexMark size={46} fill="#002a5f" />
+          <ConstellationHexMark size={46} />
           <span className="absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-gc-success text-white ring-2 ring-white">
             <Icon name="check" size={11} stroke={3} />
           </span>

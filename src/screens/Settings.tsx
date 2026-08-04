@@ -434,14 +434,13 @@ export function Settings({
                 : "No key stored"}
             </span>
             {account.has_api_key && revealedPrefix === null && (
-              <button
-                type="button"
+              <IconButton
+                icon="eye"
+                size={14}
                 onClick={revealKeyPrefix}
                 aria-label="Show start of key"
-                className="text-gc-ink-4 hover:text-gc-ink-2"
-              >
-                <Icon name="eye" size={14} />
-              </button>
+                className="-mr-1.5"
+              />
             )}
           </div>
         ) : (

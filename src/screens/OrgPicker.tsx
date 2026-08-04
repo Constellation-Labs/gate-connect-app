@@ -83,7 +83,7 @@ export function OrgPicker({
         <SubHeader title="Choose organization" onBack={onBack} />
       ) : (
         <div className="flex flex-col items-center px-5 pt-7 text-center">
-          <ConstellationHexMark size={40} fill="#002a5f" />
+          <ConstellationHexMark size={40} />
           {/* A real, focusable heading: App moves focus to
               [data-screen-focus] on every screen change, and this screen had
               neither PopHeader nor SubHeader, so focus fell to body and the

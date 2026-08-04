@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Group, GroupMember } from "../lib/groups";
 import type { AuthMode } from "../lib/api";
 import { classifyError, type ClassifiedError } from "../lib/errors";
@@ -66,6 +66,14 @@ function rawDetail(member: GroupMember): string | null {
  * the payload that sits out in the open. */
 function RawDetail({ raw, alert }: { raw: string; alert: boolean }) {
   const [copied, setCopied] = useState(false);
+  // Same cleanup as ErrorNote's: collapsing the row inside the 1.6s window used
+  // to set state on an unmounted component, and collapsing the row is exactly
+  // what the user does after copying.
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(t);
+  }, [copied]);
   return (
     <div
       role={alert ? "alert" : undefined}
@@ -77,10 +85,7 @@ function RawDetail({ raw, alert }: { raw: string; alert: boolean }) {
       <button
         type="button"
         onClick={() => {
-          void navigator.clipboard.writeText(raw).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1600);
-          });
+          void navigator.clipboard.writeText(raw).then(() => setCopied(true));
         }}
         className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
       >
@@ -308,7 +313,7 @@ export function GroupDetail({
                   and rendered "api.an…". The identifier was cut hardest in
                   exactly the two states that report a problem. */}
               <div className="pointer-events-none relative flex items-center gap-1.5 px-3.5 pb-2">
-                <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10px] text-gc-ink-3">
+                <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10.5px] text-gc-ink-3">
                   {member.kind === "config" ? "config file" : "proxy"}
                 </span>
                 {/* Mono is for identifiers only. A harness has no single
@@ -316,9 +321,9 @@ export function GroupDetail({
                     placeholder constant, not what it actually routes - so say
                     so in prose rather than print a host that lies. */}
                 {member.coversAllProviders ? (
-                  <span className="truncate text-[10px] text-gc-ink-3">all your providers</span>
+                  <span className="truncate text-[10.5px] text-gc-ink-3">all your providers</span>
                 ) : (
-                  <span className="truncate font-mono text-[10px] text-gc-ink-3">
+                  <span className="truncate font-mono text-[10.5px] text-gc-ink-3">
                     {member.kind === "proxy"
                       ? (member.domain?.hosts ?? []).join(" · ")
                       : hostOf(member.tool?.default_upstream_url)}
