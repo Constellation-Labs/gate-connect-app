@@ -166,6 +166,43 @@ describe("GroupDetail inline expansion", () => {
     renderDetail([tool("codex", "Codex", { kind: "drifted", reason: "r" })], []);
     expect(screen.getByText(/group switch leaves/)).toBeTruthy();
   });
+
+  it("announces a failed member at the top, not only inside its own row", () => {
+    renderDetail([tool("openclaw", "OpenClaw", { kind: "error", message: "bad json" })], []);
+    // The most severe member state was the only one with no banner: master-off
+    // and drifted each got one, so a failure was the single thing the screen
+    // left the user to find by expanding rows.
+    expect(screen.getByText(/OpenClaw isn’t reporting its routing state/)).toBeTruthy();
+  });
+
+  it("points a failed member at its own payload, not at restarting the app", async () => {
+    renderDetail(
+      [
+        tool("openclaw", "OpenClaw", {
+          kind: "error",
+          message: "failed to parse ~/.openclaw/openclaw.json line 42",
+        }),
+      ],
+      [],
+    );
+    fireEvent.click(screen.getByRole("button", { name: "OpenClaw details" }));
+    // The advice used to be "try again after restarting Gate Connect" printed
+    // directly above a payload naming a syntax error in the user's own file.
+    expect(screen.queryByText(/restarting Gate Connect/)).toBeNull();
+    expect(screen.getByText(/details below name the cause/)).toBeTruthy();
+  });
+
+  it("lets the payload be copied out of a 360px window", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderDetail(
+      [tool("openclaw", "OpenClaw", { kind: "error", message: "line 42, column 3" })],
+      [],
+    );
+    fireEvent.click(screen.getByRole("button", { name: "OpenClaw details" }));
+    fireEvent.click(screen.getByRole("button", { name: /Copy details/ }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("line 42, column 3"));
+  });
 });
 
 describe("GroupDetail intent versus flow", () => {

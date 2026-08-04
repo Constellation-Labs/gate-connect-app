@@ -43,7 +43,7 @@ function explain(member: GroupMember, platform: Platform): string {
     case "drifted":
       return `${member.name} has a Gate setup written outside this app. Switching it on replaces that configuration and manages the key from ${secretStoreName(platform)}.`;
     case "error":
-      return `Gate Connect couldn't read ${member.name}'s routing state. Try again after restarting Gate Connect; the details below help when reporting it.`;
+      return `Gate Connect couldn't read ${member.name}'s routing state. The details below name the cause; fix that, then reopen this window from the menu bar to re-check.`;
     default:
       return `${member.name} is installed, but its config doesn't point at Gate. Switch it on and Gate Connect will write the config for you.`;
   }
@@ -56,6 +56,39 @@ function rawDetail(member: GroupMember): string | null {
   if (status?.kind === "error") return status.message;
   if (status?.kind === "drifted") return status.reason || null;
   return null;
+}
+
+/** A backend payload, with a way to get it out of the popover. Both callers
+ * print something the user is expected to act on or forward - a failure
+ * message naming a file and line, or the evidence behind a drift verdict - and
+ * neither is selectable by hand in a 360px window with any dignity. `ErrorNote`
+ * already made this argument for its own disclosure; this is the same rule for
+ * the payload that sits out in the open. */
+function RawDetail({ raw, alert }: { raw: string; alert: boolean }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div
+      role={alert ? "alert" : undefined}
+      className="mt-2 rounded bg-gc-surface px-3 py-2.5 shadow-border"
+    >
+      <div className="font-mono text-[10.5px] leading-snug text-gc-ink-2 [overflow-wrap:anywhere]">
+        {raw}
+      </div>
+      <button
+        type="button"
+        onClick={() => {
+          void navigator.clipboard.writeText(raw).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1600);
+          });
+        }}
+        className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+      >
+        <Icon name={copied ? "check" : "copy"} size={12} />
+        {copied ? "Copied" : "Copy details"}
+      </button>
+    </div>
+  );
 }
 
 /** One model family's fine grain, two levels deep and no further: the members
@@ -102,6 +135,7 @@ export function GroupDetail({
   // flip arms a confirm instead of writing.
   const [confirmingAdopt, setConfirmingAdopt] = useState<string | null>(null);
   const drifted = group.members.filter((m) => m.attention === "drifted");
+  const errored = group.members.filter((m) => m.attention === "error");
 
   function toggleOpen(key: string) {
     setOpenKey((k) => (k === key ? null : key));
@@ -176,6 +210,22 @@ export function GroupDetail({
           <Button variant="accent" size="sm" disabled={busy} onClick={onEnableRouting}>
             Turn on routing
           </Button>
+        </div>
+      )}
+
+      {errored.length > 0 && (
+        // The only member state with no banner, and the most severe one. The
+        // two below it announce a setup the user chose and a switch they can
+        // flip; a failure announces neither, and it was the one the screen let
+        // the user find for themselves. Error wash with the colour on the icon
+        // and the sentence in ink, per the Wash-First rule.
+        <div className="mx-3.5 mb-2 flex items-start gap-2.5 rounded bg-gc-error-wash px-3 py-2.5">
+          <Icon name="info" size={15} className="mt-px shrink-0 text-gc-error" />
+          <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+            {errored.length === 1
+              ? `${errored[0].name} isn’t reporting its routing state, so Gate Connect can’t tell whether it is going through Gate. Open it below for what went wrong.`
+              : `${errored.length} of these aren’t reporting their routing state, so Gate Connect can’t tell whether they are going through Gate. Open each below for what went wrong.`}
+          </div>
         </div>
       )}
 
@@ -318,14 +368,7 @@ export function GroupDetail({
                     </Button>
                   )}
 
-                  {raw && (
-                    <div
-                      role={member.attention === "error" ? "alert" : undefined}
-                      className="mt-2 rounded bg-gc-surface px-3 py-2.5 font-mono text-[10.5px] leading-snug text-gc-ink-2 shadow-border [overflow-wrap:anywhere]"
-                    >
-                      {raw}
-                    </div>
-                  )}
+                  {raw && <RawDetail raw={raw} alert={member.attention === "error"} />}
 
                   {confirmingAdopt === member.key && (
                     <div className="mt-2 rounded bg-gc-surface p-3 shadow-border">
