@@ -3,7 +3,7 @@ import type { Group, GroupMember } from "../lib/groups";
 import type { AuthMode } from "../lib/api";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { trackError } from "../lib/analytics";
-import { SubHeader, SectionLabel, Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
+import { Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
 import { MemberPill, memberPillLabel } from "../components/GroupPill";
 import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
 import { Icon } from "../components/gc/Icon";
@@ -96,15 +96,19 @@ function RawDetail({ raw, alert }: { raw: string; alert: boolean }) {
   );
 }
 
-/** One model family's fine grain, two levels deep and no further: the members
- * expand in place rather than pushing the user into a third screen. This is
- * also the only screen that shows the mechanism (config file vs proxy), which
- * is the fact you need when one member isn't working. */
-export function GroupDetail({
+/** One model family's fine grain, rendered inside its own expanded row on the
+ * ledger rather than on a screen of its own. The members expand in place a
+ * second time, so a family and a member are two disclosures in one panel and
+ * there is no third screen at all.
+ *
+ * No group heading and no group switch: the ledger row this opens under already
+ * carries the family name, its pill, its count and the switch that routes the
+ * whole family, and repeating any of it 20px lower said everything twice. What
+ * belongs here is what the row cannot show - the per-member mechanism (config
+ * file vs proxy), the state that needs attention, and the remedy for it. */
+export function GroupMembers({
   group,
   busy,
-  onBack,
-  onToggleGroup,
   onToggleTool,
   onSetDomain,
   onTrustCa,
@@ -114,8 +118,6 @@ export function GroupDetail({
 }: {
   group: Group;
   busy: boolean;
-  onBack: () => void;
-  onToggleGroup: (id: string, on: boolean) => void;
   /** Rejects on failure so the row can surface it in place. */
   onToggleTool: (slug: string, routed: boolean) => Promise<void>;
   onSetDomain: (slug: string, enabled: boolean) => Promise<void>;
@@ -182,29 +184,7 @@ export function GroupDetail({
   }
 
   return (
-    <div className="flex flex-col">
-      <SubHeader title={group.name} onBack={onBack} />
-
-      <div className="flex items-start gap-3 px-3.5 py-3.5">
-        <div className="min-w-0 flex-1">
-          {/* aria-hidden: this is verbatim the adjacent switch's accessible
-              name, so leaving it exposed made AT read the same sentence
-              twice in a row. */}
-          <div aria-hidden className="text-[14px] font-semibold text-gc-ink">
-            {group.switchLabel}
-          </div>
-          <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
-            {group.blurb} {group.routed} of {group.members.length} routing.
-          </div>
-        </div>
-        <Switch
-          on={group.desired > 0}
-          label={group.switchLabel}
-          busy={busy}
-          onClick={() => onToggleGroup(group.id, group.desired === 0)}
-        />
-      </div>
-
+    <div className="flex flex-col bg-gc-subtle pt-2.5">
       {group.desired > 0 && !proxyOn && (
         <div className="mx-3.5 mb-2 flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
           <Icon name="info" size={15} className="shrink-0 text-gc-ink-3" />
@@ -246,7 +226,6 @@ export function GroupDetail({
         </div>
       )}
 
-      <SectionLabel>In this group</SectionLabel>
       <div className="flex flex-col border-t border-gc-line">
         {group.members.map((member) => {
           const open = openKey === member.key;
@@ -270,7 +249,7 @@ export function GroupDetail({
                   aria-label={`${member.name} details`}
                   className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
                 />
-                <div className="relative flex items-center gap-2.5 px-3.5 py-2.5">
+                <div className="relative flex items-center gap-2.5 py-2.5 pl-6 pr-3.5">
                   <div className="pointer-events-none relative min-w-0 flex-1">
                     <div className="truncate text-[13px] font-medium text-gc-ink">{member.name}</div>
                   </div>
@@ -312,7 +291,7 @@ export function GroupDetail({
                   49px and rendered "api.ope…", "Waiting on routing" left 44px
                   and rendered "api.an…". The identifier was cut hardest in
                   exactly the two states that report a problem. */}
-              <div className="pointer-events-none relative flex items-center gap-1.5 px-3.5 pb-2">
+              <div className="pointer-events-none relative flex items-center gap-1.5 pb-2 pl-6 pr-3.5">
                 <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10.5px] text-gc-ink-3">
                   {member.kind === "config" ? "config file" : "proxy"}
                 </span>
@@ -333,7 +312,7 @@ export function GroupDetail({
               </div>
 
               {open && (
-                <div className="bg-gc-subtle px-3.5 pb-3">
+                <div className="bg-gc-subtle pb-3 pl-6 pr-3.5">
                   <p className="text-[11.5px] leading-snug text-gc-ink-2">
                     {explain(member, platform)}
                   </p>

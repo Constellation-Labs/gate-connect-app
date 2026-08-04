@@ -73,7 +73,11 @@ function renderRoutes(
       busy={false}
       onBack={vi.fn()}
       onToggleGroup={vi.fn()}
-      onOpenGroup={vi.fn()}
+      onToggleTool={vi.fn()}
+      onSetDomain={vi.fn()}
+      onTrustCa={vi.fn()}
+      proxyOn={proxyOn}
+      onEnableRouting={vi.fn()}
       {...props}
     />,
   );
@@ -181,14 +185,53 @@ describe("Routes ledger", () => {
     expect(onToggleGroup).toHaveBeenCalledWith("anthropic", true);
   });
 
-  it("opens the family detail from the row body", () => {
-    const onOpenGroup = vi.fn();
-    renderRoutes(
-      { tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] },
-      { onOpenGroup },
+  it("expands the family in place instead of pushing a screen", () => {
+    renderRoutes({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [makeDomain()],
+    });
+    const row = screen.getByRole("button", { name: "Claude details" });
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    // Members are not rendered until the family is opened.
+    expect(screen.queryByText("Claude Desktop / Cowork")).toBeNull();
+
+    fireEvent.click(row);
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    // The member list, and the mechanism only this level shows.
+    expect(screen.getByText("Claude Desktop / Cowork")).toBeTruthy();
+    expect(screen.getByText("config file")).toBeTruthy();
+    // Still inside the same row, so the panel never changed.
+    expect(row.closest('[role="listitem"]')!.textContent).toContain(
+      "Claude Desktop / Cowork",
     );
+  });
+
+  it("collapses the open family when another one opens", () => {
+    renderRoutes({
+      tools: [
+        makeTool("claude-code", "Claude Code", { kind: "connected" }),
+        makeTool("codex", "Codex", { kind: "connected" }, "OpenAI"),
+      ],
+    });
     fireEvent.click(screen.getByRole("button", { name: "Claude details" }));
-    expect(onOpenGroup).toHaveBeenCalledWith("anthropic");
+    expect(screen.getByText("Claude Code")).toBeTruthy();
+    // Two open families in a 360px panel put the second one's members below the
+    // fold with no way to see both.
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI details" }));
+    expect(screen.queryByText("Claude Code")).toBeNull();
+    expect(screen.getByText("Codex")).toBeTruthy();
+  });
+
+  it("closes the family again on a second click", () => {
+    renderRoutes({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [makeDomain()],
+    });
+    const row = screen.getByRole("button", { name: "Claude details" });
+    fireEvent.click(row);
+    fireEvent.click(row);
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Claude Desktop / Cowork")).toBeNull();
   });
 
   it("returns to Home from its own header", () => {

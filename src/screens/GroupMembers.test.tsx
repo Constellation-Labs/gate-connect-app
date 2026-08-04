@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import type { ProviderState, ProxyDomain, Tool } from "../lib/api";
 import { buildGroups } from "../lib/groups";
-import { GroupDetail } from "./GroupDetail";
+import { GroupMembers } from "./GroupMembers";
 
 vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
-// GroupDetail names the secret store in two of its explainers. Pin the
+// GroupMembers names the secret store in two of its explainers. Pin the
 // platform so that copy is deterministic, and so the real hook's async
 // resolve does not settle outside act().
 vi.mock("../lib/platform", async (importOriginal) => ({
@@ -50,15 +50,13 @@ const CATALOG: ProviderState[] = [
 function renderDetail(
   tools: Tool[],
   domains: ProxyDomain[] = [domain],
-  props: Partial<React.ComponentProps<typeof GroupDetail>> = {},
+  props: Partial<React.ComponentProps<typeof GroupMembers>> = {},
 ) {
   const [group] = buildGroups(CATALOG, tools, domains, { proxyOn: true, caTrusted: true });
   render(
-    <GroupDetail
+    <GroupMembers
       group={group}
       busy={false}
-      onBack={vi.fn()}
-      onToggleGroup={vi.fn()}
       onToggleTool={vi.fn(() => Promise.resolve())}
       onSetDomain={vi.fn(() => Promise.resolve())}
       onTrustCa={vi.fn()}
@@ -75,7 +73,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("GroupDetail", () => {
+describe("GroupMembers", () => {
   it("shows the mechanism per member, which Home deliberately omits", () => {
     renderDetail([tool("claude-code", "Claude Code", { kind: "connected" })]);
     expect(screen.getByText("config file")).toBeTruthy();
@@ -112,15 +110,9 @@ describe("GroupDetail", () => {
     await waitFor(() => expect(onSetDomain).toHaveBeenCalledWith("anthropic", false));
   });
 
-  it("routes the whole family from the group switch", () => {
-    const onToggleGroup = vi.fn();
-    renderDetail([tool("claude-code", "Claude Code", { kind: "detected" })], [], { onToggleGroup });
-    fireEvent.click(screen.getByRole("switch", { name: "Route Claude through Gate" }));
-    expect(onToggleGroup).toHaveBeenCalledWith("anthropic", true);
-  });
 });
 
-describe("GroupDetail inline expansion", () => {
+describe("GroupMembers inline expansion", () => {
   it("explains a member in place rather than on a third screen", () => {
     renderDetail([tool("claude-code", "Claude Code", { kind: "connected" })], []);
     const row = screen.getByRole("button", { name: "Claude Code details" });
@@ -205,17 +197,15 @@ describe("GroupDetail inline expansion", () => {
   });
 });
 
-describe("GroupDetail intent versus flow", () => {
+describe("GroupMembers intent versus flow", () => {
   /** Routing on, certificate untrusted: the state that produced the round-6 P0. */
-  function renderUntrusted(props: Partial<React.ComponentProps<typeof GroupDetail>> = {}) {
+  function renderUntrusted(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
     const [group] = buildGroups(CATALOG, [], [domain], { proxyOn: true, caTrusted: false });
     render(
-      <GroupDetail
+      <GroupMembers
         group={group}
         busy={false}
-        onBack={vi.fn()}
-        onToggleGroup={vi.fn()}
-        onToggleTool={vi.fn(() => Promise.resolve())}
+            onToggleTool={vi.fn(() => Promise.resolve())}
         onSetDomain={vi.fn(() => Promise.resolve())}
         onTrustCa={vi.fn()}
       proxyOn={true}
@@ -257,9 +247,9 @@ describe("GroupDetail intent versus flow", () => {
   });
 });
 
-describe("GroupDetail master-off remedy", () => {
+describe("GroupMembers master-off remedy", () => {
   /** Switched on, engine down: the state round 6 introduced with prose only. */
-  function renderMasterOff(props: Partial<React.ComponentProps<typeof GroupDetail>> = {}) {
+  function renderMasterOff(props: Partial<React.ComponentProps<typeof GroupMembers>> = {}) {
     const [group] = buildGroups(
       CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
@@ -267,12 +257,10 @@ describe("GroupDetail master-off remedy", () => {
       { proxyOn: false, caTrusted: true },
     );
     render(
-      <GroupDetail
+      <GroupMembers
         group={group}
         busy={false}
-        onBack={vi.fn()}
-        onToggleGroup={vi.fn()}
-        onToggleTool={vi.fn(() => Promise.resolve())}
+            onToggleTool={vi.fn(() => Promise.resolve())}
         onSetDomain={vi.fn(() => Promise.resolve())}
         onTrustCa={vi.fn()}
         proxyOn={false}
@@ -307,16 +295,14 @@ describe("GroupDetail master-off remedy", () => {
   });
 });
 
-describe("GroupDetail certificate failure", () => {
+describe("GroupMembers certificate failure", () => {
   it("shows a failed trust next to the button that failed", async () => {
     const [group] = buildGroups(CATALOG, [], [domain], { proxyOn: true, caTrusted: false });
     render(
-      <GroupDetail
+      <GroupMembers
         group={group}
         busy={false}
-        onBack={vi.fn()}
-        onToggleGroup={vi.fn()}
-        onToggleTool={vi.fn(() => Promise.resolve())}
+            onToggleTool={vi.fn(() => Promise.resolve())}
         onSetDomain={vi.fn(() => Promise.resolve())}
         // A cancelled admin prompt: the likeliest failure in the app, and it
         // used to produce no on-screen feedback at all.

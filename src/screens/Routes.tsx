@@ -1,9 +1,11 @@
 import { useState } from "react";
+import type { AuthMode } from "../lib/api";
 import type { Group } from "../lib/groups";
 import { groupSummary } from "../lib/groups";
 import { SubHeader, Switch } from "../components/gc/ui";
 import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
+import { GroupMembers } from "./GroupMembers";
 
 /** The ledger, on its own panel: one row per model family, each carrying the
  * pill that answers "is this routing?", a switch that routes the whole family
@@ -14,19 +16,36 @@ import { Icon } from "../components/gc/Icon";
  * routing card, a certificate ceremony, a wire line, a banner and a launch tip
  * from also holding an itemized list. The cost is that the pills are one
  * navigation further from the tray, so Home's door reports any exception itself
- * rather than leaving the user to come looking. */
+ * rather than leaving the user to come looking.
+ *
+ * A family opens in place rather than pushing a third screen. Its members are
+ * themselves expandable, so the whole hierarchy - family, member, mechanism and
+ * remedy - is two disclosures deep in one panel, and the popover never stacks a
+ * screen it has to animate back out of. */
 export function Routes({
   groups,
   busy,
   onBack,
   onToggleGroup,
-  onOpenGroup,
+  onToggleTool,
+  onSetDomain,
+  onTrustCa,
+  proxyOn,
+  onEnableRouting,
+  authMode,
 }: {
   groups: Group[];
   busy: boolean;
   onBack: () => void;
   onToggleGroup: (id: string, on: boolean) => void;
-  onOpenGroup: (id: string) => void;
+  /** The member-level callbacks, passed through to the expanded family. Rejects
+   * on failure so the member row can surface it in place. */
+  onToggleTool: (slug: string, routed: boolean) => Promise<void>;
+  onSetDomain: (slug: string, enabled: boolean) => Promise<void>;
+  onTrustCa: () => Promise<void>;
+  proxyOn: boolean;
+  onEnableRouting: () => void;
+  authMode?: AuthMode;
 }) {
   // Which family the user last flipped, so the live region below reports the
   // result of their own action and stays silent about the backend's. The row's
@@ -34,6 +53,9 @@ export function Routes({
   // description is read when focus arrives, not when it changes.
   const [flipped, setFlipped] = useState<string | null>(null);
   const flippedGroup = groups.find((g) => g.id === flipped);
+  // Which family is expanded. One at a time: two open families in a 360px panel
+  // put the second one's members below the fold with no way to see both.
+  const [openKey, setOpenKey] = useState<string | null>(null);
 
   return (
     <div className="flex grow flex-col">
@@ -47,12 +69,14 @@ export function Routes({
         <div role="list" className="flex flex-col">
           {groups.map((group) => {
             const { count, exception, kind } = groupSummary(group);
+            const open = openKey === group.id;
             return (
-              <div
-                key={group.id}
-                role="listitem"
-                className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-3 transition hover:bg-gc-subtle"
-              >
+              <div key={group.id} role="listitem" className="border-b border-gc-line">
+                <div
+                  className={`relative flex items-center gap-2.5 px-3.5 py-3 transition ${
+                    open ? "bg-gc-subtle" : "hover:bg-gc-subtle"
+                  }`}
+                >
                 {/* Stretch button carries the drill-in; the switch is a sibling
                     above it, so one flip routes the whole family and the row
                     body opens the fine grain.
@@ -66,13 +90,16 @@ export function Routes({
                     say. */}
                 <button
                   type="button"
-                  onClick={() => onOpenGroup(group.id)}
+                  onClick={() =>
+                    setOpenKey((k) => (k === group.id ? null : group.id))
+                  }
+                  aria-expanded={open}
                   aria-label={`${group.name} details`}
                   aria-describedby={`group-desc-${group.id}`}
                   className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
                 />
                 <div className="pointer-events-none relative min-w-0 flex-1">
-                  <div className="text-[13.5px] font-medium text-gc-ink">{group.name}</div>
+                  <div className="text-[13.5px] font-semibold text-gc-ink">{group.name}</div>
                   {/* Exception first. Concatenated as `count · exception` the
                       line truncated at 360px and the actionable half was what
                       got cut ("0 of 2 routing · Codex set up els…"). The pill
@@ -122,9 +149,29 @@ export function Routes({
                     }}
                   />
                 </span>
-                <span className="pointer-events-none relative">
-                  <Icon name="chevronRight" size={14} stroke={2} className="text-gc-ink-4" />
-                </span>
+                  <span className="pointer-events-none relative">
+                    <Icon
+                      name="chevronRight"
+                      size={14}
+                      stroke={2}
+                      className={`text-gc-ink-4 transition-transform ${
+                        open ? "rotate-90" : ""
+                      }`}
+                    />
+                  </span>
+                </div>
+                {open && (
+                  <GroupMembers
+                    group={group}
+                    busy={busy}
+                    onToggleTool={onToggleTool}
+                    onSetDomain={onSetDomain}
+                    onTrustCa={onTrustCa}
+                    proxyOn={proxyOn}
+                    onEnableRouting={onEnableRouting}
+                    authMode={authMode}
+                  />
+                )}
               </div>
             );
           })}

@@ -36,7 +36,6 @@ import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
 import { Routes } from "./screens/Routes";
-import { GroupDetail } from "./screens/GroupDetail";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
@@ -62,8 +61,7 @@ type Screen =
   | "home"
   | "settings"
   | "success"
-  | "routes"
-  | "group";
+  | "routes";
 
 /** How deep each screen sits in the popover. In one 360px room, direction is
  *  the only navigational metaphor available: without it a push and a pop look
@@ -78,12 +76,9 @@ const SCREEN_DEPTH: Record<Screen, number> = {
   success: 2,
   home: 0,
   settings: 1,
-  // The ledger is a panel off Home, and a family detail is a panel off the
-  // ledger, so `group` sits a level deeper than it used to. Getting this wrong
-  // makes a push and a pop animate the same way, which is the whole reason the
-  // depths exist.
+  // The ledger is a panel off Home. A family no longer has a screen of its own:
+  // it expands inside its ledger row, so there is nothing at depth 2.
   routes: 1,
-  group: 2,
 };
 
 // Proxy domains hidden from the Apps ledger. "chatgpt" exists so the relay
@@ -212,8 +207,6 @@ export function App() {
   // The provider catalog is the grouping contract for Home's ledger
   // (tool_slugs + domain_slugs), not just an analytics dimension.
   const [providers, setProviders] = useState<ProviderState[]>([]);
-  // Which model family the "group" screen shows; set from the Home ledger.
-  const [groupId, setGroupId] = useState<string | null>(null);
   // Set after any routing change, and by the startup auto-enable. One state,
   // not one per flavour of advice: three independent booleans meant a fast
   // on/off flip left the "on" notice standing over the "off" one, telling the
@@ -562,12 +555,7 @@ export function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
       if (quitTools !== null || routingNotice !== null) return;
-      // One level at a time, matching the header back button on each panel:
-      // a family detail returns to the ledger it was opened from, not past it.
-      if (screen === "group") {
-        setProviderError(null);
-        setScreen("routes");
-      } else if (screen === "settings" || screen === "routes") {
+      if (screen === "settings" || screen === "routes") {
         setProviderError(null);
         setScreen("home");
       }
@@ -814,7 +802,7 @@ export function App() {
       // a cancelled admin prompt - the likeliest failure in the app - produced
       // a screen that appeared to do nothing, while classifyError's carefully
       // worded trust_ca branch went to PostHog and nowhere else. Rethrown so
-      // the member-level button on GroupDetail can show it in place.
+      // the member-level button in GroupMembers can show it in place.
       trackError(err, "trust_ca");
       setProviderError(classifyError(err, "trust_ca"));
       try {
@@ -1007,19 +995,6 @@ export function App() {
         groups={groups}
         busy={proxyBusy}
         onBack={() => setScreen("home")}
-        onToggleGroup={(id, on) => void setGroupRouted(id, on)}
-        onOpenGroup={(id) => {
-          setGroupId(id);
-          setScreen("group");
-        }}
-      />
-    );
-  } else if (screen === "group" && groups.some((g) => g.id === groupId)) {
-    body = (
-      <GroupDetail
-        group={groups.find((g) => g.id === groupId)!}
-        busy={proxyBusy}
-        onBack={() => setScreen("routes")}
         onToggleGroup={(id, on) => void setGroupRouted(id, on)}
         onToggleTool={setToolRouted}
         onSetDomain={setDomain}
