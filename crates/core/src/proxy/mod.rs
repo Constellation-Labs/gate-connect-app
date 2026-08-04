@@ -285,7 +285,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
     vec![
         ProxyDomain {
             slug: "anthropic".into(),
-            display_name: "Anthropic (Claude Desktop / Cowork)".into(),
+            // Named for what it covers (the apps whose traffic this
+            // intercepts), not the vendor: on the UI ledger a vendor name
+            // here would read as if it included Claude Code, which routes by
+            // config instead. The host line carries api.anthropic.com.
+            display_name: "Claude Desktop / Cowork".into(),
             // Inference for Claude Code, Claude Desktop, and Cowork all goes
             // to api.anthropic.com /v1/messages (OAuth bearer or API key),
             // confirmed against a real Cowork generation. a-api.anthropic.com
@@ -316,7 +320,10 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         },
         ProxyDomain {
             slug: "openai".into(),
-            display_name: "OpenAI".into(),
+            // "apps", not the vendor name: covers any system-proxy-honoring
+            // client of api.openai.com, and must not read as including Codex
+            // (config-routed; its embedded agent ignores the system proxy).
+            display_name: "OpenAI apps".into(),
             // The OpenAI API host. Catches OpenAI-compatible clients that
             // honor the macOS system proxy and hit /v1/. Note: the Codex
             // desktop app's model calls come from its embedded Rust agent,
@@ -369,7 +376,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         },
         ProxyDomain {
             slug: "openrouter".into(),
-            display_name: "OpenRouter".into(),
+            display_name: "OpenRouter apps".into(),
             // OpenRouter's API lives at openrouter.ai/api/v1/* (OpenAI-shaped
             // chat/completions). Opt-in like OpenAI; intercepts OpenRouter
             // clients that honor the system proxy.

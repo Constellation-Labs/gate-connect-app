@@ -1,93 +1,508 @@
+import { useEffect, useState } from "react";
+import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ChangeNotice } from "../App";
+import type { ClassifiedError } from "../lib/errors";
+import { launchAtLoginStatus } from "../lib/api";
+import { buildGroups, groupSummary } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
-import { Switch, CardButton, IconButton } from "../components/gc/ui";
+import { Switch, IconButton, ErrorNote, Button } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
-import { usePlatform } from "../lib/platform";
+import { trustStoreName, usePlatform } from "../lib/platform";
+import { openExternal } from "../lib/openExternal";
+import { GATE_DASHBOARD_URL } from "../lib/config";
 
-/** Connected home - Proxy card (toggle + drill-in) and Direct Gateway card. */
+/** Connected home - the one room: the master Routing card, the certificate
+ * step when it blocks coverage, and one row per model family. The families
+ * keep the ledger three rows tall however many tools are installed; the
+ * config-vs-proxy mechanism lives one tap in, on the group detail. */
 export function Home({
   workspace,
+  gatewayHost,
   proxyOn,
-  providerCount,
+  caTrusted,
   showProxy,
+  providers,
+  tools,
+  domains,
+  busy,
   error,
-  restartHint,
-  relaunchHint,
+  changeNotice,
+  onDismissChangeNotice,
+  onCloseAgents,
+  onEnableRouting,
   staleAgentsHint,
   onDismissStaleAgents,
-  onOpenProxy,
   onToggleProxy,
-  onOpenDirectGateway,
+  onTrustCa,
+  onOpenRoutes,
   onOpenSettings,
 }: {
   workspace: string;
+  /** The gateway host on its own, separate from `workspace`: the header now
+   * carries the org, so the identifier traffic actually leaves through needs a
+   * line of its own rather than disappearing with it. */
+  gatewayHost: string;
   proxyOn: boolean;
-  providerCount: number;
+  caTrusted: boolean;
   showProxy: boolean;
-  error?: string | null;
-  restartHint: boolean;
-  relaunchHint: boolean;
+  providers: ProviderState[];
+  tools: Tool[];
+  domains: ProxyDomain[];
+  busy: boolean;
+  error?: ClassifiedError | null;
+  /** What the last routing change actually resulted in, or null once
+   * dismissed. */
+  changeNotice: ChangeNotice;
+  onDismissChangeNotice: () => void;
+  onCloseAgents: () => void;
+  /** Turn the master on from the pending banner: the remedy belongs on the
+   * notice that reports the problem. */
+  onEnableRouting: () => void;
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
-  onOpenProxy: () => void;
   onToggleProxy: () => void;
-  onOpenDirectGateway: () => void;
+  onTrustCa: () => void;
+  /** Opens the ledger panel. The rows moved off this screen; the door and the
+   * exception it reports stayed. */
+  onOpenRoutes: () => void;
   onOpenSettings: () => void;
 }) {
   const platform = usePlatform();
+  const trustStore = trustStoreName(platform);
+  const groups = buildGroups(providers, tools, domains, { proxyOn, caTrusted });
+  // The certificate only gates proxy-routed apps, so the partial state (and
+  // the trust card) only exist while at least one app row is switched on.
+  const anyDomainOn = domains.some((d) => d.enabled && d.supported);
+  const partial = proxyOn && !caTrusted && anyDomainOn;
+  // Denominator included so "3 of 8" answers "and what about the rest?"
+  // without a scroll; the families below are the itemization.
+  const routableCount = groups.reduce((n, g) => n + g.members.length, 0);
+  const routedCount = groups.reduce((n, g) => n + g.routed, 0);
+  // Members no switch on this screen can fix: a family switch deliberately
+  // skips a hand-written setup, and an errored tool can't be connected at all.
+  // Without naming them the denominator sets a target the controls cannot
+  // reach, which reads as the app failing rather than as work to do.
+  // Switched on but not flowing because the master is off. Saying so is what
+  // makes flipping the switch feel safe rather than speculative.
+  const waitingCount = groups.reduce(
+    (n, g) => n + g.members.filter((m) => m.attention === "master-off").length,
+    0,
+  );
+  const stuckCount = groups.reduce(
+    (n, g) =>
+      n + g.members.filter((m) => m.attention === "drifted" || m.attention === "error").length,
+    0,
+  );
+  // Errors only, separate from `stuckCount`: a hand-written setup elsewhere is
+  // a choice the user made and the family switch deliberately respects, so it
+  // must not turn the header amber. A failure is not a choice. This is the
+  // count that decides whether the header may still claim health.
+  const errorCount = groups.reduce(
+    (n, g) => n + g.members.filter((m) => m.attention === "error").length,
+    0,
+  );
+
+  // The one exception the door reports, chosen across every family: a failure
+  // outranks a blocked certificate, which outranks a setup the user made
+  // elsewhere. Without it, moving the ledger off Home would cost the mid-task
+  // user the whole answer to "is anything wrong?", which is the question they
+  // opened the popover with.
+  //
+  // `master-off` is deliberately absent. It is not per-family news, it is the
+  // master switch's own state, and the card directly above already says "Off ·
+  // N waiting". Ranking it here made the routing-off door read "waiting on
+  // routing" and drop the family names entirely, so the one state whose only
+  // question is "what comes back when I flip this?" answered it twice in the
+  // same words and never named a single thing.
+  const EXCEPTION_RANK: Record<string, number> = {
+    error: 0,
+    "needs-trust": 1,
+    drifted: 2,
+  };
+  const worstException = groups
+    .map((g) => groupSummary(g))
+    .filter((summary) => summary.kind !== null && summary.kind in EXCEPTION_RANK)
+    .sort(
+      (a, b) => (EXCEPTION_RANK[a.kind ?? ""] ?? 9) - (EXCEPTION_RANK[b.kind ?? ""] ?? 9),
+    )[0];
+  const ledgerNote = worstException?.exception ?? null;
+  const ledgerNoteKind = worstException?.kind ?? null;
+
+  // At most one banner at a time, most actionable first: transient chrome
+  // must never bury the ledger (the pills are the point of the screen). The
+  // stale-port notice outranks the change notice because it means the user's
+  // tools are broken right now, not merely out of date. The trust card
+  // outranks both: it is the reason nothing is routing, so a change notice
+  // stacked under it would just be a second thing to read first.
+  const banner: "stale" | "change" | null =
+    // Nothing installed means nothing can be routing, so an offer to close
+    // running apps is an offer to close nothing.
+    routableCount === 0
+      ? null
+      : showProxy && partial
+      ? null
+      : staleAgentsHint
+        ? "stale"
+        : changeNotice
+          ? "change"
+          : null;
+
+  // Whether the certificate explanation is open. Collapsed by default; see the
+  // card below for why.
+  const [caExplain, setCaExplain] = useState(false);
+  // Session-scoped: the tip is already rare (quiet room only), so forgetting
+  // the dismissal on relaunch is a smaller cost than another persisted flag.
+  const [launchTipDismissed, setLaunchTipDismissed] = useState(false);
+  // Whether the user has flipped anything on this screen yet. Gates the live
+  // region so it reports their changes, not the backend's.
+  const [interacted, setInteracted] = useState(false);
+
+  // Whether Launch at login is on, so the keep-routing tip only shows when
+  // it would actually help (read the state, don't send the user to Settings
+  // to check it). null while loading = no tip.
+  const [launchAtLogin, setLaunchAtLogin] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    launchAtLoginStatus()
+      .then((status) => {
+        if (alive) setLaunchAtLogin(status.enabled);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   return (
     <div className="flex flex-col">
       <PopHeader
         workspace={workspace}
-        pill={proxyOn ? "connected" : "idle"}
+        // Green is the only thing a mid-task user reads, so it has to mean
+        // traffic is flowing. Routing can be on with every row still off,
+        // and the pill used to go green over three grey "Not routed" rows -
+        // the one place the app claimed something it could not back up.
+        // `partial` still outranks the count: "certificate not trusted" is a
+        // reason, and demoting it to a bare "Nothing routing" would hide it.
+        // A failed tool demotes it too. The pill flew green over an errored
+        // family whose own pill read grey "Not routed", so the screen the user
+        // opened *because* a tool stopped working answered in the colours it
+        // uses for a healthy, deliberately-off setup. The words below are
+        // unchanged; what changes is that they stop arriving in green.
+        pill={
+          proxyOn
+            ? partial
+              ? "partial"
+              : errorCount > 0
+                ? "partial"
+                : routedCount > 0
+                  ? "connected"
+                  : "idle"
+            : "idle"
+        }
+        pillLabel={
+          !proxyOn || partial
+            ? undefined
+            : routableCount === 0
+              ? "Nothing to route"
+              : routedCount === 0
+                ? "Nothing routing"
+                : errorCount > 0
+                  ? // The amber default is "Needs trust", which is a different
+                    // and specific reason. Traffic is flowing here and
+                    // something failed, so say the honest half-state.
+                    "Partly routed"
+                  : undefined
+        }
         onGear={onOpenSettings}
       />
+      {/* Flipping any switch rewrites the header pill, the master sub-line and
+          every row description at once, all of it silently. One polite live
+          region carries the headline so the change is announced without
+          reading the whole screen back. */}
+      {/* Silent until the user has actually touched something here. The
+          region used to fire on every state change including ones nobody
+          asked for, so a screen-reader user got an unprompted "Routing on,
+          2 of 5 routing" when the backend enabled itself at startup. */}
+      <span aria-live="polite" className="sr-only">
+        {interacted
+          ? proxyOn
+            ? partial
+              ? "Routing on, certificate not trusted"
+              : `Routing on, ${routedCount} of ${routableCount} routing`
+            : "Routing off"
+          : ""}
+      </span>
       <div className="flex flex-col gap-2.5 p-3.5">
-        {showProxy && (
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={onOpenProxy}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onOpenProxy();
-            }}
-            className="flex cursor-pointer items-center gap-3 rounded-[10px] bg-gc-surface p-3.5 shadow-border transition hover:shadow-border-hover"
-          >
-            <div
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
-                proxyOn ? "bg-gc-accent-wash text-gc-accent" : "bg-gc-sunken text-gc-ink-4"
-              }`}
-            >
-              <Icon name="shieldCheck" size={19} />
+        {/* One box, two parts: the master control and the door to what it
+            controls. They were two cards with two 36px tiles stacked 10px apart,
+            which read as two unrelated errands when they are the same subject
+            seen at two grains.
+
+            The rule between them is inset rather than full-bleed, because a
+            hairline that runs edge to edge inside a card still reads as a card
+            boundary, which is the whole thing this merge was meant to stop.
+            `overflow-hidden` keeps the lower half's hover fill inside the
+            radius. */}
+        {(showProxy || gatewayHost || groups.length > 0) && (
+          <div className="overflow-hidden rounded-[10px] bg-gc-surface shadow-border">
+            {showProxy && (
+              <div className="flex items-center gap-3 px-3.5 pb-2.5 pt-3.5">
+                {showProxy && (
+                  <div
+                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
+                      proxyOn ? "bg-gc-accent-wash text-gc-accent" : "bg-gc-sunken text-gc-ink-4"
+                    }`}
+                  >
+                    <Icon name="shieldCheck" size={19} />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  {showProxy && (
+                    <>
+                      {/* A heading, not a styled div: this is the screen's
+                          primary control and it was absent from the document
+                          outline, so the outline read h1 -> h2 "What routes
+                          through Gate" with the master switch unheaded. */}
+                      <h2 className="text-[13.5px] font-semibold text-gc-ink">Routing</h2>
+                      <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
+                        {/* The count survives the certificate state. Dropping it
+                            was backwards: that is exactly when the user wants to
+                            know how much is still working. */}
+                        {!proxyOn
+                          ? waitingCount > 0
+                            ? `Off · ${waitingCount} waiting`
+                            : "Off · not routing"
+                          : partial
+                            ? `On · ${routedCount} of ${routableCount} routing`
+                            : routableCount === 0
+                              ? "On · nothing installed to route"
+                              : routedCount === 0 && stuckCount === 0
+                                ? "On · nothing enabled yet"
+                                : stuckCount > 0
+                                  ? `On · ${routedCount} of ${routableCount} routing · ${stuckCount} need${stuckCount === 1 ? "s" : ""} attention`
+                                  : `On · ${routedCount} of ${routableCount} routing`}
+                      </div>
+                    </>
+                  )}
+                </div>
+                {showProxy && (
+                  <Switch
+                    on={proxyOn}
+                    label="Route through Gate"
+                    busy={busy}
+                    onClick={() => {
+                      setInteracted(true);
+                      onToggleProxy();
+                    }}
+                  />
+                )}
+              </div>
+            )}
+
+            {/* Its own full-width line inside the card, not a third line in the
+                text column: there it shared 234px with the 36px tile and the
+                switch and a production host was already close to wrapping. Here
+                it gets the card's whole 332px, which fits a 52-character host on
+                one line, so `truncate` costs nothing real and never wraps.
+                `title` keeps a staging host recoverable. */}
+            {gatewayHost && (
+              <div
+                title={gatewayHost}
+                className={`truncate px-3.5 pb-2.5 font-mono text-[10.5px] text-gc-ink-3${
+                  showProxy ? "" : " pt-3.5"
+                }`}
+              >
+                {gatewayHost}
+              </div>
+            )}
+
+            {/* The door to the ledger, not the ledger. One room cannot hold a
+                routing card, a certificate ceremony, a wire line, a banner, a
+                launch tip and an itemized list; the list is the part that reads
+                the same whether or not the user came looking for it. No rule
+                above it either: a hairline inside a card reads as a card edge
+                however it is inset, and the chevron plus the hover fill already
+                say the row is a door.
+
+                It carries the exception when there is one. Moving the pills a
+                navigation away would otherwise let a mid-task user open the
+                popover and learn nothing, and PRODUCT.md's second principle puts
+                the list on home for exactly that reason. The itemization goes;
+                the reporting stays.
+
+                No tile of its own: the shield above already establishes the
+                subject, and a second 36px tile made the pair read as a list of
+                two things rather than one thing and its detail. */}
+            {groups.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={onOpenRoutes}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-3 text-left transition hover:bg-gc-subtle focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-gc-ink">
+                      What routes through Gate
+                    </div>
+                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
+                      {ledgerNote ? (
+                        <span
+                          className={
+                            ledgerNoteKind === "error"
+                              ? "font-medium text-gc-error-deep"
+                              : "text-gc-ink-2"
+                          }
+                        >
+                          {ledgerNote}
+                        </span>
+                      ) : (
+                        groups.map((g) => g.name).join(", ")
+                      )}
+                    </div>
+                  </div>
+                  <Icon
+                    name="chevronRight"
+                    size={15}
+                    stroke={2}
+                    className="shrink-0 text-gc-ink-4"
+                  />
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {groups.length === 0 && (
+          // A door into an empty room is worse than the explanation, so the
+          // empty case keeps the card that says what to install.
+          <div className="flex items-start gap-2.5 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-4">
+              <Icon name="search" size={16} />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-[13.5px] font-semibold text-gc-ink">Proxy</div>
-              <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
-                {proxyOn
-                  ? `On · ${providerCount} provider${providerCount === 1 ? "" : "s"}`
-                  : "Off · not routing"}
+              <div className="text-[12.5px] font-medium text-gc-ink">
+                Nothing to route yet
               </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <span
-                className="flex"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleProxy();
-                }}
-              >
-                <Switch on={proxyOn} />
-              </span>
-              <Icon name="chevronRight" size={15} stroke={2} className="text-gc-ink-4" />
+              <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
+                Gate Connect picks up Claude Code and Codex once they&rsquo;re
+                installed. Install one, then reopen this window from the menu bar
+                and it will show up.
+              </p>
             </div>
           </div>
         )}
 
-        {staleAgentsHint && (
-          <div className="flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
+        {/* Its own line, not a footnote inside the routing card: that card
+            holds the switch that routes traffic, and a link into Settings is
+            an unrelated errand. Still only speaks in the quiet room - any
+            warning card or banner outranks a tip. */}
+        {proxyOn &&
+          routableCount > 0 &&
+          !launchTipDismissed &&
+          launchAtLogin === false &&
+          !partial &&
+          banner === null &&
+          !error && (
+          <div className="flex items-start gap-2 text-[11px] leading-snug text-gc-ink-3">
+            <span className="min-w-0 flex-1">
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
+              >
+                Turn on Launch at login
+              </button>{" "}
+              to keep routing on after a restart.
+            </span>
+            {/* A tip the user has read and declined should stop asking. It had
+                no dismissal at all, so someone who does not want launch-at-login
+                saw this under their routing card on every quiet launch. */}
+            <IconButton
+              icon="x"
+              size={12}
+              onClick={() => setLaunchTipDismissed(true)}
+              aria-label="Dismiss launch at login tip"
+            />
+          </div>
+        )}
+
+        {/* Gated on `partial`, not just an untrusted CA: with no app rows
+            switched on the certificate blocks nothing, and a warning card
+            would contradict the green header pill. */}
+        {showProxy && partial && (
+          <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning">
+                {/* Not shieldCheck: the master card's tile directly above is
+                    already that glyph, and two shields 40px apart in the same
+                    column read as one repeated thing rather than two. */}
+                <Icon name="info" size={16} />
+              </div>
+              <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-gc-ink">
+                Apps with no gateway setting need the Gate certificate.{" "}
+                <span className="font-normal text-gc-ink-3">
+                  It never leaves this machine.
+                </span>{" "}
+                {/* Inline, not its own row: the explanation is a footnote to
+                    this sentence and a separate line cost 27px in the state
+                    that already has the least room. */}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setCaExplain((v) => !v)}
+                  aria-expanded={caExplain}
+                  className="font-normal text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink disabled:opacity-45"
+                >
+                  What&rsquo;s this?
+                </button>
+              </div>
+              {/* The action, not the explanation. This card names the reason
+                  nothing is routing, and the fix used to be inside a
+                  disclosure labelled "What's this?" - so a user who already
+                  knows what a root CA is had to open a four-sentence lecture
+                  to find the button. */}
+              <Button
+                variant="accent"
+                size="sm"
+                className="shrink-0"
+                disabled={busy}
+                onClick={() => {
+                  setInteracted(true);
+                  onTrustCa();
+                }}
+              >
+                Trust
+              </Button>
+            </div>
+            {caExplain && (
+              <>
+                <p className="mt-2 text-[11.5px] leading-snug text-gc-ink-2">
+                  Desktop apps with no gateway setting route through
+                  Gate&rsquo;s local proxy, which needs a certificate your{" "}
+                  {trustStore} trusts. Until it&rsquo;s trusted, those apps
+                  don&rsquo;t route.
+                </p>
+                <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
+                  {/* "This machine", not "Certificate": that section stopped
+                      existing when Settings collapsed from six headings to
+                      four, and this cross-reference survived the rename.
+                      Not "anytime" either - removal is offered only while
+                      routing is off. */}
+                  You can remove it in Settings under This machine whenever
+                  routing is off.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+
+        {banner === "stale" && (
+          <div role="status" className="flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
             <Icon name="info" size={15} className="shrink-0 text-gc-error" />
-            <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-error">
-              Gate&rsquo;s local address changed. Restart your AI apps to
-              reconnect.
+            <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+              Gate&rsquo;s local address changed.{" "}
+              <span className="font-semibold">Close your apps</span>; they
+              reconnect the next time you open them.
             </div>
             <IconButton
               icon="x"
@@ -98,41 +513,83 @@ export function Home({
           </div>
         )}
 
-        {platform === "linux" && relaunchHint && (
-          <div className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
-            <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
-            <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-              Apps already running won’t route through Gate.{" "}
-              <span className="font-semibold">Reopen them</span> and they’ll pick
-              up the proxy at launch.
+        {/* One notice for every routing change, worded by direction. Both
+            directions carry the same remedy - close what's already open - so
+            both offer the same action, rather than the close route existing
+            only for the notice raised at startup. */}
+        {banner === "change" && (
+          <div role="status" className="flex items-center gap-2 rounded bg-gc-highlight px-3 py-2 shadow-border">
+            <Icon name="info" size={14} className="shrink-0 text-gc-ink" />
+            <div className="min-w-0 flex-1 text-[11.5px] font-medium leading-snug text-gc-ink">
+              {changeNotice === "pending"
+                ? "Set to route, but routing is off, so nothing is going through Gate yet."
+                : changeNotice === "started"
+                  ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
+                  : changeNotice === "on"
+                    ? "Routing is on. Anything already open isn’t routing through Gate yet."
+                    : "Routing is off. Anything already open still points at Gate."}
             </div>
+            {/* Pending has a different remedy: there is nothing running to
+                close, so offering "Close them…" would be busywork. The
+                ellipsis on the close action signals more steps follow. */}
+            {changeNotice === "pending" ? (
+              <button
+                type="button"
+                onClick={onEnableRouting}
+                className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink"
+              >
+                Turn on routing
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onCloseAgents}
+                className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink"
+              >
+                Close them…
+              </button>
+            )}
+            <IconButton
+              icon="x"
+              size={13}
+              onClick={onDismissChangeNotice}
+              aria-label="Dismiss routing notice"
+            />
           </div>
         )}
 
-        {restartHint && !(platform === "linux" && relaunchHint) && (
-          <div className="flex items-center gap-2.5 rounded bg-gc-highlight px-3 py-2.5 shadow-border">
-            <Icon name="refresh" size={15} className="shrink-0 text-gc-ink" />
-            <div className="min-w-0 flex-1 text-[12px] font-medium leading-snug text-gc-ink">
-              <span className="font-semibold">Restart your agent</span> to apply the change.
-            </div>
-          </div>
-        )}
+        {error && <ErrorNote error={error} />}
 
-        {error && <p className="px-1 text-[11.5px] leading-snug text-gc-error">{error}</p>}
+        {/* Last in this zone, under whatever the app has to say. It is the one
+            control here that leaves Gate Connect, so a certificate blocker, a
+            stale-port warning or a failed toggle all outrank it; it used to sit
+            above every one of them.
 
-        <CardButton onClick={onOpenDirectGateway}>
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-3">
-            <Icon name="layers" size={19} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-[13.5px] font-semibold text-gc-ink">Direct Gateway</div>
-            <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
-              Add Gate models to your coding agents
-            </div>
-          </div>
-          <Icon name="chevronRight" size={15} stroke={2} className="text-gc-ink-4" />
-        </CardButton>
+            Fifth address for this link. The previous four each failed: below the
+            last ledger row it fell under the fold; pinned to the footer it
+            squeezed the credential promise until "Session in Credential Manager"
+            truncated on Windows; riding the ledger heading it outweighed the
+            heading it sat on; and sharing the host's line it took width from the
+            one identifier on this screen that cannot be shortened without lying.
+
+            14.5px, not 11.5px: at the bottom of the zone it is no longer a
+            footnote to the host line, and it was the smallest interactive text
+            in the app. 14.5 rather than 15 only because 15 is off the ramp in
+            DESIGN.md and this is the nearest step to it; the two are half a
+            pixel apart. The padding takes the hit area from 19px to 32px, which
+            also clears the 24px target minimum it used to miss. */}
+        <button
+          type="button"
+          onClick={() => {
+            void openExternal(GATE_DASHBOARD_URL);
+          }}
+          className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-[14.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+        >
+          <Icon name="cube" size={15} />
+          Gate dashboard
+        </button>
       </div>
+
     </div>
   );
 }

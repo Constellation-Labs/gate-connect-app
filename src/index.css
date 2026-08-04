@@ -1,5 +1,10 @@
-/* ─── Geist via Google Fonts ────────────────────────────────────────── */
-@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
+/* ─── Geist + Geist Mono, bundled locally (no runtime font fetch: the app
+   must brand correctly offline and phone home to no one) ──────────────── */
+@import "@fontsource/geist/400.css";
+@import "@fontsource/geist/500.css";
+@import "@fontsource/geist/600.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
 
 @tailwind base;
 @tailwind components;
@@ -10,6 +15,18 @@
   body,
   #root {
     height: 100%;
+  }
+  /* One focus ring for the whole app. The Button/IconButton/Switch primitives
+     carry their own `focus-visible:outline-*` utilities, but most of the
+     product's controls are inline text buttons written by hand - 32 of 38 at
+     last count - and those were falling back to Chrome's 1px black UA ring.
+     Keyboard users saw two different focus vocabularies depending on which
+     control they landed on, including the two that the takeover focus traps
+     deliberately target. Declaring it here covers every button, present and
+     future, without asking each call site to remember. */
+  button:focus-visible {
+    outline: 2px solid theme("colors.gc.accent");
+    outline-offset: 2px;
   }
   /* Transparent shell so the Tauri window's rounded-corner transparency
      shows through; the visible card lives inside #root. */
@@ -113,4 +130,32 @@
     opacity: 1;
     transform: none;
   }
+}
+
+/* Keyboard focus must never land under the sticky panel header. Tab-wrap
+   inside the scroll region used to scroll the target flush to the top of the
+   container, which is exactly where PopHeader/SubHeader sits. The bottom margin
+   clears the 22px fold fade below, so a control tabbed to the bottom edge keeps
+   its focus ring at full strength instead of arriving half-faded. */
+.gc-scroll :is(a, button, input, select, textarea, [tabindex]):focus-visible {
+  scroll-margin-top: 56px;
+  scroll-margin-bottom: 28px;
+}
+
+/* The fold. The body is the only scrolling region in the popover and the
+   credential footer sits directly beneath it wearing a hairline, so a row that
+   ran past the bottom was cut by a hard line: at 360x520 a key account's
+   Settings hides 120px of 607 (Help, and Reset Gate Connect) behind what reads
+   as the end of the content, and Home's fourth family survived as a 6px sliver
+   between two borders. Fading the last 22px says "there is more" in the one
+   vocabulary this app already uses for a cropped edge (see the tour's
+   mask-image crops), rather than adding a scrim, an arrow, or a shadow the
+   design system does not own.
+
+   Applied only while something is actually below, so a fully-scrolled panel
+   keeps its last line at full strength. Both spellings: WKWebView needs the
+   prefix. */
+.gc-scroll-more {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%);
 }

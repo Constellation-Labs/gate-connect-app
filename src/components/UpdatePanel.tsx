@@ -4,6 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { setUpdaterRelaunching } from "../lib/api";
 import { useWindowReopen } from "../lib/useWindowReopen";
+import { Takeover, TAKEOVER_Z } from "./Takeover";
 import { track, trackError } from "../lib/analytics";
 import { Button, IconButton } from "./gc/ui";
 import { Icon } from "./gc/Icon";
@@ -14,7 +15,18 @@ import { Icon } from "./gc/Icon";
  *  surface as a slim top banner instead - a mid-task reopen shouldn't be
  *  blocked by a takeover. Both offer the same one-click "install & relaunch".
  *  The check is silent - offline or an unreachable endpoint shows nothing. */
-export function UpdatePanel() {
+export function UpdatePanel({
+  suppressTakeover = false,
+  onTakeoverVisibleChange,
+}: {
+  /** True while another (higher z) takeover owns the popover; the startup
+   * update takeover defers until it clears rather than mounting beneath it
+   * and stealing focus into a hidden panel. */
+  suppressTakeover?: boolean;
+  /** Lets the shell mark the background aria-hidden while the startup
+   * takeover is mounted. */
+  onTakeoverVisibleChange?: (visible: boolean) => void;
+}) {
   const [update, setUpdate] = useState<Update | null>(null);
   const [current, setCurrent] = useState("");
   const [installing, setInstalling] = useState(false);
@@ -95,13 +107,25 @@ export function UpdatePanel() {
     }
   }
 
+  // The startup takeover is visible when an update exists, no reopen has
+  // demoted it to the banner, it hasn't been dismissed, and no higher
+  // takeover suppresses it. Reported on the edge so the shell can hide the
+  // background from assistive tech.
+  const takeoverVisible = !!update && !reopened && !panelDismissed && !suppressTakeover;
+  useEffect(() => {
+    onTakeoverVisibleChange?.(takeoverVisible);
+  }, [takeoverVisible, onTakeoverVisibleChange]);
+
   if (!update) return null;
 
   // After a reopen, surface the quiet top banner instead of the takeover.
   if (reopened) {
     if (bannerDismissed) return null;
     return (
-      <div className="flex shrink-0 items-center gap-2 border-b border-gc-line bg-gc-accent-wash-2 py-1.5 pl-3 pr-1.5">
+      <div
+        role="status"
+        className="flex shrink-0 items-center gap-2 border-b border-gc-line bg-gc-accent-wash-2 py-1.5 pl-3 pr-1.5"
+      >
         <Icon name="refresh" size={13} className="shrink-0 text-gc-accent" />
         <div className="min-w-0 flex-1 text-[11.5px] text-gc-ink-2">
           {failed ? (
@@ -118,7 +142,7 @@ export function UpdatePanel() {
           onClick={() => {
             void install();
           }}
-          className="shrink-0 text-[11.5px] font-semibold text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3 disabled:no-underline disabled:opacity-60"
+          className="shrink-0 text-[11.5px] font-semibold text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3 disabled:no-underline disabled:opacity-45"
         >
           {installing ? "Installing…" : failed ? "Retry" : "Update"}
         </button>
@@ -137,16 +161,64 @@ export function UpdatePanel() {
     );
   }
 
-  // Startup: full-panel takeover.
-  if (panelDismissed) return null;
+  // Startup: full-panel takeover. Deferred (not dismissed) while a higher
+  // takeover is up; it mounts once that clears.
+  if (panelDismissed || suppressTakeover) return null;
   return (
-    <div className="gc-panel-in absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center">
+    <UpdateTakeover
+      version={update.version}
+      current={current}
+      installing={installing}
+      failed={failed}
+      onInstall={() => void install()}
+      onLater={() => {
+        setPanelDismissed(true);
+        track("update_dismissed", { source: "panel" });
+      }}
+    />
+  );
+}
+
+/** The startup takeover lives in its own component so its focus trap mounts
+ *  exactly when the panel does (the parent renders long before, as null). */
+function UpdateTakeover({
+  version,
+  current,
+  installing,
+  failed,
+  onInstall,
+  onLater,
+}: {
+  version: string;
+  current: string;
+  installing: boolean;
+  failed: boolean;
+  onInstall: () => void;
+  onLater: () => void;
+}) {
+  // Escape defers the update, matching "Later" - but not mid-install, when
+  // there is no safe dismissal.
+  // "Install & relaunch" restarts the app under the user; Later takes focus.
+  const safeRef = useRef<HTMLButtonElement>(null);
+  return (
+    <Takeover
+      z={TAKEOVER_Z.update}
+      labelledBy="update-panel-title"
+      onEscape={installing ? undefined : onLater}
+      initialFocus={safeRef}
+      // `installing` unmounts Later and disables Install, leaving nothing
+      // focusable in the panel.
+      resetKey={installing}
+    >
       <div className="flex h-14 w-14 items-center justify-center rounded-gc-lg bg-gc-accent-wash text-gc-accent">
         <Icon name="refresh" size={26} />
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <h1 className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink">
+        <h1
+          id="update-panel-title"
+          className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink"
+        >
           Update ready
         </h1>
         <p className="text-[12.5px] leading-snug text-gc-ink-3">
@@ -154,40 +226,54 @@ export function UpdatePanel() {
             ? "The update couldn’t install. Check your connection and try again."
             : "A new version of Gate Connect is ready to install."}
         </p>
+        {/* The button says "Install & relaunch" and the panel said nothing about
+            what a relaunch costs. This is the one takeover a user meets
+            mid-task, and the question it left unanswered is whether their
+            traffic stops: it does not, because the exit is marked as an updater
+            relaunch and the backend restores the routing intent afterwards.
+            Phrased as the setup rather than as "routing comes back on", which
+            would imply routing is currently on; this panel does not know. */}
+        {!failed && (
+          <p className="text-[11.5px] leading-snug text-gc-ink-3">
+            Installing restarts Gate Connect; your routing setup comes back with
+            it.
+          </p>
+        )}
       </div>
 
       <div className="flex items-center gap-2 font-mono text-[11.5px]">
-        {current && <span className="text-gc-ink-4">v{current}</span>}
-        {current && <Icon name="chevronRight" size={13} className="text-gc-ink-5" />}
-        <span className="rounded-gc-pill bg-gc-highlight px-2 py-0.5 font-medium text-gc-ink">
-          v{update.version}
+        {current && <span className="text-gc-ink-3">v{current}</span>}
+        {/* ink-4, the weight every other chevron in the app carries. ink-5 was
+            the only use of that step in the product and it measures 2.42:1 on
+            white, under the 3:1 bar for a graphic that turns two version numbers
+            into a direction. */}
+        {current && <Icon name="chevronRight" size={13} className="text-gc-ink-4" />}
+        {/* Sunken, not highlight. `gc-highlight` is the hint-banner surface in
+            DESIGN.md, spent on the one thing this app has to say when routing
+            state and running apps disagree; a version number is not that, and
+            borrowing the colour dilutes it. Sunken is the neutral chip surface
+            the mechanism chips and the idle pill already use, and ink at medium
+            still ranks this above the outgoing version beside it. */}
+        <span className="rounded-gc-pill bg-gc-sunken px-2 py-0.5 font-medium text-gc-ink">
+          v{version}
         </span>
       </div>
 
       <div className="mt-1 flex w-full flex-col gap-2">
-        <Button
-          variant="accent"
-          full
-          disabled={installing}
-          onClick={() => {
-            void install();
-          }}
-        >
+        <Button variant="accent" full disabled={installing} onClick={onInstall}>
           {installing ? "Installing…" : failed ? "Retry update" : "Install & relaunch"}
         </Button>
         {!installing && (
           <button
+            ref={safeRef}
             type="button"
-            onClick={() => {
-              setPanelDismissed(true);
-              track("update_dismissed", { source: "panel" });
-            }}
+            onClick={onLater}
             className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             Later
           </button>
         )}
       </div>
-    </div>
+    </Takeover>
   );
 }

@@ -49,6 +49,14 @@ export interface OAuthStatus {
 
 export const listTools = () => invoke<Tool[]>("list_tools");
 
+/** Point one tool's own config at Gate. Auto-enables the proxy engine when a
+ * relay-routed config needs it (idempotent if already running). */
+export const connectTool = (slug: string, upstreamUrl: string) =>
+  invoke<Status>("connect_tool", { slug, upstreamUrl });
+
+/** Revert one tool's config to its pre-Gate state. */
+export const disconnectTool = (slug: string) => invoke<Status>("disconnect_tool", { slug });
+
 export const hasUpstreamCredential = (slug: string) => invoke<boolean>("has_upstream_credential", { slug });
 
 export const saveUpstreamApiKey = (slug: string, apiKey: string) =>
@@ -181,6 +189,12 @@ export interface ProviderState {
   /** Whether the switch can act now (a tool is installed or the proxy is
    * running). When false the UI should render the switch disabled. */
   available: boolean;
+  /** Slugs of the config-file tools this provider's switch governs, so the
+   * UI can show the coupling with the per-tool switches. */
+  tool_slugs: string[];
+  /** Slugs of the proxy domains this provider covers. With `tool_slugs`,
+   * a family's whole membership - what Home's ledger groups by. */
+  domain_slugs: string[];
 }
 
 export const listProviders = () => invoke<ProviderState[]>("list_providers");
@@ -233,6 +247,11 @@ export const routedClientsStale = () => invoke<boolean>("routed_clients_stale");
  * without touching them. Used to skip the routing-change takeover when there
  * is nothing to close. */
 export const runningAgentsCount = () => invoke<number>("running_agents_count");
+
+/** Running agent processes started *before* routing last came up - the ones
+ * that genuinely need a restart to route. Drives the startup hint, so a
+ * healthy restored session (agents launched after routing) stays quiet. */
+export const staleAgentsCount = () => invoke<number>("stale_agents_count");
 
 /** Terminate running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up

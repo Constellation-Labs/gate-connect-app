@@ -12,6 +12,7 @@ export type IconName =
   | "layers"
   | "settings"
   | "chevronRight"
+  | "caretRight"
   | "chevronLeft"
   | "cube"
   | "key"
@@ -24,7 +25,8 @@ export type IconName =
   | "info"
   | "x"
   | "plus"
-  | "search";
+  | "search"
+  | "logOut";
 
 const PATHS: Record<IconName, JSX.Element> = {
   shieldCheck: (
@@ -47,6 +49,12 @@ const PATHS: Record<IconName, JSX.Element> = {
     </>
   ),
   chevronRight: <path d="m9 18 6-6-6-6" />,
+  // Disclosure, as distinct from navigation. A chevron means "this opens
+  // somewhere else" and a filled caret means "this opens in place" - the split
+  // every platform's settings UI makes, and the one this app had lost by
+  // spending one glyph on both. Filled, so it reads as a caret rather than a
+  // lighter chevron: `fill` overrides the svg's `fill="none"`.
+  caretRight: <path d="M9 5.5l7 6.5-7 6.5z" fill="currentColor" stroke="none" />,
   chevronLeft: <path d="m15 18-6-6 6-6" />,
   cube: (
     <>
@@ -121,6 +129,13 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <circle cx="11" cy="11" r="7" />
       <path d="m21 21-4.3-4.3" />
+    </>
+  ),
+  logOut: (
+    <>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="m16 17 5-5-5-5" />
+      <path d="M21 12H9" />
     </>
   ),
 };

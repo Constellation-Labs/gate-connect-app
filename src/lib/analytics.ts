@@ -25,6 +25,9 @@ export type AnalyticsEvent =
   | "proxy_enabled"
   | "proxy_disabled"
   | "provider_toggled"
+  | "domain_toggled"
+  | "tool_toggled"
+  | "group_toggled"
   | "ca_trusted"
   | "ca_untrusted"
   | "tour_completed"
@@ -36,6 +39,8 @@ export type AnalyticsEvent =
   | "stale_agents_shown"
   | "routing_notice_shown"
   | "quit_warning_shown"
+  | "oauth_offer_shown"
+  | "oauth_offer_accepted"
   | "quit_confirmed"
   | "launch_at_login_toggled"
   | "error_shown";
@@ -53,6 +58,9 @@ const ALLOWED_PROP_KEYS = new Set<string>([
   "codex_drifted",
   "provider",
   "provider_count",
+  "domain",
+  "tool",
+  "routed",
   "enabled",
   "launch_at_login",
   "context",
@@ -100,9 +108,26 @@ export function initAnalytics(): void {
   );
 }
 
+/**
+ * Telemetry must never break a user flow. Every public entry point below
+ * routes through this: a PostHog failure (blocked host, CSP, a broken
+ * init) becomes a console note, not an exception thrown into the caller.
+ * This is load-bearing, not defensive habit - `track` sits directly on the
+ * onboarding window's close path, where a throw leaves a window the user
+ * cannot close (Tauri prevents the native close whenever JS listens for
+ * close-requested, and only destroys the window if that handler resolves).
+ */
+function safely(what: string, fn: () => void): void {
+  try {
+    fn();
+  } catch (e) {
+    console.warn(`[gate] analytics ${what} failed`, e);
+  }
+}
+
 export function track(event: AnalyticsEvent, props?: Props): void {
   if (!enabled) return;
-  posthog.capture(event, sanitize(props));
+  safely("capture", () => posthog.capture(event, sanitize(props)));
 }
 
 /**
@@ -115,7 +140,7 @@ export function trackError(err: unknown, context: ErrorContext, props?: Props): 
   if (!enabled) return;
   const { title } = classifyError(err, context);
   track("error_shown", { ...props, context, title });
-  posthog.captureException(new Error(title), { context });
+  safely("captureException", () => posthog.captureException(new Error(title), { context }));
 }
 
 /**
@@ -125,5 +150,5 @@ export function trackError(err: unknown, context: ErrorContext, props?: Props): 
  */
 export function captureException(err: unknown): void {
   if (!enabled) return;
-  posthog.captureException(err);
+  safely("captureException", () => posthog.captureException(err));
 }

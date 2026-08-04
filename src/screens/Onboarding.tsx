@@ -4,7 +4,8 @@ import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { track } from "../lib/analytics";
 import { setTourSeen } from "../lib/tour";
-import { usePlatform, type Platform } from "../lib/platform";
+import { Button } from "../components/gc/ui";
+import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
 import appIcon from "../assets/app-icon.png";
 import routingScreen from "../assets/app-integrations.png";
 import whereMacos from "../assets/where-is-gate-connect-macos.png";
@@ -22,11 +23,21 @@ function RoutingHero() {
     <figure>
       <img
         src={routingScreen}
-        alt="Gate Connect routing screen: a Route through Gate toggle above per-app toggles"
-        className="mx-auto block w-full max-w-[256px]"
+        alt="The Gate Connect popover: a Routing switch above one row per model family"
+        // Intrinsic size of the capture, so the box is reserved before the PNG
+        // decodes; `w-full` still drives the rendered width.
+        width={402}
+        height={442}
+        className="mx-auto block h-auto w-full max-w-[256px]"
+        // The capture is cropped mid-card, so a square bottom edge reads as a
+        // rendering bug. Same fade the platform mockups below already use.
+        style={{
+          maskImage: "linear-gradient(180deg,#000 92%,transparent 100%)",
+          WebkitMaskImage: "linear-gradient(180deg,#000 92%,transparent 100%)",
+        }}
       />
-      <figcaption className="mt-1.5 text-[10.5px] text-gc-ink-4">
-        The Routing screen in Gate Connect
+      <figcaption className="mt-1.5 text-[10.5px] text-gc-ink-3">
+        The Gate Connect popover
       </figcaption>
     </figure>
   );
@@ -68,7 +79,7 @@ function buildSteps(platform: Platform): Step[] {
           alt="The Gate Connect app icon"
           width={128}
           height={128}
-          className="mx-auto rounded-[28px] drop-shadow-[0_14px_34px_rgba(20,38,102,0.5)]"
+          className="mx-auto rounded-[28px] drop-shadow-[0_14px_34px_rgba(0,42,95,0.5)]"
         />
       ),
       title: "Welcome to Gate Connect",
@@ -81,10 +92,10 @@ function buildSteps(platform: Platform): Step[] {
     {
       hero: <RoutingHero />,
       title: "How to turn it on",
-      sub: "Protection is a per-app choice: turn on the apps you want Gate to cover.",
+      sub: "Routing is a per-app choice: turn on the apps you want Gate to cover.",
       body: [
-        "For Claude Code, Codex, and opencode, Gate Connect points the app's own config at your gateway and restores it when you disconnect. For apps like Claude Desktop or ChatGPT, it routes the provider's domain through a local proxy.",
-        "Connected apps route through Gate; unselected apps stay unchanged. Your Gate key stays in the operating system keychain, not a plain file.",
+        "For Claude Code and Codex, Gate Connect points the app’s own config at your gateway and restores it when you disconnect. For apps like Claude Desktop or ChatGPT, it routes the provider’s domain through a local proxy.",
+        `Connected apps route through Gate; unselected apps stay unchanged. Your Gate key stays in ${secretStoreName(platform)}, not a plain file.`,
       ],
     },
     {
@@ -115,7 +126,7 @@ function buildSteps(platform: Platform): Step[] {
       sub: whereItLives(platform),
       body: [
         "Click the Gate icon to see whether Gate is active, which apps are connected, and which need attention.",
-        "That's all there is to it. Sign in and your first app is one toggle away.",
+        "That’s all there is to it. Sign in and your first app is one toggle away.",
       ],
       locate: true,
     },
@@ -131,7 +142,9 @@ export function Onboarding() {
   const steps = buildSteps(platform);
   const [index, setIndex] = useState(0);
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
-  const [dontShow, setDontShow] = useState(true);
+  // Starts clear: opting out of the intro should be a choice the user makes,
+  // not a default they discover after it stops appearing.
+  const [dontShow, setDontShow] = useState(false);
 
   // First launch vs a replay from Settings, threaded through the window URL
   // by `open_onboarding_window` as a hash fragment (query strings can fail to
@@ -149,10 +162,22 @@ export function Onboarding() {
   const indexRef = useRef(index);
   indexRef.current = index;
   useEffect(() => {
+    // Registering this listener takes over the window's close semantics:
+    // Tauri prevents the native close whenever JS listens for close-requested
+    // (has_js_listener in manager/window.rs) and the window then closes only
+    // because @tauri-apps/api's wrapper calls destroy() once this resolves
+    // without preventDefault. Two consequences worth keeping in mind before
+    // editing: the capability set must keep `core:window:allow-destroy` (an
+    // unpermitted destroy leaves a window nobody can close), and a throw in
+    // here strands the user the same way - so nothing may fail loudly.
     const unlisten = getCurrentWindow().onCloseRequested(() => {
-      if (finishedRef.current) return;
-      finishedRef.current = true;
-      track("tour_skipped", { source, step: indexRef.current + 1 });
+      try {
+        if (finishedRef.current) return;
+        finishedRef.current = true;
+        track("tour_skipped", { source, step: indexRef.current + 1 });
+      } catch (e) {
+        console.warn("[gate] tour skip tracking failed", e);
+      }
     });
     return () => {
       void unlisten.then((f) => f());
@@ -161,12 +186,24 @@ export function Onboarding() {
 
   const finish = () => {
     finishedRef.current = true;
-    setTourSeen(dontShow);
-    track("tour_completed", { source });
-    // Tell the popover window to record the flag in its own storage too, in
-    // case the platform doesn't share localStorage between webviews.
-    if (dontShow) void emit(TOUR_SEEN_EVENT);
+    // Close first, then do the bookkeeping: none of it is worth trapping the
+    // user in a window that won't close, and the guard keeps a failed write
+    // from escaping the click handler.
     void getCurrentWindow().close();
+    try {
+      // Finishing the tour is itself the "seen" signal, so it records the
+      // flag whatever the checkbox says: the checkbox only decides what
+      // happens when someone leaves early. (It used to be the sole writer,
+      // which is why it had to start checked; now that it doesn't, it can
+      // start clear without replaying the intro on every launch.)
+      setTourSeen(true);
+      track("tour_completed", { source });
+      // Tell the popover window to record the flag in its own storage too, in
+      // case the platform doesn't share localStorage between webviews.
+      void emit(TOUR_SEEN_EVENT);
+    } catch (e) {
+      console.warn("[gate] tour completion bookkeeping failed", e);
+    }
   };
 
   return (
@@ -180,21 +217,26 @@ export function Onboarding() {
         >
           <div className="mb-4">{step.hero}</div>
           <h1 className="text-balance text-[27px] font-semibold leading-tight">{step.title}</h1>
-          <p className="mt-[7px] text-[13.5px] text-gc-ink-4">{step.sub}</p>
+          <p className="mt-[7px] text-[13.5px] text-gc-ink-3">{step.sub}</p>
           <div className="mb-[14px] mt-[17px] h-px w-full bg-gc-line" aria-hidden />
           <div className="mx-auto max-w-[620px] space-y-3 text-left text-[14px] leading-[1.62] text-pretty text-gc-ink-2">
             {step.body.map((p) => (
               <p key={p.slice(0, 24)}>{p}</p>
             ))}
           </div>
+          {/* The button kit, not a fourth skin. This was accent-wash fill
+              with accent text and a seam - a shape DESIGN.md's vocabulary
+              does not contain, and the Provisional Indigo rule says not to
+              invent new indigo surfaces. */}
           {step.locate && (
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
+              className="mt-4"
               onClick={() => void invoke("reveal_popover")}
-              className="mt-4 inline-flex h-[34px] items-center rounded-lg bg-gc-accent-wash px-[18px] text-[12.5px] font-semibold text-gc-accent shadow-border transition-colors hover:bg-gc-accent-wash-2"
             >
-              Click Here to Locate Gate Connect
-            </button>
+              Show me where Gate Connect lives
+            </Button>
           )}
         </div>
       </div>
@@ -231,7 +273,10 @@ export function Onboarding() {
           </span>
           Do not show this intro again
         </label>
-        <div className="flex items-center gap-[7px]" aria-hidden>
+        {/* Decorative dots, but the position they encode is not: without the
+            label the tour never tells a screen-reader user how far along they
+            are. */}
+        <div className="flex items-center gap-[7px]" role="img" aria-label={`Step ${index + 1} of ${steps.length}`}>
           {steps.map((_, i) => (
             <span
               key={i}
@@ -240,19 +285,21 @@ export function Onboarding() {
           ))}
         </div>
         <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
+          <Button
+            size="sm"
+            className="min-w-[74px]"
             disabled={index === 0}
             onClick={() => {
               setDir("back");
               setIndex((i) => Math.max(0, i - 1));
             }}
-            className="h-[30px] min-w-[74px] rounded-md bg-gc-sunken px-[14px] text-[11.5px] font-medium text-gc-ink-2 transition-colors enabled:hover:bg-gc-line disabled:opacity-55"
           >
             Previous
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="accent"
+            size="sm"
+            className="min-w-[74px]"
             onClick={() => {
               if (last) {
                 finish();
@@ -261,10 +308,9 @@ export function Onboarding() {
                 setIndex((i) => i + 1);
               }
             }}
-            className="h-[30px] min-w-[74px] rounded-md bg-gc-ink px-[14px] text-[11.5px] font-medium text-white transition-colors hover:bg-gc-ink-2"
           >
             {last ? "Get started" : "Next"}
-          </button>
+          </Button>
         </div>
       </footer>
     </div>

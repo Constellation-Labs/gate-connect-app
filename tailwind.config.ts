@@ -143,6 +143,14 @@ export default {
           highlight: "#f6ffe3",
           line: "#e8eaef",
           "line-strong": "#d4d7e3",
+          // The switch's off track. SC 1.4.11 wants 3:1 for a component state
+          // indicator, and it has to clear that on every surface the switch
+          // lands on - not just white. #8b91a6 measured 3.13:1 on white but
+          // 2.98:1 on `subtle`, which is what an expanded or hovered member row
+          // uses, so the most-used control in the app failed exactly where the
+          // user was interacting with it. #868c9e is 3.36:1 on white and
+          // 3.19:1 on subtle.
+          "switch-off": "#868c9e",
           ink: "#0f1222",
           "ink-2": "#2a2d3f",
           "ink-3": "#55596f",
@@ -150,8 +158,23 @@ export default {
           "ink-5": "#a1a6bb",
           navy: "#002a5f",
           success: "#2ecc71",
+          // Text-on-wash partners for the status colors: dark enough to hold
+          // WCAG AA (4.5:1) at pill size on their washes over white.
+          "success-deep": "#177a42",
+          "success-wash": "rgba(46,204,113,0.14)",
           warning: "#f39c12",
+          // Same role as success-deep / error-deep: dark enough to carry meaning
+          // on its own wash. The status dots use the deep variants so the dot
+          // clears SC 1.4.11's 3:1 instead of relying on the label beside it.
+          "warning-deep": "#a25f02",
+          "warning-wash": "rgba(243,156,18,0.12)",
           error: "#e74c3c",
+          // Text-weight red, mirroring success-deep: #e74c3c is 3.8:1 on
+          // white, which is fine for a dot or an icon and short of AA for the
+          // words next to it. Dots and washes keep `error`; anything the user
+          // reads uses this.
+          "error-deep": "#c0392b",
+          "error-wash": "rgba(231,76,60,0.12)",
           menubar: "#181a30",
         },
       },

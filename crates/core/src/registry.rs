@@ -139,6 +139,21 @@ pub trait Integration: Send + Sync {
         ""
     }
 
+    /// Keep this tool out of the popover's ledger.
+    ///
+    /// The integration stays in [`registry`] regardless, so
+    /// [`disconnect_all_managed`], the master-off sweep and the restore path
+    /// still cover anyone who connected it with an earlier build - removing it
+    /// from the registry would strand their config pointing at a relay they
+    /// can no longer turn off. The `gate-connect` CLI also keeps listing it.
+    ///
+    /// Used for integrations whose config strategy has not been validated
+    /// against the tool's current documentation; see
+    /// `docs/harness-integration-validation.md`.
+    fn hidden_in_ui(&self) -> bool {
+        false
+    }
+
     /// Is an upstream credential currently saved for this tool?
     fn has_upstream_credential(&self) -> Result<bool>;
 
@@ -155,6 +170,16 @@ pub fn registry() -> Vec<Box<dyn Integration>> {
         Box::new(crate::integrations::openclaw::OpenClaw),
         Box::new(crate::integrations::hermes::Hermes),
     ]
+}
+
+/// Integrations kept out of the popover's ledger. Present in [`registry`] so
+/// cleanup still reaches them; see [`Integration::hidden_in_ui`].
+pub fn hidden_in_ui_slugs() -> Vec<&'static str> {
+    registry()
+        .iter()
+        .filter(|i| i.hidden_in_ui())
+        .map(|i| i.id().slug())
+        .collect()
 }
 
 pub fn find(id: ToolId) -> Option<Box<dyn Integration>> {
@@ -191,4 +216,48 @@ pub fn disconnect_all_managed() -> Result<()> {
         "sign-out stopped: disconnecting these tools failed: {}",
         failures.join("; ")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hiding must stay a UI decision. If these ever leave `registry()`, a user
+    /// who connected them with an earlier build loses every path that could
+    /// disconnect them: the master-off sweep, sign-out, and the restore.
+    #[test]
+    fn hidden_integrations_are_still_registered() {
+        let slugs: Vec<&str> = registry().iter().map(|i| i.id().slug()).collect();
+        for hidden in hidden_in_ui_slugs() {
+            assert!(
+                slugs.contains(&hidden),
+                "{hidden} is hidden but missing from the registry, so nothing can clean it up"
+            );
+        }
+    }
+
+    /// Every multi-provider harness is hidden: each one's config strategy
+    /// failed validation against upstream docs, and in all three cases the
+    /// failure mode is a config file that looks right while something else
+    /// decides the wire (docs/harness-integration-validation.md).
+    #[test]
+    fn agent_harnesses_are_hidden_pending_validation() {
+        let hidden = hidden_in_ui_slugs();
+        for slug in ["opencode", "openclaw", "hermes"] {
+            assert!(
+                hidden.contains(&slug),
+                "{slug} should be hidden, got {hidden:?}"
+            );
+        }
+    }
+
+    /// The single-provider integrations, whose config strategy is a plain
+    /// documented override, stay visible.
+    #[test]
+    fn single_provider_integrations_stay_visible() {
+        let hidden = hidden_in_ui_slugs();
+        for slug in ["claude-code", "codex"] {
+            assert!(!hidden.contains(&slug), "{slug} must remain in the ledger");
+        }
+    }
 }

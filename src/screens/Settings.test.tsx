@@ -7,7 +7,13 @@ import { Settings } from "./Settings";
 
 // The certificate section swaps the trust-store name by platform; drive it by
 // mocking usePlatform rather than the async Tauri lookup.
-vi.mock("../lib/platform", () => ({ usePlatform: vi.fn() }));
+// Partial: only the async OS lookup needs faking. `secretStoreName` and
+// `trustStoreName` are pure and the copy assertions below should see the real
+// strings, not a stub's.
+vi.mock("../lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/platform")>()),
+  usePlatform: vi.fn(),
+}));
 vi.mock("../lib/api", () => ({
   launchAtLoginStatus: vi.fn(),
   setLaunchAtLogin: vi.fn(),
@@ -69,20 +75,55 @@ describe("Settings certificate section", () => {
   it("offers Remove when routing is off but the CA is still trusted", async () => {
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true });
-    expect(screen.getByText(/still trusted in your keychain/i)).toBeTruthy();
+    expect(screen.getByText(/Trusted on this machine/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
-  it("names the certificate store on Windows", async () => {
+  it("names the certificate store on Windows, in the explanation", async () => {
+    // Not on the collapsed line: "certificate store" is 8 characters longer
+    // than "keychain" and wrapped it to two lines.
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("windows", { caTrusted: true });
-    expect(screen.getByText(/still trusted in your certificate store/i)).toBeTruthy();
+    expect(screen.queryByText(/certificate store/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
+    expect(screen.getByText(/trusted in your certificate store/i)).toBeTruthy();
   });
 
-  it("is hidden while routing is running", async () => {
+  it("offers removal only while routing is off", async () => {
+    // Pulling the certificate mid-routing stops every app with no gateway
+    // setting of its own, so the action is withheld - but the section stays
+    // visible and says why, rather than vanishing and leaving the user
+    // hunting for what Home told them was there.
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     await renderOn("macos", { caTrusted: true, routingOn: true });
-    expect(screen.queryByText(/still trusted/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(screen.getByText(/Turn routing off to remove\./)).toBeTruthy();
+  });
+
+  it("keeps the explanation collapsed until asked", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos", { caTrusted: true, routingOn: true });
+    // The scannable line stays; the four-line consequence is behind the
+    // disclosure, so it does not cost room on every visit to Settings.
+    expect(screen.getByText(/Turn routing off to remove\./)).toBeTruthy();
+    expect(screen.queryByText(/never leaves this machine/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
+    expect(screen.getByText(/never leaves this machine/)).toBeTruthy();
+  });
+
+  it("explains the withheld removal differently from an available one", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos", { caTrusted: true, routingOn: true });
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
+    expect(screen.getByText(/removal waits until routing is off/)).toBeTruthy();
+    cleanup();
+
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos", { caTrusted: true });
+    fireEvent.click(screen.getByRole("button", { name: "What’s this?" }));
+    expect(screen.getByText(/you can trust a new one anytime/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
   it("is hidden when the CA is not trusted", async () => {
@@ -91,12 +132,31 @@ describe("Settings certificate section", () => {
     expect(screen.queryByText(/still trusted/i)).toBeNull();
   });
 
-  it("calls onUntrustCa when Remove is clicked", async () => {
+  it("confirms before removing the certificate, and only then removes it", async () => {
     (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
     const onUntrustCa = vi.fn();
     await renderOn("macos", { caTrusted: true, onUntrustCa });
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    // It deletes a private key by its own copy, so the first click only arms.
+    expect(onUntrustCa).not.toHaveBeenCalled();
+    expect(screen.getByText(/deletes it and its private key/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove certificate" }));
     expect(onUntrustCa).toHaveBeenCalledTimes(1);
+  });
+
+  it("brings the armed confirm into view and puts focus on its safe half", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    await renderOn("macos", { caTrusted: true });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    // The confirm renders after the control that arms it, so on the Reset
+    // trigger - the last element in this screen's scroll container - it mounted
+    // entirely below the fold and pressing the button that wipes the account
+    // returned a pixel-identical screen. It reports itself instead.
+    expect(scrollIntoView).toHaveBeenCalled();
+    // Focus is an invitation, so the destructive half never gets it.
+    expect(document.activeElement?.textContent).toBe("Cancel");
   });
 });
 
@@ -159,5 +219,76 @@ describe("Settings launch at login", () => {
     await act(async () => {});
     expect(lalSwitch().getAttribute("aria-checked")).toBe("false");
     expect(screen.getByText(/no login items API/i)).toBeTruthy();
+  });
+});
+
+describe("Settings hierarchy", () => {
+  it("groups the controls under three subjects", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos", { caTrusted: true });
+    // Was six: Workspace / Signed in / Gate API Key were all "my account", and
+    // Startup / Certificate were both "this machine". Reset lost its heading
+    // too - it is the last row of the screen, and position plus error-deep
+    // carry it without a section of its own.
+    expect([...document.querySelectorAll("h2")].map((h) => h.textContent)).toEqual([
+      "Account",
+      "This machine",
+      "Help",
+    ]);
+  });
+
+  it("does not dress the auth upsell as the screen's primary action", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos");
+    // Indigo is affordance and live state; a conversion prompt was the loudest
+    // pixel on a screen an API-key user opens to check their key.
+    const accent = [...document.querySelectorAll("button")].filter((b) =>
+      b.className.includes("bg-gc-accent"),
+    );
+    expect(accent).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /Switch to Constellation sign-in/ })).toBeTruthy();
+  });
+
+  it("offers Reset once, last, and paired with Dev mode rather than Replace key", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos");
+    const labels = [...document.querySelectorAll("button")]
+      .map((e) => e.textContent?.trim())
+      .filter((t) => t === "Reset Gate Connect" || t === "Replace key" || t === "Dev mode");
+    // It used to render twice, once per auth branch, adjacent to Replace key.
+    // Now once, on the screen's last row, with Dev mode on the other side.
+    expect(labels).toEqual(["Replace key", "Dev mode", "Reset Gate Connect"]);
+  });
+
+  it("keeps Dev mode inside Help instead of floating unlabelled", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos");
+    const dev = screen.getByRole("button", { name: "Dev mode" });
+    expect(dev.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(dev);
+    expect(dev.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Gateway server")).toBeTruthy();
+  });
+});
+
+describe("Settings error placement", () => {
+  it("puts a launch-at-login failure under This machine, not up in Account", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    (setLaunchAtLogin as Mock).mockRejectedValue(new Error("no login items API"));
+    await renderOn("macos", { caTrusted: true });
+    fireEvent.click(screen.getByRole("switch"));
+    const note = await screen.findByRole("alert");
+
+    // One shared slot rendered under Account meant the reason for a reverted
+    // switch printed ~250px above it, usually outside the 487px viewport.
+    const headings = [...document.querySelectorAll("h2")];
+    const machine = headings.find((h) => h.textContent === "This machine")!;
+    const account = headings.find((h) => h.textContent === "Account")!;
+    const after = (a: Element, b: Element) =>
+      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(after(machine, note)).toBeTruthy();
+    expect(after(account, note)).toBeTruthy();
+    // and specifically below "This machine", not merely below Account.
+    expect(after(account, machine)).toBeTruthy();
   });
 });

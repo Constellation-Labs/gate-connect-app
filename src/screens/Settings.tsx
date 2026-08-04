@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Account, OAuthStatus } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
+import { classifyError, type ClassifiedError } from "../lib/errors";
 import { GATEWAY_SERVERS } from "../lib/config";
-import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch } from "../components/gc/ui";
+import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch, ErrorNote, IconButton } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
-import { usePlatform } from "../lib/platform";
+import { secretStoreName, trustStoreName, usePlatform } from "../lib/platform";
 
 function hostOf(url: string): string {
   try {
@@ -13,6 +14,64 @@ function hostOf(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** Inline confirm step for the destructive actions (the popover never stacks
+ * dialogs): names exactly what is about to be lost, then a confirm/cancel
+ * pair. Same pattern as the key-reveal confirm below.
+ *
+ * It scrolls itself into view and takes focus on mount, because it is rendered
+ * *after* the control that arms it. Reset is the last element in this screen's
+ * scroll container, so pressing it used to mount this panel entirely below the
+ * fold: the user pressed the button that wipes their account and got a
+ * pixel-identical screen back, which is the exact shape of "press it again".
+ * Same was true of the certificate and gateway-server confirms. */
+function ConfirmPanel({
+  message,
+  confirmLabel,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  message: string;
+  confirmLabel: string;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    // `nearest` so an already-visible confirm doesn't jump the screen under a
+    // user who could see it all along. The reduced-motion contract in
+    // index.css forces `scroll-behavior: auto`, and nothing sets smooth, so
+    // this is instant for everyone.
+    panelRef.current?.scrollIntoView({ block: "nearest" });
+    // Cancel, never the destructive button: focus is an invitation, and the
+    // safe half of a confirm is the one that gets it. Matches the takeovers.
+    cancelRef.current?.focus();
+  }, []);
+  return (
+    <div
+      ref={panelRef}
+      role="group"
+      aria-label="Confirm"
+      className="mx-3.5 mt-2 rounded bg-gc-subtle p-3 shadow-border"
+    >
+      <div className="text-[11.5px] leading-snug text-gc-ink-2">{message}</div>
+      <div className="mt-2.5 flex items-center gap-2">
+        {/* Same destructive grammar as the routing takeover: the action that
+            destroys something is never the encouraged indigo, and Cancel is
+            its visual equal rather than an afterthought. */}
+        <Button variant="danger" size="sm" disabled={busy} onClick={onConfirm}>
+          {confirmLabel}
+        </Button>
+        <Button ref={cancelRef} variant="secondary" size="sm" disabled={busy} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 /** Settings - workspace + Gate API key management. The key itself is held in
@@ -54,11 +113,29 @@ export function Settings({
   const [replacing, setReplacing] = useState(false);
   const [devMode, setDevMode] = useState(false);
   const platform = usePlatform();
-  const trustStore = platform === "windows" ? "certificate store" : "keychain";
+  const trustStore = trustStoreName(platform);
+  // Two different vaults: the CA is trusted in the trust store above, the key
+  // lives in the secret store here. Saying "keychain" for both was wrong on
+  // every platform but macOS.
+  const secretStore = secretStoreName(platform);
   const [newKey, setNewKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Where a failure belongs on screen. One shared slot rendered under
+  // "Account" meant a launch-at-login failure printed its reason ~250px above
+  // the switch that reverted, usually outside the 487px viewport.
+  type ErrorSlot = "account" | "machine" | "server" | "reset";
+  const [error, setError] = useState<{ slot: ErrorSlot; error: ClassifiedError } | null>(null);
+  const errorFor = (slot: ErrorSlot) =>
+    error?.slot === slot ? <ErrorNote error={error.error} className="mx-3.5 mt-2" /> : null;
   const [upgrading, setUpgrading] = useState(false);
+  // Armed by the Reset buttons; the destructive clear only runs from the
+  // inline confirm panel.
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  // Armed by picking a different Dev-mode gateway server; holds the choice
+  // until the confirm panel approves the forget-key-and-relaunch.
+  const [confirmingServer, setConfirmingServer] = useState<{ url: string; label: string } | null>(
+    null,
+  );
   const [launchAtLogin, setLaunchAtLoginState] = useState(false);
   const [laLoaded, setLaLoaded] = useState(false);
   // The launch-at-login toggle is off but the OS login item is still
@@ -74,6 +151,24 @@ export function Settings({
   // Set when a pre-prefix account has no stored prefix, so revealing must fall
   // back to a keychain read. We ask first, since that read can prompt.
   const [confirmReveal, setConfirmReveal] = useState(false);
+  // Armed by the certificate Remove button; the untrust only runs from the
+  // inline confirm.
+  const [confirmingUntrust, setConfirmingUntrust] = useState(false);
+  // Whether the certificate explanation is open. Collapsed on entry.
+  const [certExplain, setCertExplain] = useState(false);
+  // Copy-to-clipboard feedback on the gateway URL (flashes the icon to a
+  // check). Identifiers should never need retyping by hand.
+  const [copiedUrl, setCopiedUrl] = useState(false);
+
+  async function copyGatewayUrl() {
+    try {
+      await navigator.clipboard.writeText(account.gateway_base_url);
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 1500);
+    } catch (err) {
+      trackError(err, "generic");
+    }
+  }
 
   async function revealKeyPrefix() {
     try {
@@ -143,7 +238,7 @@ export function Settings({
       await setLaunchAtLogin(next);
     } catch (err) {
       setLaunchAtLoginState(!next); // revert on failure
-      setError(err instanceof Error ? err.message : String(err));
+      setError({ slot: "machine", error: classifyError(err, "launch_at_login") });
       trackError(err, "launch_at_login");
       return;
     }
@@ -173,7 +268,9 @@ export function Settings({
       setRevealedPrefix(null);
       setConfirmReveal(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // Saving a key is by definition the key path, so a 401 here always
+      // means "this key is wrong", never "your session expired".
+      setError({ slot: "account", error: classifyError(err, "save_api_key", "api_key") });
       trackError(err, "save_api_key");
     } finally {
       setSubmitting(false);
@@ -187,10 +284,11 @@ export function Settings({
     try {
       await onForget();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError({ slot: "reset", error: classifyError(err, "forget") });
       trackError(err, "forget");
     } finally {
       setSubmitting(false);
+      setConfirmingReset(false);
     }
   }
 
@@ -201,71 +299,103 @@ export function Settings({
     try {
       await onSignOut();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError({ slot: "account", error: classifyError(err, "sign_out") });
       trackError(err, "sign_out");
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function selectServer(url: string) {
+  async function switchServer(url: string) {
     if (url === account.gateway_base_url || submitting) return;
     setError(null);
     setSubmitting(true);
     try {
       await onSwitchGateway(url); // relaunches the app on success; nothing below runs
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError({ slot: "server", error: classifyError(err, "generic") });
       trackError(err, "generic");
     } finally {
       setSubmitting(false);
+      setConfirmingServer(null);
     }
   }
+
+  // Same stale-attempt guard as FirstRun: Cancel releases the button; a
+  // browser flow the user finishes anyway still lands via onUpgradeToOAuth.
+  const upgradeAttempt = useRef(0);
 
   async function handleUpgrade() {
     setError(null);
     setUpgrading(true);
+    const attempt = ++upgradeAttempt.current;
     try {
       await onUpgradeToOAuth();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
       trackError(err, "sign_in");
-      setUpgrading(false);
+      if (attempt === upgradeAttempt.current) {
+        setError({ slot: "account", error: classifyError(err, "sign_in") });
+        setUpgrading(false);
+      }
     }
+  }
+
+  function cancelUpgrade() {
+    upgradeAttempt.current++;
+    setUpgrading(false);
   }
 
   return (
     <div className="flex grow flex-col">
       <SubHeader title="Settings" onBack={onBack} />
 
-      <SectionLabel>Workspace</SectionLabel>
+      {/* Three sections, not six: Workspace / Signed in / Gate API Key were
+          all "my account", and Startup / Certificate were both "this machine".
+          Same controls, half the chunking. */}
+      <SectionLabel>Account</SectionLabel>
       <div className="flex items-center gap-3 px-3.5 py-2.5">
-        <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-gc-accent-wash text-gc-accent">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
           <Icon name="cube" size={16} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] font-medium text-gc-ink">
-            {hostOf(account.gateway_base_url)}
-          </div>
-          <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
-            {account.gateway_base_url}
-          </div>
+          <div className="text-[11px] font-medium text-gc-ink">Gateway</div>
         </div>
-        <ConnPill state={connected ? "connected" : "signedout"} />
+        <ConnPill
+          state={connected ? "connected" : "signedout"}
+          // A stored key is not a session. Only OAuth is "Signed in".
+          label={isOAuth ? (connected ? "Signed in" : "Signed out") : connected ? "Key stored" : "No key"}
+        />
+        <IconButton
+          icon={copiedUrl ? "check" : "copy"}
+          size={14}
+          onClick={() => void copyGatewayUrl()}
+          // The icon swapped to a check and the name stayed "Copy gateway URL",
+          // so the only confirmation this control gives was one a screen reader
+          // could not reach. The two "Copy details" buttons swap their visible
+          // text; this one has no text to swap.
+          aria-label={copiedUrl ? "Gateway URL copied" : "Copy gateway URL"}
+        />
+      </div>
+      {/* Full-bleed, beneath the row. Sharing the row with the pill and the
+          copy button left 155px for a 176px string, so the one identifier that
+          answers "am I pointed at production or staging?" rendered as
+          "gateway.constellationga…". The dev-mode server cards already fit the
+          full host at this size in the same 360px. */}
+      <div className="px-3.5 pb-1 font-mono text-[10.5px] text-gc-ink-3">
+        {hostOf(account.gateway_base_url)}
       </div>
 
       {isOAuth && (
         <>
-          <SectionLabel>Signed in</SectionLabel>
           <div className="flex items-center gap-3 px-3.5 py-2.5">
-            <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-gc-accent-wash text-gc-accent">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
               <Icon name="shieldCheck" size={16} />
             </div>
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] font-medium text-gc-ink">
                 {oauth?.email ?? (connected ? "Signed in" : "Session expired")}
               </div>
-              <div className="truncate text-[11.5px] text-gc-ink-4">
+              <div className="truncate text-[11.5px] text-gc-ink-3">
                 {account.org_name ?? "No organization selected"}
               </div>
             </div>
@@ -286,43 +416,16 @@ export function Settings({
               disabled={submitting}
               className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
             >
-              <Icon name="refresh" size={14} />
+              <Icon name="logOut" size={14} />
               Sign out
             </button>
-            <button
-              type="button"
-              onClick={forget}
-              disabled={submitting}
-              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
-            >
-              <Icon name="trash" size={14} />
-              Reset
-            </button>
           </div>
-          {error && <p className="mt-2 px-3.5 text-[11.5px] text-gc-error">{error}</p>}
+          {errorFor("account")}
         </>
       )}
 
       {!isOAuth && (
         <>
-      <SectionLabel>Sign in with Constellation</SectionLabel>
-      <div className="mb-4 px-3.5">
-        <p className="mb-2.5 text-[12px] leading-snug text-gc-ink-3">
-          Switch to Constellation sign-in and there's nothing to paste or
-          rotate - your session lives in the keychain and refreshes on its
-          own. You can switch back to an API key anytime.
-        </p>
-        <Button variant="accent" full disabled={upgrading} onClick={handleUpgrade}>
-          <Icon name="shieldCheck" size={15} />
-          {upgrading ? "Waiting for browser…" : "Sign in with Constellation"}
-        </Button>
-        {upgrading && (
-          <p className="mt-2 text-[11px] leading-snug text-gc-ink-4">
-            Finish signing in on the page that opened in your browser.
-          </p>
-        )}
-      </div>
-      <SectionLabel>Gate API Key</SectionLabel>
       <div className="px-3.5">
         {!replacing ? (
           <div className="flex h-9 items-center gap-2 rounded bg-gc-subtle px-3 text-gc-ink-3 shadow-border">
@@ -335,14 +438,13 @@ export function Settings({
                 : "No key stored"}
             </span>
             {account.has_api_key && revealedPrefix === null && (
-              <button
-                type="button"
+              <IconButton
+                icon="eye"
+                size={14}
                 onClick={revealKeyPrefix}
                 aria-label="Show start of key"
-                className="text-gc-ink-4 hover:text-gc-ink-2"
-              >
-                <Icon name="eye" size={14} />
-              </button>
+                className="-mr-1.5"
+              />
             )}
           </div>
         ) : (
@@ -350,6 +452,7 @@ export function Settings({
             <Input
               leadingIcon={<Icon name="key" size={14} />}
               placeholder="Enter new sk-gw-… key"
+              secret
               value={newKey}
               autoFocus
               spellCheck={false}
@@ -380,14 +483,23 @@ export function Settings({
             </div>
           </div>
         )}
-        {error && <p className="mt-2 text-[11.5px] text-gc-error">{error}</p>}
+        {errorFor("account")}
         {account.has_api_key && !replacing && (
-          <p className="mt-1.5 text-[11px] text-gc-ink-4">Stored in your keychain.</p>
+          <p className="mt-1.5 text-[11px] text-gc-ink-3">Stored in {secretStore}.</p>
+        )}
+        {/* Same promise, forward tense, while the new key is in the field.
+            The reassurance is worth least when the key is already safe and
+            most while the user is handing one over. */}
+        {replacing && (
+          <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
+            Saved to {secretStore}. Your config files get the gateway URL,
+            never the key.
+          </p>
         )}
         {confirmReveal && (
           <div className="mt-2 rounded bg-gc-subtle p-3 shadow-border">
             <div className="text-[11.5px] leading-snug text-gc-ink-2">
-              Showing the start of your key reads it from your keychain, which
+              Showing the start of your key reads it from {secretStore}, which
               may ask for permission.
             </div>
             <div className="mt-2.5 flex items-center gap-2">
@@ -415,26 +527,62 @@ export function Settings({
           <button
             type="button"
             onClick={() => setReplacing(true)}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent"
+            // ink-3, the neutral rank every routine inline action on this
+            // screen now shares. Seven actions in four different colours read
+            // as seven different kinds of thing; the vocabulary is accent for
+            // the one encouraged action in a section, ink-3 for the rest, and
+            // error-deep reserved for the two that destroy something.
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             <Icon name="refresh" size={14} />
             Replace key
           </button>
-          <button
-            type="button"
-            onClick={forget}
-            disabled={submitting}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error"
-          >
-            <Icon name="trash" size={14} />
-            Reset
-          </button>
         </div>
       )}
+
+      {/* A quiet row, not a full-width accent button. Indigo is affordance
+          and live state; this is a conversion prompt, and it was the loudest
+          thing on a screen an API-key user opens to check their key - sitting
+          above the key itself. */}
+      {/* Hairline above it: the key, its store line, Replace key and this
+          offer were one undelimited run of seven items, which is the whole
+          Account section asking to be read as a single chunk. The rule splits
+          "your key" from "a different way to sign in" without a heading. */}
+      <div className="mb-3 mt-2 border-t border-gc-line px-3.5 pt-3">
+        <button
+          type="button"
+          disabled={upgrading}
+          onClick={handleUpgrade}
+          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent transition hover:text-gc-accent-ink disabled:opacity-45"
+        >
+          <Icon name="shieldCheck" size={14} />
+          {upgrading ? "Waiting for browser…" : "Switch to Constellation sign-in"}
+        </button>
+        <p className="mt-1 text-[11px] leading-snug text-gc-ink-3">
+          Nothing to paste or rotate; your session lives in{" "}
+          {secretStoreName(platform, "the")} and refreshes on its own. You can
+          switch back anytime.
+        </p>
+        {upgrading && (
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <p className="text-[11px] leading-snug text-gc-ink-3">
+              Finish signing in on the page that opened in your browser.
+            </p>
+            <button
+              type="button"
+              onClick={cancelUpgrade}
+              className="shrink-0 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
         </>
       )}
 
-      <SectionLabel>Startup</SectionLabel>
+
+      <SectionLabel>This machine</SectionLabel>
       <div className="flex items-center gap-3 px-3.5 py-2.5">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-medium text-gc-ink">Launch at login</div>
@@ -442,83 +590,109 @@ export function Settings({
             Open Gate Connect automatically when you log in. Keeps routing on after a restart.
           </div>
         </div>
-        <Switch on={launchAtLogin} disabled={!laLoaded} onClick={toggleLaunchAtLogin} />
+        <Switch
+          on={launchAtLogin}
+          label="Launch at login"
+          disabled={!laLoaded}
+          onClick={toggleLaunchAtLogin}
+        />
       </div>
       {laPendingDisable && (
         <div className="mx-3.5 mb-1 flex items-start gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
           <Icon name="info" size={15} className="mt-px shrink-0 text-gc-ink-3" />
           <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
             Gate Connect is still listed in your login items as a safety net,
-            so an unexpected restart can't leave routing broken. It removes
-            itself automatically once that's safe.
+            so an unexpected restart can’t leave routing broken. It removes
+            itself automatically once that’s safe.
           </div>
         </div>
       )}
-      {caTrusted && !routingOn && (
+      {/* Gated on trust alone, not on routing being off. Home promises "You
+          can remove it anytime in Settings under Certificate" while routing is
+          on, which is exactly the state the user reads it in; hiding the
+          section behind !routingOn broke that promise at the moment they acted
+          on it, for a root CA. The consequence goes in the copy instead. */}
+      {errorFor("machine")}
+
+      {caTrusted && (
         <>
-          <SectionLabel>Certificate</SectionLabel>
-          <div className="flex items-center gap-3 px-3.5 py-2.5">
+          <div className="flex items-start gap-3 px-3.5 py-2.5">
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-medium text-gc-ink">Gate certificate</div>
+              {/* Collapsed by default, same disclosure Home's certificate card
+                  uses. The one line a user scanning Settings needs is whether
+                  it is trusted and whether they can remove it; the consequence
+                  of removing it is four lines they only need once, and it was
+                  taking that room on every visit. */}
+              {/* One line, no wrap, on both platforms and in both states. The
+                  trust-store name is 8 characters longer on Windows
+                  ("certificate store"), which is what pushed this to two lines;
+                  it lives in the explanation now, and the pinned footer names
+                  it on every screen anyway. */}
               <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
-                Still trusted in your {trustStore}. Removing it clears the
-                certificate and private key from this machine.
+                {routingOn ? "Trusted. Turn routing off to remove." : "Trusted on this machine."}{" "}
+                <button
+                  type="button"
+                  onClick={() => setCertExplain((v) => !v)}
+                  aria-expanded={certExplain}
+                  className="font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink"
+                >
+                  What&rsquo;s this?
+                </button>
               </div>
             </div>
+            {!routingOn && (
             <button
               type="button"
-              onClick={onUntrustCa}
+              onClick={() => setConfirmingUntrust(true)}
               disabled={proxyBusy}
-              className="shrink-0 text-[12px] font-medium text-gc-accent disabled:opacity-40"
+              // error-deep like every other destructive entry point. It was
+              // ink-3 with no underline or border - a label, not an action -
+              // on the one control that deletes a private key.
+              // Neutral: removing trust is reversible maintenance, not an
+              // encouraged action. It still gets a confirm, because by its own
+              // copy it deletes a private key and can stop apps routing - it
+              // was the only state-destroying action in the app without one.
+              className="shrink-0 text-[12px] font-medium text-gc-error-deep transition hover:brightness-90 disabled:opacity-45"
             >
               Remove
             </button>
+            )}
           </div>
+          {/* Below the row, not inside it: in the flex row the paragraph was
+              squeezed into the column Remove left over, and Remove floated
+              vertically centred against five lines of text, detached from the
+              heading it belongs to. */}
+          {certExplain && (
+            <p className="px-3.5 pb-1 text-[11.5px] leading-snug text-gc-ink-2">
+              {routingOn
+                ? `Gate created this certificate on this machine, trusted in your ${trustStore}, so apps with no gateway setting of their own can route through the local proxy. Pulling it while routing is on stops every one of them, so removal waits until routing is off. The private key never leaves this machine.`
+                : `Gate created this certificate on this machine, trusted in your ${trustStore}, so apps with no gateway setting of their own can route through the local proxy. Removing it deletes the certificate and its private key from this machine; you can trust a new one anytime.`}
+            </p>
+          )}
+          {confirmingUntrust && (
+            <ConfirmPanel
+              message="Remove the Gate certificate? This deletes it and its private key from this machine. You can trust a new one anytime."
+              confirmLabel="Remove certificate"
+              busy={proxyBusy}
+              onConfirm={() => {
+                setConfirmingUntrust(false);
+                onUntrustCa();
+              }}
+              onCancel={() => setConfirmingUntrust(false)}
+            />
+          )}
         </>
-      )}
-
-      <div className="px-3.5 pb-1 pt-1">
-        <button
-            type="button"
-            onClick={() => setDevMode((v) => !v)}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3"
-        >
-          <Icon name="settings" size={14} />
-          Dev mode
-        </button>
-      </div>
-
-      {devMode && !replacing && (
-          <>
-            <SectionLabel>Gateway server</SectionLabel>
-            <div className="flex flex-col gap-2 px-3.5 pb-1">
-              {GATEWAY_SERVERS.map((server) => {
-                const active = server.url === account.gateway_base_url;
-                return (
-                    <button
-                        key={server.url}
-                        type="button"
-                        onClick={() => selectServer(server.url)}
-                        disabled={active || submitting}
-                        className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
-                        <div className="truncate font-mono text-[10.5px] text-gc-ink-4">
-                          {hostOf(server.url)}
-                        </div>
-                      </div>
-                      {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
-                    </button>
-                );
-              })}
-            </div>
-          </>
       )}
 
       <div className="mt-auto">
         <SectionLabel>Help</SectionLabel>
-        <div className="px-3.5 pb-1">
+        {/* Dev mode sits here, with Replay tour, because both are things you
+            open on purpose and neither changes anything by itself. It used to
+            share a row with Reset Gate Connect at the same size, weight and
+            icon treatment, so a debug disclosure and the action that forgets
+            the account were literal visual peers. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3.5 pb-1">
           <button
             type="button"
             onClick={onReplayTour}
@@ -527,7 +701,84 @@ export function Settings({
             <Icon name="info" size={14} />
             Replay tour
           </button>
+          <button
+            type="button"
+            onClick={() => setDevMode((v) => !v)}
+            aria-expanded={devMode}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            <Icon name="settings" size={14} />
+            Dev mode
+          </button>
         </div>
+      {devMode && !replacing && (
+          <>
+            {/* Not a SectionLabel: this is a sub-panel of Help, and an h2
+                here made the document outline gain and lose a top-level
+                section every time Dev mode toggled. */}
+            <div className="px-3.5 pb-1.5 pt-1 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+              Gateway server
+            </div>
+            <div className="flex flex-col gap-2 px-3.5 pb-1">
+              {GATEWAY_SERVERS.map((server) => {
+                const active = server.url === account.gateway_base_url;
+                return (
+                    <button
+                        key={server.url}
+                        type="button"
+                        onClick={() => setConfirmingServer({ url: server.url, label: server.label })}
+                        disabled={active || submitting}
+                        className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
+                        <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
+                          {hostOf(server.url)}
+                        </div>
+                      </div>
+                      {active && <Icon name="check" size={15} className="shrink-0 text-gc-accent" />}
+                    </button>
+                );
+              })}
+            </div>
+            {errorFor("server")}
+            {confirmingServer && (
+              <ConfirmPanel
+                message={`Switch to ${confirmingServer.label}? This forgets your stored key, disconnects your tools, and relaunches Gate Connect against the new server.`}
+                confirmLabel={submitting ? "Switching…" : "Switch and relaunch"}
+                busy={submitting}
+                onConfirm={() => void switchServer(confirmingServer.url)}
+                onCancel={() => setConfirmingServer(null)}
+              />
+            )}
+          </>
+      )}
+        {/* The last row of the screen, and the only thing on it. Reset keeps
+            error-deep, and now position and isolation carry the rest of the
+            signal: nothing sits beside it to be mistaken for it. It stays
+            below the Dev mode panel so it is genuinely last in both states,
+            rather than splitting a disclosure from its own trigger. */}
+        <div className="mt-2.5 flex items-center border-t border-gc-line px-3.5 pb-1 pt-2.5">
+          <button
+            type="button"
+            onClick={() => setConfirmingReset(true)}
+            disabled={submitting}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep disabled:opacity-45"
+          >
+            <Icon name="trash" size={14} />
+            Reset Gate Connect
+          </button>
+        </div>
+        {errorFor("reset")}
+        {confirmingReset && (
+          <ConfirmPanel
+            message={`Reset Gate Connect? This turns routing off, disconnects your tools, and ${isOAuth ? "forgets this account" : `removes your key from ${secretStoreName(platform, "the")}`}. You’ll start over from sign-in.`}
+            confirmLabel={submitting ? "Resetting…" : "Reset everything"}
+            busy={submitting}
+            onConfirm={() => void forget()}
+            onCancel={() => setConfirmingReset(false)}
+          />
+        )}
       </div>
     </div>
   );

@@ -7,6 +7,9 @@
  * modes we see in practice - if nothing matches, the fallback names the
  * action that failed and tells the user the details below may help.
  */
+import type { AuthMode } from "./api";
+import { currentPlatform, secretStoreName } from "./platform";
+
 export type ErrorContext =
   | "sign_in"
   | "sign_out"
@@ -75,7 +78,15 @@ function rawToString(rawInput: unknown): string {
   return String(rawInput);
 }
 
-export function classifyError(rawInput: unknown, context: ErrorContext): ClassifiedError {
+export function classifyError(
+  rawInput: unknown,
+  context: ErrorContext,
+  /** The account's auth mode, where the caller knows it. The gateway's 401 is
+   * the same string for a revoked OAuth session and a bad API key, but the
+   * remedies are different screens - and telling an OAuth user to replace a
+   * key points them at a control Settings does not render for them. */
+  authMode?: AuthMode,
+): ClassifiedError {
   const raw = rawToString(rawInput);
   const lc = raw.toLowerCase();
 
@@ -87,33 +98,65 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     lc.includes("unknown command")
   ) {
     return {
-      title: "This action isn't available on your platform.",
-      hint: "This tool or action isn't supported here yet. The details below help when reporting it.",
+      title: "This action isn’t available on your platform.",
+      hint: "This tool or action isn’t supported here yet. The details below help when reporting it.",
       raw,
     };
   }
 
-  // macOS auth prompt canceled (osascript exits -128 on user cancel).
+  // Auth prompt cancelled (macOS osascript exits -128; the Windows and Linux
+  // credential prompts report their own cancels through the same branch).
   if (
     lc.includes("user canceled") ||
     lc.includes("user cancelled") ||
     lc.includes("-128") ||
     (lc.includes("authorization") && lc.includes("denied"))
   ) {
+    // The verb has to name the button the user actually pressed. A cancelled
+    // certificate prompt used to say "Click Connect again" next to a button
+    // labelled Trust certificate.
+    // The two toggle contexts fire from a role=switch, not a button, and they
+    // are the paths a user actually hits: the enable path prompts for admin
+    // every time the system proxy changes. They fell through to "Connect",
+    // which names no control on Home. Switches get "Flip", buttons get
+    // "Click".
+    const switchNames: Partial<Record<ErrorContext, string>> = {
+      proxy_toggle: "the Routing switch",
+      provider_toggle: "that switch",
+    };
+    const switchName = switchNames[context];
+    if (switchName) {
+      return {
+        title: "The system prompt was cancelled",
+        hint: `Flip ${switchName} again and approve your system password prompt.`,
+        raw,
+      };
+    }
     const verb =
-      context === "forget" ? "Reset" : context === "sign_out" ? "Sign out" : "Connect";
+      context === "forget"
+        ? "Reset"
+        : context === "sign_out"
+          ? "Sign out"
+          : context === "trust_ca"
+            ? "Trust certificate"
+            : context === "untrust_ca"
+              ? "Remove"
+              : context === "close_agents" || context === "quit_disable"
+                ? "Close everything"
+                : "Connect";
     return {
-      title: "macOS prompt canceled",
-      hint: `Click ${verb} again and approve the macOS password prompt.`,
+      title: "The system prompt was cancelled",
+      hint: `Click ${verb} again and approve your system password prompt.`,
       raw,
     };
   }
 
-  // macOS denied keychain access entirely (rare - system-level block).
+  // The OS denied secret-store access entirely (rare - system-level block).
   if (lc.includes("user interaction is not allowed") || lc.includes("errsecinteraction")) {
+    const store = secretStoreName(currentPlatform(), "the");
     return {
-      title: "macOS blocked keychain access",
-      hint: "Open System Settings → Privacy & Security and allow Gate Connect to use the keychain, then try again.",
+      title: `The system blocked access to ${store}`,
+      hint: `Allow Gate Connect to use ${store} in your OS privacy settings, then try again.`,
       raw,
     };
   }
@@ -127,17 +170,22 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
     lc.includes("network is unreachable")
   ) {
     return {
-      title: "Couldn't reach the gateway",
-      hint: "Check that you're online and that the gateway URL in the menu → Edit account is right, then try again.",
+      title: "Couldn’t reach the gateway",
+      hint: "Check that you’re online and that the gateway URL in Settings is right, then try again.",
       raw,
     };
   }
 
-  // Gateway 401 - wrong API key.
+  // Gateway 401 - the session or the key was rejected.
   if (lc.includes("401") || lc.includes("unauthorized")) {
     return {
-      title: "Gateway rejected the API key",
-      hint: "Update your gateway API key from the menu → Edit account.",
+      title: authMode === "oauth" ? "Gateway rejected your session" : "Gateway rejected the API key",
+      hint:
+        authMode === "oauth"
+          ? "Sign in again from Settings."
+          : authMode === "api_key"
+            ? "Replace your Gate API key in Settings."
+            : "Open Settings and reconnect: sign in again, or replace your Gate API key.",
       raw,
     };
   }
@@ -146,33 +194,33 @@ export function classifyError(rawInput: unknown, context: ErrorContext): Classif
   if (lc.includes("no space") || lc.includes("disk full")) {
     return {
       title: "Not enough disk space",
-      hint: "Free up some space on your Mac and try again.",
+      hint: "Free up some disk space and try again.",
       raw,
     };
   }
 
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
-    sign_in: "Couldn't save your account",
-    sign_out: "Couldn't sign out",
-    connect: "Couldn't connect this tool",
-    forget: "Couldn't reset Gate Connect",
-    save_api_key: "Couldn't save the API key",
-    update: "Couldn't install the update",
-    close_agents: "Couldn't close the running agents",
-    quit_disable: "Couldn't turn off integrations",
-    proxy_toggle: "Couldn't toggle routing",
-    provider_toggle: "Couldn't toggle the provider",
-    trust_ca: "Couldn't trust the certificate",
-    untrust_ca: "Couldn't remove the certificate trust",
-    startup: "Couldn't load state at startup",
-    account_reconcile: "Couldn't reconcile the saved account",
-    provider_restore: "Couldn't restore provider routing",
-    provider_disable: "Couldn't disconnect provider routing",
-    provider_reconcile: "Couldn't refresh tool configs",
-    routing_intent: "Couldn't save the routing preference",
-    restore_routing: "Couldn't restore routing at startup",
-    launch_at_login: "Couldn't set launch at login",
+    sign_in: "Couldn’t save your account",
+    sign_out: "Couldn’t sign out",
+    connect: "Couldn’t connect this tool",
+    forget: "Couldn’t reset Gate Connect",
+    save_api_key: "Couldn’t save the API key",
+    update: "Couldn’t install the update",
+    close_agents: "Couldn’t close the running tools and apps",
+    quit_disable: "Couldn’t disconnect the tools",
+    proxy_toggle: "Couldn’t toggle routing",
+    provider_toggle: "Couldn’t change that app’s routing",
+    trust_ca: "Couldn’t trust the certificate",
+    untrust_ca: "Couldn’t remove the certificate trust",
+    startup: "Couldn’t load state at startup",
+    account_reconcile: "Couldn’t reconcile the saved account",
+    provider_restore: "Couldn’t restore provider routing",
+    provider_disable: "Couldn’t disconnect provider routing",
+    provider_reconcile: "Couldn’t refresh tool configs",
+    routing_intent: "Couldn’t save the routing preference",
+    restore_routing: "Couldn’t restore routing at startup",
+    launch_at_login: "Couldn’t set launch at login",
     generic: "Something went wrong",
   };
   return {

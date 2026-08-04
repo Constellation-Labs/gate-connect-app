@@ -1,0 +1,326 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-30T00:00:00Z",
+  "title": "Design System: Gate Connect",
+  "extensions": {
+    "colorMeta": {
+      "gate-indigo": {
+        "role": "primary",
+        "displayName": "Gate Indigo",
+        "canonical": "#3e4fea",
+        "tonalRamp": [
+          "oklch(0.18 0.12 268)",
+          "oklch(0.28 0.16 268)",
+          "oklch(0.38 0.19 268)",
+          "oklch(0.48 0.21 268)",
+          "oklch(0.58 0.19 268)",
+          "oklch(0.70 0.14 268)",
+          "oklch(0.84 0.08 268)",
+          "oklch(0.95 0.03 268)"
+        ]
+      },
+      "gatehouse-navy": {
+        "role": "secondary",
+        "displayName": "Gatehouse Navy",
+        "canonical": "#002a5f",
+        "tonalRamp": [
+          "oklch(0.15 0.07 255)",
+          "oklch(0.23 0.09 255)",
+          "oklch(0.32 0.11 255)",
+          "oklch(0.42 0.12 255)",
+          "oklch(0.54 0.11 255)",
+          "oklch(0.68 0.08 255)",
+          "oklch(0.82 0.05 255)",
+          "oklch(0.94 0.02 255)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#0f1222",
+        "tonalRamp": [
+          "#0f1222",
+          "#2a2d3f",
+          "#414459",
+          "#55596f",
+          "#7a7f93",
+          "#a1a6bb",
+          "#d4d7e3",
+          "#eef0f6"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#181a30",
+          "#55596f",
+          "#a1a6bb",
+          "#d4d7e3",
+          "#e8eaef",
+          "#eef0f6",
+          "#f8f9fc",
+          "#ffffff"
+        ]
+      },
+      "highlight": {
+        "role": "neutral",
+        "displayName": "Highlight",
+        "canonical": "#f6ffe3",
+        "tonalRamp": [
+          "oklch(0.25 0.06 115)",
+          "oklch(0.38 0.09 115)",
+          "oklch(0.52 0.11 115)",
+          "oklch(0.66 0.12 115)",
+          "oklch(0.78 0.11 115)",
+          "oklch(0.88 0.09 115)",
+          "oklch(0.94 0.06 115)",
+          "oklch(0.98 0.03 115)"
+        ]
+      },
+      "success": {
+        "role": "status",
+        "displayName": "Success",
+        "canonical": "#2ecc71",
+        "tonalRamp": [
+          "oklch(0.22 0.07 155)",
+          "oklch(0.34 0.10 155)",
+          "oklch(0.46 0.13 155)",
+          "oklch(0.58 0.15 155)",
+          "oklch(0.70 0.16 155)",
+          "oklch(0.80 0.13 155)",
+          "oklch(0.89 0.08 155)",
+          "oklch(0.96 0.04 155)"
+        ]
+      },
+      "warning": {
+        "role": "status",
+        "displayName": "Warning",
+        "canonical": "#f39c12",
+        "tonalRamp": [
+          "oklch(0.25 0.06 70)",
+          "oklch(0.38 0.09 70)",
+          "oklch(0.50 0.12 70)",
+          "oklch(0.62 0.14 70)",
+          "oklch(0.74 0.15 70)",
+          "oklch(0.83 0.13 70)",
+          "oklch(0.91 0.08 70)",
+          "oklch(0.97 0.04 70)"
+        ]
+      },
+      "error": {
+        "role": "status",
+        "displayName": "Error",
+        "canonical": "#e74c3c",
+        "tonalRamp": [
+          "oklch(0.24 0.09 27)",
+          "oklch(0.35 0.13 27)",
+          "oklch(0.46 0.16 27)",
+          "oklch(0.57 0.19 27)",
+          "oklch(0.67 0.18 27)",
+          "oklch(0.78 0.13 27)",
+          "oklch(0.88 0.07 27)",
+          "oklch(0.96 0.03 27)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Title",
+        "purpose": "Panel titles and the wordmark; the largest type in the room."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Buttons, inputs, and sentence copy."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Row descriptions, hints, and banner copy in ink-3."
+      },
+      "label": {
+        "displayName": "Label (Mono)",
+        "purpose": "Uppercase mono section labels; lowercase mono for URLs, hosts, workspace names, key placeholders."
+      },
+      "panel-title": {
+        "displayName": "Panel Title",
+        "purpose": "Takeover and full-screen moment headings (quit confirm, update ready, welcome). Largest type in the popover."
+      },
+      "body-small": {
+        "displayName": "Body Small",
+        "purpose": "Takeover body copy and inline action links (Replace key, Sign out, Cancel)."
+      }
+    },
+    "shadows": [
+      {
+        "name": "seam",
+        "value": "0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 2px 4px -1px color-mix(in oklch, oklch(0.165 0 0) 4%, transparent)",
+        "purpose": "Resting edge of every card, input, and secondary button (shadow-border). The shadow stack IS the border."
+      },
+      {
+        "name": "seam-hover",
+        "value": "0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 9%, transparent), 0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 8%, transparent), 0 2px 6px -1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent)",
+        "purpose": "Hover and focus-within state of the seam; contrast rises, nothing lifts."
+      },
+      {
+        "name": "popup",
+        "value": "0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 4%, transparent), 0 4px 16px -2px color-mix(in oklch, oklch(0.165 0 0) 8%, transparent)",
+        "purpose": "Small floating elements inside the room."
+      },
+      {
+        "name": "popover",
+        "value": "0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 8%, transparent), 0 12px 32px -8px color-mix(in oklch, oklch(0.165 0 0) 22%, transparent), 0 4px 12px -2px color-mix(in oklch, oklch(0.165 0 0) 10%, transparent)",
+        "purpose": "The popover window itself against the desktop."
+      },
+      {
+        "name": "card-drop",
+        "value": "0 2px 4px rgba(10,10,10,0.04), 0 8px 24px rgba(10,10,10,0.06)",
+        "purpose": "Softer ambient drop (shadow-gc-md) where a card floats free of the seam language."
+      }
+    ],
+    "motion": [
+      {
+        "name": "slide-forward",
+        "value": "260ms cubic-bezier(0.2, 0.7, 0.3, 1), translateX(28px) to none with fade",
+        "purpose": "Direction-aware onboarding step changes."
+      },
+      {
+        "name": "panel-in",
+        "value": "240ms cubic-bezier(0.2, 0.7, 0.3, 1), translateY(16px) to none with fade",
+        "purpose": "Update panel takeover rising over the room."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "prefers-reduced-motion collapses all animation to 0.01ms",
+        "purpose": "Global non-negotiable contract from index.css."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "popover",
+        "value": "360px",
+        "purpose": "The one room; there are no other breakpoints."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Accent Button",
+      "kind": "button",
+      "refersTo": "button-accent",
+      "description": "Primary action; Gate Indigo fill deepening on hover, no shadow theatrics.",
+      "html": "<button class=\"ds-btn-accent\">Sign in to Gate</button>",
+      "css": ".ds-btn-accent { display: inline-flex; height: 40px; align-items: center; justify-content: center; gap: 8px; border: none; border-radius: 6px; padding: 0 16px; background: #3e4fea; color: #ffffff; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 13.5px; font-weight: 500; cursor: pointer; transition: background 150ms; } .ds-btn-accent:hover { background: #2a38cb; } .ds-btn-accent:focus-visible { outline: 2px solid #3e4fea; outline-offset: 2px; } .ds-btn-accent:disabled { opacity: 0.45; pointer-events: none; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "White surface wearing the Seam; hover raises seam contrast.",
+      "html": "<button class=\"ds-btn-secondary\">Copy gateway URL</button>",
+      "css": ".ds-btn-secondary { display: inline-flex; height: 40px; align-items: center; justify-content: center; gap: 8px; border: none; border-radius: 6px; padding: 0 16px; background: #ffffff; color: #0f1222; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 13.5px; font-weight: 500; cursor: pointer; box-shadow: 0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 2px 4px -1px color-mix(in oklch, oklch(0.165 0 0) 4%, transparent); transition: box-shadow 150ms; } .ds-btn-secondary:hover, .ds-btn-secondary:focus-visible { box-shadow: 0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 9%, transparent), 0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 8%, transparent), 0 2px 6px -1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent); } .ds-btn-secondary:focus-visible { outline: 2px solid #3e4fea; outline-offset: 2px; }"
+    },
+    {
+      "name": "Switch",
+      "kind": "custom",
+      "refersTo": "switch",
+      "description": "38x22 pill toggle; indigo when on, thumb carries a check so state reads without color.",
+      "html": "<button class=\"ds-switch\" role=\"switch\" aria-checked=\"true\"><span class=\"ds-switch-thumb\"><svg width=\"11\" height=\"11\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#3e4fea\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"20 6 9 17 4 12\"/></svg></span></button>",
+      "css": ".ds-switch { position: relative; display: inline-flex; height: 22px; width: 38px; align-items: center; border: none; border-radius: 9999px; background: #3e4fea; cursor: pointer; transition: background 150ms; } .ds-switch[aria-checked=\"false\"] { background: #d4d7e3; } .ds-switch-thumb { position: absolute; display: flex; height: 18px; width: 18px; align-items: center; justify-content: center; border-radius: 9999px; background: #ffffff; box-shadow: 0 1px 2px rgba(10,10,10,0.15); transform: translateX(18px); transition: transform 150ms; } .ds-switch[aria-checked=\"false\"] .ds-switch-thumb { transform: translateX(2px); } .ds-switch[aria-checked=\"false\"] .ds-switch-thumb svg { display: none; } .ds-switch:focus-visible { outline: 2px solid #3e4fea; outline-offset: 2px; }"
+    },
+    {
+      "name": "Connection Pill",
+      "kind": "chip",
+      "refersTo": "pill-connected",
+      "description": "Truthful system state in a capsule: wash background, solid dot, deep text.",
+      "html": "<span class=\"ds-pill-connected\"><span class=\"ds-pill-dot\"></span>Connected</span>",
+      "css": ".ds-pill-connected { display: inline-flex; align-items: center; gap: 6px; border-radius: 48px; background: rgba(46,204,113,0.14); padding: 4px 8px; color: #177a42; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 11px; font-weight: 500; } .ds-pill-dot { height: 6px; width: 6px; border-radius: 9999px; background: #2ecc71; }"
+    },
+    {
+      "name": "Feature Card Row",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "The home-screen noun: icon tile (indigo wash when live), title, status caption, trailing control.",
+      "html": "<div class=\"ds-card-row\"><div class=\"ds-card-tile\"><svg width=\"19\" height=\"19\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z\"/><path d=\"m9 12 2 2 4-4\"/></svg></div><div class=\"ds-card-body\"><div class=\"ds-card-title\">Proxy</div><div class=\"ds-card-caption\">On · 3 routing</div></div><svg class=\"ds-card-chevron\" width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"9 18 15 12 9 6\"/></svg></div>",
+      "css": ".ds-card-row { display: flex; width: 100%; max-width: 332px; align-items: center; gap: 12px; border-radius: 10px; background: #ffffff; padding: 14px; cursor: pointer; box-shadow: 0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 2px 4px -1px color-mix(in oklch, oklch(0.165 0 0) 4%, transparent); transition: box-shadow 150ms; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; } .ds-card-row:hover { box-shadow: 0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 9%, transparent), 0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 8%, transparent), 0 2px 6px -1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent); } .ds-card-tile { display: flex; height: 36px; width: 36px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 9px; background: rgba(62,79,234,0.08); color: #3e4fea; } .ds-card-body { min-width: 0; flex: 1; } .ds-card-title { font-size: 13.5px; font-weight: 600; color: #0f1222; } .ds-card-caption { margin-top: 2px; font-size: 11.5px; color: #55596f; } .ds-card-chevron { flex-shrink: 0; color: #7a7f93; }"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Seam-edged field; focus raises the seam, no glow or accent ring.",
+      "html": "<div class=\"ds-input-wrap\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#7a7f93\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M2 12h20\"/><path d=\"M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z\"/></svg><input class=\"ds-input\" placeholder=\"https://gateway.example.dev\" /></div>",
+      "css": ".ds-input-wrap { display: flex; height: 36px; width: 100%; max-width: 332px; align-items: center; gap: 8px; border-radius: 6px; background: #ffffff; padding: 0 12px; box-shadow: 0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 2px 4px -1px color-mix(in oklch, oklch(0.165 0 0) 4%, transparent); transition: box-shadow 150ms; } .ds-input-wrap:focus-within { box-shadow: 0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 9%, transparent), 0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 8%, transparent), 0 2px 6px -1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent); } .ds-input { min-width: 0; flex: 1; border: none; background: transparent; font-family: 'Geist Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #0f1222; outline: none; } .ds-input::placeholder { color: #7a7f93; }"
+    },
+    {
+      "name": "Section Label",
+      "kind": "custom",
+      "refersTo": "label",
+      "description": "The ledger's column headings: uppercase mono micro-labels.",
+      "html": "<div class=\"ds-section-label\">Providers</div>",
+      "css": ".ds-section-label { padding: 12px 14px 6px; font-family: 'Geist Mono', ui-monospace, Menlo, monospace; font-size: 10.5px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: #7a7f93; }"
+    },
+    {
+      "name": "Hint Banner",
+      "kind": "custom",
+      "refersTo": "highlight",
+      "description": "Signature truth-telling: warm highlight banner when routing state and running apps disagree.",
+      "html": "<div class=\"ds-hint-banner\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0f1222\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M3 21v-5h5\"/></svg><div class=\"ds-hint-text\"><strong>Restart your agent</strong> to apply the change.</div></div>",
+      "css": ".ds-hint-banner { display: flex; width: 100%; max-width: 332px; align-items: center; gap: 10px; border-radius: 6px; background: #f6ffe3; padding: 10px 12px; box-shadow: 0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 1px 0 0 color-mix(in oklch, oklch(0.165 0 0) 6%, transparent), 0 2px 4px -1px color-mix(in oklch, oklch(0.165 0 0) 4%, transparent); font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; } .ds-hint-banner svg { flex-shrink: 0; } .ds-hint-text { min-width: 0; flex: 1; font-size: 12px; font-weight: 500; line-height: 1.35; color: #0f1222; } .ds-hint-text strong { font-weight: 600; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Gatehouse",
+    "overview": "Gate Connect is a small warm room at the edge of something big. A calm keeper checks your credentials, waves your traffic through, and keeps the key on its hook where you can see it. The popover (360px wide, ~520px tall) is that one room: white paper surfaces, a ledger's precision in the mono identifiers, and a single house color (Gate Indigo) that marks what is live and actionable. The emotional target is the reassuring gatekeeper: the user should close the popover thinking \"good, that's handled.\"\n\nThe system is ink-on-paper carried by shadows instead of lines. Elevated surfaces (cards, inputs, buttons) never wear a solid 1px border; a three-stop shadow stack draws their seam. Hairline borders exist only as structural dividers between the popover's fixed zones. Controls are quiet and precise: state changes are legible, never theatrical, and every status pill reports system state truthfully.",
+    "keyCharacteristics": [
+      "One room: everything fits a 360px popover; panels slide, nothing stacks.",
+      "Shadow-as-border seams on every elevated surface.",
+      "Gate Indigo marks affordance and live state; neutrals do everything else.",
+      "Geist for voice, Geist Mono for identity and system state.",
+      "Quiet, precise controls; reassurance through transparency."
+    ],
+    "rules": [
+      {
+        "name": "The Provisional Indigo Rule",
+        "body": "The Gate Indigo palette is the incumbent identity of this popover (from the Claude Design handoff) but it is provisional. The wider Constellation Gate family rule is ink-primary, never blue, and a future pass may fold the popover back to it. Extend the existing indigo usage patterns faithfully; do not invent new indigo surface types, and do not bleed the gc-* palette into shared cg components.",
+        "section": "colors"
+      },
+      {
+        "name": "The Wash-First Rule",
+        "body": "Status and accent colors touch surfaces only as washes (8 to 14% alpha) with a solid dot or text in the full color. Solid accent fills are reserved for the primary button and the switch on-state.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono Earns Its Place Rule",
+        "body": "Geist Mono appears only where identity or precision matters: URLs, hosts, API key placeholders, workspace names, section labels, status identifiers, tabular counts. Body copy, labels on buttons, and descriptions are always sans. Mono is a signal, not a vibe.",
+        "section": "typography"
+      },
+      {
+        "name": "The One Room Rule",
+        "body": "Every screen works inside the 360px frame without scrolling chrome. If a design needs a second window or a stacked modal, it is the wrong design.",
+        "section": "layout"
+      },
+      {
+        "name": "The Seam Rule",
+        "body": "Elevated surfaces never wear a solid 1px border; the seam stack draws their edge. Hairline borders (line, #e8eaef) are permitted only as structural dividers between the popover's fixed zones (header/footer separators), never around cards, inputs, or buttons.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do draw every card, input, and secondary button edge with the Seam stack (shadow-border), moving to Seam Hover on hover/focus-within.",
+      "Do keep Gate Indigo scoped to affordance and live state: primary buttons, switch on-states, active icon tiles, links.",
+      "Do set identifiers (URLs, hosts, workspace names, key placeholders, section labels) in Geist Mono at 10.5 to 11px; keep pills' text sans.",
+      "Do honor prefers-reduced-motion for every animation; the global collapse in index.css is the contract.",
+      "Do keep every screen inside the 360px popover; secondary surfaces slide as full panels with the 260ms directional grammar.",
+      "Do meet WCAG 2.1 AA contrast on white; ink-3 (#55596f) is the floor for body-secondary text."
+    ],
+    "donts": [
+      "Don't put a solid 1px border on a card, input, or button; hairlines are for the popover's fixed structural seams only.",
+      "Don't introduce new indigo surface types or leak the gc-* palette into shared cg components (The Provisional Indigo Rule).",
+      "Don't use gradients, neon accents, sparkles, or dark chrome; the generic AI aesthetic is a locked anti-reference.",
+      "Don't set body copy or button labels in mono, or use all-caps outside the 10.5px mono section labels.",
+      "Don't stack modals or open second windows; one room, sliding panels.",
+      "Don't use the em dash character anywhere in UI copy."
+    ]
+  }
+}

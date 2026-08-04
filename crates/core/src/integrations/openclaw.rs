@@ -372,6 +372,16 @@ impl Integration for OpenClaw {
         )
     }
 
+    /// Hidden from the popover: provider discovery reads `auth.profiles` from
+    /// `openclaw.json`, but OpenClaw keeps auth profiles in a per-agent store,
+    /// so a provider configured purely via `openclaw models auth login` is
+    /// likely never gated. Redirecting `anthropic` also makes OpenClaw suppress
+    /// its implicit beta headers (interleaved thinking, claude-code) with no
+    /// warning from us. See docs/harness-integration-validation.md H2, H3.
+    fn hidden_in_ui(&self) -> bool {
+        true
+    }
+
     fn has_upstream_credential(&self) -> Result<bool> {
         Ok(true)
     }
