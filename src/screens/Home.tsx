@@ -269,13 +269,19 @@ export function Home({
             host it is the far end of, which is the one place it means
             something. */}
         {gatewayHost && (
-          <div className="flex items-center gap-2 px-0.5">
-            {/* `title` for the same reason the header's org line carries one: a
-                staging host runs past the 211px this slot gets, and the
-                ellipsis truncation paints lives in no attribute. */}
+          // The host and the dashboard link share this line. `flex-wrap` alone
+          // could not save the host: with `flex-1` it shrinks rather than
+          // forcing a wrap, so at a raised platform minimum font size a
+          // 28-character host still truncated. It breaks instead now, up to two
+          // lines, which is the same treatment `RawDetail` gives a payload and
+          // the ledger gives an exception sentence. The link keeps `ml-auto`, so
+          // it stays right-aligned whether or not it wraps below.
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-0.5">
+            {/* `title` because two lines still is not enough for a long staging
+                host, and the ellipsis truncation paints lives in no attribute. */}
             <span
               title={gatewayHost}
-              className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-gc-ink-3"
+              className="min-w-0 flex-1 line-clamp-2 font-mono text-[10.5px] text-gc-ink-3 [overflow-wrap:anywhere]"
             >
               {gatewayHost}
             </span>
@@ -284,7 +290,7 @@ export function Home({
               onClick={() => {
                 void openExternal(GATE_DASHBOARD_URL);
               }}
-              className="-mr-1 flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+              className="-mr-1 ml-auto flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
             >
               <Icon name="cube" size={13} />
               Gate dashboard
