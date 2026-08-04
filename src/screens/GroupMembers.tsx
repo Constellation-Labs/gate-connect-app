@@ -282,14 +282,6 @@ export function GroupMembers({
                       {memberPillLabel(member)}
                     </span>
                   </span>
-                  <span className="pointer-events-none relative">
-                    <Icon
-                      name="caretRight"
-                      size={14}
-                      stroke={2}
-                      className={`text-gc-ink-4 transition-transform ${open ? "rotate-90" : ""}`}
-                    />
-                  </span>
                 </div>
 
               {/* Its own full-width line, below the name/pill/switch row. In
@@ -315,6 +307,25 @@ export function GroupMembers({
                       : hostOf(member.tool?.default_upstream_url)}
                   </span>
                 )}
+                {/* A word, not a caret, and on this line rather than beside the
+                    name. The deepest level is where a glyph pays least: the
+                    row's accessible name is already "<member> details", so a
+                    visible "Details" makes what a screen reader hears and what
+                    the eye reads the same string, and it stops a member row
+                    ending in the same mark as the family row above it.
+
+                    Line two because line one is the crowded one. Beside the name
+                    the word cost 26px and wrapped "Claude Desktop / Cowork" in
+                    the routed state, not just the needs-trust one; here the
+                    mechanism chip and the host leave room to spare, and line one
+                    gets the caret's width back on top.
+
+                    `aria-expanded` on the stretch button carries open/closed and
+                    the disclosure appears directly below, so nothing has to
+                    rotate to say which way this went. */}
+                <span className="ml-auto shrink-0 pl-2 text-[11px] text-gc-ink-3">
+                  Details
+                </span>
               </div>
               </div>
 
