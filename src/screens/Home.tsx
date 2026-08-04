@@ -230,54 +230,84 @@ export function Home({
         {/* One box, two parts: the master control and the door to what it
             controls. They were two cards with two 36px tiles stacked 10px apart,
             which read as two unrelated errands when they are the same subject
-            seen at two grains. The hairline between them is the same divider
-            every ledger row uses; `overflow-hidden` keeps the lower half's hover
-            fill inside the card's radius. */}
-        {(showProxy || groups.length > 0) && (
+            seen at two grains.
+
+            The rule between them is inset rather than full-bleed, because a
+            hairline that runs edge to edge inside a card still reads as a card
+            boundary, which is the whole thing this merge was meant to stop.
+            `overflow-hidden` keeps the lower half's hover fill inside the
+            radius. */}
+        {(showProxy || gatewayHost || groups.length > 0) && (
           <div className="overflow-hidden rounded-[10px] bg-gc-surface shadow-border">
-            {showProxy && (
+            {(showProxy || gatewayHost) && (
               <div className="flex items-center gap-3 p-3.5">
-                <div
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
-                    proxyOn ? "bg-gc-accent-wash text-gc-accent" : "bg-gc-sunken text-gc-ink-4"
-                  }`}
-                >
-                  <Icon name="shieldCheck" size={19} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  {/* A heading, not a styled div: this is the screen's primary
-                      control and it was absent from the document outline, so the
-                      outline read h1 -> h2 "What routes through Gate" with the
-                      master switch unheaded. */}
-                  <h2 className="text-[13.5px] font-semibold text-gc-ink">Routing</h2>
-                  <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
-                    {/* The count survives the certificate state. Dropping it was
-                        backwards: that is exactly when the user wants to know
-                        how much is still working. */}
-                    {!proxyOn
-                      ? waitingCount > 0
-                        ? `Off · ${waitingCount} waiting`
-                        : "Off · not routing"
-                      : partial
-                        ? `On · ${routedCount} of ${routableCount} routing`
-                        : routableCount === 0
-                          ? "On · nothing installed to route"
-                          : routedCount === 0 && stuckCount === 0
-                            ? "On · nothing enabled yet"
-                            : stuckCount > 0
-                              ? `On · ${routedCount} of ${routableCount} routing · ${stuckCount} need${stuckCount === 1 ? "s" : ""} attention`
-                              : `On · ${routedCount} of ${routableCount} routing`}
+                {showProxy && (
+                  <div
+                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
+                      proxyOn ? "bg-gc-accent-wash text-gc-accent" : "bg-gc-sunken text-gc-ink-4"
+                    }`}
+                  >
+                    <Icon name="shieldCheck" size={19} />
                   </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  {showProxy && (
+                    <>
+                      {/* A heading, not a styled div: this is the screen's
+                          primary control and it was absent from the document
+                          outline, so the outline read h1 -> h2 "What routes
+                          through Gate" with the master switch unheaded. */}
+                      <h2 className="text-[13.5px] font-semibold text-gc-ink">Routing</h2>
+                      <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
+                        {/* The count survives the certificate state. Dropping it
+                            was backwards: that is exactly when the user wants to
+                            know how much is still working. */}
+                        {!proxyOn
+                          ? waitingCount > 0
+                            ? `Off · ${waitingCount} waiting`
+                            : "Off · not routing"
+                          : partial
+                            ? `On · ${routedCount} of ${routableCount} routing`
+                            : routableCount === 0
+                              ? "On · nothing installed to route"
+                              : routedCount === 0 && stuckCount === 0
+                                ? "On · nothing enabled yet"
+                                : stuckCount > 0
+                                  ? `On · ${routedCount} of ${routableCount} routing · ${stuckCount} need${stuckCount === 1 ? "s" : ""} attention`
+                                  : `On · ${routedCount} of ${routableCount} routing`}
+                      </div>
+                    </>
+                  )}
+                  {/* The host under the status it belongs to. Outside the card it
+                      was a loose line between two boxes, standing for a fact
+                      about the very thing the card above it reports.
+
+                      `line-clamp-2` with `[overflow-wrap:anywhere]`, not
+                      `truncate`: a hostname is one long token, and at a raised
+                      platform minimum font size truncating dropped the end of
+                      it. Breaking loses nothing. `title` because two lines still
+                      is not enough for a long staging host, and the ellipsis
+                      truncation paints lives in no attribute. */}
+                  {gatewayHost && (
+                    <div
+                      title={gatewayHost}
+                      className="mt-1 line-clamp-2 font-mono text-[10.5px] text-gc-ink-3 [overflow-wrap:anywhere]"
+                    >
+                      {gatewayHost}
+                    </div>
+                  )}
                 </div>
-                <Switch
-                  on={proxyOn}
-                  label="Route through Gate"
-                  busy={busy}
-                  onClick={() => {
-                    setInteracted(true);
-                    onToggleProxy();
-                  }}
-                />
+                {showProxy && (
+                  <Switch
+                    on={proxyOn}
+                    label="Route through Gate"
+                    busy={busy}
+                    onClick={() => {
+                      setInteracted(true);
+                      onToggleProxy();
+                    }}
+                  />
+                )}
               </div>
             )}
 
@@ -296,40 +326,43 @@ export function Home({
                 subject, and a second 36px tile made the pair read as a list of
                 two things rather than one thing and its detail. */}
             {groups.length > 0 && (
-              <button
-                type="button"
-                onClick={onOpenRoutes}
-                className={`flex w-full items-center gap-2.5 px-3.5 py-3 text-left transition hover:bg-gc-subtle focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent${
-                  showProxy ? " border-t border-gc-line" : ""
-                }`}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-medium text-gc-ink">
-                    What routes through Gate
+              <>
+                {(showProxy || gatewayHost) && (
+                  <div className="mx-3.5 h-px bg-gc-line" aria-hidden />
+                )}
+                <button
+                  type="button"
+                  onClick={onOpenRoutes}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-3 text-left transition hover:bg-gc-subtle focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-gc-ink">
+                      What routes through Gate
+                    </div>
+                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
+                      {ledgerNote ? (
+                        <span
+                          className={
+                            ledgerNoteKind === "error"
+                              ? "font-medium text-gc-error-deep"
+                              : "text-gc-ink-2"
+                          }
+                        >
+                          {ledgerNote}
+                        </span>
+                      ) : (
+                        groups.map((g) => g.name).join(", ")
+                      )}
+                    </div>
                   </div>
-                  <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
-                    {ledgerNote ? (
-                      <span
-                        className={
-                          ledgerNoteKind === "error"
-                            ? "font-medium text-gc-error-deep"
-                            : "text-gc-ink-2"
-                        }
-                      >
-                        {ledgerNote}
-                      </span>
-                    ) : (
-                      groups.map((g) => g.name).join(", ")
-                    )}
-                  </div>
-                </div>
-                <Icon
-                  name="chevronRight"
-                  size={15}
-                  stroke={2}
-                  className="shrink-0 text-gc-ink-4"
-                />
-              </button>
+                  <Icon
+                    name="chevronRight"
+                    size={15}
+                    stroke={2}
+                    className="shrink-0 text-gc-ink-4"
+                  />
+                </button>
+              </>
             )}
           </div>
         )}
@@ -351,25 +384,6 @@ export function Home({
                 and it will show up.
               </p>
             </div>
-          </div>
-        )}
-
-        {/* What is on the wire, on its own line, because it is a standing fact
-            about this install rather than a footnote to anything. The header
-            used to carry this host and now carries the org; a gateway
-            identifier that vanished with it would take the answer to "where is
-            my traffic actually going" off Home entirely. */}
-        {gatewayHost && (
-          // `line-clamp-2` with `[overflow-wrap:anywhere]`, not `truncate`: a
-          // hostname is one long token, and at a raised platform minimum font
-          // size truncating dropped the end of it. Breaking loses nothing.
-          // `title` because two lines still is not enough for a long staging
-          // host, and the ellipsis truncation paints lives in no attribute.
-          <div
-            title={gatewayHost}
-            className="line-clamp-2 px-0.5 font-mono text-[10.5px] text-gc-ink-3 [overflow-wrap:anywhere]"
-          >
-            {gatewayHost}
           </div>
         )}
 
@@ -553,16 +567,18 @@ export function Home({
             heading it sat on; and sharing the host's line it took width from the
             one identifier on this screen that cannot be shortened without lying.
 
-            13px, not 11.5px: at the bottom of the zone it is no longer a
+            14.5px, not 11.5px: at the bottom of the zone it is no longer a
             footnote to the host line, and it was the smallest interactive text
-            in the app. The padding takes the hit area from 19px to 30px, which
+            in the app. 14.5 rather than 15 only because 15 is off the ramp in
+            DESIGN.md and this is the nearest step to it; the two are half a
+            pixel apart. The padding takes the hit area from 19px to 32px, which
             also clears the 24px target minimum it used to miss. */}
         <button
           type="button"
           onClick={() => {
             void openExternal(GATE_DASHBOARD_URL);
           }}
-          className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-[13px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+          className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-[14.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
         >
           <Icon name="cube" size={15} />
           Gate dashboard
