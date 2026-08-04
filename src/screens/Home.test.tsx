@@ -440,6 +440,19 @@ describe("Home quiet-state honesty", () => {
     expect(screen.queryByText("Routing on")).toBeNull();
   });
 
+  it("does not fly a green pill when routing is on but nothing is routed", () => {
+    // The ledger is full and the master is on, but no row is enabled: the
+    // rows all read "Not routed" and the header used to read green "Routing
+    // on" above them. Green is the only signal a mid-task user takes in, so
+    // this is the app telling them their traffic is covered when it is not.
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "detected" })],
+      domains: [makeDomain({ enabled: false })],
+    });
+    expect(screen.getByText("Nothing routing")).toBeTruthy();
+    expect(screen.queryByText("Routing on")).toBeNull();
+  });
+
   it("keeps the launch-at-login tip dismissible", async () => {
     // Once, so the file-level never-resolving default (which keeps the tip
     // hidden and other tests free of act warnings) is restored afterwards.

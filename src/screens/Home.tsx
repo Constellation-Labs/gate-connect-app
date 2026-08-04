@@ -113,6 +113,9 @@ export function Home({
   // Session-scoped: the tip is already rare (quiet room only), so forgetting
   // the dismissal on relaunch is a smaller cost than another persisted flag.
   const [launchTipDismissed, setLaunchTipDismissed] = useState(false);
+  // Whether the user has flipped anything on this screen yet. Gates the live
+  // region so it reports their changes, not the backend's.
+  const [interacted, setInteracted] = useState(false);
 
   // Whether Launch at login is on, so the keep-routing tip only shows when
   // it would actually help (read the state, don't send the user to Settings
@@ -134,9 +137,23 @@ export function Home({
     <div className="flex flex-col">
       <PopHeader
         workspace={workspace}
-        pill={proxyOn && routableCount > 0 ? (partial ? "partial" : "connected") : "idle"}
+        // Green is the only thing a mid-task user reads, so it has to mean
+        // traffic is flowing. Routing can be on with every row still off,
+        // and the pill used to go green over three grey "Not routed" rows -
+        // the one place the app claimed something it could not back up.
+        // `partial` still outranks the count: "certificate not trusted" is a
+        // reason, and demoting it to a bare "Nothing routing" would hide it.
+        pill={
+          proxyOn ? (partial ? "partial" : routedCount > 0 ? "connected" : "idle") : "idle"
+        }
         pillLabel={
-          proxyOn && routableCount === 0 ? "Nothing to route" : undefined
+          !proxyOn || partial
+            ? undefined
+            : routableCount === 0
+              ? "Nothing to route"
+              : routedCount === 0
+                ? "Nothing routing"
+                : undefined
         }
         onGear={onOpenSettings}
       />
@@ -144,12 +161,18 @@ export function Home({
           every row description at once, all of it silently. One polite live
           region carries the headline so the change is announced without
           reading the whole screen back. */}
+      {/* Silent until the user has actually touched something here. The
+          region used to fire on every state change including ones nobody
+          asked for, so a screen-reader user got an unprompted "Routing on,
+          2 of 5 routing" when the backend enabled itself at startup. */}
       <span aria-live="polite" className="sr-only">
-        {proxyOn
-          ? partial
-            ? "Routing on, certificate not trusted"
-            : `Routing on, ${routedCount} of ${routableCount} routing`
-          : "Routing off"}
+        {interacted
+          ? proxyOn
+            ? partial
+              ? "Routing on, certificate not trusted"
+              : `Routing on, ${routedCount} of ${routableCount} routing`
+            : "Routing off"
+          : ""}
       </span>
       <div className="flex flex-col gap-2.5 p-3.5">
         {showProxy && (
@@ -190,7 +213,10 @@ export function Home({
               on={proxyOn}
               label="Route through Gate"
               busy={busy}
-              onClick={onToggleProxy}
+              onClick={() => {
+                setInteracted(true);
+                onToggleProxy();
+              }}
             />
           </div>
         )}
@@ -269,7 +295,10 @@ export function Home({
                 size="sm"
                 className="shrink-0"
                 disabled={busy}
-                onClick={onTrustCa}
+                onClick={() => {
+                  setInteracted(true);
+                  onTrustCa();
+                }}
               >
                 Trust
               </Button>
@@ -363,10 +392,7 @@ export function Home({
 
       {/* Not "Models": the last row is a tool category, not a model family,
           and a label the list contradicts is worse than a plain one. This
-          names the question every row answers.
-          No longer `dense`: that was tuned when four families put Home exactly
-          at the frame, and the harnesses are hidden now, so the ledger is three
-          rows with room to spare. */}
+          names the question every row answers. */}
       <SectionLabel>What routes through Gate</SectionLabel>
       {groups.length > 0 ? (
         <div role="list" className="flex flex-col border-t border-gc-line">
@@ -427,7 +453,10 @@ export function Home({
                     on={group.desired > 0}
                     label={group.switchLabel}
                     busy={busy}
-                    onClick={() => onToggleGroup(group.id, group.desired === 0)}
+                    onClick={() => {
+                      setInteracted(true);
+                      onToggleGroup(group.id, group.desired === 0);
+                    }}
                   />
                 </span>
                 <span className="pointer-events-none relative">
