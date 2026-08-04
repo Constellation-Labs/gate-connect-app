@@ -142,7 +142,7 @@ export function UpdatePanel({
           onClick={() => {
             void install();
           }}
-          className="shrink-0 text-[11.5px] font-semibold text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3 disabled:no-underline disabled:opacity-60"
+          className="shrink-0 text-[11.5px] font-semibold text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3 disabled:no-underline disabled:opacity-45"
         >
           {installing ? "Installing…" : failed ? "Retry" : "Update"}
         </button>

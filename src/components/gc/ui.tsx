@@ -15,8 +15,13 @@ import { Icon, type IconName } from "./Icon";
  * destructive action happens to come first in DOM order. */
 export const Button = forwardRef<HTMLButtonElement, {
   variant?: "accent" | "secondary" | "danger";
-  /** `sm` is for dense chrome (the onboarding window's 52px footer), not the
-   * popover, where buttons stay `md`. */
+  /** `md` (40px, the DESIGN.md button spec) is the default and is what
+   * standalone and full-width actions use. `sm` (32px) is for a button
+   * *embedded* in something else, where a 40px control would outweigh the
+   * thing it sits in: an inline banner, an expanded row, an inline confirm
+   * pair, or the onboarding window's 52px footer. This doc used to say `sm`
+   * never appears in the popover, which eight call sites had already
+   * disproved; the rule is about the container, not the window. */
   size?: "sm" | "md";
   full?: boolean;
 } & ButtonHTMLAttributes<HTMLButtonElement>>(function Button(
@@ -61,7 +66,7 @@ export function IconButton({
   return (
     <button
       type="button"
-      className={`flex h-7 w-7 items-center justify-center rounded text-gc-ink-3 transition hover:bg-gc-subtle hover:text-gc-ink-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-gc-accent disabled:opacity-40 ${className}`}
+      className={`flex h-7 w-7 items-center justify-center rounded text-gc-ink-3 transition hover:bg-gc-subtle hover:text-gc-ink-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-gc-accent disabled:opacity-45 ${className}`}
       {...rest}
     >
       <Icon name={icon} size={size} />
@@ -103,7 +108,7 @@ export function Switch({
       aria-disabled={busy || undefined}
       disabled={disabled}
       onClick={busy ? undefined : onClick}
-      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-50 ${busy ? "opacity-70" : ""} ${on ? "bg-gc-accent" : "bg-gc-switch-off"}`}
+      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-45 ${busy ? "opacity-70" : ""} ${on ? "bg-gc-accent" : "bg-gc-switch-off"}`}
     >
       <span
         className={`absolute flex h-[18px] w-[18px] items-center justify-center rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[18px]" : "translate-x-[2px]"}`}

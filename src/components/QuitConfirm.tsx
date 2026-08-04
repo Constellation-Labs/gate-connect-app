@@ -98,7 +98,7 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
           type="button"
           disabled={busy}
           onClick={onCancel}
-          className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink disabled:opacity-60"
+          className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink disabled:opacity-45"
         >
           Cancel
         </button>

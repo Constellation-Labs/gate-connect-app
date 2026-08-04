@@ -330,7 +330,7 @@ export function Settings({
           Same controls, half the chunking. */}
       <SectionLabel>Account</SectionLabel>
       <div className="flex items-center gap-3 px-3.5 py-2.5">
-        <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
           <Icon name="cube" size={16} />
         </div>
         <div className="min-w-0 flex-1">
@@ -360,7 +360,7 @@ export function Settings({
       {isOAuth && (
         <>
           <div className="flex items-center gap-3 px-3.5 py-2.5">
-            <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
               <Icon name="shieldCheck" size={16} />
             </div>
             <div className="min-w-0 flex-1">
@@ -526,7 +526,7 @@ export function Settings({
           type="button"
           disabled={upgrading}
           onClick={handleUpgrade}
-          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent transition hover:text-gc-accent-ink disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent transition hover:text-gc-accent-ink disabled:opacity-45"
         >
           <Icon name="shieldCheck" size={14} />
           {upgrading ? "Waiting for browser…" : "Switch to Constellation sign-in"}
@@ -626,7 +626,7 @@ export function Settings({
               // encouraged action. It still gets a confirm, because by its own
               // copy it deletes a private key and can stop apps routing - it
               // was the only state-destroying action in the app without one.
-              className="shrink-0 text-[12px] font-medium text-gc-error-deep transition hover:brightness-90 disabled:opacity-40"
+              className="shrink-0 text-[12px] font-medium text-gc-error-deep transition hover:brightness-90 disabled:opacity-45"
             >
               Remove
             </button>
@@ -736,7 +736,7 @@ export function Settings({
             type="button"
             onClick={() => setConfirmingReset(true)}
             disabled={submitting}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep disabled:opacity-45"
           >
             <Icon name="trash" size={14} />
             Reset Gate Connect

@@ -263,7 +263,7 @@ export function Home({
         {showProxy && partial && (
           <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
             <div className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning">
                 {/* Not shieldCheck: the master card's tile directly above is
                     already that glyph, and two shields 40px apart in the same
                     column read as one repeated thing rather than two. */}
@@ -282,7 +282,7 @@ export function Home({
                   disabled={busy}
                   onClick={() => setCaExplain((v) => !v)}
                   aria-expanded={caExplain}
-                  className="font-normal text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink disabled:opacity-40"
+                  className="font-normal text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink disabled:opacity-45"
                 >
                   What&rsquo;s this?
                 </button>
@@ -491,7 +491,7 @@ export function Home({
         </div>
       ) : (
         <div className="mx-3.5 mb-1 flex items-start gap-2.5 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-4">
             <Icon name="search" size={16} />
           </div>
           <div className="min-w-0 flex-1">

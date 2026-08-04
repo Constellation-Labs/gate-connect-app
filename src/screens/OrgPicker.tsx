@@ -129,9 +129,9 @@ export function OrgPicker({
               type="button"
               onClick={() => choose(org)}
               disabled={choosing !== null}
-              className="flex items-center gap-3 rounded-[10px] bg-gc-surface p-3.5 text-left shadow-border transition hover:shadow-border-hover disabled:opacity-60"
+              className="flex items-center gap-3 rounded-[10px] bg-gc-surface p-3.5 text-left shadow-border transition hover:shadow-border-hover disabled:opacity-45"
             >
-              <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-accent-wash text-gc-accent">
                 <Icon name="cube" size={16} />
               </div>
               <div className="min-w-0 flex-1">
