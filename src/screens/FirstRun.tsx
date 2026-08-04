@@ -5,6 +5,7 @@ import { DEFAULT_GATEWAY_BASE_URL, GATEWAY_SERVERS, GATE_API_KEYS_URL } from "..
 import { trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { markOAuthOfferSeen } from "../lib/oauthOffer";
+import { secretStoreName, usePlatform } from "../lib/platform";
 import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
 import { Button, Input, ErrorNote } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
@@ -49,6 +50,7 @@ export function FirstRun({
     !!initialGateway && initialGateway !== DEFAULT_GATEWAY_BASE_URL,
   );
   const [gateway, setGateway] = useState(initialGateway ?? DEFAULT_GATEWAY_BASE_URL);
+  const platform = usePlatform();
 
   const busy = submitting || signingIn;
   const canSubmitKey = key.trim().length > 0 && !busy;
@@ -121,7 +123,7 @@ export function FirstRun({
         <p className="mt-1.5 max-w-[290px] text-[12.5px] leading-[1.45] text-gc-ink-3">
           {reauth
             ? "Your session expired. Sign in again to keep routing your desktop agents through Gate."
-            : "Sign in to route your desktop agents through Gate - right from the menu bar."}
+            : "Sign in to route your desktop agents through Gate, right from the menu bar."}
         </p>
       </div>
 
@@ -161,12 +163,13 @@ export function FirstRun({
           </div>
           <p className="mb-2 text-[11px] leading-snug text-gc-ink-3">
             Best for CI or headless machines where browser sign-in isn't
-            practical. Otherwise, sign in with Constellation - nothing to
+            practical. Otherwise, sign in with Constellation: nothing to
             paste, and it refreshes on its own.
           </p>
           <Input
             leadingIcon={<Icon name="key" size={14} />}
             placeholder="sk-gw-…"
+            secret
             value={key}
             autoFocus
             spellCheck={false}
@@ -175,6 +178,15 @@ export function FirstRun({
               if (e.key === "Enter") connectWithKey();
             }}
           />
+          {/* The destination, said at the moment the secret is in the user's
+              hands. The pinned footer says this everywhere else, but it is
+              suppressed here (no account exists yet), so the one screen that
+              handles a live key was the one screen that never named the
+              vault. */}
+          <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
+            Saved to {secretStoreName(platform)}. Your config files get the
+            gateway URL, never the key.
+          </p>
           <p className="mt-1 text-[11px] text-gc-ink-3">
             Find it under{" "}
             <button

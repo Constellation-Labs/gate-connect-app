@@ -1,4 +1,4 @@
-import { forwardRef } from "react";
+import { forwardRef, useState } from "react";
 import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
@@ -132,23 +132,9 @@ export function CardButton({
   );
 }
 
-export function SectionLabel({
-  children,
-  dense,
-}: {
-  children: ReactNode;
-  /** Tighter leading room, for a screen with no vertical budget left. Home
-   * sits exactly at the 487px frame with four families, and 12px of top
-   * padding to restate what the pills already say is the cheapest thing to
-   * give back. */
-  dense?: boolean;
-}) {
+export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <h2
-      className={`px-3.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3 ${
-        dense ? "pb-1 pt-1.5" : "pb-1.5 pt-3"
-      }`}
-    >
+    <h2 className="px-3.5 pb-1.5 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
       {children}
     </h2>
   );
@@ -157,20 +143,42 @@ export function SectionLabel({
 export function Input({
   leadingIcon,
   trailing,
+  secret,
   className = "",
   ...rest
 }: {
   leadingIcon?: ReactNode;
   trailing?: ReactNode;
+  /** Masks the value and adds a reveal toggle. For the `sk-gw-` field: a live
+   * gateway key is the one string in this app worth hiding while it is being
+   * pasted, and Settings already puts a confirm in front of revealing the
+   * stored one - typing it in the clear was the louder inconsistency. */
+  secret?: boolean;
 } & InputHTMLAttributes<HTMLInputElement>) {
+  const [revealed, setRevealed] = useState(false);
   return (
     <div className="flex h-9 items-center gap-2 rounded bg-gc-surface px-3 shadow-border transition focus-within:shadow-border-hover">
       {leadingIcon && <span className="shrink-0 text-gc-ink-4">{leadingIcon}</span>}
       <input
+        type={secret && !revealed ? "password" : "text"}
         className={`min-w-0 flex-1 bg-transparent text-[13px] text-gc-ink outline-none placeholder:text-gc-ink-3 ${className}`}
         {...rest}
       />
-      {trailing && <span className="flex shrink-0 items-center gap-0.5">{trailing}</span>}
+      {(trailing || secret) && (
+        <span className="flex shrink-0 items-center gap-0.5">
+          {trailing}
+          {secret && (
+            <button
+              type="button"
+              onClick={() => setRevealed((v) => !v)}
+              aria-label={revealed ? "Hide key" : "Show key"}
+              className="text-gc-ink-4 transition hover:text-gc-ink-2"
+            >
+              <Icon name={revealed ? "eyeOff" : "eye"} size={14} />
+            </button>
+          )}
+        </span>
+      )}
     </div>
   );
 }
@@ -248,6 +256,7 @@ export function ErrorNote({
   error: ClassifiedError;
   className?: string;
 }) {
+  const [copied, setCopied] = useState(false);
   return (
     <div role="alert" className={`flex gap-2.5 rounded bg-gc-sunken px-3 py-2.5 text-left ${className}`}>
       <Icon name="info" size={15} className="mt-px shrink-0 text-gc-error" />
@@ -260,6 +269,22 @@ export function ErrorNote({
             <div className="mt-1 break-all font-mono text-[10.5px] leading-snug text-gc-ink-3">
               {error.raw}
             </div>
+            {/* Five error branches tell the user "the details below help when
+                reporting it" and then gave them a break-all mono blob to
+                select by hand inside a 360px popover. */}
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(error.raw).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1600);
+                });
+              }}
+              className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            >
+              <Icon name={copied ? "check" : "copy"} size={12} />
+              {copied ? "Copied" : "Copy details"}
+            </button>
           </details>
         )}
       </div>
