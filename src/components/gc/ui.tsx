@@ -132,11 +132,23 @@ export function CardButton({
   );
 }
 
-export function SectionLabel({ children }: { children: ReactNode }) {
+export function SectionLabel({
+  children,
+  trailing,
+}: {
+  children: ReactNode;
+  /** An action that belongs to the section, rendered flush right on the same
+   * baseline. Lets a link ride the heading instead of costing the ledger its
+   * own row, which matters on a screen with no vertical budget. */
+  trailing?: ReactNode;
+}) {
   return (
-    <h2 className="px-3.5 pb-1.5 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
-      {children}
-    </h2>
+    <div className="flex items-baseline justify-between gap-2 px-3.5 pb-1.5 pt-3">
+      <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+        {children}
+      </h2>
+      {trailing}
+    </div>
   );
 }
 

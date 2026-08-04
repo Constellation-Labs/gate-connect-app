@@ -45,8 +45,6 @@ import { OAuthOffer } from "./components/OAuthOffer";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
-import { openExternal } from "./lib/openExternal";
-import { GATE_DASHBOARD_URL } from "./lib/config";
 import { track, trackError } from "./lib/analytics";
 import { backendErrorContext, classifyError, type ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
@@ -1140,52 +1138,28 @@ export function App() {
             costs the scroll budget nothing. */}
         {credentialStore && (
           <div className="flex shrink-0 items-center gap-2 border-t border-gc-line px-3.5 py-2">
-            {credentialStore && (
-              <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-gc-ink-3">
-                <Icon name="key" size={11} className="shrink-0" />
-                {/* The longest form is Windows with OAuth, and "Session in
-                    your Credential Manager" was 170px into a 153px slot.
-                    `secretStoreName` drops the possessive there and only
-                    there, which lands it at 146px with all six platform /
-                    auth-mode combinations clear. */}
-                <span className="truncate">
-                  {!hasCredential
-                    ? `Credentials live in ${credentialStore}`
-                    : `${account?.auth_mode === "oauth" ? "Session" : "Key"} in ${credentialStore}`}
-                </span>
+            <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-gc-ink-3">
+              <Icon name="key" size={11} className="shrink-0" />
+              {/* This slot has to hold "Session in Credential Manager" (146px)
+                  and, during the first async tick before the platform
+                  resolves, "Key in your system's secure store" (159px). With
+                  the dashboard button also on the strip it was 136-142px, so
+                  the product's core promise truncated on Windows and briefly
+                  everywhere. The button moved into Home's ledger heading; the
+                  strip is back to a label and a version, which is what it was
+                  measured for. */}
+              <span className="truncate">
+                {!hasCredential
+                  ? `Credentials live in ${credentialStore}`
+                  : `${account?.auth_mode === "oauth" ? "Session" : "Key"} in ${credentialStore}`}
               </span>
-            )}
-            {/* The dashboard link used to sit at the bottom of the ledger,
-                inside the scroll, which put it below the fold on the most
-                common Home. Pinned, it is always reachable and Home gets its
-                height back. The version moved to Settings > Help; two items
-                is all this strip can carry at 360px. */}
-            {/* Accent and a step up in size: at 10.5px ink-3 it matched the
-                credential line beside it and read as a second label rather
-                than the only action on the strip. Indigo is defined as
-                affordance, which is what this is. The footer is pinned, so
-                the extra weight costs Home no height. */}
-            {/* Suppressed before there is an account: on first run the strip
-                carries the promise and nothing else, and a second action
-                would break the sign-in screen's two-option shape. It also
-                buys the longer "Credentials live in ..." string the full
-                width it needs. */}
-            {hasCredential && (
-              <span className="ml-auto flex shrink-0 items-center gap-2">
-              {version && (
-                <span className="font-mono text-[10.5px] text-gc-ink-3">v{version}</span>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  void openExternal(GATE_DASHBOARD_URL);
-                }}
-                className="-mr-1 flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
-              >
-                <Icon name="cube" size={13} />
-                Gate dashboard
-              </button>
             </span>
+            {/* Suppressed before there is an account: on first run the strip
+                carries the promise and nothing else. */}
+            {hasCredential && version && (
+              <span className="ml-auto shrink-0 font-mono text-[10.5px] text-gc-ink-3">
+                v{version}
+              </span>
             )}
           </div>
         )}

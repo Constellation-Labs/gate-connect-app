@@ -311,12 +311,17 @@ describe("Home routing-change notice", () => {
 });
 
 describe("Home dashboard link", () => {
-  it("is not in the scroll area", () => {
-    // It moved to the pinned footer in App: inside the ledger it sat below
-    // the fold on the most common Home, and it was costing ~34px of a screen
-    // that has none to spare.
+  it("rides the ledger heading, not a row of its own below the list", () => {
+    // Three placements have been tried. Below the last row it sat under the
+    // fold on the most common Home. Pinned to the footer it was always
+    // reachable, but it took the strip to three items and squeezed the
+    // credential promise to 136px, so "Session in Credential Manager" (146px)
+    // truncated on Windows. On the heading it is above the fold in every
+    // state and costs the ledger no height.
     renderHome();
-    expect(screen.queryByRole("button", { name: /Gate dashboard/ })).toBeNull();
+    const link = screen.getByRole("button", { name: /Gate dashboard/ });
+    const heading = screen.getByRole("heading", { name: /What routes through Gate/ });
+    expect(heading.parentElement?.contains(link)).toBe(true);
   });
 });
 

@@ -9,6 +9,8 @@ import { Switch, IconButton, SectionLabel, ErrorNote, Button } from "../componen
 import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 import { trustStoreName, usePlatform } from "../lib/platform";
+import { openExternal } from "../lib/openExternal";
+import { GATE_DASHBOARD_URL } from "../lib/config";
 
 /** Connected home - the one room: the master Routing card, the certificate
  * step when it blocks coverage, and one row per model family. The families
@@ -393,7 +395,28 @@ export function Home({
       {/* Not "Models": the last row is a tool category, not a model family,
           and a label the list contradicts is worse than a plain one. This
           names the question every row answers. */}
-      <SectionLabel>What routes through Gate</SectionLabel>
+      {/* The dashboard link rides the heading rather than sitting below the
+          last row, which is where it used to be and where it fell below the
+          fold. Pinning it to the footer fixed the fold and cost the
+          credential promise the width it needed to fit on Windows; up here
+          it is above the fold in every state and costs the ledger no
+          height. */}
+      <SectionLabel
+        trailing={
+          <button
+            type="button"
+            onClick={() => {
+              void openExternal(GATE_DASHBOARD_URL);
+            }}
+            className="-mr-1 flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+          >
+            <Icon name="cube" size={13} />
+            Gate dashboard
+          </button>
+        }
+      >
+        What routes through Gate
+      </SectionLabel>
       {groups.length > 0 ? (
         <div role="list" className="flex flex-col border-t border-gc-line">
           {groups.map((group) => {
