@@ -9,6 +9,11 @@ export function PopHeader({
   pillLabel,
   onGear,
 }: {
+  /** Who the user is on this gateway: the org where there is one, and the
+   * gateway host on the surfaces that have nowhere else to print it. Empty
+   * renders no sub-label at all, which is what Home passes for a key account:
+   * Home prints the host on its own line, and a header repeating it 230px above
+   * said the same thing twice. */
   workspace: string;
   pill?: "connected" | "partial" | "idle" | "signedout";
   /** Overrides the pill text. Used when routing is on but there is nothing
@@ -30,9 +35,11 @@ export function PopHeader({
             Gate <span className="text-gc-accent">Connect</span>
           </span>
         </h1>
-        <span className="truncate pl-[25px] font-mono text-[10.5px] text-gc-ink-3">
-          {workspace}
-        </span>
+        {workspace && (
+          <span className="truncate pl-[25px] font-mono text-[10.5px] text-gc-ink-3">
+            {workspace}
+          </span>
+        )}
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         {/* The header pill answers exactly one question: is traffic routing

@@ -18,6 +18,7 @@ import { GATE_DASHBOARD_URL } from "../lib/config";
  * config-vs-proxy mechanism lives one tap in, on the group detail. */
 export function Home({
   workspace,
+  gatewayHost,
   proxyOn,
   caTrusted,
   showProxy,
@@ -39,6 +40,10 @@ export function Home({
   onOpenSettings,
 }: {
   workspace: string;
+  /** The gateway host on its own, separate from `workspace`: the header now
+   * carries the org, so the identifier traffic actually leaves through needs a
+   * line of its own rather than disappearing with it. */
+  gatewayHost: string;
   proxyOn: boolean;
   caTrusted: boolean;
   showProxy: boolean;
@@ -249,6 +254,38 @@ export function Home({
           </div>
         )}
 
+        {/* What is on the wire, on its own line, because it is a standing fact
+            about this install rather than a footnote to anything. The header
+            used to carry this host and now carries the org; a gateway
+            identifier that vanished with it would take the answer to "where is
+            my traffic actually going" off Home entirely.
+
+            It also gives the Gate dashboard the place it has been looking for.
+            Three previous addresses each failed differently: below the last row
+            it fell under the fold, pinned to the footer it squeezed the
+            credential promise until "Session in Credential Manager" truncated
+            on Windows, and riding the ledger heading it outweighed the heading
+            it sat on while pointing out of the app. Here it is attached to the
+            host it is the far end of, which is the one place it means
+            something. */}
+        {gatewayHost && (
+          <div className="flex items-center gap-2 px-0.5">
+            <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-gc-ink-3">
+              {gatewayHost}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                void openExternal(GATE_DASHBOARD_URL);
+              }}
+              className="-mr-1 flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+            >
+              <Icon name="cube" size={13} />
+              Gate dashboard
+            </button>
+          </div>
+        )}
+
         {/* Its own line, not a footnote inside the routing card: that card
             holds the switch that routes traffic, and a link into Settings is
             an unrelated errand. Still only speaks in the quiet room - any
@@ -421,32 +458,11 @@ export function Home({
       {/* Not "Models": the last row is a tool category, not a model family,
           and a label the list contradicts is worse than a plain one. This
           names the question every row answers. */}
-      {/* The dashboard link rides the heading rather than sitting below the
-          last row, which is where it used to be and where it fell below the
-          fold. Pinning it to the footer fixed the fold and cost the
-          credential promise the width it needed to fit on Windows; up here
-          it is above the fold in every state and costs the ledger no
-          height. */}
-      <SectionLabel
-        trailing={
-          <button
-            type="button"
-            onClick={() => {
-              void openExternal(GATE_DASHBOARD_URL);
-            }}
-            className="-mr-1 flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
-          >
-            <Icon name="cube" size={13} />
-            Gate dashboard
-          </button>
-        }
-      >
-        What routes through Gate
-      </SectionLabel>
+      <SectionLabel>What routes through Gate</SectionLabel>
       {groups.length > 0 ? (
         <div role="list" className="flex flex-col border-t border-gc-line">
           {groups.map((group) => {
-            const { count, exception } = groupSummary(group);
+            const { count, exception, kind } = groupSummary(group);
             return (
               <div
                 key={group.id}
@@ -487,11 +503,24 @@ export function Home({
                       count never needs the second line, so the row only grows
                       in the state that has something to say. */}
                   <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
-                    {/* No count alongside an exception: concatenated, the
-                        line truncated to "Codex set up elsewhere · 0 of 2…",
-                        and a half-printed number is worse than none. The pill
-                        already answers "is this routing?". */}
-                    {exception ? <span className="text-gc-ink-2">{exception}</span> : count}
+                    {/* The sentence carries its own severity. Every exception
+                        used to print in the same ink-2 as every other, so a
+                        failure and a hand-written setup were typographically
+                        identical and the pill was reality's only voice on the
+                        row - against a saturated indigo switch reporting mere
+                        intent. Error-deep here is the same ink the app already
+                        uses for destructive and failed states elsewhere. */}
+                    {exception ? (
+                      <span
+                        className={
+                          kind === "error" ? "font-medium text-gc-error-deep" : "text-gc-ink-2"
+                        }
+                      >
+                        {exception}
+                      </span>
+                    ) : (
+                      count
+                    )}
                   </div>
                 </div>
                 {/* The visible text truncates at 360px; this carries the whole

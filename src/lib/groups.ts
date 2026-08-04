@@ -182,9 +182,20 @@ export function buildGroups(
   return groups.filter((g) => g.members.length > 0);
 }
 
+/** Which kind of exception `groupSummary` found, so a row can give the sentence
+ * its own ink instead of printing every severity in the same grey. Reality is
+ * what this ledger is for, and it was losing the row to the switch beside it:
+ * intent is one saturated indigo object, so reality has to speak in more than
+ * one place to hold its own. */
+export type GroupException = "error" | "needs-trust" | "master-off" | "drifted";
+
 /** "2 of 4 routing", plus whatever needs a human, named rather than counted
  * away: the row is a summary, but an exception should never hide inside it. */
-export function groupSummary(group: Group): { count: string; exception: string | null } {
+export function groupSummary(group: Group): {
+  count: string;
+  exception: string | null;
+  kind: GroupException | null;
+} {
   // When there is an exception, the count is the half that survives
   // truncation at 360px and the exception is the half that gets cut - the
   // wrong way round, since the pill already answers "is this routing?".
@@ -194,19 +205,28 @@ export function groupSummary(group: Group): { count: string; exception: string |
   const drifted = group.members.filter((m) => m.attention === "drifted");
   const untrusted = group.members.filter((m) => m.attention === "needs-trust");
   const masterOff = group.members.filter((m) => m.attention === "master-off");
-  const exception =
-    errors.length > 0
-      ? errors.length === 1
-        ? `${errors[0].name} failed`
-        : `${errors.length} failed`
-      : untrusted.length > 0
-        ? "certificate not trusted"
-        : masterOff.length > 0
-          ? "waiting on routing"
-          : drifted.length > 0
-            ? drifted.length === 1
-              ? `${drifted[0].name} set up elsewhere`
-              : `${drifted.length} set up elsewhere`
-            : null;
-  return { count, exception };
+  if (errors.length > 0) {
+    return {
+      count,
+      exception: errors.length === 1 ? `${errors[0].name} failed` : `${errors.length} failed`,
+      kind: "error",
+    };
+  }
+  if (untrusted.length > 0) {
+    return { count, exception: "certificate not trusted", kind: "needs-trust" };
+  }
+  if (masterOff.length > 0) {
+    return { count, exception: "waiting on routing", kind: "master-off" };
+  }
+  if (drifted.length > 0) {
+    return {
+      count,
+      exception:
+        drifted.length === 1
+          ? `${drifted[0].name} set up elsewhere`
+          : `${drifted.length} set up elsewhere`,
+      kind: "drifted",
+    };
+  }
+  return { count, exception: null, kind: null };
 }

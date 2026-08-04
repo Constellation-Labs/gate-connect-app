@@ -145,6 +145,7 @@ describe("groupSummary", () => {
     expect(groupSummary(group)).toEqual({
       count: "1 of 2 routing",
       exception: "Claude Code failed",
+      kind: "error",
     });
   });
 
@@ -176,7 +177,11 @@ describe("groupSummary", () => {
       [],
       ON,
     );
-    expect(groupSummary(clean)).toEqual({ count: "1 of 1 routing", exception: null });
+    expect(groupSummary(clean)).toEqual({
+      count: "1 of 1 routing",
+      exception: null,
+      kind: null,
+    });
   });
 });
 
@@ -209,6 +214,7 @@ describe("intent versus flow", () => {
     expect(groupSummary(group)).toEqual({
       count: "0 of 1 routing",
       exception: "waiting on routing",
+      kind: "master-off",
     });
   });
 

@@ -890,7 +890,18 @@ export function App() {
     setScreen("firstrun");
   }, [proxy]);
 
-  const workspace = hostOf(account?.gateway_base_url);
+  const gatewayHost = hostOf(account?.gateway_base_url);
+  // The header's mono sub-label answers "who am I here?", and the gateway host
+  // cannot: it is byte-identical for every customer of a given deployment. The
+  // org is what gets billed and what the gateway rejects requests without (see
+  // `isSignedIn`), and it used to appear on no screen the user operates from -
+  // only in Settings, two navigations away.
+  //
+  // Home takes the org alone and shows nothing when there isn't one, because
+  // Home prints the host on its own line and a header repeating it read as two
+  // facts where there was one. Success has no such line, so it falls back.
+  const orgName = account?.org_name ?? null;
+  const workspace = orgName ?? gatewayHost;
   const proxyOn = proxy?.running ?? false;
   const showProxy = proxy !== null;
   // Proxy domains minus internal plumbing entries.
@@ -997,7 +1008,8 @@ export function App() {
     // home (and any fallback once loaded)
     body = (
       <Home
-        workspace={workspace}
+        workspace={orgName ?? ""}
+        gatewayHost={gatewayHost}
         proxyOn={proxyOn}
         // `?? false`, matching the other three call sites. An unresolved
         // proxy state is not evidence that the CA is trusted, and defaulting

@@ -81,7 +81,8 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
   (usePlatform as Mock).mockReturnValue(platform);
   render(
     <Home
-      workspace="gateway.constellationgate.ai"
+      workspace="Constellation Labs"
+      gatewayHost="gateway.constellationgate.ai"
       proxyOn={true}
       caTrusted={true}
       showProxy={true}
@@ -295,6 +296,58 @@ describe("Home model-family ledger", () => {
     expect(screen.getByText("Routing on")).toBeTruthy();
   });
 
+  it("gives a failure its own ink, not the grey every exception used to share", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
+      domains: [makeDomain()],
+    });
+    // The pill was reality's only voice on a row whose switch reports intent in
+    // saturated indigo. The sentence carries severity too now.
+    const failure = screen.getByText("Claude Code failed");
+    expect(failure.className).toContain("text-gc-error-deep");
+  });
+
+  it("keeps a hand-written setup in the quieter ink", () => {
+    renderHome({
+      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
+      domains: [],
+    });
+    const drift = screen.getByText("Codex set up elsewhere");
+    expect(drift.className).toContain("text-gc-ink-2");
+    expect(drift.className).not.toContain("error");
+  });
+
+  it("names the gateway host on its own line, not only in the header", () => {
+    renderHome();
+    // The header carries the org now, because a gateway host is byte-identical
+    // for every customer and the org is what gets billed. The host still has to
+    // be answerable from Home, so it gets a line.
+    expect(screen.getByText("gateway.constellationgate.ai")).toBeTruthy();
+    expect(screen.getByText("Constellation Labs")).toBeTruthy();
+  });
+
+  it("attaches the dashboard to the host it is the far end of", () => {
+    renderHome();
+    // Fourth address for this link. The previous three each failed: under the
+    // fold, squeezing the credential promise in the footer, and outweighing the
+    // ledger heading it rode. The heading is a plain label again.
+    const link = screen.getByRole("button", { name: /Gate dashboard/ });
+    const heading = screen.getByRole("heading", { name: /What routes through Gate/ });
+    // It used to be a sibling of the h2 inside a shared flex wrapper. Its
+    // wrapper now holds the host instead, and no longer holds the heading.
+    expect(link.parentElement?.contains(heading)).toBe(false);
+    const host = screen.getByText("gateway.constellationgate.ai");
+    expect(host.parentElement?.contains(link)).toBe(true);
+  });
+
+  it("prints the host once when there is no org to name", () => {
+    // App passes an empty workspace for a key account, which has no org. The
+    // header showed the host there, and the wire line shows it too, so the same
+    // string appeared twice 230px apart.
+    renderHome({ workspace: "" });
+    expect(screen.getAllByText("gateway.constellationgate.ai").length).toBe(1);
+  });
+
   it("flags a hand-written setup without calling the family broken", () => {
     renderHome({
       tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
@@ -351,21 +404,6 @@ describe("Home routing-change notice", () => {
     expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(screen.getByText(/local address changed/)).toBeTruthy();
     expect(screen.queryByText(/Routing is off\./)).toBeNull();
-  });
-});
-
-describe("Home dashboard link", () => {
-  it("rides the ledger heading, not a row of its own below the list", () => {
-    // Three placements have been tried. Below the last row it sat under the
-    // fold on the most common Home. Pinned to the footer it was always
-    // reachable, but it took the strip to three items and squeezed the
-    // credential promise to 136px, so "Session in Credential Manager" (146px)
-    // truncated on Windows. On the heading it is above the fold in every
-    // state and costs the ledger no height.
-    renderHome();
-    const link = screen.getByRole("button", { name: /Gate dashboard/ });
-    const heading = screen.getByRole("heading", { name: /What routes through Gate/ });
-    expect(heading.parentElement?.contains(link)).toBe(true);
   });
 });
 
