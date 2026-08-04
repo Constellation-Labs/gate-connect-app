@@ -148,7 +148,7 @@ describe("GroupDetail inline expansion", () => {
     const onToggleTool = vi.fn(() => Promise.reject("No upstream credential saved."));
     renderDetail([tool("claude-code", "Claude Code", { kind: "detected" })], [], { onToggleTool });
     fireEvent.click(screen.getByRole("switch", { name: "Route Claude Code through Gate" }));
-    expect(await screen.findByText("Couldn't connect this tool")).toBeTruthy();
+    expect(await screen.findByText("Couldn’t connect this tool")).toBeTruthy();
   });
 
   it("asks before replacing a hand-written setup, and only writes on confirm", async () => {

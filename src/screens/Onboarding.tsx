@@ -94,7 +94,7 @@ function buildSteps(platform: Platform): Step[] {
       title: "How to turn it on",
       sub: "Routing is a per-app choice: turn on the apps you want Gate to cover.",
       body: [
-        "For Claude Code and Codex, Gate Connect points the app's own config at your gateway and restores it when you disconnect. For apps like Claude Desktop or ChatGPT, it routes the provider's domain through a local proxy.",
+        "For Claude Code and Codex, Gate Connect points the app’s own config at your gateway and restores it when you disconnect. For apps like Claude Desktop or ChatGPT, it routes the provider’s domain through a local proxy.",
         `Connected apps route through Gate; unselected apps stay unchanged. Your Gate key stays in ${secretStoreName(platform)}, not a plain file.`,
       ],
     },
@@ -126,7 +126,7 @@ function buildSteps(platform: Platform): Step[] {
       sub: whereItLives(platform),
       body: [
         "Click the Gate icon to see whether Gate is active, which apps are connected, and which need attention.",
-        "That's all there is to it. Sign in and your first app is one toggle away.",
+        "That’s all there is to it. Sign in and your first app is one toggle away.",
       ],
       locate: true,
     },

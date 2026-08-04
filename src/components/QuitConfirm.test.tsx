@@ -22,7 +22,7 @@ describe("QuitConfirm copy", () => {
   it("names a single connected tool in the singular", () => {
     renderConfirm(["Claude Code"]);
     expect(screen.getByText(/Claude Code still routes through Gate/)).toBeTruthy();
-    expect(screen.getByText(/it can't connect until Gate Connect runs again/)).toBeTruthy();
+    expect(screen.getByText(/it can’t connect until Gate Connect runs again/)).toBeTruthy();
   });
 
   it("lists two tools joined with and, in the plural", () => {
@@ -37,9 +37,11 @@ describe("QuitConfirm copy", () => {
     expect(screen.getByText(/Claude Code, Codex, and OpenCode still route/)).toBeTruthy();
   });
 
-  it("says disconnected tools come back at the next start", () => {
+  it("names which app's next start brings the tools back", () => {
     renderConfirm(["Claude Code"]);
-    expect(screen.getByText(/reconnects it at the next start/)).toBeTruthy();
+    // "at the next start" left the subject open, and the tool's own next launch
+    // is the wrong answer. Matches the notification this choice fires.
+    expect(screen.getByText(/reconnects it when Gate Connect starts again/)).toBeTruthy();
   });
 
   it("backs out via Cancel without touching integrations or quitting", () => {
@@ -65,7 +67,7 @@ describe("QuitConfirm actions", () => {
   it("quits anyway without disconnecting anything", async () => {
     (quitApp as Mock).mockResolvedValue(undefined);
     renderConfirm(["Claude Code"]);
-    fireEvent.click(screen.getByRole("button", { name: "Quit anyway" }));
+    fireEvent.click(screen.getByRole("button", { name: "Quit without disconnecting" }));
     await vi.waitFor(() => expect(quitApp).toHaveBeenCalledTimes(1));
     expect(disconnectToolsForQuit).not.toHaveBeenCalled();
     expect(track).toHaveBeenCalledWith("quit_confirmed", { integrations_disabled: false });

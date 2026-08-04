@@ -66,7 +66,7 @@ export function secretStoreName(p: Platform, determiner: "your" | "the" = "your"
     case "macos":
       return `${determiner} keychain`;
     default:
-      return `${determiner} system's secure store`;
+      return `${determiner} system’s secure store`;
   }
 }
 

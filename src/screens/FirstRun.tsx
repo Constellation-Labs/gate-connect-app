@@ -162,7 +162,7 @@ export function FirstRun({
             Gate API Key
           </div>
           <p className="mb-2 text-[11px] leading-snug text-gc-ink-3">
-            Best for CI or headless machines where browser sign-in isn't
+            Best for CI or headless machines where browser sign-in isn’t
             practical. Otherwise, sign in with Constellation: nothing to
             paste, and it refreshes on its own.
           </p>

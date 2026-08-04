@@ -17,7 +17,7 @@ describe("secretStoreName", () => {
   });
 
   it("falls back to a generic name for unknown platforms", () => {
-    expect(secretStoreName("unknown")).toBe("your system's secure store");
+    expect(secretStoreName("unknown")).toBe("your system’s secure store");
   });
 
   it("swaps the determiner where a nearby 'your' is already doing the work", () => {

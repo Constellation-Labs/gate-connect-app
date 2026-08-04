@@ -226,6 +226,19 @@ function UpdateTakeover({
             ? "The update couldn’t install. Check your connection and try again."
             : "A new version of Gate Connect is ready to install."}
         </p>
+        {/* The button says "Install & relaunch" and the panel said nothing about
+            what a relaunch costs. This is the one takeover a user meets
+            mid-task, and the question it left unanswered is whether their
+            traffic stops: it does not, because the exit is marked as an updater
+            relaunch and the backend restores the routing intent afterwards.
+            Phrased as the setup rather than as "routing comes back on", which
+            would imply routing is currently on; this panel does not know. */}
+        {!failed && (
+          <p className="text-[11.5px] leading-snug text-gc-ink-3">
+            Installing restarts Gate Connect; your routing setup comes back with
+            it.
+          </p>
+        )}
       </div>
 
       <div className="flex items-center gap-2 font-mono text-[11.5px]">

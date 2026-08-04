@@ -369,7 +369,11 @@ export function Settings({
           icon={copiedUrl ? "check" : "copy"}
           size={14}
           onClick={() => void copyGatewayUrl()}
-          aria-label="Copy gateway URL"
+          // The icon swapped to a check and the name stayed "Copy gateway URL",
+          // so the only confirmation this control gives was one a screen reader
+          // could not reach. The two "Copy details" buttons swap their visible
+          // text; this one has no text to swap.
+          aria-label={copiedUrl ? "Gateway URL copied" : "Copy gateway URL"}
         />
       </div>
       {/* Full-bleed, beneath the row. Sharing the row with the pill and the
@@ -598,8 +602,8 @@ export function Settings({
           <Icon name="info" size={15} className="mt-px shrink-0 text-gc-ink-3" />
           <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
             Gate Connect is still listed in your login items as a safety net,
-            so an unexpected restart can't leave routing broken. It removes
-            itself automatically once that's safe.
+            so an unexpected restart can’t leave routing broken. It removes
+            itself automatically once that’s safe.
           </div>
         </div>
       )}
@@ -768,7 +772,7 @@ export function Settings({
         {errorFor("reset")}
         {confirmingReset && (
           <ConfirmPanel
-            message={`Reset Gate Connect? This turns routing off, disconnects your tools, and ${isOAuth ? "forgets this account" : `removes your key from ${secretStoreName(platform, "the")}`}. You'll start over from sign-in.`}
+            message={`Reset Gate Connect? This turns routing off, disconnects your tools, and ${isOAuth ? "forgets this account" : `removes your key from ${secretStoreName(platform, "the")}`}. You’ll start over from sign-in.`}
             confirmLabel={submitting ? "Resetting…" : "Reset everything"}
             busy={submitting}
             onConfirm={() => void forget()}

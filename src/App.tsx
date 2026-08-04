@@ -771,8 +771,8 @@ export function App() {
           ...classified,
           title:
             failed.length === 1
-              ? `Couldn't ${on ? "connect" : "disconnect"} ${failed[0]}`
-              : `Couldn't ${on ? "connect" : "disconnect"} ${failed.length} of ${group.members.length}: ${failed.join(", ")}`,
+              ? `Couldn’t ${on ? "connect" : "disconnect"} ${failed[0]}`
+              : `Couldn’t ${on ? "connect" : "disconnect"} ${failed.length} of ${group.members.length}: ${failed.join(", ")}`,
         });
       }
       setTools(await listTools().catch(() => tools));
@@ -1183,7 +1183,7 @@ export function App() {
               <Icon name="key" size={11} className="shrink-0" />
               {/* This slot has to hold "Session in Credential Manager" (146px)
                   and, during the first async tick before the platform
-                  resolves, "Key in your system's secure store" (159px). With
+                  resolves, "Key in your system’s secure store" (159px). With
                   the dashboard button also on the strip it was 136-142px, so
                   the product's core promise truncated on Windows and briefly
                   everywhere. The button moved into Home's ledger heading; the

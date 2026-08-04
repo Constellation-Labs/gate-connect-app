@@ -84,7 +84,7 @@ export function RoutingChangeNotice({
               three steps, which meant a screen reader entering the confirm
               heard no change at all. */}
           {confirming && closed === null
-            ? "Close everything that's running?"
+            ? "Close the tools and apps that are running?"
             : routingOn
               ? "Routing is on"
               : "Routing is off"}
@@ -94,10 +94,16 @@ export function RoutingChangeNotice({
         {closed === null ? (
           <p className="text-[12.5px] leading-snug text-gc-ink-3">
             {confirming
-              ? "Close everything still running, including desktop apps like Claude? Anything they're working on will be interrupted."
+              ? // Not "Close everything still running": this closes the agent
+                // process set, so a routed app outside it (ChatGPT desktop,
+                // Cowork) survives and the old wording told the user it had
+                // been handled. The desktop-app warning stays because it is
+                // true and it is the surprising half - the match lowercases the
+                // process name, so macOS Claude Desktop is in scope.
+                "Desktop apps like Claude close too, and anything they’re working on will be interrupted."
               : routingOn
-                ? "Anything already open isn't routing through Gate yet. Close it and it picks Gate up the next time you open it."
-                : "Anything already open still points at Gate. Close it and it goes back to normal the next time you open it."}
+                ? "Tools and apps that were already open aren’t routing through Gate yet. Close them and they pick Gate up when you open them again."
+                : "Tools and apps that were already open still point at Gate. Close them and they go back to their own settings when you open them again."}
           </p>
         ) : (
           // The one line that reports the result of a destructive action, and
@@ -119,8 +125,10 @@ export function RoutingChangeNotice({
             <Button variant="accent" full onClick={onDismiss}>
               Got it
             </Button>
+            {/* Ellipsis, matching Home's banner: same action, different entry
+                point, and both land on the confirm step rather than acting. */}
             <Button variant="secondary" full onClick={() => setConfirming(true)}>
-              Close them now
+              Close them…
             </Button>
           </>
         )}
@@ -131,7 +139,7 @@ export function RoutingChangeNotice({
                 Same grammar as Settings' Reset. Cancel is a full secondary
                 button, not a text link, so the safe option is its equal. */}
             <Button variant="danger" full disabled={closing} onClick={() => void closeAgents()}>
-              {closing ? "Closing…" : "Close everything"}
+              {closing ? "Closing…" : "Close them"}
             </Button>
             <Button
               ref={safeRef}

@@ -28,14 +28,14 @@ function explain(member: GroupMember, platform: Platform): string {
   if (member.attention === "master-off") {
     return member.kind === "proxy"
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
-      : `${member.name}'s config points at Gate, but routing is off, so it can't reach the gateway.`;
+      : `${member.name}’s config points at Gate, but routing is off, so it can’t reach the gateway.`;
   }
   if (member.kind === "proxy") {
     return member.attention === "needs-trust"
-      ? `${member.name} is switched on, but the local certificate isn't trusted yet, so its traffic isn't routing.`
+      ? `${member.name} is switched on, but the local certificate isn’t trusted yet, so its traffic isn’t routing.`
       : member.routed
         ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
-        : `${member.name} routes through Gate's local proxy once you switch it on.`;
+        : `${member.name} routes through Gate’s local proxy once you switch it on.`;
   }
   switch (member.tool?.status.kind) {
     case "connected":
@@ -43,9 +43,9 @@ function explain(member: GroupMember, platform: Platform): string {
     case "drifted":
       return `${member.name} has a Gate setup written outside this app. Switching it on replaces that configuration and manages the key from ${secretStoreName(platform)}.`;
     case "error":
-      return `Gate Connect couldn't read ${member.name}'s routing state. The details below name the cause; fix that, then reopen this window from the menu bar to re-check.`;
+      return `Gate Connect couldn’t read ${member.name}’s routing state. The details below name the cause; fix that, then reopen this window from the menu bar to re-check.`;
     default:
-      return `${member.name} is installed, but its config doesn't point at Gate. Switch it on and Gate Connect will write the config for you.`;
+      return `${member.name} is installed, but its config doesn’t point at Gate. Switch it on and Gate Connect will write the config for you.`;
   }
 }
 
@@ -339,7 +339,7 @@ export function GroupDetail({
                   </p>
 
                   {/* The remedy belongs where the problem is named. Without
-                      this the user reads "the certificate isn't trusted yet"
+                      this the user reads "the certificate isn’t trusted yet"
                       and has to navigate back to Home to act on it. */}
                   {member.attention === "needs-trust" && (
                     <Button

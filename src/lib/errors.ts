@@ -98,8 +98,8 @@ export function classifyError(
     lc.includes("unknown command")
   ) {
     return {
-      title: "This action isn't available on your platform.",
-      hint: "This tool or action isn't supported here yet. The details below help when reporting it.",
+      title: "This action isn’t available on your platform.",
+      hint: "This tool or action isn’t supported here yet. The details below help when reporting it.",
       raw,
     };
   }
@@ -170,8 +170,8 @@ export function classifyError(
     lc.includes("network is unreachable")
   ) {
     return {
-      title: "Couldn't reach the gateway",
-      hint: "Check that you're online and that the gateway URL in Settings is right, then try again.",
+      title: "Couldn’t reach the gateway",
+      hint: "Check that you’re online and that the gateway URL in Settings is right, then try again.",
       raw,
     };
   }
@@ -201,26 +201,26 @@ export function classifyError(
 
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
-    sign_in: "Couldn't save your account",
-    sign_out: "Couldn't sign out",
-    connect: "Couldn't connect this tool",
-    forget: "Couldn't reset Gate Connect",
-    save_api_key: "Couldn't save the API key",
-    update: "Couldn't install the update",
-    close_agents: "Couldn't close the running tools and apps",
-    quit_disable: "Couldn't disconnect the tools",
-    proxy_toggle: "Couldn't toggle routing",
-    provider_toggle: "Couldn't change that app's routing",
-    trust_ca: "Couldn't trust the certificate",
-    untrust_ca: "Couldn't remove the certificate trust",
-    startup: "Couldn't load state at startup",
-    account_reconcile: "Couldn't reconcile the saved account",
-    provider_restore: "Couldn't restore provider routing",
-    provider_disable: "Couldn't disconnect provider routing",
-    provider_reconcile: "Couldn't refresh tool configs",
-    routing_intent: "Couldn't save the routing preference",
-    restore_routing: "Couldn't restore routing at startup",
-    launch_at_login: "Couldn't set launch at login",
+    sign_in: "Couldn’t save your account",
+    sign_out: "Couldn’t sign out",
+    connect: "Couldn’t connect this tool",
+    forget: "Couldn’t reset Gate Connect",
+    save_api_key: "Couldn’t save the API key",
+    update: "Couldn’t install the update",
+    close_agents: "Couldn’t close the running tools and apps",
+    quit_disable: "Couldn’t disconnect the tools",
+    proxy_toggle: "Couldn’t toggle routing",
+    provider_toggle: "Couldn’t change that app’s routing",
+    trust_ca: "Couldn’t trust the certificate",
+    untrust_ca: "Couldn’t remove the certificate trust",
+    startup: "Couldn’t load state at startup",
+    account_reconcile: "Couldn’t reconcile the saved account",
+    provider_restore: "Couldn’t restore provider routing",
+    provider_disable: "Couldn’t disconnect provider routing",
+    provider_reconcile: "Couldn’t refresh tool configs",
+    routing_intent: "Couldn’t save the routing preference",
+    restore_routing: "Couldn’t restore routing at startup",
+    launch_at_login: "Couldn’t set launch at login",
     generic: "Something went wrong",
   };
   return {

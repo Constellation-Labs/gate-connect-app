@@ -77,11 +77,16 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
         </h1>
         <p className="text-[12.5px] leading-snug text-gc-ink-3">
           {names} still {plural ? "route" : "routes"} through Gate. If you quit now,{" "}
-          {plural ? "they" : "it"} can't connect until Gate Connect runs again.
+          {plural ? "they" : "it"} can’t connect until Gate Connect runs again.
         </p>
         <p className="text-[11.5px] leading-snug text-gc-ink-3">
-          Disconnecting restores {plural ? "their" : "its"} own settings for the
-          downtime and reconnects {plural ? "them" : "it"} at the next start.
+          {/* "when Gate Connect starts again", not "at the next start": the next
+              start of what was the open question, and the tool's own next launch
+              is the wrong answer. Same phrasing as the notification this choice
+              fires, so the two messages the user reads seconds apart agree. */}
+          Disconnecting puts {plural ? "their" : "its"} own settings back while
+          Gate Connect is closed, then reconnects {plural ? "them" : "it"} when
+          Gate Connect starts again.
         </p>
         {error && <ErrorNote error={error} />}
       </div>
@@ -90,8 +95,11 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
         <Button variant="accent" full disabled={busy} onClick={() => void turnOffAndQuit()}>
           {busy ? "Working…" : "Disconnect tools and quit"}
         </Button>
+        {/* Names what it does instead of "Quit anyway", which said only that
+            quitting would happen and left the difference between the two quit
+            buttons to be inferred. */}
         <Button variant="secondary" full disabled={busy} onClick={() => void quitAnyway()}>
-          Quit anyway
+          Quit without disconnecting
         </Button>
         <button
           ref={safeRef}

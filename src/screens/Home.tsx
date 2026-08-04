@@ -424,9 +424,9 @@ export function Home({
               {changeNotice === "pending"
                 ? "Set to route, but routing is off, so nothing is going through Gate yet."
                 : changeNotice === "started"
-                  ? "That turned routing on too. Anything already open isn't routing through Gate yet."
+                  ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
                   : changeNotice === "on"
-                    ? "Routing is on. Anything already open isn't routing through Gate yet."
+                    ? "Routing is on. Anything already open isn’t routing through Gate yet."
                     : "Routing is off. Anything already open still points at Gate."}
             </div>
             {/* Pending has a different remedy: there is nothing running to

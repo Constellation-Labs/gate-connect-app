@@ -43,12 +43,22 @@ export function Success({
           data-screen-focus
           className="text-[17px] font-semibold tracking-[-0.02em] text-gc-ink outline-none"
         >
-          You’re connected
+          {/* The heading claims only what finished. It used to read "You're
+              connected" under a header pill reading "Routing off", which is the
+              same contradiction Home's pill logic was rewritten to avoid: the
+              account is linked, routing is not on, and the two facts were
+              landing 40px apart in opposite directions. */}
+          {proxyOn ? "You’re connected" : "Account connected"}
         </h1>
         <p className="mt-1.5 max-w-[280px] text-[12.5px] leading-[1.45] text-gc-ink-3">
+          {/* Three states, not two. The middle one is the reason this split
+              matters: with no proxy subsystem to report on, the old copy still
+              claimed to be "routing your agents through Gate". */}
           {offerRouting
-            ? "Gate Connect is linked to your workspace. One step left: turn on routing to send your agents through Gate."
-            : "Gate Connect is linked to your workspace and routing your agents through Gate."}
+            ? "One step left: turn on routing to send your agents through Gate."
+            : proxyOn
+              ? "Gate Connect is linked to your workspace and routing your agents through Gate."
+              : "Gate Connect is linked to your workspace."}
         </p>
         {offerRouting ? (
           <>

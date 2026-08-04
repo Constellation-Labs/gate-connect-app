@@ -1221,8 +1221,13 @@ async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> 
             .builder()
             .title("Gate Connect")
             .body(
-                "Integrations are off while Gate Connect is closed. Restart any running \
-                 CLI agents; everything reconnects when Gate Connect starts again.",
+                // "Your tools", not "Integrations": that word reaches the user
+                // nowhere else in the product, and this notification arrives
+                // seconds after a panel that called them tools. The rest of the
+                // wording is shared with QuitConfirm on purpose.
+                "Your tools are back on their own settings while Gate Connect is \
+                 closed. Restart any running CLI agents; everything reconnects \
+                 when Gate Connect starts again.",
             )
             .show();
     }
