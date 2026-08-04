@@ -65,6 +65,22 @@ type Screen =
   | "success"
   | "group";
 
+/** How deep each screen sits in the popover. In one 360px room, direction is
+ *  the only navigational metaphor available: without it a push and a pop look
+ *  identical and the user never builds a sense of where Settings is relative
+ *  to Home. DESIGN.md has promised this grammar since the start; only the
+ *  takeovers had it. `loading` is deliberately absent - the first paint has
+ *  nothing to slide away from. */
+const SCREEN_DEPTH: Record<Screen, number> = {
+  loading: 0,
+  firstrun: 0,
+  orgpicker: 1,
+  success: 2,
+  home: 0,
+  settings: 1,
+  group: 1,
+};
+
 // Proxy domains hidden from the Apps ledger. "chatgpt" exists so the relay
 // recognizes the Codex integration's upstream hint - it's plumbing for the
 // Codex tool, not an app the user routes independently.
@@ -157,6 +173,25 @@ function needsOrg(account: Account | null, oauth: OAuthStatus | null): boolean {
 export function App() {
   const platform = usePlatform();
   const [screen, setScreen] = useState<Screen>("loading");
+  // Direction of the current screen change, derived during render (the React
+  // pattern for adjusting state when an input changes) rather than in an
+  // effect, so the panel slides in on its first paint instead of a frame
+  // late. Nothing animates away from `loading`: the first screen has no
+  // predecessor to have come from.
+  const [motionFrom, setMotionFrom] = useState<Screen>("loading");
+  const [screenMotion, setScreenMotion] = useState("");
+  if (motionFrom !== screen) {
+    setScreenMotion(
+      motionFrom === "loading"
+        ? ""
+        : SCREEN_DEPTH[screen] > SCREEN_DEPTH[motionFrom]
+          ? "ob-slide-in-fwd"
+          : SCREEN_DEPTH[screen] < SCREEN_DEPTH[motionFrom]
+            ? "ob-slide-in-back"
+            : "",
+    );
+    setMotionFrom(screen);
+  }
   const [account, setAccount] = useState<Account | null>(null);
   const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
   // Where the org picker returns to when done: "home" (startup re-pick),
@@ -611,7 +646,7 @@ export function App() {
         // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
         // or a missing network service) instead of silently reverting - a
         // swallowed error reads as "the toggle does nothing".
-        setProviderError(classifyError(e, "proxy_toggle"));
+        setProviderError(classifyError(e, "proxy_toggle", account?.auth_mode));
         // Re-sync to the true state after the failed toggle.
         try {
           setProxy(await proxyStatus());
@@ -733,7 +768,7 @@ export function App() {
       }
       track("group_toggled", { provider: id, enabled: on });
       if (lastError !== null) {
-        const classified = classifyError(lastError, "connect");
+        const classified = classifyError(lastError, "connect", account?.auth_mode);
         setProviderError({
           ...classified,
           title:
@@ -957,6 +992,7 @@ export function App() {
         onTrustCa={trustCa}
         proxyOn={proxy?.running ?? false}
         onEnableRouting={() => void toggleProxy(false)}
+        authMode={account?.auth_mode}
       />
     );
   } else {
@@ -965,7 +1001,11 @@ export function App() {
       <Home
         workspace={workspace}
         proxyOn={proxyOn}
-        caTrusted={proxy?.ca_trusted ?? true}
+        // `?? false`, matching the other three call sites. An unresolved
+        // proxy state is not evidence that the CA is trusted, and defaulting
+        // a security fact to the reassuring answer is the wrong direction
+        // even where nothing visible currently depends on it.
+        caTrusted={proxy?.ca_trusted ?? false}
         showProxy={showProxy}
         providers={providers}
         tools={tools}
@@ -1003,12 +1043,19 @@ export function App() {
   }
 
   // Named per platform, the way `trustStoreName` is elsewhere: the
-  // reassurance is worthless if it names the wrong vault. Only shown once
-  // there is actually a credential to reassure about.
+  // reassurance is worthless if it names the wrong vault.
+  const hasCredential = !!account && (account.has_api_key || (oauth?.signed_in ?? false));
+  // First run has no credential yet, but it is the screen where the user is
+  // about to hand one over, so the promise is worth more here than anywhere
+  // else. Stated in the general voice ("credentials live in X") because at
+  // this point we do not know whether it will be a session or a key.
   const credentialStore =
-    account && (account.has_api_key || (oauth?.signed_in ?? false))
-      ? secretStoreName(platform)
-      : null;
+    hasCredential || screen === "firstrun" ? secretStoreName(platform) : null;
+
+  // Any full-popover takeover is up, so the room behind it is not the user's
+  // to read or click.
+  const obscured =
+    quitTools !== null || routingNotice !== null || updateTakeoverVisible || oauthOffer;
 
   return (
     <div
@@ -1062,22 +1109,29 @@ export function App() {
             }}
           />
         )}
-      {/* While any takeover is up, the obscured content goes aria-hidden so
-          a screen reader's virtual cursor can't wander under the dialog (the
-          focus traps already handle Tab). */}
+      {/* While any takeover is up the obscured content goes aria-hidden, so a
+          screen reader's virtual cursor can't wander under the dialog, and
+          pointer-events-none, so the mouse can't either. aria-hidden alone
+          left the gear and the row switches clickable underneath the panel:
+          the focus traps cover Tab, but a click still reached a control the
+          user could not see. (`inert` would do both in one attribute; React
+          18's DOM typings don't carry it yet.) */}
       <div
-        className="flex min-h-0 grow flex-col"
-        aria-hidden={
-          quitTools !== null || routingNotice !== null || updateTakeoverVisible || oauthOffer
-            ? true
-            : undefined
-        }
+        className={`flex min-h-0 grow flex-col${obscured ? " pointer-events-none" : ""}`}
+        aria-hidden={obscured ? true : undefined}
       >
         {/* Only the body scrolls. The version line used to live inside the
             scroll container, so it drifted with the content - PRODUCT.md says
             header and footer never scroll, and on Home it meant the footer
             and the dashboard link both sat below an invisible fold. */}
-        <div className="gc-scroll min-h-0 grow overflow-y-auto overflow-x-hidden">{body}</div>
+        <div className="gc-scroll min-h-0 grow overflow-y-auto overflow-x-hidden">
+          {/* Keyed by screen so the slide replays on every navigation and not
+              on ordinary re-renders. The reduced-motion guard in index.css
+              collapses both classes to instant. */}
+          <div key={screen} className={screenMotion}>
+            {body}
+          </div>
+        </div>
         {/* PRODUCT.md's first principle is that every screen should make the
             user feel where the key lives. Home never said "keychain" once -
             the claim lived in the tour, one line of Settings, and two taps
@@ -1095,7 +1149,9 @@ export function App() {
                     there, which lands it at 146px with all six platform /
                     auth-mode combinations clear. */}
                 <span className="truncate">
-                  {account?.auth_mode === "oauth" ? "Session" : "Key"} in {credentialStore}
+                  {!hasCredential
+                    ? `Credentials live in ${credentialStore}`
+                    : `${account?.auth_mode === "oauth" ? "Session" : "Key"} in ${credentialStore}`}
                 </span>
               </span>
             )}
@@ -1109,7 +1165,13 @@ export function App() {
                 than the only action on the strip. Indigo is defined as
                 affordance, which is what this is. The footer is pinned, so
                 the extra weight costs Home no height. */}
-            <span className="ml-auto flex shrink-0 items-center gap-2">
+            {/* Suppressed before there is an account: on first run the strip
+                carries the promise and nothing else, and a second action
+                would break the sign-in screen's two-option shape. It also
+                buys the longer "Credentials live in ..." string the full
+                width it needs. */}
+            {hasCredential && (
+              <span className="ml-auto flex shrink-0 items-center gap-2">
               {version && (
                 <span className="font-mono text-[10.5px] text-gc-ink-3">v{version}</span>
               )}
@@ -1124,6 +1186,7 @@ export function App() {
                 Gate dashboard
               </button>
             </span>
+            )}
           </div>
         )}
       </div>
