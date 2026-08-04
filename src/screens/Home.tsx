@@ -5,8 +5,7 @@ import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import { buildGroups, groupSummary } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
-import { Switch, IconButton, SectionLabel, ErrorNote, Button } from "../components/gc/ui";
-import { GroupPill, groupPillLabel } from "../components/GroupPill";
+import { Switch, IconButton, CardButton, ErrorNote, Button } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 import { trustStoreName, usePlatform } from "../lib/platform";
 import { openExternal } from "../lib/openExternal";
@@ -35,8 +34,7 @@ export function Home({
   onDismissStaleAgents,
   onToggleProxy,
   onTrustCa,
-  onToggleGroup,
-  onOpenGroup,
+  onOpenRoutes,
   onOpenSettings,
 }: {
   workspace: string;
@@ -64,8 +62,9 @@ export function Home({
   onDismissStaleAgents: () => void;
   onToggleProxy: () => void;
   onTrustCa: () => void;
-  onToggleGroup: (id: string, on: boolean) => void;
-  onOpenGroup: (id: string) => void;
+  /** Opens the ledger panel. The rows moved off this screen; the door and the
+   * exception it reports stayed. */
+  onOpenRoutes: () => void;
   onOpenSettings: () => void;
 }) {
   const platform = usePlatform();
@@ -102,6 +101,26 @@ export function Home({
     (n, g) => n + g.members.filter((m) => m.attention === "error").length,
     0,
   );
+
+  // The one exception the door reports, chosen across every family: a failure
+  // outranks a blocked certificate, which outranks a setup the user made
+  // elsewhere, which outranks waiting on the master switch. Without it, moving
+  // the ledger off Home would cost the mid-task user the whole answer to "is
+  // anything wrong?", which is the question they opened the popover with.
+  const EXCEPTION_RANK: Record<string, number> = {
+    error: 0,
+    "needs-trust": 1,
+    drifted: 2,
+    "master-off": 3,
+  };
+  const worstException = groups
+    .map((g) => groupSummary(g))
+    .filter((summary) => summary.exception !== null)
+    .sort(
+      (a, b) => (EXCEPTION_RANK[a.kind ?? ""] ?? 9) - (EXCEPTION_RANK[b.kind ?? ""] ?? 9),
+    )[0];
+  const ledgerNote = worstException?.exception ?? null;
+  const ledgerNoteKind = worstException?.kind ?? null;
 
   // At most one banner at a time, most actionable first: transient chrome
   // must never bury the ledger (the pills are the point of the screen). The
@@ -254,49 +273,101 @@ export function Home({
           </div>
         )}
 
+        {/* The door to the ledger, not the ledger, and directly under the card
+            it itemizes. One room cannot hold a routing card, a certificate
+            ceremony, a wire line, a banner, a launch tip and an itemized list;
+            the list is the part that reads the same whether or not the user came
+            looking for it.
+
+            It carries the exception when there is one. Moving the pills a
+            navigation away would otherwise let a mid-task user open the popover
+            and learn nothing, and PRODUCT.md's second principle puts the list on
+            home for exactly that reason. The itemization goes; the reporting
+            stays. */}
+        {groups.length > 0 ? (
+          <CardButton onClick={onOpenRoutes}>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-3">
+              <Icon name="layers" size={18} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13.5px] font-medium text-gc-ink">
+                What routes through Gate
+              </div>
+              <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
+                {ledgerNote ? (
+                  <span
+                    className={
+                      ledgerNoteKind === "error"
+                        ? "font-medium text-gc-error-deep"
+                        : "text-gc-ink-2"
+                    }
+                  >
+                    {ledgerNote}
+                  </span>
+                ) : (
+                  groups.map((g) => g.name).join(", ")
+                )}
+              </div>
+            </div>
+            <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
+          </CardButton>
+        ) : (
+          // A door into an empty room is worse than the explanation, so the
+          // empty case keeps the card that says what to install.
+          <div className="flex items-start gap-2.5 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-4">
+              <Icon name="search" size={16} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[12.5px] font-medium text-gc-ink">
+                Nothing to route yet
+              </div>
+              <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
+                Gate Connect picks up Claude Code and Codex once they&rsquo;re
+                installed. Install one, then reopen this window from the menu bar
+                and it will show up.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* What is on the wire, on its own line, because it is a standing fact
             about this install rather than a footnote to anything. The header
             used to carry this host and now carries the org; a gateway
             identifier that vanished with it would take the answer to "where is
-            my traffic actually going" off Home entirely.
-
-            It also gives the Gate dashboard the place it has been looking for.
-            Three previous addresses each failed differently: below the last row
-            it fell under the fold, pinned to the footer it squeezed the
-            credential promise until "Session in Credential Manager" truncated
-            on Windows, and riding the ledger heading it outweighed the heading
-            it sat on while pointing out of the app. Here it is attached to the
-            host it is the far end of, which is the one place it means
-            something. */}
+            my traffic actually going" off Home entirely. */}
         {gatewayHost && (
-          // The host and the dashboard link share this line. `flex-wrap` alone
-          // could not save the host: with `flex-1` it shrinks rather than
-          // forcing a wrap, so at a raised platform minimum font size a
-          // 28-character host still truncated. It breaks instead now, up to two
-          // lines, which is the same treatment `RawDetail` gives a payload and
-          // the ledger gives an exception sentence. The link keeps `ml-auto`, so
-          // it stays right-aligned whether or not it wraps below.
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-0.5">
-            {/* `title` because two lines still is not enough for a long staging
-                host, and the ellipsis truncation paints lives in no attribute. */}
-            <span
-              title={gatewayHost}
-              className="min-w-0 flex-1 line-clamp-2 font-mono text-[10.5px] text-gc-ink-3 [overflow-wrap:anywhere]"
-            >
-              {gatewayHost}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                void openExternal(GATE_DASHBOARD_URL);
-              }}
-              className="-mr-1 ml-auto flex shrink-0 items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
-            >
-              <Icon name="cube" size={13} />
-              Gate dashboard
-            </button>
+          // `line-clamp-2` with `[overflow-wrap:anywhere]`, not `truncate`: a
+          // hostname is one long token, and at a raised platform minimum font
+          // size truncating dropped the end of it. Breaking loses nothing.
+          // `title` because two lines still is not enough for a long staging
+          // host, and the ellipsis truncation paints lives in no attribute.
+          <div
+            title={gatewayHost}
+            className="line-clamp-2 px-0.5 font-mono text-[10.5px] text-gc-ink-3 [overflow-wrap:anywhere]"
+          >
+            {gatewayHost}
           </div>
         )}
+
+        {/* Its own line now, not the trailing half of the host's. Four previous
+            addresses each failed differently: below the last row it fell under
+            the fold; pinned to the footer it squeezed the credential promise
+            until "Session in Credential Manager" truncated on Windows; riding
+            the ledger heading it outweighed the heading it sat on; and sharing
+            the host's line it took width from the one identifier on this screen
+            that cannot be shortened without lying. A full line costs 18px and
+            settles it. */}
+        <button
+          type="button"
+          onClick={() => {
+            void openExternal(GATE_DASHBOARD_URL);
+          }}
+          className="-ml-1 flex w-fit items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+        >
+          <Icon name="cube" size={13} />
+          Gate dashboard
+        </button>
 
         {/* Its own line, not a footnote inside the routing card: that card
             holds the switch that routes traffic, and a link into Settings is
@@ -466,119 +537,6 @@ export function Home({
 
         {error && <ErrorNote error={error} />}
       </div>
-
-      {/* Not "Models": the last row is a tool category, not a model family,
-          and a label the list contradicts is worse than a plain one. This
-          names the question every row answers. */}
-      <SectionLabel>What routes through Gate</SectionLabel>
-      {groups.length > 0 ? (
-        <div role="list" className="flex flex-col border-t border-gc-line">
-          {groups.map((group) => {
-            const { count, exception, kind } = groupSummary(group);
-            return (
-              <div
-                key={group.id}
-                role="listitem"
-                // Back to py-3. The 16px this saved bought the fourth family
-                // room it no longer needs.
-                className="relative flex items-center gap-2.5 border-b border-gc-line px-3.5 py-3 transition hover:bg-gc-subtle"
-              >
-                {/* Stretch button carries the drill-in; the switch is a
-                    sibling above it, so one flip routes the whole family and
-                    the row body opens the fine grain.
-
-                    `aria-describedby` is what makes the row readable without
-                    eyes. The count, the pill and the exception are all in
-                    `pointer-events-none` spans so the stretch button can sit
-                    over them, which also hid them from the accessibility tree:
-                    the row announced "Claude details, button" and never
-                    "OpenClaw failed", which is the one thing the row exists to
-                    say. */}
-                <button
-                  type="button"
-                  onClick={() => onOpenGroup(group.id)}
-                  aria-label={`${group.name} details`}
-                  aria-describedby={`group-desc-${group.id}`}
-                  className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
-                />
-                <div className="pointer-events-none relative min-w-0 flex-1">
-                  <div className="text-[13.5px] font-medium text-gc-ink">{group.name}</div>
-                  {/* Exception first. Concatenated as `count · exception` the
-                      line truncated at 360px and the actionable half was what
-                      got cut ("0 of 2 routing · Codex set up els…"). The pill
-                      already answers "is this routing?", so the count is the
-                      half that can afford to go. */}
-                  {/* Two lines, not `truncate`. The exception is a sentence
-                      whose verb is at the end, so a production-length tool
-                      name ate it: "Codex Command Line Interfa…" reported that
-                      something involved Codex and nothing about what. The
-                      count never needs the second line, so the row only grows
-                      in the state that has something to say. */}
-                  <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
-                    {/* The sentence carries its own severity. Every exception
-                        used to print in the same ink-2 as every other, so a
-                        failure and a hand-written setup were typographically
-                        identical and the pill was reality's only voice on the
-                        row - against a saturated indigo switch reporting mere
-                        intent. Error-deep here is the same ink the app already
-                        uses for destructive and failed states elsewhere. */}
-                    {exception ? (
-                      <span
-                        className={
-                          kind === "error" ? "font-medium text-gc-error-deep" : "text-gc-ink-2"
-                        }
-                      >
-                        {exception}
-                      </span>
-                    ) : (
-                      count
-                    )}
-                  </div>
-                </div>
-                {/* The visible text truncates at 360px; this carries the whole
-                    sentence, pill state included, to anyone listening. */}
-                <span id={`group-desc-${group.id}`} className="sr-only">
-                  {groupPillLabel(group)}. {count}
-                  {exception ? `. ${exception}` : ""}
-                </span>
-                <span className="pointer-events-none relative">
-                  <GroupPill group={group} />
-                </span>
-                <span className="relative">
-                  <Switch
-                    on={group.desired > 0}
-                    label={group.switchLabel}
-                    busy={busy}
-                    onClick={() => {
-                      setInteracted(true);
-                      onToggleGroup(group.id, group.desired === 0);
-                    }}
-                  />
-                </span>
-                <span className="pointer-events-none relative">
-                  <Icon name="chevronRight" size={14} stroke={2} className="text-gc-ink-4" />
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="mx-3.5 mb-1 flex items-start gap-2.5 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-4">
-            <Icon name="search" size={16} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-[12.5px] font-medium text-gc-ink">
-              Nothing to route yet
-            </div>
-            <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
-              Gate Connect picks up Claude Code and Codex once they&rsquo;re
-              installed. Install one, then reopen this window from the menu bar
-              and it will show up.
-            </p>
-          </div>
-        </div>
-      )}
 
     </div>
   );

@@ -35,6 +35,7 @@ import {
 import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
+import { Routes } from "./screens/Routes";
 import { GroupDetail } from "./screens/GroupDetail";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
@@ -61,6 +62,7 @@ type Screen =
   | "home"
   | "settings"
   | "success"
+  | "routes"
   | "group";
 
 /** How deep each screen sits in the popover. In one 360px room, direction is
@@ -76,7 +78,12 @@ const SCREEN_DEPTH: Record<Screen, number> = {
   success: 2,
   home: 0,
   settings: 1,
-  group: 1,
+  // The ledger is a panel off Home, and a family detail is a panel off the
+  // ledger, so `group` sits a level deeper than it used to. Getting this wrong
+  // makes a push and a pop animate the same way, which is the whole reason the
+  // depths exist.
+  routes: 1,
+  group: 2,
 };
 
 // Proxy domains hidden from the Apps ledger. "chatgpt" exists so the relay
@@ -555,7 +562,12 @@ export function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
       if (quitTools !== null || routingNotice !== null) return;
-      if (screen === "settings" || screen === "group") {
+      // One level at a time, matching the header back button on each panel:
+      // a family detail returns to the ledger it was opened from, not past it.
+      if (screen === "group") {
+        setProviderError(null);
+        setScreen("routes");
+      } else if (screen === "settings" || screen === "routes") {
         setProviderError(null);
         setScreen("home");
       }
@@ -989,12 +1001,25 @@ export function App() {
         onUntrustCa={untrustCa}
       />
     );
+  } else if (screen === "routes") {
+    body = (
+      <Routes
+        groups={groups}
+        busy={proxyBusy}
+        onBack={() => setScreen("home")}
+        onToggleGroup={(id, on) => void setGroupRouted(id, on)}
+        onOpenGroup={(id) => {
+          setGroupId(id);
+          setScreen("group");
+        }}
+      />
+    );
   } else if (screen === "group" && groups.some((g) => g.id === groupId)) {
     body = (
       <GroupDetail
         group={groups.find((g) => g.id === groupId)!}
         busy={proxyBusy}
-        onBack={() => setScreen("home")}
+        onBack={() => setScreen("routes")}
         onToggleGroup={(id, on) => void setGroupRouted(id, on)}
         onToggleTool={setToolRouted}
         onSetDomain={setDomain}
@@ -1042,11 +1067,7 @@ export function App() {
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onToggleProxy={() => toggleProxy(true)}
         onTrustCa={trustCa}
-        onToggleGroup={(id, on) => void setGroupRouted(id, on)}
-        onOpenGroup={(id) => {
-          setGroupId(id);
-          setScreen("group");
-        }}
+        onOpenRoutes={() => setScreen("routes")}
         onOpenSettings={() => setScreen("settings")}
       />
     );

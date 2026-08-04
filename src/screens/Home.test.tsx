@@ -99,8 +99,7 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       onDismissStaleAgents={vi.fn()}
       onToggleProxy={vi.fn()}
       onTrustCa={vi.fn()}
-      onToggleGroup={vi.fn()}
-      onOpenGroup={vi.fn()}
+      onOpenRoutes={vi.fn()}
       onOpenSettings={vi.fn()}
       {...props}
     />,
@@ -196,65 +195,70 @@ describe("Home master toggle", () => {
   });
 });
 
-describe("Home model-family ledger", () => {
-  it("collapses tools and apps into one row per family", () => {
+describe("Home ledger door", () => {
+  it("names the panel it opens, in the same words the panel uses", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [makeDomain()],
+    });
+    expect(screen.getByRole("button", { name: /What routes through Gate/ })).toBeTruthy();
+  });
+
+  it("opens the ledger", () => {
+    const onOpenRoutes = vi.fn();
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      onOpenRoutes,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /What routes through Gate/ }));
+    expect(onOpenRoutes).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists the families when there is nothing to report", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "connected" }),
-        makeTool("hermes", "Hermes", { kind: "not_installed" }),
-        makeTool("codex", "Codex", { kind: "detected" }, "OpenAI"),
+        makeTool("codex", "Codex", { kind: "connected" }, "OpenAI"),
       ],
       domains: [makeDomain()],
     });
-    // Families, not tool rows; not_installed stays out entirely.
-    expect(screen.getByText("Claude")).toBeTruthy();
-    expect(screen.getByText("OpenAI")).toBeTruthy();
-    expect(screen.queryByText("Claude Code")).toBeNull();
-    expect(screen.queryByText("Hermes")).toBeNull();
-    // Claude: Claude Code + Cowork both routing. OpenAI: Codex only, off.
-    // Twice each: the visible sub-line, and the sr-only description the
-    // stretch button points at (the visible copy truncates at 360px).
-    expect(screen.getAllByText(/2 of 2 routing/)).toHaveLength(2);
-    expect(screen.getAllByText(/0 of 1 routing/)).toHaveLength(2);
+    expect(screen.getByText("Claude, OpenAI")).toBeTruthy();
   });
 
-  it("gives the multi-provider tools an honest home, not a wrong family", () => {
-    renderHome({
-      // The real backend calls their upstream "your existing providers".
-      tools: [
-        makeTool("opencode", "OpenCode", { kind: "detected" }, "your existing providers"),
-        makeTool("openclaw", "OpenClaw", { kind: "detected" }, "your existing providers"),
-      ],
-      domains: [],
-    });
-    expect(screen.getByText("Agent harnesses")).toBeTruthy();
-    expect(screen.queryByText(/existing providers/)).toBeNull();
-  });
-
-  it("reports a partly-routed family without rounding up", () => {
-    renderHome({
-      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
-      // Its sibling app row is switched off, so the family is half on.
-      domains: [makeDomain({ enabled: false })],
-    });
-    expect(screen.getByText("Partly routed")).toBeTruthy();
-    // Exact: the Routing card says "On · 1 of 2 routing", the row just the count.
-    expect(screen.getByText("1 of 2 routing")).toBeTruthy();
-  });
-
-  it("names an exception in the sub-line instead of hijacking the family pill", () => {
+  it("reports the failure rather than the inventory, in its own ink", () => {
+    // The rows moved to their own panel, so this door is the only thing left on
+    // Home that can answer "is anything wrong?". A mid-task user who opens the
+    // popover and reads a tidy list of family names while a tool is broken has
+    // been told the opposite of the truth.
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
       domains: [makeDomain()],
     });
-    // The family pill still answers "is this routing?": the app row beside the
-    // failed tool is carrying traffic, so the family reads partly routed and
-    // the failure is named below rather than taking the pill. Read off the row
-    // description, because the header now carries these words too.
-    expect(document.getElementById("group-desc-anthropic")?.textContent).toContain(
-      "Partly routed",
-    );
-    expect(screen.getAllByText(/Claude Code failed/).length).toBeGreaterThan(0);
+    const note = screen.getByText("Claude Code failed");
+    expect(note.className).toContain("text-gc-error-deep");
+    expect(screen.queryByText("Claude")).toBeNull();
+  });
+
+  it("prefers a failure over a quieter exception when both are present", () => {
+    renderHome({
+      tools: [
+        makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" }),
+        makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI"),
+      ],
+      domains: [makeDomain()],
+    });
+    expect(screen.getByText("Claude Code failed")).toBeTruthy();
+    expect(screen.queryByText("Codex set up elsewhere")).toBeNull();
+  });
+
+  it("keeps a hand-written setup in the quieter ink", () => {
+    renderHome({
+      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
+      domains: [],
+    });
+    const note = screen.getByText("Codex set up elsewhere");
+    expect(note.className).toContain("text-gc-ink-2");
+    expect(note.className).not.toContain("error");
   });
 
   it("stops the header claiming green while a tool is failing", () => {
@@ -267,21 +271,16 @@ describe("Home model-family ledger", () => {
     // over a family whose own pill read grey "Not routed", which is the one
     // screen a user opens *because* a tool stopped working.
     expect(screen.queryByText("Routing on")).toBeNull();
-    // Both pills carry the words now: the header and the family row.
-    expect(screen.getAllByText("Partly routed").length).toBe(2);
+    expect(screen.getByText("Partly routed")).toBeTruthy();
   });
 
-  it("says Error, not Not routed, when a family is dark because a tool failed", () => {
+  it("keeps the header honest when a failure leaves nothing routing", () => {
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
       domains: [],
     });
-    // Grey "Not routed" is what this pill says for a switch the user set;
-    // a failure must not borrow it.
-    expect(screen.getByText("Error")).toBeTruthy();
-    expect(screen.queryByText("Not routed")).toBeNull();
-    // Nothing is routing, so the header keeps the same words as before - but
-    // amber rather than grey, because the cause is a failure.
+    // Same words as a deliberately-off setup, but amber rather than grey,
+    // because the cause is a failure.
     expect(screen.getByText("Nothing routing")).toBeTruthy();
   });
 
@@ -296,27 +295,6 @@ describe("Home model-family ledger", () => {
     expect(screen.getByText("Routing on")).toBeTruthy();
   });
 
-  it("gives a failure its own ink, not the grey every exception used to share", () => {
-    renderHome({
-      tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
-      domains: [makeDomain()],
-    });
-    // The pill was reality's only voice on a row whose switch reports intent in
-    // saturated indigo. The sentence carries severity too now.
-    const failure = screen.getByText("Claude Code failed");
-    expect(failure.className).toContain("text-gc-error-deep");
-  });
-
-  it("keeps a hand-written setup in the quieter ink", () => {
-    renderHome({
-      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
-      domains: [],
-    });
-    const drift = screen.getByText("Codex set up elsewhere");
-    expect(drift.className).toContain("text-gc-ink-2");
-    expect(drift.className).not.toContain("error");
-  });
-
   it("names the gateway host on its own line, not only in the header", () => {
     renderHome();
     // The header carries the org now, because a gateway host is byte-identical
@@ -326,18 +304,16 @@ describe("Home model-family ledger", () => {
     expect(screen.getByText("Constellation Labs")).toBeTruthy();
   });
 
-  it("attaches the dashboard to the host it is the far end of", () => {
+  it("gives the dashboard link a line of its own", () => {
     renderHome();
-    // Fourth address for this link. The previous three each failed: under the
-    // fold, squeezing the credential promise in the footer, and outweighing the
-    // ledger heading it rode. The heading is a plain label again.
+    // Fifth address for this link. The previous four each failed: under the
+    // fold, squeezing the credential promise in the footer, outweighing the
+    // ledger heading it rode, and taking width from the one identifier on this
+    // screen that cannot be shortened without lying.
     const link = screen.getByRole("button", { name: /Gate dashboard/ });
-    const heading = screen.getByRole("heading", { name: /What routes through Gate/ });
-    // It used to be a sibling of the h2 inside a shared flex wrapper. Its
-    // wrapper now holds the host instead, and no longer holds the heading.
-    expect(link.parentElement?.contains(heading)).toBe(false);
     const host = screen.getByText("gateway.constellationgate.ai");
-    expect(host.parentElement?.contains(link)).toBe(true);
+    expect(host.contains(link)).toBe(false);
+    expect(link.contains(host)).toBe(false);
   });
 
   it("prints the host once when there is no org to name", () => {
@@ -349,10 +325,9 @@ describe("Home model-family ledger", () => {
   });
 
   it("leaves a way to read an identifier its slot truncates", () => {
-    // The header's org line gets 195-206px depending on how wide the pill
-    // renders, and the wire line's host gets 211px; both are `truncate`, and the
-    // ellipsis truncation paints exists in no attribute. Without a title the
-    // full value is unrecoverable from the screen that names it.
+    // The header's org line and the host line are both clamped, and the ellipsis
+    // truncation paints exists in no attribute. Without a title the full value is
+    // unrecoverable from the screen that names it.
     renderHome({
       workspace: "Constellation Networks Advanced Research and Platform Engineering",
     });
@@ -360,36 +335,6 @@ describe("Home model-family ledger", () => {
       screen.getByTitle("Constellation Networks Advanced Research and Platform Engineering"),
     ).toBeTruthy();
     expect(screen.getByTitle("gateway.constellationgate.ai")).toBeTruthy();
-  });
-
-  it("flags a hand-written setup without calling the family broken", () => {
-    renderHome({
-      tools: [makeTool("codex", "Codex", { kind: "drifted", reason: "r" }, "OpenAI")],
-      domains: [],
-    });
-    expect(screen.getAllByText(/Codex set up elsewhere/).length).toBeGreaterThan(0);
-  });
-
-  it("routes a whole family with one flip", () => {
-    const onToggleGroup = vi.fn();
-    renderHome({
-      tools: [makeTool("claude-code", "Claude Code", { kind: "detected" })],
-      domains: [],
-      onToggleGroup,
-    });
-    fireEvent.click(screen.getByRole("switch", { name: "Route Claude through Gate" }));
-    expect(onToggleGroup).toHaveBeenCalledWith("anthropic", true);
-  });
-
-  it("opens the family detail from the row body", () => {
-    const onOpenGroup = vi.fn();
-    renderHome({
-      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
-      domains: [],
-      onOpenGroup,
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Claude details" }));
-    expect(onOpenGroup).toHaveBeenCalledWith("anthropic");
   });
 });
 
@@ -418,29 +363,6 @@ describe("Home routing-change notice", () => {
     expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(screen.getByText(/local address changed/)).toBeTruthy();
     expect(screen.queryByText(/Routing is off\./)).toBeNull();
-  });
-});
-
-describe("Home ledger accessibility", () => {
-  it("gives the row's whole sentence to the drill-in button, pill state included", () => {
-    renderHome({
-      tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
-      domains: [makeDomain()],
-    });
-    const row = screen.getByRole("button", { name: "Claude details" });
-    const described = document.getElementById(row.getAttribute("aria-describedby")!);
-    // Without this the row announced "Claude details, button" and nothing
-    // else: the count, the pill and the failure were all in pointer-events-none
-    // spans under the stretch button.
-    expect(described?.textContent).toContain("Partly routed");
-    expect(described?.textContent).toContain("1 of 2 routing");
-    expect(described?.textContent).toContain("Claude Code failed");
-  });
-
-  it("exposes the ledger as a list", () => {
-    renderHome({ tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] });
-    expect(screen.getByRole("list")).toBeTruthy();
-    expect(screen.getAllByRole("listitem").length).toBeGreaterThan(0);
   });
 });
 
