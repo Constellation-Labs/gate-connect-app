@@ -5,7 +5,7 @@ import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import { buildGroups, groupSummary } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
-import { Switch, IconButton, CardButton, ErrorNote, Button } from "../components/gc/ui";
+import { Switch, IconButton, ErrorNote, Button } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 import { trustStoreName, usePlatform } from "../lib/platform";
 import { openExternal } from "../lib/openExternal";
@@ -227,91 +227,114 @@ export function Home({
           : ""}
       </span>
       <div className="flex flex-col gap-2.5 p-3.5">
-        {showProxy && (
-          <div className="flex items-center gap-3 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
-            <div
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
-                proxyOn ? "bg-gc-accent-wash text-gc-accent" : "bg-gc-sunken text-gc-ink-4"
-              }`}
-            >
-              <Icon name="shieldCheck" size={19} />
-            </div>
-            <div className="min-w-0 flex-1">
-              {/* A heading, not a styled div: this is the screen's primary
-                  control and it was absent from the document outline, so the
-                  outline read h1 -> h2 "What routes through Gate" with the
-                  master switch unheaded. */}
-              <h2 className="text-[13.5px] font-semibold text-gc-ink">Routing</h2>
-              <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
-                {/* The count survives the certificate state. Dropping it was
-                    backwards: that is exactly when the user wants to know how
-                    much is still working. */}
-                {!proxyOn
-                  ? waitingCount > 0
-                    ? `Off · ${waitingCount} waiting`
-                    : "Off · not routing"
-                  : partial
-                    ? `On · ${routedCount} of ${routableCount} routing`
-                    : routableCount === 0
-                      ? "On · nothing installed to route"
-                      : routedCount === 0 && stuckCount === 0
-                        ? "On · nothing enabled yet"
-                        : stuckCount > 0
-                          ? `On · ${routedCount} of ${routableCount} routing · ${stuckCount} need${stuckCount === 1 ? "s" : ""} attention`
-                          : `On · ${routedCount} of ${routableCount} routing`}
+        {/* One box, two parts: the master control and the door to what it
+            controls. They were two cards with two 36px tiles stacked 10px apart,
+            which read as two unrelated errands when they are the same subject
+            seen at two grains. The hairline between them is the same divider
+            every ledger row uses; `overflow-hidden` keeps the lower half's hover
+            fill inside the card's radius. */}
+        {(showProxy || groups.length > 0) && (
+          <div className="overflow-hidden rounded-[10px] bg-gc-surface shadow-border">
+            {showProxy && (
+              <div className="flex items-center gap-3 p-3.5">
+                <div
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
+                    proxyOn ? "bg-gc-accent-wash text-gc-accent" : "bg-gc-sunken text-gc-ink-4"
+                  }`}
+                >
+                  <Icon name="shieldCheck" size={19} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  {/* A heading, not a styled div: this is the screen's primary
+                      control and it was absent from the document outline, so the
+                      outline read h1 -> h2 "What routes through Gate" with the
+                      master switch unheaded. */}
+                  <h2 className="text-[13.5px] font-semibold text-gc-ink">Routing</h2>
+                  <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
+                    {/* The count survives the certificate state. Dropping it was
+                        backwards: that is exactly when the user wants to know
+                        how much is still working. */}
+                    {!proxyOn
+                      ? waitingCount > 0
+                        ? `Off · ${waitingCount} waiting`
+                        : "Off · not routing"
+                      : partial
+                        ? `On · ${routedCount} of ${routableCount} routing`
+                        : routableCount === 0
+                          ? "On · nothing installed to route"
+                          : routedCount === 0 && stuckCount === 0
+                            ? "On · nothing enabled yet"
+                            : stuckCount > 0
+                              ? `On · ${routedCount} of ${routableCount} routing · ${stuckCount} need${stuckCount === 1 ? "s" : ""} attention`
+                              : `On · ${routedCount} of ${routableCount} routing`}
+                  </div>
+                </div>
+                <Switch
+                  on={proxyOn}
+                  label="Route through Gate"
+                  busy={busy}
+                  onClick={() => {
+                    setInteracted(true);
+                    onToggleProxy();
+                  }}
+                />
               </div>
-            </div>
-            <Switch
-              on={proxyOn}
-              label="Route through Gate"
-              busy={busy}
-              onClick={() => {
-                setInteracted(true);
-                onToggleProxy();
-              }}
-            />
+            )}
+
+            {/* The door to the ledger, not the ledger. One room cannot hold a
+                routing card, a certificate ceremony, a wire line, a banner, a
+                launch tip and an itemized list; the list is the part that reads
+                the same whether or not the user came looking for it.
+
+                It carries the exception when there is one. Moving the pills a
+                navigation away would otherwise let a mid-task user open the
+                popover and learn nothing, and PRODUCT.md's second principle puts
+                the list on home for exactly that reason. The itemization goes;
+                the reporting stays.
+
+                No tile of its own: the shield above already establishes the
+                subject, and a second 36px tile made the pair read as a list of
+                two things rather than one thing and its detail. */}
+            {groups.length > 0 && (
+              <button
+                type="button"
+                onClick={onOpenRoutes}
+                className={`flex w-full items-center gap-2.5 px-3.5 py-3 text-left transition hover:bg-gc-subtle focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent${
+                  showProxy ? " border-t border-gc-line" : ""
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-medium text-gc-ink">
+                    What routes through Gate
+                  </div>
+                  <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
+                    {ledgerNote ? (
+                      <span
+                        className={
+                          ledgerNoteKind === "error"
+                            ? "font-medium text-gc-error-deep"
+                            : "text-gc-ink-2"
+                        }
+                      >
+                        {ledgerNote}
+                      </span>
+                    ) : (
+                      groups.map((g) => g.name).join(", ")
+                    )}
+                  </div>
+                </div>
+                <Icon
+                  name="chevronRight"
+                  size={15}
+                  stroke={2}
+                  className="shrink-0 text-gc-ink-4"
+                />
+              </button>
+            )}
           </div>
         )}
 
-        {/* The door to the ledger, not the ledger, and directly under the card
-            it itemizes. One room cannot hold a routing card, a certificate
-            ceremony, a wire line, a banner, a launch tip and an itemized list;
-            the list is the part that reads the same whether or not the user came
-            looking for it.
-
-            It carries the exception when there is one. Moving the pills a
-            navigation away would otherwise let a mid-task user open the popover
-            and learn nothing, and PRODUCT.md's second principle puts the list on
-            home for exactly that reason. The itemization goes; the reporting
-            stays. */}
-        {groups.length > 0 ? (
-          <CardButton onClick={onOpenRoutes}>
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-3">
-              <Icon name="layers" size={18} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-[13.5px] font-medium text-gc-ink">
-                What routes through Gate
-              </div>
-              <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
-                {ledgerNote ? (
-                  <span
-                    className={
-                      ledgerNoteKind === "error"
-                        ? "font-medium text-gc-error-deep"
-                        : "text-gc-ink-2"
-                    }
-                  >
-                    {ledgerNote}
-                  </span>
-                ) : (
-                  groups.map((g) => g.name).join(", ")
-                )}
-              </div>
-            </div>
-            <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
-          </CardButton>
-        ) : (
+        {groups.length === 0 && (
           // A door into an empty room is worse than the explanation, so the
           // empty case keeps the card that says what to install.
           <div className="flex items-start gap-2.5 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
@@ -349,25 +372,6 @@ export function Home({
             {gatewayHost}
           </div>
         )}
-
-        {/* Its own line now, not the trailing half of the host's. Four previous
-            addresses each failed differently: below the last row it fell under
-            the fold; pinned to the footer it squeezed the credential promise
-            until "Session in Credential Manager" truncated on Windows; riding
-            the ledger heading it outweighed the heading it sat on; and sharing
-            the host's line it took width from the one identifier on this screen
-            that cannot be shortened without lying. A full line costs 18px and
-            settles it. */}
-        <button
-          type="button"
-          onClick={() => {
-            void openExternal(GATE_DASHBOARD_URL);
-          }}
-          className="-ml-1 flex w-fit items-center gap-1.5 rounded px-1 py-0.5 text-[11.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
-        >
-          <Icon name="cube" size={13} />
-          Gate dashboard
-        </button>
 
         {/* Its own line, not a footnote inside the routing card: that card
             holds the switch that routes traffic, and a link into Settings is
@@ -536,6 +540,33 @@ export function Home({
         )}
 
         {error && <ErrorNote error={error} />}
+
+        {/* Last in this zone, under whatever the app has to say. It is the one
+            control here that leaves Gate Connect, so a certificate blocker, a
+            stale-port warning or a failed toggle all outrank it; it used to sit
+            above every one of them.
+
+            Fifth address for this link. The previous four each failed: below the
+            last ledger row it fell under the fold; pinned to the footer it
+            squeezed the credential promise until "Session in Credential Manager"
+            truncated on Windows; riding the ledger heading it outweighed the
+            heading it sat on; and sharing the host's line it took width from the
+            one identifier on this screen that cannot be shortened without lying.
+
+            13px, not 11.5px: at the bottom of the zone it is no longer a
+            footnote to the host line, and it was the smallest interactive text
+            in the app. The padding takes the hit area from 19px to 30px, which
+            also clears the 24px target minimum it used to miss. */}
+        <button
+          type="button"
+          onClick={() => {
+            void openExternal(GATE_DASHBOARD_URL);
+          }}
+          className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-[13px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+        >
+          <Icon name="cube" size={15} />
+          Gate dashboard
+        </button>
       </div>
 
     </div>

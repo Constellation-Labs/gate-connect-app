@@ -214,6 +214,31 @@ describe("Home ledger door", () => {
     expect(onOpenRoutes).toHaveBeenCalledTimes(1);
   });
 
+  it("shares one box with the routing control", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [makeDomain()],
+    });
+    // Two cards with two 36px tiles stacked 10px apart read as two unrelated
+    // errands; this is one subject at two grains, so it is one box.
+    const door = screen.getByRole("button", { name: /What routes through Gate/ });
+    const master = screen.getByRole("switch", { name: "Route through Gate" });
+    const box = door.closest(".shadow-border");
+    expect(box).toBeTruthy();
+    expect(box!.contains(master)).toBe(true);
+  });
+
+  it("puts the dashboard link after anything the app has to say", () => {
+    renderHome({ changeNotice: "on", domains: [makeDomain()] });
+    // It is the one control here that leaves Gate Connect, so a warning, a
+    // blocker or a failed toggle all outrank it. It used to sit above them.
+    const notice = screen.getByRole("status");
+    const link = screen.getByRole("button", { name: /Gate dashboard/ });
+    expect(
+      notice.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("lists the families when there is nothing to report", () => {
     renderHome({
       tools: [
