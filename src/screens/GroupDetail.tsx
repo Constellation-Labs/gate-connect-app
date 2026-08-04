@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Group, GroupMember } from "../lib/groups";
+import type { AuthMode } from "../lib/api";
 import { classifyError, type ClassifiedError } from "../lib/errors";
 import { trackError } from "../lib/analytics";
 import { SubHeader, SectionLabel, Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
@@ -71,6 +72,7 @@ export function GroupDetail({
   onTrustCa,
   proxyOn,
   onEnableRouting,
+  authMode,
 }: {
   group: Group;
   busy: boolean;
@@ -88,6 +90,9 @@ export function GroupDetail({
   /** The remedy for the master-off state, for the same reason `onTrustCa`
    * exists: naming a problem without offering the fix is half a screen. */
   onEnableRouting: () => void;
+  /** So a gateway 401 sends an OAuth user to sign-in and a key user to the
+   * key field, instead of naming a control their Settings does not render. */
+  authMode?: AuthMode;
 }) {
   const platform = usePlatform();
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -132,7 +137,7 @@ export function GroupDetail({
       setChanged(member.key);
     } catch (e) {
       trackError(e, "connect", { tool: member.key });
-      setError(classifyError(e, "connect"));
+      setError(classifyError(e, "connect", authMode));
       setOpenKey(member.key);
     }
   }
@@ -193,8 +198,13 @@ export function GroupDetail({
           const raw = rawDetail(member);
           return (
             <div key={member.key} className="border-b border-gc-line">
+              {/* One hit area for the whole row, identifier line included.
+                  The stretch button used to cover only the upper line, so the
+                  bottom 40% of a row that highlights as one block did nothing
+                  when clicked - and on Home the equivalent row is clickable
+                  end to end. */}
               <div
-                className={`relative flex items-center gap-2.5 px-3.5 py-2.5 transition ${
+                className={`relative transition ${
                   open ? "bg-gc-subtle" : "hover:bg-gc-subtle"
                 }`}
               >
@@ -205,40 +215,41 @@ export function GroupDetail({
                   aria-label={`${member.name} details`}
                   className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
                 />
-                <div className="pointer-events-none relative min-w-0 flex-1">
-                  <div className="truncate text-[13px] font-medium text-gc-ink">{member.name}</div>
-                </div>
-                <span className="pointer-events-none relative">
-                  <MemberPill member={member} />
-                </span>
-                <span className="relative">
-                  {/* `desired`, not `routed`: the switch is the user's intent.
-                      Driving it from `routed` meant an enabled domain behind
-                      an untrusted certificate rendered off, and clicking it
-                      turned the domain off while the switch never moved. */}
-                  {/* The switch reports intent, so it can read "on" while the
-                      pill beside it says the traffic isn't flowing. Point it at
-                      the same description so a screen reader hears both. */}
-                  <Switch
-                    on={member.desired}
-                    label={`Route ${member.name} through Gate`}
-                    describedBy={`member-state-${member.key}`}
-                    busy={busy}
-                    onClick={() => void toggleMember(member)}
-                  />
-                  <span id={`member-state-${member.key}`} className="sr-only">
-                    {memberPillLabel(member)}
+                <div className="relative flex items-center gap-2.5 px-3.5 py-2.5">
+                  <div className="pointer-events-none relative min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-medium text-gc-ink">{member.name}</div>
+                  </div>
+                  <span className="pointer-events-none relative">
+                    <MemberPill member={member} />
                   </span>
-                </span>
-                <span className="pointer-events-none relative">
-                  <Icon
-                    name="chevronRight"
-                    size={14}
-                    stroke={2}
-                    className={`text-gc-ink-4 transition-transform ${open ? "rotate-90" : ""}`}
-                  />
-                </span>
-              </div>
+                  <span className="relative">
+                    {/* `desired`, not `routed`: the switch is the user's intent.
+                        Driving it from `routed` meant an enabled domain behind
+                        an untrusted certificate rendered off, and clicking it
+                        turned the domain off while the switch never moved. */}
+                    {/* The switch reports intent, so it can read "on" while the
+                        pill beside it says the traffic isn't flowing. Point it at
+                        the same description so a screen reader hears both. */}
+                    <Switch
+                      on={member.desired}
+                      label={`Route ${member.name} through Gate`}
+                      describedBy={`member-state-${member.key}`}
+                      busy={busy}
+                      onClick={() => void toggleMember(member)}
+                    />
+                    <span id={`member-state-${member.key}`} className="sr-only">
+                      {memberPillLabel(member)}
+                    </span>
+                  </span>
+                  <span className="pointer-events-none relative">
+                    <Icon
+                      name="chevronRight"
+                      size={14}
+                      stroke={2}
+                      className={`text-gc-ink-4 transition-transform ${open ? "rotate-90" : ""}`}
+                    />
+                  </span>
+                </div>
 
               {/* Its own full-width line, below the name/pill/switch row. In
                   that row the host shared width with the pill, so the wider
@@ -246,11 +257,7 @@ export function GroupDetail({
                   49px and rendered "api.ope…", "Waiting on routing" left 44px
                   and rendered "api.an…". The identifier was cut hardest in
                   exactly the two states that report a problem. */}
-              <div
-                className={`pointer-events-none flex items-center gap-1.5 px-3.5 pb-2 ${
-                  open ? "bg-gc-subtle" : ""
-                }`}
-              >
+              <div className="pointer-events-none relative flex items-center gap-1.5 px-3.5 pb-2">
                 <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-[10px] text-gc-ink-3">
                   {member.kind === "config" ? "config file" : "proxy"}
                 </span>
@@ -267,6 +274,7 @@ export function GroupDetail({
                       : hostOf(member.tool?.default_upstream_url)}
                   </span>
                 )}
+              </div>
               </div>
 
               {open && (
