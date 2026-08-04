@@ -250,6 +250,22 @@ describe("Home ledger door", () => {
     expect(screen.getByText("Claude, OpenAI")).toBeTruthy();
   });
 
+  it("still names the families when routing is off", () => {
+    // Every member reports master-off with routing down, so ranking that state
+    // as an exception made the door print "waiting on routing" and drop the
+    // inventory - under a card already reading "Off · 1 waiting". Routing-off is
+    // the one state whose only question is what comes back when you flip it.
+    renderHome({
+      proxyOn: false,
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [],
+    });
+    expect(screen.getByText("Claude")).toBeTruthy();
+    expect(screen.queryByText("waiting on routing")).toBeNull();
+    // The master card keeps sole ownership of its own state.
+    expect(screen.getByText("Off · 1 waiting")).toBeTruthy();
+  });
+
   it("reports the failure rather than the inventory, in its own ink", () => {
     // The rows moved to their own panel, so this door is the only thing left on
     // Home that can answer "is anything wrong?". A mid-task user who opens the

@@ -104,18 +104,24 @@ export function Home({
 
   // The one exception the door reports, chosen across every family: a failure
   // outranks a blocked certificate, which outranks a setup the user made
-  // elsewhere, which outranks waiting on the master switch. Without it, moving
-  // the ledger off Home would cost the mid-task user the whole answer to "is
-  // anything wrong?", which is the question they opened the popover with.
+  // elsewhere. Without it, moving the ledger off Home would cost the mid-task
+  // user the whole answer to "is anything wrong?", which is the question they
+  // opened the popover with.
+  //
+  // `master-off` is deliberately absent. It is not per-family news, it is the
+  // master switch's own state, and the card directly above already says "Off ·
+  // N waiting". Ranking it here made the routing-off door read "waiting on
+  // routing" and drop the family names entirely, so the one state whose only
+  // question is "what comes back when I flip this?" answered it twice in the
+  // same words and never named a single thing.
   const EXCEPTION_RANK: Record<string, number> = {
     error: 0,
     "needs-trust": 1,
     drifted: 2,
-    "master-off": 3,
   };
   const worstException = groups
     .map((g) => groupSummary(g))
-    .filter((summary) => summary.exception !== null)
+    .filter((summary) => summary.kind !== null && summary.kind in EXCEPTION_RANK)
     .sort(
       (a, b) => (EXCEPTION_RANK[a.kind ?? ""] ?? 9) - (EXCEPTION_RANK[b.kind ?? ""] ?? 9),
     )[0];

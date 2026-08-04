@@ -251,7 +251,14 @@ export function GroupMembers({
                 />
                 <div className="relative flex items-center gap-2.5 py-2.5 pl-6 pr-3.5">
                   <div className="pointer-events-none relative min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-medium text-gc-ink">{member.name}</div>
+                    {/* Two lines, not `truncate`. The 10px hierarchy indent plus
+                        the widest member pill left 130px for a name that needs
+                        151, and "Claude Desktop / Cowork" clipped in exactly the
+                        state the user opened the row to act on. Wrapping is the
+                        answer the family's exception line already uses. */}
+                    <div className="line-clamp-2 text-[13px] font-medium leading-snug text-gc-ink">
+                      {member.name}
+                    </div>
                   </div>
                   <span className="pointer-events-none relative">
                     <MemberPill member={member} />
@@ -277,7 +284,7 @@ export function GroupMembers({
                   </span>
                   <span className="pointer-events-none relative">
                     <Icon
-                      name="chevronRight"
+                      name="caretRight"
                       size={14}
                       stroke={2}
                       className={`text-gc-ink-4 transition-transform ${open ? "rotate-90" : ""}`}

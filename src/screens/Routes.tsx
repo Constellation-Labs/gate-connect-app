@@ -151,7 +151,7 @@ export function Routes({
                 </span>
                   <span className="pointer-events-none relative">
                     <Icon
-                      name="chevronRight"
+                      name="caretRight"
                       size={14}
                       stroke={2}
                       className={`text-gc-ink-4 transition-transform ${
