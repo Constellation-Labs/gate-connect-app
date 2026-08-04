@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { closeRunningAgents } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
-import { useFocusTrap } from "../lib/useFocusTrap";
+import { Takeover, TAKEOVER_Z } from "./Takeover";
 import { Button, ErrorNote } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
@@ -35,12 +35,10 @@ export function RoutingChangeNotice({
   // Signalled-process count once the close ran; null until then.
   const [closed, setClosed] = useState<number | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
   // Focus the way out, not the way through: this panel can be reached by
   // pressing Enter on the Home banner, and its primary is "Close everything".
   const safeRef = useRef<HTMLButtonElement>(null);
   // `confirming`/`closed` are the step: each swaps the buttons out.
-  useFocusTrap(panelRef, onDismiss, safeRef, `${confirming}:${closed}`);
 
   async function closeAgents() {
     setClosing(true);
@@ -61,12 +59,12 @@ export function RoutingChangeNotice({
   }
 
   return (
-    <div
-      ref={panelRef}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="routing-notice-title"
-      className="gc-panel-in absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center"
+    <Takeover
+      z={TAKEOVER_Z.routing}
+      labelledBy="routing-notice-title"
+      onEscape={onDismiss}
+      initialFocus={safeRef}
+      resetKey={`${confirming}:${closed}`}
     >
       <div
         className={`flex h-14 w-14 items-center justify-center rounded-gc-lg ${
@@ -152,6 +150,6 @@ export function RoutingChangeNotice({
           </Button>
         )}
       </div>
-    </div>
+    </Takeover>
   );
 }

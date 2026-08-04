@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { disconnectToolsForQuit, quitApp } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
-import { useFocusTrap } from "../lib/useFocusTrap";
+import { Takeover, TAKEOVER_Z } from "./Takeover";
 import { Button, ErrorNote } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
@@ -24,12 +24,9 @@ function joinNames(names: string[]): string {
 export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ClassifiedError | null>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
   // The user asked to quit, but Enter on an unread panel should not decide
   // how. Cancel takes focus; both quit paths stay one Tab away.
   const safeRef = useRef<HTMLButtonElement>(null);
-  // `busy` empties the panel of focusable controls.
-  useFocusTrap(panelRef, onCancel, safeRef, busy);
 
   async function turnOffAndQuit() {
     setBusy(true);
@@ -57,12 +54,13 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
   const plural = tools.length > 1;
 
   return (
-    <div
-      ref={panelRef}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="quit-confirm-title"
-      className="gc-panel-in absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center"
+    <Takeover
+      z={TAKEOVER_Z.quit}
+      labelledBy="quit-confirm-title"
+      onEscape={onCancel}
+      initialFocus={safeRef}
+      // `busy` empties the panel of focusable controls.
+      resetKey={busy}
     >
       <div className="flex h-14 w-14 items-center justify-center rounded-gc-lg bg-gc-sunken text-gc-ink-3">
         {/* Leaving, not protecting: the shield stays with routing states so
@@ -105,6 +103,6 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
           Cancel
         </button>
       </div>
-    </div>
+    </Takeover>
   );
 }

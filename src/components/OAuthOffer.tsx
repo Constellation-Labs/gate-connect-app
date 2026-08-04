@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
-import { useFocusTrap } from "../lib/useFocusTrap";
+import { Takeover, TAKEOVER_Z } from "./Takeover";
 import { secretStoreName, usePlatform } from "../lib/platform";
 import { Button, ErrorNote } from "./gc/ui";
 import { Icon } from "./gc/Icon";
@@ -30,11 +30,9 @@ export function OAuthOffer({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ClassifiedError | null>(null);
   const platform = usePlatform();
-  const panelRef = useRef<HTMLDivElement>(null);
   // An offer the user did not ask for should not open with its accept
   // focused: Space or Enter would launch a browser sign-in flow.
   const safeRef = useRef<HTMLButtonElement>(null);
-  useFocusTrap(panelRef, onDismiss, safeRef);
 
   async function upgrade() {
     setBusy(true);
@@ -51,12 +49,11 @@ export function OAuthOffer({
   }
 
   return (
-    <div
-      ref={panelRef}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="oauth-offer-title"
-      className="gc-panel-in absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center"
+    <Takeover
+      z={TAKEOVER_Z.offer}
+      labelledBy="oauth-offer-title"
+      onEscape={onDismiss}
+      initialFocus={safeRef}
     >
       <div className="flex h-14 w-14 items-center justify-center rounded-gc-lg bg-gc-accent-wash text-gc-accent">
         <Icon name="shieldCheck" size={26} />
@@ -95,6 +92,6 @@ export function OAuthOffer({
       <p className="text-[11px] leading-snug text-gc-ink-3">
         You can switch either way later, under Account in Settings.
       </p>
-    </div>
+    </Takeover>
   );
 }

@@ -4,7 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { setUpdaterRelaunching } from "../lib/api";
 import { useWindowReopen } from "../lib/useWindowReopen";
-import { useFocusTrap } from "../lib/useFocusTrap";
+import { Takeover, TAKEOVER_Z } from "./Takeover";
 import { track, trackError } from "../lib/analytics";
 import { Button, IconButton } from "./gc/ui";
 import { Icon } from "./gc/Icon";
@@ -196,21 +196,19 @@ function UpdateTakeover({
   onInstall: () => void;
   onLater: () => void;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
   // Escape defers the update, matching "Later" - but not mid-install, when
   // there is no safe dismissal.
   // "Install & relaunch" restarts the app under the user; Later takes focus.
   const safeRef = useRef<HTMLButtonElement>(null);
-  // `installing` unmounts Later and disables Install, leaving nothing
-  // focusable in the panel.
-  useFocusTrap(panelRef, installing ? undefined : onLater, safeRef, installing);
   return (
-    <div
-      ref={panelRef}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="update-panel-title"
-      className="gc-panel-in absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-gc-surface px-7 text-center"
+    <Takeover
+      z={TAKEOVER_Z.update}
+      labelledBy="update-panel-title"
+      onEscape={installing ? undefined : onLater}
+      initialFocus={safeRef}
+      // `installing` unmounts Later and disables Install, leaving nothing
+      // focusable in the panel.
+      resetKey={installing}
     >
       <div className="flex h-14 w-14 items-center justify-center rounded-gc-lg bg-gc-accent-wash text-gc-accent">
         <Icon name="refresh" size={26} />
@@ -253,6 +251,6 @@ function UpdateTakeover({
           </button>
         )}
       </div>
-    </div>
+    </Takeover>
   );
 }
