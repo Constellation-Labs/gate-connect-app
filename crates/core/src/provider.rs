@@ -52,6 +52,11 @@ pub fn providers() -> Vec<Provider> {
             display_name: "Claude",
             subtitle: "Claude Code + Claude Desktop",
             tool_ids: &[ToolId::ClaudeCode],
+            // Only the api.anthropic.com domain. The `claude-web` chat domain is
+            // deliberately absent: `enable` below turns on EVERY domain a
+            // provider lists, so adding it here would start intercepting the
+            // user's claude.ai session the moment they enabled Claude. That
+            // surface is reached through its own domain toggle instead.
             proxy_domain_slugs: &["anthropic"],
         },
         Provider {
@@ -652,5 +657,14 @@ mod tests {
                 nothing: true
             }
         );
+    }
+    #[test]
+    fn claude_web_is_not_reachable_by_enabling_the_anthropic_provider() {
+        // `enable` flips every domain a provider lists. Attaching the chat
+        // domain here would route the user's claude.ai SESSION cookie as a side
+        // effect of enabling Claude, bypassing that domain's opt-in default.
+        let p = find("anthropic").expect("anthropic provider present");
+        assert!(!p.proxy_domain_slugs.contains(&"claude-web"));
+        assert_eq!(p.proxy_domain_slugs, &["anthropic"]);
     }
 }

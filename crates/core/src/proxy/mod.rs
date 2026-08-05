@@ -294,8 +294,10 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // to api.anthropic.com /v1/messages (OAuth bearer or API key),
             // confirmed against a real Cowork generation. a-api.anthropic.com
             // is Anthropic's telemetry host (Segment-style /v1/b ingestion)
-            // and claude.ai is the web/login surface - both are deliberately
-            // left tunnelled, never intercepted.
+            // and is deliberately left tunnelled, never intercepted. claude.ai
+            // is the web/chat/login surface and is NOT part of this entry — it
+            // speaks a different protocol and has its own opt-in `claude-web`
+            // domain below.
             hosts: vec!["api.anthropic.com".into()],
             // Applies to every host above. Only group hosts that genuinely
             // share this upstream - never collapse distinct API hosts onto one.
@@ -316,6 +318,48 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // unrewritten.
             passthrough_prefixes: vec!["/api/desktop/".into()],
             enabled: true,
+            supported: true,
+        },
+        ProxyDomain {
+            slug: "claude-web".into(),
+            // Claude Desktop's CHAT surface, which is a different protocol from
+            // the entry above rather than more of the same host. That one covers
+            // api.anthropic.com /v1/messages; this one covers claude.ai, where
+            // the desktop app sends a bare `prompt` string and Anthropic keeps
+            // the conversation history server-side. Gate recognises it as the
+            // `claude-web-chat` surface and treats it as inspection + audit, not
+            // as key-brokered routing: there is no API key involved at all.
+            display_name: "Claude Desktop chat".into(),
+            hosts: vec!["claude.ai".into()],
+            upstream_url: "https://claude.ai".into(),
+            // Prefix matching cannot isolate the chat call on its own: the
+            // endpoint is `/api/organizations/{org}/chat_conversations/{conv}/completion`,
+            // so the varying id sits BEFORE the distinguishing final segment.
+            // Rewriting the whole `/api/organizations/` tree is deliberate and
+            // safe — Gate classifies only the completion path as the chat
+            // surface and forwards the sibling calls (skills, usage,
+            // conversation reads) as ordinary passthrough, which it has explicit
+            // coverage for. They add audit rows, not behaviour changes.
+            rewrite_prefixes: vec!["/api/organizations/".into()],
+            // Everything here would be pure noise or actively harmful to route:
+            // the updater channel, telemetry batches, and the bootstrap/account
+            // calls the app makes before any conversation exists.
+            passthrough_prefixes: vec![
+                "/api/desktop/".into(),
+                "/api/event_logging/".into(),
+                "/api/bootstrap/".into(),
+            ],
+            // Opt-in. This surface carries the user's Claude SESSION cookie
+            // rather than an API key, so it should never start intercepting
+            // without a deliberate toggle.
+            //
+            // Deliberately NOT attached to the `anthropic` provider's
+            // `proxy_domain_slugs` (see `provider.rs`): `provider::enable` turns
+            // on every domain a provider lists, so attaching it would route the
+            // session surface the moment someone enabled "Claude" — defeating
+            // the opt-in above. It is reached only through the domain-level
+            // toggle (`proxy domain claude-web on`), like the google domains.
+            enabled: false,
             supported: true,
         },
         ProxyDomain {
@@ -397,6 +441,20 @@ mod tests {
     fn anthropic() -> Vec<ProxyDomain> {
         vec![default_domains().into_iter().next().unwrap()]
     }
+
+    /// The `claude-web` entry, force-enabled: it ships opt-out because the
+    /// surface carries a session cookie rather than an API key.
+    fn claude_web() -> Vec<ProxyDomain> {
+        let mut d: ProxyDomain = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "claude-web")
+            .expect("claude-web is in the catalog");
+        d.enabled = true;
+        vec![d]
+    }
+
+    const CLAUDE_COMPLETION: &str =
+        "/api/organizations/b44129f9-a8ea-4f96-a137-b14a560e58d3/chat_conversations/2f261f16-2b31-41f8-b441-6067464c6504/completion";
 
     #[test]
     fn intercepts_only_enabled_matching_hosts() {
@@ -596,5 +654,107 @@ mod tests {
             decide(&d, "chatgpt.com", "/backend-api/codex/responses"),
             Decision::Tunnel
         );
+    }
+    #[test]
+    fn claude_web_ships_disabled_so_a_session_surface_is_never_routed_silently() {
+        let catalog = default_domains();
+        let d = catalog.iter().find(|d| d.slug == "claude-web").unwrap();
+        assert!(!d.enabled, "claude-web must be opt-in");
+        assert!(d.supported);
+        assert_eq!(d.hosts, vec!["claude.ai".to_string()]);
+        assert_eq!(d.upstream_url, "https://claude.ai");
+    }
+
+    #[test]
+    fn claude_web_rewrites_the_chat_completion_call() {
+        let d = claude_web();
+        assert_eq!(
+            decide(&d, "claude.ai", CLAUDE_COMPLETION),
+            Decision::Rewrite {
+                upstream_url: "https://claude.ai".into()
+            }
+        );
+        // Query strings must not change the verdict.
+        assert_eq!(
+            decide(
+                &d,
+                "claude.ai",
+                &format!("{CLAUDE_COMPLETION}?rendering_mode=messages")
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://claude.ai".into()
+            }
+        );
+    }
+
+    #[test]
+    fn claude_web_leaves_updater_telemetry_and_bootstrap_alone() {
+        let d = claude_web();
+        for path in [
+            "/api/desktop/RELEASES",
+            "/api/event_logging/v2/batch",
+            "/api/bootstrap/b44129f9/current_user_access",
+        ] {
+            assert_eq!(
+                decide(&d, "claude.ai", path),
+                Decision::Passthrough,
+                "{path} must reach the real host untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_web_routes_sibling_org_calls_but_gate_classifies_them_separately() {
+        // Prefix matching cannot isolate the completion path (the conversation id
+        // precedes the distinguishing final segment), so these ride along. That
+        // is deliberate: Gate tags only the completion call as the chat surface
+        // and forwards the rest as ordinary passthrough.
+        let d = claude_web();
+        for path in [
+            "/api/organizations/b44129f9/skills/list-skills",
+            "/api/organizations/b44129f9/usage",
+        ] {
+            assert_eq!(
+                decide(&d, "claude.ai", path),
+                Decision::Rewrite {
+                    upstream_url: "https://claude.ai".into()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn claude_web_does_not_touch_paths_outside_the_api_tree() {
+        let d = claude_web();
+        assert_eq!(decide(&d, "claude.ai", "/chat/abc"), Decision::Passthrough);
+        assert_eq!(
+            decide(&d, "claude.ai", "/_next/static/x.js"),
+            Decision::Passthrough
+        );
+    }
+
+    #[test]
+    fn claude_web_and_anthropic_stay_separate_domains() {
+        // The api.anthropic.com entry must not start matching claude.ai, and the
+        // chat entry must not claim the API host: they are different protocols.
+        assert_eq!(
+            decide(&anthropic(), "claude.ai", CLAUDE_COMPLETION),
+            Decision::Tunnel
+        );
+        assert_eq!(
+            decide(&claude_web(), "api.anthropic.com", "/v1/messages"),
+            Decision::Tunnel
+        );
+    }
+
+    #[test]
+    fn ca_name_constraints_cover_claude_ai_once_the_domain_ships() {
+        // The CA's permitted subtrees are built from the WHOLE catalog, so a
+        // missing host here means interception fails at the handshake.
+        let hosts: Vec<String> = default_domains()
+            .iter()
+            .flat_map(|d| d.hosts.iter().cloned())
+            .collect();
+        assert!(hosts.contains(&"claude.ai".to_string()));
     }
 }
