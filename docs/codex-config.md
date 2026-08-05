@@ -61,6 +61,28 @@ so nothing routes through Gate while it sits there; the app reports Codex as
 disconnected, and reconnecting overwrites it with the managed block. It is
 safe to delete by hand once the old threads are finished with.
 
+## Thread history is listed per provider
+
+Turning routing on or off changes **which Codex conversations the ChatGPT app
+lists**. With routing on you see the threads you started while routed; turn it
+off and you see the ones from before, and vice versa.
+
+Nothing is deleted. Codex keeps one thread store and tags every thread with the
+provider it ran under - `model_provider` in `state_*.sqlite`'s `threads` table,
+indexed - and the app's list request filters on it (`ThreadListParams` carries a
+`modelProviders` field, which becomes `AND threads.model_provider IN (…)`). Since
+Gate Connect flips the top-level `model_provider` between `gate` and your own
+value, the same store answers two different queries. Every rollout file under
+`~/.codex/sessions/` and every row in the index survives the toggle; flip
+routing back and the other set returns.
+
+This is Codex's own behaviour, not something Gate Connect can route around:
+native Codex partitions history the same way when you switch providers and back.
+The only way to make one continuous list would be to keep `model_provider =
+"gate"` in place permanently - which would mean owning your pointer even while
+disconnected, and would *still* hide anything you started before using Gate. We
+would rather restore your config honestly and tell you where the threads went.
+
 ## What the app writes
 
 The base URL and the `X-Gate-Upstream-Url` header depend on which auth mode
