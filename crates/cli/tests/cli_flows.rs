@@ -166,9 +166,16 @@ fn codex_connect_then_disconnect() {
         !after.contains("X-Gate-Api-Key"),
         "gate residue left behind: {after}"
     );
+    assert!(!after.contains(RELAY_URL), "relay URL left behind: {after}");
     assert!(
-        !after.contains("model_providers.gate"),
-        "gate provider left behind: {after}"
+        !after.contains(r#"model_provider = "gate""#),
+        "gate pointer left behind: {after}"
+    );
+    // The provider name survives as a passthrough stub (api-key mode → /v1) so
+    // Codex threads started while routed can still resume, going direct.
+    assert!(
+        after.contains(r#"base_url = "https://api.openai.com/v1""#),
+        "passthrough stub missing: {after}"
     );
 }
 
@@ -234,13 +241,15 @@ wire_api = "responses"
         !after.contains(r#"model_provider = "gate""#),
         "hand-written gate pointer restored: {after}"
     );
+    // The adopted block is replaced by the passthrough stub, not deleted, but
+    // it must keep none of the hand-written routing.
     assert!(
-        !after.contains("model_providers.gate"),
-        "gate provider left behind: {after}"
+        !after.contains("old.gateway.test") && !after.contains("X-Gate-Api-Key"),
+        "hand-written gate routing left behind: {after}"
     );
     assert!(
-        !after.contains("_gate_connect"),
-        "gate marker left behind: {after}"
+        !after.contains("previous_model_provider"),
+        "gate undo-log keys left behind: {after}"
     );
 }
 
