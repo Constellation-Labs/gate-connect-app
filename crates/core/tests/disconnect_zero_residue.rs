@@ -529,3 +529,39 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         "sidecar must be removed"
     );
 }
+
+#[test]
+fn hermes_connect_refuses_an_unconfigured_model_with_a_usable_message() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+
+    let launcher = env::home().unwrap().join(".local/bin/hermes");
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::write(&launcher, "#!/bin/sh\n").unwrap();
+
+    // What a fresh install actually ships: `model` is the empty-string sentinel
+    // that `hermes model` later upgrades to a mapping. Reading it as a mapping
+    // used to fail with "model is not a mapping", which says nothing about what
+    // to do next.
+    let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(&cfg, "model: \"\"\n").unwrap();
+
+    let err = find(ToolId::Hermes)
+        .unwrap()
+        .connect(&connect_input(9977))
+        .expect_err("an unconfigured model must not be silently redirected");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no model configured yet") && msg.contains("hermes model"),
+        "error should name the fix: {msg}"
+    );
+
+    // And it must not have written a half-redirect on the way out.
+    let after = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        !after.contains("127.0.0.1"),
+        "config must be untouched: {after}"
+    );
+}

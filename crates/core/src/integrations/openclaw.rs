@@ -36,11 +36,14 @@
 //! The provider's `apiKey`, `api`, model list, and any other options the user set
 //! survive the merge.
 //!
-//! Discovery: a provider is gated if it appears in `models.providers` and is
-//! in our well-known list. OpenClaw resolves provider credentials from env
-//! vars rather than an auth file, so (unlike OpenCode) there is no auth.json
-//! to consult — a provider the user drives purely via `<PROVIDER>_API_KEY`
-//! with no `models.providers.<id>` block isn't auto-discovered.
+//! Discovery: a provider is gated if it is in our well-known list and either
+//! has a `models.providers.<id>` block or shows up in the auth-profile signal.
+//! Caveat on that second signal: it reads `auth.profiles` out of
+//! `openclaw.json`, but current OpenClaw keeps auth profiles in a per-agent
+//! store (`~/.openclaw/agents/<id>/agent/…`), so a provider configured purely
+//! via `openclaw models auth login` is likely still missed. See
+//! `docs/harness-integration-validation.md` H2 - it is one of the reasons this
+//! integration is hidden from the popover.
 //!
 //! Config format: `openclaw.json` is JSON5 (comments + trailing commas
 //! allowed), so we parse with the `json5` crate. We write back with

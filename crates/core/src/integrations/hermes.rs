@@ -195,10 +195,23 @@ impl Integration for Hermes {
 
         let mut settings = load_settings()?.unwrap_or_default();
 
-        // Ensure `model` section exists.
+        // Ensure `model` section exists. A fresh install ships the string
+        // sentinel `model: ""`, which `hermes setup` / `hermes model` upgrades to
+        // a mapping - so an absent key and an empty string are both "not
+        // configured yet" and deserve the same actionable message rather than a
+        // type error.
         let model_key = Value::String("model".to_string());
-        if !settings.contains_key(&model_key) {
-            settings.insert(model_key.clone(), Value::Mapping(Mapping::new()));
+        match settings.get(&model_key) {
+            None => {
+                settings.insert(model_key.clone(), Value::Mapping(Mapping::new()));
+            }
+            Some(v) if !v.is_mapping() => {
+                anyhow::bail!(
+                    "Hermes has no model configured yet (`model` in config.yaml is {v:?}, not a \
+                     model block) - run `hermes model` to pick one, then connect again"
+                );
+            }
+            Some(_) => {}
         }
 
         let model = settings
