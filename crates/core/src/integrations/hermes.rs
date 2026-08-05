@@ -3,17 +3,26 @@
 //! Hermes is a Python-based OpenAI-compatible agent CLI with a single
 //! `model.base_url` in `~/.hermes/config.yaml`. Gate Connect redirects that
 //! endpoint through the loopback reverse-proxy relay ([`crate::proxy::relay`])
-//! by setting `model.base_url` to `http://127.0.0.1:<relay-port>/v1` and
-//! injecting only the non-secret `X-Gate-Upstream-Url` hint into
-//! `model.default_headers`. The relay injects the live Gate credential per
-//! request, so **no Gate credential is written to config.yaml**. The user's
+//! by setting `model.base_url` to
+//! `http://127.0.0.1:<relay-port>/<slug><client-path>`, and writes nothing
+//! else. Both parts come from [`crate::proxy::resolve_endpoint`]: `<slug>` names
+//! the catalog domain, which is how the relay knows where to forward, and
+//! `<client-path>` keeps whatever sits between the upstream host and Hermes' own
+//! suffix (`/api/v1` for the OpenRouter default, `/v1` for OpenAI).
+//!
+//! **No header and no credential is written.** The relay injects the Gate
+//! credential and the upstream hint per request, so a token refresh is invisible
+//! here. That also means we no longer touch `model.default_headers`, which is
+//! not a documented Hermes field - it worked only because the model block is
+//! passed through to the OpenAI client constructor, and upstream is still
+//! deciding what to name it (NousResearch/hermes-agent#12785). The user's own
 //! upstream credentials are untouched -- Gate is a pure passthrough on
 //! `Authorization` / `x-api-key`.
 //!
 //! State tracking: a sidecar at `<app_support_dir>/hermes-state.json` records
-//! the original `base_url` and `default_headers` so `disconnect` can restore
-//! them exactly. The sidecar is written atomically before the config is
-//! mutated and deleted only after the config is restored.
+//! the original `base_url` so `disconnect` can restore it exactly. The sidecar is
+//! written atomically before the config is mutated and deleted only after the
+//! config is restored.
 //!
 //! Config format: we parse and re-serialize with `serde_yaml`, which means a
 //! connect/disconnect rewrites `config.yaml` and **drops any comments**
@@ -34,8 +43,6 @@ const UPSTREAM_PROVIDER_NAME: &str = "openrouter";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 
 const HERMES_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-const GATEWAY_PATH_SUFFIX: &str = "/v1";
-const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
 const STATE_FILENAME: &str = "hermes-state.json";
 
 #[cfg(unix)]
@@ -91,7 +98,31 @@ impl Integration for Hermes {
         if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);
         }
-        Ok(crate::env::hermes_config_dir()?.exists())
+        if launcher_paths()?.iter().any(|p| p.exists()) {
+            return Ok(true);
+        }
+        Ok(launcher_on_path())
+    }
+
+    fn config_is_managed(&self) -> Result<bool> {
+        // Two-part marker. The sidecar only exists because connect() wrote it,
+        // but on its own it can't tell our stale write apart from a base_url
+        // the user has since repointed by hand - so also require that what's on
+        // disk still aims at loopback, which is only ever us. That keeps the
+        // reconcile pass reasserting a dead relay port while leaving a
+        // deliberate out-of-app endpoint alone.
+        if load_state()?.is_none() {
+            return Ok(false);
+        }
+        let Some(settings) = load_settings()? else {
+            return Ok(false);
+        };
+        Ok(settings
+            .get("model")
+            .and_then(|v| v.as_mapping())
+            .and_then(|m| m.get("base_url"))
+            .and_then(|v| v.as_str())
+            .is_some_and(is_local_url))
     }
 
     fn status(&self) -> Result<Status> {
@@ -99,12 +130,29 @@ impl Integration for Hermes {
             return Ok(Status::NotInstalled);
         }
 
-        let Some(_state) = load_state()? else {
+        let Some(state) = load_state()? else {
             return Ok(Status::Detected);
         };
 
         let expected_base = match crate::proxy::relay_base_url() {
-            Some(u) => compute_base_url(&u),
+            Some(relay) => {
+                // Which path Hermes must keep depends on the endpoint it was
+                // pointed at before we redirected it (`/v1` for OpenAI,
+                // `/api/v1` for OpenRouter), and the sidecar is where that
+                // original lives.
+                let original = state
+                    .previous_base_url
+                    .as_deref()
+                    .unwrap_or(HERMES_DEFAULT_BASE_URL);
+                match crate::proxy::resolve_endpoint(original) {
+                    Some(r) => r.relay_base_url(&relay),
+                    None => {
+                        return Ok(Status::Drifted(format!(
+                            "Gate has no upstream domain for {original:?}"
+                        )));
+                    }
+                }
+            }
             None => {
                 return Ok(Status::Drifted(
                     "the Gate proxy has not been enabled yet -- turn it on to route Hermes".into(),
@@ -123,15 +171,10 @@ impl Integration for Hermes {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let headers = model
-            .and_then(|m| m.get("default_headers"))
-            .and_then(|v| v.as_mapping());
-
-        // No key check: the relay injects the Gate credential live, so the
-        // config carries only the non-secret upstream hint.
-        let has_upstream_url = headers.and_then(|h| h.get(UPSTREAM_URL_HEADER)).is_some();
-
-        if base_url == expected_base && has_upstream_url {
+        // The base_url is the whole test: it carries the relay origin, the
+        // catalog slug the relay routes on, and the endpoint's own path. No
+        // credential and no header is written, so there is nothing else to check.
+        if base_url == expected_base {
             Ok(Status::Connected)
         } else {
             Ok(Status::Drifted(format!(
@@ -149,8 +192,6 @@ impl Integration for Hermes {
         let relay_base_url = input.relay_base_url.as_deref().context(
             "the Gate proxy relay is not running -- enable the proxy before connecting Hermes",
         )?;
-
-        let relay_base = compute_base_url(relay_base_url);
 
         let mut settings = load_settings()?.unwrap_or_default();
 
@@ -180,7 +221,19 @@ impl Integration for Hermes {
             );
         }
 
-        let upstream_url = upstream_url_from_base(&current_base_url);
+        // Resolve the user's own endpoint against the catalog. This decides both
+        // halves at once: the upstream Gate forwards to, and the path Hermes
+        // must keep on its side. Deriving them separately is what broke the
+        // default OpenRouter config - stripping `/v1` off
+        // `https://openrouter.ai/api/v1` yields `https://openrouter.ai/api`,
+        // which matches no catalog entry, so every request 403'd.
+        let resolved = crate::proxy::resolve_endpoint(&current_base_url).with_context(|| {
+            format!(
+                "Hermes is pointed at {current_base_url:?}, which Gate has no upstream domain for - \
+                 point it at a supported provider first"
+            )
+        })?;
+        let relay_base = resolved.relay_base_url(relay_base_url);
 
         // Snapshot original values before we touch anything.
         let state = State {
@@ -202,23 +255,15 @@ impl Integration for Hermes {
         };
         save_state(&state)?;
 
-        // Redirect base_url at the relay .
+        // Redirect base_url at the relay. The slug segment it carries is how the
+        // relay knows which upstream this is, so nothing else has to be written.
         model.insert(base_url_key, Value::String(relay_base));
 
-        // Inject only the non-secret upstream hint into default_headers. The
-        // relay injects the Gate credential live, so no key is written here.
-        if !model.contains_key(&headers_key) {
-            model.insert(headers_key.clone(), Value::Mapping(Mapping::new()));
-        }
-        let headers = model
-            .get_mut(&headers_key)
-            .and_then(|v| v.as_mapping_mut())
-            .context("default_headers is not a mapping")?;
-
-        headers.insert(
-            Value::String(UPSTREAM_URL_HEADER.to_string()),
-            Value::String(upstream_url),
-        );
+        // `model.default_headers` is left alone entirely. It is not a documented
+        // Hermes field - it works only because the model block is passed through
+        // to the OpenAI client constructor, and upstream is still deciding what to
+        // call it (NousResearch/hermes-agent#12785) - so depending on it was the
+        // most fragile thing this integration did.
 
         write_settings(&settings)
     }
@@ -279,22 +324,42 @@ impl Integration for Hermes {
     }
 }
 
-/// Appends `/v1` to the relay's loopback base URL, stripping any trailing
-/// slash first. The relay (and Gate behind it) forward the path verbatim.
-fn compute_base_url(base: &str) -> String {
-    format!("{}{}", base.trim_end_matches('/'), GATEWAY_PATH_SUFFIX)
+/// Where the Hermes launcher actually lands, checked instead of "the config
+/// directory exists".
+///
+/// The installer writes `~/.hermes/config.yaml` from a template and drops the
+/// launcher in `~/.local/bin` - so treating the config directory as proof of
+/// installation reported Hermes as installed long after it was removed, and
+/// left the app offering to configure a CLI that wasn't there.
+fn launcher_paths() -> Result<Vec<std::path::PathBuf>> {
+    let home = crate::env::home()?;
+    Ok(vec![
+        home.join(".local/bin/hermes"),
+        crate::env::hermes_config_dir()?.join("bin/hermes"),
+    ])
 }
 
-/// Strips the trailing `/v1` from a `base_url` to produce the value Gate
-/// expects in `X-Gate-Upstream-Url`. Gate prepends this to the inbound
-/// request path, so `/v1/chat/completions` must live on the client side.
-fn upstream_url_from_base(base_url: &str) -> String {
-    let s = base_url.trim_end_matches('/');
-    if let Some(stripped) = s.strip_suffix("/v1") {
-        stripped.trim_end_matches('/').to_string()
-    } else {
-        s.to_string()
-    }
+/// Whether a `hermes` executable is reachable on `$PATH`.
+///
+/// A supplement to [`launcher_paths`], never a replacement: launched from Finder
+/// or launchd the app inherits a minimal `PATH` that excludes `~/.local/bin`, so
+/// this would miss the standard install in exactly the case that matters. It
+/// covers the reverse - Hermes somewhere unusual (a venv, `/opt`, a scratch
+/// HOME) that the absolute paths don't know about.
+fn launcher_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        if dir.as_os_str().is_empty() {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        let names: &[&str] = &["hermes.exe", "hermes.cmd", "hermes.bat"];
+        #[cfg(not(target_os = "windows"))]
+        let names: &[&str] = &["hermes"];
+        names.iter().any(|n| dir.join(n).is_file())
+    })
 }
 
 /// Returns true if `base_url` targets a local address (loopback, link-local,
@@ -387,31 +452,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn upstream_url_strips_v1() {
+    fn resolving_the_default_endpoint_keeps_api_v1_on_the_client() {
+        // Hermes ships pointed at OpenRouter, whose API lives under `/api/v1`.
+        // The old code derived the upstream by stripping `/v1`, producing
+        // `https://openrouter.ai/api` - off-catalog, so the relay 403'd every
+        // request from a default Hermes install. The `/api` has to stay on the
+        // client side, where it also keeps the forwarded path on OpenRouter's
+        // `/api/` inference prefix.
+        let r = crate::proxy::resolve_endpoint(HERMES_DEFAULT_BASE_URL)
+            .expect("the default Hermes endpoint must be routable");
+        assert_eq!(r.upstream_url, "https://openrouter.ai");
+        assert_eq!(r.client_path, "/api/v1");
         assert_eq!(
-            upstream_url_from_base("https://openrouter.ai/api/v1"),
-            "https://openrouter.ai/api"
+            format!("{}{}", "http://127.0.0.1:9977", r.client_path),
+            "http://127.0.0.1:9977/api/v1"
         );
-        assert_eq!(
-            upstream_url_from_base("https://api.openai.com/v1"),
-            "https://api.openai.com"
-        );
-        assert_eq!(
-            upstream_url_from_base("https://api.openai.com/v1/"),
-            "https://api.openai.com"
-        );
+
+        // An OpenAI-shaped endpoint keeps just `/v1`.
+        let r = crate::proxy::resolve_endpoint("https://api.openai.com/v1")
+            .expect("openai endpoint resolves");
+        assert_eq!(r.upstream_url, "https://api.openai.com");
+        assert_eq!(r.client_path, "/v1");
     }
 
     #[test]
-    fn upstream_url_no_v1() {
-        assert_eq!(
-            upstream_url_from_base("https://api.custom.com/"),
-            "https://api.custom.com"
-        );
-        assert_eq!(
-            upstream_url_from_base("https://api.openai-v1.com"),
-            "https://api.openai-v1.com"
-        );
+    fn an_endpoint_gate_cannot_route_is_refused_not_guessed() {
+        // A custom endpoint no catalog domain covers must not be rewritten:
+        // connect bails instead of pointing Hermes at a relay that would 403.
+        assert!(crate::proxy::resolve_endpoint("https://api.custom.com").is_none());
+        // Suffix confusion must not resolve to api.openai.com either.
+        assert!(crate::proxy::resolve_endpoint("https://api.openai-v1.com").is_none());
     }
 
     #[test]
@@ -421,17 +491,5 @@ mod tests {
         assert!(is_local_url("http://my-service.local/v1"));
         assert!(!is_local_url("https://openrouter.ai/api/v1"));
         assert!(!is_local_url("https://api.openai.com/v1"));
-    }
-
-    #[test]
-    fn compute_base_url_appends_suffix() {
-        assert_eq!(
-            compute_base_url("https://gate.example.com"),
-            "https://gate.example.com/v1"
-        );
-        assert_eq!(
-            compute_base_url("https://gate.example.com/"),
-            "https://gate.example.com/v1"
-        );
     }
 }

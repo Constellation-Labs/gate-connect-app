@@ -14,7 +14,7 @@ Codex brings its own upstream credentials. Gate Connect sets
 `requires_openai_auth = true` on the provider so Codex attaches its own
 `codex login` session (the ChatGPT OAuth token or the API key in
 `~/.codex/auth.json`) as the upstream bearer. Gate passes that bearer
-through and forwards to OpenAI per the `X-Gate-Upstream-Url` hint.
+through and forwards to OpenAI per the upstream hint the relay injects.
 
 This is the only provider shape that carries a ChatGPT-subscription login
 through a custom `base_url`. A bare `[auth] command` credential-helper
@@ -85,9 +85,11 @@ would rather restore your config honestly and tell you where the threads went.
 
 ## What the app writes
 
-The base URL and the `X-Gate-Upstream-Url` header depend on which auth mode
-`codex login` left you in. The two modes have incompatible upstream URL
-shapes, so Gate Connect picks the matching pair.
+One key, and no headers. `base_url` points at Gate Connect's loopback relay,
+never at the gateway directly, and carries two path segments: the catalog slug
+the relay routes on, and the suffix Codex appends `/responses` to. Which pair
+you get depends on the auth mode `codex login` left you in, because the two
+modes have incompatible upstream URL shapes.
 
 ### ChatGPT subscription mode
 
@@ -96,18 +98,15 @@ model_provider = "gate"
 
 [model_providers.gate]
 name = "Constellation Gate"
-base_url = "https://gateway.constellationgate.ai/codex"
+base_url = "http://127.0.0.1:8977/chatgpt/codex"
 wire_api = "responses"
 requires_openai_auth = true
-
-[model_providers.gate.http_headers]
-"X-Gate-Api-Key" = "sk-gw-…your Gate key…"
-"X-Gate-Upstream-Url" = "https://chatgpt.com/backend-api"
 ```
 
-- `base_url` ends in `/codex`, so the client sends `/codex/responses`.
-- `X-Gate-Upstream-Url` is the bare `backend-api` host; the `/codex`
-  segment lives in the path, not the upstream hint.
+- Codex sends `/chatgpt/codex/responses`.
+- The relay strips `/chatgpt`, looks that slug up in its built-in catalog, and
+  forwards `/codex/responses` to the gateway with
+  `X-Gate-Upstream-Url: https://chatgpt.com/backend-api` attached.
 
 ### API key mode
 
@@ -116,24 +115,28 @@ model_provider = "gate"
 
 [model_providers.gate]
 name = "Constellation Gate"
-base_url = "https://gateway.constellationgate.ai/v1"
+base_url = "http://127.0.0.1:8977/openai/v1"
 wire_api = "responses"
 requires_openai_auth = true
-
-[model_providers.gate.http_headers]
-"X-Gate-Api-Key" = "sk-gw-…your Gate key…"
-"X-Gate-Upstream-Url" = "https://api.openai.com"
 ```
 
-- `base_url` ends in `/v1`, so the client sends `/v1/responses`.
-- `X-Gate-Upstream-Url` is the bare `api.openai.com` host; `/v1` lives in
-  the path.
+- Codex sends `/openai/v1/responses`.
+- The relay strips `/openai` and forwards `/v1/responses` with
+  `X-Gate-Upstream-Url: https://api.openai.com`.
 
 ## Notes
 
-- The gateway address (`https://gateway.constellationgate.ai` above) comes
-  from your account's `gateway_base_url`; a staging URL substitutes cleanly.
-  A trailing slash and any existing `/codex` or `/v1` suffix are handled.
-- `X-Gate-Api-Key` is your Gate workspace key (`sk-gw-…`). It lives in the
-  OS keychain; the app injects it when writing the file. It is not stored
-  anywhere else in the config.
+- **No credential is in this file.** Your Gate credential (OAuth access token,
+  or the legacy `sk-gw-…` key) lives in the OS keychain and is injected by the
+  relay per request, so a token refresh or a key rotation touches nothing on
+  disk. Earlier versions did write `X-Gate-Api-Key` into an
+  `[model_providers.gate.http_headers]` table; disconnect removes any leftover.
+- **No upstream hint is in this file either.** The relay derives it from the slug
+  in `base_url` and injects it itself, the same way the system-proxy path derives
+  it from the TLS host. That keeps Gate out of `http_headers` entirely.
+- `8977` above is Gate Connect's relay port. It is persisted, so it survives
+  restarts and upgrades; if it ever has to change, the app rewrites this file and
+  tells you to restart running `codex` sessions.
+- The consequence of pointing at loopback: Codex only routes through Gate while
+  Gate Connect is running. That is why connecting a tool turns routing on, and
+  why quitting the app offers to restore your configs first.

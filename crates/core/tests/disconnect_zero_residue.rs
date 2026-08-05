@@ -20,15 +20,22 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use gate_connect_core::env;
-use gate_connect_core::registry::{find, Status, ToolId};
+use gate_connect_core::registry::{find, ConnectInput, Status, ToolId};
 
 static HOME_LOCK: Mutex<()> = Mutex::new(());
 
 /// Point `$HOME` at a fresh temp dir for the duration of a test, restoring the
 /// prior value (and deleting the dir) on drop.
+///
+/// Also pins `XDG_CONFIG_HOME` / `XDG_DATA_HOME` inside that dir. OpenCode's
+/// config path honors XDG (as OpenCode itself does), so leaving the ambient
+/// values in place would let a test escape its temp home and edit the
+/// developer's real `~/.config/opencode/opencode.json`.
 struct TempHome {
     dir: PathBuf,
     prev: Option<String>,
+    prev_xdg_config: Option<String>,
+    prev_xdg_data: Option<String>,
 }
 
 impl TempHome {
@@ -45,18 +52,51 @@ impl TempHome {
         ));
         fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("HOME").ok();
+        let prev_xdg_config = std::env::var("XDG_CONFIG_HOME").ok();
+        let prev_xdg_data = std::env::var("XDG_DATA_HOME").ok();
         std::env::set_var("HOME", &dir);
-        TempHome { dir, prev }
+        std::env::set_var("XDG_CONFIG_HOME", dir.join(".config"));
+        std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
+        TempHome {
+            dir,
+            prev,
+            prev_xdg_config,
+            prev_xdg_data,
+        }
     }
 }
 
 impl Drop for TempHome {
     fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
+        fn restore(key: &str, prev: &Option<String>) {
+            match prev {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
         }
+        restore("HOME", &self.prev);
+        restore("XDG_CONFIG_HOME", &self.prev_xdg_config);
+        restore("XDG_DATA_HOME", &self.prev_xdg_data);
         let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Persist a relay port so `relay_base_url()` answers `Some` and `connect()`
+/// has a loopback base to write.
+fn seed_relay_port(port: u16) {
+    let path = env::app_support_dir()
+        .unwrap()
+        .join("proxy")
+        .join("relay-port");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, port.to_string()).unwrap();
+}
+
+fn connect_input(relay_port: u16) -> ConnectInput {
+    ConnectInput {
+        gateway_base_url: "https://gw.example.com".to_string(),
+        upstream_url: "https://api.anthropic.com".to_string(),
+        relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
     }
 }
 
@@ -310,5 +350,182 @@ previous_model_provider_absent = true
     assert!(
         !twice.contains("127.0.0.1"),
         "the relay URL must not survive disconnect: {twice}"
+    );
+}
+
+// --- The tools no provider maps -----------------------------------------
+//
+// These drive the real connect -> disconnect round trip rather than a
+// hand-fabricated "connected" file, so they also pin the per-provider base URL
+// the catalog resolves. Formatting is not asserted (both configs are
+// re-serialized on write); what must hold is that no Gate value survives, the
+// user's own settings do, and the sidecar is gone.
+
+#[test]
+fn opencode_disconnect_leaves_no_gate_residue() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+
+    let cfg = env::opencode_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(
+        &cfg,
+        r#"{
+  "provider": {
+    "openrouter": { "options": { "apiKey": "user-openrouter-key" } }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let integ = find(ToolId::OpenCode).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    // OpenRouter's API lives under /api, so `/api/v1` has to stay on the client
+    // side: that keeps the forwarded path on the `/api/` inference prefix and
+    // the upstream hint on the bare host the catalog knows.
+    let connected = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        connected.contains("http://127.0.0.1:9977/openrouter/api/v1"),
+        "openrouter baseURL must keep the slug + /api/v1: {connected}"
+    );
+    assert!(
+        !connected.contains("X-Gate-Upstream-Url"),
+        "no Gate header may be written - the relay derives the upstream from the \
+         slug in the base URL: {connected}"
+    );
+    assert!(matches!(integ.status().unwrap(), Status::Connected));
+
+    integ.disconnect().unwrap();
+
+    let after = fs::read_to_string(&cfg).unwrap_or_default();
+    assert!(
+        !after.contains("127.0.0.1"),
+        "relay base URL must be reverted: {after}"
+    );
+    assert!(
+        !after.contains("X-Gate-"),
+        "no Gate header may survive: {after}"
+    );
+    assert!(
+        after.contains("user-openrouter-key"),
+        "the user's own apiKey must survive: {after}"
+    );
+    assert!(
+        !env::app_support_dir()
+            .unwrap()
+            .join("opencode-state.json")
+            .exists(),
+        "sidecar must be removed"
+    );
+}
+
+#[test]
+fn openclaw_disconnect_leaves_no_gate_residue() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+
+    let cfg = env::openclaw_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(
+        &cfg,
+        r#"{"models":{"providers":{"openrouter":{"baseUrl":"https://openrouter.ai/api/v1","apiKey":"user-openrouter-key"}}}}"#,
+    )
+    .unwrap();
+
+    let integ = find(ToolId::OpenClaw).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    let connected = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        connected.contains("http://127.0.0.1:9977/openrouter/api/v1"),
+        "openrouter baseUrl must keep the slug + /api/v1: {connected}"
+    );
+    assert!(matches!(integ.status().unwrap(), Status::Connected));
+
+    integ.disconnect().unwrap();
+
+    let after = fs::read_to_string(&cfg).unwrap_or_default();
+    assert!(
+        !after.contains("127.0.0.1"),
+        "relay base URL must be reverted: {after}"
+    );
+    assert!(
+        !after.contains("X-Gate-"),
+        "no Gate header may survive: {after}"
+    );
+    assert!(
+        after.contains("https://openrouter.ai/api/v1"),
+        "the user's original baseUrl must be restored exactly: {after}"
+    );
+    assert!(
+        !env::app_support_dir()
+            .unwrap()
+            .join("openclaw-state.json")
+            .exists(),
+        "sidecar must be removed"
+    );
+}
+
+#[test]
+fn hermes_disconnect_leaves_no_gate_residue() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+
+    // detect() wants the launcher, not just the config dir - the installer drops
+    // it in ~/.local/bin.
+    let launcher = env::home().unwrap().join(".local/bin/hermes");
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::write(&launcher, "#!/bin/sh\n").unwrap();
+
+    let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(
+        &cfg,
+        "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: user-key\n",
+    )
+    .unwrap();
+
+    let integ = find(ToolId::Hermes).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    // The default Hermes endpoint is OpenRouter's, which used to resolve to the
+    // off-catalog `https://openrouter.ai/api` and 403 every request.
+    let connected = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        connected.contains("http://127.0.0.1:9977/openrouter/api/v1"),
+        "base_url must keep the slug + /api/v1: {connected}"
+    );
+    assert!(matches!(integ.status().unwrap(), Status::Connected));
+
+    integ.disconnect().unwrap();
+
+    let after = fs::read_to_string(&cfg).unwrap_or_default();
+    assert!(
+        !after.contains("127.0.0.1"),
+        "relay base URL must be reverted: {after}"
+    );
+    assert!(
+        !after.contains("X-Gate-"),
+        "no Gate header may survive: {after}"
+    );
+    assert!(
+        after.contains("https://openrouter.ai/api/v1"),
+        "the user's original base_url must be restored: {after}"
+    );
+    assert!(
+        after.contains("user-key"),
+        "the user's own api_key must survive: {after}"
+    );
+    assert!(
+        !env::app_support_dir()
+            .unwrap()
+            .join("hermes-state.json")
+            .exists(),
+        "sidecar must be removed"
     );
 }

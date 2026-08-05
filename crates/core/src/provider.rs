@@ -314,6 +314,10 @@ fn domains_enabled_persisted(_p: &Provider) -> bool {
 /// values are ours (an old scheme, a changed relay port), not a setup the user
 /// made by hand - and the relay is up so there's a live base URL to point it
 /// at. Unmarked drift is left alone so this never clobbers an out-of-app setup.
+///
+/// Tools no provider maps get the drift half of the same treatment via
+/// [`reconcile_unmapped_tools`]; they have no provider flag to read as intent,
+/// so they are never auto-*connected*.
 pub fn reconcile_enabled() -> Result<()> {
     let Some(account) = account::load()? else {
         return Ok(()); // no gateway configured yet - nothing to point tools at
@@ -356,6 +360,51 @@ pub fn reconcile_enabled() -> Result<()> {
             }
         }
     }
+    reconcile_unmapped_tools(&account, relay_base_url.as_deref())
+}
+
+/// Self-heal the registry tools no provider maps (OpenCode, OpenClaw, Hermes).
+///
+/// Unlike a provider tool, a standalone tool has no enabled-provider flag to
+/// read as intent, so `Detected` (installed, no Gate config) is left alone -
+/// nothing says the user wants it routed. Only *our own* stale write is
+/// reasserted: `Drifted` plus [`Integration::config_is_managed`], the same test
+/// the provider pass uses. That covers the case this exists for - the relay
+/// came back on a different port, so the base URL we wrote is now dead - while
+/// never clobbering a config the user set up out-of-app.
+fn reconcile_unmapped_tools(
+    account: &account::Account,
+    relay_base_url: Option<&str>,
+) -> Result<()> {
+    let Some(relay_base_url) = relay_base_url else {
+        return Ok(()); // no relay to point anything at; connect() would bail
+    };
+    let mapped: Vec<ToolId> = providers()
+        .iter()
+        .flat_map(|p| p.tool_ids.iter().copied())
+        .collect();
+    for integ in registry::registry() {
+        if mapped.contains(&integ.id()) {
+            continue; // covered by the provider pass above
+        }
+        if integ.requires_upstream_credential() {
+            continue; // needs a stored key; not safe to auto-apply
+        }
+        if !matches!(integ.status(), Ok(Status::Drifted(_))) {
+            continue;
+        }
+        if !integ.config_is_managed().unwrap_or(false) {
+            continue; // drift in a config we didn't write - leave it alone
+        }
+        let input = ConnectInput {
+            gateway_base_url: account.gateway_base_url.clone(),
+            upstream_url: integ.default_upstream_url().to_string(),
+            relay_base_url: Some(relay_base_url.to_string()),
+        };
+        if let Err(e) = integ.connect(&input) {
+            eprintln!("[gate] re-applying {} failed: {e:#}", integ.display_name());
+        }
+    }
     Ok(())
 }
 
@@ -369,9 +418,11 @@ pub fn reconcile_enabled() -> Result<()> {
 
 /// Provider slugs to re-enable on master-on.
 const PROVIDER_SNAPSHOT: &str = "restore-snapshot.json";
-/// Tool slugs no provider maps (OpenCode and friends), disconnected by the
-/// quit-time teardown and reconnected alongside the provider snapshot.
-const QUIT_TOOLS_SNAPSHOT: &str = "restore-tools-snapshot.json";
+/// Tool slugs the master-off sweep disconnected, reconnected alongside the
+/// provider snapshot. Filename is historical (the sweep started out
+/// quit-only); changing it would orphan a pending restore written by an
+/// older build.
+const TOOLS_SNAPSHOT: &str = "restore-tools-snapshot.json";
 
 fn snapshot_path(file: &str) -> Result<PathBuf> {
     Ok(crate::env::app_support_dir()?.join("provider").join(file))
@@ -417,9 +468,16 @@ fn master_flow_guard() -> MutexGuard<'static, ()> {
 }
 
 /// Master OFF: record every currently-enabled provider, then disconnect them
-/// all. Call this *before* stopping the proxy so each provider's domain is
-/// still flippable. Best-effort per provider so one failure can't strand the
-/// rest. The snapshot survives until the master is turned back on.
+/// all, then sweep every remaining registry tool that still routes through the
+/// relay. Call this *before* stopping the proxy so each provider's domain is
+/// still flippable. Best-effort per provider/tool so one failure can't strand
+/// the rest. The snapshots survive until the master is turned back on.
+///
+/// The tool sweep is not quit-specific: the relay is bound inside the engine,
+/// so it dies when routing stops just as surely as when the app exits. Without
+/// the sweep a standalone tool (OpenCode and friends, which no provider maps)
+/// keeps pointing at a dead port and every request fails with connection
+/// refused until routing comes back.
 pub fn snapshot_and_disable_all() -> Result<()> {
     let _guard = master_flow_guard();
     snapshot_and_disable_all_locked()
@@ -447,20 +505,18 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
             eprintln!("[gate] disabling provider {slug:?} during master-off failed: {e}");
         }
     }
-    Ok(())
+    sweep_remaining_tools_locked()
 }
 
-/// Quit-time master-off (the "turn off integrations and quit" choice): the
-/// provider snapshot + disable, then a sweep that disconnects every registry
-/// tool still managed (Connected or Drifted) afterwards - standalone tools no
-/// provider maps (OpenCode and friends), and provider tools the provider pass
-/// missed (a drifted config, a failed disable). Their configs point at the
-/// loopback relay, which dies with the app. Swept tools are recorded in their
-/// own snapshot so [`restore_all`] reconnects them alongside the providers.
-/// Best-effort per tool, mirroring the provider pass.
-pub fn snapshot_and_disable_all_for_quit() -> Result<()> {
-    let _guard = master_flow_guard();
-    snapshot_and_disable_all_locked()?;
+/// Disconnect every registry tool still managed (Connected or Drifted) after
+/// the provider pass: standalone tools no provider maps, and provider tools the
+/// provider pass missed (a drifted config, a failed disable). A drifted config
+/// still points at the relay, which is why it counts. Swept tools are recorded
+/// in their own snapshot so [`restore_all`] reconnects them alongside the
+/// providers. Best-effort per tool, mirroring the provider pass.
+///
+/// Caller must hold [`MASTER_FLOW_LOCK`].
+fn sweep_remaining_tools_locked() -> Result<()> {
     let mut disconnected = Vec::new();
     for integ in registry::registry() {
         if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
@@ -469,29 +525,29 @@ pub fn snapshot_and_disable_all_for_quit() -> Result<()> {
         match integ.disconnect() {
             Ok(()) => disconnected.push(integ.id().slug().to_string()),
             Err(e) => eprintln!(
-                "[gate] disconnecting {} during quit failed: {e}",
+                "[gate] disconnecting {} during master-off failed: {e}",
                 integ.display_name()
             ),
         }
     }
     // Union for the same reason as the provider snapshot.
-    let mut snapshot = load_snapshot(QUIT_TOOLS_SNAPSHOT)?;
+    let mut snapshot = load_snapshot(TOOLS_SNAPSHOT)?;
     for slug in disconnected {
         if !snapshot.contains(&slug) {
             snapshot.push(slug);
         }
     }
-    save_snapshot(QUIT_TOOLS_SNAPSHOT, &snapshot)
+    save_snapshot(TOOLS_SNAPSHOT, &snapshot)
 }
 
 /// Master ON: re-enable every provider that was on when routing was last
-/// turned off, then reconnect any standalone tools the quit-time teardown
-/// disconnected. Entries that fail to restore stay in their snapshot so a
-/// later call can retry them; each snapshot is cleared once everything in it
-/// is back. Idempotent; a missing snapshot is a no-op. Callers run this twice
-/// per master-on: once before the proxy comes up (config-based tools, and the
-/// engine's "at least one provider" precondition) and once after (domain-only
-/// providers, which have nothing to configure until the proxy is running).
+/// turned off, then reconnect any tools the master-off sweep disconnected.
+/// Entries that fail to restore stay in their snapshot so a later call can retry
+/// them; each snapshot is cleared once everything in it is back. Idempotent; a
+/// missing snapshot is a no-op. Callers run this twice per master-on: once
+/// before the proxy comes up (config-based tools, and the engine's "at least one
+/// provider" precondition) and once after (domain-only providers, which have
+/// nothing to configure until the proxy is running).
 pub fn restore_all() -> Result<()> {
     let _guard = master_flow_guard();
     let mut failed = Vec::new();
@@ -506,17 +562,17 @@ pub fn restore_all() -> Result<()> {
     } else {
         save_snapshot(PROVIDER_SNAPSHOT, &failed)?;
     }
-    restore_quit_tools()
+    restore_tools()
 }
 
-/// Reconnect the standalone tools the quit-time teardown disconnected (see
-/// [`snapshot_and_disable_all_for_quit`]). Same retry semantics as the
+/// Reconnect the tools the master-off sweep disconnected (see
+/// [`sweep_remaining_tools_locked`]). Same retry semantics as the
 /// provider snapshot: failures stay recorded, the file clears once every tool
-/// is back. Tools uninstalled (or slugs unknown) since the quit are dropped.
-/// Signed out since the quit: leave the snapshot for a later signed-in
+/// is back. Tools uninstalled (or slugs unknown) since the sweep are dropped.
+/// Signed out since the sweep: leave the snapshot for a later signed-in
 /// restore - there's no gateway to point the tools at.
-fn restore_quit_tools() -> Result<()> {
-    let slugs = load_snapshot(QUIT_TOOLS_SNAPSHOT)?;
+fn restore_tools() -> Result<()> {
+    let slugs = load_snapshot(TOOLS_SNAPSHOT)?;
     if slugs.is_empty() {
         return Ok(());
     }
@@ -543,9 +599,9 @@ fn restore_quit_tools() -> Result<()> {
         }
     }
     if failed.is_empty() {
-        clear_snapshot(QUIT_TOOLS_SNAPSHOT)
+        clear_snapshot(TOOLS_SNAPSHOT)
     } else {
-        save_snapshot(QUIT_TOOLS_SNAPSHOT, &failed)
+        save_snapshot(TOOLS_SNAPSHOT, &failed)
     }
 }
 

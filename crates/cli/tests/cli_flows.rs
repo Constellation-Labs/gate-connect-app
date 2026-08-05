@@ -101,8 +101,9 @@ fn claude_code_connect_then_disconnect() {
     let body = read(&settings);
     assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
     assert!(
-        body.contains("X-Gate-Upstream-Url"),
-        "upstream header missing: {body}"
+        !body.contains("X-Gate-Upstream-Url"),
+        "no Gate header may be written - the relay derives the upstream from \
+         the slug in the base URL: {body}"
     );
     // No credential is ever written - the relay injects it live.
     assert!(
@@ -142,7 +143,7 @@ fn codex_connect_then_disconnect() {
         "pointer not set: {body}"
     );
     assert!(
-        body.contains(&format!("{RELAY_URL}/v1")),
+        body.contains(&format!("{RELAY_URL}/openai/v1")),
         "relay base URL missing: {body}"
     );
     assert!(
@@ -212,7 +213,7 @@ wire_api = "responses"
 
     let body = read(&config);
     assert!(
-        body.contains(&format!("{RELAY_URL}/v1")),
+        body.contains(&format!("{RELAY_URL}/openai/v1")),
         "managed relay base URL missing: {body}"
     );
     assert!(
@@ -268,8 +269,9 @@ fn opencode_connect_then_disconnect() {
     let body = read(&config);
     assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
     assert!(
-        body.contains("X-Gate-Upstream-Url"),
-        "upstream header missing: {body}"
+        !body.contains("X-Gate-Upstream-Url"),
+        "no Gate header may be written - the relay derives the upstream from \
+         the slug in the base URL: {body}"
     );
     // No credential is ever written - the relay injects it live.
     assert!(
@@ -292,6 +294,64 @@ fn opencode_connect_then_disconnect() {
 }
 
 #[test]
+fn hermes_connect_then_disconnect() {
+    let h = Harness::new();
+    // detect() wants the launcher, which the installer drops in ~/.local/bin -
+    // a leftover config dir alone no longer counts as installed.
+    let bin = h.home().join(".local").join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("hermes"), "#!/bin/sh\n").unwrap();
+    let hermes_dir = h.home().join(".hermes");
+    fs::create_dir_all(&hermes_dir).unwrap();
+    // Hermes ships pointed at OpenRouter, whose API lives under /api/v1.
+    let config = hermes_dir.join("config.yaml");
+    fs::write(
+        &config,
+        "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n",
+    )
+    .unwrap();
+    h.login();
+
+    h.run_ok(&["connect", "hermes"]);
+
+    let body = read(&config);
+    assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
+    // The `/api/v1` stays on the client side so the forwarded path lands on
+    // OpenRouter's `/api/` inference prefix instead of 403ing off-catalog.
+    assert!(
+        body.contains(&format!("{RELAY_URL}/openrouter/api/v1")),
+        "openrouter client path missing: {body}"
+    );
+    assert!(
+        !body.contains("X-Gate-Upstream-Url"),
+        "no Gate header may be written - the relay derives the upstream from \
+         the slug in the base URL: {body}"
+    );
+    // No credential is ever written - the relay injects it live.
+    assert!(
+        !body.contains("X-Gate-Api-Key"),
+        "credential must not be written to config: {body}"
+    );
+    assert!(
+        !body.contains(API_KEY),
+        "api key value must not be written: {body}"
+    );
+
+    h.run_ok(&["disconnect", "hermes"]);
+
+    let after = read(&config);
+    assert!(
+        !after.contains("X-Gate-Upstream-Url"),
+        "gate residue left behind: {after}"
+    );
+    assert!(!after.contains(RELAY_URL), "relay URL left behind: {after}");
+    assert!(
+        after.contains("https://openrouter.ai/api/v1"),
+        "original base_url must be restored: {after}"
+    );
+}
+
+#[test]
 fn openclaw_connect_then_disconnect() {
     let h = Harness::new();
     let oc_dir = h.home().join(".openclaw");
@@ -310,12 +370,13 @@ fn openclaw_connect_then_disconnect() {
 
     let body = read(&config);
     assert!(
-        body.contains(&format!("{RELAY_URL}/v1")),
+        body.contains(&format!("{RELAY_URL}/anthropic/v1")),
         "relay base URL missing: {body}"
     );
     assert!(
-        body.contains("X-Gate-Upstream-Url"),
-        "upstream header missing: {body}"
+        !body.contains("X-Gate-Upstream-Url"),
+        "no Gate header may be written - the relay derives the upstream from \
+         the slug in the base URL: {body}"
     );
     // No credential is ever written - the relay injects it live.
     assert!(
