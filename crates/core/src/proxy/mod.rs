@@ -392,6 +392,50 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             supported: true,
         },
         ProxyDomain {
+            slug: "codex-desktop".into(),
+            display_name: "Codex Desktop tools".into(),
+            // Codex Desktop's TOOL traffic, which is a separate route from the
+            // `chatgpt` entry below even though both name chatgpt.com.
+            //
+            // That entry is RELAY-only: it exists so the relay recognises the
+            // upstream hint `integrations/codex.rs` writes, and it is matched by
+            // `relay::route` on `upstream_url`. This entry is the MITM half,
+            // matched by `decide` on HOST — which is why the two can share a
+            // host without colliding, and why the split below differs.
+            //
+            // What this can and cannot capture: Codex's embedded Rust agent
+            // ignores the system proxy, so its MODEL calls stay invisible to the
+            // engine (they route via the relay instead — see below). The Electron
+            // shell DOES honour the system proxy, and the tool-plane calls
+            // observed in a capture came from it: `/backend-api/wham/*` carried a
+            // Chromium user-agent. `/backend-api/ps/mcp` sends no user-agent at
+            // all, so whether the engine sees it is genuinely unverified — this
+            // entry is how we find out.
+            hosts: vec!["chatgpt.com".into()],
+            // MITM convention: `engine::apply_rewrite` preserves the request path
+            // and query VERBATIM and swaps only scheme + authority, so the
+            // upstream is the BARE host and the paths below are the app's real
+            // ones. The relay entry uses the opposite split (`/backend-api` in
+            // the upstream, short client path) because the relay sees the path
+            // Codex rewrote, not the real one. Gate accepts both spellings.
+            upstream_url: "https://chatgpt.com".into(),
+            // Only the two path families Gate classifies as native surfaces:
+            // the MCP tool plane (`codex-mcp`, scanned for indirect injection)
+            // and the task/settings reads (`codex-tasks`). Deliberately NOT
+            // `/backend-api/codex/responses` — the model call belongs to the
+            // relay route, and rewriting it here would send it upstream with the
+            // wrong split. Plugin-store listings are left out as pure noise.
+            rewrite_prefixes: vec!["/backend-api/ps/mcp".into(), "/backend-api/wham/".into()],
+            // Not needed: `decide` already passes through anything that matches
+            // no rewrite prefix, and the prefixes above are narrow.
+            passthrough_prefixes: vec![],
+            // Opt-in, and ordered BEFORE the relay `chatgpt` entry on purpose:
+            // `decide` returns on the FIRST enabled host match, so with the relay
+            // entry first this one would be unreachable for MITM traffic.
+            enabled: false,
+            supported: true,
+        },
+        ProxyDomain {
             slug: "chatgpt".into(),
             display_name: "ChatGPT (Codex subscription)".into(),
             // ChatGPT-subscription Codex talks to the Responses API at
@@ -449,6 +493,16 @@ mod tests {
             .into_iter()
             .find(|d| d.slug == "claude-web")
             .expect("claude-web is in the catalog");
+        d.enabled = true;
+        vec![d]
+    }
+
+    /// The `codex-desktop` MITM entry, force-enabled.
+    fn codex_desktop() -> Vec<ProxyDomain> {
+        let mut d: ProxyDomain = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "codex-desktop")
+            .expect("codex-desktop is in the catalog");
         d.enabled = true;
         vec![d]
     }
@@ -756,5 +810,94 @@ mod tests {
             .flat_map(|d| d.hosts.iter().cloned())
             .collect();
         assert!(hosts.contains(&"claude.ai".to_string()));
+    }
+    #[test]
+    fn codex_desktop_rewrites_the_tool_plane_paths() {
+        let d = codex_desktop();
+        for path in [
+            "/backend-api/ps/mcp",
+            "/backend-api/wham/tasks/list",
+            "/backend-api/wham/usage",
+        ] {
+            assert_eq!(
+                decide(&d, "chatgpt.com", path),
+                Decision::Rewrite {
+                    upstream_url: "https://chatgpt.com".into()
+                },
+                "{path} should route to Gate"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_desktop_leaves_the_model_call_to_the_relay_route() {
+        // The embedded agent reaches chatgpt.com directly and is routed by
+        // base_url through the relay, whose entry uses the other URL split.
+        // Rewriting it here would send it upstream with `/backend-api` doubled.
+        let d = codex_desktop();
+        assert_eq!(
+            decide(&d, "chatgpt.com", "/backend-api/codex/responses"),
+            Decision::Passthrough
+        );
+    }
+
+    #[test]
+    fn codex_desktop_ignores_plugin_store_and_auth_noise() {
+        let d = codex_desktop();
+        for path in [
+            "/backend-api/ps/plugins/installed",
+            "/backend-api/settings/user",
+            "/api/auth/session",
+        ] {
+            assert_eq!(decide(&d, "chatgpt.com", path), Decision::Passthrough);
+        }
+    }
+
+    #[test]
+    fn codex_desktop_is_ordered_before_the_relay_chatgpt_entry() {
+        // Load-bearing: `decide` returns on the FIRST enabled host match, and both
+        // entries name chatgpt.com. With the relay entry first, the MITM entry
+        // would be unreachable and the tool plane would silently pass through.
+        let catalog = default_domains();
+        let mitm = catalog
+            .iter()
+            .position(|d| d.slug == "codex-desktop")
+            .unwrap();
+        let relay = catalog.iter().position(|d| d.slug == "chatgpt").unwrap();
+        assert!(
+            mitm < relay,
+            "codex-desktop must precede chatgpt in the catalog"
+        );
+    }
+
+    #[test]
+    fn the_two_chatgpt_entries_use_opposite_url_splits() {
+        // `relay::route` matches on upstream_url and `decide` on host, so the
+        // entries coexist — but only because their upstreams differ. Collapsing
+        // them onto one upstream would break whichever route lost.
+        let catalog = default_domains();
+        let mitm = catalog.iter().find(|d| d.slug == "codex-desktop").unwrap();
+        let relay = catalog.iter().find(|d| d.slug == "chatgpt").unwrap();
+        assert_eq!(mitm.upstream_url, "https://chatgpt.com");
+        assert_eq!(relay.upstream_url, "https://chatgpt.com/backend-api");
+        assert_ne!(mitm.upstream_url, relay.upstream_url);
+        // Both opt-in.
+        assert!(!mitm.enabled && !relay.enabled);
+    }
+
+    #[test]
+    fn enabling_only_the_relay_entry_keeps_todays_passthrough_behaviour() {
+        // A user who enabled Codex CLI but not the desktop tools must see no
+        // change: the relay entry matches the host first and passes everything
+        // except its own short path through.
+        let mut relay_only: Vec<ProxyDomain> = default_domains()
+            .into_iter()
+            .filter(|d| d.slug == "chatgpt")
+            .collect();
+        relay_only[0].enabled = true;
+        assert_eq!(
+            decide(&relay_only, "chatgpt.com", "/backend-api/ps/mcp"),
+            Decision::Passthrough
+        );
     }
 }
