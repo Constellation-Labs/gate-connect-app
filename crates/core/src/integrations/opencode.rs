@@ -18,20 +18,25 @@
 //! "provider": {
 //!   "<id>": {
 //!     "options": {
-//!       "baseURL": "http://127.0.0.1:<relay-port>/v1",
-//!       "headers": {
-//!         "X-Gate-Upstream-Url": "<original provider host>",
-//!         ...any pre-existing headers the user had
-//!       }
+//!       "baseURL": "http://127.0.0.1:<relay-port>/<slug><client-path>"
 //!     }
 //!   }
 //! }
 //! ```
 //!
+//! That single value is the entire write. Both parts come from
+//! [`crate::proxy::resolve_endpoint`]: `<slug>` names the catalog domain, which
+//! is how the relay knows where to forward, and `<client-path>` is whatever sits
+//! between the upstream host and the SDK's own suffix - `/v1` for Anthropic and
+//! OpenAI, `/api/v1` for OpenRouter, `/zen/v1` and `/zen/go/v1` for OpenCode Zen
+//! and Go, since Gate forwards the request path verbatim.
+//!
 //! The base URL points at the loopback reverse-proxy relay
-//! ([`crate::proxy::relay`]), not the gateway: the relay injects the live
-//! Gate credential per request, so **no Gate credential is written to
-//! opencode.json** - only the non-secret `X-Gate-Upstream-Url` hint.
+//! ([`crate::proxy::relay`]), not the gateway: the relay injects the live Gate
+//! credential *and* the upstream hint per request, so **neither a credential nor
+//! a header is written to opencode.json**. `options.headers` is not in
+//! OpenCode's config schema, so not writing it also drops a dependency on an
+//! undocumented key - the key is never touched at all.
 //!
 //! The provider's `apiKey` , its model list, and any
 //! other options the user set survive the merge. OpenCode keeps using
@@ -66,60 +71,52 @@ use crate::registry::{ConnectInput, Integration, Status, ToolId};
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
 
-const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
-
 /// Sidecar state file. OpenCode's JSON schema rejects unknown top-level
 /// keys, so we can't keep state inside opencode.json itself.
 const STATE_FILENAME: &str = "opencode-state.json";
 
-/// Path suffix added to the user's gateway URL when we override per-provider
-/// baseURLs. Every AI SDK provider we target appends a specific path
-/// (`/messages`, `/chat/completions`, `/responses`) onto baseURL, and all
-/// of them sit under `/v1` on the upstream side. Gate forwards the full
-/// path verbatim to upstream, so the `/v1` segment has to live in baseURL.
-const GATEWAY_PATH_SUFFIX: &str = "/v1";
-
-/// Providers we know how to redirect through Gate. For each, the
-/// `upstream_url` is the bare-host form expected by `X-Gate-Upstream-Url`
-/// - Gate concatenates the inbound request path onto it, so trailing
-///   `/v1` lives on the client side (in baseURL), never here.
+/// Providers we know how to redirect through Gate.
+///
+/// `endpoint` is the provider's **canonical endpoint** - the URL OpenCode would
+/// call if Gate were not in the picture, including the `/v1`-style suffix.
+/// [`crate::proxy::resolve_endpoint`] splits it into the upstream Gate forwards
+/// to and the path that must stay in `baseURL`; nothing here hardcodes that
+/// split, because doing it by hand is what broke OpenRouter.
 struct KnownProvider {
     id: &'static str,
-    upstream_url: &'static str,
+    endpoint: &'static str,
 }
 
-/// The list is intentionally short. Adding a new entry means knowing
-/// the canonical upstream URL and that the upstream speaks a wire format
-/// Gate can forward. Users with custom providers
-/// can still wire them up by hand.
+/// The list is intentionally short. Adding a new entry means knowing the
+/// canonical endpoint and that the upstream speaks a wire format Gate can
+/// forward. Users with custom providers can still wire them up by hand.
 ///
-/// Upstream URLs are bare-host form - Gate concatenates the inbound
-/// request path verbatim. The OpenCode Zen / Go endpoints intentionally
-/// host both OpenAI- and Anthropic-shape endpoints under the same prefix
-/// (`/v1/chat/completions` and `/v1/messages`), so a single base URL
-/// works for either AI-SDK flavor.
+/// Every entry must resolve against the proxy catalog - an endpoint no domain
+/// covers is skipped at connect time rather than repointed, because the relay
+/// would 403 every request. `known_provider_endpoints_all_resolve_against_the_catalog`
+/// holds the whole list to that.
 const KNOWN_PROVIDERS: &[KnownProvider] = &[
     KnownProvider {
         id: "anthropic",
-        upstream_url: "https://api.anthropic.com",
+        endpoint: "https://api.anthropic.com/v1",
     },
     KnownProvider {
         id: "openai",
-        upstream_url: "https://api.openai.com",
+        endpoint: "https://api.openai.com/v1",
     },
     KnownProvider {
         id: "openrouter",
-        upstream_url: "https://openrouter.ai/api",
+        endpoint: "https://openrouter.ai/api/v1",
     },
     // OpenCode Zen - opencode.ai/zen/v1/{chat/completions,messages,models}
     KnownProvider {
         id: "opencode",
-        upstream_url: "https://opencode.ai/zen",
+        endpoint: "https://opencode.ai/zen/v1",
     },
     // OpenCode Go - opencode.ai/zen/go/v1/{chat/completions,messages}
     KnownProvider {
         id: "opencode-go",
-        upstream_url: "https://opencode.ai/zen/go",
+        endpoint: "https://opencode.ai/zen/go/v1",
     },
 ];
 
@@ -242,6 +239,31 @@ impl Integration for OpenCode {
         Ok(env::opencode_config_dir()?.exists())
     }
 
+    fn config_is_managed(&self) -> Result<bool> {
+        // Two-part marker, since opencode.json's schema rejects unknown
+        // top-level keys so we cannot leave one in the file itself. The sidecar
+        // only exists because connect() wrote it, but on its own it can't tell
+        // our stale write apart from a baseURL the user has since repointed by
+        // hand - so also require that at least one recorded provider still aims
+        // at loopback, which is only ever us.
+        let Some(state) = load_state()? else {
+            return Ok(false);
+        };
+        let settings = load_settings()?.unwrap_or_default();
+        Ok(state.providers.keys().any(|provider_id| {
+            settings
+                .get("provider")
+                .and_then(|v| v.as_object())
+                .and_then(|m| m.get(provider_id))
+                .and_then(|v| v.as_object())
+                .and_then(|b| b.get("options"))
+                .and_then(|v| v.as_object())
+                .and_then(|o| o.get("baseURL"))
+                .and_then(|v| v.as_str())
+                .is_some_and(looks_local)
+        }))
+    }
+
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
@@ -260,7 +282,7 @@ impl Integration for OpenCode {
         let settings = load_settings()?.unwrap_or_default();
 
         let expected_base = match crate::proxy::relay_base_url() {
-            Some(u) => compute_base_url(&u),
+            Some(u) => u,
             None => {
                 return Ok(Status::Drifted(
                     "the Gate proxy has not been enabled yet - turn it on to route OpenCode".into(),
@@ -283,17 +305,13 @@ impl Integration for OpenCode {
                 .and_then(|o| o.get("baseURL"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let headers = options
-                .and_then(|o| o.get("headers"))
-                .and_then(|v| v.as_object());
-            // No key check: the relay injects the Gate credential live, so the
-            // config carries only the non-secret upstream hint.
-            let has_upstream = headers
-                .and_then(|h| h.get(UPSTREAM_URL_HEADER))
-                .and_then(|v| v.as_str())
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
-            if base_url == expected_base && has_upstream {
+            // The baseURL is the whole test now: it carries the relay origin,
+            // the catalog slug the relay routes on, and the provider's own path.
+            // No credential and no header is written, so there is nothing else
+            // to check. Per provider, because OpenRouter's path is `/api/v1`
+            // where Anthropic's is `/v1`.
+            let expected = expected_base_url(provider_id, &expected_base);
+            if expected.as_deref() == Some(base_url) {
                 healthy += 1;
             } else {
                 drifted.push(provider_id.clone());
@@ -396,11 +414,32 @@ impl Integration for OpenCode {
         // values from the previous connect.
         let mut state = load_state()?.unwrap_or_default();
 
-        let relay_base = compute_base_url(relay_base_url);
         let provider_map = ensure_object(&mut settings, "provider");
 
+        // Each provider gets its own baseURL: the path Gate must not swallow
+        // differs per upstream (`/v1` for Anthropic and OpenAI, `/api/v1` for
+        // OpenRouter), and the split between "upstream Gate forwards to" and
+        // "path the client keeps" is decided in one place, by the catalog.
+        let mut skipped_off_catalog: Vec<&str> = Vec::new();
+        let mut applied = 0;
         for target in &targets {
-            apply_override(provider_map, &mut state, target, &relay_base);
+            let Some(resolved) = crate::proxy::resolve_endpoint(target.endpoint) else {
+                // No catalog domain covers this upstream, so the relay would
+                // 403 every request. Leaving the config alone is strictly
+                // better than repointing it at a dead end.
+                skipped_off_catalog.push(target.id);
+                continue;
+            };
+            let base_url = resolved.relay_base_url(relay_base_url);
+            apply_override(provider_map, &mut state, target, &base_url);
+            applied += 1;
+        }
+
+        if applied == 0 {
+            anyhow::bail!(
+                "None of the configured OpenCode providers can route through Gate yet ({}). Gate has no upstream domain for them.",
+                skipped_off_catalog.join(", ")
+            );
         }
 
         save_state(&state)?;
@@ -527,19 +566,9 @@ fn apply_override(
         Value::String(relay_base_url.to_string()),
     );
 
-    let headers_entry = options
-        .entry("headers".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !headers_entry.is_object() {
-        *headers_entry = Value::Object(Map::new());
-    }
-    let headers = headers_entry
-        .as_object_mut()
-        .expect("headers entry was just coerced to an object");
-    headers.insert(
-        UPSTREAM_URL_HEADER.to_string(),
-        Value::String(target.upstream_url.to_string()),
-    );
+    // `options.headers` is left alone entirely: the relay reads the upstream off
+    // the slug segment in `baseURL` and injects the hint itself. That also drops
+    // a dependency on a key absent from OpenCode's config schema.
 }
 
 /// Reverse `apply_override` for one provider. Restores baseURL / headers
@@ -593,16 +622,19 @@ fn restore_provider(
     }
 }
 
-/// Append the SDK's expected path suffix (`/v1`) to the relay's loopback base
-/// URL. The relay (and Gate behind it) forward the path verbatim, so the `/v1`
-/// segment lives here. Trims trailing slash, and avoids doubling the suffix.
-fn compute_base_url(base: &str) -> String {
-    let trimmed = base.trim_end_matches('/');
-    if trimmed.ends_with(GATEWAY_PATH_SUFFIX) {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}{GATEWAY_PATH_SUFFIX}")
-    }
+/// The `baseURL` connect writes for `provider_id`, given the relay's loopback
+/// base. `None` when the provider is not one we redirect (unknown id, or an
+/// endpoint no catalog domain covers) - `status` treats that as drift rather
+/// than pretending it matches.
+///
+/// The suffix is per provider and comes from the catalog, not a constant: the
+/// relay and Gate forward the path verbatim, so whatever sits between the
+/// upstream host and the SDK's own suffix (`/v1` for Anthropic and OpenAI,
+/// `/api/v1` for OpenRouter) has to live on this side.
+fn expected_base_url(provider_id: &str, relay_base_url: &str) -> Option<String> {
+    let target = KNOWN_PROVIDERS.iter().find(|p| p.id == provider_id)?;
+    let resolved = crate::proxy::resolve_endpoint(target.endpoint)?;
+    Some(resolved.relay_base_url(relay_base_url))
 }
 
 // --- file I/O ---------------------------------------------------------
@@ -702,31 +734,67 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn compute_base_url_appends_v1_suffix() {
+    fn expected_base_url_carries_the_per_provider_path() {
+        // Each base URL names the catalog slug the relay routes on, then the
+        // provider's own path: `/v1` for Anthropic and OpenAI, `/api/v1` for
+        // OpenRouter, whose API lives under `/api`.
         assert_eq!(
-            compute_base_url("https://gw.example.com"),
-            "https://gw.example.com/v1"
+            expected_base_url("anthropic", "http://127.0.0.1:9977").as_deref(),
+            Some("http://127.0.0.1:9977/anthropic/v1")
         );
         assert_eq!(
-            compute_base_url("https://gw.example.com/"),
-            "https://gw.example.com/v1"
+            expected_base_url("openai", "http://127.0.0.1:9977/").as_deref(),
+            Some("http://127.0.0.1:9977/openai/v1")
         );
+        assert_eq!(
+            expected_base_url("openrouter", "http://127.0.0.1:9977").as_deref(),
+            Some("http://127.0.0.1:9977/openrouter/api/v1")
+        );
+        // Zen and Go keep their own paths under the shared opencode.ai upstream.
+        assert_eq!(
+            expected_base_url("opencode", "http://127.0.0.1:9977").as_deref(),
+            Some("http://127.0.0.1:9977/opencode/zen/v1")
+        );
+        assert_eq!(
+            expected_base_url("opencode-go", "http://127.0.0.1:9977").as_deref(),
+            Some("http://127.0.0.1:9977/opencode/zen/go/v1")
+        );
+        // An id that is not one we redirect has no expected value at all.
+        assert_eq!(expected_base_url("nope", "http://127.0.0.1:9977"), None);
     }
 
     #[test]
-    fn compute_base_url_does_not_double_v1_suffix() {
-        assert_eq!(
-            compute_base_url("https://gw.example.com/v1"),
-            "https://gw.example.com/v1"
-        );
-        assert_eq!(
-            compute_base_url("https://gw.example.com/v1/"),
-            "https://gw.example.com/v1"
-        );
+    fn known_provider_endpoints_all_resolve_against_the_catalog() {
+        // Every OpenCode provider we redirect must be one the relay can forward,
+        // and the path we leave on the client must stay on that domain's
+        // inference branch - otherwise the request either 403s off-catalog or,
+        // worse, passes through to the user's own account while looking fine.
+        for p in KNOWN_PROVIDERS {
+            assert!(p.endpoint.starts_with("https://"), "{} must be https", p.id);
+            let resolved = crate::proxy::resolve_endpoint(p.endpoint)
+                .unwrap_or_else(|| panic!("{} endpoint {} is off-catalog", p.id, p.endpoint));
+            let domain = crate::proxy::default_domains()
+                .into_iter()
+                .find(|d| d.slug == resolved.slug)
+                .expect("resolved slug is a catalog domain");
+            assert!(
+                domain.rewrite_prefixes.iter().any(|pre| {
+                    // The client path is only the start of what the tool sends -
+                    // the SDK appends its own leaf - so the two must sit on the
+                    // same branch, in either direction.
+                    pre.starts_with(resolved.client_path.as_str())
+                        || resolved.client_path.starts_with(pre.as_str())
+                }),
+                "{}: client path {:?} is on no branch of {:?}",
+                p.id,
+                resolved.client_path,
+                domain.rewrite_prefixes
+            );
+        }
     }
 
     #[test]
-    fn apply_override_adds_upstream_header_without_clobbering_user_options() {
+    fn apply_override_rewrites_base_url_without_clobbering_user_options() {
         let mut providers = Map::new();
         providers.insert(
             "anthropic".to_string(),
@@ -741,7 +809,7 @@ mod tests {
         let mut state = State::default();
         let target = KnownProvider {
             id: "anthropic",
-            upstream_url: "https://api.anthropic.com",
+            endpoint: "https://api.anthropic.com/v1",
         };
         apply_override(
             &mut providers,
@@ -756,15 +824,13 @@ mod tests {
         assert_eq!(opts["baseURL"], json!("http://127.0.0.1:9977/v1"));
         // user's apiKey survived
         assert_eq!(opts["apiKey"], json!("{env:ANTHROPIC_API_KEY}"));
-        // user's existing header preserved alongside the Gate upstream hint
+        // The user's own header survives, and no Gate header joins it: the relay
+        // reads the upstream off the slug in baseURL and injects both the hint
+        // and the credential itself.
         let hdrs = opts["headers"].as_object().unwrap();
         assert_eq!(hdrs["X-User-Custom"], json!("yes"));
-        // No Gate credential is ever written - the relay injects it live.
         assert!(!hdrs.contains_key("X-Gate-Api-Key"));
-        assert_eq!(
-            hdrs[UPSTREAM_URL_HEADER],
-            json!("https://api.anthropic.com")
-        );
+        assert!(!hdrs.contains_key("X-Gate-Upstream-Url"));
         // models block untouched
         assert!(anth["models"]
             .as_object()
@@ -797,7 +863,7 @@ mod tests {
         let mut state = State::default();
         let target = KnownProvider {
             id: "openai",
-            upstream_url: "https://api.openai.com",
+            endpoint: "https://api.openai.com/v1",
         };
         apply_override(
             &mut providers,
@@ -825,7 +891,7 @@ mod tests {
         let mut state = State::default();
         let target = KnownProvider {
             id: "openai",
-            upstream_url: "https://api.openai.com",
+            endpoint: "https://api.openai.com/v1",
         };
         apply_override(
             &mut providers,
@@ -887,21 +953,11 @@ mod tests {
         let ids: Vec<&str> = KNOWN_PROVIDERS.iter().map(|p| p.id).collect();
         assert!(ids.contains(&"opencode"));
         assert!(ids.contains(&"opencode-go"));
-        // Bare-host form - Gate concatenates the request path.
         for p in KNOWN_PROVIDERS {
+            assert!(p.endpoint.starts_with("https://"), "{} must be https", p.id);
             assert!(
-                !p.upstream_url.ends_with("/v1"),
-                "{} upstream must be bare host",
-                p.id
-            );
-            assert!(
-                !p.upstream_url.ends_with('/'),
-                "{} upstream must not end in /",
-                p.id
-            );
-            assert!(
-                p.upstream_url.starts_with("https://"),
-                "{} must be https",
+                !p.endpoint.ends_with('/'),
+                "{} endpoint must not end in /",
                 p.id
             );
         }
@@ -917,7 +973,7 @@ mod tests {
         let mut state = State::default();
         let target = KnownProvider {
             id: "anthropic",
-            upstream_url: "https://api.anthropic.com",
+            endpoint: "https://api.anthropic.com/v1",
         };
 
         apply_override(

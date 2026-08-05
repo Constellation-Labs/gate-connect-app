@@ -441,26 +441,31 @@ run_all_tools() {
   fi
 
   # --- Hermes: Python OpenAI-compatible agent. gate-connect rewrites
-  #     model.base_url in ~/.hermes/config.yaml to the relay and injects the Gate
-  #     headers into model.default_headers → POSTs /v1/chat/completions. We seed a
-  #     complete model block the way a configured user's would look: provider must
-  #     be set or hermes refuses to run ("No LLM provider configured"), and
-  #     base_url must be a public https URL or gate-connect treats it as local and
-  #     refuses to route it. provider=custom is hermes' recipe for an
-  #     OpenAI-compatible endpoint: it calls model.base_url directly using
-  #     model.api_key. Since hermes now talks to the plaintext relay, no
-  #     ssl_verify / custom_providers TLS shim is needed. The base_url host must be
-  #     one the relay allows: gate-connect derives X-Gate-Upstream-Url by stripping
-  #     the trailing /v1, and the relay only forwards to upstreams in its built-in
-  #     catalog - so api.openai.com works but openrouter.ai/api (bare host is
-  #     openrouter.ai in the catalog, not openrouter.ai/api) would be rejected 403.
-  #     Guarded on install.
+  #     model.base_url in ~/.hermes/config.yaml to the relay - and writes nothing
+  #     else, since the relay derives the upstream from the slug in that URL →
+  #     POSTs /openrouter/api/v1/chat/completions, which reaches the gateway as
+  #     /api/v1/chat/completions once the slug is stripped. We
+  #     seed a complete model block the way a configured user's would look:
+  #     provider must be set or hermes refuses to run ("No LLM provider
+  #     configured"), and base_url must be a public https URL or gate-connect
+  #     treats it as local and refuses to route it. provider=custom is hermes'
+  #     recipe for an OpenAI-compatible endpoint: it calls model.base_url
+  #     directly using model.api_key. Since hermes talks to the plaintext relay,
+  #     no ssl_verify / custom_providers TLS shim is needed.
+  #
+  #     Seeded with OpenRouter on purpose - it is what a stock `hermes` install
+  #     ships with, and it is the shape that used to fail: the upstream hint was
+  #     derived by stripping the trailing /v1, giving the off-catalog
+  #     `https://openrouter.ai/api` and a 403 on every request. The `/api/v1`
+  #     needle is the regression guard: OpenRouter's inference prefix is `/api/`,
+  #     so a path that arrives as plain `/v1/...` would pass through to the
+  #     user's own account instead of routing through Gate. Guarded on install.
   if command -v hermes >/dev/null 2>&1; then
     mkdir -p "$HOME/.hermes"
-    printf 'model:\n  provider: custom\n  base_url: https://api.openai.com/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
+    printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
       > "$HOME/.hermes/config.yaml"
     export OPENAI_API_KEY="sk-e2e-dummy"
-    run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
+    run_tool "hermes" "hermes" "/api/v1/chat/completions" "$mode" -- \
       hermes -z "ping" --model openai/gpt-4o-mini
   else
     echo "::notice::skipping hermes - CLI not installed on this runner"

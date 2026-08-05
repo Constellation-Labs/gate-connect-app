@@ -387,7 +387,103 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             enabled: false,
             supported: true,
         },
+        ProxyDomain {
+            slug: "opencode".into(),
+            display_name: "OpenCode Zen / Go".into(),
+            // Zen (`/zen/v1/*`) and Go (`/zen/go/v1/*`) are the same host and
+            // the same upstream, separated only by path, so they are ONE entry:
+            // `decide` returns on the first host match, so a second entry
+            // sharing `opencode.ai` would never be consulted.
+            hosts: vec!["opencode.ai".into()],
+            upstream_url: "https://opencode.ai".into(),
+            // Inference endpoints only, same reasoning as Anthropic and OpenAI
+            // above: a `/zen/v1/models` preflight carries no model, so the
+            // gateway can't classify it and 503s. Both Zen and Go host
+            // OpenAI-shaped and Anthropic-shaped endpoints under the same
+            // prefix, hence two leaves each. Do NOT widen to "/zen/".
+            rewrite_prefixes: vec![
+                "/zen/v1/chat/completions".into(),
+                "/zen/v1/messages".into(),
+                "/zen/go/v1/chat/completions".into(),
+                "/zen/go/v1/messages".into(),
+            ],
+            passthrough_prefixes: vec![],
+            enabled: false,
+            supported: true,
+        },
     ]
+}
+
+/// A provider endpoint split the way the relay and the gateway need it.
+pub struct ResolvedEndpoint {
+    /// Catalog slug that owns the endpoint.
+    pub slug: String,
+    /// What `X-Gate-Upstream-Url` must carry. The gateway concatenates the
+    /// forwarded request path onto this, and the relay only forwards to
+    /// upstreams it can find in the catalog.
+    pub upstream_url: String,
+    /// The path that has to live in the *tool's* base URL, so that the path the
+    /// relay forwards is relative to `upstream_url`. Empty when the endpoint is
+    /// the catalog upstream itself.
+    pub client_path: String,
+}
+
+impl ResolvedEndpoint {
+    /// The base URL a tool config points at to route this endpoint through the
+    /// relay: `<relay>/<slug><client_path>`.
+    ///
+    /// The slug segment is how the relay knows which upstream a request belongs
+    /// to, so it can inject `x-gate-upstream-url` itself instead of the tool
+    /// carrying it in a config file. It is stripped back off before anything is
+    /// forwarded, leaving exactly `client_path` + whatever the tool appended.
+    pub fn relay_base_url(&self, relay_base_url: &str) -> String {
+        format!(
+            "{}/{}{}",
+            relay_base_url.trim_end_matches('/'),
+            self.slug,
+            self.client_path
+        )
+    }
+}
+
+/// Resolve a provider's canonical endpoint - the URL a tool would call if Gate
+/// were not in the picture, e.g. `https://openrouter.ai/api/v1` - into the
+/// catalog upstream plus the path the tool must keep on its own side.
+///
+/// `None` means no catalog entry covers the endpoint. The relay refuses to
+/// forward such an upstream, so a caller must leave that provider's config
+/// alone rather than repointing it at a relay that will 403 every request.
+///
+/// This is deliberately the *only* place the split is decided. Doing it by hand,
+/// once per integration, is what broke OpenRouter: `https://openrouter.ai/api`
+/// reads like a sensible upstream but matches no catalog entry (which is
+/// `https://openrouter.ai`), so every request 403'd. Moving the `/api` to the
+/// upstream side without also moving it into the client path would have been
+/// worse than the 403 - OpenRouter's inference prefix is `/api/`, so the path
+/// would no longer match it and the traffic would have silently passed through
+/// to the user's own account instead of routing through Gate.
+pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
+    let endpoint = endpoint.trim_end_matches('/');
+    default_domains()
+        .into_iter()
+        .filter_map(|d| {
+            let rest = endpoint.strip_prefix(d.upstream_url.as_str())?;
+            // Only match on a path boundary, so `https://api.openai.com.evil.test`
+            // can never resolve to the `api.openai.com` entry.
+            if !rest.is_empty() && !rest.starts_with('/') {
+                return None;
+            }
+            let client_path = rest.to_string();
+            Some((d, client_path))
+        })
+        // Longest upstream wins, so an entry carrying a path
+        // (chatgpt.com/backend-api) beats a bare-host entry for the same host.
+        .max_by_key(|(d, _)| d.upstream_url.len())
+        .map(|(d, client_path)| ResolvedEndpoint {
+            slug: d.slug,
+            upstream_url: d.upstream_url,
+            client_path,
+        })
 }
 
 #[cfg(test)]
@@ -396,6 +492,90 @@ mod tests {
 
     fn anthropic() -> Vec<ProxyDomain> {
         vec![default_domains().into_iter().next().unwrap()]
+    }
+
+    #[test]
+    fn resolves_endpoints_against_the_catalog() {
+        // Bare-host upstream: the whole path stays on the client.
+        let r = resolve_endpoint("https://api.anthropic.com/v1").expect("anthropic resolves");
+        assert_eq!(r.slug, "anthropic");
+        assert_eq!(r.upstream_url, "https://api.anthropic.com");
+        assert_eq!(r.client_path, "/v1");
+
+        // OpenRouter's real API lives under /api/v1. The `/api` belongs in the
+        // client path, NOT in the upstream - `https://openrouter.ai/api` matches
+        // no catalog entry, and moving it upstream-side would stop the forwarded
+        // path from matching the `/api/` inference prefix.
+        let r = resolve_endpoint("https://openrouter.ai/api/v1").expect("openrouter resolves");
+        assert_eq!(r.slug, "openrouter");
+        assert_eq!(r.upstream_url, "https://openrouter.ai");
+        assert_eq!(r.client_path, "/api/v1");
+
+        // A catalog upstream that itself carries a path wins over a bare host.
+        let r =
+            resolve_endpoint("https://chatgpt.com/backend-api/codex").expect("chatgpt resolves");
+        assert_eq!(r.slug, "chatgpt");
+        assert_eq!(r.upstream_url, "https://chatgpt.com/backend-api");
+        assert_eq!(r.client_path, "/codex");
+
+        // Trailing slash and the bare upstream itself.
+        let r = resolve_endpoint("https://api.openai.com/").expect("openai resolves");
+        assert_eq!(r.client_path, "");
+
+        // Zen and Go share one catalog entry, separated by client path. Longest
+        // match is not what distinguishes them - the same upstream serves both -
+        // so the path each tool keeps is what routes it.
+        let zen = resolve_endpoint("https://opencode.ai/zen/v1").expect("zen resolves");
+        assert_eq!(zen.slug, "opencode");
+        assert_eq!(zen.upstream_url, "https://opencode.ai");
+        assert_eq!(zen.client_path, "/zen/v1");
+        let go = resolve_endpoint("https://opencode.ai/zen/go/v1").expect("zen go resolves");
+        assert_eq!(go.slug, "opencode");
+        assert_eq!(go.client_path, "/zen/go/v1");
+
+        // Off-catalog upstreams do not resolve, so callers leave them alone.
+        assert!(resolve_endpoint("https://attacker.example/v1").is_none());
+        // Suffix-confusion must not resolve to the api.openai.com entry.
+        assert!(resolve_endpoint("https://api.openai.com.evil.test/v1").is_none());
+    }
+
+    #[test]
+    fn every_resolved_endpoint_lands_on_an_inference_prefix() {
+        // The invariant that ties the two halves together: for each catalog
+        // entry, the path a tool ends up sending (client_path + the tool's own
+        // suffix) must match one of that entry's `rewrite_prefixes`, or the
+        // request silently passes through to the user's own account instead of
+        // routing through Gate. Checked here for the canonical endpoint of each
+        // domain; each integration's own
+        // `known_provider_endpoints_all_resolve_against_the_catalog` checks it
+        // for the endpoints that integration actually writes.
+        for d in default_domains() {
+            if d.rewrite_prefixes.is_empty() {
+                continue;
+            }
+            // A prefix ending in `/` is a directory prefix, so give it a leaf to
+            // stand in for the tool's own suffix; otherwise the prefix is
+            // already a full endpoint path.
+            let prefix = &d.rewrite_prefixes[0];
+            let path = if prefix.ends_with('/') {
+                format!("{prefix}probe")
+            } else {
+                prefix.clone()
+            };
+            let endpoint = format!("{}{}", d.upstream_url, path);
+            let r = resolve_endpoint(&endpoint)
+                .unwrap_or_else(|| panic!("{} endpoint {endpoint} must resolve", d.slug));
+            assert_eq!(r.slug, d.slug);
+            assert!(
+                d.rewrite_prefixes
+                    .iter()
+                    .any(|p| r.client_path.starts_with(p.as_str())),
+                "{}: client_path {:?} matches no rewrite prefix {:?}",
+                d.slug,
+                r.client_path,
+                d.rewrite_prefixes
+            );
+        }
     }
 
     #[test]

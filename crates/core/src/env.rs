@@ -17,6 +17,13 @@ fn test_home_override() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
+/// A non-empty path from an environment variable, or `None`.
+fn env_path(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
 pub fn home() -> Result<PathBuf> {
     if let Some(home) = test_home_override() {
         return Ok(home);
@@ -170,28 +177,62 @@ pub fn codex_auth_json_path() -> Result<PathBuf> {
     Ok(codex_config_dir()?.join("auth.json"))
 }
 
-/// `~/.config/opencode` - OpenCode's user config root. OpenCode is a
-/// Node-based CLI that uses XDG-style paths on every OS (it does not
-/// follow the macOS `~/Library/Application Support` or Windows
-/// `%APPDATA%` conventions), so this path is the same everywhere.
+/// OpenCode's user config root. OpenCode is a Node-based CLI that uses
+/// XDG-style paths on every OS (it does not follow the macOS `~/Library/
+/// Application Support` or Windows `%APPDATA%` conventions).
+///
+/// OpenCode resolves this via XDG and documents two overrides, so hardcoding
+/// `~/.config/opencode` meant Gate Connect could edit a file OpenCode never
+/// reads. Precedence, highest first:
+/// - `OPENCODE_CONFIG_DIR`
+/// - `$XDG_CONFIG_HOME/opencode`
+/// - `~/.config/opencode`
+///
+/// XDG is skipped while the test-home seam is active: a test that redirects HOME
+/// must not pick up the developer's real `XDG_CONFIG_HOME` and write outside its
+/// scratch directory.
 pub fn opencode_config_dir() -> Result<PathBuf> {
+    if let Some(dir) = env_path("OPENCODE_CONFIG_DIR") {
+        return Ok(dir);
+    }
+    if test_home_override().is_none() {
+        if let Some(xdg) = env_path("XDG_CONFIG_HOME") {
+            return Ok(xdg.join("opencode"));
+        }
+    }
     Ok(home()?.join(".config/opencode"))
 }
 
-/// `~/.config/opencode/opencode.json` - OpenCode's user config. Gate
-/// Connect adds (or replaces) a `provider.gate` block and leaves the
-/// rest of the file untouched.
+/// OpenCode's user config file, `opencode.json` inside
+/// [`opencode_config_dir`]. `OPENCODE_CONFIG` (a full file path) overrides it,
+/// matching OpenCode's own precedence.
+///
+/// Gate Connect edits `provider.<id>.options` in place for the providers it
+/// redirects and leaves the rest of the file untouched.
+///
+/// Note what this cannot see: OpenCode also merges a project-level
+/// `opencode.json` from the working directory, and that wins over the global
+/// file. A project config touching the same provider options silently overrides
+/// what we write here, and no amount of care in this function detects it.
 pub fn opencode_config_path() -> Result<PathBuf> {
+    if let Some(path) = env_path("OPENCODE_CONFIG") {
+        return Ok(path);
+    }
     Ok(opencode_config_dir()?.join("opencode.json"))
 }
 
 /// `~/.local/share/opencode/auth.json` - OpenCode's credential store.
-/// `opencode auth login <provider-id>` writes into this file, and
-/// OpenCode injects the matching entry into `provider.<id>.options.apiKey`
-/// at request time. Gate Connect writes the `gate` entry here on
-/// connect so users do not have to drop into the terminal to attach an
-/// upstream key. Path layout is the same on every OS .
+/// `opencode auth login <provider-id>` writes into this file, and OpenCode
+/// injects the matching entry into `provider.<id>.options.apiKey` at request
+/// time. Gate Connect only *reads* this, to tell which providers the user has
+/// authenticated and is therefore worth redirecting; it writes no credential of
+/// its own. Honors `XDG_DATA_HOME` for the same reason as the config dir.
 pub fn opencode_auth_path() -> Result<PathBuf> {
+    if test_home_override().is_none() {
+        if let Some(xdg) = env_path("XDG_DATA_HOME") {
+            return Ok(xdg.join("opencode/auth.json"));
+        }
+    }
     Ok(home()?.join(".local/share/opencode/auth.json"))
 }
 

@@ -17,21 +17,23 @@
 //! "models": {
 //!   "providers": {
 //!     "<id>": {
-//!       "baseUrl": "http://127.0.0.1:<relay-port>/v1",
-//!       "headers": {
-//!         "X-Gate-Upstream-Url": "<original provider host>",
-//!         // ...any pre-existing headers the user had
-//!       }
+//!       "baseUrl": "http://127.0.0.1:<relay-port>/<slug><client-path>"
 //!     }
 //!   }
 //! }
 //! ```
 //!
+//! That single value is the entire write. Both parts come from
+//! [`crate::proxy::resolve_endpoint`]: `<slug>` names the catalog domain, which
+//! is how the relay knows where to forward, and `<client-path>` is whatever sits
+//! between the upstream host and the SDK's own suffix - `/v1` for Anthropic and
+//! OpenAI, `/api/v1` for OpenRouter, since Gate forwards the path verbatim.
+//!
 //! The base URL points at the loopback reverse-proxy relay
-//! ([`crate::proxy::relay`]), not the gateway: the relay injects the live
-//! Gate credential per request, so **no Gate credential is written to
-//! openclaw.json** - only the non-secret `X-Gate-Upstream-Url` hint. The
-//! provider's `apiKey`, `api`, model list, and any other options the user set
+//! ([`crate::proxy::relay`]), not the gateway: the relay injects the live Gate
+//! credential *and* the upstream hint per request, so **neither a credential nor
+//! a header is written to openclaw.json** - `headers` is never touched at all.
+//! The provider's `apiKey`, `api`, model list, and any other options the user set
 //! survive the merge.
 //!
 //! Discovery: a provider is gated if it appears in `models.providers` and is
@@ -65,17 +67,8 @@ use crate::registry::{ConnectInput, Integration, Status, ToolId};
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
 
-const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
-
 /// Sidecar state file. We keep state out of the user-owned `openclaw.json`.
 const STATE_FILENAME: &str = "openclaw-state.json";
-
-/// Path suffix added to the user's gateway URL when we override per-provider
-/// baseUrls. Upstream provider APIs sit under `/v1`, and Gate forwards the
-/// full path verbatim to upstream, so the `/v1` segment has to live in the
-/// client-side baseUrl. Matches OpenClaw's own documented provider examples
-/// (e.g. `baseUrl: "https://api.moonshot.ai/v1"`).
-const GATEWAY_PATH_SUFFIX: &str = "/v1";
 
 /// Providers we know how to redirect through Gate. For each, the
 /// `upstream_url` is the bare-host form expected by `X-Gate-Upstream-Url` —
@@ -83,7 +76,7 @@ const GATEWAY_PATH_SUFFIX: &str = "/v1";
 /// lives on the client side (in baseUrl), never here.
 struct KnownProvider {
     id: &'static str,
-    upstream_url: &'static str,
+    endpoint: &'static str,
 }
 
 /// The list is intentionally short — matching the set Gate already forwards
@@ -94,15 +87,15 @@ struct KnownProvider {
 const KNOWN_PROVIDERS: &[KnownProvider] = &[
     KnownProvider {
         id: "anthropic",
-        upstream_url: "https://api.anthropic.com",
+        endpoint: "https://api.anthropic.com/v1",
     },
     KnownProvider {
         id: "openai",
-        upstream_url: "https://api.openai.com",
+        endpoint: "https://api.openai.com/v1",
     },
     KnownProvider {
         id: "openrouter",
-        upstream_url: "https://openrouter.ai/api",
+        endpoint: "https://openrouter.ai/api/v1",
     },
 ];
 
@@ -214,6 +207,30 @@ impl Integration for OpenClaw {
         Ok(env::openclaw_config_dir()?.exists())
     }
 
+    fn config_is_managed(&self) -> Result<bool> {
+        // Two-part marker, mirroring OpenCode. The sidecar only exists because
+        // connect() wrote it, but on its own it can't tell our stale write apart
+        // from a baseUrl the user has since repointed by hand - so also require
+        // that at least one recorded provider still aims at loopback, which is
+        // only ever us.
+        let Some(state) = load_state()? else {
+            return Ok(false);
+        };
+        let settings = load_settings()?.unwrap_or_default();
+        Ok(state.providers.keys().any(|provider_id| {
+            settings
+                .get("models")
+                .and_then(|v| v.as_object())
+                .and_then(|m| m.get("providers"))
+                .and_then(|v| v.as_object())
+                .and_then(|p| p.get(provider_id))
+                .and_then(|v| v.as_object())
+                .and_then(|b| b.get("baseUrl"))
+                .and_then(|v| v.as_str())
+                .is_some_and(looks_local)
+        }))
+    }
+
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
@@ -231,8 +248,8 @@ impl Integration for OpenClaw {
 
         let settings = load_settings()?.unwrap_or_default();
 
-        let expected_base = match crate::proxy::relay_base_url() {
-            Some(u) => compute_base_url(&u),
+        let relay_base = match crate::proxy::relay_base_url() {
+            Some(u) => u,
             None => {
                 return Ok(Status::Drifted(
                     "the Gate proxy has not been enabled yet - turn it on to route OpenClaw".into(),
@@ -240,7 +257,7 @@ impl Integration for OpenClaw {
             }
         };
 
-        Ok(compute_status(&state, &settings, &expected_base))
+        Ok(compute_status(&state, &settings, &relay_base))
     }
 
     fn connect(&self, input: &ConnectInput) -> Result<()> {
@@ -316,11 +333,32 @@ impl Integration for OpenClaw {
         // previous connect.
         let mut state = load_state()?.unwrap_or_default();
 
-        let relay_base = compute_base_url(relay_base_url);
         let provider_map = ensure_provider_map(&mut settings);
 
+        // Each provider gets its own baseUrl: the path Gate must not swallow
+        // differs per upstream (`/v1` for Anthropic and OpenAI, `/api/v1` for
+        // OpenRouter), and the split between "upstream Gate forwards to" and
+        // "path the client keeps" is decided in one place, by the catalog.
+        let mut skipped_off_catalog: Vec<&str> = Vec::new();
+        let mut applied = 0;
         for target in &targets {
-            apply_override(provider_map, &mut state, target, &relay_base);
+            let Some(resolved) = crate::proxy::resolve_endpoint(target.endpoint) else {
+                // No catalog domain covers this upstream, so the relay would
+                // 403 every request. Leaving the config alone is strictly
+                // better than repointing it at a dead end.
+                skipped_off_catalog.push(target.id);
+                continue;
+            };
+            let base_url = resolved.relay_base_url(relay_base_url);
+            apply_override(provider_map, &mut state, target, &base_url);
+            applied += 1;
+        }
+
+        if applied == 0 {
+            anyhow::bail!(
+                "None of the configured OpenClaw providers can route through Gate yet ({}). Gate has no upstream domain for them.",
+                skipped_off_catalog.join(", ")
+            );
         }
 
         save_state(&state)?;
@@ -398,7 +436,7 @@ impl Integration for OpenClaw {
 /// the user wiped our edits; some unhealthy → a partial hand-edit. Split out of
 /// [`OpenClaw::status`] so the comparison logic is testable without touching
 /// the filesystem, account, or env.
-fn compute_status(state: &State, settings: &Map<String, Value>, expected_base: &str) -> Status {
+fn compute_status(state: &State, settings: &Map<String, Value>, relay_base_url: &str) -> Status {
     let mut healthy = 0;
     let mut drifted = Vec::new();
     for provider_id in state.providers.keys() {
@@ -409,17 +447,13 @@ fn compute_status(state: &State, settings: &Map<String, Value>, expected_base: &
             .and_then(|b| b.get("baseUrl"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let headers = block
-            .and_then(|b| b.get("headers"))
-            .and_then(|v| v.as_object());
-        // No key check: the relay injects the Gate credential live, so the
-        // config carries only the non-secret upstream hint.
-        let has_upstream = headers
-            .and_then(|h| h.get(UPSTREAM_URL_HEADER))
-            .and_then(|v| v.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        if base_url == expected_base && has_upstream {
+        // The baseUrl is the whole test now: it carries the relay origin, the
+        // catalog slug the relay routes on, and the provider's own path. No
+        // credential and no header is written, so there is nothing else to
+        // check. Per provider, because OpenRouter's path is `/api/v1` where
+        // Anthropic's is `/v1`.
+        let expected = expected_base_url(provider_id, relay_base_url);
+        if expected.as_deref() == Some(base_url) {
             healthy += 1;
         } else {
             drifted.push(provider_id.clone());
@@ -516,19 +550,8 @@ fn apply_override(
             .or_insert_with(|| Value::Array(Vec::new()));
     }
 
-    let headers_entry = provider
-        .entry("headers".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !headers_entry.is_object() {
-        *headers_entry = Value::Object(Map::new());
-    }
-    let headers = headers_entry
-        .as_object_mut()
-        .expect("headers entry was just coerced to an object");
-    headers.insert(
-        UPSTREAM_URL_HEADER.to_string(),
-        Value::String(target.upstream_url.to_string()),
-    );
+    // `headers` is left alone entirely: the relay reads the upstream off the slug
+    // segment in `baseUrl` and injects the hint itself.
 }
 
 /// Reverse `apply_override` for one provider. Restores baseUrl / headers to
@@ -569,16 +592,19 @@ fn restore_provider(
     }
 }
 
-/// Append the SDK's expected path suffix (`/v1`) to the relay's loopback base
-/// URL. The relay (and Gate behind it) forward the path verbatim, so the `/v1`
-/// segment lives here. Trims trailing slash, and avoids doubling the suffix.
-fn compute_base_url(base: &str) -> String {
-    let trimmed = base.trim_end_matches('/');
-    if trimmed.ends_with(GATEWAY_PATH_SUFFIX) {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}{GATEWAY_PATH_SUFFIX}")
-    }
+/// The `baseUrl` connect writes for `provider_id`, given the relay's loopback
+/// base. `None` when the provider is not one we redirect (unknown id, or an
+/// endpoint no catalog domain covers) - `compute_status` treats that as drift
+/// rather than pretending it matches.
+///
+/// The suffix is per provider and comes from the catalog, not a constant: the
+/// relay and Gate forward the path verbatim, so whatever sits between the
+/// upstream host and the SDK's own suffix (`/v1` for Anthropic and OpenAI,
+/// `/api/v1` for OpenRouter) has to live on this side.
+fn expected_base_url(provider_id: &str, relay_base_url: &str) -> Option<String> {
+    let target = KNOWN_PROVIDERS.iter().find(|p| p.id == provider_id)?;
+    let resolved = crate::proxy::resolve_endpoint(target.endpoint)?;
+    Some(resolved.relay_base_url(relay_base_url))
 }
 
 // --- file I/O ---------------------------------------------------------
@@ -708,31 +734,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn compute_base_url_appends_v1_suffix() {
+    fn expected_base_url_carries_the_per_provider_path() {
+        // Each base URL names the catalog slug the relay routes on, then the
+        // provider's own path: `/v1` for Anthropic and OpenAI, `/api/v1` for
+        // OpenRouter, whose API lives under `/api`.
         assert_eq!(
-            compute_base_url("https://gw.example.com"),
-            "https://gw.example.com/v1"
+            expected_base_url("anthropic", "http://127.0.0.1:9977").as_deref(),
+            Some("http://127.0.0.1:9977/anthropic/v1")
         );
         assert_eq!(
-            compute_base_url("https://gw.example.com/"),
-            "https://gw.example.com/v1"
+            expected_base_url("openai", "http://127.0.0.1:9977/").as_deref(),
+            Some("http://127.0.0.1:9977/openai/v1")
         );
+        assert_eq!(
+            expected_base_url("openrouter", "http://127.0.0.1:9977").as_deref(),
+            Some("http://127.0.0.1:9977/openrouter/api/v1")
+        );
+        assert_eq!(expected_base_url("nope", "http://127.0.0.1:9977"), None);
     }
 
     #[test]
-    fn compute_base_url_does_not_double_v1_suffix() {
-        assert_eq!(
-            compute_base_url("https://gw.example.com/v1"),
-            "https://gw.example.com/v1"
-        );
-        assert_eq!(
-            compute_base_url("https://gw.example.com/v1/"),
-            "https://gw.example.com/v1"
-        );
-    }
-
-    #[test]
-    fn apply_override_adds_upstream_header_without_clobbering_user_fields() {
+    fn apply_override_rewrites_base_url_without_clobbering_user_fields() {
         let mut providers = Map::new();
         providers.insert(
             "anthropic".to_string(),
@@ -746,7 +768,7 @@ mod tests {
         let mut state = State::default();
         let target = KnownProvider {
             id: "anthropic",
-            upstream_url: "https://api.anthropic.com",
+            endpoint: "https://api.anthropic.com/v1",
         };
         apply_override(
             &mut providers,
@@ -761,15 +783,13 @@ mod tests {
         // user's apiKey + api survived
         assert_eq!(anth["apiKey"], json!("${ANTHROPIC_API_KEY}"));
         assert_eq!(anth["api"], json!("anthropic-messages"));
-        // user's existing header preserved alongside the Gate upstream hint
+        // The user's own header survives, and no Gate header joins it: the relay
+        // reads the upstream off the slug in baseUrl and injects both the hint
+        // and the credential itself.
         let hdrs = anth["headers"].as_object().unwrap();
         assert_eq!(hdrs["X-User-Custom"], json!("yes"));
-        // No Gate credential is ever written - the relay injects it live.
         assert!(!hdrs.contains_key("X-Gate-Api-Key"));
-        assert_eq!(
-            hdrs[UPSTREAM_URL_HEADER],
-            json!("https://api.anthropic.com")
-        );
+        assert!(!hdrs.contains_key("X-Gate-Upstream-Url"));
         // models block untouched
         assert!(anth["models"].is_array());
         // snapshot captured
@@ -795,7 +815,7 @@ mod tests {
         let mut state = State::default();
         let target = KnownProvider {
             id: "openai",
-            upstream_url: "https://api.openai.com",
+            endpoint: "https://api.openai.com/v1",
         };
         apply_override(
             &mut providers,
@@ -823,7 +843,7 @@ mod tests {
         let mut state = State::default();
         let target = KnownProvider {
             id: "openai",
-            upstream_url: "https://api.openai.com",
+            endpoint: "https://api.openai.com/v1",
         };
         apply_override(
             &mut providers,
@@ -885,22 +905,41 @@ mod tests {
     }
 
     #[test]
-    fn known_providers_are_bare_https_hosts() {
+    fn known_provider_endpoints_all_resolve_against_the_catalog() {
+        // Every OpenClaw provider we redirect must be one the relay can forward.
+        // This is the assertion the old "bare https host" check could not make:
+        // `https://openrouter.ai/api` satisfied every shape rule while matching
+        // no catalog entry, so connect happily pointed OpenRouter at a relay
+        // that 403'd every request.
         for p in KNOWN_PROVIDERS {
+            assert!(p.endpoint.starts_with("https://"), "{} must be https", p.id);
             assert!(
-                !p.upstream_url.ends_with("/v1"),
-                "{} upstream must be bare host",
+                !p.endpoint.ends_with('/'),
+                "{} endpoint must not end in /",
                 p.id
             );
+            let resolved = crate::proxy::resolve_endpoint(p.endpoint)
+                .unwrap_or_else(|| panic!("{} endpoint {} is off-catalog", p.id, p.endpoint));
+            let domain = crate::proxy::default_domains()
+                .into_iter()
+                .find(|d| d.slug == resolved.slug)
+                .expect("resolved slug is a catalog domain");
             assert!(
-                !p.upstream_url.ends_with('/'),
-                "{} upstream must not end in /",
-                p.id
-            );
-            assert!(
-                p.upstream_url.starts_with("https://"),
-                "{} must be https",
-                p.id
+                domain.rewrite_prefixes.iter().any(|pre| {
+                    // The client path is only the *start* of what the tool
+                    // sends - the SDK appends its own leaf (`/messages`,
+                    // `/chat/completions`). So the two must sit on the same
+                    // path branch, in either direction: `/v1` vs
+                    // `/v1/messages` (prefix extends it) and `/api/v1` vs
+                    // `/api/` (path extends the prefix) are both fine.
+                    pre.starts_with(resolved.client_path.as_str())
+                        || resolved.client_path.starts_with(pre.as_str())
+                }),
+                "{}: client path {:?} is on no branch of {:?}, so its traffic would \
+                 pass through to the user's own account instead of routing via Gate",
+                p.id,
+                resolved.client_path,
+                domain.rewrite_prefixes
             );
         }
     }
@@ -915,7 +954,7 @@ mod tests {
         let mut state = State::default();
         let target = KnownProvider {
             id: "anthropic",
-            upstream_url: "https://api.anthropic.com",
+            endpoint: "https://api.anthropic.com/v1",
         };
 
         apply_override(
@@ -964,7 +1003,7 @@ mod tests {
             let mut block = json!({ "baseUrl": base_url });
             if *gate_headers {
                 block["headers"] = json!({
-                    UPSTREAM_URL_HEADER: "https://api.anthropic.com",
+                    "X-Gate-Upstream-Url": "https://api.anthropic.com",
                 });
             }
             provider_map.insert((*id).to_string(), block);
@@ -978,11 +1017,11 @@ mod tests {
     fn compute_status_connected_when_all_providers_carry_gate_headers() {
         let state = state_with(&["anthropic", "openai"]);
         let settings = settings_with(&[
-            ("anthropic", "https://gw.example.com/v1", true),
-            ("openai", "https://gw.example.com/v1", true),
+            ("anthropic", "https://gw.example.com/anthropic/v1", true),
+            ("openai", "https://gw.example.com/openai/v1", true),
         ]);
         assert_eq!(
-            compute_status(&state, &settings, "https://gw.example.com/v1"),
+            compute_status(&state, &settings, "https://gw.example.com"),
             Status::Connected
         );
     }
@@ -993,9 +1032,9 @@ mod tests {
         let state = state_with(&["anthropic", "openai"]);
         let settings = settings_with(&[
             ("anthropic", "https://api.anthropic.com", true),
-            ("openai", "https://gw.example.com/v1", true),
+            ("openai", "https://gw.example.com/openai/v1", true),
         ]);
-        match compute_status(&state, &settings, "https://gw.example.com/v1") {
+        match compute_status(&state, &settings, "https://gw.example.com") {
             Status::Drifted(msg) => {
                 assert!(msg.contains("edited by hand"), "unexpected message: {msg}");
                 assert!(
@@ -1016,7 +1055,7 @@ mod tests {
         // User wiped our edits: provider exists but has no Gate headers.
         let state = state_with(&["anthropic"]);
         let settings = settings_with(&[("anthropic", "https://api.anthropic.com", false)]);
-        match compute_status(&state, &settings, "https://gw.example.com/v1") {
+        match compute_status(&state, &settings, "https://gw.example.com") {
             Status::Drifted(msg) => {
                 assert!(
                     msg.contains("no providers carry Gate headers"),
