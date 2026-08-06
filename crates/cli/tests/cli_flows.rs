@@ -307,7 +307,13 @@ fn opencode_connect_then_disconnect() {
 }
 
 #[test]
-fn hermes_connect_then_disconnect() {
+fn hermes_refuses_to_connect_without_a_running_proxy() {
+    // Hermes now routes through the proxy engine, so connect requires a live
+    // one - pointing HTTPS_PROXY at a dead address would break its requests
+    // rather than merely un-routing them. That refusal is the only part of the
+    // flow reachable from the CLI (a live engine needs a trusted CA, which
+    // needs privileges); the round trip is covered in
+    // `crates/core/tests/disconnect_zero_residue.rs`.
     let h = Harness::new();
     // detect() wants the launcher, which the installer drops in ~/.local/bin -
     // a leftover config dir alone no longer counts as installed.
@@ -316,55 +322,32 @@ fn hermes_connect_then_disconnect() {
     fs::write(bin.join("hermes"), "#!/bin/sh\n").unwrap();
     let hermes_dir = h.home().join(".hermes");
     fs::create_dir_all(&hermes_dir).unwrap();
-    // Hermes ships pointed at OpenRouter, whose API lives under /api/v1.
     let config = hermes_dir.join("config.yaml");
-    fs::write(
-        &config,
-        "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n",
-    )
-    .unwrap();
+    let seed = "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n";
+    fs::write(&config, seed).unwrap();
     h.login();
 
-    h.run_ok(&["connect", "hermes"]);
-
-    let body = read(&config);
-    assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
-    // Only `/v1` stays on the client side: OpenRouter's `/api` rides in the
-    // upstream URL, because Gate's ALB diverts a forwarded `/api/*` to the
-    // dashboard API before the gateway proxy sees it.
+    let err = h.run_err(&["connect", "hermes"]);
     assert!(
-        body.contains(&format!("{RELAY_URL}/openrouter/v1")),
-        "openrouter client path missing: {body}"
-    );
-    assert!(
-        !body.contains("X-Gate-Upstream-Url"),
-        "no Gate header may be written - the relay derives the upstream from \
-         the slug in the base URL: {body}"
-    );
-    // No credential is ever written - the relay injects it live.
-    assert!(
-        !body.contains("X-Gate-Api-Key"),
-        "credential must not be written to config: {body}"
-    );
-    assert!(
-        !body.contains(API_KEY),
-        "api key value must not be written: {body}"
+        err.contains("proxy is not running"),
+        "expected a refusal naming the proxy, got: {err}"
     );
 
+    // config.yaml is no longer part of this integration at all, and a refused
+    // connect must leave no .env behind either.
+    assert_eq!(
+        read(&config),
+        seed,
+        "config.yaml must never be touched by the Hermes integration"
+    );
+    assert!(
+        !hermes_dir.join(".env").exists(),
+        "a refused connect must not create .env"
+    );
+
+    // Disconnect on an unmanaged tool is a no-op, not an error.
     h.run_ok(&["disconnect", "hermes"]);
-
-    let after = read(&config);
-    assert!(
-        !after.contains("X-Gate-Upstream-Url"),
-        "gate residue left behind: {after}"
-    );
-    assert!(!after.contains(RELAY_URL), "relay URL left behind: {after}");
-    assert!(
-        after.contains("https://openrouter.ai/api/v1"),
-        "original base_url must be restored: {after}"
-    );
 }
-
 #[test]
 fn openclaw_connect_is_a_no_op_without_routing() {
     // Complements `openclaw_refuses_to_connect_without_a_running_proxy`: the

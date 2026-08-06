@@ -102,6 +102,22 @@ fn seed_engine_port(port: u16) {
     fs::write(&path, port.to_string()).unwrap();
 }
 
+/// Seed a CA cert so `ca_bundle::ensure()` has something to append. Contents
+/// are never parsed here - the bundle is concatenated text - so a marker string
+/// is enough to prove it made it into the output.
+fn seed_ca_cert() {
+    let path = env::app_support_dir()
+        .unwrap()
+        .join("proxy")
+        .join("ca-cert.pem");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "-----BEGIN CERTIFICATE-----\ngate-test-ca\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+}
+
 fn connect_input(relay_port: u16) -> ConnectInput {
     ConnectInput {
         gateway_base_url: "https://gw.example.com".to_string(),
@@ -517,6 +533,8 @@ fn hermes_disconnect_leaves_no_gate_residue() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
     seed_relay_port(9977);
+    seed_engine_port(9977);
+    seed_ca_cert();
 
     // detect() wants the launcher, not just the config dir - the installer drops
     // it in ~/.local/bin.
@@ -524,45 +542,68 @@ fn hermes_disconnect_leaves_no_gate_residue() {
     fs::create_dir_all(launcher.parent().unwrap()).unwrap();
     fs::write(&launcher, "#!/bin/sh\n").unwrap();
 
+    // A config.yaml and an .env holding the user's own key. Neither the model
+    // block nor the key may be touched: Hermes routes via the proxy now, so
+    // there is no base_url to rewrite and no provider to discover.
     let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
-    fs::write(
-        &cfg,
-        "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: user-key\n",
-    )
-    .unwrap();
+    let original_cfg =
+        "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: user-key\n";
+    fs::write(&cfg, original_cfg).unwrap();
+    let envfile = env::hermes_config_dir().unwrap().join(".env");
+    fs::write(&envfile, "OPENROUTER_API_KEY=sk-user\n").unwrap();
 
     let integ = find(ToolId::Hermes).unwrap();
     integ.connect(&connect_input(9977)).unwrap();
 
-    // The default Hermes endpoint is OpenRouter's. Its `/api` rides in the
-    // upstream URL, so the relay base keeps only `/v1` - a forwarded `/api/*`
-    // would be diverted by Gate's ALB to the dashboard API and 404.
-    let connected = fs::read_to_string(&cfg).unwrap();
+    let env_body = fs::read_to_string(&envfile).unwrap();
     assert!(
-        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
-        "base_url must keep the slug + /v1: {connected}"
+        env_body.contains("HTTPS_PROXY=http://127.0.0.1:9977"),
+        "the proxy must be set in .env: {env_body}"
     );
-    assert!(matches!(integ.status().unwrap(), Status::Connected));
+    assert!(
+        env_body.contains("NO_PROXY=localhost,127.0.0.1,::1"),
+        "loopback must stay off the proxy so local providers keep working: {env_body}"
+    );
+    assert!(
+        env_body.contains("HERMES_CA_BUNDLE="),
+        "a full CA bundle is required - venv certifi does not see the OS store: {env_body}"
+    );
+    assert_eq!(
+        fs::read_to_string(&cfg).unwrap(),
+        original_cfg,
+        "config.yaml must not be touched at all"
+    );
+
+    // Not Connected here: no engine is running against this temp HOME. Drift is
+    // the truthful answer and still counts as managed for the master-off sweep.
+    match integ.status().unwrap() {
+        Status::Drifted(m) => assert!(
+            m.contains("not running") || m.contains("does not match"),
+            "unexpected status message: {m}"
+        ),
+        other => panic!("expected drift with no engine running, got {other:?}"),
+    }
 
     integ.disconnect().unwrap();
 
-    let after = fs::read_to_string(&cfg).unwrap_or_default();
+    let after = fs::read_to_string(&envfile).unwrap();
     assert!(
         !after.contains("127.0.0.1"),
-        "relay base URL must be reverted: {after}"
+        "the proxy must be reverted: {after}"
     );
     assert!(
-        !after.contains("X-Gate-"),
-        "no Gate header may survive: {after}"
+        !after.contains("HERMES_CA_BUNDLE"),
+        "the CA bundle line must be reverted: {after}"
     );
     assert!(
-        after.contains("https://openrouter.ai/api/v1"),
-        "the user's original base_url must be restored: {after}"
+        after.contains("OPENROUTER_API_KEY=sk-user"),
+        "the user's own key must survive: {after}"
     );
-    assert!(
-        after.contains("user-key"),
-        "the user's own api_key must survive: {after}"
+    assert_eq!(
+        fs::read_to_string(&cfg).unwrap(),
+        original_cfg,
+        "config.yaml must still be untouched after disconnect"
     );
     assert!(
         !env::app_support_dir()
@@ -574,67 +615,36 @@ fn hermes_disconnect_leaves_no_gate_residue() {
 }
 
 #[test]
-fn hermes_connect_refuses_an_unconfigured_model_with_a_usable_message() {
+fn hermes_leaves_a_user_owned_proxy_alone() {
+    // A pre-existing HTTPS_PROXY is likely a corporate egress proxy the rest of
+    // the user's setup depends on. Clobbering it would break far more than Gate,
+    // so connect refuses rather than taking it over.
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
     seed_relay_port(9977);
+    seed_engine_port(9977);
+    seed_ca_cert();
 
     let launcher = env::home().unwrap().join(".local/bin/hermes");
     fs::create_dir_all(launcher.parent().unwrap()).unwrap();
     fs::write(&launcher, "#!/bin/sh\n").unwrap();
 
-    // What a fresh install actually ships: `model` is the empty-string sentinel
-    // that `hermes model` later upgrades to a mapping. Reading it as a mapping
-    // used to fail with "model is not a mapping", which says nothing about what
-    // to do next.
-    let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
-    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
-    fs::write(&cfg, "model: \"\"\n").unwrap();
+    let envfile = env::hermes_config_dir().unwrap().join(".env");
+    fs::create_dir_all(envfile.parent().unwrap()).unwrap();
+    let original = "HTTPS_PROXY=http://corp.example:3128\nHTTP_PROXY=http://corp.example:3128\nNO_PROXY=corp.example\nHERMES_CA_BUNDLE=/corp/ca.pem\n";
+    fs::write(&envfile, original).unwrap();
 
     let err = find(ToolId::Hermes)
         .unwrap()
         .connect(&connect_input(9977))
-        .expect_err("an unconfigured model must not be silently redirected");
-    let msg = format!("{err:#}");
+        .expect_err("a user-owned proxy must not be silently replaced");
     assert!(
-        msg.contains("no model configured yet") && msg.contains("hermes model"),
-        "error should name the fix: {msg}"
+        format!("{err:#}").contains("own proxy settings"),
+        "error should say why: {err:#}"
     );
-
-    // And it must not have written a half-redirect on the way out.
-    let after = fs::read_to_string(&cfg).unwrap();
-    assert!(
-        !after.contains("127.0.0.1"),
-        "config must be untouched: {after}"
-    );
-}
-
-#[test]
-fn hermes_connect_refuses_when_there_is_no_config_at_all() {
-    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::set();
-    seed_relay_port(9977);
-
-    // The real fresh-install state: the installer creates ~/.hermes/.env and a
-    // launcher, but no config.yaml until `hermes setup` / `hermes model` runs.
-    let launcher = env::home().unwrap().join(".local/bin/hermes");
-    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
-    fs::write(&launcher, "#!/bin/sh\n").unwrap();
-    let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
-    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
-    assert!(!cfg.exists());
-
-    let err = find(ToolId::Hermes)
-        .unwrap()
-        .connect(&connect_input(9977))
-        .expect_err("an unconfigured Hermes must not be given a bare base_url");
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("hermes model"),
-        "error should name the fix: {msg}"
-    );
-    assert!(
-        !cfg.exists(),
-        "must not create a config file Hermes cannot use"
+    assert_eq!(
+        fs::read_to_string(&envfile).unwrap(),
+        original,
+        "the user's .env must be byte-identical after a refusal"
     );
 }

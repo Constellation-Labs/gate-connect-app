@@ -60,6 +60,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::env;
+use crate::integrations::dotenv;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
@@ -198,12 +199,21 @@ impl Integration for OpenClaw {
                 .cloned();
         }
 
-        let (ca_env_added, ca_env_file_created) = write_ca_env()?;
+        // Point OpenClaw's Node runtime at Gate's CA. A value the user already
+        // set is left strictly alone - it may be a corporate bundle the rest of
+        // their setup depends on.
+        let applied = dotenv::add_vars(
+            &env_file_path()?,
+            &[(
+                CA_ENV_KEY,
+                crate::proxy::ca_cert_path()?.display().to_string(),
+            )],
+        )?;
         // Only record a fresh write; a re-connect must keep the first answer,
         // or disconnect would leave behind a line we did add.
         if load_state()?.is_none() {
-            state.ca_env_added = ca_env_added;
-            state.ca_env_file_created = ca_env_file_created;
+            state.ca_env_added = !applied.added.is_empty();
+            state.ca_env_file_created = applied.file_created;
         }
 
         // `proxy.loopbackMode` and `proxy.tls` are deliberately untouched - see
@@ -252,7 +262,11 @@ impl Integration for OpenClaw {
         }
 
         if state.ca_env_added {
-            remove_ca_env(state.ca_env_file_created)?;
+            dotenv::remove_vars(
+                &env_file_path()?,
+                &[CA_ENV_KEY.to_string()],
+                state.ca_env_file_created,
+            )?;
         }
 
         // Only drop the sidecar once the restored config is on disk: losing it
@@ -348,65 +362,6 @@ fn is_loopback_url(url: &str) -> bool {
 
 fn env_file_path() -> Result<PathBuf> {
     Ok(env::openclaw_config_dir()?.join(".env"))
-}
-
-/// Point OpenClaw's Node runtime at Gate's CA. Returns
-/// `(line_added, file_created)` so disconnect removes only what we added.
-///
-/// A `NODE_EXTRA_CA_CERTS` the user already set is left strictly alone: it may
-/// be a corporate bundle the rest of their setup depends on, and clobbering it
-/// would break TLS well outside Gate's blast radius.
-fn write_ca_env() -> Result<(bool, bool)> {
-    let path = env_file_path()?;
-    let existing = fs::read_to_string(&path).unwrap_or_default();
-    let file_created = !path.exists();
-
-    if existing
-        .lines()
-        .any(|l| l.trim_start().starts_with(CA_ENV_KEY))
-    {
-        return Ok((false, false));
-    }
-
-    let ca = crate::proxy::ca_cert_path()?;
-    let mut body = existing;
-    if !body.is_empty() && !body.ends_with('\n') {
-        body.push('\n');
-    }
-    body.push_str(&format!("{CA_ENV_KEY}={}\n", ca.display()));
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    crate::primitives::write_file(&path, body.as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))?;
-    Ok((true, file_created))
-}
-
-/// Remove the `NODE_EXTRA_CA_CERTS` line connect added, and the file too if we
-/// created it and nothing else is left in it.
-fn remove_ca_env(file_created: bool) -> Result<()> {
-    let path = env_file_path()?;
-    if !path.exists() {
-        return Ok(());
-    }
-    let existing =
-        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let kept: Vec<&str> = existing
-        .lines()
-        .filter(|l| !l.trim_start().starts_with(CA_ENV_KEY))
-        .collect();
-
-    if kept.iter().all(|l| l.trim().is_empty()) && file_created {
-        return fs::remove_file(&path).with_context(|| format!("removing {}", path.display()));
-    }
-
-    let mut body = kept.join("\n");
-    if !body.is_empty() && !body.ends_with('\n') {
-        body.push('\n');
-    }
-    crate::primitives::write_file(&path, body.as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))
 }
 
 // --- file I/O ---------------------------------------------------------

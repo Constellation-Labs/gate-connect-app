@@ -33,6 +33,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod engine;
 
+/// Platform trust roots plus Gate's CA, for tools that take a single CA file.
+pub mod ca_bundle;
+
 mod cert_authority;
 
 /// Plaintext loopback reverse proxy for CLI tools; hosted in the engine.
