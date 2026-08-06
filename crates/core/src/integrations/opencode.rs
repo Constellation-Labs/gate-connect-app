@@ -748,7 +748,7 @@ mod tests {
         );
         assert_eq!(
             expected_base_url("openrouter", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/openrouter/api/v1")
+            Some("http://127.0.0.1:9977/openrouter/v1")
         );
         // Zen and Go keep their own paths under the shared opencode.ai upstream.
         assert_eq!(

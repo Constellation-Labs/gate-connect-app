@@ -739,8 +739,9 @@ mod tests {
     #[test]
     fn expected_base_url_carries_the_per_provider_path() {
         // Each base URL names the catalog slug the relay routes on, then the
-        // provider's own path: `/v1` for Anthropic and OpenAI, `/api/v1` for
-        // OpenRouter, whose API lives under `/api`.
+        // provider's own path - `/v1` throughout here, because OpenRouter's
+        // `/api` rides in the upstream URL rather than the forwarded path (a
+        // forwarded `/api/*` is diverted by Gate's ALB to the dashboard API).
         assert_eq!(
             expected_base_url("anthropic", "http://127.0.0.1:9977").as_deref(),
             Some("http://127.0.0.1:9977/anthropic/v1")
@@ -751,7 +752,7 @@ mod tests {
         );
         assert_eq!(
             expected_base_url("openrouter", "http://127.0.0.1:9977").as_deref(),
-            Some("http://127.0.0.1:9977/openrouter/api/v1")
+            Some("http://127.0.0.1:9977/openrouter/v1")
         );
         assert_eq!(expected_base_url("nope", "http://127.0.0.1:9977"), None);
     }

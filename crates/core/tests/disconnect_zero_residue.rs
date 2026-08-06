@@ -388,8 +388,8 @@ fn opencode_disconnect_leaves_no_gate_residue() {
     // the upstream hint on the bare host the catalog knows.
     let connected = fs::read_to_string(&cfg).unwrap();
     assert!(
-        connected.contains("http://127.0.0.1:9977/openrouter/api/v1"),
-        "openrouter baseURL must keep the slug + /api/v1: {connected}"
+        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
+        "openrouter baseURL must keep the slug + /v1: {connected}"
     );
     assert!(
         !connected.contains("X-Gate-Upstream-Url"),
@@ -441,8 +441,8 @@ fn openclaw_disconnect_leaves_no_gate_residue() {
 
     let connected = fs::read_to_string(&cfg).unwrap();
     assert!(
-        connected.contains("http://127.0.0.1:9977/openrouter/api/v1"),
-        "openrouter baseUrl must keep the slug + /api/v1: {connected}"
+        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
+        "openrouter baseUrl must keep the slug + /v1: {connected}"
     );
     assert!(matches!(integ.status().unwrap(), Status::Connected));
 
@@ -493,12 +493,13 @@ fn hermes_disconnect_leaves_no_gate_residue() {
     let integ = find(ToolId::Hermes).unwrap();
     integ.connect(&connect_input(9977)).unwrap();
 
-    // The default Hermes endpoint is OpenRouter's, which used to resolve to the
-    // off-catalog `https://openrouter.ai/api` and 403 every request.
+    // The default Hermes endpoint is OpenRouter's. Its `/api` rides in the
+    // upstream URL, so the relay base keeps only `/v1` - a forwarded `/api/*`
+    // would be diverted by Gate's ALB to the dashboard API and 404.
     let connected = fs::read_to_string(&cfg).unwrap();
     assert!(
-        connected.contains("http://127.0.0.1:9977/openrouter/api/v1"),
-        "base_url must keep the slug + /api/v1: {connected}"
+        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
+        "base_url must keep the slug + /v1: {connected}"
     );
     assert!(matches!(integ.status().unwrap(), Status::Connected));
 

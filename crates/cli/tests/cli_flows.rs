@@ -316,10 +316,11 @@ fn hermes_connect_then_disconnect() {
 
     let body = read(&config);
     assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
-    // The `/api/v1` stays on the client side so the forwarded path lands on
-    // OpenRouter's `/api/` inference prefix instead of 403ing off-catalog.
+    // Only `/v1` stays on the client side: OpenRouter's `/api` rides in the
+    // upstream URL, because Gate's ALB diverts a forwarded `/api/*` to the
+    // dashboard API before the gateway proxy sees it.
     assert!(
-        body.contains(&format!("{RELAY_URL}/openrouter/api/v1")),
+        body.contains(&format!("{RELAY_URL}/openrouter/v1")),
         "openrouter client path missing: {body}"
     );
     assert!(

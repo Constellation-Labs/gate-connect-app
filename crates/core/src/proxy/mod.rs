@@ -250,14 +250,59 @@ pub(crate) fn should_intercept_host(domains: &[ProxyDomain], host: &str) -> bool
     domains.iter().any(|d| d.enabled && d.matches_host(host))
 }
 
+/// The path component of a catalog `upstream_url` - `/api` for
+/// `https://openrouter.ai/api`, `""` for a bare host. Gate appends the
+/// forwarded path to the upstream URL verbatim, so this segment is the part of
+/// the provider's path that travels in the `X-Gate-Upstream-Url` header rather
+/// than in the request line.
+pub(crate) fn upstream_path(upstream_url: &str) -> &str {
+    let after_scheme = upstream_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(upstream_url);
+    after_scheme
+        .find('/')
+        .map(|i| after_scheme[i..].trim_end_matches('/'))
+        .unwrap_or("")
+}
+
+/// Remove an upstream URL's own path prefix from a request path, on a path
+/// boundary: `/api/v1/chat` under upstream path `/api` becomes `/v1/chat`.
+///
+/// `None` means the request is outside the upstream's subtree (`/apifoo`, or a
+/// wholly unrelated path), which callers treat as "not ours".
+pub(crate) fn strip_upstream_path<'a>(path: &'a str, upstream_path: &str) -> Option<&'a str> {
+    if upstream_path.is_empty() {
+        return Some(path);
+    }
+    let rest = path.strip_prefix(upstream_path)?;
+    if rest.is_empty() {
+        Some("/")
+    } else if rest.starts_with('/') {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
 /// Decide what to do with a request given its host + path. Passthrough
 /// prefixes win over rewrite prefixes; a matched host with an unmatched
 /// path is left alone (passthrough) rather than rewritten.
+///
+/// Prefixes are matched against the path *as Gate will receive it* - i.e. after
+/// the domain's own [`upstream_path`] is removed, since that segment rides in
+/// the upstream header instead. For a bare-host upstream the two are identical.
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
     for d in domains.iter().filter(|d| d.enabled) {
         if !d.matches_host(host) {
             continue;
         }
+        // A path outside the upstream's own subtree is not this domain's
+        // traffic at all; leave it alone rather than forwarding a path Gate
+        // would reassemble into a URL the provider never served.
+        let Some(path) = strip_upstream_path(path, upstream_path(&d.upstream_url)) else {
+            return Decision::Passthrough;
+        };
         if d.passthrough_prefixes
             .iter()
             .any(|p| path.starts_with(p.as_str()))
@@ -381,8 +426,16 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // chat/completions). Opt-in like OpenAI; intercepts OpenRouter
             // clients that honor the system proxy.
             hosts: vec!["openrouter.ai".into()],
-            upstream_url: "https://openrouter.ai".into(),
-            rewrite_prefixes: vec!["/api/".into()],
+            // The `/api` MUST ride in the upstream URL, not the forwarded path.
+            // Gate's ALB routes `/api/*` (plus /orgs/, /admin/, /me/,
+            // /agent-templates/) to the dashboard API, so a forwarded
+            // `/api/v1/chat/completions` never reaches the gateway proxy at all
+            // - it 404s out of a service that has no such route. Keeping `/api`
+            // upstream-side sends `/v1/chat/completions`, which clears the rule,
+            // and Gate reassembles the two into the URL OpenRouter serves.
+            // `forwarded_paths_avoid_gate_reserved_prefixes` pins this.
+            upstream_url: "https://openrouter.ai/api".into(),
+            rewrite_prefixes: vec!["/v1/".into()],
             passthrough_prefixes: vec![],
             enabled: false,
             supported: true,
@@ -455,13 +508,11 @@ impl ResolvedEndpoint {
 /// alone rather than repointing it at a relay that will 403 every request.
 ///
 /// This is deliberately the *only* place the split is decided. Doing it by hand,
-/// once per integration, is what broke OpenRouter: `https://openrouter.ai/api`
-/// reads like a sensible upstream but matches no catalog entry (which is
-/// `https://openrouter.ai`), so every request 403'd. Moving the `/api` to the
-/// upstream side without also moving it into the client path would have been
-/// worse than the 403 - OpenRouter's inference prefix is `/api/`, so the path
-/// would no longer match it and the traffic would have silently passed through
-/// to the user's own account instead of routing through Gate.
+/// once per integration, is what first broke OpenRouter: `https://openrouter.ai/api`
+/// read like a sensible upstream but matched no catalog entry (which was then
+/// `https://openrouter.ai`), so every request 403'd. The catalog entry now
+/// carries the `/api` itself, which is what makes that split the correct one -
+/// see the entry's comment for why the forwarded path must not begin `/api/`.
 pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
     let endpoint = endpoint.trim_end_matches('/');
     default_domains()
@@ -502,14 +553,15 @@ mod tests {
         assert_eq!(r.upstream_url, "https://api.anthropic.com");
         assert_eq!(r.client_path, "/v1");
 
-        // OpenRouter's real API lives under /api/v1. The `/api` belongs in the
-        // client path, NOT in the upstream - `https://openrouter.ai/api` matches
-        // no catalog entry, and moving it upstream-side would stop the forwarded
-        // path from matching the `/api/` inference prefix.
+        // OpenRouter's real API lives under /api/v1, and the `/api` belongs in
+        // the *upstream*, not the client path: Gate's ALB diverts `/api/*` to
+        // the dashboard API, so a forwarded `/api/v1/...` never reaches the
+        // gateway proxy. Gate re-joins upstream + path, so the provider still
+        // sees /api/v1/chat/completions.
         let r = resolve_endpoint("https://openrouter.ai/api/v1").expect("openrouter resolves");
         assert_eq!(r.slug, "openrouter");
-        assert_eq!(r.upstream_url, "https://openrouter.ai");
-        assert_eq!(r.client_path, "/api/v1");
+        assert_eq!(r.upstream_url, "https://openrouter.ai/api");
+        assert_eq!(r.client_path, "/v1");
 
         // A catalog upstream that itself carries a path wins over a bare host.
         let r =
@@ -576,6 +628,70 @@ mod tests {
                 d.rewrite_prefixes
             );
         }
+    }
+
+    #[test]
+    fn forwarded_paths_avoid_gate_reserved_prefixes() {
+        // Gate's ALB routes by path prefix: `/api/*`, `/orgs/*`, `/admin/*`,
+        // `/me/*` and `/agent-templates/*` go to the dashboard API, everything
+        // else to the gateway proxy (gate: terraform/aws/compute.tf, the
+        // `path_patterns` on the dashboard-api listener rule). A forwarded path
+        // that starts with one of those never reaches the proxy at all - it
+        // 404s out of a service with no such route, which is exactly how the
+        // OpenRouter integration failed end-to-end while every catalog
+        // self-consistency check stayed green.
+        //
+        // This list mirrors infrastructure in another repo, so it is a snapshot:
+        // if Gate adds a listener rule, this test will not know. It still pins
+        // the ones we have measured.
+        const RESERVED: &[&str] = &["/api/", "/orgs/", "/admin/", "/me/", "/agent-templates/"];
+
+        for d in default_domains() {
+            for prefix in &d.rewrite_prefixes {
+                for reserved in RESERVED {
+                    assert!(
+                        !prefix.starts_with(reserved),
+                        "{}: rewrite prefix {:?} lands on Gate's reserved {:?} - the request \
+                         would be routed to the dashboard API instead of the gateway proxy. \
+                         Move that segment into `upstream_url` so it rides in \
+                         X-Gate-Upstream-Url instead of the request line.",
+                        d.slug,
+                        prefix,
+                        reserved
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn upstream_path_extracts_the_path_component() {
+        assert_eq!(upstream_path("https://openrouter.ai/api"), "/api");
+        assert_eq!(
+            upstream_path("https://chatgpt.com/backend-api"),
+            "/backend-api"
+        );
+        assert_eq!(upstream_path("https://api.anthropic.com"), "");
+        // A trailing slash is not a path segment.
+        assert_eq!(upstream_path("https://openrouter.ai/"), "");
+    }
+
+    #[test]
+    fn strip_upstream_path_respects_path_boundaries() {
+        assert_eq!(
+            strip_upstream_path("/api/v1/chat", "/api"),
+            Some("/v1/chat")
+        );
+        // The upstream root itself normalises to "/".
+        assert_eq!(strip_upstream_path("/api", "/api"), Some("/"));
+        // Not a boundary: must not match.
+        assert_eq!(strip_upstream_path("/apifoo", "/api"), None);
+        assert_eq!(strip_upstream_path("/v1/chat", "/api"), None);
+        // A bare-host upstream passes the path through untouched.
+        assert_eq!(
+            strip_upstream_path("/v1/messages", ""),
+            Some("/v1/messages")
+        );
     }
 
     #[test]
@@ -712,13 +828,25 @@ mod tests {
             .expect("openrouter domain present in catalog");
         d.enabled = true; // catalog default is opt-in; enable for the test
         let d = vec![d];
-        // OpenRouter's chat/completions lives at openrouter.ai/api/v1/*, which
-        // must rewrite to the gateway with the OpenRouter upstream injected.
+        // OpenRouter's chat/completions lives at openrouter.ai/api/v1/*. The
+        // client still calls that, but `decide` matches on the path Gate will
+        // see - `/v1/...` - because the `/api` travels in the upstream URL to
+        // clear Gate's ALB rule on `/api/*`.
         assert_eq!(
             decide(&d, "openrouter.ai", "/api/v1/chat/completions"),
             Decision::Rewrite {
-                upstream_url: "https://openrouter.ai".into()
+                upstream_url: "https://openrouter.ai/api".into()
             }
+        );
+        // Outside the upstream's subtree: not this domain's traffic.
+        assert_eq!(
+            decide(&d, "openrouter.ai", "/v1/chat/completions"),
+            Decision::Passthrough
+        );
+        // Path-boundary guard - `/apifoo` must not read as `/api` + `foo`.
+        assert_eq!(
+            decide(&d, "openrouter.ai", "/apifoo/v1/chat"),
+            Decision::Passthrough
         );
         assert!(should_intercept_host(&d, "OPENROUTER.AI"));
     }

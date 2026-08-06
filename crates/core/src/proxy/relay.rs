@@ -727,13 +727,14 @@ mod tests {
 
     #[test]
     fn routes_openrouter_under_its_api_prefix() {
-        // OpenRouter's inference prefix is `/api/`, and its client path is
-        // `/api/v1` - so the forwarded path must keep the `/api` that used to be
-        // mistakenly folded into the upstream URL.
-        let r = resolved("/openrouter/api/v1/chat/completions").expect("openrouter resolves");
+        // OpenRouter's `/api` rides in the upstream URL, not the forwarded path:
+        // Gate's ALB diverts `/api/*` to the dashboard API, so a forwarded
+        // `/api/v1/...` 404s before reaching the gateway proxy. Gate re-joins
+        // upstream + path, so OpenRouter still sees /api/v1/chat/completions.
+        let r = resolved("/openrouter/v1/chat/completions").expect("openrouter resolves");
         assert_eq!(r.route, Route::Rewrite);
-        assert_eq!(r.upstream_url, "https://openrouter.ai");
-        assert_eq!(r.path_and_query, "/api/v1/chat/completions");
+        assert_eq!(r.upstream_url, "https://openrouter.ai/api");
+        assert_eq!(r.path_and_query, "/v1/chat/completions");
     }
 
     #[test]

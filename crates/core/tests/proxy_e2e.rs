@@ -390,10 +390,13 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
 
     engine.stop();
 
-    // 4. The rewrite landed on the gateway: original path preserved (OpenRouter
-    //    nests its API under /api/v1/), the OAuth token injected as
-    //    x-gate-authorization (not the API key), and the client's own bearer
-    //    forwarded untouched.
+    // 4. The rewrite landed on the gateway with the `/api` moved OFF the request
+    //    line and INTO the upstream header. Gate's ALB routes `/api/*` to the
+    //    dashboard API, so forwarding `/api/v1/chat/completions` would 404 out
+    //    of a service that has no such route - Gate re-joins upstream + path, so
+    //    OpenRouter still receives /api/v1/chat/completions. Also: the OAuth
+    //    token injected as x-gate-authorization (not the API key), and the
+    //    client's own bearer forwarded untouched.
     let reqs = gateway.captured.lock().unwrap().clone();
     assert_eq!(
         reqs.len(),
@@ -402,7 +405,10 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
     );
     let r = &reqs[0];
     assert_eq!(r.method, "POST");
-    assert_eq!(r.path, "/api/v1/chat/completions");
+    assert_eq!(
+        r.path, "/v1/chat/completions",
+        "the forwarded path must not begin with Gate's reserved /api/ prefix"
+    );
     assert_eq!(
         r.header("x-gate-authorization"),
         Some("Bearer cognito-access-token")
@@ -419,7 +425,8 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
     );
     assert_eq!(
         r.header("x-gate-upstream-url"),
-        Some("https://openrouter.ai")
+        Some("https://openrouter.ai/api"),
+        "the /api segment must travel in the upstream header, not the path"
     );
     assert_eq!(
         r.header("authorization"),

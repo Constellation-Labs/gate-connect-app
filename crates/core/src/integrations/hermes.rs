@@ -482,20 +482,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolving_the_default_endpoint_keeps_api_v1_on_the_client() {
+    fn resolving_the_default_endpoint_moves_api_into_the_upstream() {
         // Hermes ships pointed at OpenRouter, whose API lives under `/api/v1`.
-        // The old code derived the upstream by stripping `/v1`, producing
-        // `https://openrouter.ai/api` - off-catalog, so the relay 403'd every
-        // request from a default Hermes install. The `/api` has to stay on the
-        // client side, where it also keeps the forwarded path on OpenRouter's
-        // `/api/` inference prefix.
+        // The `/api` has to ride in the *upstream* URL: Gate's ALB routes
+        // `/api/*` to the dashboard API, so a forwarded `/api/v1/...` 404s
+        // before the gateway proxy ever sees it. Gate re-joins upstream + path,
+        // so OpenRouter still receives /api/v1/chat/completions.
         let r = crate::proxy::resolve_endpoint(HERMES_DEFAULT_BASE_URL)
             .expect("the default Hermes endpoint must be routable");
-        assert_eq!(r.upstream_url, "https://openrouter.ai");
-        assert_eq!(r.client_path, "/api/v1");
+        assert_eq!(r.upstream_url, "https://openrouter.ai/api");
+        assert_eq!(r.client_path, "/v1");
         assert_eq!(
-            format!("{}{}", "http://127.0.0.1:9977", r.client_path),
-            "http://127.0.0.1:9977/api/v1"
+            r.relay_base_url("http://127.0.0.1:9977"),
+            "http://127.0.0.1:9977/openrouter/v1"
         );
 
         // An OpenAI-shaped endpoint keeps just `/v1`.
