@@ -17,6 +17,7 @@ import {
   proxyEnable,
   proxyDisable,
   proxyTrustCa,
+  proxySetEnvExport,
   proxyUntrustCa,
   proxySetDomain,
   listProviders,
@@ -790,6 +791,32 @@ export function App() {
     [proxyBusy, providers, tools, proxy],
   );
 
+  /** Toggle the shell-environment channel, the master's sub-setting. Its own
+   * handler rather than a branch of `toggleProxy`: this one never starts or
+   * stops the engine, it only decides whether the proxy is also put in the
+   * user's environment - a machine-wide change that reaches git and curl, not
+   * just the AI tools. */
+  const toggleEnvExport = useCallback(async () => {
+    if (proxyBusy) return;
+    setProviderError(null);
+    setProxyBusy(true);
+    try {
+      const next = !proxy?.env_export_opted_in;
+      setProxy(await proxySetEnvExport(next));
+      track(next ? "env_export_enabled" : "env_export_disabled");
+    } catch (err) {
+      trackError(err, "env_export");
+      setProviderError(classifyError(err, "env_export"));
+      try {
+        setProxy(await proxyStatus());
+      } catch {
+        /* noop */
+      }
+    } finally {
+      setProxyBusy(false);
+    }
+  }, [proxyBusy, proxy]);
+
   const trustCa = useCallback(async () => {
     if (proxyBusy) return;
     setProviderError(null);
@@ -1041,6 +1068,9 @@ export function App() {
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onToggleProxy={() => toggleProxy(true)}
+        envExportSeparable={proxy?.env_export_separable ?? false}
+        envExportOn={proxy?.env_export_opted_in ?? false}
+        onToggleEnvExport={() => void toggleEnvExport()}
         onTrustCa={trustCa}
         onOpenRoutes={() => setScreen("routes")}
         onOpenSettings={() => setScreen("settings")}

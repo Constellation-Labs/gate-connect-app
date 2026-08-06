@@ -29,6 +29,8 @@ export type AnalyticsEvent =
   | "tool_toggled"
   | "group_toggled"
   | "ca_trusted"
+  | "env_export_enabled"
+  | "env_export_disabled"
   | "ca_untrusted"
   | "tour_completed"
   | "tour_skipped"

@@ -28,22 +28,17 @@
 //! engine, which MITMs the intercepted domains and blind-tunnels the rest. That
 //! is exactly what Linux has always done.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 
-// The prior-value snapshot below is macOS/Windows only: Linux reverts by
-// deleting a drop-in it owns outright and so has nothing to restore.
-//
-// `EnvSnapshot` and `prior_to_record` are compiled in under `test` everywhere
-// as well, so the re-entry guard - the one piece here with a subtle failure
-// mode - is covered on whichever platform the suite runs on. The functions that
-// actually touch disk are not, since the guard test is pure.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use {anyhow::Context, std::fs, std::path::PathBuf};
+// `EnvSnapshot` and `prior_to_record` are macOS/Windows only: Linux reverts by
+// deleting a drop-in it owns outright and so has nothing to restore. Compiled
+// in under `test` everywhere as well, so the re-entry guard - the one piece
+// here with a subtle failure mode - is covered wherever the suite runs.
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
-use {
-    serde::{Deserialize, Serialize},
-    std::collections::BTreeMap,
-};
+use std::collections::BTreeMap;
 
 /// Keep loopback off the proxy. Required, not merely polite: OpenCode's TUI
 /// talks to its own local HTTP server, and routing that through the engine
@@ -103,6 +98,54 @@ pub(crate) fn case_insensitive(port: u16) -> Result<Vec<(&'static str, String)>>
     let ca = super::ca_cert_path()?.display().to_string();
     let values = [endpoint.clone(), endpoint, NO_PROXY_VALUE.to_string(), ca];
     Ok(VARS_CASE_INSENSITIVE.into_iter().zip(values).collect())
+}
+
+/// Persisted answer to "may Gate put its proxy into your environment?".
+///
+/// These variables are machine-wide: `HTTPS_PROXY` redirects git, curl, npm and
+/// everything else, not only the AI tools we care about. That is a big enough
+/// change to be something the user holds an opinion about, so it is a choice
+/// with a home on disk rather than a silent side effect of the routing switch.
+///
+/// Owned by the `env-proxy` integration; read by the platform managers so a user
+/// who turned it off does not get it back on the next enable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExportChoice {
+    enabled: bool,
+}
+
+fn choice_path() -> Result<PathBuf> {
+    Ok(crate::env::app_support_dir()?
+        .join("proxy")
+        .join("env-routing.json"))
+}
+
+/// Whether the user wants the proxy exported into their environment.
+///
+/// Defaults to **true**: the export is what routes the command-line tools, and
+/// the routing switch has always implied it. Only an explicit disconnect turns
+/// it off. An unreadable file reads as `true` for the same reason - the failure
+/// that matters is a tool silently not routing, not one routing when asked.
+pub(crate) fn export_opted_in() -> bool {
+    let Ok(path) = choice_path() else {
+        return true;
+    };
+    match fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str::<ExportChoice>(&raw)
+            .map(|c| c.enabled)
+            .unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
+/// Record the user's choice. Persisted so it survives a routing toggle, an app
+/// restart, and a reboot.
+pub(crate) fn set_export_opted_in(enabled: bool) -> Result<()> {
+    let path = choice_path()?;
+    let raw = serde_json::to_string_pretty(&ExportChoice { enabled })
+        .context("serializing the proxy env choice")?;
+    crate::primitives::write_file(&path, raw.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// What each managed variable held before we first set it, so disable can put

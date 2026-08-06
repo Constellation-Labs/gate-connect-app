@@ -155,6 +155,126 @@ pub fn proxy_env_vars(port: u16) -> Result<Vec<(&'static str, String)>> {
     proxy_env::case_sensitive(port)
 }
 
+// --- The environment channel, as a thing the user can decline ---------------
+//
+// Cross-platform wrappers over the per-OS `system_proxy` env export, so the
+// `env-proxy` integration can be one platform-agnostic file. Unsupported
+// platforms get inert answers rather than a missing symbol.
+
+/// Can the env export be turned off while the OS proxy setting stays on?
+///
+/// False on Linux, where the `environment.d` drop-in *is* the system proxy:
+/// there is no PAC, so declining the variables would mean declining routing.
+/// True on macOS/Windows, where the PAC covers GUI apps independently.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn env_export_is_separable() -> bool {
+    system_proxy::ENV_CHANNEL_SEPARABLE
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub fn env_export_is_separable() -> bool {
+    false
+}
+
+/// The proxy URL currently in the user's environment, read back from the OS
+/// rather than from our own record - so status reports what is true, not what
+/// we last tried to write.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn exported_proxy_url() -> Option<String> {
+    system_proxy::exported_proxy().ok().flatten()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub fn exported_proxy_url() -> Option<String> {
+    None
+}
+
+/// Whether the user wants the proxy exported into their environment. Defaults
+/// to true; see [`proxy_env::export_opted_in`].
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn env_export_opted_in() -> bool {
+    proxy_env::export_opted_in()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub fn env_export_opted_in() -> bool {
+    false
+}
+
+/// Record the user's choice about the env export.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn set_env_export_opted_in(enabled: bool) -> Result<()> {
+    proxy_env::set_export_opted_in(enabled)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub fn set_env_export_opted_in(_enabled: bool) -> Result<()> {
+    anyhow::bail!("the proxy environment export is not supported on this platform")
+}
+
+/// Export the variables now, without waiting for a routing toggle. Only where
+/// the channel is separable; on Linux the drop-in already did it.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn enable_env_export(port: u16) -> Result<()> {
+    system_proxy::enable_env(port)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn enable_env_export(_port: u16) -> Result<()> {
+    Ok(())
+}
+
+/// Withdraw the variables now. Only where the channel is separable.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn disable_env_export() -> Result<()> {
+    system_proxy::disable_env()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn disable_env_export() -> Result<()> {
+    Ok(())
+}
+
+/// Record the user's choice about the env export *and* apply it now.
+///
+/// One implementation shared by the `env-proxy` integration and the Tauri
+/// command behind the UI switch, so the two cannot drift on the part that is
+/// easy to get wrong: applying immediately, rather than leaving the user to
+/// toggle routing off and on before their choice takes effect.
+///
+/// Withdrawing is best-effort on the inseparable platform (Linux), where the
+/// variables belong to the routing drop-in and only routing-off clears them.
+pub fn set_env_export(enabled: bool) -> Result<()> {
+    set_env_export_opted_in(enabled)?;
+    if !env_export_is_separable() {
+        return Ok(());
+    }
+    if enabled {
+        // Only ever export against a *live* engine. The persisted port outlives
+        // a disable (so the engine can rebind the same address), so exporting
+        // off it with routing off would point every command-line tool at a dead
+        // address - the one failure worse than not routing. With routing off we
+        // just record the choice; `manager.enable()` applies it next time.
+        match engine_port().filter(|_| engine_likely_running()) {
+            None => Ok(()),
+            Some(port) => enable_env_export(port),
+        }
+    } else {
+        disable_env_export()
+    }
+}
+
+/// The port the engine is bound to per the persisted record, if any.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn engine_port() -> Option<u16> {
+    system_proxy::load_port().ok().flatten()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn engine_port() -> Option<u16> {
+    None
+}
+
 /// Loopback URL of the MITM engine's forward (CONNECT) proxy, for tools that
 /// take a proxy URL of their own rather than a base URL - as distinct from
 /// [`relay_base_url`], which is the *reverse* proxy CLI tool configs point at.
@@ -303,6 +423,17 @@ pub struct ProxyState {
     pub pac_port: Option<u16>,
     /// Whether our root CA is trusted in the OS trust store.
     pub ca_trusted: bool,
+    /// Whether Gate is putting its proxy into the user's environment - the
+    /// channel that routes command-line tools, as distinct from the OS proxy
+    /// setting that routes GUI apps. A user-held choice, because the variables
+    /// are machine-wide; see [`crate::integrations::env_proxy`].
+    #[serde(default)]
+    pub env_export_opted_in: bool,
+    /// Whether that choice is offerable at all. False on Linux, where the
+    /// `environment.d` drop-in *is* the system proxy, so the two channels
+    /// cannot be separated and the UI must not present a switch for it.
+    #[serde(default)]
+    pub env_export_separable: bool,
     /// The full domain catalog with current enabled flags.
     pub domains: Vec<ProxyDomain>,
 }

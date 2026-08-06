@@ -8,6 +8,9 @@ pub enum ToolId {
     OpenCode,
     OpenClaw,
     Hermes,
+    /// Not a tool: the proxy variables exported into the user's environment,
+    /// which route OpenCode and anything else that reads `HTTPS_PROXY`.
+    EnvProxy,
 }
 
 impl ToolId {
@@ -18,6 +21,7 @@ impl ToolId {
             ToolId::OpenCode => "opencode",
             ToolId::OpenClaw => "openclaw",
             ToolId::Hermes => "hermes",
+            ToolId::EnvProxy => "env-proxy",
         }
     }
 
@@ -28,6 +32,7 @@ impl ToolId {
             "opencode" => Some(ToolId::OpenCode),
             "openclaw" => Some(ToolId::OpenClaw),
             "hermes" => Some(ToolId::Hermes),
+            "env-proxy" => Some(ToolId::EnvProxy),
             _ => None,
         }
     }
@@ -175,6 +180,7 @@ pub fn registry() -> Vec<Box<dyn Integration>> {
         Box::new(crate::integrations::opencode::OpenCode),
         Box::new(crate::integrations::openclaw::OpenClaw),
         Box::new(crate::integrations::hermes::Hermes),
+        Box::new(crate::integrations::env_proxy::EnvProxy),
     ]
 }
 
@@ -242,17 +248,22 @@ mod tests {
         }
     }
 
-    /// Every multi-provider harness is hidden: each one's config strategy
-    /// failed validation against upstream docs, and in all three cases the
-    /// failure mode is a config file that looks right while something else
-    /// decides the wire (docs/harness-integration-validation.md).
+    /// The multi-provider harnesses are in the ledger. They were hidden while
+    /// their config strategy was a base-URL rewrite that something else could
+    /// override; OpenClaw and Hermes now route through the proxy engine, and
+    /// OpenCode's remaining exposure (a project config outranking the global
+    /// one) is covered by the environment channel, which routes it whatever
+    /// `opencode.json` says.
+    ///
+    /// Still true and not pinned here: none of the three has been exercised
+    /// end-to-end against a real install. See docs/routing-architecture.md.
     #[test]
-    fn agent_harnesses_are_hidden_pending_validation() {
+    fn agent_harnesses_are_listed() {
         let hidden = hidden_in_ui_slugs();
         for slug in ["opencode", "openclaw", "hermes"] {
             assert!(
-                hidden.contains(&slug),
-                "{slug} should be hidden, got {hidden:?}"
+                !hidden.contains(&slug),
+                "{slug} should be in the ledger, got hidden: {hidden:?}"
             );
         }
     }
@@ -265,5 +276,20 @@ mod tests {
         for slug in ["claude-code", "codex"] {
             assert!(!hidden.contains(&slug), "{slug} must remain in the ledger");
         }
+    }
+
+    /// The environment channel is registered like anything else, so sign-out and
+    /// the master-off sweep reach it. It is hidden for a different reason than
+    /// the harnesses: not "unvalidated", but "no correct home in a ledger that
+    /// groups by model family" - it is a mechanism, not a tool.
+    #[test]
+    fn the_environment_channel_is_registered_and_hidden() {
+        let slugs: Vec<&str> = registry().iter().map(|i| i.id().slug()).collect();
+        assert!(
+            slugs.contains(&"env-proxy"),
+            "env-proxy must be registered so cleanup reaches it, got {slugs:?}"
+        );
+        assert!(hidden_in_ui_slugs().contains(&"env-proxy"));
+        assert_eq!(ToolId::from_slug("env-proxy"), Some(ToolId::EnvProxy));
     }
 }

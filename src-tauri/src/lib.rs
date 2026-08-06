@@ -808,6 +808,23 @@ fn proxy_set_domain(
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
+async fn proxy_set_env_export(
+    enabled: bool,
+) -> Result<gate_connect_core::proxy::ProxyState, String> {
+    // Off the main thread: this shells out to `launchctl` on macOS and
+    // broadcasts a settings change to every top-level window on Windows.
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::proxy::set_env_export(enabled).map_err(|e| format!("{e:#}"))?;
+        gate_connect_core::proxy::manager()
+            .status()
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("env export join error: {e}"))?
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
 async fn proxy_trust_ca() -> Result<gate_connect_core::proxy::ProxyState, String> {
     // Off the main thread: trusting the CA pops an interactive prompt.
     tauri::async_runtime::spawn_blocking(|| {
@@ -1307,6 +1324,7 @@ pub fn run() {
                     proxy_enable,
                     proxy_disable,
                     proxy_set_domain,
+                    proxy_set_env_export,
                     proxy_trust_ca,
                     proxy_untrust_ca,
                     launch_at_login_status,

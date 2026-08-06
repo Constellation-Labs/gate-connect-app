@@ -147,6 +147,14 @@ export interface ProxyState {
   /** Loopback port serving the PAC script (macOS/Windows; null on Linux). */
   pac_port: number | null;
   ca_trusted: boolean;
+  /** Whether Gate puts its proxy in the shell environment - the channel that
+   * routes command-line tools, as opposed to the OS setting that routes GUI
+   * apps. A separate choice because those variables are machine-wide. */
+  env_export_opted_in: boolean;
+  /** Whether that choice can be offered at all. False on Linux, where the
+   * environment variables *are* the system proxy and cannot be declined
+   * without turning routing off - so the switch must not render there. */
+  env_export_separable: boolean;
   domains: ProxyDomain[];
 }
 
@@ -171,6 +179,10 @@ export const proxySetDomain = (slug: string, enabled: boolean) =>
 
 export const proxyTrustCa = () => invoke<ProxyState>("proxy_trust_ca");
 
+/** Turn the shell-environment channel on or off. Applies immediately rather
+ * than at the next routing toggle, and the choice persists across restarts. */
+export const proxySetEnvExport = (enabled: boolean) =>
+  invoke<ProxyState>("proxy_set_env_export", { enabled });
 export const proxyUntrustCa = () => invoke<ProxyState>("proxy_untrust_ca");
 
 // ---- Providers (one switch per model provider) ----

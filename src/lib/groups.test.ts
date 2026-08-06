@@ -96,6 +96,30 @@ describe("buildGroups", () => {
     expect(groups[0].switchLabel).toBe("Route agent harnesses through Gate");
   });
 
+  it("builds the fourth row the ledger could not previously reach", () => {
+    // All three harnesses are listed now, so a family row and the
+    // multi-provider row coexist - the four-row ledger the sizing notes
+    // describe but no test could produce while every harness was hidden.
+    const groups = buildGroups(
+      CATALOG,
+      [
+        tool("claude-code", "Claude Code", { kind: "connected" }),
+        tool("opencode", "OpenCode", { kind: "detected" }, "your existing providers"),
+        tool("openclaw", "OpenClaw", { kind: "detected" }, "your existing providers"),
+        tool("hermes", "Hermes", { kind: "detected" }, "your existing providers"),
+      ],
+      [],
+      ON,
+    );
+    const harnesses = groups.find((g) => g.id === MULTI_PROVIDER_ID);
+    expect(harnesses).toBeTruthy();
+    expect(harnesses!.members.map((m) => m.name)).toEqual(["OpenCode", "OpenClaw", "Hermes"]);
+    // The family row is still its own row: a harness must not be absorbed into
+    // Claude just because it can talk to Anthropic.
+    const claude = groups.find((g) => g.id === "anthropic");
+    expect(claude!.members.map((m) => m.name)).toEqual(["Claude Code"]);
+  });
+
   it("drops families with nothing routable and leaves out what cannot route", () => {
     const groups = buildGroups(
       CATALOG,

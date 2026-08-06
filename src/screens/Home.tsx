@@ -33,6 +33,9 @@ export function Home({
   staleAgentsHint,
   onDismissStaleAgents,
   onToggleProxy,
+  envExportSeparable,
+  envExportOn,
+  onToggleEnvExport,
   onTrustCa,
   onOpenRoutes,
   onOpenSettings,
@@ -61,6 +64,11 @@ export function Home({
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
   onToggleProxy: () => void;
+  /** Whether the shell-environment channel can be offered at all. False on
+   * Linux, where those variables *are* the system proxy. */
+  envExportSeparable: boolean;
+  envExportOn: boolean;
+  onToggleEnvExport: () => void;
   onTrustCa: () => void;
   /** Opens the ledger panel. The rows moved off this screen; the door and the
    * exception it reports stayed. */
@@ -313,6 +321,45 @@ export function Home({
                 }`}
               >
                 {gatewayHost}
+              </div>
+            )}
+
+            {/* The second channel, one grain down from the master switch.
+                Routing reaches GUI apps through the OS proxy setting and
+                command-line tools through the shell environment, and only the
+                second is a machine-wide change to things that are not AI tools
+                - so it is the master's sub-setting, not a peer, and not a row
+                in the ledger (that groups by model family; this spans all of
+                them).
+
+                No rule above it, per the note on the ledger door: a hairline
+                inside a card reads as a card edge however it is inset.
+
+                Absent entirely on Linux, where the `environment.d` drop-in *is*
+                the system proxy - there the variables cannot be declined
+                without turning routing off, and a switch that cannot honour
+                itself is worse than no switch. `env_export_separable` carries
+                that from the backend rather than the UI guessing at platforms. */}
+            {showProxy && envExportSeparable && (
+              <div className="flex items-start gap-3 px-3.5 pb-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] text-gc-ink-2">
+                    Command-line tools
+                  </div>
+                  <div className="mt-0.5 text-[10.5px] leading-snug text-gc-ink-4">
+                    Sets <span className="font-mono">HTTPS_PROXY</span> for your
+                    whole shell, so OpenCode and other terminal tools route too.
+                  </div>
+                </div>
+                <Switch
+                  on={envExportOn}
+                  label="Route command-line tools through Gate"
+                  busy={busy}
+                  onClick={() => {
+                    setInteracted(true);
+                    onToggleEnvExport();
+                  }}
+                />
               </div>
             )}
 

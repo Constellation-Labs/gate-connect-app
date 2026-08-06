@@ -213,14 +213,6 @@ impl Integration for Hermes {
         )
     }
 
-    /// Hidden from the popover pending an end-to-end run against a real
-    /// install: the mechanism is verified in Hermes' source but the integration
-    /// has not been exercised against a live gateway.
-    /// See docs/harness-integration-validation.md.
-    fn hidden_in_ui(&self) -> bool {
-        true
-    }
-
     fn has_upstream_credential(&self) -> Result<bool> {
         Ok(true)
     }

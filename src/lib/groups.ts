@@ -3,13 +3,12 @@ import type { ProviderState, ProxyDomain, Tool } from "./api";
 /**
  * Home's ledger groups everything routable by the model family it belongs to
  * (Claude, OpenAI, OpenRouter) instead of by mechanism (config file vs local
- * proxy). Three rows today, and they stay that way as tools are installed,
- * with the mechanism kept for the group detail where it actually helps.
+ * proxy), with the mechanism kept for the group detail where it actually helps.
  *
- * Sizing note for the next reader: comments elsewhere used to describe a
- * four-family ledger and tune spacing for it. Every agent harness is hidden
- * (see docs/harness-integration-validation.md), so the fourth family cannot
- * currently occur.
+ * Sizing note for the next reader: up to four rows. The fourth is the
+ * multi-provider group below, which was dormant while every agent harness was
+ * hidden and is live again now that OpenCode, OpenClaw and Hermes are listed
+ * (see docs/routing-architecture.md).
  *
  * Membership comes from the backend provider catalog (`tool_slugs` +
  * `domain_slugs`), never from `Tool.upstream_provider_name`: that field is
@@ -24,10 +23,9 @@ import type { ProviderState, ProxyDomain, Tool } from "./api";
  * config, not by the tool. Connecting one rewrites every well-known provider
  * block it finds, so it can't sit under a single family.
  *
- * Currently dormant: every harness is hidden from the ledger pending
- * validation (see docs/harness-integration-validation.md), so `list_tools`
- * returns none and this group is never built. The logic stays because it is
- * correct and is needed the moment one comes back. */
+ * Live: OpenCode, OpenClaw and Hermes are all listed, so this group builds
+ * whenever at least one of them is installed. It was dormant for a while and
+ * the logic was kept against exactly this moment. */
 export const MULTI_PROVIDER_ID = "any-provider";
 
 export type MemberAttention = "error" | "drifted" | "needs-trust" | "master-off" | null;

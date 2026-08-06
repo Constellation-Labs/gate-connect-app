@@ -485,17 +485,6 @@ impl Integration for OpenCode {
         )
     }
 
-    /// Hidden from the popover: OpenCode merges config from at least six
-    /// sources and the global file we write is second-lowest, so any project
-    /// `opencode.json`, `.opencode/` directory, `OPENCODE_CONFIG` or managed
-    /// `/etc/opencode` that sets a provider `baseURL` silently overrides our
-    /// redirect for that repo - while `status()`, which reads only the global
-    /// file, still reports Connected.
-    /// See docs/harness-integration-validation.md O1.
-    fn hidden_in_ui(&self) -> bool {
-        true
-    }
-
     fn has_upstream_credential(&self) -> Result<bool> {
         Ok(true)
     }

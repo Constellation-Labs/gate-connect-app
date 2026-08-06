@@ -444,6 +444,17 @@ pub fn enable_env(port: u16) -> Result<()> {
     Ok(())
 }
 
+/// The proxy URL currently exported to the launchd session, read back from
+/// `launchctl` rather than from anything we remember writing.
+pub fn exported_proxy() -> Result<Option<String>> {
+    Ok(launchctl_getenv("HTTPS_PROXY"))
+}
+
+/// The PAC and the exported variables are separate mechanisms here, so the
+/// user can keep GUI routing while declining the machine-wide environment
+/// change (contrast Linux, where the drop-in is both at once).
+pub const ENV_CHANNEL_SEPARABLE: bool = true;
+
 /// Put the environment back the way it was: a variable the user owned is
 /// restored to their value, one only we set is removed.
 ///

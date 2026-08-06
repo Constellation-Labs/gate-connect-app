@@ -191,6 +191,30 @@ pub fn clear_snapshot() -> Result<()> {
     }
 }
 
+/// The proxy URL currently exported to the environment, read back from the
+/// drop-in rather than from anything we remember writing.
+///
+/// On Linux this is the same file that *is* the system proxy: there is no PAC,
+/// so the env channel and the OS setting are one mechanism and cannot be
+/// toggled apart (see `ENV_CHANNEL_SEPARABLE`).
+pub fn exported_proxy() -> Result<Option<String>> {
+    let path = dropin_path()?;
+    let body = match fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    Ok(body
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("HTTPS_PROXY="))
+        .map(|v| v.trim().trim_matches('"').to_string()))
+}
+
+/// The environment variables are the whole mechanism here, so turning them off
+/// independently would mean turning routing off. macOS and Windows can separate
+/// the two because their OS proxy setting is a PAC.
+pub const ENV_CHANNEL_SEPARABLE: bool = false;
+
 /// Point the system proxy at the loopback engine: write our `environment.d`
 /// drop-in (applied to future login sessions) and push the same variables into
 /// the running session so a tool relaunched now picks them up without a logout.

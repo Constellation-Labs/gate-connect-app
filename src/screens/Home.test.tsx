@@ -98,6 +98,9 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       staleAgentsHint={false}
       onDismissStaleAgents={vi.fn()}
       onToggleProxy={vi.fn()}
+      envExportSeparable={true}
+      envExportOn={true}
+      onToggleEnvExport={vi.fn()}
       onTrustCa={vi.fn()}
       onOpenRoutes={vi.fn()}
       onOpenSettings={vi.fn()}
@@ -529,5 +532,44 @@ describe("Home quiet-state honesty", () => {
     expect(tip).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss launch at login tip" }));
     expect(screen.queryByRole("button", { name: /Turn on Launch at login/ })).toBeNull();
+  });
+});
+
+describe("Home command-line tools switch", () => {
+  const NAME = "Route command-line tools through Gate";
+
+  it("toggles the shell-environment channel without touching the master", () => {
+    const onToggleEnvExport = vi.fn();
+    const onToggleProxy = vi.fn();
+    renderHome({ onToggleEnvExport, onToggleProxy });
+    fireEvent.click(screen.getByRole("switch", { name: NAME }));
+    expect(onToggleEnvExport).toHaveBeenCalledTimes(1);
+    // The sub-setting must never start or stop the engine as a side effect.
+    expect(onToggleProxy).not.toHaveBeenCalled();
+  });
+
+  it("reflects the backend's choice rather than the master's state", () => {
+    renderHome({ envExportOn: false, proxyOn: true });
+    expect(screen.getByRole("switch", { name: NAME }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("is absent where the channel cannot be separated from routing", () => {
+    // Linux: the environment.d drop-in *is* the system proxy, so a switch here
+    // could not honour itself. Better no control than one that lies.
+    renderHome({ envExportSeparable: false });
+    expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
+    // The master switch is unaffected.
+    expect(screen.getByRole("switch", { name: "Route through Gate" })).toBeTruthy();
+  });
+
+  it("sits inside the routing card, under the master switch", () => {
+    renderHome();
+    const master = screen.getByRole("switch", { name: "Route through Gate" });
+    const sub = screen.getByRole("switch", { name: NAME });
+    const card = master.closest("div.shadow-border");
+    expect(card).toBeTruthy();
+    expect(card!.contains(sub)).toBe(true);
+    // Order matters: it is the master's sub-setting, not a peer above it.
+    expect(master.compareDocumentPosition(sub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
