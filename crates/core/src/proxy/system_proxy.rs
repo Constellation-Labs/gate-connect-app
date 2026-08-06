@@ -365,6 +365,115 @@ pub fn force_off(services: &[String]) -> Result<()> {
     apply(&force_off_command(services))
 }
 
+// --- Proxy environment variables -----------------------------------------
+//
+// The PAC above only reaches clients that consult the OS proxy setting. The
+// command-line AI tools don't: Node, Bun and Python read `HTTPS_PROXY` and
+// friends instead, and some (OpenCode) expose no proxy setting of their own at
+// all. `launchctl setenv` puts the variables in the user's launchd domain,
+// which is the parent of everything the session starts afterwards - GUI apps
+// from Finder or the Dock, and new Terminal windows (Terminal itself is
+// launchd-spawned, so its shells inherit).
+//
+// Two limits worth knowing, neither fixable from here:
+//
+// - **Already-running processes keep their old environment.** A tool has to be
+//   relaunched to pick this up. Same as the Linux drop-in.
+// - **launchd variables do not survive a logout or reboot.** That is fine
+//   because it is not our persistence mechanism: the user's routing choice is
+//   persisted separately in [`super::intent`] and re-applied at next launch,
+//   which calls through here again.
+
+const LAUNCHCTL: &str = "/bin/launchctl";
+
+/// Read one variable out of the user's launchd domain. `None` when unset -
+/// `launchctl getenv` prints nothing and still exits 0 in that case, so an
+/// empty result is the "not set" signal rather than an error.
+fn launchctl_getenv(key: &str) -> Option<String> {
+    let out = Command::new(LAUNCHCTL)
+        .arg("getenv")
+        .arg(key)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+/// Set or unset one variable in the user's launchd domain. Values are passed as
+/// separate argv entries, so a CA path containing spaces (and on macOS it does:
+/// `~/Library/Application Support/...`) needs no quoting.
+fn launchctl_set(key: &str, value: Option<&str>) -> Result<()> {
+    let mut cmd = Command::new(LAUNCHCTL);
+    match value {
+        Some(value) => cmd.arg("setenv").arg(key).arg(value),
+        None => cmd.arg("unsetenv").arg(key),
+    };
+    let out = cmd
+        .output()
+        .with_context(|| format!("running launchctl for {key}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "launchctl {} {key} exited {}: {}",
+            if value.is_some() {
+                "setenv"
+            } else {
+                "unsetenv"
+            },
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Export the proxy variables into the user's launchd session, after recording
+/// what they held before so [`disable_env`] can put a user-owned proxy back.
+///
+/// Takes the *engine* port, not the PAC port: an env-var proxy has no PAC
+/// equivalent, so tools that honour it dial the engine directly and it
+/// blind-tunnels whatever isn't an intercepted domain.
+pub fn enable_env(port: u16) -> Result<()> {
+    let assignments = super::proxy_env::case_sensitive(port)?;
+    super::proxy_env::snapshot_prior(&super::proxy_env::VARS_CASE_SENSITIVE, launchctl_getenv);
+    for (key, value) in &assignments {
+        launchctl_set(key, Some(value))?;
+    }
+    Ok(())
+}
+
+/// Put the environment back the way it was: a variable the user owned is
+/// restored to their value, one only we set is removed.
+///
+/// Best-effort per variable and idempotent - it runs on the disable, crash and
+/// startup-reconcile paths, where giving up halfway would strand the rest of the
+/// set pointing at a dead engine.
+pub fn disable_env() -> Result<()> {
+    let prior = super::proxy_env::load_snapshot().unwrap_or_else(|e| {
+        eprintln!("gate proxy: unreadable proxy env snapshot ({e}); clearing our variables");
+        None
+    });
+    let mut failed = Vec::new();
+    for key in super::proxy_env::VARS_CASE_SENSITIVE {
+        // No snapshot means we cannot know the user's prior value, so clear -
+        // leaving a dead proxy behind is the one outcome we must not pick.
+        let restore_to = prior
+            .as_ref()
+            .and_then(|p| p.vars.get(key).cloned())
+            .flatten();
+        if let Err(e) = launchctl_set(key, restore_to.as_deref()) {
+            failed.push(format!("{key}: {e}"));
+        }
+    }
+    let _ = super::proxy_env::clear_snapshot();
+    if !failed.is_empty() {
+        anyhow::bail!("could not revert proxy environment ({})", failed.join("; "));
+    }
+    Ok(())
+}
+
 /// True if `server` is a loopback address - what our engine binds to. Used to
 /// distinguish a stranded Gate proxy from a user's real (remote) proxy.
 fn is_loopback(server: &str) -> bool {

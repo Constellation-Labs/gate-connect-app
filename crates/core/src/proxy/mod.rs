@@ -24,8 +24,15 @@
 //! are platform-specific - macOS via `security` + `networksetup`, Windows via
 //! `certutil` + the per-user WinINET registry settings, Linux via the system
 //! trust store (`update-ca-certificates` / `update-ca-trust`) + a user-scoped
-//! systemd `environment.d` drop-in (so the proxy reaches command-line tools and
-//! GUI apps without root). Other platforms get no [`ProxyManager`].
+//! systemd `environment.d` drop-in. Other platforms get no [`ProxyManager`].
+//!
+//! Each platform wires *two* channels, because they reach different clients.
+//! The OS proxy setting (a PAC on macOS/Windows) covers GUI apps and anything
+//! on the platform HTTP stack; the proxy environment variables
+//! ([`proxy_env`]) cover the command-line AI tools, whose Node/Bun/Python HTTP
+//! clients read `HTTPS_PROXY` and ignore the OS setting entirely. On Linux the
+//! drop-in has always been both at once; macOS exports the variables via
+//! `launchctl setenv` and Windows via `HKCU\Environment` alongside the PAC.
 
 use anyhow::{Context, Result};
 use http::{HeaderMap, HeaderName, HeaderValue};
@@ -51,6 +58,11 @@ pub mod autostart_optout;
 // `system_proxy` modules wrap it with their platform rationale.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod port_persist;
+
+// Shared names/values for the proxy environment variables, which every
+// platform's `system_proxy` exports so CLI tools (Node/Bun/Python) route too.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod proxy_env;
 
 #[cfg(target_os = "macos")]
 pub mod ca;
@@ -129,6 +141,18 @@ pub fn ca_cert_path() -> Result<std::path::PathBuf> {
     Ok(crate::env::app_support_dir()?
         .join("proxy")
         .join("ca-cert.pem"))
+}
+
+/// The proxy environment variables the system proxy exports for an engine on
+/// `port`, as `(name, value)` pairs - the same set [`system_proxy`] writes to
+/// the Linux drop-in, macOS `launchctl` and the Windows per-user environment.
+///
+/// Public so the end-to-end test can route a real external process using
+/// exactly what production exports, rather than a hand-copied list that could
+/// silently drift from it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn proxy_env_vars(port: u16) -> Result<Vec<(&'static str, String)>> {
+    proxy_env::case_sensitive(port)
 }
 
 /// Loopback URL of the MITM engine's forward (CONNECT) proxy, for tools that

@@ -89,12 +89,6 @@ pub fn op_lock_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("proxy").join("op.lock"))
 }
 
-/// Path to our CA cert, mirrored from [`super::ca`] - used for
-/// `NODE_EXTRA_CA_CERTS` so Node CLIs trust the engine's leaf certs.
-fn ca_cert_path() -> Result<PathBuf> {
-    Ok(env::app_support_dir()?.join("proxy").join("ca-cert.pem"))
-}
-
 /// Whether our drop-in currently exists on disk.
 fn dropin_present() -> Result<bool> {
     Ok(dropin_path()?.exists())
@@ -102,34 +96,15 @@ fn dropin_present() -> Result<bool> {
 
 /// The proxy-related environment variables we manage, in a stable order.
 /// Enabling sets them (drop-in + live push); disabling blanks them in the
-/// running session. Single source of truth so the two paths can't drift.
-const PROXY_VARS: [&str; 7] = [
-    "http_proxy",
-    "https_proxy",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "no_proxy",
-    "NO_PROXY",
-    "NODE_EXTRA_CA_CERTS",
-];
+/// running session. Shared with the macOS and Windows exports so the three
+/// platforms can't drift (see [`super::proxy_env`]).
+const PROXY_VARS: [&str; 7] = super::proxy_env::VARS_CASE_SENSITIVE;
 
 /// The name/value pairs for an *enabled* proxy pointing at `127.0.0.1:port`,
 /// keyed by [`PROXY_VARS`]. Consumed by both [`build_dropin`] and the live
 /// session push in [`enable`].
 fn proxy_env(port: u16) -> Result<Vec<(&'static str, String)>> {
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let no_proxy = "localhost,127.0.0.1,::1".to_string();
-    let ca = ca_cert_path()?.display().to_string();
-    let values = [
-        endpoint.clone(),
-        endpoint.clone(),
-        endpoint.clone(),
-        endpoint,
-        no_proxy.clone(),
-        no_proxy,
-        ca,
-    ];
-    Ok(PROXY_VARS.into_iter().zip(values).collect())
+    super::proxy_env::case_sensitive(port)
 }
 
 /// Build the drop-in body from name/value pairs. systemd `environment.d` parses
