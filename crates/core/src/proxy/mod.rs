@@ -392,8 +392,8 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             supported: true,
         },
         ProxyDomain {
-            slug: "codex-desktop".into(),
-            display_name: "Codex Desktop tools".into(),
+            slug: "chatgpt-apps".into(),
+            display_name: "ChatGPT app chat + Codex tools".into(),
             // Codex Desktop's TOOL traffic, which is a separate route from the
             // `chatgpt` entry below even though both name chatgpt.com.
             //
@@ -425,10 +425,24 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // `/backend-api/codex/responses` — the model call belongs to the
             // relay route, and rewriting it here would send it upstream with the
             // wrong split. Plugin-store listings are left out as pure noise.
-            rewrite_prefixes: vec!["/backend-api/ps/mcp".into(), "/backend-api/wham/".into()],
-            // Not needed: `decide` already passes through anything that matches
-            // no rewrite prefix, and the prefixes above are narrow.
-            passthrough_prefixes: vec![],
+            // `/backend-api/f/conversation` is the ChatGPT app's own chat turn
+            // (Gate's `chatgpt-web-chat` surface): one message per request, reply
+            // as a `delta_encoding: v1` SSE stream. It lives in THIS entry rather
+            // than its own because `decide` returns on the first enabled
+            // host match — a second chatgpt.com entry would be dead code.
+            //
+            // The `…/f/conversation/prepare` sibling is deliberately absent: it
+            // only mints a short-lived `conduit_token` and carries neither prompt
+            // nor reply, so routing it would add audit noise and nothing else.
+            rewrite_prefixes: vec![
+                "/backend-api/f/conversation".into(),
+                "/backend-api/ps/mcp".into(),
+                "/backend-api/wham/".into(),
+            ],
+            // `/backend-api/f/conversation/prepare` starts with the chat prefix
+            // above, so it needs an explicit passthrough to stay unrouted —
+            // passthrough prefixes are checked first in `decide`.
+            passthrough_prefixes: vec!["/backend-api/f/conversation/prepare".into()],
             // Opt-in, and ordered BEFORE the relay `chatgpt` entry on purpose:
             // `decide` returns on the FIRST enabled host match, so with the relay
             // entry first this one would be unreachable for MITM traffic.
@@ -497,12 +511,12 @@ mod tests {
         vec![d]
     }
 
-    /// The `codex-desktop` MITM entry, force-enabled.
-    fn codex_desktop() -> Vec<ProxyDomain> {
+    /// The `chatgpt-apps` MITM entry (chat + Codex tool plane), force-enabled.
+    fn chatgpt_apps() -> Vec<ProxyDomain> {
         let mut d: ProxyDomain = default_domains()
             .into_iter()
-            .find(|d| d.slug == "codex-desktop")
-            .expect("codex-desktop is in the catalog");
+            .find(|d| d.slug == "chatgpt-apps")
+            .expect("chatgpt-apps is in the catalog");
         d.enabled = true;
         vec![d]
     }
@@ -812,8 +826,8 @@ mod tests {
         assert!(hosts.contains(&"claude.ai".to_string()));
     }
     #[test]
-    fn codex_desktop_rewrites_the_tool_plane_paths() {
-        let d = codex_desktop();
+    fn chatgpt_apps_rewrites_the_tool_plane_paths() {
+        let d = chatgpt_apps();
         for path in [
             "/backend-api/ps/mcp",
             "/backend-api/wham/tasks/list",
@@ -830,11 +844,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_desktop_leaves_the_model_call_to_the_relay_route() {
+    fn chatgpt_apps_leaves_the_model_call_to_the_relay_route() {
         // The embedded agent reaches chatgpt.com directly and is routed by
         // base_url through the relay, whose entry uses the other URL split.
         // Rewriting it here would send it upstream with `/backend-api` doubled.
-        let d = codex_desktop();
+        let d = chatgpt_apps();
         assert_eq!(
             decide(&d, "chatgpt.com", "/backend-api/codex/responses"),
             Decision::Passthrough
@@ -842,8 +856,8 @@ mod tests {
     }
 
     #[test]
-    fn codex_desktop_ignores_plugin_store_and_auth_noise() {
-        let d = codex_desktop();
+    fn chatgpt_apps_ignores_plugin_store_and_auth_noise() {
+        let d = chatgpt_apps();
         for path in [
             "/backend-api/ps/plugins/installed",
             "/backend-api/settings/user",
@@ -854,19 +868,19 @@ mod tests {
     }
 
     #[test]
-    fn codex_desktop_is_ordered_before_the_relay_chatgpt_entry() {
+    fn chatgpt_apps_is_ordered_before_the_relay_chatgpt_entry() {
         // Load-bearing: `decide` returns on the FIRST enabled host match, and both
         // entries name chatgpt.com. With the relay entry first, the MITM entry
         // would be unreachable and the tool plane would silently pass through.
         let catalog = default_domains();
         let mitm = catalog
             .iter()
-            .position(|d| d.slug == "codex-desktop")
+            .position(|d| d.slug == "chatgpt-apps")
             .unwrap();
         let relay = catalog.iter().position(|d| d.slug == "chatgpt").unwrap();
         assert!(
             mitm < relay,
-            "codex-desktop must precede chatgpt in the catalog"
+            "chatgpt-apps must precede chatgpt in the catalog"
         );
     }
 
@@ -876,7 +890,7 @@ mod tests {
         // entries coexist — but only because their upstreams differ. Collapsing
         // them onto one upstream would break whichever route lost.
         let catalog = default_domains();
-        let mitm = catalog.iter().find(|d| d.slug == "codex-desktop").unwrap();
+        let mitm = catalog.iter().find(|d| d.slug == "chatgpt-apps").unwrap();
         let relay = catalog.iter().find(|d| d.slug == "chatgpt").unwrap();
         assert_eq!(mitm.upstream_url, "https://chatgpt.com");
         assert_eq!(relay.upstream_url, "https://chatgpt.com/backend-api");
@@ -897,6 +911,42 @@ mod tests {
         relay_only[0].enabled = true;
         assert_eq!(
             decide(&relay_only, "chatgpt.com", "/backend-api/ps/mcp"),
+            Decision::Passthrough
+        );
+    }
+    #[test]
+    fn chatgpt_apps_rewrites_the_chat_turn() {
+        let d = chatgpt_apps();
+        assert_eq!(
+            decide(&d, "chatgpt.com", "/backend-api/f/conversation"),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com".into()
+            }
+        );
+    }
+
+    #[test]
+    fn chatgpt_apps_leaves_the_conduit_prepare_call_alone() {
+        // `…/f/conversation/prepare` only mints a short-lived conduit token and
+        // carries neither prompt nor reply. It shares the chat prefix, so it needs
+        // the explicit passthrough — which `decide` checks BEFORE rewrites.
+        let d = chatgpt_apps();
+        assert_eq!(
+            decide(&d, "chatgpt.com", "/backend-api/f/conversation/prepare"),
+            Decision::Passthrough
+        );
+    }
+
+    #[test]
+    fn chatgpt_apps_leaves_the_sentinel_proof_of_work_alone() {
+        // The app computes its own sentinel tokens; routing those adds nothing.
+        let d = chatgpt_apps();
+        assert_eq!(
+            decide(
+                &d,
+                "chatgpt.com",
+                "/backend-api/sentinel/chat-requirements/prepare"
+            ),
             Decision::Passthrough
         );
     }
