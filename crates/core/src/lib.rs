@@ -10,6 +10,7 @@
 //! `anthropic` domain instead (see [`proxy`]).
 
 pub mod account;
+pub mod audit;
 /// Read-only snapshot of this install, for the copy-pasteable support report.
 pub mod diagnostics;
 pub mod env;

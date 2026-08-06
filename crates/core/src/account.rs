@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::audit;
 use crate::env;
 use crate::keychain;
 use crate::primitives;
@@ -135,6 +136,7 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     // on disk so a URL-only edit doesn't drop it. The auth mode is likewise
     // preserved - it's chosen via [`set_auth_mode`], not by saving a URL/key.
     let existing = read_account_file()?;
+    let old_prefix = existing.as_ref().and_then(|f| f.api_key_prefix.as_deref());
     let api_key_prefix = match api_key {
         Some(key) => Some(key.chars().take(12).collect()),
         None => existing.as_ref().and_then(|f| f.api_key_prefix.clone()),
@@ -155,6 +157,18 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     if let Some(key) = api_key {
         let user = env::current_user()?;
         keychain::set(&service(), &user, key)?;
+
+        // Emit audit event (best-effort; don't fail if audit fails)
+        if let Some(org_id) = org_id_for_injection() {
+            let new_prefix = key.chars().take(12).collect::<String>();
+            let _ = audit::api_key_saved(
+                gateway_base_url,
+                key,
+                &org_id,
+                old_prefix,
+                &new_prefix,
+            );
+        }
     }
     Ok(())
 }

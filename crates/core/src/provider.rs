@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::account;
+use crate::audit;
 use crate::registry::{self, ConnectInput, Status, ToolId};
 
 /// A user-facing provider: the union of the config integrations and proxy
@@ -285,7 +286,19 @@ fn enable_inner(slug: &str, skip: &[String]) -> Result<ProviderState> {
         }
     }
 
-    Ok(state(&p))
+    let state = state(&p);
+
+    // Emit audit event (best-effort; don't fail if audit fails)
+    if let Some(org_id) = crate::account::org_id_for_injection() {
+        let _ = audit::provider_enabled(
+            &account.gateway_base_url,
+            &account.api_key,
+            &org_id,
+            &p.display_name,
+        );
+    }
+
+    Ok(state)
 }
 
 /// Turn a provider off. Reverts the config integration(s) and, if the proxy is
@@ -322,7 +335,21 @@ pub fn disable(slug: &str) -> Result<ProviderState> {
         };
     }
 
-    Ok(state(&p))
+    let state = state(&p);
+
+    // Emit audit event (best-effort; don't fail if audit fails)
+    if let Ok(Some(account)) = account::load() {
+        if let Some(org_id) = crate::account::org_id_for_injection() {
+            let _ = audit::provider_disabled(
+                &account.gateway_base_url,
+                &account.api_key,
+                &org_id,
+                &p.display_name,
+            );
+        }
+    }
+
+    Ok(state)
 }
 
 /// Persisted (on-disk) view of whether any of the provider's proxy domains are

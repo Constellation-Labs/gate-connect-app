@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 
 use super::{ca, config, engine, system_proxy, ProxyDomain, ProxyState};
 use crate::account;
+use crate::audit;
 
 pub struct ProxyManager {
     engine: Mutex<Option<engine::RunningEngine>>,
@@ -277,6 +278,20 @@ impl ProxyManager {
             anyhow::bail!("proxy engine exited unexpectedly while enabling");
         }
         drop(guard);
+
+        // Emit audit event (best-effort; don't fail if audit fails)
+        if let Ok(Some(account)) = account::load() {
+            if let Some(org_id) = crate::account::org_id_for_injection() {
+                let port = self.status().ok().and_then(|s| s.port).unwrap_or(0);
+                let _ = audit::proxy_enabled(
+                    &account.gateway_base_url,
+                    &account.api_key,
+                    &org_id,
+                    port,
+                );
+            }
+        }
+
         self.status()
     }
 
@@ -336,6 +351,14 @@ impl ProxyManager {
             running.stop();
         }
         let _ = system_proxy::clear_snapshot();
+
+        // Emit audit event (best-effort; don't fail if audit fails)
+        if let Ok(Some(account)) = account::load() {
+            if let Some(org_id) = crate::account::org_id_for_injection() {
+                let _ = audit::proxy_disabled(&account.gateway_base_url, &account.api_key, &org_id);
+            }
+        }
+
         Ok(())
     }
 
