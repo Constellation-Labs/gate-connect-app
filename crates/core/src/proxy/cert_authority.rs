@@ -39,6 +39,85 @@ const LEAF_RENEW_MARGIN_SECS: i64 = 7 * 24 * 60 * 60;
 /// modules, which also use it as the lookup key for trust/untrust.
 pub(crate) const CA_COMMON_NAME: &str = "Gate Connect Local CA";
 
+/// Fingerprint of the host set the root CA was minted for.
+///
+/// The CA's X.509 name constraints are built from the WHOLE domain catalog at
+/// generation time, so a root minted before a host was added cannot issue for it
+/// and interception of that host fails at the handshake with nothing naming the
+/// cause. `load_or_create` is presence-based — it returns whatever key + cert are
+/// on disk without examining them — so the drift is invisible to it.
+///
+/// Rather than parse the stored certificate's constraints back out (an X.509
+/// dependency, for a value we already know), each platform persists this
+/// fingerprint beside its cert and compares on load. A mismatch, or a missing
+/// file on a pre-existing install, means regenerate.
+///
+/// Hashed rather than stored verbatim so the file stays fixed-size and carries no
+/// meaning worth editing by hand. Sorted + deduped + lowercased so the value
+/// tracks the host SET and not the catalog's declaration order — reordering
+/// entries must not force a re-trust on every user.
+pub(crate) fn catalog_host_fingerprint() -> String {
+    let hosts: Vec<String> = crate::proxy::default_domains()
+        .iter()
+        .flat_map(|d| d.hosts.iter())
+        .cloned()
+        .collect();
+    fingerprint_hosts(&hosts)
+}
+
+/// The hash itself, over an explicit host list so the normalisation is testable
+/// without reaching into the catalog.
+fn fingerprint_hosts(hosts: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut normalised: Vec<String> = hosts
+        .iter()
+        .map(|h| h.trim().to_ascii_lowercase())
+        .collect();
+    normalised.sort();
+    normalised.dedup();
+    let mut hasher = Sha256::new();
+    for h in &normalised {
+        hasher.update(h.as_bytes());
+        // NUL-delimited so ["ab","c"] and ["a","bc"] cannot hash alike.
+        hasher.update([0u8]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// Path of the fingerprint sidecar for a given CA cert path.
+pub(crate) fn host_fingerprint_path(cert_path: &std::path::Path) -> std::path::PathBuf {
+    cert_path.with_extension("hosts")
+}
+
+/// True when the on-disk fingerprint matches the current catalog — i.e. the
+/// stored CA can still mint for every host we route.
+///
+/// A missing or unreadable sidecar reads as STALE, which is the safe direction:
+/// every install predating this check has no sidecar and needs the regeneration
+/// exactly once. A false "stale" costs one regeneration + re-trust; a false
+/// "fresh" leaves a CA that cannot serve the catalog.
+pub(crate) fn host_fingerprint_is_current(cert_path: &std::path::Path) -> bool {
+    match std::fs::read_to_string(host_fingerprint_path(cert_path)) {
+        Ok(stored) => stored.trim() == catalog_host_fingerprint(),
+        Err(_) => false,
+    }
+}
+
+/// Persist the current catalog fingerprint beside a freshly generated cert.
+///
+/// Written AFTER the cert so an interrupted sequence leaves the sidecar absent
+/// or stale, never newer than the cert it describes — the same self-healing
+/// ordering the platform modules already use for key-then-cert.
+pub(crate) fn write_host_fingerprint(cert_path: &std::path::Path) -> Result<()> {
+    let path = host_fingerprint_path(cert_path);
+    let tmp = path.with_extension("hosts.tmp");
+    std::fs::write(&tmp, catalog_host_fingerprint())
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
 /// Certificate parameters for the local root CA, shared by the three
 /// platform CA modules so the security-critical extensions cannot drift.
 ///
@@ -56,13 +135,13 @@ pub(crate) const CA_COMMON_NAME: &str = "Gate Connect Local CA";
 ///     every user — including those who never turn the domain on. Weigh that
 ///     when adding a host: `claude-web` puts `claude.ai` in here, i.e. the
 ///     surface holding the user's Claude session cookie.
-///  2. `load_or_create` short-circuits whenever a key + cert already exist and
-///     does NOT compare the on-disk constraints against the current catalog.
-///     An install that enabled the proxy BEFORE a host was added therefore
-///     keeps a root that cannot mint for it, and interception of that host
-///     fails at the handshake with no obvious cause. Until that drift is
-///     detected automatically, a newly added host needs `proxy untrust-ca`
-///     followed by `proxy enable` to take effect on an existing install.
+///  2. `load_or_create` short-circuits whenever a key + cert already exist, and
+///     the stored certificate's constraints are never parsed back out — so the
+///     drift is invisible to it. That is what [`catalog_host_fingerprint`]
+///     and its sidecar exist for: the host set is fingerprinted at generation
+///     time and compared on every load, so adding a host regenerates the root
+///     automatically on next launch instead of failing the handshake with no
+///     obvious cause. No manual `proxy untrust-ca` is required.
 pub(crate) fn ca_certificate_params() -> Result<CertificateParams> {
     let mut params =
         CertificateParams::new(Vec::<String>::new()).context("building CA certificate params")?;
@@ -202,5 +281,91 @@ impl CertificateAuthority for GateCa {
                 },
             );
         cfg
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    fn v(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn fingerprint_tracks_the_host_set_not_the_declaration_order() {
+        // Reordering catalog entries must NOT look like drift — otherwise every
+        // cosmetic reshuffle forces a CA regeneration and re-trust on every user.
+        assert_eq!(
+            fingerprint_hosts(&v(&["claude.ai", "chatgpt.com"])),
+            fingerprint_hosts(&v(&["chatgpt.com", "claude.ai"]))
+        );
+    }
+
+    #[test]
+    fn fingerprint_ignores_case_and_duplicates() {
+        // Two entries legitimately share a host (the chatgpt.com relay + MITM
+        // pair), so a duplicate must not read as a different set.
+        assert_eq!(
+            fingerprint_hosts(&v(&["chatgpt.com"])),
+            fingerprint_hosts(&v(&["ChatGPT.com", "chatgpt.com"]))
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_when_a_host_is_added() {
+        // The whole point: adding a host must invalidate an existing CA.
+        assert_ne!(
+            fingerprint_hosts(&v(&["api.anthropic.com"])),
+            fingerprint_hosts(&v(&["api.anthropic.com", "claude.ai"]))
+        );
+    }
+
+    #[test]
+    fn fingerprint_is_delimited_so_concatenations_cannot_collide() {
+        assert_ne!(
+            fingerprint_hosts(&v(&["ab", "c"])),
+            fingerprint_hosts(&v(&["a", "bc"]))
+        );
+    }
+
+    #[test]
+    fn current_catalog_fingerprint_is_stable_and_covers_the_catalog() {
+        assert_eq!(catalog_host_fingerprint(), catalog_host_fingerprint());
+        let hosts: Vec<String> = crate::proxy::default_domains()
+            .iter()
+            .flat_map(|d| d.hosts.iter())
+            .cloned()
+            .collect();
+        assert_eq!(catalog_host_fingerprint(), fingerprint_hosts(&hosts));
+    }
+
+    #[test]
+    fn a_missing_sidecar_reads_as_stale() {
+        // Every install predating this check has no sidecar, and must regenerate
+        // exactly once. Erring toward stale costs a regeneration; erring toward
+        // fresh leaves a CA that cannot serve the catalog.
+        let dir = std::env::temp_dir().join(format!("gate-ca-fp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert = dir.join("ca-cert.pem");
+        assert!(!host_fingerprint_is_current(&cert));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn writing_the_sidecar_makes_it_current_and_a_wrong_value_does_not() {
+        let dir = std::env::temp_dir().join(format!("gate-ca-fp-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert = dir.join("ca-cert.pem");
+
+        write_host_fingerprint(&cert).unwrap();
+        assert!(host_fingerprint_is_current(&cert));
+        // Sidecar sits beside the cert, not on top of it.
+        assert_eq!(host_fingerprint_path(&cert), dir.join("ca-cert.hosts"));
+
+        std::fs::write(host_fingerprint_path(&cert), "not-the-fingerprint").unwrap();
+        assert!(!host_fingerprint_is_current(&cert));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
