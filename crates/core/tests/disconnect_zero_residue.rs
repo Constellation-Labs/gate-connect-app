@@ -565,3 +565,33 @@ fn hermes_connect_refuses_an_unconfigured_model_with_a_usable_message() {
         "config must be untouched: {after}"
     );
 }
+
+#[test]
+fn hermes_connect_refuses_when_there_is_no_config_at_all() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+
+    // The real fresh-install state: the installer creates ~/.hermes/.env and a
+    // launcher, but no config.yaml until `hermes setup` / `hermes model` runs.
+    let launcher = env::home().unwrap().join(".local/bin/hermes");
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::write(&launcher, "#!/bin/sh\n").unwrap();
+    let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    assert!(!cfg.exists());
+
+    let err = find(ToolId::Hermes)
+        .unwrap()
+        .connect(&connect_input(9977))
+        .expect_err("an unconfigured Hermes must not be given a bare base_url");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("hermes model"),
+        "error should name the fix: {msg}"
+    );
+    assert!(
+        !cfg.exists(),
+        "must not create a config file Hermes cannot use"
+    );
+}

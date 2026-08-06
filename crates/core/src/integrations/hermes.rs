@@ -193,13 +193,21 @@ impl Integration for Hermes {
             "the Gate proxy relay is not running -- enable the proxy before connecting Hermes",
         )?;
 
-        let mut settings = load_settings()?.unwrap_or_default();
+        // No config at all is the real fresh-install state: the installer writes
+        // `~/.hermes/.env` and a launcher, but `config.yaml` only appears once
+        // `hermes setup` / `hermes model` has run. Creating one here would leave
+        // a file holding nothing but our relay `base_url`, for a Hermes that
+        // still refuses to start for want of a provider - and hand us a file to
+        // clean up that was never the user's.
+        let mut settings = load_settings()?.with_context(|| {
+            "Hermes has no model configured yet (no config.yaml) - run `hermes model` to pick \
+             one, then connect again"
+        })?;
 
-        // Ensure `model` section exists. A fresh install ships the string
-        // sentinel `model: ""`, which `hermes setup` / `hermes model` upgrades to
-        // a mapping - so an absent key and an empty string are both "not
-        // configured yet" and deserve the same actionable message rather than a
-        // type error.
+        // A fresh install can also ship the string sentinel `model: ""`, which
+        // `hermes setup` / `hermes model` upgrades to a mapping - the same "not
+        // configured yet" state, deserving the same actionable message rather
+        // than a type error.
         let model_key = Value::String("model".to_string());
         match settings.get(&model_key) {
             None => {
