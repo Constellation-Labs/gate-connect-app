@@ -229,6 +229,7 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
                 relay_base_url: crate::proxy::relay_base_url(),
+                engine_proxy_url: crate::proxy::engine_proxy_url(),
             };
             integ
                 .connect(&input)
@@ -363,6 +364,7 @@ pub fn reconcile_enabled() -> Result<()> {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
                 relay_base_url: relay_base_url.clone(),
+                engine_proxy_url: crate::proxy::engine_proxy_url(),
             };
             if let Err(e) = integ.connect(&input) {
                 eprintln!(
@@ -412,6 +414,7 @@ fn reconcile_unmapped_tools(
             gateway_base_url: account.gateway_base_url.clone(),
             upstream_url: integ.default_upstream_url().to_string(),
             relay_base_url: Some(relay_base_url.to_string()),
+            engine_proxy_url: crate::proxy::engine_proxy_url(),
         };
         if let Err(e) = integ.connect(&input) {
             eprintln!("[gate] re-applying {} failed: {e:#}", integ.display_name());
@@ -603,6 +606,7 @@ fn restore_swept_tools() -> Result<()> {
             gateway_base_url: account.gateway_base_url.clone(),
             upstream_url: integ.default_upstream_url().to_string(),
             relay_base_url: relay_base_url.clone(),
+            engine_proxy_url: crate::proxy::engine_proxy_url(),
         };
         if let Err(e) = integ.connect(&input) {
             eprintln!("[gate] restoring tool {slug:?} on master-on failed: {e:#}");

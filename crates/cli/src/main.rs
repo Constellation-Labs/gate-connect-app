@@ -395,6 +395,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
         gateway_base_url: acct.gateway_base_url,
         upstream_url,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
+        engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
     };
     integ.connect(&input)?;
     println!("Connected {}.", integ.display_name());

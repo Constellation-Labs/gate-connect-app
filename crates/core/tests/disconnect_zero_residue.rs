@@ -92,11 +92,22 @@ fn seed_relay_port(port: u16) {
     fs::write(&path, port.to_string()).unwrap();
 }
 
+/// Persist an engine port so `persisted_engine_proxy_url()` answers `Some` and
+/// OpenClaw's drift check can tell "pointed at us" from "pointed elsewhere".
+/// Deliberately does NOT fake a running engine - no snapshot file - so status
+/// still reports the honest "proxy is not running" drift.
+fn seed_engine_port(port: u16) {
+    let path = env::app_support_dir().unwrap().join("proxy").join("port");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, port.to_string()).unwrap();
+}
+
 fn connect_input(relay_port: u16) -> ConnectInput {
     ConnectInput {
         gateway_base_url: "https://gw.example.com".to_string(),
         upstream_url: "https://api.anthropic.com".to_string(),
         relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
+        engine_proxy_url: Some(format!("http://127.0.0.1:{relay_port}")),
     }
 }
 
@@ -427,12 +438,16 @@ fn openclaw_disconnect_leaves_no_gate_residue() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::set();
     seed_relay_port(9977);
+    seed_engine_port(9977);
 
     let cfg = env::openclaw_config_path().unwrap();
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    // A user-set `loopbackMode` and a provider block: connect must leave both
+    // exactly as it found them. OpenClaw routes via the proxy, so there is no
+    // per-provider rewriting and no discovery step at all.
     fs::write(
         &cfg,
-        r#"{"models":{"providers":{"openrouter":{"baseUrl":"https://openrouter.ai/api/v1","apiKey":"user-openrouter-key"}}}}"#,
+        r#"{"proxy":{"loopbackMode":"gateway-only"},"models":{"providers":{"openrouter":{"baseUrl":"https://openrouter.ai/api/v1","apiKey":"user-openrouter-key"}}}}"#,
     )
     .unwrap();
 
@@ -441,25 +456,52 @@ fn openclaw_disconnect_leaves_no_gate_residue() {
 
     let connected = fs::read_to_string(&cfg).unwrap();
     assert!(
-        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
-        "openrouter baseUrl must keep the slug + /v1: {connected}"
+        connected.contains(r#""proxyUrl": "http://127.0.0.1:9977""#),
+        "proxy.proxyUrl must point at the engine: {connected}"
     );
-    assert!(matches!(integ.status().unwrap(), Status::Connected));
+    assert!(
+        connected.contains("https://openrouter.ai/api/v1"),
+        "the provider baseUrl must stay canonical - redirecting it is what made \
+         OpenClaw drop its implicit beta headers: {connected}"
+    );
+    assert!(
+        connected.contains(r#""loopbackMode": "gateway-only""#),
+        "loopbackMode is the user's local-provider bypass and must survive: {connected}"
+    );
+    // Not Connected here, and correctly so: no engine is running against this
+    // temp HOME, and OpenClaw hands *all* its egress to the proxy. Drift is the
+    // truthful answer, and it still counts as Gate-managed for the master-off
+    // sweep. The Connected path is covered by `compute_status` unit tests.
+    match integ.status().unwrap() {
+        Status::Drifted(m) => assert!(
+            m.contains("no route out") || m.contains("does not match"),
+            "unexpected status message: {m}"
+        ),
+        other => panic!("expected drift with no engine running, got {other:?}"),
+    }
 
     integ.disconnect().unwrap();
 
     let after = fs::read_to_string(&cfg).unwrap_or_default();
     assert!(
         !after.contains("127.0.0.1"),
-        "relay base URL must be reverted: {after}"
+        "the proxy URL must be reverted: {after}"
     );
     assert!(
-        !after.contains("X-Gate-"),
-        "no Gate header may survive: {after}"
+        !after.contains("proxyUrl"),
+        "a proxyUrl the user never had must not survive: {after}"
+    );
+    assert!(
+        after.contains(r#""loopbackMode": "gateway-only""#),
+        "the user's own proxy settings must be left behind intact: {after}"
     );
     assert!(
         after.contains("https://openrouter.ai/api/v1"),
-        "the user's original baseUrl must be restored exactly: {after}"
+        "the user's original baseUrl must be untouched throughout: {after}"
+    );
+    assert!(
+        !env::openclaw_config_dir().unwrap().join(".env").exists(),
+        "the NODE_EXTRA_CA_CERTS file we created must be removed"
     );
     assert!(
         !env::app_support_dir()

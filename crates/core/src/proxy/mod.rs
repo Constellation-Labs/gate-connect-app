@@ -119,6 +119,55 @@ pub fn serve_relay() -> anyhow::Result<()> {
     relay::serve()
 }
 
+/// Path to the local root CA's public cert on disk. Tools that ship their own
+/// trust bundle instead of using the OS trust store (Node, Python) have to be
+/// pointed at this to accept the engine's minted leaf certs.
+pub fn ca_cert_path() -> Result<std::path::PathBuf> {
+    Ok(crate::env::app_support_dir()?
+        .join("proxy")
+        .join("ca-cert.pem"))
+}
+
+/// Loopback URL of the MITM engine's forward (CONNECT) proxy, for tools that
+/// take a proxy URL of their own rather than a base URL - as distinct from
+/// [`relay_base_url`], which is the *reverse* proxy CLI tool configs point at.
+///
+/// `None` unless the proxy is actually routing: unlike the relay, a tool that
+/// hands all its egress to a proxy URL has no fallback path, so handing one out
+/// while the engine is down would take that tool's whole network with it. The
+/// persisted port alone can't answer that - it survives a disable so the engine
+/// can rebind the same address - hence the [`engine_likely_running`] gate. Use
+/// [`persisted_engine_proxy_url`] where the question is "is this address ours"
+/// rather than "may I route through it now".
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn engine_proxy_url() -> Option<String> {
+    if !engine_likely_running() {
+        return None;
+    }
+    persisted_engine_proxy_url()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub fn engine_proxy_url() -> Option<String> {
+    None
+}
+
+/// The engine's forward-proxy URL from the persisted port, whether or not the
+/// engine is up. This is the *identity* of our proxy address, which is what a
+/// drift check wants: a config pointing here is ours even while routing is off.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn persisted_engine_proxy_url() -> Option<String> {
+    system_proxy::load_port()
+        .ok()
+        .flatten()
+        .map(|port| format!("http://127.0.0.1:{port}"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub fn persisted_engine_proxy_url() -> Option<String> {
+    None
+}
+
 /// Non-secret hint the tool config (or the MITM rewrite) sets, telling the
 /// gateway which upstream to forward to.
 pub(crate) const UPSTREAM_URL_HEADER: &str = "x-gate-upstream-url";

@@ -55,6 +55,12 @@ pub struct ConnectInput {
     /// live one). `None` when no relay port has been bound yet - a relay-routed
     /// integration then declines to connect.
     pub relay_base_url: Option<String>,
+    /// Loopback URL of the MITM engine's forward proxy
+    /// ([`crate::proxy::engine_proxy_url`]), for integrations that hand their
+    /// whole egress to a proxy rather than repointing a base URL. `None` unless
+    /// the proxy is actually routing, so such an integration declines to
+    /// connect rather than stranding the tool with no network.
+    pub engine_proxy_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
