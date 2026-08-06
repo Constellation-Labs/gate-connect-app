@@ -69,6 +69,19 @@ impl Harness {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
+    /// Run the CLI and assert it exited non-zero, returning stderr. For paths
+    /// where the refusal *is* the behaviour under test.
+    fn run_err(&self, args: &[&str]) -> String {
+        let out = self.run(args);
+        assert!(
+            !out.status.success(),
+            "`gate-connect {}` unexpectedly succeeded\nstdout: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stdout),
+        );
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+
     /// Sign in so `connect` has a gateway URL on disk + a key in the store, and
     /// seed a persisted relay port so `connect` can point tool configs at the
     /// loopback relay (the app would set this by enabling the proxy).
@@ -101,8 +114,9 @@ fn claude_code_connect_then_disconnect() {
     let body = read(&settings);
     assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
     assert!(
-        body.contains("X-Gate-Upstream-Url"),
-        "upstream header missing: {body}"
+        !body.contains("X-Gate-Upstream-Url"),
+        "no Gate header may be written - the relay derives the upstream from \
+         the slug in the base URL: {body}"
     );
     // No credential is ever written - the relay injects it live.
     assert!(
@@ -142,7 +156,7 @@ fn codex_connect_then_disconnect() {
         "pointer not set: {body}"
     );
     assert!(
-        body.contains(&format!("{RELAY_URL}/v1")),
+        body.contains(&format!("{RELAY_URL}/openai/v1")),
         "relay base URL missing: {body}"
     );
     assert!(
@@ -212,7 +226,7 @@ wire_api = "responses"
 
     let body = read(&config);
     assert!(
-        body.contains(&format!("{RELAY_URL}/v1")),
+        body.contains(&format!("{RELAY_URL}/openai/v1")),
         "managed relay base URL missing: {body}"
     );
     assert!(
@@ -268,8 +282,9 @@ fn opencode_connect_then_disconnect() {
     let body = read(&config);
     assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
     assert!(
-        body.contains("X-Gate-Upstream-Url"),
-        "upstream header missing: {body}"
+        !body.contains("X-Gate-Upstream-Url"),
+        "no Gate header may be written - the relay derives the upstream from \
+         the slug in the base URL: {body}"
     );
     // No credential is ever written - the relay injects it live.
     assert!(
@@ -292,12 +307,55 @@ fn opencode_connect_then_disconnect() {
 }
 
 #[test]
-fn openclaw_connect_then_disconnect() {
+fn hermes_refuses_to_connect_without_a_running_proxy() {
+    // Hermes now routes through the proxy engine, so connect requires a live
+    // one - pointing HTTPS_PROXY at a dead address would break its requests
+    // rather than merely un-routing them. That refusal is the only part of the
+    // flow reachable from the CLI (a live engine needs a trusted CA, which
+    // needs privileges); the round trip is covered in
+    // `crates/core/tests/disconnect_zero_residue.rs`.
+    let h = Harness::new();
+    // detect() wants the launcher, which the installer drops in ~/.local/bin -
+    // a leftover config dir alone no longer counts as installed.
+    let bin = h.home().join(".local").join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("hermes"), "#!/bin/sh\n").unwrap();
+    let hermes_dir = h.home().join(".hermes");
+    fs::create_dir_all(&hermes_dir).unwrap();
+    let config = hermes_dir.join("config.yaml");
+    let seed = "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n";
+    fs::write(&config, seed).unwrap();
+    h.login();
+
+    let err = h.run_err(&["connect", "hermes"]);
+    assert!(
+        err.contains("proxy is not running"),
+        "expected a refusal naming the proxy, got: {err}"
+    );
+
+    // config.yaml is no longer part of this integration at all, and a refused
+    // connect must leave no .env behind either.
+    assert_eq!(
+        read(&config),
+        seed,
+        "config.yaml must never be touched by the Hermes integration"
+    );
+    assert!(
+        !hermes_dir.join(".env").exists(),
+        "a refused connect must not create .env"
+    );
+
+    // Disconnect on an unmanaged tool is a no-op, not an error.
+    h.run_ok(&["disconnect", "hermes"]);
+}
+#[test]
+fn openclaw_connect_is_a_no_op_without_routing() {
+    // Complements `openclaw_refuses_to_connect_without_a_running_proxy`: the
+    // refusal must also leave no sidecar, so a later `disconnect` has nothing
+    // to undo and `status` does not claim the tool is managed.
     let h = Harness::new();
     let oc_dir = h.home().join(".openclaw");
     fs::create_dir_all(&oc_dir).unwrap();
-    // Seed a known provider so connect has something to route through Gate.
-    // JSON5 (comment + trailing comma) to confirm the tolerant parse path.
     let config = oc_dir.join("openclaw.json");
     fs::write(
         &config,
@@ -306,63 +364,62 @@ fn openclaw_connect_then_disconnect() {
     .unwrap();
     h.login();
 
-    h.run_ok(&["connect", "openclaw"]);
+    let _ = h.run_err(&["connect", "openclaw"]);
 
-    let body = read(&config);
+    let sidecar = h
+        .home()
+        .join("app-support")
+        .join("Gate Connect")
+        .join("openclaw-state.json");
     assert!(
-        body.contains(&format!("{RELAY_URL}/v1")),
-        "relay base URL missing: {body}"
-    );
-    assert!(
-        body.contains("X-Gate-Upstream-Url"),
-        "upstream header missing: {body}"
-    );
-    // No credential is ever written - the relay injects it live.
-    assert!(
-        !body.contains("X-Gate-Api-Key"),
-        "credential must not be written to config: {body}"
-    );
-    assert!(
-        !body.contains(API_KEY),
-        "api key value must not be written: {body}"
+        !sidecar.exists(),
+        "a refused connect must not write a sidecar"
     );
 
+    // Disconnect on an unmanaged tool is a no-op, not an error.
     h.run_ok(&["disconnect", "openclaw"]);
-
-    let after = read(&config);
+    let status = h.run_ok(&["status", "openclaw"]);
     assert!(
-        !after.contains("X-Gate-Upstream-Url"),
-        "gate residue left behind: {after}"
+        !status.contains("connected"),
+        "must not report connected after a refused connect, got: {status}"
     );
-    assert!(!after.contains(RELAY_URL), "relay URL left behind: {after}");
 }
 
 #[test]
-fn openclaw_status_reports_connected_then_drift() {
+fn openclaw_refuses_to_connect_without_a_running_proxy() {
+    // OpenClaw is the one integration that hands its *entire* egress to Gate:
+    // managed proxy mode force-clears no_proxy and has no bypass list. Pointing
+    // it at an engine that is not running would take the tool's whole network
+    // down rather than degrading its inference, so connect must refuse. That
+    // refusal is the safety-critical property, and it is the only part of the
+    // flow reachable here - a live engine needs a trusted CA, which needs
+    // privileges. The connect/disconnect round trip is covered in
+    // `crates/core/tests/disconnect_zero_residue.rs`, which seeds the engine
+    // port in-process.
     let h = Harness::new();
     let oc_dir = h.home().join(".openclaw");
     fs::create_dir_all(&oc_dir).unwrap();
     let config = oc_dir.join("openclaw.json");
-    // JSON5 with unquoted keys — the un-gated starting point.
-    let seed = "{\n  models: { providers: { anthropic: {} } },\n}\n";
+    let seed = "{\n  // user config\n  models: { providers: { anthropic: {}, } },\n}\n";
     fs::write(&config, seed).unwrap();
     h.login();
 
-    h.run_ok(&["connect", "openclaw"]);
-    let status = h.run_ok(&["status", "openclaw"]);
+    let err = h.run_err(&["connect", "openclaw"]);
     assert!(
-        status.contains("connected"),
-        "expected connected after connect, got: {status}"
+        err.contains("proxy is not running"),
+        "expected a refusal naming the proxy, got: {err}"
     );
 
-    // Hand-edit: revert the config to the un-gated seed but leave the sidecar
-    // state in place — exactly the drift a user causes by editing the provider
-    // block back by hand. `status` must report drift, not connected.
-    fs::write(&config, seed).unwrap();
-    let status = h.run_ok(&["status", "openclaw"]);
+    // A refused connect must leave the config byte-identical - no half-written
+    // proxy block, and nothing to clean up.
+    assert_eq!(
+        read(&config),
+        seed,
+        "a refused connect must not touch the config"
+    );
     assert!(
-        status.contains("drifted"),
-        "expected drift after hand-edit, got: {status}"
+        !oc_dir.join(".env").exists(),
+        "a refused connect must not create the CA env file"
     );
 }
 

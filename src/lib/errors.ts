@@ -22,6 +22,7 @@ export type ErrorContext =
   | "proxy_toggle"
   | "provider_toggle"
   | "trust_ca"
+  | "env_export"
   | "untrust_ca"
   | "startup"
   | "account_reconcile"
@@ -100,6 +101,20 @@ export function classifyError(
     return {
       title: "This action isn’t available on your platform.",
       hint: "This tool or action isn’t supported here yet. The details below help when reporting it.",
+      raw,
+    };
+  }
+
+  // The proxy-routed tools (OpenClaw, Hermes, the environment channel) refuse
+  // to connect while the engine is down, by design: handing a tool's whole
+  // egress to a dead port breaks it outright rather than merely leaving it
+  // un-routed. Without this branch the generic fallback answers "try again",
+  // which is precisely wrong - retrying cannot help until routing is on, and
+  // the one sentence that says so is buried in the details disclosure.
+  if (lc.includes("proxy is not running")) {
+    return {
+      title: "Turn on “Route through Gate” first",
+      hint: "This tool sends all of its traffic through Gate’s local proxy, so routing has to be on before it can be connected.",
       raw,
     };
   }
@@ -212,6 +227,7 @@ export function classifyError(
     proxy_toggle: "Couldn’t toggle routing",
     provider_toggle: "Couldn’t change that app’s routing",
     trust_ca: "Couldn’t trust the certificate",
+    env_export: "Couldn’t change the command-line tool setting",
     untrust_ca: "Couldn’t remove the certificate trust",
     startup: "Couldn’t load state at startup",
     account_reconcile: "Couldn’t reconcile the saved account",

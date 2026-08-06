@@ -20,15 +20,22 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use gate_connect_core::env;
-use gate_connect_core::registry::{find, Status, ToolId};
+use gate_connect_core::registry::{find, ConnectInput, Status, ToolId};
 
 static HOME_LOCK: Mutex<()> = Mutex::new(());
 
 /// Point `$HOME` at a fresh temp dir for the duration of a test, restoring the
 /// prior value (and deleting the dir) on drop.
+///
+/// Also pins `XDG_CONFIG_HOME` / `XDG_DATA_HOME` inside that dir. OpenCode's
+/// config path honors XDG (as OpenCode itself does), so leaving the ambient
+/// values in place would let a test escape its temp home and edit the
+/// developer's real `~/.config/opencode/opencode.json`.
 struct TempHome {
     dir: PathBuf,
     prev: Option<String>,
+    prev_xdg_config: Option<String>,
+    prev_xdg_data: Option<String>,
 }
 
 impl TempHome {
@@ -45,18 +52,78 @@ impl TempHome {
         ));
         fs::create_dir_all(&dir).unwrap();
         let prev = std::env::var("HOME").ok();
+        let prev_xdg_config = std::env::var("XDG_CONFIG_HOME").ok();
+        let prev_xdg_data = std::env::var("XDG_DATA_HOME").ok();
         std::env::set_var("HOME", &dir);
-        TempHome { dir, prev }
+        std::env::set_var("XDG_CONFIG_HOME", dir.join(".config"));
+        std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
+        TempHome {
+            dir,
+            prev,
+            prev_xdg_config,
+            prev_xdg_data,
+        }
     }
 }
 
 impl Drop for TempHome {
     fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
+        fn restore(key: &str, prev: &Option<String>) {
+            match prev {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
         }
+        restore("HOME", &self.prev);
+        restore("XDG_CONFIG_HOME", &self.prev_xdg_config);
+        restore("XDG_DATA_HOME", &self.prev_xdg_data);
         let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Persist a relay port so `relay_base_url()` answers `Some` and `connect()`
+/// has a loopback base to write.
+fn seed_relay_port(port: u16) {
+    let path = env::app_support_dir()
+        .unwrap()
+        .join("proxy")
+        .join("relay-port");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, port.to_string()).unwrap();
+}
+
+/// Persist an engine port so `persisted_engine_proxy_url()` answers `Some` and
+/// OpenClaw's drift check can tell "pointed at us" from "pointed elsewhere".
+/// Deliberately does NOT fake a running engine - no snapshot file - so status
+/// still reports the honest "proxy is not running" drift.
+fn seed_engine_port(port: u16) {
+    let path = env::app_support_dir().unwrap().join("proxy").join("port");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, port.to_string()).unwrap();
+}
+
+/// Seed a CA cert so `ca_bundle::ensure()` has something to append. Contents
+/// are never parsed here - the bundle is concatenated text - so a marker string
+/// is enough to prove it made it into the output.
+fn seed_ca_cert() {
+    let path = env::app_support_dir()
+        .unwrap()
+        .join("proxy")
+        .join("ca-cert.pem");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "-----BEGIN CERTIFICATE-----\ngate-test-ca\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+}
+
+fn connect_input(relay_port: u16) -> ConnectInput {
+    ConnectInput {
+        gateway_base_url: "https://gw.example.com".to_string(),
+        upstream_url: "https://api.anthropic.com".to_string(),
+        relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
+        engine_proxy_url: Some(format!("http://127.0.0.1:{relay_port}")),
     }
 }
 
@@ -310,5 +377,274 @@ previous_model_provider_absent = true
     assert!(
         !twice.contains("127.0.0.1"),
         "the relay URL must not survive disconnect: {twice}"
+    );
+}
+
+// --- The tools no provider maps -----------------------------------------
+//
+// These drive the real connect -> disconnect round trip rather than a
+// hand-fabricated "connected" file, so they also pin the per-provider base URL
+// the catalog resolves. Formatting is not asserted (both configs are
+// re-serialized on write); what must hold is that no Gate value survives, the
+// user's own settings do, and the sidecar is gone.
+
+#[test]
+fn opencode_disconnect_leaves_no_gate_residue() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+
+    let cfg = env::opencode_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(
+        &cfg,
+        r#"{
+  "provider": {
+    "openrouter": { "options": { "apiKey": "user-openrouter-key" } }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let integ = find(ToolId::OpenCode).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    // OpenRouter's API lives under /api, so `/api/v1` has to stay on the client
+    // side: that keeps the forwarded path on the `/api/` inference prefix and
+    // the upstream hint on the bare host the catalog knows.
+    let connected = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        connected.contains("http://127.0.0.1:9977/openrouter/v1"),
+        "openrouter baseURL must keep the slug + /v1: {connected}"
+    );
+    assert!(
+        !connected.contains("X-Gate-Upstream-Url"),
+        "no Gate header may be written - the relay derives the upstream from the \
+         slug in the base URL: {connected}"
+    );
+    assert!(matches!(integ.status().unwrap(), Status::Connected));
+
+    integ.disconnect().unwrap();
+
+    let after = fs::read_to_string(&cfg).unwrap_or_default();
+    assert!(
+        !after.contains("127.0.0.1"),
+        "relay base URL must be reverted: {after}"
+    );
+    assert!(
+        !after.contains("X-Gate-"),
+        "no Gate header may survive: {after}"
+    );
+    assert!(
+        after.contains("user-openrouter-key"),
+        "the user's own apiKey must survive: {after}"
+    );
+    assert!(
+        !env::app_support_dir()
+            .unwrap()
+            .join("opencode-state.json")
+            .exists(),
+        "sidecar must be removed"
+    );
+}
+
+#[test]
+fn openclaw_disconnect_leaves_no_gate_residue() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+    seed_engine_port(9977);
+
+    let cfg = env::openclaw_config_path().unwrap();
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    // A user-set `loopbackMode` and a provider block: connect must leave both
+    // exactly as it found them. OpenClaw routes via the proxy, so there is no
+    // per-provider rewriting and no discovery step at all.
+    fs::write(
+        &cfg,
+        r#"{"proxy":{"loopbackMode":"gateway-only"},"models":{"providers":{"openrouter":{"baseUrl":"https://openrouter.ai/api/v1","apiKey":"user-openrouter-key"}}}}"#,
+    )
+    .unwrap();
+
+    let integ = find(ToolId::OpenClaw).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    let connected = fs::read_to_string(&cfg).unwrap();
+    assert!(
+        connected.contains(r#""proxyUrl": "http://127.0.0.1:9977""#),
+        "proxy.proxyUrl must point at the engine: {connected}"
+    );
+    assert!(
+        connected.contains("https://openrouter.ai/api/v1"),
+        "the provider baseUrl must stay canonical - redirecting it is what made \
+         OpenClaw drop its implicit beta headers: {connected}"
+    );
+    assert!(
+        connected.contains(r#""loopbackMode": "gateway-only""#),
+        "loopbackMode is the user's local-provider bypass and must survive: {connected}"
+    );
+    // Not Connected here, and correctly so: no engine is running against this
+    // temp HOME, and OpenClaw hands *all* its egress to the proxy. Drift is the
+    // truthful answer, and it still counts as Gate-managed for the master-off
+    // sweep. The Connected path is covered by `compute_status` unit tests.
+    match integ.status().unwrap() {
+        Status::Drifted(m) => assert!(
+            m.contains("no route out") || m.contains("does not match"),
+            "unexpected status message: {m}"
+        ),
+        other => panic!("expected drift with no engine running, got {other:?}"),
+    }
+
+    integ.disconnect().unwrap();
+
+    let after = fs::read_to_string(&cfg).unwrap_or_default();
+    assert!(
+        !after.contains("127.0.0.1"),
+        "the proxy URL must be reverted: {after}"
+    );
+    assert!(
+        !after.contains("proxyUrl"),
+        "a proxyUrl the user never had must not survive: {after}"
+    );
+    assert!(
+        after.contains(r#""loopbackMode": "gateway-only""#),
+        "the user's own proxy settings must be left behind intact: {after}"
+    );
+    assert!(
+        after.contains("https://openrouter.ai/api/v1"),
+        "the user's original baseUrl must be untouched throughout: {after}"
+    );
+    assert!(
+        !env::openclaw_config_dir().unwrap().join(".env").exists(),
+        "the NODE_EXTRA_CA_CERTS file we created must be removed"
+    );
+    assert!(
+        !env::app_support_dir()
+            .unwrap()
+            .join("openclaw-state.json")
+            .exists(),
+        "sidecar must be removed"
+    );
+}
+
+#[test]
+fn hermes_disconnect_leaves_no_gate_residue() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+    seed_engine_port(9977);
+    seed_ca_cert();
+
+    // detect() wants the launcher, not just the config dir - the installer drops
+    // it in ~/.local/bin.
+    let launcher = env::home().unwrap().join(".local/bin/hermes");
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::write(&launcher, "#!/bin/sh\n").unwrap();
+
+    // A config.yaml and an .env holding the user's own key. Neither the model
+    // block nor the key may be touched: Hermes routes via the proxy now, so
+    // there is no base_url to rewrite and no provider to discover.
+    let cfg = env::hermes_config_dir().unwrap().join("config.yaml");
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    let original_cfg =
+        "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: user-key\n";
+    fs::write(&cfg, original_cfg).unwrap();
+    let envfile = env::hermes_config_dir().unwrap().join(".env");
+    fs::write(&envfile, "OPENROUTER_API_KEY=sk-user\n").unwrap();
+
+    let integ = find(ToolId::Hermes).unwrap();
+    integ.connect(&connect_input(9977)).unwrap();
+
+    let env_body = fs::read_to_string(&envfile).unwrap();
+    assert!(
+        env_body.contains("HTTPS_PROXY=http://127.0.0.1:9977"),
+        "the proxy must be set in .env: {env_body}"
+    );
+    assert!(
+        env_body.contains("NO_PROXY=localhost,127.0.0.1,::1"),
+        "loopback must stay off the proxy so local providers keep working: {env_body}"
+    );
+    assert!(
+        env_body.contains("HERMES_CA_BUNDLE="),
+        "a full CA bundle is required - venv certifi does not see the OS store: {env_body}"
+    );
+    assert_eq!(
+        fs::read_to_string(&cfg).unwrap(),
+        original_cfg,
+        "config.yaml must not be touched at all"
+    );
+
+    // Not Connected here: no engine is running against this temp HOME. Drift is
+    // the truthful answer and still counts as managed for the master-off sweep.
+    match integ.status().unwrap() {
+        Status::Drifted(m) => assert!(
+            m.contains("not running") || m.contains("does not match"),
+            "unexpected status message: {m}"
+        ),
+        other => panic!("expected drift with no engine running, got {other:?}"),
+    }
+
+    integ.disconnect().unwrap();
+
+    let after = fs::read_to_string(&envfile).unwrap();
+    assert!(
+        !after.contains("127.0.0.1"),
+        "the proxy must be reverted: {after}"
+    );
+    assert!(
+        !after.contains("HERMES_CA_BUNDLE"),
+        "the CA bundle line must be reverted: {after}"
+    );
+    assert!(
+        after.contains("OPENROUTER_API_KEY=sk-user"),
+        "the user's own key must survive: {after}"
+    );
+    assert_eq!(
+        fs::read_to_string(&cfg).unwrap(),
+        original_cfg,
+        "config.yaml must still be untouched after disconnect"
+    );
+    assert!(
+        !env::app_support_dir()
+            .unwrap()
+            .join("hermes-state.json")
+            .exists(),
+        "sidecar must be removed"
+    );
+}
+
+#[test]
+fn hermes_leaves_a_user_owned_proxy_alone() {
+    // A pre-existing HTTPS_PROXY is likely a corporate egress proxy the rest of
+    // the user's setup depends on. Clobbering it would break far more than Gate,
+    // so connect refuses rather than taking it over.
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    seed_relay_port(9977);
+    seed_engine_port(9977);
+    seed_ca_cert();
+
+    let launcher = env::home().unwrap().join(".local/bin/hermes");
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::write(&launcher, "#!/bin/sh\n").unwrap();
+
+    let envfile = env::hermes_config_dir().unwrap().join(".env");
+    fs::create_dir_all(envfile.parent().unwrap()).unwrap();
+    let original = "HTTPS_PROXY=http://corp.example:3128\nHTTP_PROXY=http://corp.example:3128\nNO_PROXY=corp.example\nHERMES_CA_BUNDLE=/corp/ca.pem\n";
+    fs::write(&envfile, original).unwrap();
+
+    let err = find(ToolId::Hermes)
+        .unwrap()
+        .connect(&connect_input(9977))
+        .expect_err("a user-owned proxy must not be silently replaced");
+    assert!(
+        format!("{err:#}").contains("own proxy settings"),
+        "error should say why: {err:#}"
+    );
+    assert_eq!(
+        fs::read_to_string(&envfile).unwrap(),
+        original,
+        "the user's .env must be byte-identical after a refusal"
     );
 }

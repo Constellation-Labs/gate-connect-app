@@ -326,6 +326,177 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
     );
 }
 
+/// The variables the system proxy actually *exports* must, on their own, be
+/// enough to route a black-box process through the engine.
+///
+/// The test above proves the engine honours `https_proxy`; this one proves the
+/// set we ship honours it, which is a different claim. It takes the pairs
+/// straight from [`gate_connect_core::proxy::proxy_env_vars`] - the single
+/// source the Linux drop-in, macOS `launchctl setenv` and the Windows
+/// `HKCU\Environment` writer all feed from - and hands *only* those to `curl`.
+/// A typo in a variable name, a proxy pointed at the PAC port instead of the
+/// engine, a `NO_PROXY` that accidentally exempts the target, or a
+/// `NODE_EXTRA_CA_CERTS` pointing somewhere the CA isn't would each fail here
+/// while every unit test still passed.
+///
+/// This is the mechanism OpenCode depends on entirely: it has no proxy or CA
+/// setting in its config schema, so these variables are the only way to route
+/// it. `curl` stands in for its Bun HTTP client - the one difference is that
+/// curl has no `NODE_EXTRA_CA_CERTS` equivalent, so the exported value is fed
+/// to `--cacert`, which still asserts the contract that matters: the path we
+/// export is a file that validates the engine's leaf.
+#[tokio::test]
+async fn exported_proxy_env_routes_an_external_process() {
+    let _serial = SERIAL.lock().await;
+
+    // 1. Redirect every per-user path into a throwaway dir *before* anything
+    //    resolves one. `proxy_env_vars` derives NODE_EXTRA_CA_CERTS from
+    //    `app_support_dir`, so without this the test would write its own CA
+    //    over the developer's real one.
+    let temp_home = std::env::temp_dir().join(format!(
+        "gate-proxy-env-e2e-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+    std::env::set_var("GATE_CONNECT_TEST_HOME", &temp_home);
+
+    let gateway = start_mock_gateway().await;
+
+    // 2. Boot the real engine. `default_domains()` ships Anthropic enabled.
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    // 3. The production export, for this engine's port.
+    let vars = gate_connect_core::proxy::proxy_env_vars(engine.port())
+        .expect("resolving the exported proxy environment");
+
+    // The proxy must point at the engine itself. An env-var proxy has no PAC
+    // equivalent, so exporting the PAC port here would route every request into
+    // a listener that only serves a .pac file.
+    let expected_endpoint = format!("http://127.0.0.1:{}", engine.port());
+    for name in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"] {
+        let value = vars
+            .iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            value,
+            Some(expected_endpoint.as_str()),
+            "{name} must point at the engine port"
+        );
+    }
+
+    // 4. Put the engine's CA where *production* keeps it, then point curl at
+    //    whatever the exported variable claims. Writing to the exported path
+    //    instead would be circular - it would pass even if the export named a
+    //    file nothing ever writes - so the two must come from different places
+    //    for this to assert anything.
+    let real_ca_path =
+        gate_connect_core::proxy::ca_cert_path().expect("resolving the production CA path");
+    std::fs::create_dir_all(real_ca_path.parent().unwrap()).expect("creating the CA directory");
+    std::fs::write(&real_ca_path, &ca_cert_pem).expect("writing the CA where the app keeps it");
+
+    let exported_ca = vars
+        .iter()
+        .find(|(k, _)| *k == "NODE_EXTRA_CA_CERTS")
+        .map(|(_, v)| std::path::PathBuf::from(v))
+        .expect("NODE_EXTRA_CA_CERTS must be exported");
+
+    // 5. Drive curl with *only* the exported variables. `env_clear` is
+    //    deliberate: an ambient https_proxy or no_proxy in the developer's or
+    //    CI's shell could otherwise carry the test, or exempt the target and
+    //    sink it, either way telling us nothing about what we export. PATH is
+    //    restored so curl itself is still findable.
+    let ca_arg = exported_ca.clone();
+    let vars_for_curl = vars.clone();
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let output = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("curl");
+        cmd.env_clear().env("PATH", path_var);
+        for (name, value) in &vars_for_curl {
+            cmd.env(name, value);
+        }
+        cmd.arg("-sS")
+            // (schannel/Windows) the MITM leaf has no CRL/OCSP endpoint.
+            .arg("--ssl-no-revoke")
+            .arg("--fail")
+            // curl has no NODE_EXTRA_CA_CERTS; feed it the exported value.
+            .arg("--cacert")
+            .arg(&ca_arg)
+            .arg("-X")
+            .arg("POST")
+            .arg("-H")
+            .arg("authorization: Bearer app-token")
+            .arg("-H")
+            .arg("content-type: application/json")
+            .arg("--data")
+            .arg(r#"{"model":"claude","messages":[]}"#)
+            .arg("https://api.anthropic.com/v1/messages")
+            .output()
+    })
+    .await
+    .expect("joining the curl task")
+    .expect("curl must be installed to run this test");
+
+    engine.stop();
+    let _ = std::fs::remove_dir_all(&temp_home);
+    match prev_home {
+        Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+        None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+    }
+
+    assert!(
+        output.status.success(),
+        "curl routed by the exported proxy env failed: status={:?}\nstdout={}\nstderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // 6. The request reached the gateway rewritten - so the exported variables
+    //    routed it, and the exported CA path let TLS validate.
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "gateway should have received exactly one request"
+    );
+    let r = &reqs[0];
+    assert_eq!(r.method, "POST");
+    assert_eq!(r.path, "/v1/messages");
+    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-gate-upstream-url"),
+        Some("https://api.anthropic.com")
+    );
+    assert_eq!(
+        r.header("authorization"),
+        Some("Bearer app-token"),
+        "the external client's own credential must be forwarded untouched"
+    );
+}
+
 #[tokio::test]
 async fn proxy_rewrites_openrouter_request_to_gateway() {
     let _serial = SERIAL.lock().await;
@@ -390,10 +561,13 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
 
     engine.stop();
 
-    // 4. The rewrite landed on the gateway: original path preserved (OpenRouter
-    //    nests its API under /api/v1/), the OAuth token injected as
-    //    x-gate-authorization (not the API key), and the client's own bearer
-    //    forwarded untouched.
+    // 4. The rewrite landed on the gateway with the `/api` moved OFF the request
+    //    line and INTO the upstream header. Gate's ALB routes `/api/*` to the
+    //    dashboard API, so forwarding `/api/v1/chat/completions` would 404 out
+    //    of a service that has no such route - Gate re-joins upstream + path, so
+    //    OpenRouter still receives /api/v1/chat/completions. Also: the OAuth
+    //    token injected as x-gate-authorization (not the API key), and the
+    //    client's own bearer forwarded untouched.
     let reqs = gateway.captured.lock().unwrap().clone();
     assert_eq!(
         reqs.len(),
@@ -402,7 +576,10 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
     );
     let r = &reqs[0];
     assert_eq!(r.method, "POST");
-    assert_eq!(r.path, "/api/v1/chat/completions");
+    assert_eq!(
+        r.path, "/v1/chat/completions",
+        "the forwarded path must not begin with Gate's reserved /api/ prefix"
+    );
     assert_eq!(
         r.header("x-gate-authorization"),
         Some("Bearer cognito-access-token")
@@ -419,7 +596,8 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
     );
     assert_eq!(
         r.header("x-gate-upstream-url"),
-        Some("https://openrouter.ai")
+        Some("https://openrouter.ai/api"),
+        "the /api segment must travel in the upstream header, not the path"
     );
     assert_eq!(
         r.header("authorization"),

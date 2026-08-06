@@ -49,6 +49,8 @@ impl ProxyManager {
             port,
             pac_port,
             ca_trusted: ca::is_trusted()?,
+            env_export_opted_in: crate::proxy::env_export_opted_in(),
+            env_export_separable: crate::proxy::env_export_is_separable(),
             domains: config::load_domains()?,
         })
     }
@@ -145,6 +147,24 @@ impl ProxyManager {
             return Err(e).context("enabling system proxy");
         }
 
+        // Export the proxy variables too, unless the user declined. The PAC
+        // above only reaches clients that go through WinINET; the CLI AI tools
+        // read `HTTPS_PROXY` instead, and OpenCode has no proxy setting of its
+        // own at all. Owned by the `env-proxy` integration, which is why this is
+        // a choice and not unconditional - the variables are machine-wide and
+        // survive a reboot here, so a user who turned them off must not get them
+        // back. Deliberately best-effort: a registry failure must not take
+        // routing down for everything that *does* follow the PAC, so it degrades
+        // to "GUI apps routed, CLI tools not" rather than to "enable failed".
+        if crate::proxy::env_export_opted_in() {
+            if let Err(e) = system_proxy::enable_env(running.port()) {
+                eprintln!(
+                    "gate proxy: could not export proxy environment variables ({e}); GUI apps \
+                     still route through Gate, but CLI tools that read HTTPS_PROXY will not"
+                );
+            }
+        }
+
         *guard = Some(running);
 
         // The crash fail-safe defers while we hold the lock; if the engine
@@ -197,6 +217,17 @@ impl ProxyManager {
             .lock()
             .expect("proxy engine mutex poisoned")
             .take();
+
+        // Revert the exported variables first, and unconditionally: the PAC
+        // restore below can fail with `?`, and of the two channels this is the
+        // one where a stale value breaks tools outright rather than merely
+        // failing open. A PAC left pointing at a dead port makes clients fall
+        // back to DIRECT; an `HTTPS_PROXY` left pointing at a dead port makes
+        // every request from a CLI tool fail to connect - and on Windows it
+        // would survive the reboot.
+        if let Err(e) = system_proxy::disable_env() {
+            eprintln!("gate proxy: {e}");
+        }
 
         // An unreadable snapshot must not strand HTTPS at the dead engine
         // port - treat it like a missing one and force the proxy off.
@@ -320,6 +351,7 @@ impl ProxyManager {
             return;
         };
         let _ = guard.take();
+        let _ = system_proxy::disable_env();
         let _ = match system_proxy::load_snapshot() {
             Ok(Some(snapshot)) => system_proxy::restore(&snapshot),
             _ => system_proxy::force_off(),
@@ -332,6 +364,16 @@ impl ProxyManager {
     /// quit / crash) - restore it. Promptless, so it always succeeds; a clean
     /// disable clears the snapshot, making this a no-op.
     pub fn reconcile_on_startup(&self) -> Result<()> {
+        // Before anything else, and above the early return below: unlike the
+        // WinINET snapshot, the exported variables live in the persistent
+        // per-user environment and survive a reboot, so a crashed session
+        // leaves them aimed at a port nothing listens on. Clearing them is
+        // unconditional - the system-proxy snapshot says nothing about whether
+        // they are set. If routing is meant to be on, `enable` runs straight
+        // after this and re-exports them at the new engine port.
+        if let Err(e) = system_proxy::disable_env() {
+            eprintln!("gate proxy: {e}");
+        }
         // As in disable: an unreadable snapshot still means an unclean prior
         // session, so force the proxy off rather than bailing and leaving
         // HTTPS routed at a port nothing listens on.

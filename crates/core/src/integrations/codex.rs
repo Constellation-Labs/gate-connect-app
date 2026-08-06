@@ -8,12 +8,13 @@
 //! byte-identical.
 //!
 //! `base_url` points at the loopback reverse-proxy relay
-//! ([`crate::proxy::relay`]), not the gateway: the relay injects the live
-//! Gate credential per request and forwards to the gateway, so **no Gate
-//! credential is written to config.toml**. `http_headers` carries only the
-//! non-secret `X-Gate-Upstream-Url` hint. (The path suffix Codex needs -
-//! `/codex` or `/v1` - is still appended to the relay base, since the relay
-//! forwards the request path verbatim onto the gateway.)
+//! ([`crate::proxy::relay`]), not the gateway, and is the only thing written:
+//! `http://127.0.0.1:<port>/<slug><suffix>`, where `<slug>` names the catalog
+//! domain the relay routes on and `<suffix>` is the path Codex appends
+//! `/responses` to (`/codex` in ChatGPT mode, `/v1` in API-key mode), since the
+//! relay forwards the request path verbatim onto the gateway. The relay injects
+//! the live Gate credential *and* the upstream hint per request, so **neither a
+//! credential nor an `http_headers` table is written to config.toml**.
 //!
 //! Like Claude Code, Codex brings its own upstream credentials. We set
 //! `requires_openai_auth = true` on the provider so Codex attaches its
@@ -23,7 +24,7 @@
 //! through a custom `base_url` (a bare `[auth] command` helper works for
 //! API keys but leaves ChatGPT-mode Codex falling back to its built-in
 //! provider and hitting chatgpt.com directly). Gate passes the bearer
-//! through and forwards to OpenAI per the `X-Gate-Upstream-Url` hint.
+//! through and forwards to OpenAI per the upstream hint the relay injects.
 //! Therefore [`requires_upstream_credential`] is `false`.
 //!
 //! Codex reads `config.toml` at startup, so the user must restart any
@@ -127,19 +128,29 @@ fn read_auth_mode() -> Result<AuthMode> {
     }
 }
 
-/// Codex `base_url` - the relay loopback origin plus the auth-mode-specific
-/// path suffix Codex appends `/responses` to. The relay (and Gate behind it)
-/// forward the path verbatim, so this suffix has to match the upstream's path
-/// layout (`chatgpt.com/backend-api/codex` vs. `api.openai.com/v1`). Trims any
-/// trailing slash, and avoids doubling the suffix if `base` already includes it.
-fn compute_base_url(base: &str, mode: AuthMode) -> String {
-    let trimmed = base.trim_end_matches('/');
-    let suffix = mode.gateway_path_suffix();
-    if trimmed.ends_with(suffix) {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}{suffix}")
-    }
+/// Codex `base_url` - the relay loopback origin, the catalog slug the relay
+/// routes on, and the auth-mode path suffix Codex appends `/responses` to.
+///
+/// The suffix has to match the upstream's path layout
+/// (`chatgpt.com/backend-api/codex` vs. `api.openai.com/v1`) because the relay
+/// and Gate forward the path verbatim. Both halves come from
+/// [`crate::proxy::resolve_endpoint`] rather than being spliced by hand: the
+/// mode's canonical endpoint is its upstream plus its suffix, and the catalog
+/// says where to cut it.
+///
+/// Errors when the mode's endpoint is off-catalog, which would mean the relay
+/// could not forward it - better to refuse than to write a config that 403s.
+fn relay_base_url_for(relay_base: &str, mode: AuthMode) -> Result<String> {
+    let endpoint = format!("{}{}", mode.upstream_url(), mode.gateway_path_suffix());
+    let resolved = crate::proxy::resolve_endpoint(&endpoint)
+        .with_context(|| format!("Gate has no upstream domain for {endpoint:?}"))?;
+    Ok(resolved.relay_base_url(relay_base))
+}
+
+/// The path suffix on Codex's side of the relay, for the passthrough stub that
+/// disconnect leaves pointed straight at OpenAI.
+fn direct_base_url(mode: AuthMode) -> String {
+    format!("{}{}", mode.upstream_url(), mode.gateway_path_suffix())
 }
 
 const UPSTREAM_PROVIDER_NAME: &str = "OpenAI";
@@ -176,8 +187,6 @@ const PASSTHROUGH_DISPLAY_NAME: &str = "OpenAI (direct)";
 /// post-disconnect passthrough stub rather than a routed one. Without it
 /// [`status`] would read the stub as leftover Gate residue and report drift.
 const PASSTHROUGH_MARKER: &str = "passthrough_stub";
-
-const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
 
 /// Common install locations for the `codex` binary. Detection also falls
 /// back to checking `~/.codex/` so Volta / asdf / npx layouts still flag
@@ -290,7 +299,7 @@ impl Integration for Codex {
         // bites - wrong base_url shape causes 404s; API-key mode just needs
         // an OPENAI_API_KEY to authenticate).
         let mode = read_auth_mode().unwrap_or(AuthMode::Chatgpt);
-        let expected_base = compute_base_url(&relay_base, mode);
+        let expected_base = relay_base_url_for(&relay_base, mode)?;
         let base_url = provider_block
             .get("base_url")
             .and_then(|i| i.as_str())
@@ -301,27 +310,11 @@ impl Integration for Codex {
             )));
         }
 
-        // Only the non-secret upstream hint is written; the relay injects the
-        // Gate credential live, so there is deliberately no key header here.
-        let headers_table = provider_block
-            .get("http_headers")
-            .and_then(|i| i.as_table_like());
-        let upstream = headers_table
-            .and_then(|h| h.get(UPSTREAM_URL_HEADER))
-            .and_then(|i| i.as_str())
-            .unwrap_or("");
-        if upstream.is_empty() {
-            return Ok(Status::Drifted(format!(
-                "[model_providers.{PROVIDER_ID}.http_headers] missing {UPSTREAM_URL_HEADER}"
-            )));
-        }
-        let expected_upstream = mode.upstream_url();
-        if upstream != expected_upstream {
-            return Ok(Status::Drifted(format!(
-                "{UPSTREAM_URL_HEADER} is {upstream:?}, expected {expected_upstream:?} for auth_mode {:?}",
-                match mode { AuthMode::Chatgpt => "chatgpt", AuthMode::Apikey => "apikey" }
-            )));
-        }
+        // Nothing else to check: `base_url` above carries the relay origin, the
+        // catalog slug the relay routes on, and the auth-mode path, and no header
+        // or credential is written alongside it. An `http_headers` table left by
+        // an older build is not drift - the next connect rewrites the block
+        // wholesale, and disconnect drops it either way.
 
         Ok(Status::Connected)
     }
@@ -397,8 +390,7 @@ impl Integration for Codex {
             .context("`model_providers` must be a TOML table")?;
         model_providers.set_implicit(true);
 
-        let base_url = compute_base_url(relay_base, mode);
-        let upstream_url = mode.upstream_url();
+        let base_url = relay_base_url_for(relay_base, mode)?;
 
         let mut provider = Table::new();
         provider.insert("name", value(PROVIDER_DISPLAY_NAME));
@@ -413,12 +405,10 @@ impl Integration for Codex {
         // and `[auth] command` per the Codex docs, so we set neither.
         provider.insert("requires_openai_auth", value(true));
 
-        // Only the non-secret upstream hint. The Gate credential is injected
-        // live by the relay, never written here.
-        let mut headers = Table::new();
-        headers.set_implicit(false);
-        headers.insert(UPSTREAM_URL_HEADER, value(upstream_url));
-        provider.insert("http_headers", Item::Table(headers));
+        // No `http_headers` at all: the relay reads the upstream off the slug
+        // segment in `base_url` and injects the hint itself, and the Gate
+        // credential was never written here. An older build's table is dropped
+        // with the rest of the block, since we rewrite it wholesale.
 
         model_providers.insert(PROVIDER_ID, Item::Table(provider));
 
@@ -604,10 +594,7 @@ fn passthrough_stub(mode: AuthMode) -> Table {
          # straight to OpenAI. Safe to delete once those threads are done.\n",
     );
     t.insert("name", value(PASSTHROUGH_DISPLAY_NAME));
-    t.insert(
-        "base_url",
-        value(compute_base_url(mode.upstream_url(), mode).as_str()),
-    );
+    t.insert("base_url", value(direct_base_url(mode).as_str()));
     t.insert("wire_api", value("responses"));
     t.insert("requires_openai_auth", value(true));
     t
@@ -639,38 +626,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chatgpt_mode_appends_codex_path_suffix() {
+    fn chatgpt_mode_base_url_carries_the_chatgpt_slug_and_codex_path() {
+        // The relay strips `/chatgpt` and forwards `/codex/responses`, which the
+        // gateway concatenates onto `https://chatgpt.com/backend-api`.
         assert_eq!(
-            compute_base_url("https://gw.example.com", AuthMode::Chatgpt),
-            "https://gw.example.com/codex"
+            relay_base_url_for("http://127.0.0.1:9977", AuthMode::Chatgpt).unwrap(),
+            "http://127.0.0.1:9977/chatgpt/codex"
         );
         assert_eq!(
-            compute_base_url("https://gw.example.com/", AuthMode::Chatgpt),
-            "https://gw.example.com/codex"
-        );
-    }
-
-    #[test]
-    fn apikey_mode_appends_v1_path_suffix() {
-        assert_eq!(
-            compute_base_url("https://gw.example.com", AuthMode::Apikey),
-            "https://gw.example.com/v1"
-        );
-        assert_eq!(
-            compute_base_url("https://gw.example.com/", AuthMode::Apikey),
-            "https://gw.example.com/v1"
+            relay_base_url_for("http://127.0.0.1:9977/", AuthMode::Chatgpt).unwrap(),
+            "http://127.0.0.1:9977/chatgpt/codex"
         );
     }
 
     #[test]
-    fn base_url_does_not_double_path_suffix_if_already_present() {
+    fn apikey_mode_base_url_carries_the_openai_slug_and_v1_path() {
         assert_eq!(
-            compute_base_url("https://gw.example.com/codex", AuthMode::Chatgpt),
-            "https://gw.example.com/codex"
+            relay_base_url_for("http://127.0.0.1:9977", AuthMode::Apikey).unwrap(),
+            "http://127.0.0.1:9977/openai/v1"
+        );
+    }
+
+    #[test]
+    fn direct_base_url_is_the_real_upstream_for_the_passthrough_stub() {
+        assert_eq!(
+            direct_base_url(AuthMode::Chatgpt),
+            "https://chatgpt.com/backend-api/codex"
         );
         assert_eq!(
-            compute_base_url("https://gw.example.com/v1", AuthMode::Apikey),
-            "https://gw.example.com/v1"
+            direct_base_url(AuthMode::Apikey),
+            "https://api.openai.com/v1"
         );
     }
 
@@ -703,13 +688,13 @@ mod tests {
         provider.insert("name", value(PROVIDER_DISPLAY_NAME));
         provider.insert(
             "base_url",
-            value(compute_base_url("http://127.0.0.1:9977", AuthMode::Chatgpt).as_str()),
+            value(
+                relay_base_url_for("http://127.0.0.1:9977", AuthMode::Chatgpt)
+                    .unwrap()
+                    .as_str(),
+            ),
         );
         provider.insert("requires_openai_auth", value(true));
-        let mut headers = Table::new();
-        headers.set_implicit(false);
-        headers.insert(UPSTREAM_URL_HEADER, value(AuthMode::Chatgpt.upstream_url()));
-        provider.insert("http_headers", Item::Table(headers));
         model_providers.insert(PROVIDER_ID, Item::Table(provider));
         doc["model_provider"] = value(PROVIDER_ID);
 
@@ -717,16 +702,16 @@ mod tests {
         assert!(rendered.contains("model_provider = \"gate\""));
         assert!(rendered.contains("[model_providers.gate]"));
         assert!(rendered.contains("requires_openai_auth = true"));
-        assert!(rendered.contains("[model_providers.gate.http_headers]"));
-        assert!(rendered.contains("X-Gate-Upstream-Url"));
-        // No Gate credential is ever written to config.toml - the relay
-        // injects it live.
+        // ChatGPT mode: base_url points at the relay, names the `chatgpt` catalog
+        // slug the relay routes on, and ends in /codex so Codex sends
+        // /chatgpt/codex/responses. The relay strips the slug and forwards
+        // /codex/responses.
+        assert!(rendered.contains("base_url = \"http://127.0.0.1:9977/chatgpt/codex\""));
+        // Nothing else is written: no header table, no upstream hint, and above
+        // all no credential - the relay injects all of it live.
+        assert!(!rendered.contains("http_headers"));
+        assert!(!rendered.contains("X-Gate-Upstream-Url"));
         assert!(!rendered.contains("X-Gate-Api-Key"));
-        // ChatGPT mode: base_url points at the relay and ends in /codex (so the
-        // client sends /codex/responses); upstream is the bare backend-api host
-        // (Gate concatenates the path onto it).
-        assert!(rendered.contains("base_url = \"http://127.0.0.1:9977/codex\""));
-        assert!(rendered.contains("\"https://chatgpt.com/backend-api\""));
         // And specifically NOT the double-codex shape that produced 404s.
         assert!(!rendered.contains("https://chatgpt.com/backend-api/codex"));
     }
@@ -751,7 +736,7 @@ mod tests {
         assert!(rendered.contains("requires_openai_auth = true"));
         // Nothing Gate-flavoured survives: no relay/gateway URL, no upstream
         // hint header, no credential.
-        assert!(!rendered.contains(UPSTREAM_URL_HEADER));
+        assert!(!rendered.contains("X-Gate-Upstream-Url"));
         assert!(!rendered.contains("http_headers"));
         assert!(!rendered.contains("X-Gate-Api-Key"));
         assert!(!rendered.contains("127.0.0.1"));

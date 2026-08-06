@@ -14,11 +14,15 @@
 //! forwards everything to the real upstream under the tool's own credential -
 //! see [`RelayState::intercept`].
 //!
-//! The upshot for the design: **no credential is ever written to a tool's
-//! config file.** The config carries only the loopback base URL and the
-//! non-secret `x-gate-upstream-url` hint; the secret lives in the keychain and
-//! is injected here at request time, so a token refresh is invisible to the
-//! tool and rotating the key touches nothing on disk.
+//! The upshot for the design: **a tool's config carries one value and no
+//! headers.** The base URL is `http://127.0.0.1:<port>/<slug><client-path>`,
+//! where `<slug>` names the catalog domain; the relay reads it off the path,
+//! strips it, and injects `x-gate-upstream-url` itself - the same thing the MITM
+//! engine does from the CONNECT host. The credential lives in the keychain and is
+//! injected here per request, so a token refresh is invisible to the tool and
+//! rotating the key touches nothing on disk. Deriving the upstream from the
+//! catalog rather than trusting the caller also means a local process cannot aim
+//! the gateway at a host of its choosing.
 //!
 //! [`serve`] runs the same relay standalone (its own runtime, no MITM/CA/system
 //! proxy) as a blocking headless host for environments with no menubar app -
@@ -150,11 +154,11 @@ struct RelayState {
     /// Live selected org UUID; empty means "none selected". Injected only when
     /// a token is present.
     org: watch::Receiver<Arc<str>>,
-    /// The built-in domain catalog. Used to (a) validate the tool-supplied
-    /// `x-gate-upstream-url` against a known upstream - so a local process can't
-    /// aim the relay at an arbitrary host - and (b) classify each path the way
-    /// the MITM engine's `decide` does: inference (`/v1/`) rewrites to the
-    /// gateway, everything else passes through to the real upstream.
+    /// The built-in domain catalog. Used to (a) resolve the leading path segment
+    /// of a request to a known upstream - so a local process can't aim the relay
+    /// at an arbitrary host - and (b) classify the remaining path the way the
+    /// MITM engine's `decide` does: inference rewrites to the gateway,
+    /// everything else passes through to the real upstream.
     domains: Vec<ProxyDomain>,
     /// Whether inference rewrites to the gateway at all. When false (the Linux
     /// daemon with no GUI connected - see
@@ -380,32 +384,20 @@ async fn proxy(
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| "/".to_string());
 
-    // The tool config sets the (non-secret) upstream hint; classify the request
-    // against the catalog before we forward anything. Inference paths rewrite to
-    // the gateway under the Gate credential; account/metadata paths (e.g. Claude
-    // Code's `/api/oauth/usage`) pass through to the real upstream under the
-    // tool's own credential - mirroring the MITM engine's `decide`. Without this
-    // the relay funnels every path to the gateway, which only serves inference
-    // and 404s the rest.
-    let upstream = req
-        .headers()
-        .get(UPSTREAM_URL_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string)
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("missing {UPSTREAM_URL_HEADER} header"),
-        ))?;
-    let classified = route(&state.domains, &upstream, &path_and_query).ok_or((
-        StatusCode::FORBIDDEN,
-        format!("upstream {upstream:?} is not in the built-in catalog"),
-    ))?;
+    // Which upstream this request belongs to comes from the leading path
+    // segment the tool's base URL carries, so no tool config has to hold a
+    // header. Inference paths rewrite to the gateway under the Gate credential;
+    // account/metadata paths (e.g. Claude Code's `/api/oauth/usage`) pass
+    // through to the real upstream under the tool's own credential - mirroring
+    // the MITM engine's `decide`. Without this the relay would funnel every
+    // path to the gateway, which only serves inference and 404s the rest.
+    let routed = resolve_route(&state.domains, &path_and_query, req.headers())?;
     // Not intercepting (Linux daemon, GUI gone): forward everything to the
     // real upstream under the tool's own credential, the same way the MITM
-    // port blind-tunnels. The catalog check above still applies - direct mode
-    // doesn't make the relay an open proxy.
+    // port blind-tunnels. The catalog resolution above still applies - direct
+    // mode doesn't make the relay an open proxy.
     let route = if *state.intercept.borrow() {
-        classified
+        routed.route
     } else {
         Route::Passthrough
     };
@@ -421,13 +413,22 @@ async fn proxy(
                     format!("injecting Gate credential: {e:#}"),
                 )
             })?;
-            format!("{}{}", state.gateway_base, path_and_query)
+            // We set the upstream hint, overwriting anything the caller sent.
+            // The value comes from the catalog entry we resolved, so a local
+            // process can't aim the gateway at a host of its choosing.
+            set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
+                )
+            })?;
+            format!("{}{}", state.gateway_base, routed.path_and_query)
         }
         Route::Passthrough => {
             // Strip every Gate-internal header and forward under the tool's own
             // `Authorization`; never inject the Gate credential here.
             strip_gate_headers(&mut headers);
-            format!("{upstream}{path_and_query}")
+            format!("{}{}", routed.upstream_url, routed.path_and_query)
         }
     };
 
@@ -494,8 +495,9 @@ fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> 
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM
-/// engine's [`Decision`](crate::proxy::Decision), but keyed by the
-/// tool-supplied `x-gate-upstream-url` hint instead of a CONNECT host.
+/// engine's [`Decision`](crate::proxy::Decision), but keyed by the leading path
+/// segment of the tool's base URL instead of a CONNECT host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
     /// Inference path: rewrite to the gateway with the Gate credential injected.
     Rewrite,
@@ -504,25 +506,128 @@ enum Route {
     Passthrough,
 }
 
-/// Classify a relayed request the way the MITM engine's `decide` does:
-/// passthrough prefixes win, then inference (`/v1/`) rewrites; any other path on
-/// a catalog upstream passes through. Returns `None` when `upstream` isn't in
-/// the built-in catalog, so the caller refuses to forward it.
-fn route(domains: &[ProxyDomain], upstream: &str, path: &str) -> Option<Route> {
-    let d = domains.iter().find(|d| d.upstream_url == upstream)?;
+/// A resolved relay request: which upstream owns it, the path to forward, and
+/// whether that path rewrites to the gateway.
+#[derive(Debug)]
+struct Routed {
+    /// The catalog upstream. Sent on as `x-gate-upstream-url` when rewriting,
+    /// and used as the base of the direct hop when passing through.
+    upstream_url: String,
+    /// Path + query **relative to `upstream_url`** - our own slug segment
+    /// removed. Both the gateway and the direct upstream append this to their
+    /// own base, so it must not carry anything Gate-internal.
+    path_and_query: String,
+    route: Route,
+}
+
+/// Split `/<segment>/rest?query` into `("<segment>", "/rest?query")`, or `None`
+/// when there is no leading segment. A path that ends at the segment becomes
+/// `"/"`, and a query directly after it keeps a `/` in front so the forwarded
+/// path stays absolute.
+fn split_leading_segment(path_and_query: &str) -> Option<(&str, String)> {
+    let rest = path_and_query.strip_prefix('/')?;
+    let end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (segment, tail) = rest.split_at(end);
+    if segment.is_empty() {
+        return None;
+    }
+    let inner = if tail.is_empty() {
+        "/".to_string()
+    } else if tail.starts_with('?') {
+        format!("/{tail}")
+    } else {
+        tail.to_string()
+    };
+    Some((segment, inner))
+}
+
+/// Resolve a relayed request against the catalog.
+///
+/// Primary scheme: the tool's base URL carries the catalog slug as its first
+/// path segment (`http://127.0.0.1:<port>/anthropic/v1`), so the request itself
+/// says which upstream it belongs to and the relay injects
+/// `x-gate-upstream-url` from the catalog entry - exactly what the MITM engine
+/// does from the CONNECT host. **No tool config has to carry a Gate header.**
+///
+/// Fallback: a config written before path encoding sends no slug and does carry
+/// the header. That shape is still honored so an in-place upgrade keeps routing
+/// until the reconcile pass rewrites the config. The header only *selects* a
+/// catalog entry - the value forwarded is always the entry's own
+/// `upstream_url` - so it cannot widen where the relay will forward.
+///
+/// `Err` carries the status to answer with: a caller that named an upstream we
+/// don't serve is refused (403), while one that named nothing at all is a
+/// malformed request (400).
+fn resolve_route(
+    domains: &[ProxyDomain],
+    path_and_query: &str,
+    headers: &HeaderMap,
+) -> Result<Routed, (StatusCode, String)> {
+    if let Some((segment, inner)) = split_leading_segment(path_and_query) {
+        if let Some(d) = domains.iter().find(|d| d.slug == segment) {
+            return Ok(Routed {
+                upstream_url: d.upstream_url.clone(),
+                route: classify(d, &inner),
+                path_and_query: inner,
+            });
+        }
+    }
+    let Some(upstream) = headers
+        .get(UPSTREAM_URL_HEADER)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{path_and_query:?} does not start with a known upstream slug, and no \
+                 {UPSTREAM_URL_HEADER} header was supplied"
+            ),
+        ));
+    };
+    let d = domains
+        .iter()
+        .find(|d| d.upstream_url == upstream)
+        .ok_or_else(|| {
+            (
+                StatusCode::FORBIDDEN,
+                format!("upstream {upstream:?} is not in the built-in catalog"),
+            )
+        })?;
+    Ok(Routed {
+        upstream_url: d.upstream_url.clone(),
+        route: classify(d, path_and_query),
+        path_and_query: path_and_query.to_string(),
+    })
+}
+
+/// Classify a path within one domain the way the MITM engine's `decide` does:
+/// passthrough prefixes win, then inference rewrites; any other path on the
+/// domain passes through.
+fn classify(d: &ProxyDomain, path: &str) -> Route {
     if d.passthrough_prefixes
         .iter()
         .any(|p| path.starts_with(p.as_str()))
     {
-        return Some(Route::Passthrough);
+        return Route::Passthrough;
     }
     if d.rewrite_prefixes
         .iter()
         .any(|p| path.starts_with(p.as_str()))
     {
-        return Some(Route::Rewrite);
+        return Route::Rewrite;
     }
-    Some(Route::Passthrough)
+    Route::Passthrough
+}
+
+/// Set the upstream hint the gateway forwards on. Always overwrites, so a
+/// caller-supplied value can never reach the gateway.
+fn set_upstream_header(headers: &mut HeaderMap, upstream_url: &str) -> Result<()> {
+    headers.insert(
+        HeaderName::from_static(UPSTREAM_URL_HEADER),
+        hyper::header::HeaderValue::from_str(upstream_url)
+            .context("building the upstream hint header")?,
+    );
+    Ok(())
 }
 
 /// Strip every Gate-internal header before a passthrough hop, so none of them
@@ -576,45 +681,101 @@ fn error_response(status: StatusCode, message: String) -> Response<BoxBody<Bytes
 mod tests {
     use super::*;
 
+    fn resolved(path: &str) -> Option<Routed> {
+        resolve_route(&default_domains(), path, &HeaderMap::new()).ok()
+    }
+
     #[test]
     fn routes_inference_to_gateway_and_account_paths_to_upstream() {
-        let domains = default_domains();
-        let anthropic = "https://api.anthropic.com";
+        // The leading segment names the catalog domain; everything after it is
+        // what gets forwarded, so the slug never reaches the gateway.
+        let r = resolved("/anthropic/v1/messages?beta=true").expect("anthropic slug resolves");
+        assert_eq!(r.route, Route::Rewrite);
+        assert_eq!(r.upstream_url, "https://api.anthropic.com");
+        assert_eq!(r.path_and_query, "/v1/messages?beta=true");
 
-        // Inference rewrites to the gateway.
-        assert!(matches!(
-            route(&domains, anthropic, "/v1/messages?beta=true"),
-            Some(Route::Rewrite)
-        ));
-        // Claude Code's usage/account calls pass through to the real upstream -
-        // the bug this fixes: they used to be funneled to the gateway and 404.
-        assert!(matches!(
-            route(&domains, anthropic, "/api/oauth/usage"),
-            Some(Route::Passthrough)
-        ));
+        // Claude Code's usage/account calls pass through to the real upstream
+        // rather than being funneled to the gateway, which only serves inference.
+        let r = resolved("/anthropic/api/oauth/usage").expect("resolves");
+        assert_eq!(r.route, Route::Passthrough);
+        assert_eq!(r.path_and_query, "/api/oauth/usage");
+
         // An explicit passthrough prefix (the Squirrel updater) also passes
         // through, never rewritten.
-        assert!(matches!(
-            route(&domains, anthropic, "/api/desktop/RELEASES"),
-            Some(Route::Passthrough)
-        ));
-        // An upstream outside the catalog is refused.
-        assert!(route(&domains, "https://attacker.example", "/v1/messages").is_none());
+        assert_eq!(
+            resolved("/anthropic/api/desktop/RELEASES").unwrap().route,
+            Route::Passthrough
+        );
+
+        // A slug that names no catalog domain is refused, so a local process
+        // can't invent an upstream.
+        assert!(resolved("/attacker/v1/messages").is_none());
+        assert!(resolved("/").is_none());
     }
 
     #[test]
     fn routes_chatgpt_codex_responses_to_gateway() {
-        // Regression: ChatGPT-subscription Codex writes
-        // `X-Gate-Upstream-Url: https://chatgpt.com/backend-api` and hits the
-        // relay at `/codex/responses`. The relay must recognize that upstream
-        // (exact-match against the catalog) and classify the path as inference
-        // so it rewrites to the gateway - otherwise the relay 403s the request
-        // ("upstream ... is not in the built-in catalog").
-        let domains = default_domains();
-        let chatgpt = "https://chatgpt.com/backend-api";
-        assert!(matches!(
-            route(&domains, chatgpt, "/codex/responses"),
-            Some(Route::Rewrite)
-        ));
+        // ChatGPT-subscription Codex points at `<relay>/chatgpt/codex` and
+        // appends `/responses`. Stripping the slug has to leave exactly
+        // `/codex/responses`, which is what the gateway concatenates onto
+        // `https://chatgpt.com/backend-api`.
+        let r = resolved("/chatgpt/codex/responses").expect("chatgpt slug resolves");
+        assert_eq!(r.route, Route::Rewrite);
+        assert_eq!(r.upstream_url, "https://chatgpt.com/backend-api");
+        assert_eq!(r.path_and_query, "/codex/responses");
+    }
+
+    #[test]
+    fn routes_openrouter_under_its_api_prefix() {
+        // OpenRouter's `/api` rides in the upstream URL, not the forwarded path:
+        // Gate's ALB diverts `/api/*` to the dashboard API, so a forwarded
+        // `/api/v1/...` 404s before reaching the gateway proxy. Gate re-joins
+        // upstream + path, so OpenRouter still sees /api/v1/chat/completions.
+        let r = resolved("/openrouter/v1/chat/completions").expect("openrouter resolves");
+        assert_eq!(r.route, Route::Rewrite);
+        assert_eq!(r.upstream_url, "https://openrouter.ai/api");
+        assert_eq!(r.path_and_query, "/v1/chat/completions");
+    }
+
+    #[test]
+    fn a_bare_slug_forwards_the_root_path() {
+        let r = resolved("/anthropic").expect("resolves");
+        assert_eq!(r.path_and_query, "/");
+        let r = resolved("/anthropic?x=1").expect("resolves");
+        assert_eq!(r.path_and_query, "/?x=1");
+    }
+
+    #[test]
+    fn falls_back_to_the_legacy_upstream_header() {
+        // A config written before path encoding sends no slug and does carry the
+        // header. Honored so an in-place upgrade keeps routing until the
+        // reconcile pass rewrites the config.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(UPSTREAM_URL_HEADER),
+            hyper::header::HeaderValue::from_static("https://api.anthropic.com"),
+        );
+        let r = resolve_route(&default_domains(), "/v1/messages", &headers)
+            .expect("legacy header resolves");
+        assert_eq!(r.route, Route::Rewrite);
+        assert_eq!(r.upstream_url, "https://api.anthropic.com");
+        // No slug to strip, so the path forwards unchanged.
+        assert_eq!(r.path_and_query, "/v1/messages");
+
+        // The header still only *selects* a catalog entry - an upstream outside
+        // the catalog is refused just as it was before.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(UPSTREAM_URL_HEADER),
+            hyper::header::HeaderValue::from_static("https://attacker.example"),
+        );
+        // Refused, not merely unrouted: naming an upstream we don't serve is a
+        // 403, while naming nothing at all is a 400.
+        let err = resolve_route(&default_domains(), "/v1/messages", &headers)
+            .expect_err("off-catalog upstream must be refused");
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        let err = resolve_route(&default_domains(), "/v1/messages", &HeaderMap::new())
+            .expect_err("no slug and no header is malformed");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
     }
 }

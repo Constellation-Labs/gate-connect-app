@@ -369,10 +369,15 @@ fn cmd_status(tool: &str) -> Result<()> {
                 println!("Re-run `opencode` to pick up the new opencode.json provider block.")
             }
             ToolId::OpenClaw => {
-                println!("Re-run `openclaw` to pick up the new openclaw.json provider block.")
+                println!("Re-run `openclaw` to pick up the new proxy setting in openclaw.json.")
             }
             ToolId::Hermes => {
-                println!("Re-run `hermes` (or start a new Hermes Desktop chat) to pick up the new config.yaml routing.")
+                println!("Re-run `hermes` to pick up the new proxy settings in ~/.hermes/.env.")
+            }
+            ToolId::EnvProxy => {
+                println!(
+                    "Start a new shell (or relaunch your tools) - only processes started after the export see these variables."
+                )
             }
         }
     }
@@ -395,6 +400,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
         gateway_base_url: acct.gateway_base_url,
         upstream_url,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
+        engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
     };
     integ.connect(&input)?;
     println!("Connected {}.", integ.display_name());
@@ -428,19 +434,30 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
         ToolId::OpenClaw => {
             println!("  1. Quit any running `openclaw` sessions.");
             println!(
-                    "  2. Re-run `openclaw` — your configured providers (anthropic / openai / openrouter) now route through Gate. Use the same model names you always have."
-                );
+                "  2. Re-run `openclaw` - it now sends its traffic through Gate's local proxy, so every provider you have configured routes, whichever one you use."
+            );
             println!(
-                    "  3. Your provider credentials in ~/.openclaw/openclaw.json are untouched. Gate adds its headers and forwards each request to the original upstream."
-                );
+                "  3. Your provider credentials in ~/.openclaw/openclaw.json are untouched, and their base URLs are left exactly as you set them."
+            );
         }
         ToolId::Hermes => {
             println!("  1. Quit any running `hermes` sessions.");
             println!(
-                "  2. Re-run `hermes` (or start a new Hermes Desktop chat) - it reads ~/.hermes/config.yaml on launch and routes model.base_url through Gate."
+                "  2. Re-run `hermes` - it reads ~/.hermes/.env on launch and sends its traffic through Gate's local proxy. Your config.yaml is not touched."
             );
             println!(
-                "  3. Your upstream credentials are untouched. Gate adds its headers and forwards each request to the original upstream."
+                "  3. Your upstream credentials are untouched. Gate injects its own in flight and forwards each request to the original upstream."
+            );
+        }
+        ToolId::EnvProxy => {
+            println!(
+                "  1. Gate's proxy is now in your environment (HTTPS_PROXY, NO_PROXY, NODE_EXTRA_CA_CERTS)."
+            );
+            println!(
+                "  2. Start a new shell, then re-run OpenCode or any other tool that reads HTTPS_PROXY. Already-running processes keep the old environment."
+            );
+            println!(
+                "  3. This is machine-wide: git, curl and npm go through Gate's proxy too. It blind-tunnels anything Gate does not intercept, and `gate-connect disconnect env-proxy` takes it back out."
             );
         }
     }
@@ -466,6 +483,11 @@ fn cmd_disconnect(tool: &str) -> Result<()> {
         }
         ToolId::Hermes => {
             println!("Restart any running `hermes` sessions for the change to take effect.")
+        }
+        ToolId::EnvProxy => {
+            println!(
+                "Start a new shell for the change to take effect - already-running processes keep the variables until they are relaunched."
+            )
         }
     }
     Ok(())

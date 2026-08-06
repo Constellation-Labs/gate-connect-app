@@ -234,6 +234,7 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
                 relay_base_url: crate::proxy::relay_base_url(),
+                engine_proxy_url: crate::proxy::engine_proxy_url(),
             };
             integ
                 .connect(&input)
@@ -331,6 +332,10 @@ fn domains_enabled_persisted(_p: &Provider) -> bool {
 /// values are ours (an old scheme, a changed relay port), not a setup the user
 /// made by hand - and the relay is up so there's a live base URL to point it
 /// at. Unmarked drift is left alone so this never clobbers an out-of-app setup.
+///
+/// Tools no provider maps get the drift half of the same treatment via
+/// [`reconcile_unmapped_tools`]; they have no provider flag to read as intent,
+/// so they are never auto-*connected*.
 pub fn reconcile_enabled() -> Result<()> {
     let Some(account) = account::load()? else {
         return Ok(()); // no gateway configured yet - nothing to point tools at
@@ -364,6 +369,7 @@ pub fn reconcile_enabled() -> Result<()> {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
                 relay_base_url: relay_base_url.clone(),
+                engine_proxy_url: crate::proxy::engine_proxy_url(),
             };
             if let Err(e) = integ.connect(&input) {
                 eprintln!(
@@ -371,6 +377,52 @@ pub fn reconcile_enabled() -> Result<()> {
                     integ.display_name()
                 );
             }
+        }
+    }
+    reconcile_unmapped_tools(&account, relay_base_url.as_deref())
+}
+
+/// Self-heal the registry tools no provider maps (OpenCode, OpenClaw, Hermes).
+///
+/// Unlike a provider tool, a standalone tool has no enabled-provider flag to
+/// read as intent, so `Detected` (installed, no Gate config) is left alone -
+/// nothing says the user wants it routed. Only *our own* stale write is
+/// reasserted: `Drifted` plus [`Integration::config_is_managed`], the same test
+/// the provider pass uses. That covers the case this exists for - the relay
+/// came back on a different port, so the base URL we wrote is now dead - while
+/// never clobbering a config the user set up out-of-app.
+fn reconcile_unmapped_tools(
+    account: &account::Account,
+    relay_base_url: Option<&str>,
+) -> Result<()> {
+    let Some(relay_base_url) = relay_base_url else {
+        return Ok(()); // no relay to point anything at; connect() would bail
+    };
+    let mapped: Vec<ToolId> = providers()
+        .iter()
+        .flat_map(|p| p.tool_ids.iter().copied())
+        .collect();
+    for integ in registry::registry() {
+        if mapped.contains(&integ.id()) {
+            continue; // covered by the provider pass above
+        }
+        if integ.requires_upstream_credential() {
+            continue; // needs a stored key; not safe to auto-apply
+        }
+        if !matches!(integ.status(), Ok(Status::Drifted(_))) {
+            continue;
+        }
+        if !integ.config_is_managed().unwrap_or(false) {
+            continue; // drift in a config we didn't write - leave it alone
+        }
+        let input = ConnectInput {
+            gateway_base_url: account.gateway_base_url.clone(),
+            upstream_url: integ.default_upstream_url().to_string(),
+            relay_base_url: Some(relay_base_url.to_string()),
+            engine_proxy_url: crate::proxy::engine_proxy_url(),
+        };
+        if let Err(e) = integ.connect(&input) {
+            eprintln!("[gate] re-applying {} failed: {e:#}", integ.display_name());
         }
     }
     Ok(())
@@ -559,6 +611,7 @@ fn restore_swept_tools() -> Result<()> {
             gateway_base_url: account.gateway_base_url.clone(),
             upstream_url: integ.default_upstream_url().to_string(),
             relay_base_url: relay_base_url.clone(),
+            engine_proxy_url: crate::proxy::engine_proxy_url(),
         };
         if let Err(e) = integ.connect(&input) {
             eprintln!("[gate] restoring tool {slug:?} on master-on failed: {e:#}");

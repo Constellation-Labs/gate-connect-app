@@ -22,6 +22,10 @@ pub mod registry;
 pub mod integrations {
     pub mod claude_code;
     pub mod codex;
+    /// Managed `.env` edits, shared by the proxy-routed harnesses.
+    pub(crate) mod dotenv;
+    /// Not a tool: the environment channel itself, as a thing users can decline.
+    pub mod env_proxy;
     pub mod hermes;
     pub mod openclaw;
     pub mod opencode;

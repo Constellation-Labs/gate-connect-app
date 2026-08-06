@@ -168,3 +168,22 @@ describe("cancelled prompt names the control the user actually touched", () => {
     expect(classifyError("User canceled (-128)", "forget").hint).toContain("Click Reset");
   });
 });
+
+describe("classifyError: a proxy-routed tool with routing off", () => {
+  // OpenClaw, Hermes and the environment channel all refuse by design when the
+  // engine is down. The generic fallback answers "try again", which cannot
+  // work - the user has to turn routing on.
+  const RAW =
+    "configuring OpenClaw: the Gate proxy is not running -- turn routing on before connecting OpenClaw";
+
+  it("names the actual remedy instead of suggesting a retry", () => {
+    const c = classifyError(RAW, "connect");
+    expect(c.title).toContain("Route through Gate");
+    expect(c.hint).not.toContain("Try again");
+    expect(c.hint).toContain("routing");
+  });
+
+  it("keeps the backend sentence available in the details", () => {
+    expect(classifyError(RAW, "connect").raw).toContain("proxy is not running");
+  });
+});

@@ -89,6 +89,7 @@ fn connect_opencode() {
             gateway_base_url: "https://gateway.example.com".into(),
             upstream_url: integ.default_upstream_url().to_string(),
             relay_base_url: Some("http://127.0.0.1:8402".into()),
+            engine_proxy_url: Some("http://127.0.0.1:8403".into()),
         })
         .expect("connect opencode");
     let status = integ.status().unwrap();

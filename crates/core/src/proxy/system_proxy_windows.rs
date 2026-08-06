@@ -256,3 +256,162 @@ pub fn force_off() -> Result<()> {
     notify_wininet();
     set_auto_config("")
 }
+
+// --- Proxy environment variables -----------------------------------------
+//
+// WinINET's PAC above only reaches clients that go through WinINET. The
+// command-line AI tools don't: Node, Bun and Python read `HTTPS_PROXY` and
+// friends, and some (OpenCode) expose no proxy setting of their own at all.
+// `HKCU\Environment` is the per-user environment every new process inherits,
+// so writing there is the Windows equivalent of the Linux `environment.d`
+// drop-in and the macOS `launchctl setenv`.
+//
+// Two differences from the other platforms:
+//
+// - **These persist across a reboot.** macOS launchd variables evaporate at
+//   logout, so a crashed session self-heals there; here a stale value would
+//   outlive the crash. `reconcile_on_startup` clears them for that reason.
+// - **Names are case-insensitive**, so we write only the upper-case four
+//   ([`super::proxy_env::VARS_CASE_INSENSITIVE`]); adding `https_proxy` as well
+//   would be two writes contending for one entry.
+//
+// As everywhere else, already-running processes keep their old environment
+// until relaunched.
+
+const ENVIRONMENT: &str = "Environment";
+
+// WM_SETTINGCHANGE broadcast constants from winuser.h.
+const HWND_BROADCAST: isize = 0xffff;
+const WM_SETTINGCHANGE: u32 = 0x001a;
+const SMTO_ABORTIFHUNG: u32 = 0x0002;
+
+#[link(name = "user32")]
+extern "system" {
+    fn SendMessageTimeoutW(
+        hwnd: isize,
+        msg: u32,
+        wparam: usize,
+        lparam: *const u16,
+        flags: u32,
+        timeout: u32,
+        result: *mut usize,
+    ) -> isize;
+}
+
+fn environment_key(write: bool) -> Result<RegKey> {
+    let access = if write {
+        KEY_READ | KEY_SET_VALUE
+    } else {
+        KEY_READ
+    };
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(ENVIRONMENT, access)
+        .with_context(|| format!("opening HKCU\\{ENVIRONMENT}"))
+}
+
+/// Tell the shell the environment block changed, so processes launched from
+/// Explorer afterwards inherit the new values instead of the ones Explorer
+/// captured at *its* startup. Without this the variables only take effect at
+/// the next logon.
+///
+/// `SMTO_ABORTIFHUNG` with a short timeout because this is a broadcast to every
+/// top-level window: one wedged application must not block the proxy toggle.
+fn broadcast_environment_change() {
+    let param: Vec<u16> = ENVIRONMENT
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut result: usize = 0;
+    // SAFETY: `param` is a NUL-terminated UTF-16 buffer that outlives the call,
+    // and `result` is a valid out-pointer. The timeout bounds the call.
+    unsafe {
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            param.as_ptr(),
+            SMTO_ABORTIFHUNG,
+            5_000,
+            &mut result,
+        );
+    }
+}
+
+/// Current value of one managed variable, or `None` when unset. An empty string
+/// counts as unset so restoring it becomes a delete rather than an empty entry.
+fn env_get(key: &str) -> Option<String> {
+    environment_key(false)
+        .ok()?
+        .get_value::<String, _>(key)
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+/// Write the proxy variables into the per-user environment, after recording
+/// what they held before so [`disable_env`] can put a user-owned proxy back.
+///
+/// Takes the *engine* port, not the PAC port: an env-var proxy has no PAC
+/// equivalent, so tools that honour it dial the engine directly and it
+/// blind-tunnels whatever isn't an intercepted domain.
+pub fn enable_env(port: u16) -> Result<()> {
+    let assignments = super::proxy_env::case_insensitive(port)?;
+    super::proxy_env::snapshot_prior(&super::proxy_env::VARS_CASE_INSENSITIVE, env_get);
+    let key = environment_key(true)?;
+    for (name, value) in &assignments {
+        key.set_value(name, value)
+            .with_context(|| format!("setting HKCU\\{ENVIRONMENT}\\{name}"))?;
+    }
+    broadcast_environment_change();
+    Ok(())
+}
+
+/// The proxy URL currently exported to the per-user environment, read back
+/// from the registry rather than from anything we remember writing.
+pub fn exported_proxy() -> Result<Option<String>> {
+    Ok(env_get("HTTPS_PROXY"))
+}
+
+/// The PAC and the exported variables are separate mechanisms here, so the
+/// user can keep GUI routing while declining the machine-wide environment
+/// change (contrast Linux, where the drop-in is both at once).
+pub const ENV_CHANNEL_SEPARABLE: bool = true;
+
+/// Put the environment back the way it was: a variable the user owned is
+/// restored to their value, one only we set is deleted.
+///
+/// Best-effort per variable and idempotent - it runs on the disable, crash and
+/// startup-reconcile paths, where giving up halfway would leave the rest of the
+/// set pointing at a dead engine.
+pub fn disable_env() -> Result<()> {
+    let prior = super::proxy_env::load_snapshot().unwrap_or_else(|e| {
+        eprintln!("gate proxy: unreadable proxy env snapshot ({e}); clearing our variables");
+        None
+    });
+    let key = environment_key(true)?;
+    let mut failed = Vec::new();
+    for name in super::proxy_env::VARS_CASE_INSENSITIVE {
+        // No snapshot means we cannot know the user's prior value, so delete -
+        // leaving a dead proxy behind is the one outcome we must not pick.
+        let restore_to = prior
+            .as_ref()
+            .and_then(|p| p.vars.get(name).cloned())
+            .flatten();
+        let outcome = match restore_to {
+            Some(value) => key.set_value(name, &value).map_err(anyhow::Error::from),
+            None => match key.delete_value(name) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(anyhow::Error::from(e)),
+            },
+        };
+        if let Err(e) = outcome {
+            failed.push(format!("{name}: {e}"));
+        }
+    }
+    broadcast_environment_change();
+    let _ = super::proxy_env::clear_snapshot();
+    if !failed.is_empty() {
+        anyhow::bail!("could not revert proxy environment ({})", failed.join("; "));
+    }
+    Ok(())
+}

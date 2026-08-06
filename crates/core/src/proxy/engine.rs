@@ -479,12 +479,18 @@ impl HttpHandler for GateHandler {
 }
 
 /// Repoint a request at the gateway: swap scheme + authority for the
-/// gateway's, keep the original path/query, and inject the Gate headers.
-/// The app's own auth header (bearer / `x-api-key`) is left intact - Gate
-/// validates the Gate credential and forwards the rest. The credential
+/// gateway's, strip the upstream's own path prefix, and inject the Gate
+/// headers. The app's own auth header (bearer / `x-api-key`) is left intact -
+/// Gate validates the Gate credential and forwards the rest. The credential
 /// precedence (a caller-supplied `x-gate-api-key` is respected, else OAuth
 /// token wins over the legacy key) lives in [`super::inject_gate_credential`],
 /// shared with the relay so the two paths can't drift.
+///
+/// The path strip is what keeps a provider whose API lives under a reserved
+/// prefix routable: Gate appends the forwarded path to `X-Gate-Upstream-Url`,
+/// so moving `/api` from the request line into the upstream URL reassembles to
+/// the same provider URL while sending Gate a path its ALB won't divert. See
+/// the `openrouter` catalog entry in [`super::default_domains`].
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
@@ -497,6 +503,23 @@ pub(crate) fn apply_rewrite<T>(
     let mut parts = req.uri().clone().into_parts();
     parts.scheme = gw.scheme;
     parts.authority = gw.authority;
+
+    let upstream_path = super::upstream_path(upstream_url);
+    if !upstream_path.is_empty() {
+        let pq = parts.path_and_query.as_ref().map_or("/", |pq| pq.as_str());
+        let (path, query) = pq.split_once('?').map_or((pq, None), |(p, q)| (p, Some(q)));
+        let stripped = super::strip_upstream_path(path, upstream_path).with_context(|| {
+            format!("request path {path:?} is outside upstream {upstream_url:?}")
+        })?;
+        let rebuilt = match query {
+            Some(q) => format!("{stripped}?{q}"),
+            None => stripped.to_string(),
+        };
+        parts.path_and_query = Some(rebuilt.parse().with_context(|| {
+            format!("rebuilding request path after stripping {upstream_path:?}")
+        })?);
+    }
+
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
     let headers = req.headers_mut();

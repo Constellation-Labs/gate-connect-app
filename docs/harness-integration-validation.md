@@ -1,5 +1,13 @@
 # Agent-harness integration validation (OpenClaw, Hermes, OpenCode)
 
+> **Partly superseded (2026-08-06).** OpenClaw and Hermes were rewritten as
+> proxy-engine integrations and the system proxy now exports proxy environment
+> variables on every platform, which retires or moots H1-H3 and H5-H7, and
+> neutralises O1's impact. This document is kept for its per-finding detail and
+> its record of what validated cleanly; for the current mechanism, tool status
+> and open items see [routing-architecture.md](routing-architecture.md). The
+> hidden-in-UI status below is still accurate.
+
 Validated 2026-08-03 against upstream documentation.
 
 Status as of this document: **all three agent harnesses - OpenCode, OpenClaw

@@ -1,67 +1,93 @@
 //! Hermes integration.
 //!
-//! Hermes is a Python-based OpenAI-compatible agent CLI with a single
-//! `model.base_url` in `~/.hermes/config.yaml`. Gate Connect redirects that
-//! endpoint through the loopback reverse-proxy relay ([`crate::proxy::relay`])
-//! by setting `model.base_url` to `http://127.0.0.1:<relay-port>/v1` and
-//! injecting only the non-secret `X-Gate-Upstream-Url` hint into
-//! `model.default_headers`. The relay injects the live Gate credential per
-//! request, so **no Gate credential is written to config.yaml**. The user's
-//! upstream credentials are untouched -- Gate is a pure passthrough on
-//! `Authorization` / `x-api-key`.
+//! Hermes routes through Gate's MITM proxy engine, not the reverse-proxy relay,
+//! and the entire integration is a few variables in `~/.hermes/.env`:
+//!
+//! ```text
+//! HTTPS_PROXY=http://127.0.0.1:<engine-port>
+//! HTTP_PROXY=http://127.0.0.1:<engine-port>
+//! NO_PROXY=localhost,127.0.0.1,::1
+//! HERMES_CA_BUNDLE=<app-support>/proxy/ca-bundle.pem
+//! ```
+//!
+//! **`config.yaml` is never touched.** Hermes loads `$HERMES_HOME/.env` at CLI
+//! startup (`hermes_cli/env_loader.py`, called from `cli.py`) before any client
+//! is constructed, and `agent/process_bootstrap.py` reads `HTTPS_PROXY` /
+//! `HTTP_PROXY` / `ALL_PROXY` (plus lower-case) from the environment, honouring
+//! `NO_PROXY` via `proxy_bypass_environment`. Which traffic then reaches Gate is
+//! decided by the enabled catalog domains - the engine MITMs those and
+//! blind-tunnels everything else.
+//!
+//! Why this replaced rewriting `model.base_url`: that redirect was per-endpoint,
+//! so anything changing which endpoint is live routed around us while `status()`
+//! still said Connected. A process-level proxy catches the socket regardless of
+//! which provider config won, which retires that whole class - H1 (the
+//! native-Anthropic wire) and H6 (`custom_providers` overriding `model.base_url`)
+//! both stop being reachable. It also means a fresh install with no `config.yaml`
+//! is no longer a special case: there is no model block to read.
+//! See `docs/harness-integration-validation.md`.
+//!
+//! `NO_PROXY` is set for loopback so a locally-hosted provider keeps talking to
+//! itself directly instead of being tunnelled through the engine - the same
+//! protection the old `is_local_url` guard gave, expressed where Hermes can
+//! actually act on it.
+//!
+//! Certificates: `HERMES_CA_BUNDLE` points at a bundle carrying the platform's
+//! trust roots *plus* Gate's CA ([`crate::proxy::ca_bundle`]). The OS trust
+//! store alone is not enough here. Stdlib Python does read it, but Hermes
+//! installs into a venv (`setup-hermes.sh` runs `uv venv` then pip), so its
+//! `httpx` / `requests` clients fall back to a **pip-installed** certifi that
+//! knows nothing about the CA - measured: `certifi.where()` in that venv is
+//! `…/site-packages/certifi/cacert.pem`, not the system bundle. `ssl_verify.py`
+//! feeds this value to `create_default_context(cafile=…)`, which *replaces* the
+//! trust store rather than adding to it, which is why it must be a full bundle
+//! and never our single cert. One variable covers both client libraries -
+//! `agent/model_metadata.py` reads the same key for its `requests` callsites.
 //!
 //! State tracking: a sidecar at `<app_support_dir>/hermes-state.json` records
-//! the original `base_url` and `default_headers` so `disconnect` can restore
-//! them exactly. The sidecar is written atomically before the config is
-//! mutated and deleted only after the config is restored.
-//!
-//! Config format: we parse and re-serialize with `serde_yaml`, which means a
-//! connect/disconnect rewrites `config.yaml` and **drops any comments**
-//! the user had in it (same precedent as OpenClaw's JSON5 rewrite). The
-//! redirected `base_url` / `default_headers` values themselves are snapshotted
-//! and restored exactly on disconnect.
+//! which variables we added, so disconnect removes exactly those and leaves a
+//! pre-existing `HTTPS_PROXY` (a corporate egress proxy, say) alone.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_yaml::{Mapping, Value};
-use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::integrations::dotenv;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
 const DISPLAY_NAME: &str = "Hermes";
-const UPSTREAM_PROVIDER_NAME: &str = "openrouter";
+const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
-
-const HERMES_DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-const GATEWAY_PATH_SUFFIX: &str = "/v1";
-const UPSTREAM_URL_HEADER: &str = "X-Gate-Upstream-Url";
 const STATE_FILENAME: &str = "hermes-state.json";
+
+/// Keep loopback off the proxy so a self-hosted provider is reached directly.
+const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
+
+/// The variable status compares against; the others move with it.
+const PRIMARY_VAR: &str = "HTTPS_PROXY";
 
 #[cfg(unix)]
 const CLI_BIN_PATHS: &[&str] = &["/usr/local/bin/hermes", "/usr/bin/hermes"];
 #[cfg(not(unix))]
 const CLI_BIN_PATHS: &[&str] = &[];
 
-/// Sidecar that records what `connect` changed so `disconnect` can restore it.
+/// Sidecar that records what `connect` changed so `disconnect` can undo exactly
+/// that and nothing else.
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct State {
     #[serde(default = "default_version")]
     version: u8,
-    /// The value of `model.base_url` before connect, or `None` if the key
-    /// was absent.
-    previous_base_url: Option<String>,
-    /// True if `model.base_url` existed in the original config. When false,
-    /// disconnect removes the key entirely rather than restoring a `None`.
+    /// Variables connect added to `~/.hermes/.env`. Anything the user had
+    /// already set is absent, so disconnect leaves it be.
     #[serde(default)]
-    base_url_was_set: bool,
-    /// Full contents of `model.default_headers` before connect, or `None` if
-    /// the section was absent.
-    previous_default_headers: Option<Vec<(String, String)>>,
+    added_vars: Vec<String>,
+    /// Whether connect created `.env` itself.
+    #[serde(default)]
+    env_file_created: bool,
 }
 
 fn default_version() -> u8 {
-    1
+    2
 }
 
 pub struct Hermes;
@@ -91,53 +117,35 @@ impl Integration for Hermes {
         if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);
         }
-        Ok(crate::env::hermes_config_dir()?.exists())
+        if launcher_paths()?.iter().any(|p| p.exists()) {
+            return Ok(true);
+        }
+        Ok(launcher_on_path())
+    }
+
+    fn config_is_managed(&self) -> Result<bool> {
+        // Two-part marker. The sidecar only exists because connect() wrote it,
+        // but on its own it can't tell our stale write apart from a proxy the
+        // user has since repointed by hand - so also require that what's on
+        // disk still aims at loopback, which is only ever us.
+        if load_state()?.is_none() {
+            return Ok(false);
+        }
+        Ok(configured_proxy()?.as_deref().is_some_and(is_loopback_url))
     }
 
     fn status(&self) -> Result<Status> {
         if !self.detect()? {
             return Ok(Status::NotInstalled);
         }
-
-        let Some(_state) = load_state()? else {
+        if load_state()?.is_none() {
             return Ok(Status::Detected);
-        };
-
-        let expected_base = match crate::proxy::relay_base_url() {
-            Some(u) => compute_base_url(&u),
-            None => {
-                return Ok(Status::Drifted(
-                    "the Gate proxy has not been enabled yet -- turn it on to route Hermes".into(),
-                ));
-            }
-        };
-
-        let Some(settings) = load_settings()? else {
-            return Ok(Status::Detected);
-        };
-
-        let model = settings.get("model").and_then(|v| v.as_mapping());
-
-        let base_url = model
-            .and_then(|m| m.get("base_url"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let headers = model
-            .and_then(|m| m.get("default_headers"))
-            .and_then(|v| v.as_mapping());
-
-        // No key check: the relay injects the Gate credential live, so the
-        // config carries only the non-secret upstream hint.
-        let has_upstream_url = headers.and_then(|h| h.get(UPSTREAM_URL_HEADER)).is_some();
-
-        if base_url == expected_base && has_upstream_url {
-            Ok(Status::Connected)
-        } else {
-            Ok(Status::Drifted(format!(
-                "Hermes config does not match Gate settings (base_url: {base_url:?}, expected: {expected_base:?})"
-            )))
         }
+        Ok(compute_status(
+            configured_proxy()?.as_deref().unwrap_or(""),
+            crate::proxy::persisted_engine_proxy_url().as_deref(),
+            crate::proxy::engine_proxy_url().is_some(),
+        ))
     }
 
     fn connect(&self, input: &ConnectInput) -> Result<()> {
@@ -146,137 +154,63 @@ impl Integration for Hermes {
                 "Hermes is not installed -- install it from https://github.com/nousresearch/hermes-agent first"
             );
         }
-        let relay_base_url = input.relay_base_url.as_deref().context(
-            "the Gate proxy relay is not running -- enable the proxy before connecting Hermes",
+
+        // Hard requirement: Hermes sends its traffic to whatever `HTTPS_PROXY`
+        // names, so pointing it at an engine that is not running would break
+        // its requests rather than merely un-routing them.
+        let proxy_url = input.engine_proxy_url.as_deref().context(
+            "the Gate proxy is not running -- turn routing on before connecting Hermes, which \
+             sends its traffic through the proxy",
         )?;
 
-        let relay_base = compute_base_url(relay_base_url);
+        // Built before the .env write so a failure here leaves nothing behind.
+        let bundle = crate::proxy::ca_bundle::ensure()?;
 
-        let mut settings = load_settings()?.unwrap_or_default();
+        let applied = dotenv::add_vars(
+            &env_file_path()?,
+            &[
+                ("HTTPS_PROXY", proxy_url.to_string()),
+                ("HTTP_PROXY", proxy_url.to_string()),
+                ("NO_PROXY", NO_PROXY_VALUE.to_string()),
+                ("HERMES_CA_BUNDLE", bundle.display().to_string()),
+            ],
+        )?;
 
-        // Ensure `model` section exists.
-        let model_key = Value::String("model".to_string());
-        if !settings.contains_key(&model_key) {
-            settings.insert(model_key.clone(), Value::Mapping(Mapping::new()));
-        }
-
-        let model = settings
-            .get_mut(&model_key)
-            .and_then(|v| v.as_mapping_mut())
-            .context("model is not a mapping")?;
-
-        let base_url_key = Value::String("base_url".to_string());
-        let headers_key = Value::String("default_headers".to_string());
-
-        let current_base_url = model
-            .get(&base_url_key)
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| HERMES_DEFAULT_BASE_URL.to_string());
-
-        if is_local_url(&current_base_url) {
+        if applied.added.is_empty() {
             anyhow::bail!(
-                "Hermes is pointed at a local endpoint ({current_base_url:?}) -- skipping to avoid redirecting local traffic through Gate"
+                "Hermes already has its own proxy settings in ~/.hermes/.env -- Gate left them \
+                 alone. Remove them first if you want Hermes to route through Gate."
             );
         }
 
-        let upstream_url = upstream_url_from_base(&current_base_url);
-
-        // Snapshot original values before we touch anything.
-        let state = State {
-            version: 1,
-            previous_base_url: model
-                .get(&base_url_key)
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            base_url_was_set: model.contains_key(&base_url_key),
-            previous_default_headers: model.get(&headers_key).and_then(|v| v.as_mapping()).map(
-                |m| {
-                    m.iter()
-                        .filter_map(|(k, v)| {
-                            Some((k.as_str()?.to_string(), v.as_str()?.to_string()))
-                        })
-                        .collect()
-                },
-            ),
-        };
+        // Preserve the ORIGINAL record across re-connects: a second connect
+        // must not claim credit for variables the first one added.
+        let mut state = load_state()?.unwrap_or_default();
+        if state.added_vars.is_empty() {
+            state.version = 2;
+            state.added_vars = applied.added;
+            state.env_file_created = applied.file_created;
+        }
         save_state(&state)?;
 
-        // Redirect base_url at the relay .
-        model.insert(base_url_key, Value::String(relay_base));
-
-        // Inject only the non-secret upstream hint into default_headers. The
-        // relay injects the Gate credential live, so no key is written here.
-        if !model.contains_key(&headers_key) {
-            model.insert(headers_key.clone(), Value::Mapping(Mapping::new()));
-        }
-        let headers = model
-            .get_mut(&headers_key)
-            .and_then(|v| v.as_mapping_mut())
-            .context("default_headers is not a mapping")?;
-
-        headers.insert(
-            Value::String(UPSTREAM_URL_HEADER.to_string()),
-            Value::String(upstream_url),
-        );
-
-        write_settings(&settings)
+        eprintln!("note: Hermes reads ~/.hermes/.env at startup -- restart it to pick this up.");
+        Ok(())
     }
 
     fn disconnect(&self) -> Result<()> {
         let Some(state) = load_state()? else {
             return Ok(());
         };
-
-        if let Some(mut settings) = load_settings()? {
-            let model_key = Value::String("model".to_string());
-            if let Some(model) = settings
-                .get_mut(&model_key)
-                .and_then(|v| v.as_mapping_mut())
-            {
-                let base_url_key = Value::String("base_url".to_string());
-                let headers_key = Value::String("default_headers".to_string());
-
-                // Restore base_url.
-                if let Some(prev) = &state.previous_base_url {
-                    model.insert(base_url_key, Value::String(prev.clone()));
-                } else if !state.base_url_was_set {
-                    model.remove(&base_url_key);
-                }
-
-                // Restore default_headers.
-                match &state.previous_default_headers {
-                    None => {
-                        model.remove(&headers_key);
-                    }
-                    Some(prev_headers) => {
-                        let mut restored = Mapping::new();
-                        for (k, v) in prev_headers {
-                            restored.insert(Value::String(k.clone()), Value::String(v.clone()));
-                        }
-                        model.insert(headers_key, Value::Mapping(restored));
-                    }
-                }
-            }
-            write_settings(&settings)?;
-        }
-
+        dotenv::remove_vars(&env_file_path()?, &state.added_vars, state.env_file_created)?;
+        // Only drop the sidecar once the file is back: losing it first would
+        // leave our variables in place while status reports the tool clean.
         clear_state()
     }
 
     fn save_upstream_credential(&self, _credential: &str) -> Result<()> {
         anyhow::bail!(
-            "Hermes does not need a separate upstream credential -- Gate Connect injects its headers into ~/.hermes/config.yaml."
+            "Hermes does not need a separate upstream credential -- Gate routes its traffic through the proxy and passes your provider credentials through untouched."
         )
-    }
-
-    /// Hidden from the popover: `model.default_headers` applies on the OpenAI
-    /// wire only, and we never read `api_mode`. On a native-Anthropic setup the
-    /// `X-Gate-Upstream-Url` hint is silently not sent and the relay rejects
-    /// the request outright, while `status()` still reports Connected.
-    /// See docs/harness-integration-validation.md H1.
-    fn hidden_in_ui(&self) -> bool {
-        true
     }
 
     fn has_upstream_credential(&self) -> Result<bool> {
@@ -288,81 +222,99 @@ impl Integration for Hermes {
     }
 }
 
-/// Appends `/v1` to the relay's loopback base URL, stripping any trailing
-/// slash first. The relay (and Gate behind it) forward the path verbatim.
-fn compute_base_url(base: &str) -> String {
-    format!("{}{}", base.trim_end_matches('/'), GATEWAY_PATH_SUFFIX)
-}
-
-/// Strips the trailing `/v1` from a `base_url` to produce the value Gate
-/// expects in `X-Gate-Upstream-Url`. Gate prepends this to the inbound
-/// request path, so `/v1/chat/completions` must live on the client side.
-fn upstream_url_from_base(base_url: &str) -> String {
-    let s = base_url.trim_end_matches('/');
-    if let Some(stripped) = s.strip_suffix("/v1") {
-        stripped.trim_end_matches('/').to_string()
-    } else {
-        s.to_string()
+/// Pure drift evaluation, split out of [`Hermes::status`] so all four states are
+/// testable without a live engine.
+///
+/// `expected` is our proxy address from the persisted port (identity: a config
+/// pointing here is ours even while routing is off); `running` is whether the
+/// engine is actually up. They are separate because "pointed at us but the
+/// engine is down" is a broken tool, not a cosmetic mismatch, and it is reported
+/// as drift rather than Connected so the master-off sweep still disconnects it.
+fn compute_status(configured: &str, expected: Option<&str>, running: bool) -> Status {
+    let Some(expected) = expected else {
+        return Status::Drifted(
+            "Gate has never bound a proxy port, so nothing can be routing yet".into(),
+        );
+    };
+    if configured != expected {
+        return Status::Drifted(format!(
+            "Hermes config does not match Gate settings (HTTPS_PROXY: {configured:?}, expected: \
+             {expected:?})"
+        ));
     }
+    if !running {
+        return Status::Drifted(format!(
+            "the Gate proxy is not running, so Hermes cannot reach its provider ({configured:?} \
+             is a dead address) -- turn the proxy on, or disconnect Hermes to restore it"
+        ));
+    }
+    Status::Connected
 }
 
-/// Returns true if `base_url` targets a local address (loopback, link-local,
-/// RFC-1918, `.local`, `.lan`, `.internal`). We skip those to avoid
-/// redirecting traffic from private/local endpoints through Gate.
-fn is_local_url(base_url: &str) -> bool {
-    let authority = base_url
-        .strip_prefix("http://")
-        .or_else(|| base_url.strip_prefix("https://"))
-        .unwrap_or(base_url)
-        .split('/')
-        .next()
-        .unwrap_or("");
-    let host = authority.split(':').next().unwrap_or("");
-    matches!(
-        host,
-        "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "metadata.google.internal"
-    ) || host.ends_with(".local")
-        || host.ends_with(".lan")
-        || host.starts_with("10.")
-        || host.starts_with("192.168.")
-        || host.starts_with("169.254.")
-        || host.ends_with(".internal")
+/// The proxy Hermes is currently pointed at, per its own `.env`.
+fn configured_proxy() -> Result<Option<String>> {
+    dotenv::read_var(&env_file_path()?, PRIMARY_VAR)
 }
 
-fn state_path() -> Result<std::path::PathBuf> {
+/// Whether a proxy URL points at loopback - i.e. is one of ours rather than a
+/// corporate egress proxy the user configured themselves.
+fn is_loopback_url(url: &str) -> bool {
+    let lowered = url.trim().to_ascii_lowercase();
+    let rest = lowered
+        .split_once("://")
+        .map_or(lowered.as_str(), |(_, r)| r);
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = authority
+        .strip_prefix('[')
+        .and_then(|a| a.split(']').next())
+        .unwrap_or_else(|| authority.split(':').next().unwrap_or(""));
+    host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+fn env_file_path() -> Result<PathBuf> {
+    Ok(crate::env::hermes_config_dir()?.join(".env"))
+}
+
+/// Where the Hermes launcher actually lands, checked instead of "the config
+/// directory exists".
+///
+/// The installer writes `~/.hermes/` and drops the launcher in `~/.local/bin` -
+/// so treating the config directory as proof of installation reported Hermes as
+/// installed long after it was removed, and left the app offering to configure a
+/// CLI that wasn't there.
+fn launcher_paths() -> Result<Vec<PathBuf>> {
+    let home = crate::env::home()?;
+    Ok(vec![
+        home.join(".local/bin/hermes"),
+        crate::env::hermes_config_dir()?.join("bin/hermes"),
+    ])
+}
+
+/// Whether a `hermes` executable is reachable on `$PATH`.
+///
+/// A supplement to [`launcher_paths`], never a replacement: launched from Finder
+/// or launchd the app inherits a minimal `PATH` that excludes `~/.local/bin`, so
+/// this would miss the standard install in exactly the case that matters. It
+/// covers the reverse - Hermes somewhere unusual (a venv, `/opt`, a scratch
+/// HOME) that the absolute paths don't know about.
+fn launcher_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        if dir.as_os_str().is_empty() {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        let names: &[&str] = &["hermes.exe", "hermes.cmd", "hermes.bat"];
+        #[cfg(not(target_os = "windows"))]
+        let names: &[&str] = &["hermes"];
+        names.iter().any(|n| dir.join(n).is_file())
+    })
+}
+
+fn state_path() -> Result<PathBuf> {
     Ok(crate::env::app_support_dir()?.join(STATE_FILENAME))
-}
-
-fn settings_path() -> Result<std::path::PathBuf> {
-    crate::env::hermes_config_path()
-}
-
-fn load_settings() -> Result<Option<Mapping>> {
-    let path = settings_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let val: Value =
-        serde_yaml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-    match val {
-        Value::Mapping(m) => Ok(Some(m)),
-        Value::Null => Ok(Some(Mapping::new())),
-        _ => anyhow::bail!("{} is not a YAML mapping", path.display()),
-    }
-}
-
-fn write_settings(settings: &Mapping) -> Result<()> {
-    let path = settings_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let mut body = serde_yaml::to_string(settings).context("serializing config.yaml")?;
-    if !body.ends_with('\n') {
-        body.push('\n');
-    }
-    crate::primitives::write_file(&path, body.as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))
 }
 
 fn load_state() -> Result<Option<State>> {
@@ -370,7 +322,8 @@ fn load_state() -> Result<Option<State>> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let state: State =
         serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
     Ok(Some(state))
@@ -386,7 +339,7 @@ fn save_state(state: &State) -> Result<()> {
 fn clear_state() -> Result<()> {
     let path = state_path()?;
     if path.exists() {
-        fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
     }
     Ok(())
 }
@@ -396,51 +349,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn upstream_url_strips_v1() {
-        assert_eq!(
-            upstream_url_from_base("https://openrouter.ai/api/v1"),
-            "https://openrouter.ai/api"
-        );
-        assert_eq!(
-            upstream_url_from_base("https://api.openai.com/v1"),
-            "https://api.openai.com"
-        );
-        assert_eq!(
-            upstream_url_from_base("https://api.openai.com/v1/"),
-            "https://api.openai.com"
-        );
+    fn compute_status_covers_the_four_states() {
+        let ours = "http://127.0.0.1:9977";
+
+        assert_eq!(compute_status(ours, Some(ours), true), Status::Connected);
+
+        // Pointed at us but the engine is down: Hermes' requests go nowhere, so
+        // this must never read as Connected.
+        match compute_status(ours, Some(ours), false) {
+            Status::Drifted(m) => {
+                assert!(m.contains("not running"), "unexpected message: {m}");
+                assert!(m.contains("disconnect"), "must offer a way out: {m}");
+            }
+            other => panic!("expected drift, got {other:?}"),
+        }
+
+        // A corporate proxy the user set by hand is not ours.
+        match compute_status("http://proxy.corp.example:3128", Some(ours), true) {
+            Status::Drifted(m) => assert!(m.contains("does not match"), "unexpected: {m}"),
+            other => panic!("expected drift, got {other:?}"),
+        }
+
+        match compute_status(ours, None, false) {
+            Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
+            other => panic!("expected drift, got {other:?}"),
+        }
     }
 
     #[test]
-    fn upstream_url_no_v1() {
-        assert_eq!(
-            upstream_url_from_base("https://api.custom.com/"),
-            "https://api.custom.com"
-        );
-        assert_eq!(
-            upstream_url_from_base("https://api.openai-v1.com"),
-            "https://api.openai-v1.com"
-        );
-    }
-
-    #[test]
-    fn local_url_detection() {
-        assert!(is_local_url("http://localhost:1234/v1"));
-        assert!(is_local_url("http://127.0.0.1:8080/v1"));
-        assert!(is_local_url("http://my-service.local/v1"));
-        assert!(!is_local_url("https://openrouter.ai/api/v1"));
-        assert!(!is_local_url("https://api.openai.com/v1"));
-    }
-
-    #[test]
-    fn compute_base_url_appends_suffix() {
-        assert_eq!(
-            compute_base_url("https://gate.example.com"),
-            "https://gate.example.com/v1"
-        );
-        assert_eq!(
-            compute_base_url("https://gate.example.com/"),
-            "https://gate.example.com/v1"
-        );
+    fn loopback_detection_separates_our_proxy_from_a_corporate_one() {
+        for u in [
+            "http://127.0.0.1:9977",
+            "http://localhost:9977",
+            "http://127.0.0.5:1234",
+            "HTTP://LOCALHOST:9977",
+        ] {
+            assert!(is_loopback_url(u), "expected loopback: {u}");
+        }
+        for u in [
+            "http://proxy.corp.example:3128",
+            "https://egress.example.com",
+            "http://10.0.0.7:3128",
+        ] {
+            assert!(!is_loopback_url(u), "expected non-loopback: {u}");
+        }
     }
 }
