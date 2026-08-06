@@ -87,7 +87,20 @@ pub fn load_or_create() -> Result<Ca> {
     };
 
     if let (Some(key_pem), Some(cert_pem)) = (existing_key, existing_cert) {
-        return Ok(Ca { cert_pem, key_pem });
+        // Presence is not enough: the stored root's X.509 name constraints were
+        // fixed at generation time from the domain catalog, so one minted before
+        // a host was added cannot issue for it and interception of that host dies
+        // at the handshake with nothing naming the cause. A stale fingerprint (or
+        // none, on an install predating this check) falls through to regenerate.
+        //
+        // Safe to regenerate here because callers invoke `ensure_trusted()`
+        // immediately after, and `is_trusted()` is content-keyed on all three
+        // platforms — thumbprint, `verify-cert` against the current file, and a
+        // content comparison — so it reports false for the new root and the trust
+        // step installs it rather than short-circuiting on the old one.
+        if cert_authority::host_fingerprint_is_current(&path) {
+            return Ok(Ca { cert_pem, key_pem });
+        }
     }
 
     // Regenerating must not leave the *old* root trusted: trust is keyed
@@ -116,6 +129,9 @@ pub fn load_or_create() -> Result<Ca> {
     fs::write(&tmp, &cert_pem).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, &path)
         .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
+    // Written after the cert so an interrupted sequence leaves the sidecar
+    // absent or stale — never describing a cert that isn't there yet.
+    cert_authority::write_host_fingerprint(&path)?;
     Ok(Ca { cert_pem, key_pem })
 }
 
@@ -265,6 +281,9 @@ pub fn untrust() -> Result<()> {
 fn remove_ca_material() -> Result<()> {
     let _ = keychain::delete(&key_service(), &env::current_user()?);
     let cert = cert_path()?;
+    // The catalog fingerprint sidecar is CA material too — leaving it behind
+    // would be residue after an untrust that claims to remove everything.
+    let _ = fs::remove_file(cert_authority::host_fingerprint_path(&cert));
     match fs::remove_file(&cert) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
