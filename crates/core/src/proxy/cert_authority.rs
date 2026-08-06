@@ -48,6 +48,21 @@ pub(crate) const CA_COMMON_NAME: &str = "Gate Connect Local CA";
 /// CA-key compromise to the providers the proxy actually intercepts.
 /// Adding a host to the catalog later requires regenerating the CA
 /// (`load_or_create` re-trusts a regenerated pair).
+///
+/// Two consequences of that, both easy to miss:
+///
+///  1. The subtree list is built from the WHOLE catalog, not from the enabled
+///     entries, so shipping a new domain widens what this root may mint for
+///     every user — including those who never turn the domain on. Weigh that
+///     when adding a host: `claude-web` puts `claude.ai` in here, i.e. the
+///     surface holding the user's Claude session cookie.
+///  2. `load_or_create` short-circuits whenever a key + cert already exist and
+///     does NOT compare the on-disk constraints against the current catalog.
+///     An install that enabled the proxy BEFORE a host was added therefore
+///     keeps a root that cannot mint for it, and interception of that host
+///     fails at the handshake with no obvious cause. Until that drift is
+///     detected automatically, a newly added host needs `proxy untrust-ca`
+///     followed by `proxy enable` to take effect on an existing install.
 pub(crate) fn ca_certificate_params() -> Result<CertificateParams> {
     let mut params =
         CertificateParams::new(Vec::<String>::new()).context("building CA certificate params")?;
