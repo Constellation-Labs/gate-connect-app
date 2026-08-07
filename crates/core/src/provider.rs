@@ -307,7 +307,7 @@ fn enable_inner(slug: &str, skip: &[String]) -> Result<ProviderState> {
                 &account.gateway_base_url,
                 &cached_token,
                 &org_id,
-                &p.display_name,
+                p.display_name,
             );
         }
     }
@@ -361,7 +361,7 @@ pub fn disable(slug: &str) -> Result<ProviderState> {
                     &account.gateway_base_url,
                     &auth_token,
                     &org_id,
-                    &p.display_name,
+                    p.display_name,
                 );
             }
         }
