@@ -101,15 +101,22 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
         <Button variant="secondary" full disabled={busy} onClick={() => void quitAnyway()}>
           Quit without disconnecting
         </Button>
-        <button
+        {/* A full secondary button, not a text link, so the safe option is the
+            equal of the two that quit. This panel already focuses Cancel on
+            mount, on the reasoning that Enter on an unread panel should not
+            decide how to quit; at 12.5px text it measured 304x18.8 under two
+            40px buttons, so the control the panel points focus at was also the
+            faintest thing on it. RoutingChangeNotice states this rule for its
+            own Cancel and this was the higher-stakes takeover breaking it. */}
+        <Button
           ref={safeRef}
-          type="button"
+          variant="secondary"
+          full
           disabled={busy}
           onClick={onCancel}
-          className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink disabled:opacity-45"
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </Takeover>
   );

@@ -239,11 +239,22 @@ describe("GroupMembers intent versus flow", () => {
   });
 
   it("offers the certificate remedy where the problem is named", () => {
-    const onTrustCa = vi.fn();
+    const onTrustCa = vi.fn(() => Promise.resolve());
     renderUntrusted({ onTrustCa });
-    fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
-    fireEvent.click(screen.getByRole("button", { name: "Trust certificate" }));
+    // At group level, and without expanding anything. There is one machine-wide
+    // certificate, so a per-member button could only be a second or third copy
+    // of this one; the family row is also where "certificate not trusted" is
+    // named, so this is the level that both reports and fixes it.
+    fireEvent.click(screen.getByRole("button", { name: "Trust" }));
     expect(onTrustCa).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the untrusted member in the banner and offers exactly one Trust", () => {
+    renderUntrusted();
+    expect(screen.getByText(/Claude Desktop \/ Cowork needs the/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
+    // Expanding the member must not add a second button for the same action.
+    expect(screen.getAllByRole("button", { name: "Trust" })).toHaveLength(1);
   });
 });
 
@@ -311,8 +322,7 @@ describe("GroupMembers certificate failure", () => {
         onEnableRouting={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
-    fireEvent.click(screen.getByRole("button", { name: "Trust certificate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Trust" }));
     expect(await screen.findByText("The system prompt was cancelled")).toBeTruthy();
   });
 });

@@ -55,7 +55,7 @@ function makeDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
 }
 
 /** Mirrors the real catalog: Claude Code and Codex are claimed; OpenCode and
- * OpenClaw deliberately are not, so they land in "Agent harnesses". */
+ * OpenClaw deliberately are not, so they land in "Other tools". */
 const CATALOG: ProviderState[] = [
   {
     slug: "anthropic",
@@ -511,7 +511,7 @@ describe("Home says what is waiting", () => {
   it("does not offer to close apps when nothing is installed", () => {
     renderHome({ changeNotice: "on", tools: [], domains: [] });
     expect(screen.queryByText(/Routing is on\./)).toBeNull();
-    expect(screen.getByText(/Nothing to route yet/)).toBeTruthy();
+    expect(screen.getByText(/Install a tool to route/)).toBeTruthy();
   });
 });
 

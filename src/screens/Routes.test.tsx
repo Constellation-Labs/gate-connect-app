@@ -35,7 +35,7 @@ function makeDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
 }
 
 /** Mirrors the real catalog: Claude Code and Codex are claimed; OpenCode and
- * OpenClaw deliberately are not, so they land in "Agent harnesses". */
+ * OpenClaw deliberately are not, so they land in "Other tools". */
 const CATALOG: ProviderState[] = [
   {
     slug: "anthropic",
@@ -121,7 +121,7 @@ describe("Routes ledger", () => {
         makeTool("openclaw", "OpenClaw", { kind: "detected" }, "your existing providers"),
       ],
     });
-    expect(screen.getByText("Agent harnesses")).toBeTruthy();
+    expect(screen.getByText("Other tools")).toBeTruthy();
     expect(screen.queryByText(/existing providers/)).toBeNull();
   });
 

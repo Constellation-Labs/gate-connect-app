@@ -465,8 +465,13 @@ export function Home({
               <Icon name="search" size={16} />
             </div>
             <div className="min-w-0 flex-1">
+              {/* Leads with the verb, not with a third restatement. The header
+                  pill already says "Nothing to route" and the card above says
+                  "On"; this card used to open "Nothing to route yet", so the
+                  empty state said one fact three times and never said what to
+                  do about it. */}
               <div className="text-[12.5px] font-medium text-gc-ink">
-                Nothing to route yet
+                Install a tool to route
               </div>
               <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
                 Gate Connect picks up Claude Code and Codex once they&rsquo;re
@@ -490,10 +495,14 @@ export function Home({
           !error && (
           <div className="flex items-start gap-2 text-[11px] leading-snug text-gc-ink-3">
             <span className="min-w-0 flex-1">
+              {/* `inline-block` with matched negative margin: the hit area grows
+                  from 15px to 27px without moving the sentence it sits in. The
+                  action to accept this tip was half the height of the
+                  IconButton that declines it. */}
               <button
                 type="button"
                 onClick={onOpenSettings}
-                className="font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
+                className="-my-1.5 inline-block py-1.5 font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
               >
                 Turn on Launch at login
               </button>{" "}
@@ -679,10 +688,12 @@ function FamilyRow({
       </span>
       <div className="pointer-events-none relative flex items-center gap-2.5 px-3.5 py-2.5">
         {/* `truncate`, not two lines: a family name is a proper noun and the
-            longest one the catalog can produce is "Agent harnesses". */}
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-gc-ink">
+            longest one the catalog can produce is "Other tools". An h3, because
+            these are sections of the h2 above them, so the outline nests instead
+            of flattening four families up to the list's own level. */}
+        <h3 className="min-w-0 flex-1 truncate text-[13px] font-medium text-gc-ink">
           {group.name}
-        </span>
+        </h3>
         <GroupPill group={group} />
         <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
       </div>

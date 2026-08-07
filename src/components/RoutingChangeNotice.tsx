@@ -66,12 +66,23 @@ export function RoutingChangeNotice({
       initialFocus={safeRef}
       resetKey={`${confirming}:${closed}`}
     >
+      {/* The tile follows the step, not just the routing direction. On the
+          confirm step the panel is asking to close the user's running apps and
+          pairs that with a red `danger` button, so a shieldCheck in indigo wash
+          put "protected" and "destroy" 40px apart in the same panel. `info` in
+          warning wash is the glyph this system already uses to ask before an
+          irreversible step (Home's certificate card picks it for the same
+          reason: not repeating a shield that means something else). */}
       <div
         className={`flex h-14 w-14 items-center justify-center rounded-gc-lg ${
-          routingOn ? "bg-gc-accent-wash text-gc-accent" : "bg-gc-sunken text-gc-ink-3"
+          confirming && closed === null
+            ? "bg-gc-warning-wash text-gc-warning"
+            : routingOn
+              ? "bg-gc-accent-wash text-gc-accent"
+              : "bg-gc-sunken text-gc-ink-3"
         }`}
       >
-        <Icon name="shieldCheck" size={26} />
+        <Icon name={confirming && closed === null ? "info" : "shieldCheck"} size={26} />
       </div>
 
       <div className="flex flex-col gap-1.5">

@@ -143,6 +143,7 @@ export function GroupMembers({
   const [confirmingAdopt, setConfirmingAdopt] = useState<string | null>(null);
   const drifted = group.members.filter((m) => m.attention === "drifted");
   const errored = group.members.filter((m) => m.attention === "error");
+  const untrusted = group.members.filter((m) => m.attention === "needs-trust");
 
   function toggleOpen(key: string) {
     setOpenKey((k) => (k === key ? null : key));
@@ -194,6 +195,38 @@ export function GroupMembers({
           </div>
           <Button variant="accent" size="sm" disabled={busy} onClick={onEnableRouting}>
             Turn on routing
+          </Button>
+        </div>
+      )}
+
+      {untrusted.length > 0 && (
+        // The last member state to get a banner, and the only blocking one that
+        // did not have one: `master-off`, `error` and `drifted` each announced
+        // themselves at group level while the certificate was named on the
+        // family row and then explained nowhere, with its remedy two disclosures
+        // down inside a member. Since the family row says "certificate not
+        // trusted", the level that reports the problem is now also a level that
+        // can fix it.
+        //
+        // Mutually exclusive with the master-off banner above: a member can only
+        // be untrusted while the engine is running, and only master-off while it
+        // is not. Warning wash with the colour on the icon and the sentence in
+        // ink, per the Wash-First rule, and the same words Home's card uses so
+        // the two screens do not describe one certificate two ways.
+        <div className="mx-3.5 mb-2 flex items-center gap-2.5 rounded bg-gc-warning-wash px-3 py-2.5">
+          <Icon name="info" size={15} className="shrink-0 text-gc-warning" />
+          <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+            {untrusted.length === 1 ? `${untrusted[0].name} needs` : "These need"} the
+            Gate certificate. It never leaves this machine.
+          </div>
+          <Button
+            variant="accent"
+            size="sm"
+            className="shrink-0"
+            disabled={busy}
+            onClick={() => void trustFromRow(untrusted[0])}
+          >
+            Trust
           </Button>
         </div>
       )}
@@ -335,20 +368,13 @@ export function GroupMembers({
                     {explain(member, platform)}
                   </p>
 
-                  {/* The remedy belongs where the problem is named. Without
-                      this the user reads "the certificate isn’t trusted yet"
-                      and has to navigate back to Home to act on it. */}
-                  {member.attention === "needs-trust" && (
-                    <Button
-                      variant="accent"
-                      size="sm"
-                      className="mt-2.5"
-                      disabled={busy}
-                      onClick={() => void trustFromRow(member)}
-                    >
-                      Trust certificate
-                    </Button>
-                  )}
+                  {/* No per-member Trust button. There is one machine-wide
+                      certificate, the group banner above appears whenever any
+                      member is untrusted, and a button here could only ever be a
+                      second or third copy of it: two untrusted members expanded
+                      put three identical buttons on screen for one action. The
+                      remedy still travels with the problem, one level up, where
+                      the sentence that names it now lives. */}
 
                   {/* Same reasoning as the Trust button above. This state was
                       introduced with prose only, so the one attention state

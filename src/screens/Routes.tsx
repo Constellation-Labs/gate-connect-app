@@ -119,7 +119,10 @@ export function Routes({
                   className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
                 />
                 <div className="pointer-events-none relative min-w-0 flex-1">
-                  <div className="text-[13.5px] font-semibold text-gc-ink">{group.name}</div>
+                  {/* An h2 under the panel's h1, so four families and up to six
+                      pills are navigable by heading instead of being one
+                      undifferentiated list to a screen reader. */}
+                  <h2 className="text-[13.5px] font-semibold text-gc-ink">{group.name}</h2>
                   {/* Exception first. Concatenated as `count · exception` the
                       line truncated at 360px and the actionable half was what
                       got cut ("0 of 2 routing · Codex set up els…"). The pill
@@ -232,6 +235,19 @@ export function Routes({
               Sets <span className="font-mono">HTTPS_PROXY</span> for your whole
               shell, so OpenCode and other terminal tools route too.
             </div>
+            {/* Intent and reality, kept apart here the way every ledger row
+                keeps them apart. The switch reports the stored choice, which
+                survives routing being turned off; this line reports that the
+                choice is not in effect. Without it the row painted a saturated
+                indigo track - the colour DESIGN.md reserves for live state - for
+                a channel that cannot be live, in the app whose whole thesis is
+                that its status is truthful. Same words the member pill uses for
+                the same condition, so there is one vocabulary for it. */}
+            {envExportOn && !proxyOn && (
+              <div className="mt-1 text-[11px] font-medium leading-snug text-gc-ink-2">
+                Waiting on routing
+              </div>
+            )}
           </div>
           <Switch
             on={envExportOn}
