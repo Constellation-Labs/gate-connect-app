@@ -126,6 +126,15 @@ ckpt() {
 export NODE_TLS_REJECT_UNAUTHORIZED=0
 export ANTHROPIC_API_KEY="sk-ant-e2e-dummy"
 
+# Per-request engine logging. The engine prints `[gate-proxy] <host><path> ->
+# <action>` for every intercepted request, where action is one of passthrough /
+# rewrite->gateway / rewrite-FAILED, and the daemon tees it to
+# <app-support>/proxy/helper.log when this is set. That single field is what
+# separates "the engine never intercepted" from "it intercepted and chose not to
+# rewrite" from "it tried and the gateway hop failed" - none of which are
+# distinguishable from the tool's side, which sees only a provider response.
+export GATE_PROXY_DEBUG=1
+
 PASS=0
 FAIL=0
 
@@ -356,6 +365,19 @@ start_engine() {
 
 stop_engine() {
   [ -n "$ENGINE_ON" ] || return 0
+  # Harvest the daemon's log BEFORE disabling, into $WORK/*.out so the
+  # workflow's existing diagnostics glob picks it up. Located rather than
+  # constructed: app_support_dir resolves three different ways (the test-home
+  # seam on Windows, XDG on Linux, Library/Application Support on macOS) and a
+  # hardcoded guess would silently find nothing.
+  local helper_log
+  helper_log="$(find "$HOME" -path '*/proxy/helper.log' 2>/dev/null | head -n1)"
+  if [ -n "$helper_log" ] && [ -f "$helper_log" ]; then
+    cp "$helper_log" "$WORK/engine-requests.out" 2>/dev/null || true
+    ckpt "engine: captured $(wc -l <"$helper_log" 2>/dev/null || echo 0) request log lines"
+  else
+    ckpt "engine: no helper.log at $helper_log"
+  fi
   ckpt "engine: proxy disable"
   "$CLI" proxy disable >/dev/null 2>&1 || true
   ENGINE_ON=""
