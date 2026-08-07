@@ -357,10 +357,23 @@ impl HttpHandler for GateHandler {
             .map(|h| should_intercept_host(&rules, h))
             .unwrap_or(false);
         if debug_log() {
+            // The enabled set is printed alongside the verdict because the two
+            // have been observed to disagree with what `proxy enable` reports:
+            // the CLI listed anthropic and openrouter as on while the engine
+            // tunnelled both. Without this the log cannot distinguish "the host
+            // is not in the catalog" from "the engine is holding a different
+            // catalog than the one just configured".
+            let enabled: Vec<&str> = rules
+                .iter()
+                .filter(|d| d.enabled)
+                .map(|d| d.slug.as_str())
+                .collect();
             eprintln!(
-                "[gate-proxy] CONNECT {} -> {}",
+                "[gate-proxy] CONNECT {} -> {} (engine rules: {} total, enabled: [{}])",
                 host.unwrap_or("?"),
-                if intercept { "intercept" } else { "tunnel" }
+                if intercept { "intercept" } else { "tunnel" },
+                rules.len(),
+                enabled.join(",")
             );
         }
         intercept
