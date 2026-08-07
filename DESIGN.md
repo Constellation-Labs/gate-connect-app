@@ -259,6 +259,27 @@ is global and non-negotiable.
 scrolling chrome. If a design needs a second window or a stacked modal,
 it is the wrong design.
 
+**The Vertical Budget.** The body's scroll viewport is 487px on macOS and
+Windows (520px frame less the 33px pinned credential strip) and 455px on
+Linux, whose custom title bar takes another 32px. Measure against those
+numbers rather than the frame; the Linux case is the one that catches a
+composition out, because a layout that fits with 15px to spare elsewhere
+overflows there.
+
+Home's daily state must fit with no overflow: header, routing card, ledger
+heading, four 44px family rows and the dashboard link land at 440.8px,
+leaving 46.3px. States that add chrome are allowed to scroll, and should:
+the certificate ceremony, a stale-address banner or two exception sentences
+each earn their height, and the fold cue (`gc-scroll-more`) exists for
+exactly that. What is not allowed is the inverse, which is what this rule
+was written after: a third of the primary screen empty, nothing scrolling,
+and the list it was supposed to hold parked behind a door.
+
+**Blockers outrank inventory.** Anything that explains why traffic is not
+flowing, and carries the fix, sits directly under the routing card and above
+the list. Ordering the ledger first pushed the certificate card and its only
+Trust button below the fold in the one state where nothing routes.
+
 ## Elevation & Depth
 
 Depth is structural, not atmospheric: the shadow stack IS the border.
@@ -311,6 +332,16 @@ Quiet and precise: color states, not size or shadow theatrics.
 - **Disabled:** 45% opacity, pointer events off.
 - **Icon buttons:** 28px square, radius 6px, ink-3 glyph; hover fills
   subtle (#f8f9fc) and darkens the glyph to ink-2.
+- **The safe option is its equal.** In any takeover that offers a
+  destructive or irreversible action, Cancel is a full secondary button of
+  the same width and height as the buttons it sits with, never a text link.
+  A takeover that puts initial focus on Cancel (because Enter on an unread
+  panel should not decide the outcome) and then renders it as 12.5px text
+  makes the faintest control on the panel the one the panel points at.
+- **`sm` (32px) is for a button embedded in something else** - an inline
+  banner, an expanded row, an inline confirm pair - where a 40px control
+  would outweigh what it sits in. The rule is about the container, not
+  about the window.
 
 ### Switch
 - **Style:** 38x22px pill track; on-state Gate Indigo, off-state
@@ -324,16 +355,61 @@ Quiet and precise: color states, not size or shadow theatrics.
 
 ### Status Pills
 - **Style:** 48px-radius capsule, 11px medium text, 6px status dot,
-  8px horizontal padding.
+  8px horizontal padding, and a 1px seam ring tinted from the state's own
+  hue (see the ladder below).
 - **Connected / Routed:** Success Wash background, Success Deep (#177a42)
-  text, solid Success dot.
-- **Partial:** Warning Wash background, ink-2 text, solid Warning dot.
-  The honest third state for a system that is genuinely half-on (routing
-  up, certificate untrusted).
+  text, solid Success dot, Success Deep ring at 30%.
+- **Partial:** Warning Wash background, ink-2 text, solid Warning dot,
+  Warning Deep ring at 45%. The honest third state for a system that is
+  genuinely half-on (routing up, certificate untrusted).
+- **Error:** Error Wash background, ink-2 text, solid Error dot, Error
+  Deep ring at 65%. A family dark *because something failed* must not
+  borrow the grey it uses for a switch the user set.
 - **Idle / Signed out / Not routed:** sunken (#eef0f6) background, ink-3
-  text, ink-5 dot.
-- Pills report system state truthfully; they are never decorative, and a
-  pill on a tool row is a door (opens the tool detail), not a verdict.
+  text, ink-3 dot, ink-4 ring at 45%.
+- **The Pill Seam Ladder.** A wash at 8 to 14% alpha measures 1.09 to
+  1.16:1 against the row it sits on, so the capsule was invisible as an
+  object: the words floated in tinted air beside a switch track reading
+  5.98:1, and reality lost the row to intent by a factor of 5.4 on the
+  element this product calls the most important pixel on the screen. The
+  ring is what makes a pill a thing. It is weighted by severity rather
+  than applied evenly: error reads about 3:1 as a bordered chip, and
+  Routed stays the quietest of the four at about 1.5:1, because four green
+  pills on a healthy launch should read as "that's handled" and not as a
+  wall of edges.
+- **Not a conformance fix.** The pill's state is carried by its text
+  (4.63 to 4.84:1) and its dot, both of which already pass, so the ring is
+  a weight decision and does not need to reach 3:1 at every level.
+- A ring, not a border: solid 1px borders are what this system draws with
+  box-shadow instead.
+- Pills report system state truthfully and are never decorative. On the
+  ledger panel a pill sits beside a switch that reports intent, and the two
+  are allowed to disagree; on Home a pill carries its row alone.
+
+### Ledger Rows (Home)
+The list of model families is Home's primary content, not a panel behind a
+door. PRODUCT.md's second principle puts it there and the vertical budget
+allows it: parked behind a door, Home measured 33% empty with nothing
+scrolling.
+- **Anatomy:** family name (13px medium ink, `truncate`), status pill,
+  stroked chevron. No switch and no expander: those are the ledger panel's
+  job, and keeping them off this row is what stops Home re-crowding.
+- **Height:** 44px at rest. A row with an exception grows by its sentence
+  (11px, two lines maximum, error in Error Deep and everything quieter in
+  ink-2).
+- **Order:** exception-first, error before needs-trust before drifted, with
+  the healthy tail holding catalog order via a stable sort.
+- **Card-owned states never print on a row.** The master being off and the
+  certificate both belong to the card above, which is also the thing that
+  can fix them; printed per row they repeat one sentence up to four times
+  directly under the card that just said it.
+- **Depth grammar:** the row navigates (stroked chevron), the panel's family
+  row expands in place (filled caret, rotating), and the member level drops
+  the glyph for the word "Details". Three depths, three affordances, no
+  glyph doing two jobs.
+- **Headings:** the group heading is an h2 and family names are h3 beneath
+  it on Home; on the ledger panel, whose title is the h1, families are h2.
+  Four families and six pills must be navigable by heading.
 
 ### Cards / Rows
 - **Corner Style:** 10px radius.
@@ -355,8 +431,12 @@ Quiet and precise: color states, not size or shadow theatrics.
 
 ### Section Labels
 - **Style:** Geist Mono, 10.5px, 500, uppercase, 0.08em tracking, ink-3,
-  padded 14px sides / 12px top / 6px bottom. The ledger's column
-  headings.
+  padded 14px sides / 12px top / 6px bottom. Structural chrome for a long
+  scrolling list of unrelated sections: Settings uses three.
+- **Not for a sentence.** Home's ledger heading is sentence-case sans
+  (11.5px medium ink-3), because "What routes through Gate" is a sentence
+  and the mono rule below forbids mono for sentence copy. Mono earns its
+  place on identifiers, not on prose that happens to label something.
 
 ### Hint Banners (signature)
 Inline, dismissible truth-telling: when routing state and running apps
@@ -365,6 +445,39 @@ disagree, a banner says so plainly.
   12px medium ink text with a bold imperative ("Restart your agent").
 - **Stale-address notices:** sunken fill, error-colored icon and 11.5px
   text, trailing dismiss icon button.
+- **Group-level blockers:** wash fill keyed to severity, the colour on the
+  icon and the sentence in ink (the Wash-First rule), and the remedy as an
+  `sm` accent button in the banner itself.
+- **Every blocking member state gets one, at group level.** Master-off,
+  error, drifted and needs-trust each announce themselves where the family
+  is named, because that is the level whose sentence the user reads. The
+  certificate was the last one to get this: it was named on the family row
+  and then explained nowhere, with its remedy two disclosures down.
+- **One remedy per cause.** Where a banner offers the fix, the member rows
+  beneath it must not repeat it. There is a single machine-wide
+  certificate, so a Trust button inside a member could only ever be the
+  second or third copy of the banner's, and two expanded members put three
+  identical buttons on screen for one action.
+- **An icon may not contradict the button beside it.** A confirm step that
+  destroys something takes `info` in Warning Wash, not `shieldCheck` in
+  Indigo Wash: a shield 40px from a red danger button says "protected"
+  while the button says "destroy".
+
+### Intent versus Reality
+The product's signature risk is a setting that is on while nothing flows,
+so the two are separate fields (`desired`, `routed`) and are allowed to
+disagree on screen. The switch reports intent; a pill or a note reports
+what is actually happening.
+- Anything that reports intent must not paint itself in live-state indigo
+  when it cannot be live. The shell-environment channel's stored choice
+  survives routing being turned off, so its row carries "Waiting on
+  routing" beside the switch rather than implying a live channel.
+- Use the existing vocabulary for the condition. "Waiting on routing" is
+  what the member pill says for exactly this state; a second phrasing for
+  one condition is a second thing to learn.
+- Wire it to assistive tech: a switch that can read "on" over something
+  broken points `aria-describedby` at the sentence that reports reality, so
+  one control speaks both channels.
 
 ## Do's and Don'ts
 
@@ -381,8 +494,19 @@ disagree, a banner says so plainly.
   slide as full panels with the 260ms directional grammar.
 - **Do** meet WCAG 2.1 AA contrast on white; ink-3 (#55596f) is the
   floor for body-secondary text.
+- **Do** name things the way the user would. The UI's nouns are tools and
+  apps: a group label must be something someone could point at on their own
+  machine, never the name of the filter that built it ("Agent harnesses"
+  was the label on `filter(t => !claimed.has(t.slug))`).
+- **Do** give an interactive element a hit area of at least 24px even when
+  its visible box is smaller, using `before:-inset-*` or matched
+  `inline-block` padding and negative margin so the layout does not move.
 
 ### Don't:
+- **Don't** state one fact in more than one place on the same screen. A
+  header pill, a card sub-line and a row that all report the same fault
+  make the user reconcile three vocabularies before learning which tool
+  broke; whichever element can also be acted on is the one that keeps it.
 - **Don't** put a solid 1px border on a card, input, or button; hairlines
   are for the popover's fixed structural seams only.
 - **Don't** introduce new indigo surface types or leak the `gc-*` palette
