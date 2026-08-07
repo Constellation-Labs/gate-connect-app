@@ -122,12 +122,16 @@ pub fn ensure() -> Result<PathBuf> {
     Ok(path)
 }
 
+// Gated as a whole rather than per-test: the single test below does not run on
+// Windows, so leaving the module open there makes `use super::*` an unused
+// import and `-D warnings` fails the build. Drop this line if a Windows test
+// is ever added.
 #[cfg(test)]
+#[cfg(not(target_os = "windows"))]
 mod tests {
     use super::*;
 
     #[test]
-    #[cfg(not(target_os = "windows"))]
     fn system_roots_are_a_real_bundle_not_a_single_cert() {
         // The whole point of this module: a tool that takes a `cafile` replaces
         // its trust store with that file, so the base must carry the platform's
