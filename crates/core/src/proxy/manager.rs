@@ -159,6 +159,17 @@ impl ProxyManager {
 
         let account = account::load()?
             .context("no Gate account configured - sign in before enabling the proxy")?;
+
+        // Cache the auth token for this session. Used by disable audit and other
+        // call sites to emit without re-prompting for keychain access.
+        let auth_token = match account.auth_mode {
+            account::AuthMode::ApiKey => account.api_key.clone(),
+            account::AuthMode::OAuth => oauth::access_token_for_injection(),
+        };
+        if !auth_token.is_empty() {
+            crate::session::set_auth_token(auth_token);
+        }
+
         let domains = config::load_domains()?;
         // No enabled-domains guard here: the master switch owns whether the
         // engine runs, while providers/domains own what it intercepts. Starting
@@ -280,17 +291,15 @@ impl ProxyManager {
         }
         drop(guard);
 
-        // Emit audit event (best-effort; don't fail if audit fails)
-        if let Ok(Some(account)) = account::load() {
-            if let Some(org_id) = crate::account::org_id_for_injection() {
-                let auth_token = match account.auth_mode {
-                    account::AuthMode::ApiKey => account.api_key.clone(),
-                    account::AuthMode::OAuth => oauth::access_token_for_injection(),
-                };
+        // Emit audit event (best-effort; don't fail if audit fails).
+        // Account was already loaded, and auth_token is cached in session.
+        let org_id = crate::account::org_id_for_injection();
+        if !org_id.is_empty() {
+            if let Some(cached_token) = crate::session::get_auth_token() {
                 let port = self.status().ok().and_then(|s| s.port).unwrap_or(0);
                 let _ = audit::proxy_enabled(
                     &account.gateway_base_url,
-                    &auth_token,
+                    &cached_token,
                     &org_id,
                     port,
                 );
@@ -357,14 +366,18 @@ impl ProxyManager {
         }
         let _ = system_proxy::clear_snapshot();
 
-        // Emit audit event (best-effort; don't fail if audit fails)
-        if let Ok(Some(account)) = account::load() {
-            if let Some(org_id) = crate::account::org_id_for_injection() {
-                let auth_token = match account.auth_mode {
-                    account::AuthMode::ApiKey => account.api_key.clone(),
-                    account::AuthMode::OAuth => oauth::access_token_for_injection(),
-                };
-                let _ = audit::proxy_disabled(&account.gateway_base_url, &auth_token, &org_id);
+        // Emit audit event if we have a cached token from this session.
+        // If the user never enabled proxy in this session, skip silently (best-effort).
+        let org_id = crate::account::org_id_for_injection();
+        if !org_id.is_empty() {
+            if let Some(auth_token) = crate::session::get_auth_token() {
+                if let Ok(Some(account)) = account::load() {
+                    let _ = audit::proxy_disabled(
+                        &account.gateway_base_url,
+                        &auth_token,
+                        &org_id,
+                    );
+                }
             }
         }
 

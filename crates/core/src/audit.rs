@@ -7,21 +7,26 @@
 //!
 //! Events are sent to `POST /v1/audit/emit` on the dashboard API.
 //! Best-effort: failures are logged but don't block user operations.
+//! Audit emission must be completely silent - never prompt for credentials.
 //!
-//! Auth: In API key mode, pass the API key as the bearer token.
-//! In OAuth mode, pass the current access token (from oauth::access_token_for_injection()).
+//! The caller should provide gateway_url, auth_token, and org_id from sources
+//! that don't require prompting (e.g., already-loaded account, config file,
+//! oauth::access_token_for_injection()). If any required info is unavailable
+//! without prompting, the audit event is silently skipped.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::time::Duration;
 
 /// Emit an audit event to the dashboard API.
 ///
-/// `auth_token`: The bearer token (API key in API-key mode, access token in OAuth mode).
-/// Must not be empty - the endpoint requires authentication.
+/// All parameters must be obtained without prompting. If any required information
+/// is unavailable, the caller should skip the emit silently (best-effort).
 ///
-/// Returns Ok on success (event recorded).
-/// On failure, logs the error but doesn't throw (best-effort).
+/// `auth_token`: The bearer token (API key or OAuth access token).
+/// Returns Ok on success (event recorded with 2xx status).
+/// On any failure (empty token, transport error, non-2xx status, or timeout),
+/// logs the error and returns Err. Callers should ignore the error (`let _ = emit(...)`).
 pub fn emit(
     gateway_url: &str,
     auth_token: &str,
@@ -34,7 +39,12 @@ pub fn emit(
         return Err(anyhow::anyhow!("auth_token is required (cannot emit without authentication)"));
     }
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .context("building audit HTTP client")?;
+
     let url = format!("{}/v1/audit/emit", gateway_url.trim_end_matches('/'));
 
     let request = json!({
@@ -43,18 +53,33 @@ pub fn emit(
         "data": data,
     });
 
-    client
+    match client
         .post(&url)
-        .header("X-Org-Id", org_id)
+        .header("x-org-id", org_id)
         .bearer_auth(auth_token)
         .json(&request)
         .send()
-        .context("sending audit emit request")?;
-
-    Ok(())
+    {
+        Ok(response) => {
+            if !response.status().is_success() {
+                eprintln!(
+                    "[gate] audit emit failed: {} ({})",
+                    response.status(),
+                    url
+                );
+                return Err(anyhow::anyhow!("audit emit returned {}", response.status()));
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("[gate] audit emit error: {e} ({})", url);
+            Err(e).context("sending audit emit request")
+        }
+    }
 }
 
 /// Emit a proxy enable event.
+/// Caller must provide auth_token without prompting.
 pub fn proxy_enabled(
     gateway_url: &str,
     auth_token: &str,
@@ -70,7 +95,6 @@ pub fn proxy_enabled(
         json!({
             "action": "proxy_enabled",
             "proxy": {
-                "previousState": "off",
                 "newState": "on",
                 "port": port,
             }
@@ -79,6 +103,7 @@ pub fn proxy_enabled(
 }
 
 /// Emit a proxy disable event.
+/// Caller must provide auth_token without prompting.
 pub fn proxy_disabled(gateway_url: &str, auth_token: &str, org_id: &str) -> Result<()> {
     emit(
         gateway_url,
@@ -89,7 +114,6 @@ pub fn proxy_disabled(gateway_url: &str, auth_token: &str, org_id: &str) -> Resu
         json!({
             "action": "proxy_disabled",
             "proxy": {
-                "previousState": "on",
                 "newState": "off",
             }
         }),
@@ -97,6 +121,7 @@ pub fn proxy_disabled(gateway_url: &str, auth_token: &str, org_id: &str) -> Resu
 }
 
 /// Emit a provider enable event.
+/// Caller must provide auth_token without prompting.
 pub fn provider_enabled(
     gateway_url: &str,
     auth_token: &str,
@@ -113,7 +138,6 @@ pub fn provider_enabled(
             "action": "provider_enabled",
             "provider": {
                 "name": provider_name,
-                "previousState": "off",
                 "newState": "on",
             }
         }),
@@ -121,6 +145,7 @@ pub fn provider_enabled(
 }
 
 /// Emit a provider disable event.
+/// Caller must provide auth_token without prompting.
 pub fn provider_disabled(
     gateway_url: &str,
     auth_token: &str,
@@ -137,7 +162,6 @@ pub fn provider_disabled(
             "action": "provider_disabled",
             "provider": {
                 "name": provider_name,
-                "previousState": "on",
                 "newState": "off",
             }
         }),
@@ -145,6 +169,7 @@ pub fn provider_disabled(
 }
 
 /// Emit an API key saved/updated event.
+/// Caller must provide auth_token without prompting.
 pub fn api_key_saved(
     gateway_url: &str,
     auth_token: &str,
@@ -169,6 +194,7 @@ pub fn api_key_saved(
 }
 
 /// Emit an API key cleared event.
+/// Caller must provide auth_token without prompting.
 pub fn api_key_cleared(
     gateway_url: &str,
     auth_token: &str,

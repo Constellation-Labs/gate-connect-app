@@ -169,6 +169,20 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
                 &new_prefix,
             );
         }
+
+        // Cache the auth token for this session based on current auth mode.
+        // If ApiKey mode, the token is the API key we just saved.
+        // If OAuth mode, the token is the OAuth access token (key is stored but not used for auth).
+        let auth_mode = read_account_file()?
+            .map(|f| f.auth_mode)
+            .unwrap_or_default();
+        let auth_token = match auth_mode {
+            AuthMode::ApiKey => key.to_string(),
+            AuthMode::OAuth => crate::oauth::access_token_for_injection(),
+        };
+        if !auth_token.is_empty() {
+            crate::session::set_auth_token(auth_token);
+        }
     }
     Ok(())
 }
