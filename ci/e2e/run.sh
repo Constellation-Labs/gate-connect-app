@@ -349,7 +349,9 @@ start_engine() {
   # without this the engine tunnels openrouter.ai straight past Gate and the
   # capture stays empty. Anthropic (OpenClaw's provider) is on by default.
   "$CLI" proxy domain openrouter on >>"$WORK/enable.out" 2>&1 || true
-  ckpt "engine: enabled ($(grep -o 'http://127.0.0.1:[0-9]*' "$WORK/enable.out" | head -n1))"
+  # `proxy enable` reports "Proxy:    running on 127.0.0.1:<port>", with no
+  # scheme - matching on one printed an empty checkpoint.
+  ckpt "engine: enabled ($(grep -o '127\.0\.0\.1:[0-9]*' "$WORK/enable.out" | head -n1))"
 }
 
 stop_engine() {
@@ -452,7 +454,7 @@ fi
 # Run every installed tool against the relay and assert the given auth mode's
 # Gate headers reached the mock gateway. The tool config is mode-independent (it
 # just points at the relay); the relay injects the differing credential.
-run_all_tools() {
+run_relay_tools() {
   local mode="$1"
 
   # --- Claude Code: gate-connect writes the relay base URL + upstream headers
@@ -491,6 +493,20 @@ run_all_tools() {
     run_tool "opencode" "opencode" "/v1/messages" "$mode" -- \
       opencode run --model "$OPENCODE_MODEL" "ping"
   fi
+
+}
+
+# The proxy-routed half, run with the relay DOWN and the engine up. The two
+# hosts cannot overlap: on Linux the engine lives in the helper daemon, which
+# hosts a relay of its own and rewrites the persisted relay port on the way up
+# (manager_linux::enable passes relay::load_persisted_port() into set_intercept,
+# then saves whatever came back). With `proxy serve` already holding that port
+# the two fight over it, `connect` writes the wrong one into every tool config,
+# and the relay-routed tools stop reaching the gateway - measured, and it took
+# all ten tools down rather than just these two. macOS has no daemon and passed
+# with both up at once, which is what pinned the cause to the daemon.
+run_engine_tools() {
+  local mode="$1"
 
   # --- OpenClaw: PROXY-routed since the harnesses moved off per-provider
   #     baseUrl edits. gate-connect writes `proxy.proxyUrl` (a process-wide
@@ -572,13 +588,14 @@ echo "::group::phase: api-key login"
 }
 echo "::endgroup::"
 start_relay || exit 1
+run_relay_tools "api-key"
+stop_relay
 # Best-effort, like the per-tool guards: a runner that cannot bring the engine
 # up should still prove the three relay-routed tools rather than failing the
 # whole phase. The two proxy-routed tools skip with a notice in that case.
 start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
-run_all_tools "api-key"
+run_engine_tools "api-key"
 stop_engine
-stop_relay
 "$CLI" logout >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
@@ -589,10 +606,11 @@ echo "::group::phase: oauth login"
 if oauth_login; then
   echo "::endgroup::"
   start_relay || exit 1
-  start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
-  run_all_tools "oauth"
-  stop_engine
+  run_relay_tools "oauth"
   stop_relay
+  start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
+  run_engine_tools "oauth"
+  stop_engine
   "$CLI" logout >/dev/null 2>&1 || true
 else
   echo "::endgroup::"
