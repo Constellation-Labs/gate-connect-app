@@ -71,10 +71,30 @@ fn system_roots_pem() -> Result<String> {
     // so export them. `Root` is the machine-wide trusted-root store, which is
     // also where our own CA is installed - a duplicate in the bundle is
     // harmless, so no attempt is made to filter it out.
-    let script = "Get-ChildItem Cert:\\LocalMachine\\Root | ForEach-Object { \
-         '-----BEGIN CERTIFICATE-----'; \
-         [Convert]::ToBase64String($_.RawData, 'InsertLineBreaks'); \
-         '-----END CERTIFICATE-----' }";
+    //
+    // Opened through .NET rather than the `Cert:` PSDrive, which looks like the
+    // obvious spelling and is a trap. That drive is provided by the
+    // `Microsoft.PowerShell.Security` module, so using it depends on module
+    // AUTOLOADING, which follows `PSModulePath` - and this process does not
+    // control that variable. Spawning from a PowerShell 7 parent is enough to
+    // break it: the child `powershell` (Windows PowerShell 5.1) inherits pwsh's
+    // `PSModulePath`, which names the 7.x module tree rather than 5.1's, the
+    // module never loads, and the export dies with "Cannot find drive. A drive
+    // with the name 'Cert' does not exist". Measured on CI, where the test
+    // process is a child of the runner's pwsh.
+    //
+    // Nothing below needs a module: `X509Store` and `[Convert]` are .NET types
+    // reached through the language itself, `::new()` is language syntax (not
+    // `New-Object`, which lives in Microsoft.PowerShell.Utility), and `foreach`
+    // is a keyword (not `ForEach-Object`). So there is no autoload to fail.
+    let script = "$store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root','LocalMachine'); \
+         $store.Open('ReadOnly'); \
+         foreach ($c in $store.Certificates) { \
+           '-----BEGIN CERTIFICATE-----'; \
+           [Convert]::ToBase64String($c.RawData, 'InsertLineBreaks'); \
+           '-----END CERTIFICATE-----' \
+         }; \
+         $store.Close()";
     let out = Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output()
