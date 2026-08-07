@@ -201,6 +201,9 @@ export function App() {
   // Set when the org picker hands a user to the API-key fallback, so FirstRun
   // opens on the key form instead of making them find the disclosure again.
   const [startOnKey, setStartOnKey] = useState(false);
+  // Which family the ledger panel should open with, set by the Home row that
+  // opened it. Null when the user arrived from the heading rather than a row.
+  const [routesOpen, setRoutesOpen] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
@@ -1029,6 +1032,10 @@ export function App() {
         proxyOn={proxy?.running ?? false}
         onEnableRouting={() => void toggleProxy(false)}
         authMode={account?.auth_mode}
+        initialOpen={routesOpen}
+        envExportSeparable={proxy?.env_export_separable ?? false}
+        envExportOn={proxy?.env_export_opted_in ?? false}
+        onToggleEnvExport={() => void toggleEnvExport()}
       />
     );
   } else {
@@ -1068,11 +1075,12 @@ export function App() {
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onToggleProxy={() => toggleProxy(true)}
-        envExportSeparable={proxy?.env_export_separable ?? false}
-        envExportOn={proxy?.env_export_opted_in ?? false}
-        onToggleEnvExport={() => void toggleEnvExport()}
         onTrustCa={trustCa}
-        onOpenRoutes={() => setScreen("routes")}
+        onOpenRoutes={(groupId) => {
+          // Carried into the panel so the family the user tapped arrives open.
+          setRoutesOpen(groupId ?? null);
+          setScreen("routes");
+        }}
         onOpenSettings={() => setScreen("settings")}
       />
     );

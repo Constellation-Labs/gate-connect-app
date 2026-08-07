@@ -3,18 +3,26 @@ import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
 import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
+import type { Group, GroupException } from "../lib/groups";
 import { buildGroups, groupSummary } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, ErrorNote, Button } from "../components/gc/ui";
+import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 import { trustStoreName, usePlatform } from "../lib/platform";
 import { openExternal } from "../lib/openExternal";
 import { GATE_DASHBOARD_URL } from "../lib/config";
 
 /** Connected home - the one room: the master Routing card, the certificate
- * step when it blocks coverage, and one row per model family. The families
- * keep the ledger three rows tall however many tools are installed; the
- * config-vs-proxy mechanism lives one tap in, on the group detail. */
+ * step when it blocks coverage, and one row per model family, ranked so
+ * anything needing a human is the first thing on the screen.
+ *
+ * The rows carry name and pill only. Their switches, their members and the
+ * config-vs-proxy mechanism live one tap in, on the ledger panel; so does the
+ * shell-environment channel, which routes every family at once rather than
+ * belonging to any one of them. What stays here is the answer to "is anything
+ * wrong, and which of my tools", which is the question the popover gets
+ * opened with. */
 export function Home({
   workspace,
   gatewayHost,
@@ -33,9 +41,6 @@ export function Home({
   staleAgentsHint,
   onDismissStaleAgents,
   onToggleProxy,
-  envExportSeparable,
-  envExportOn,
-  onToggleEnvExport,
   onTrustCa,
   onOpenRoutes,
   onOpenSettings,
@@ -64,15 +69,12 @@ export function Home({
   staleAgentsHint: boolean;
   onDismissStaleAgents: () => void;
   onToggleProxy: () => void;
-  /** Whether the shell-environment channel can be offered at all. False on
-   * Linux, where those variables *are* the system proxy. */
-  envExportSeparable: boolean;
-  envExportOn: boolean;
-  onToggleEnvExport: () => void;
   onTrustCa: () => void;
-  /** Opens the ledger panel. The rows moved off this screen; the door and the
-   * exception it reports stayed. */
-  onOpenRoutes: () => void;
+  /** Opens the ledger panel with `groupId`'s family already expanded, so a row
+   * that reports a fault is also the way to it. Without the target the user
+   * arrives at a collapsed list and pays a second click to reach the row they
+   * just tapped. */
+  onOpenRoutes: (groupId?: string) => void;
   onOpenSettings: () => void;
 }) {
   const platform = usePlatform();
@@ -96,45 +98,42 @@ export function Home({
     (n, g) => n + g.members.filter((m) => m.attention === "master-off").length,
     0,
   );
-  const stuckCount = groups.reduce(
-    (n, g) =>
-      n + g.members.filter((m) => m.attention === "drifted" || m.attention === "error").length,
-    0,
-  );
-  // Errors only, separate from `stuckCount`: a hand-written setup elsewhere is
-  // a choice the user made and the family switch deliberately respects, so it
-  // must not turn the header amber. A failure is not a choice. This is the
-  // count that decides whether the header may still claim health.
+  // What the user has asked to route, as opposed to what is actually flowing.
+  // The sub-line needs this to tell "you haven't switched anything on yet" apart
+  // from "you switched things on and the certificate is holding them". Keyed off
+  // `routed === 0` those two states printed the same sentence, and the second
+  // one is the one where "nothing enabled yet" is simply false.
+  const desiredCount = groups.reduce((n, g) => n + g.desired, 0);
+  // Errors only: a hand-written setup elsewhere is a choice the user made and
+  // the family switch deliberately respects, so it must not turn the header
+  // amber. A failure is not a choice. This is the count that decides whether the
+  // header may still claim health.
   const errorCount = groups.reduce(
     (n, g) => n + g.members.filter((m) => m.attention === "error").length,
     0,
   );
 
-  // The one exception the door reports, chosen across every family: a failure
-  // outranks a blocked certificate, which outranks a setup the user made
-  // elsewhere. Without it, moving the ledger off Home would cost the mid-task
-  // user the whole answer to "is anything wrong?", which is the question they
-  // opened the popover with.
+  // The order the families render in: anything needing a human floats to the
+  // top, everything else holds catalog order. `sort` is stable, so the healthy
+  // tail never reshuffles between renders.
   //
-  // `master-off` is deliberately absent. It is not per-family news, it is the
-  // master switch's own state, and the card directly above already says "Off ·
-  // N waiting". Ranking it here made the routing-off door read "waiting on
-  // routing" and drop the family names entirely, so the one state whose only
-  // question is "what comes back when I flip this?" answered it twice in the
-  // same words and never named a single thing.
+  // `master-off` is deliberately absent, as it was when this ranking fed the
+  // door. It is not per-family news, it is the master switch's own state, and
+  // the card above already says "Off · N waiting". Ranked here it would print
+  // "waiting on routing" on every row at once - the same sentence the card just
+  // said, repeated four times, while naming nothing.
   const EXCEPTION_RANK: Record<string, number> = {
     error: 0,
     "needs-trust": 1,
     drifted: 2,
   };
-  const worstException = groups
-    .map((g) => groupSummary(g))
-    .filter((summary) => summary.kind !== null && summary.kind in EXCEPTION_RANK)
+  const ranked = groups
+    .map((group) => ({ group, ...groupSummary(group) }))
     .sort(
-      (a, b) => (EXCEPTION_RANK[a.kind ?? ""] ?? 9) - (EXCEPTION_RANK[b.kind ?? ""] ?? 9),
-    )[0];
-  const ledgerNote = worstException?.exception ?? null;
-  const ledgerNoteKind = worstException?.kind ?? null;
+      (a, b) =>
+        (a.kind !== null ? (EXCEPTION_RANK[a.kind] ?? 9) : 9) -
+        (b.kind !== null ? (EXCEPTION_RANK[b.kind] ?? 9) : 9),
+    );
 
   // At most one banner at a time, most actionable first: transient chrome
   // must never bury the ledger (the pills are the point of the screen). The
@@ -251,7 +250,7 @@ export function Home({
             boundary, which is the whole thing this merge was meant to stop.
             `overflow-hidden` keeps the lower half's hover fill inside the
             radius. */}
-        {(showProxy || gatewayHost || groups.length > 0) && (
+        {(showProxy || gatewayHost) && (
           <div className="overflow-hidden rounded-[10px] bg-gc-surface shadow-border">
             {showProxy && (
               <div className="flex items-center gap-3 px-3.5 pb-2.5 pt-3.5">
@@ -275,20 +274,25 @@ export function Home({
                       <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
                         {/* The count survives the certificate state. Dropping it
                             was backwards: that is exactly when the user wants to
-                            know how much is still working. */}
+                            know how much is still working.
+
+                            No "· N need attention" clause any more, and no
+                            "nothing installed to route". The rows below now name
+                            each exception and the empty card explains the empty
+                            case, so both of those were this line restating what
+                            the screen already said better one block down - the
+                            mid-task user was reading one fault in three
+                            vocabularies (pill, this line, the door) before
+                            finding out which tool it was. */}
                         {!proxyOn
                           ? waitingCount > 0
                             ? `Off · ${waitingCount} waiting`
                             : "Off · not routing"
-                          : partial
-                            ? `On · ${routedCount} of ${routableCount} routing`
-                            : routableCount === 0
-                              ? "On · nothing installed to route"
-                              : routedCount === 0 && stuckCount === 0
-                                ? "On · nothing enabled yet"
-                                : stuckCount > 0
-                                  ? `On · ${routedCount} of ${routableCount} routing · ${stuckCount} need${stuckCount === 1 ? "s" : ""} attention`
-                                  : `On · ${routedCount} of ${routableCount} routing`}
+                          : routableCount === 0
+                            ? "On"
+                            : desiredCount === 0
+                              ? "On · nothing enabled yet"
+                              : `On · ${routedCount} of ${routableCount} routing`}
                       </div>
                     </>
                   )}
@@ -324,155 +328,25 @@ export function Home({
               </div>
             )}
 
-            {/* The second channel, one grain down from the master switch.
-                Routing reaches GUI apps through the OS proxy setting and
-                command-line tools through the shell environment, and only the
-                second is a machine-wide change to things that are not AI tools
-                - so it is the master's sub-setting, not a peer, and not a row
-                in the ledger (that groups by model family; this spans all of
-                them).
-
-                No rule above it, per the note on the ledger door: a hairline
-                inside a card reads as a card edge however it is inset.
-
-                Absent entirely on Linux, where the `environment.d` drop-in *is*
-                the system proxy - there the variables cannot be declined
-                without turning routing off, and a switch that cannot honour
-                itself is worse than no switch. `env_export_separable` carries
-                that from the backend rather than the UI guessing at platforms. */}
-            {showProxy && envExportSeparable && (
-              <div className="flex items-start gap-3 px-3.5 pb-3">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[12px] text-gc-ink-2">
-                    Command-line tools
-                  </div>
-                  <div className="mt-0.5 text-[10.5px] leading-snug text-gc-ink-4">
-                    Sets <span className="font-mono">HTTPS_PROXY</span> for your
-                    whole shell, so OpenCode and other terminal tools route too.
-                  </div>
-                </div>
-                <Switch
-                  on={envExportOn}
-                  label="Route command-line tools through Gate"
-                  busy={busy}
-                  onClick={() => {
-                    setInteracted(true);
-                    onToggleEnvExport();
-                  }}
-                />
-              </div>
-            )}
-
-            {/* The door to the ledger, not the ledger. One room cannot hold a
-                routing card, a certificate ceremony, a wire line, a banner, a
-                launch tip and an itemized list; the list is the part that reads
-                the same whether or not the user came looking for it. No rule
-                above it either: a hairline inside a card reads as a card edge
-                however it is inset, and the chevron plus the hover fill already
-                say the row is a door.
-
-                It carries the exception when there is one. Moving the pills a
-                navigation away would otherwise let a mid-task user open the
-                popover and learn nothing, and PRODUCT.md's second principle puts
-                the list on home for exactly that reason. The itemization goes;
-                the reporting stays.
-
-                No tile of its own: the shield above already establishes the
-                subject, and a second 36px tile made the pair read as a list of
-                two things rather than one thing and its detail. */}
-            {groups.length > 0 && (
-              <>
-                <button
-                  type="button"
-                  onClick={onOpenRoutes}
-                  className="flex w-full items-center gap-2.5 px-3.5 py-3 text-left transition hover:bg-gc-subtle focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-gc-ink">
-                      What routes through Gate
-                    </div>
-                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
-                      {ledgerNote ? (
-                        <span
-                          className={
-                            ledgerNoteKind === "error"
-                              ? "font-medium text-gc-error-deep"
-                              : "text-gc-ink-2"
-                          }
-                        >
-                          {ledgerNote}
-                        </span>
-                      ) : (
-                        groups.map((g) => g.name).join(", ")
-                      )}
-                    </div>
-                  </div>
-                  <Icon
-                    name="chevronRight"
-                    size={15}
-                    stroke={2}
-                    className="shrink-0 text-gc-ink-4"
-                  />
-                </button>
-              </>
-            )}
           </div>
         )}
 
-        {groups.length === 0 && (
-          // A door into an empty room is worse than the explanation, so the
-          // empty case keeps the card that says what to install.
-          <div className="flex items-start gap-2.5 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-4">
-              <Icon name="search" size={16} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-[12.5px] font-medium text-gc-ink">
-                Nothing to route yet
-              </div>
-              <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
-                Gate Connect picks up Claude Code and Codex once they&rsquo;re
-                installed. Install one, then reopen this window from the menu bar
-                and it will show up.
-              </p>
-            </div>
-          </div>
-        )}
+        {/* The ledger, back on Home.
 
-        {/* Its own line, not a footnote inside the routing card: that card
-            holds the switch that routes traffic, and a link into Settings is
-            an unrelated errand. Still only speaks in the quiet room - any
-            warning card or banner outranks a tip. */}
-        {proxyOn &&
-          routableCount > 0 &&
-          !launchTipDismissed &&
-          launchAtLogin === false &&
-          !partial &&
-          banner === null &&
-          !error && (
-          <div className="flex items-start gap-2 text-[11px] leading-snug text-gc-ink-3">
-            <span className="min-w-0 flex-1">
-              <button
-                type="button"
-                onClick={onOpenSettings}
-                className="font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
-              >
-                Turn on Launch at login
-              </button>{" "}
-              to keep routing on after a restart.
-            </span>
-            {/* A tip the user has read and declined should stop asking. It had
-                no dismissal at all, so someone who does not want launch-at-login
-                saw this under their routing card on every quiet launch. */}
-            <IconButton
-              icon="x"
-              size={12}
-              onClick={() => setLaunchTipDismissed(true)}
-              aria-label="Dismiss launch at login tip"
-            />
-          </div>
-        )}
+            It spent one release behind a door on the theory that one room
+            cannot hold a routing card, a certificate ceremony, a wire line, a
+            banner, a launch tip and an itemized list. Measured, the room was
+            33% empty with nothing scrolling, and the door had replaced the
+            inventory with a single ranked exception - so a mid-task user could
+            open the popover, read "Claude Code failed", and still not know
+            which of four families to go to. PRODUCT.md's second principle puts
+            the list here for exactly that reason.
 
+            Its own surface rather than a third part of the routing card: the
+            card is one control and its address, and a list of four things it
+            governs is a different grain. Rows carry name and pill only - the
+            switches stayed on the panel, which is what keeps this from
+            re-crowding into the screen the door was invented to fix. */}
         {/* Gated on `partial`, not just an untrusted CA: with no app rows
             switched on the certificate blocks nothing, and a warning card
             would contradict the green header pill. */}
@@ -542,6 +416,101 @@ export function Home({
             )}
           </div>
         )}
+
+        {groups.length > 0 && (
+          <div>
+            {/* Sentence case in sans, not the mono uppercase SectionLabel that
+                Settings uses. This is a sentence, not an identifier, and
+                DESIGN.md's own mono rule ("never sentence copy") is what
+                decides it. The words are the ones the door carried and the
+                panel still titles itself with; retiring the button did not
+                mean retiring the best sentence on the screen.
+
+                An h2, so the only route off Home stops being absent from the
+                document outline - it was a <button> wrapping <div>s, and the
+                outline read h1 -> h2 "Routing" with nothing for the list. */}
+            <h2 className="pb-1.5 text-[11.5px] font-medium text-gc-ink-3">
+              What routes through Gate
+            </h2>
+            <div
+              role="list"
+              className="overflow-hidden rounded-[10px] bg-gc-surface shadow-border"
+            >
+              {ranked.map(({ group, count, exception, kind }, i) => (
+                <FamilyRow
+                  key={group.id}
+                  group={group}
+                  count={count}
+                  // Two states never reach a row, because the card above owns
+                  // both and can act on both: the master being off, and the
+                  // certificate. Printed here they would repeat one sentence on
+                  // up to four rows directly under the card that just said it,
+                  // and in the certificate's case alongside the only button that
+                  // fixes it. The pill still reports what it costs the family.
+                  exception={kind === "master-off" || kind === "needs-trust" ? null : exception}
+                  kind={kind}
+                  last={i === ranked.length - 1}
+                  onOpen={() => onOpenRoutes(group.id)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {groups.length === 0 && (
+          // A door into an empty room is worse than the explanation, so the
+          // empty case keeps the card that says what to install.
+          <div className="flex items-start gap-2.5 rounded-[10px] bg-gc-surface p-3.5 shadow-border">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-sunken text-gc-ink-4">
+              <Icon name="search" size={16} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[12.5px] font-medium text-gc-ink">
+                Nothing to route yet
+              </div>
+              <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
+                Gate Connect picks up Claude Code and Codex once they&rsquo;re
+                installed. Install one, then reopen this window from the menu bar
+                and it will show up.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Its own line, not a footnote inside the routing card: that card
+            holds the switch that routes traffic, and a link into Settings is
+            an unrelated errand. Still only speaks in the quiet room - any
+            warning card or banner outranks a tip. */}
+        {proxyOn &&
+          routableCount > 0 &&
+          !launchTipDismissed &&
+          launchAtLogin === false &&
+          !partial &&
+          banner === null &&
+          !error && (
+          <div className="flex items-start gap-2 text-[11px] leading-snug text-gc-ink-3">
+            <span className="min-w-0 flex-1">
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="font-medium text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3"
+              >
+                Turn on Launch at login
+              </button>{" "}
+              to keep routing on after a restart.
+            </span>
+            {/* A tip the user has read and declined should stop asking. It had
+                no dismissal at all, so someone who does not want launch-at-login
+                saw this under their routing card on every quiet launch. */}
+            <IconButton
+              icon="x"
+              size={12}
+              onClick={() => setLaunchTipDismissed(true)}
+              aria-label="Dismiss launch at login tip"
+            />
+          </div>
+        )}
+
 
         {banner === "stale" && (
           <div role="status" className="flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
@@ -637,6 +606,101 @@ export function Home({
         </button>
       </div>
 
+    </div>
+  );
+}
+
+/** One family on Home: the name, the pill that answers "is this routing?", and
+ * the way in. No switch and no expander - those are the panel's job, and
+ * keeping them off this row is what lets four families fit under a routing card
+ * without a scroll.
+ *
+ * The row navigates; it does not expand. Home's glyph has meant "go" since the
+ * door used it, the panel's caret has meant "open in place", and the member
+ * level says the word "Details" - three depths, three affordances, no glyph
+ * doing two jobs.
+ *
+ * No inline remedy, which was the plan and did not survive contact:
+ *
+ * - `needs-trust` co-occurs with the certificate card by construction (a member
+ *   is only untrusted while `partial` is true), so a per-row Trust button would
+ *   put two or three identical buttons on screen for one machine-wide
+ *   certificate, next to a card that already explains it and says "It never
+ *   leaves this machine". One ceremony, one button.
+ * - `error` and `drifted` have no honest family-level action at all:
+ *   `setGroupRouted` skips a drifted member by design, and an errored one is
+ *   already `desired`, so the loop that looked like a retry would touch nothing
+ *   and report success.
+ *
+ * So the remedy stays where it is truthful and the row is the way to it, which
+ * is still one click where it used to be three. */
+function FamilyRow({
+  group,
+  count,
+  exception,
+  kind,
+  last,
+  onOpen,
+}: {
+  group: Group;
+  count: string;
+  /** Null when there is nothing to say, or when the only thing to say belongs to
+   * the card above: the master being off, or the certificate. */
+  exception: string | null;
+  kind: GroupException | null;
+  last: boolean;
+  onOpen: () => void;
+}) {
+  const label = groupPillLabel(group);
+  return (
+    <div
+      role="listitem"
+      className={`relative transition hover:bg-gc-subtle${
+        last ? "" : " border-b border-gc-line"
+      }`}
+    >
+      {/* Stretch button over the whole row, Trust as a sibling above it - the
+          same layering the panel uses for its switch. `aria-describedby` is what
+          makes the row readable without eyes: the pill and the exception sit in
+          `pointer-events-none` spans so this button can cover them, which also
+          takes them out of the accessibility tree. Without it the row announces
+          "Claude details, button" and never "Claude Code failed", which is the
+          one thing it exists to say. */}
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`${group.name} details`}
+        aria-describedby={`home-family-${group.id}`}
+        className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
+      />
+      <span id={`home-family-${group.id}`} className="sr-only">
+        {label}. {count}
+        {exception ? `. ${exception}` : ""}
+      </span>
+      <div className="pointer-events-none relative flex items-center gap-2.5 px-3.5 py-2.5">
+        {/* `truncate`, not two lines: a family name is a proper noun and the
+            longest one the catalog can produce is "Agent harnesses". */}
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-gc-ink">
+          {group.name}
+        </span>
+        <GroupPill group={group} />
+        <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
+      </div>
+      {exception && (
+        <div className="relative flex items-center gap-2 px-3.5 pb-2">
+          {/* The sentence carries its own severity, so a failure and a
+              hand-written setup are not typographically identical. Two lines,
+              because the exception's verb is at the end and a
+              production-length tool name ate it at 360px. */}
+          <span
+            className={`pointer-events-none min-w-0 flex-1 line-clamp-2 text-[11px] leading-snug ${
+              kind === "error" ? "font-medium text-gc-error-deep" : "text-gc-ink-2"
+            }`}
+          >
+            {exception}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

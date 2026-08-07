@@ -7,21 +7,27 @@ import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 import { GroupMembers } from "./GroupMembers";
 
-/** The ledger, on its own panel: one row per model family, each carrying the
- * pill that answers "is this routing?", a switch that routes the whole family
- * with one flip, and a body that opens the family's fine grain.
+/** The ledger's fine grain, on its own panel: one row per model family, each
+ * carrying the pill that answers "is this routing?", a switch that routes the
+ * whole family with one flip, and a body that opens the family's members.
  *
- * It used to sit on Home under a section label. Home now carries the master
- * control and a labelled door to this panel, which keeps the room that holds a
- * routing card, a certificate ceremony, a wire line, a banner and a launch tip
- * from also holding an itemized list. The cost is that the pills are one
- * navigation further from the tray, so Home's door reports any exception itself
- * rather than leaving the user to come looking.
+ * Home carries the same families as read-only rows, so this panel is where a
+ * family is *changed* rather than where it is first learned about. A row on Home
+ * arrives here with its own family already open, which is why `initialOpen`
+ * exists: tapping a row that says "Claude Code failed" and landing on a
+ * collapsed list would charge a second click for the thing just tapped.
  *
- * A family opens in place rather than pushing a third screen. Its members are
- * themselves expandable, so the whole hierarchy - family, member, mechanism and
- * remedy - is two disclosures deep in one panel, and the popover never stacks a
- * screen it has to animate back out of. */
+ * It also owns the shell-environment channel, at the bottom. That switch is not
+ * a family - it routes every command-line tool at once, whatever provider they
+ * talk to - so it cannot be a row here, and it was a near-identical peer of the
+ * master switch on Home: same 38x22 track, same indigo, 66px apart, telling the
+ * user by geometry that a machine-wide change to git and curl was the routing
+ * switch's equal.
+ *
+ * A family opens in place rather than pushing a third screen, so the whole
+ * hierarchy - family, member, mechanism and remedy - is two disclosures deep in
+ * one panel, and the popover never stacks a screen it has to animate back out
+ * of. */
 export function Routes({
   groups,
   busy,
@@ -33,6 +39,10 @@ export function Routes({
   proxyOn,
   onEnableRouting,
   authMode,
+  initialOpen,
+  envExportSeparable,
+  envExportOn,
+  onToggleEnvExport,
 }: {
   groups: Group[];
   busy: boolean;
@@ -46,6 +56,15 @@ export function Routes({
   proxyOn: boolean;
   onEnableRouting: () => void;
   authMode?: AuthMode;
+  /** The family to arrive with already expanded, when the user got here from a
+   * Home row rather than from the heading. */
+  initialOpen?: string | null;
+  /** Whether the shell-environment channel can be offered at all. False on
+   * Linux, where those variables *are* the system proxy, so a switch could not
+   * honour itself. */
+  envExportSeparable: boolean;
+  envExportOn: boolean;
+  onToggleEnvExport: () => void;
 }) {
   // Which family the user last flipped, so the live region below reports the
   // result of their own action and stays silent about the backend's. The row's
@@ -54,8 +73,9 @@ export function Routes({
   const [flipped, setFlipped] = useState<string | null>(null);
   const flippedGroup = groups.find((g) => g.id === flipped);
   // Which family is expanded. One at a time: two open families in a 360px panel
-  // put the second one's members below the fold with no way to see both.
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  // put the second one's members below the fold with no way to see both. Seeded
+  // from the Home row that got the user here.
+  const [openKey, setOpenKey] = useState<string | null>(initialOpen ?? null);
 
   return (
     <div className="flex grow flex-col">
@@ -183,6 +203,43 @@ export function Routes({
         <p className="px-3.5 py-4 text-[11.5px] leading-snug text-gc-ink-3">
           Nothing is installed to route right now.
         </p>
+      )}
+
+      {/* The other channel, after the families rather than among them. Routing
+          reaches GUI apps through the OS proxy setting and command-line tools
+          through the shell environment; this is the second one, and it spans
+          every family at once, so it is not a row and never was.
+
+          `ink-3`, not `ink-4`. This is two sentences of instruction about the
+          one control in the app that changes something outside the AI tools -
+          `HTTPS_PROXY` reaches git, curl and every process in the shell - and at
+          ink-4 it measured 3.97:1 on white, the only text in the product below
+          the 4.5:1 floor. DESIGN.md scopes ink-4 to "placeholders, muted icons,
+          and incidental mono identifiers only; never sentence copy or labels",
+          and OAuthOffer already carries the note that ink-3 is the smallest ink
+          that may carry real text. ink-3 is 6.90:1.
+
+          Absent entirely on Linux, where the `environment.d` drop-in *is* the
+          system proxy: there the variables cannot be declined without turning
+          routing off, and a switch that cannot honour itself is worse than no
+          switch. `env_export_separable` carries that from the backend rather
+          than the UI guessing at platforms. */}
+      {envExportSeparable && (
+        <div className="flex items-start gap-3 px-3.5 py-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-[12.5px] font-medium text-gc-ink">Command-line tools</div>
+            <div className="mt-0.5 text-[11px] leading-snug text-gc-ink-3">
+              Sets <span className="font-mono">HTTPS_PROXY</span> for your whole
+              shell, so OpenCode and other terminal tools route too.
+            </div>
+          </div>
+          <Switch
+            on={envExportOn}
+            label="Route command-line tools through Gate"
+            busy={busy}
+            onClick={onToggleEnvExport}
+          />
+        </div>
       )}
     </div>
   );

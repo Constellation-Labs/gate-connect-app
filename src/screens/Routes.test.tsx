@@ -78,6 +78,9 @@ function renderRoutes(
       onTrustCa={vi.fn()}
       proxyOn={proxyOn}
       onEnableRouting={vi.fn()}
+      envExportSeparable={true}
+      envExportOn={true}
+      onToggleEnvExport={vi.fn()}
       {...props}
     />,
   );
@@ -289,5 +292,71 @@ describe("Routes accessibility", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Route Claude through Gate" }));
     expect(live.textContent).toContain("Claude");
     expect(live.textContent).toContain("Routed");
+  });
+});
+
+describe("Routes command-line tools switch", () => {
+  const NAME = "Route command-line tools through Gate";
+
+  it("toggles the shell-environment channel without touching any family", () => {
+    const onToggleEnvExport = vi.fn();
+    const onToggleGroup = vi.fn();
+    renderRoutes({ tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] }, {
+      onToggleEnvExport,
+      onToggleGroup,
+    });
+    fireEvent.click(screen.getByRole("switch", { name: NAME }));
+    expect(onToggleEnvExport).toHaveBeenCalledTimes(1);
+    // It spans every family, so it must never flip one as a side effect.
+    expect(onToggleGroup).not.toHaveBeenCalled();
+  });
+
+  it("reflects the backend's choice rather than the master's state", () => {
+    renderRoutes({ proxyOn: true }, { envExportOn: false });
+    expect(screen.getByRole("switch", { name: NAME }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("is absent where the channel cannot be separated from routing", () => {
+    // Linux: the environment.d drop-in *is* the system proxy, so a switch here
+    // could not honour itself. Better no control than one that lies.
+    renderRoutes({}, { envExportSeparable: false });
+    expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
+  });
+
+  it("renders after the families, not among them", () => {
+    renderRoutes({ tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] });
+    const family = screen.getByRole("switch", { name: "Route Claude through Gate" });
+    const sub = screen.getByRole("switch", { name: NAME });
+    expect(family.compareDocumentPosition(sub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Not a row: it belongs to no family, so it must sit outside the list.
+    expect(sub.closest("[role='listitem']")).toBeNull();
+  });
+
+  it("carries its instruction in ink that clears AA", () => {
+    // ink-4 measured 3.97:1 on white, the only text in the app below 4.5:1,
+    // and this is two sentences about a machine-wide change to git and curl.
+    renderRoutes();
+    const copy = screen.getByText(/for your whole/);
+    expect(copy.className).toContain("text-gc-ink-3");
+    expect(copy.className).not.toContain("text-gc-ink-4");
+  });
+});
+
+describe("Routes initial expansion", () => {
+  it("arrives with the family the Home row named already open", () => {
+    renderRoutes(
+      { tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] },
+      { initialOpen: "anthropic" },
+    );
+    expect(
+      screen.getByRole("button", { name: "Claude details" }).getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+
+  it("stays collapsed when the user came from the heading", () => {
+    renderRoutes({ tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] });
+    expect(
+      screen.getByRole("button", { name: "Claude details" }).getAttribute("aria-expanded"),
+    ).toBe("false");
   });
 });

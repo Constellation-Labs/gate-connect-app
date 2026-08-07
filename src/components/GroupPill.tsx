@@ -39,16 +39,43 @@ export function groupPillLabel(
  * state twice. */
 export function GroupPill({ group }: { group: Group }) {
   const label = groupPillLabel(group);
+  // The seam, tinted from the pill's own hue and weighted by severity.
+  //
+  // A wash at 8-14% alpha measures 1.09-1.16:1 against the row it sits on, so
+  // the capsule was invisible as an object: the words floated in tinted air
+  // beside a switch whose indigo track reads 5.98:1. Reality lost the row to
+  // intent by a factor of 5.4, on the element PRODUCT.md calls the most
+  // important pixel on the screen. Now that these rows are Home's primary
+  // content and there are four of them, a pill has to read as a thing.
+  //
+  // Not one seam for all four states. The ladder is the point: error is a
+  // bordered chip at ~3:1, and "Routed" - the state four rows out of four are
+  // in on a healthy launch - stays the quietest of the set at ~1.5:1, because
+  // the emotional target is "good, that's handled" and not a wall of edges.
+  // A ring rather than a border, per the Seam Rule: solid 1px borders are what
+  // this system draws with box-shadow instead.
   const skin =
     label === "Routed"
-      ? { wrap: "bg-gc-success-wash text-gc-success-deep", dot: "bg-gc-success-deep" }
+      ? {
+          wrap: "bg-gc-success-wash text-gc-success-deep ring-1 ring-gc-success-deep/30",
+          dot: "bg-gc-success-deep",
+        }
       : label === "Partly routed"
-        ? { wrap: "bg-gc-warning-wash text-gc-ink-2", dot: "bg-gc-warning-deep" }
+        ? {
+            wrap: "bg-gc-warning-wash text-gc-ink-2 ring-1 ring-gc-warning-deep/45",
+            dot: "bg-gc-warning-deep",
+          }
         : label === "Error"
           ? // Same skin as the member pill's error state: one vocabulary for
             // one condition, at both levels of the ledger.
-            { wrap: "bg-gc-error-wash text-gc-ink-2", dot: "bg-gc-error-deep" }
-          : { wrap: "bg-gc-sunken text-gc-ink-3", dot: "bg-gc-ink-3" };
+            {
+              wrap: "bg-gc-error-wash text-gc-ink-2 ring-1 ring-gc-error-deep/65",
+              dot: "bg-gc-error-deep",
+            }
+          : {
+              wrap: "bg-gc-sunken text-gc-ink-3 ring-1 ring-gc-ink-4/45",
+              dot: "bg-gc-ink-3",
+            };
   return (
     <span aria-hidden className={`${PILL} ${skin.wrap}`}>
       <span className={`${DOT} ${skin.dot}`} />
