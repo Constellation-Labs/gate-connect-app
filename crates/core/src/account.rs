@@ -145,7 +145,7 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     // setters, not by saving a URL/key.
     let auth_mode = existing.as_ref().map(|f| f.auth_mode).unwrap_or_default();
     let org_id = existing.as_ref().and_then(|f| f.org_id.clone());
-    let org_name = existing.and_then(|f| f.org_name.clone());
+    let org_name = existing.as_ref().and_then(|f| f.org_name.clone());
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix,

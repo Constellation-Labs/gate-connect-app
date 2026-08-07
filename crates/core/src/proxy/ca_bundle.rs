@@ -149,8 +149,6 @@ pub fn ensure() -> Result<PathBuf> {
 #[cfg(test)]
 #[cfg(not(target_os = "windows"))]
 mod tests {
-    use super::*;
-
     #[test]
     fn system_roots_are_a_real_bundle_not_a_single_cert() {
         // The whole point of this module: a tool that takes a `cafile` replaces
