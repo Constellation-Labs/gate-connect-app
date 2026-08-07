@@ -19,6 +19,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::account;
 use crate::audit;
+use crate::oauth;
 use crate::registry::{self, ConnectInput, Status, ToolId};
 
 /// A user-facing provider: the union of the config integrations and proxy
@@ -290,9 +291,13 @@ fn enable_inner(slug: &str, skip: &[String]) -> Result<ProviderState> {
 
     // Emit audit event (best-effort; don't fail if audit fails)
     if let Some(org_id) = crate::account::org_id_for_injection() {
+        let auth_token = match account.auth_mode {
+            account::AuthMode::ApiKey => account.api_key.clone(),
+            account::AuthMode::OAuth => oauth::access_token_for_injection(),
+        };
         let _ = audit::provider_enabled(
             &account.gateway_base_url,
-            &account.api_key,
+            &auth_token,
             &org_id,
             &p.display_name,
         );
@@ -340,9 +345,13 @@ pub fn disable(slug: &str) -> Result<ProviderState> {
     // Emit audit event (best-effort; don't fail if audit fails)
     if let Ok(Some(account)) = account::load() {
         if let Some(org_id) = crate::account::org_id_for_injection() {
+            let auth_token = match account.auth_mode {
+                account::AuthMode::ApiKey => account.api_key.clone(),
+                account::AuthMode::OAuth => oauth::access_token_for_injection(),
+            };
             let _ = audit::provider_disabled(
                 &account.gateway_base_url,
-                &account.api_key,
+                &auth_token,
                 &org_id,
                 &p.display_name,
             );

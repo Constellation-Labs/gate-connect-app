@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use super::{ca, config, engine, system_proxy, ProxyDomain, ProxyState};
 use crate::account;
 use crate::audit;
+use crate::oauth;
 
 pub struct ProxyManager {
     engine: Mutex<Option<engine::RunningEngine>>,
@@ -282,10 +283,14 @@ impl ProxyManager {
         // Emit audit event (best-effort; don't fail if audit fails)
         if let Ok(Some(account)) = account::load() {
             if let Some(org_id) = crate::account::org_id_for_injection() {
+                let auth_token = match account.auth_mode {
+                    account::AuthMode::ApiKey => account.api_key.clone(),
+                    account::AuthMode::OAuth => oauth::access_token_for_injection(),
+                };
                 let port = self.status().ok().and_then(|s| s.port).unwrap_or(0);
                 let _ = audit::proxy_enabled(
                     &account.gateway_base_url,
-                    &account.api_key,
+                    &auth_token,
                     &org_id,
                     port,
                 );
@@ -355,7 +360,11 @@ impl ProxyManager {
         // Emit audit event (best-effort; don't fail if audit fails)
         if let Ok(Some(account)) = account::load() {
             if let Some(org_id) = crate::account::org_id_for_injection() {
-                let _ = audit::proxy_disabled(&account.gateway_base_url, &account.api_key, &org_id);
+                let auth_token = match account.auth_mode {
+                    account::AuthMode::ApiKey => account.api_key.clone(),
+                    account::AuthMode::OAuth => oauth::access_token_for_injection(),
+                };
+                let _ = audit::proxy_disabled(&account.gateway_base_url, &auth_token, &org_id);
             }
         }
 
