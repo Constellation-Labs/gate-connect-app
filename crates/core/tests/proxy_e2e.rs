@@ -434,6 +434,19 @@ async fn exported_proxy_env_routes_an_external_process() {
     let output = tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new("curl");
         cmd.env_clear().env("PATH", path_var);
+        // Windows loads Winsock, DNS and schannel out of the system directory,
+        // and finds it through SystemRoot. Clearing that leaves curl unable to
+        // open a socket at all: it fails in single-digit milliseconds with
+        // "Could not connect to server", which is indistinguishable from the
+        // engine being down and is exactly how this test read on CI. Neither
+        // variable carries proxy configuration, so restoring them keeps the
+        // isolation this `env_clear` exists for.
+        #[cfg(windows)]
+        for key in ["SystemRoot", "SystemDrive"] {
+            if let Some(value) = std::env::var_os(key) {
+                cmd.env(key, value);
+            }
+        }
         for (name, value) in &vars_for_curl {
             cmd.env(name, value);
         }
