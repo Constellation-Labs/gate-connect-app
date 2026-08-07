@@ -6,5 +6,9 @@
 /src-tauri/binaries/
 .DS_Store
 
+# JetBrains project files. Removed from tracking in #114; ignored so they
+# cannot be committed by accident again.
+.idea/
+
 # Impeccable live-overlay working state (transient; snapshots in critique/ are tracked)
 .impeccable/live/
