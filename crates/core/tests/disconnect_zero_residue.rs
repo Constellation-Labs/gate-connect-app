@@ -476,6 +476,11 @@ fn openclaw_disconnect_leaves_no_gate_residue() {
         "proxy.proxyUrl must point at the engine: {connected}"
     );
     assert!(
+        connected.contains(r#""enabled": true"#),
+        "proxy.enabled is what actually switches managed proxy mode on - without it \
+         OpenClaw ignores the URL and reaches providers directly: {connected}"
+    );
+    assert!(
         connected.contains("https://openrouter.ai/api/v1"),
         "the provider baseUrl must stay canonical - redirecting it is what made \
          OpenClaw drop its implicit beta headers: {connected}"
@@ -506,6 +511,11 @@ fn openclaw_disconnect_leaves_no_gate_residue() {
     assert!(
         !after.contains("proxyUrl"),
         "a proxyUrl the user never had must not survive: {after}"
+    );
+    assert!(
+        !after.contains("enabled"),
+        "an enabled flag the user never had must not survive either - leaving it \
+         behind switches managed proxy mode on with no proxy to point at: {after}"
     );
     assert!(
         after.contains(r#""loopbackMode": "gateway-only""#),
