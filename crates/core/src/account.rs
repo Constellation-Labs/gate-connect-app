@@ -159,7 +159,8 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         keychain::set(&service(), &user, key)?;
 
         // Emit audit event (best-effort; don't fail if audit fails)
-        if let Some(org_id) = org_id_for_injection() {
+        let org_id = org_id_for_injection();
+        if !org_id.is_empty() {
             let new_prefix = key.chars().take(12).collect::<String>();
             let _ = audit::api_key_saved(
                 gateway_base_url,
