@@ -216,6 +216,25 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
             preferred_port,
             preferred_relay_port,
         } => {
+            // What the daemon actually received, as opposed to what the CLI
+            // printed. The engine ends up with zero ENABLED domains while
+            // `proxy enable` reports anthropic on, and every link in between
+            // has been cleared: load_domains starts from default_domains and
+            // cannot be empty, set_intercept sends `domains.to_vec()`,
+            // validate_domains only validates, and ProxyDomain carries no serde
+            // attributes on `enabled`. This is the one hop with no evidence.
+            if crate::proxy::engine::debug_log() {
+                let on: Vec<&str> = domains
+                    .iter()
+                    .filter(|d| d.enabled)
+                    .map(|d| d.slug.as_str())
+                    .collect();
+                eprintln!(
+                    "[gate-proxyd] SetIntercept received {} domains, enabled: [{}]",
+                    domains.len(),
+                    on.join(",")
+                );
+            }
             // Access control #4: only ever route catalog providers.
             if let Err(e) = control::validate_domains(&domains) {
                 return Response::Error {
