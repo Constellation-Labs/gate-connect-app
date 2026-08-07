@@ -28,10 +28,7 @@ impl SessionContext {
     }
 
     pub fn get_token(&self) -> Option<String> {
-        self.auth_token
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
+        self.auth_token.lock().ok().and_then(|guard| guard.clone())
     }
 
     pub fn clear(&self) {

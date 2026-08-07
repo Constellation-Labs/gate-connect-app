@@ -36,7 +36,9 @@ pub fn emit(
     data: serde_json::Value,
 ) -> Result<()> {
     if auth_token.is_empty() {
-        return Err(anyhow::anyhow!("auth_token is required (cannot emit without authentication)"));
+        return Err(anyhow::anyhow!(
+            "auth_token is required (cannot emit without authentication)"
+        ));
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -62,11 +64,7 @@ pub fn emit(
     {
         Ok(response) => {
             if !response.status().is_success() {
-                eprintln!(
-                    "[gate] audit emit failed: {} ({})",
-                    response.status(),
-                    url
-                );
+                eprintln!("[gate] audit emit failed: {} ({})", response.status(), url);
                 return Err(anyhow::anyhow!("audit emit returned {}", response.status()));
             }
             Ok(())
@@ -80,12 +78,7 @@ pub fn emit(
 
 /// Emit a proxy enable event.
 /// Caller must provide auth_token without prompting.
-pub fn proxy_enabled(
-    gateway_url: &str,
-    auth_token: &str,
-    org_id: &str,
-    port: u16,
-) -> Result<()> {
+pub fn proxy_enabled(gateway_url: &str, auth_token: &str, org_id: &str, port: u16) -> Result<()> {
     emit(
         gateway_url,
         auth_token,

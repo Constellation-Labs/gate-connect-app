@@ -297,12 +297,8 @@ impl ProxyManager {
         if !org_id.is_empty() {
             if let Some(cached_token) = crate::session::get_auth_token() {
                 let port = self.status().ok().and_then(|s| s.port).unwrap_or(0);
-                let _ = audit::proxy_enabled(
-                    &account.gateway_base_url,
-                    &cached_token,
-                    &org_id,
-                    port,
-                );
+                let _ =
+                    audit::proxy_enabled(&account.gateway_base_url, &cached_token, &org_id, port);
             }
         }
 
@@ -372,11 +368,7 @@ impl ProxyManager {
         if !org_id.is_empty() {
             if let Some(auth_token) = crate::session::get_auth_token() {
                 if let Ok(Some(account)) = account::load() {
-                    let _ = audit::proxy_disabled(
-                        &account.gateway_base_url,
-                        &auth_token,
-                        &org_id,
-                    );
+                    let _ = audit::proxy_disabled(&account.gateway_base_url, &auth_token, &org_id);
                 }
             }
         }

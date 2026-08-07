@@ -162,13 +162,7 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         let org_id = org_id_for_injection();
         if !org_id.is_empty() {
             let new_prefix = key.chars().take(12).collect::<String>();
-            let _ = audit::api_key_saved(
-                gateway_base_url,
-                key,
-                &org_id,
-                old_prefix,
-                &new_prefix,
-            );
+            let _ = audit::api_key_saved(gateway_base_url, key, &org_id, old_prefix, &new_prefix);
         }
 
         // Cache the auth token for this session based on current auth mode.
