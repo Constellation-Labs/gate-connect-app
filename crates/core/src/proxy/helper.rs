@@ -13,6 +13,7 @@
 
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -82,6 +83,10 @@ async fn serve() -> Result<()> {
         .with_context(|| format!("locking down {}", sock.display()))?;
 
     let engine: Shared = Arc::new(Mutex::new(None));
+    // Set by a client that told us its lifetime is not the routing lifetime
+    // (the CLI). Lives outside the connection loop on purpose: the whole point
+    // is that it outlives the connection that set it.
+    let detached = Arc::new(AtomicBool::new(false));
     // SAFETY: geteuid never fails.
     let owner_uid = unsafe { libc::geteuid() };
 
@@ -93,12 +98,19 @@ async fn serve() -> Result<()> {
                 continue;
             }
         };
-        // One client (the GUI) at a time - handle to completion, then accept
-        // the next. On any disconnect, drop back to pass-through.
-        if let Err(e) = handle_conn(stream, owner_uid, &token, &engine).await {
+        // One client at a time - handle to completion, then accept the next.
+        // On disconnect, drop back to pass-through UNLESS the client asked to
+        // be detached: a short-lived caller like `gate-connect proxy enable`
+        // exits as soon as it has armed the engine, and reverting on its exit
+        // silently un-routed the machine while status still read "on".
+        if let Err(e) = handle_conn(stream, owner_uid, &token, &engine, &detached).await {
             eprintln!("[gate-proxyd] connection ended: {e}");
         }
-        set_passthrough(&engine);
+        if detached.load(Ordering::SeqCst) {
+            eprintln!("[gate-proxyd] client disconnected; staying detached and intercepting");
+        } else {
+            set_passthrough(&engine);
+        }
     }
 }
 
@@ -133,6 +145,7 @@ async fn handle_conn(
     owner_uid: u32,
     token: &str,
     engine: &Shared,
+    detached: &AtomicBool,
 ) -> Result<()> {
     // Access control #2: reject any peer that isn't us, before reading a byte.
     let uid = peer_uid(&stream)?;
@@ -192,7 +205,7 @@ async fn handle_conn(
             }
             std::process::exit(0);
         }
-        let resp = handle_request(req, engine);
+        let resp = handle_request(req, engine, detached);
         write_response(&mut write_half, &resp).await?;
     }
     Ok(())
@@ -200,7 +213,7 @@ async fn handle_conn(
 
 /// Apply one request to the engine and produce the reply. Synchronous: engine
 /// updates are cheap (watch-channel sends) and `start` returns once bound.
-fn handle_request(req: Request, engine: &Shared) -> Response {
+fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Response {
     match req {
         Request::Hello { .. } => Response::Error {
             message: "unexpected Hello".into(),
@@ -213,6 +226,7 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
             ca_cert_pem,
             ca_key_pem,
             domains,
+            detached: want_detached,
             preferred_port,
             preferred_relay_port,
         } => {
@@ -235,6 +249,9 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
                     on.join(",")
                 );
             }
+            // Recorded before the engine is touched, so a client that arms and
+            // exits immediately cannot lose the race with its own disconnect.
+            detached.store(want_detached, Ordering::SeqCst);
             // Access control #4: only ever route catalog providers.
             if let Err(e) = control::validate_domains(&domains) {
                 return Response::Error {
@@ -297,6 +314,10 @@ fn handle_request(req: Request, engine: &Shared) -> Response {
             }
         }
         Request::SetPassthrough => {
+            // An explicit request always wins over a standing detach: this is
+            // `proxy disable`, i.e. the user asking for routing off, not a
+            // client going away.
+            detached.store(false, Ordering::SeqCst);
             set_passthrough(engine);
             Response::Ok
         }

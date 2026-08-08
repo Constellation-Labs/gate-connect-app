@@ -369,7 +369,9 @@ impl HttpHandler for GateHandler {
                 .map(|d| d.slug.as_str())
                 .collect();
             eprintln!(
-                "[gate-proxy] CONNECT {} -> {} (engine rules: {} total, enabled: [{}])",
+                // `rules` is already enabled_only(), so its length IS the
+                // enabled count - saying "total" would imply the catalog size.
+                "[gate-proxy] CONNECT {} -> {} (engine has {} enabled: [{}])",
                 host.unwrap_or("?"),
                 if intercept { "intercept" } else { "tunnel" },
                 rules.len(),
