@@ -110,8 +110,8 @@ components:
 
 Gate Connect is a small warm room at the edge of something big. A calm
 keeper checks your credentials, waves your traffic through, and keeps the
-key on its hook where you can see it. The popover (360px wide, ~520px
-tall) is that one room: white paper surfaces, a ledger's precision in the
+key on its hook where you can see it. The popover (380 x 620, fixed) is
+that one room: white paper surfaces, a ledger's precision in the
 mono identifiers, and a single house color (Gate Indigo) that marks what
 is live and actionable. The emotional target is the reassuring
 gatekeeper: the user should close the popover thinking "good, that's
@@ -130,7 +130,7 @@ enterprise SaaS dashboard look (heavy cards, bright blue CTAs), no
 dev-tool brutalism (all-mono UI, ASCII chrome, all-caps everything).
 
 **Key Characteristics:**
-- One room: everything fits a 360px popover; panels slide, nothing stacks.
+- One room: everything fits the 380px popover; panels slide, nothing stacks.
 - Shadow-as-border seams on every elevated surface.
 - Gate Indigo marks affordance and live state; neutrals do everything else.
 - Geist for voice, Geist Mono for identity and system state.
@@ -225,7 +225,7 @@ friendly sentences, exact entries.
   key placeholders, and pill-adjacent identifiers at 10.5 to 11px.
 
 The onboarding tour lives in its own larger window and may use a 27px
-display heading; inside the 360px popover the ramp tops out at Panel
+display heading; inside the 380px popover the ramp tops out at Panel
 Title.
 
 ### Units, and the eleven-versus-six gap
@@ -284,7 +284,7 @@ wraps beneath the wordmark at 200% instead of colliding with it.
 
 ## Layout
 
-One room, 360px wide, ~520px tall on a typical screen. The header
+One room, 380px wide and 620px tall, fixed and non-resizable. The header
 (wordmark, workspace, connection pill, gear) and any footer are fixed;
 only the body scrolls, on 6px ink-ramp scrollbars. Secondary surfaces
 (tool detail, settings, forms) slide in as full-popover panels, never as
@@ -303,24 +303,40 @@ reduced-motion preference collapses all of it to instant; that contract
 is global and non-negotiable.
 
 ### Named Rules
-**The One Room Rule.** Every screen works inside the 360px frame without
+**The One Room Rule.** Every screen works inside the 380px frame without
 scrolling chrome. If a design needs a second window or a stacked modal,
 it is the wrong design.
 
-**The Vertical Budget.** The body's scroll viewport is 487px on macOS and
-Windows (520px frame less the 33px pinned credential strip) and 455px on
-Linux, whose custom title bar takes another 32px. Measure against those
-numbers rather than the frame; the Linux case is the one that catches a
-composition out, because a layout that fits with 15px to spare elsewhere
-overflows there.
+**The Vertical Budget.** The window is **380 x 620** (`tauri.conf.json`,
+fixed: `resizable: false`, no runtime resize). The body's scroll viewport is
+**587px** on macOS and Windows (620 less the 33px pinned credential strip)
+and 555px on Linux, whose custom title bar takes another 32px. Measure
+against those numbers rather than the frame; the Linux case is the one that
+catches a composition out.
 
 Home's daily state must fit with no overflow **at 100% text**: header,
 routing card, ledger heading, four 44px family rows and the dashboard link
-land at 440.8px, leaving 46.3px. Above 100% the body scrolls, and that is
-the intended trade: SC 1.4.4 asks for no loss of content or function, not
-for everything to stay above the fold, and scrolling a body is neither.
-What must not happen at any size is content colliding or clipping, which is
-what "type size is the breakpoint" in Typography exists to prevent.
+measure **443.4px, leaving 143.6px (24.5%) with nothing scrolling**. Above
+100% the body scrolls, and that is the intended trade: SC 1.4.4 asks for no
+loss of content or function, not for everything to stay above the fold, and
+scrolling a body is neither. What must not happen at any size is content
+colliding or clipping, which is what "type size is the breakpoint" in
+Typography exists to prevent.
+
+That 24.5% is not a target and not yet a verdict. The screen is no longer
+*empty with its content hidden behind a door*, which is what the rows were
+brought back to fix, but a quarter of the primary surface is still unspent
+and the next composition pass should decide deliberately what it is for.
+
+**Correction, 2026-08-07.** This section previously said 360 x 520 with a
+487px viewport, and so did every other size reference in this file and in
+PRODUCT.md. The real window has been 380 x 620 throughout. Every measurement
+taken before this date, including the figures in the round-15 and round-16
+critique snapshots under `.impeccable/critique/`, was captured in a 360 x 520
+harness built from the wrong number: 20px too narrow and 100px too short.
+Those readings are directionally useful and numerically wrong, and the
+emptiness figures in particular are understated, because a shorter frame
+makes a screen look fuller than it is.
 
 States that add chrome are allowed to scroll, and should:
 the certificate ceremony, a stale-address banner or two exception sentences
@@ -558,7 +574,7 @@ what is actually happening.
   section labels) in Geist Mono at 10.5 to 11px; keep pills' text sans.
 - **Do** honor `prefers-reduced-motion` for every animation; the global
   collapse in index.css is the contract.
-- **Do** keep every screen inside the 360px popover; secondary surfaces
+- **Do** keep every screen inside the 380px popover; secondary surfaces
   slide as full panels with the 260ms directional grammar.
 - **Do** meet WCAG 2.1 AA contrast on white; ink-3 (#55596f) is the
   floor for body-secondary text.
