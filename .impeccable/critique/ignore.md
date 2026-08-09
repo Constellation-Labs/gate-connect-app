@@ -18,10 +18,11 @@ navigation aid only.
   container, and its `mask-image` gradient uses `#000` as the opaque stop.
   Nothing paints it; the gradient only decides where content fades. Added
   2026-08-04 with the layout pass.
-- `design-system-font-size` 27px on `src/screens/Onboarding.tsx:219`: the
-  onboarding tour renders in its own larger window and uses a 27px display
-  heading, documented in DESIGN.md's Typography section. The popover ramp
-  tops out at Panel Title (17px).
+- ~~`design-system-font-size` 27px on `src/screens/Onboarding.tsx:219`~~:
+  retired 2026-08-07. The literal became the `gc-display` token when the type
+  ramp moved to rem, so the rule no longer fires and the exception matched
+  nothing. The heading itself is unchanged, and DESIGN.md's Typography
+  section still documents why the tour may exceed the popover's ramp.
 - `design-system-color` `oklch(0.165 0 0)` on `tailwind.config.ts:188` and
   `:192`: this is `ink.800` (defined at line 71) and it only ever appears
   inside `color-mix(in oklch, ... 4-9%, transparent)`, so it is never

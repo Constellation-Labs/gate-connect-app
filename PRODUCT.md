@@ -144,3 +144,10 @@ sensitive and makes you feel like grown-ups are running the kitchen.
 Target WCAG 2.1 AA: contrast ratios and full keyboard operability inside the
 popover. Light theme only for the first release, so AA must be met on the
 white popover surface without relying on a dark-mode fallback.
+
+Text resizes to 200% (SC 1.4.4) through the app's own five-step control in
+Settings, not through the OS or a browser zoom. A fixed, non-resizable
+menubar window exposes no other route, so the mechanism has to be ours: the
+type ramp is expressed in rem and scaled from one root variable. Layouts that
+must change at large text key off the type size in `em`, since a single fixed
+window has no width breakpoints to key off instead.

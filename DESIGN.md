@@ -228,11 +228,59 @@ The onboarding tour lives in its own larger window and may use a 27px
 display heading; inside the 360px popover the ramp tops out at Panel
 Title.
 
+### Units, and the eleven-versus-six gap
+Every size above is expressed in **rem against a 16px root**, never in px.
+That is what makes the ramp scalable: px is absolute, so before this the
+whole app was immune to a user's text-size setting (measured: root 16px to
+32px left a 13.5px heading at 13.5px).
+
+The `fontSize` tokens in `tailwind.config.ts` are the implementation, and
+there are **eleven of them against the six names above**: `gc-label`,
+`gc-micro`, `gc-caption`, `gc-caption-lg`, `gc-body-sm`, `gc-body-md`,
+`gc-body`, `gc-title-sm`, `gc-title`, `gc-panel-title`, `gc-display`.
+Eleven is what the code actually uses. The six names here keep their
+meaning and remain the design intent; the five in-between steps are
+consolidation candidates, and collapsing them changes how the product looks
+at 100%, so it belongs to a typesetting pass rather than to the units change
+that introduced them. Until that happens, this section describes the target
+and the tokens describe the state.
+
+Tokens carry **font size only, no line-height tuple**. Tailwind would
+otherwise emit `line-height` beside every `font-size` and change computed
+leading at each call site that does not already carry a `leading-*` utility.
+
+### Text scaling
+The popover scales its own type: five steps from 100% to 200%, driven by
+`useTextScale`, with the control in Settings and a Cmd/Ctrl plus-minus
+shortcut. WCAG 2.1 SC 1.4.4 asks for 200% without loss of content or
+function, and a fixed, non-resizable menubar window exposes no other way to
+get there.
+
+**Not webview zoom**, though that would be one call. The app root is
+`h-full w-full`, so the CSS layout width *is* the window width: zooming a
+380px window to 200% lays the page out at 190 CSS px, and "Waiting on
+routing" is a ~130px pill. Zoom shrinks the room while it grows the type.
+Scaling the rem root grows type inside a composition that keeps its shape.
+
+Five steps rather than a slider, because a slider implies a precision the
+vertical budget cannot honour.
+
 ### Named Rules
 **The Mono Earns Its Place Rule.** Geist Mono appears only where identity
 or precision matters: URLs, hosts, API key placeholders, workspace names,
 section labels, status identifiers, tabular counts. Body copy, labels on
 buttons, and descriptions are always sans. Mono is a signal, not a vibe.
+
+**The Rem Rule.** No `text-[Npx]` literal in product code. A new size is a
+new token or an existing one; a px literal is a size that silently opts out
+of scaling, and one of those is enough to break a screen at 200%.
+
+**Type size is the breakpoint.** The popover has no width breakpoints and
+cannot get them: it is one fixed window. Where a layout must change at large
+text, it keys off the type itself in `em` rather than a media query. The
+header is the worked example: `flex-wrap` with `basis-[8em]` asks for eight
+characters' worth of room at whatever the current size is, so the pill group
+wraps beneath the wordmark at 200% instead of colliding with it.
 
 ## Layout
 
@@ -266,9 +314,15 @@ numbers rather than the frame; the Linux case is the one that catches a
 composition out, because a layout that fits with 15px to spare elsewhere
 overflows there.
 
-Home's daily state must fit with no overflow: header, routing card, ledger
-heading, four 44px family rows and the dashboard link land at 440.8px,
-leaving 46.3px. States that add chrome are allowed to scroll, and should:
+Home's daily state must fit with no overflow **at 100% text**: header,
+routing card, ledger heading, four 44px family rows and the dashboard link
+land at 440.8px, leaving 46.3px. Above 100% the body scrolls, and that is
+the intended trade: SC 1.4.4 asks for no loss of content or function, not
+for everything to stay above the fold, and scrolling a body is neither.
+What must not happen at any size is content colliding or clipping, which is
+what "type size is the breakpoint" in Typography exists to prevent.
+
+States that add chrome are allowed to scroll, and should:
 the certificate ceremony, a stale-address banner or two exception sentences
 each earn their height, and the fold cue (`gc-scroll-more`) exists for
 exactly that. What is not allowed is the inverse, which is what this rule
@@ -367,6 +421,12 @@ Quiet and precise: color states, not size or shadow theatrics.
   borrow the grey it uses for a switch the user set.
 - **Idle / Signed out / Not routed:** sunken (#eef0f6) background, ink-3
   text, ink-3 dot, ink-4 ring at 45%.
+- **Needs trust / Set up elsewhere:** Warning Wash, ink-2 text, Warning
+  Deep dot and ring at 45%. Both are "half-on for a reason outside this
+  row", so they share the Partial rung.
+- **Waiting on routing:** sunken background, ink-2 text (not ink-3),
+  ink-3 dot, ink-4 ring at 45%. Sunken because nothing is flowing; ink-2
+  because the user did not ask for this.
 - **The Pill Seam Ladder.** A wash at 8 to 14% alpha measures 1.09 to
   1.16:1 against the row it sits on, so the capsule was invisible as an
   object: the words floated in tinted air beside a switch track reading
@@ -374,9 +434,17 @@ Quiet and precise: color states, not size or shadow theatrics.
   element this product calls the most important pixel on the screen. The
   ring is what makes a pill a thing. It is weighted by severity rather
   than applied evenly: error reads about 3:1 as a bordered chip, and
-  Routed stays the quietest of the four at about 1.5:1, because four green
+  Routed stays the quietest of the set at about 1.5:1, because four green
   pills on a healthy launch should read as "that's handled" and not as a
   wall of edges.
+- **One table, every level.** The ladder is a rule for the component, not
+  for one caller. It first shipped on the family pill alone, which left the
+  member rows - the one place in the app where an intent control and a
+  reality report sit side by side and are *allowed to disagree* - at 1.08:1
+  beside a 5.68:1 switch, i.e. the exact measurement the ring was introduced
+  to fix, unfixed. There is now one skin table keyed by label, shared by the
+  family pill, the member pill and the header pill. Two copies of a severity
+  ladder would drift.
 - **Not a conformance fix.** The pill's state is carried by its text
   (4.63 to 4.84:1) and its dot, both of which already pass, so the ring is
   a weight decision and does not need to reach 3:1 at every level.
