@@ -127,7 +127,7 @@ export function UpdatePanel({
         className="flex shrink-0 items-center gap-2 border-b border-gc-line bg-gc-accent-wash-2 py-1.5 pl-3 pr-1.5"
       >
         <Icon name="refresh" size={13} className="shrink-0 text-gc-accent" />
-        <div className="min-w-0 flex-1 text-[11.5px] text-gc-ink-2">
+        <div className="min-w-0 flex-1 text-gc-caption text-gc-ink-2">
           {failed ? (
             "Update failed · try again"
           ) : (
@@ -142,7 +142,7 @@ export function UpdatePanel({
           onClick={() => {
             void install();
           }}
-          className="shrink-0 text-[11.5px] font-semibold text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3 disabled:no-underline disabled:opacity-45"
+          className="shrink-0 text-gc-caption font-semibold text-gc-ink underline decoration-gc-line-strong underline-offset-2 transition hover:decoration-gc-ink-3 disabled:no-underline disabled:opacity-45"
         >
           {installing ? "Installing…" : failed ? "Retry" : "Update"}
         </button>
@@ -217,11 +217,11 @@ function UpdateTakeover({
       <div className="flex flex-col gap-1.5">
         <h1
           id="update-panel-title"
-          className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink"
+          className="text-gc-panel-title font-semibold tracking-[-0.01em] text-gc-ink"
         >
           Update ready
         </h1>
-        <p className="text-[12.5px] leading-snug text-gc-ink-3">
+        <p className="text-gc-body-sm leading-snug text-gc-ink-3">
           {failed
             ? "The update couldn’t install. Check your connection and try again."
             : "A new version of Gate Connect is ready to install."}
@@ -234,14 +234,14 @@ function UpdateTakeover({
             Phrased as the setup rather than as "routing comes back on", which
             would imply routing is currently on; this panel does not know. */}
         {!failed && (
-          <p className="text-[11.5px] leading-snug text-gc-ink-3">
+          <p className="text-gc-caption leading-snug text-gc-ink-3">
             Installing restarts Gate Connect; your routing setup comes back with
             it.
           </p>
         )}
       </div>
 
-      <div className="flex items-center gap-2 font-mono text-[11.5px]">
+      <div className="flex items-center gap-2 font-mono text-gc-caption">
         {current && <span className="text-gc-ink-3">v{current}</span>}
         {/* ink-4, the weight every other chevron in the app carries. ink-5 was
             the only use of that step in the product and it measures 2.42:1 on
@@ -268,7 +268,7 @@ function UpdateTakeover({
             ref={safeRef}
             type="button"
             onClick={onLater}
-            className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            className="text-gc-body-sm font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             Later
           </button>

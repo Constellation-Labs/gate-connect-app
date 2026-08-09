@@ -135,12 +135,21 @@ export function Home({
         (b.kind !== null ? (EXCEPTION_RANK[b.kind] ?? 9) : 9),
     );
 
-  // At most one banner at a time, most actionable first: transient chrome
-  // must never bury the ledger (the pills are the point of the screen). The
-  // stale-port notice outranks the change notice because it means the user's
-  // tools are broken right now, not merely out of date. The trust card
-  // outranks both: it is the reason nothing is routing, so a change notice
-  // stacked under it would just be a second thing to read first.
+  // At most one banner at a time, most actionable first. The stale-port notice
+  // outranks the change notice because it means the user's tools are broken
+  // right now, not merely out of date. The trust card outranks both: it is the
+  // reason nothing is routing, so a change notice stacked under it would just
+  // be a second thing to read first.
+  //
+  // Both render above the ledger, with the trust card. This comment used to say
+  // "transient chrome must never bury the ledger (the pills are the point of
+  // the screen)", which contradicted DESIGN.md's "Blockers outrank inventory"
+  // written the same round, and the banners obeyed this half while the trust
+  // card obeyed the other. A banner that explains why traffic is not flowing
+  // and carries the fix is not chrome; it is the most important sentence on the
+  // screen. The rule survives, scoped to what is actually transient: the launch
+  // tip, which is the one element here that speaks only in a quiet room and
+  // correctly sits below the list.
   const banner: "stale" | "change" | null =
     // Nothing installed means nothing can be routing, so an offer to close
     // running apps is an offer to close nothing.
@@ -245,15 +254,22 @@ export function Home({
             which read as two unrelated errands when they are the same subject
             seen at two grains.
 
-            The rule between them is inset rather than full-bleed, because a
-            hairline that runs edge to edge inside a card still reads as a card
-            boundary, which is the whole thing this merge was meant to stop.
-            `overflow-hidden` keeps the lower half's hover fill inside the
+            No rule between the halves. There was one, inset rather than
+            full-bleed, on the reasoning that a hairline running edge to edge
+            inside a card still reads as a card boundary - which is the whole
+            thing this merge was meant to stop. Dropping it entirely turned out
+            better: the host line reads as the card's third line, which is what
+            it is. `overflow-hidden` keeps the lower half's hover fill inside the
             radius. */}
         {(showProxy || gatewayHost) && (
           <div className="overflow-hidden rounded-[10px] bg-gc-surface shadow-border">
             {showProxy && (
-              <div className="flex items-center gap-3 px-3.5 pb-2.5 pt-3.5">
+              // `flex-wrap` with an `em` basis on the text column, same rule as
+              // the family rows. At 200% the tile and the switch left the text
+              // ~150px, which broke "On · 8 of 8 routing" across three lines with
+              // an orphaned "8". Given its own line the switch costs one row and
+              // the sentence reads.
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 pb-2.5 pt-3.5">
                 {showProxy && (
                   <div
                     className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] ${
@@ -263,15 +279,15 @@ export function Home({
                     <Icon name="shieldCheck" size={19} />
                   </div>
                 )}
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1 basis-[8em]">
                   {showProxy && (
                     <>
                       {/* A heading, not a styled div: this is the screen's
                           primary control and it was absent from the document
                           outline, so the outline read h1 -> h2 "What routes
                           through Gate" with the master switch unheaded. */}
-                      <h2 className="text-[13.5px] font-semibold text-gc-ink">Routing</h2>
-                      <div className="mt-0.5 text-[11.5px] text-gc-ink-3">
+                      <h2 className="text-gc-body font-semibold text-gc-ink">Routing</h2>
+                      <div className="mt-0.5 text-gc-caption text-gc-ink-3">
                         {/* The count survives the certificate state. Dropping it
                             was backwards: that is exactly when the user wants to
                             know how much is still working.
@@ -299,6 +315,7 @@ export function Home({
                 </div>
                 {showProxy && (
                   <Switch
+                    className="ml-auto"
                     on={proxyOn}
                     label="Route through Gate"
                     busy={busy}
@@ -318,9 +335,15 @@ export function Home({
                 one line, so `truncate` costs nothing real and never wraps.
                 `title` keeps a staging host recoverable. */}
             {gatewayHost && (
+              // Wraps rather than truncates. At 100% the card's 332px fits a
+              // 52-character host on one line, so this renders identically to
+              // the `truncate` it replaces; at 200% the host wanted 409px in
+              // 304 and lost its tail to an ellipsis. A hostname is the one
+              // identifier on this screen that cannot be shortened without
+              // lying, so it gets a second line instead of an ellipsis.
               <div
                 title={gatewayHost}
-                className={`truncate px-3.5 pb-2.5 font-mono text-[10.5px] text-gc-ink-3${
+                className={`px-3.5 pb-2.5 font-mono text-gc-label text-gc-ink-3 [overflow-wrap:anywhere]${
                   showProxy ? "" : " pt-3.5"
                 }`}
               >
@@ -353,39 +376,33 @@ export function Home({
         {showProxy && partial && (
           <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
             <div className="flex items-center gap-2.5">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning">
+              <div className="order-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning-deep">
                 {/* Not shieldCheck: the master card's tile directly above is
                     already that glyph, and two shields 40px apart in the same
-                    column read as one repeated thing rather than two. */}
+                    column read as one repeated thing rather than two.
+
+                    warning-deep, not warning: `#f39c12` on the wash measures
+                    2.00:1, the only graphical object in the app under 3:1, on
+                    the one card whose whole job is to get a blocker cleared.
+                    The ring ladder already uses warning-deep for this rung. */}
                 <Icon name="info" size={16} />
-              </div>
-              <div className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-gc-ink">
-                Apps with no gateway setting need the Gate certificate.{" "}
-                <span className="font-normal text-gc-ink-3">
-                  It never leaves this machine.
-                </span>{" "}
-                {/* Inline, not its own row: the explanation is a footnote to
-                    this sentence and a separate line cost 27px in the state
-                    that already has the least room. */}
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setCaExplain((v) => !v)}
-                  aria-expanded={caExplain}
-                  className="font-normal text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink disabled:opacity-45"
-                >
-                  What&rsquo;s this?
-                </button>
               </div>
               {/* The action, not the explanation. This card names the reason
                   nothing is routing, and the fix used to be inside a
                   disclosure labelled "What's this?" - so a user who already
                   knows what a root CA is had to open a four-sentence lecture
-                  to find the button. */}
+                  to find the button.
+
+                  Before the text in the DOM, after it visually (`order-2` /
+                  `order-3`). The sentence wraps, which put "What's this?" at
+                  y=244 while Trust sits at y=211 - so tab reached the explainer
+                  33.2px *below* the action, on the one screen whose whole job is
+                  a ceremony. Ordering the DOM by what the eye meets first also
+                  means a screen reader hears the remedy before the lecture. */}
               <Button
                 variant="accent"
                 size="sm"
-                className="shrink-0"
+                className="order-3 shrink-0"
                 disabled={busy}
                 onClick={() => {
                   setInteracted(true);
@@ -394,16 +411,36 @@ export function Home({
               >
                 Trust
               </Button>
+              <div className="order-2 min-w-0 flex-1 text-gc-body-sm font-medium leading-snug text-gc-ink">
+                Apps with no gateway setting need the Gate certificate.{" "}
+                <span className="font-normal text-gc-ink-3">
+                  It never leaves this machine.
+                </span>{" "}
+                {/* Inline, not its own row: the explanation is a footnote to
+                    this sentence and a separate line cost 27px in the state
+                    that already has the least room. `-my-1.5 inline-block
+                    py-1.5` takes the hit area from 17px to 29px without moving
+                    the sentence it sits in. */}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setCaExplain((v) => !v)}
+                  aria-expanded={caExplain}
+                  className="-my-1.5 inline-block py-1.5 font-normal text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink disabled:opacity-45"
+                >
+                  What&rsquo;s this?
+                </button>
+              </div>
             </div>
             {caExplain && (
               <>
-                <p className="mt-2 text-[11.5px] leading-snug text-gc-ink-2">
+                <p className="mt-2 text-gc-caption leading-snug text-gc-ink-2">
                   Desktop apps with no gateway setting route through
                   Gate&rsquo;s local proxy, which needs a certificate your{" "}
                   {trustStore} trusts. Until it&rsquo;s trusted, those apps
                   don&rsquo;t route.
                 </p>
-                <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
+                <p className="mt-1.5 text-gc-micro leading-snug text-gc-ink-3">
                   {/* "This machine", not "Certificate": that section stopped
                       existing when Settings collapsed from six headings to
                       four, and this cross-reference survived the rename.
@@ -414,6 +451,92 @@ export function Home({
                 </p>
               </>
             )}
+          </div>
+        )}
+
+        {/* Blockers, above the inventory.
+
+            These three sat *below* the ledger card, 10px under the last family
+            row. Measured, that put the sentence "Gate's local address changed.
+            Close your apps" at y=393 beneath four rows all reading green
+            "Routed" - because `routed` is `enabled && proxyOn && caTrusted` and
+            none of those goes false when the local port moves. A mid-task user
+            opening the popover for two seconds read four green pills and closed
+            it. PRODUCT.md names silent disconnects as the failure signal, and
+            this was the screen for that failure reading reassuring.
+
+            So they join the certificate card in the one slot a blocker belongs
+            in: directly under the routing card, above the list. The certificate
+            card already obeyed that rule; these did not, and the two orderings
+            came from two rules written in the same round.
+
+            `error` leads: it is the operation the user just triggered failing,
+            so it is the newest news on the screen. */}
+        {error && <ErrorNote error={error} />}
+
+        {banner === "stale" && (
+          <div role="status" className="flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
+            <Icon name="info" size={15} className="shrink-0 text-gc-error" />
+            <div className="min-w-0 flex-1 text-gc-caption leading-snug text-gc-ink-2">
+              Gate&rsquo;s local address changed.{" "}
+              <span className="font-semibold">Close your apps</span>; they
+              reconnect the next time you open them.
+            </div>
+            <IconButton
+              icon="x"
+              size={13}
+              onClick={onDismissStaleAgents}
+              aria-label="Dismiss restart notice"
+            />
+          </div>
+        )}
+
+        {/* One notice for every routing change, worded by direction. Both
+            directions carry the same remedy - close what's already open - so
+            both offer the same action, rather than the close route existing
+            only for the notice raised at startup. */}
+        {banner === "change" && (
+          <div role="status" className="flex items-center gap-2 rounded bg-gc-highlight px-3 py-2 shadow-border">
+            <Icon name="info" size={14} className="shrink-0 text-gc-ink" />
+            <div className="min-w-0 flex-1 text-gc-caption font-medium leading-snug text-gc-ink">
+              {changeNotice === "pending"
+                ? "Set to route, but routing is off, so nothing is going through Gate yet."
+                : changeNotice === "started"
+                  ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
+                  : changeNotice === "on"
+                    ? "Routing is on. Anything already open isn’t routing through Gate yet."
+                    : "Routing is off. Anything already open still points at Gate."}
+            </div>
+            {/* Pending has a different remedy: there is nothing running to
+                close, so offering "Close them…" would be busywork. The
+                ellipsis on the close action signals more steps follow.
+
+                `-my-1.5 py-1.5`: the remedy in a banner about broken routing
+                measured 18px tall, under the 24px target minimum, and the
+                negative margin buys the height without moving the row. */}
+            {changeNotice === "pending" ? (
+              <button
+                type="button"
+                onClick={onEnableRouting}
+                className="-my-1.5 shrink-0 py-1.5 text-gc-caption-lg font-medium text-gc-accent transition hover:text-gc-accent-ink"
+              >
+                Turn on routing
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onCloseAgents}
+                className="-my-1.5 shrink-0 py-1.5 text-gc-caption-lg font-medium text-gc-accent transition hover:text-gc-accent-ink"
+              >
+                Close them…
+              </button>
+            )}
+            <IconButton
+              icon="x"
+              size={13}
+              onClick={onDismissChangeNotice}
+              aria-label="Dismiss routing notice"
+            />
           </div>
         )}
 
@@ -429,7 +552,7 @@ export function Home({
                 An h2, so the only route off Home stops being absent from the
                 document outline - it was a <button> wrapping <div>s, and the
                 outline read h1 -> h2 "Routing" with nothing for the list. */}
-            <h2 className="pb-1.5 text-[11.5px] font-medium text-gc-ink-3">
+            <h2 className="pb-1.5 text-gc-caption font-medium text-gc-ink-3">
               What routes through Gate
             </h2>
             <div
@@ -470,10 +593,10 @@ export function Home({
                   "On"; this card used to open "Nothing to route yet", so the
                   empty state said one fact three times and never said what to
                   do about it. */}
-              <div className="text-[12.5px] font-medium text-gc-ink">
+              <div className="text-gc-body-sm font-medium text-gc-ink">
                 Install a tool to route
               </div>
-              <p className="mt-1 text-[11.5px] leading-snug text-gc-ink-3">
+              <p className="mt-1 text-gc-caption leading-snug text-gc-ink-3">
                 Gate Connect picks up Claude Code and Codex once they&rsquo;re
                 installed. Install one, then reopen this window from the menu bar
                 and it will show up.
@@ -493,7 +616,7 @@ export function Home({
           !partial &&
           banner === null &&
           !error && (
-          <div className="flex items-start gap-2 text-[11px] leading-snug text-gc-ink-3">
+          <div className="flex items-start gap-2 text-gc-micro leading-snug text-gc-ink-3">
             <span className="min-w-0 flex-1">
               {/* `inline-block` with matched negative margin: the hit area grows
                   from 15px to 27px without moving the sentence it sits in. The
@@ -520,71 +643,6 @@ export function Home({
           </div>
         )}
 
-
-        {banner === "stale" && (
-          <div role="status" className="flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
-            <Icon name="info" size={15} className="shrink-0 text-gc-error" />
-            <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
-              Gate&rsquo;s local address changed.{" "}
-              <span className="font-semibold">Close your apps</span>; they
-              reconnect the next time you open them.
-            </div>
-            <IconButton
-              icon="x"
-              size={13}
-              onClick={onDismissStaleAgents}
-              aria-label="Dismiss restart notice"
-            />
-          </div>
-        )}
-
-        {/* One notice for every routing change, worded by direction. Both
-            directions carry the same remedy - close what's already open - so
-            both offer the same action, rather than the close route existing
-            only for the notice raised at startup. */}
-        {banner === "change" && (
-          <div role="status" className="flex items-center gap-2 rounded bg-gc-highlight px-3 py-2 shadow-border">
-            <Icon name="info" size={14} className="shrink-0 text-gc-ink" />
-            <div className="min-w-0 flex-1 text-[11.5px] font-medium leading-snug text-gc-ink">
-              {changeNotice === "pending"
-                ? "Set to route, but routing is off, so nothing is going through Gate yet."
-                : changeNotice === "started"
-                  ? "That turned routing on too. Anything already open isn’t routing through Gate yet."
-                  : changeNotice === "on"
-                    ? "Routing is on. Anything already open isn’t routing through Gate yet."
-                    : "Routing is off. Anything already open still points at Gate."}
-            </div>
-            {/* Pending has a different remedy: there is nothing running to
-                close, so offering "Close them…" would be busywork. The
-                ellipsis on the close action signals more steps follow. */}
-            {changeNotice === "pending" ? (
-              <button
-                type="button"
-                onClick={onEnableRouting}
-                className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink"
-              >
-                Turn on routing
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onCloseAgents}
-                className="shrink-0 text-[12px] font-medium text-gc-accent transition hover:text-gc-accent-ink"
-              >
-                Close them…
-              </button>
-            )}
-            <IconButton
-              icon="x"
-              size={13}
-              onClick={onDismissChangeNotice}
-              aria-label="Dismiss routing notice"
-            />
-          </div>
-        )}
-
-        {error && <ErrorNote error={error} />}
-
         {/* Last in this zone, under whatever the app has to say. It is the one
             control here that leaves Gate Connect, so a certificate blocker, a
             stale-port warning or a failed toggle all outrank it; it used to sit
@@ -608,7 +666,7 @@ export function Home({
           onClick={() => {
             void openExternal(GATE_DASHBOARD_URL);
           }}
-          className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-[14.5px] font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
+          className="-ml-1.5 flex w-fit items-center gap-2 rounded px-1.5 py-1.5 text-gc-title font-medium text-gc-accent transition hover:bg-gc-accent-wash hover:text-gc-accent-ink"
         >
           <Icon name="cube" size={15} />
           Gate dashboard
@@ -684,18 +742,32 @@ function FamilyRow({
       />
       <span id={`home-family-${group.id}`} className="sr-only">
         {label}. {count}
-        {exception ? `. ${exception}` : ""}
+        {/* Not when the pill already said it. A dark family now names its own
+            cause, so `master-off` read "Waiting on routing. 0 of 2 routing.
+            waiting on routing". The visible row already suppresses this pair;
+            the description was the copy that still had both. */}
+        {exception && exception.toLowerCase() !== label.toLowerCase() ? `. ${exception}` : ""}
       </span>
-      <div className="pointer-events-none relative flex items-center gap-2.5 px-3.5 py-2.5">
+      {/* `flex-wrap` with an `em` basis on the name, so the row reflows with the
+          type instead of starving it. At 200% the pill is ~200px wide in a 332px
+          row, which left ~90px for the family name and rendered "Claude" as
+          "Cla…" - loss of content, which is the one thing SC 1.4.4 names. The
+          name now asks for 6 characters' worth at the current size (96px at
+          100%, 192px at 200%), so at large scales the pill drops to its own line
+          and the name keeps the full width. The stretch button is
+          `absolute inset-0`, so a taller row stays entirely clickable. */}
+      <div className="pointer-events-none relative flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2.5">
         {/* `truncate`, not two lines: a family name is a proper noun and the
             longest one the catalog can produce is "Other tools". An h3, because
             these are sections of the h2 above them, so the outline nests instead
             of flattening four families up to the list's own level. */}
-        <h3 className="min-w-0 flex-1 truncate text-[13px] font-medium text-gc-ink">
+        <h3 className="min-w-0 flex-1 basis-[6em] truncate text-gc-body-md font-medium text-gc-ink">
           {group.name}
         </h3>
-        <GroupPill group={group} />
-        <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
+        <div className="ml-auto flex shrink-0 items-center gap-2.5">
+          <GroupPill group={group} />
+          <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
+        </div>
       </div>
       {exception && (
         <div className="relative flex items-center gap-2 px-3.5 pb-2">
@@ -704,7 +776,7 @@ function FamilyRow({
               because the exception's verb is at the end and a
               production-length tool name ate it at 360px. */}
           <span
-            className={`pointer-events-none min-w-0 flex-1 line-clamp-2 text-[11px] leading-snug ${
+            className={`pointer-events-none min-w-0 flex-1 line-clamp-2 text-gc-micro leading-snug ${
               kind === "error" ? "font-medium text-gc-error-deep" : "text-gc-ink-2"
             }`}
           >

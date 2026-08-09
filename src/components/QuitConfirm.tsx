@@ -71,15 +71,15 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
       <div className="flex flex-col gap-1.5">
         <h1
           id="quit-confirm-title"
-          className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink"
+          className="text-gc-panel-title font-semibold tracking-[-0.01em] text-gc-ink"
         >
           Quit Gate Connect?
         </h1>
-        <p className="text-[12.5px] leading-snug text-gc-ink-3">
+        <p className="text-gc-body-sm leading-snug text-gc-ink-3">
           {names} still {plural ? "route" : "routes"} through Gate. If you quit now,{" "}
           {plural ? "they" : "it"} can’t connect until Gate Connect runs again.
         </p>
-        <p className="text-[11.5px] leading-snug text-gc-ink-3">
+        <p className="text-gc-caption leading-snug text-gc-ink-3">
           {/* "when Gate Connect starts again", not "at the next start": the next
               start of what was the open question, and the tool's own next launch
               is the wrong answer. Same phrasing as the notification this choice

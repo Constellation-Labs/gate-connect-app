@@ -122,7 +122,7 @@ export function Routes({
                   {/* An h2 under the panel's h1, so four families and up to six
                       pills are navigable by heading instead of being one
                       undifferentiated list to a screen reader. */}
-                  <h2 className="text-[13.5px] font-semibold text-gc-ink">{group.name}</h2>
+                  <h2 className="text-gc-body font-semibold text-gc-ink">{group.name}</h2>
                   {/* Exception first. Concatenated as `count · exception` the
                       line truncated at 360px and the actionable half was what
                       got cut ("0 of 2 routing · Codex set up els…"). The pill
@@ -133,7 +133,7 @@ export function Routes({
                       whose verb is at the end, so a production-length tool name
                       ate it. The count never needs the second line, so the row
                       only grows in the state that has something to say. */}
-                  <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
+                  <div className="mt-0.5 line-clamp-2 text-gc-micro leading-snug text-gc-ink-3">
                     {/* The sentence carries its own severity. Every exception
                         used to print in the same ink as every other, so a
                         failure and a hand-written setup were typographically
@@ -153,18 +153,36 @@ export function Routes({
                   </div>
                 </div>
                 {/* The visible text truncates at 360px; this carries the whole
-                    sentence, pill state included, to anyone listening. */}
+                    sentence, pill state included, to anyone listening.
+
+                    The exception drops out when the pill already said it. Now
+                    that a dark family names its own cause, `master-off` made
+                    this read "Waiting on routing. 0 of 2 routing. waiting on
+                    routing" - the same fact twice in one description, in the
+                    app whose own Don't forbids saying it twice on one screen. */}
                 <span id={`group-desc-${group.id}`} className="sr-only">
                   {groupPillLabel(group)}. {count}
-                  {exception ? `. ${exception}` : ""}
+                  {exception && exception.toLowerCase() !== groupPillLabel(group).toLowerCase()
+                    ? `. ${exception}`
+                    : ""}
                 </span>
                 <span className="pointer-events-none relative">
                   <GroupPill group={group} />
                 </span>
                 <span className="relative">
+                  {/* Points at the same sentence the row button does. The switch
+                      reports intent and can read "on" while the pill beside it
+                      says nothing is flowing - in `home-off` every one of these
+                      is `aria-checked="true"` over a "Not routed" pill - which is
+                      exactly the case DESIGN.md's "Intent versus Reality" section
+                      requires be wired to assistive tech. The reality sentence
+                      already existed on the row button; the switch just wasn't
+                      looking at it, so the control that says "on" said only
+                      "on". */}
                   <Switch
                     on={group.desired > 0}
                     label={group.switchLabel}
+                    describedBy={`group-desc-${group.id}`}
                     busy={busy}
                     onClick={() => {
                       setFlipped(group.id);
@@ -203,7 +221,7 @@ export function Routes({
         // Reachable without a dead end: reopening the popover re-reads the
         // ledger, so the last tool can be uninstalled while this panel is open.
         // Home explains the empty case in full; this says enough to get back.
-        <p className="px-3.5 py-4 text-[11.5px] leading-snug text-gc-ink-3">
+        <p className="px-3.5 py-4 text-gc-caption leading-snug text-gc-ink-3">
           Nothing is installed to route right now.
         </p>
       )}
@@ -230,8 +248,8 @@ export function Routes({
       {envExportSeparable && (
         <div className="flex items-start gap-3 px-3.5 py-3">
           <div className="min-w-0 flex-1">
-            <div className="text-[12.5px] font-medium text-gc-ink">Command-line tools</div>
-            <div className="mt-0.5 text-[11px] leading-snug text-gc-ink-3">
+            <div className="text-gc-body-sm font-medium text-gc-ink">Command-line tools</div>
+            <div className="mt-0.5 text-gc-micro leading-snug text-gc-ink-3">
               Sets <span className="font-mono">HTTPS_PROXY</span> for your whole
               shell, so OpenCode and other terminal tools route too.
             </div>
@@ -244,7 +262,7 @@ export function Routes({
                 that its status is truthful. Same words the member pill uses for
                 the same condition, so there is one vocabulary for it. */}
             {envExportOn && !proxyOn && (
-              <div className="mt-1 text-[11px] font-medium leading-snug text-gc-ink-2">
+              <div className="mt-1 text-gc-micro font-medium leading-snug text-gc-ink-2">
                 Waiting on routing
               </div>
             )}

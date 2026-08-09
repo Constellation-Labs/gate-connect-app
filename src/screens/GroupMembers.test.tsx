@@ -326,3 +326,49 @@ describe("GroupMembers certificate failure", () => {
     expect(await screen.findByText("The system prompt was cancelled")).toBeTruthy();
   });
 });
+
+describe("GroupMembers row hit target", () => {
+  /** Measured in a real browser, the stretch button's 360x74.8 box only
+   *  responded across 360x26: the wrapper holding the name, the pill and the
+   *  switch was `relative` without `pointer-events-none`, so its own py-2.5 band
+   *  sat over the button and ate the top 49px. Clicking a tool's own name did
+   *  nothing while the row highlighted as one block.
+   *
+   *  jsdom does no hit testing, so this asserts the structure rather than the
+   *  behaviour: the wrapper must be transparent to clicks and the switch must
+   *  opt back in. Home's equivalent wrapper (Home.tsx) always had this, which is
+   *  how the two ledgers came to disagree. */
+  it("leaves the row wrapper transparent to clicks, with the switch opted back in", () => {
+    renderDetail([tool("claude-code", "Claude Code", { kind: "connected" })]);
+    const stretch = screen.getByRole("button", { name: "Claude Code details" });
+    const row = stretch.parentElement!;
+
+    const wrapper = Array.from(row.children).find(
+      (el) => el !== stretch && el.tagName === "DIV" && el.className.includes("flex"),
+    ) as HTMLElement;
+    expect(wrapper).toBeTruthy();
+    expect(wrapper.className).toContain("pointer-events-none");
+
+    // The switch lives inside that wrapper and must still be clickable.
+    const toggle = screen.getByRole("switch", { name: "Route Claude Code through Gate" });
+    expect(wrapper.contains(toggle)).toBe(true);
+    expect(toggle.parentElement!.className).toContain("pointer-events-auto");
+  });
+
+  it("announces a member flip, not just its aria-checked", async () => {
+    // The panel's live region reports the family; aria-describedby is read on
+    // focus arrival, not on change. So flipping a member moved its pill from
+    // "Routed" to "Not routed" with nothing announced.
+    const onToggleTool = vi.fn(() => Promise.resolve());
+    renderDetail(
+      [tool("claude-code", "Claude Code", { kind: "connected" })],
+      [domain],
+      { onToggleTool },
+    );
+    const live = document.querySelector('[aria-live="polite"]') as HTMLElement;
+    expect(live).toBeTruthy();
+    expect(live.textContent).toBe("");
+    fireEvent.click(screen.getByRole("switch", { name: "Route Claude Code through Gate" }));
+    await waitFor(() => expect(live.textContent).toContain("Claude Code"));
+  });
+});

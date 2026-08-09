@@ -561,3 +561,91 @@ describe("Home quiet-state honesty", () => {
     expect(screen.queryByRole("button", { name: /Turn on Launch at login/ })).toBeNull();
   });
 });
+
+describe("Home family pill vocabulary", () => {
+  it("says why a family is dark instead of reusing the switched-off grey", () => {
+    // Switched on, master on, certificate untrusted. This rendered "Not routed",
+    // byte-identical to a family the user turned off - and then jumped to green
+    // when they pressed Trust, teaching them the pill is approximate.
+    renderHome({ caTrusted: false, domains: [makeDomain({ enabled: true })] });
+    expect(screen.getAllByText("Needs trust").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Not routed")).toBeNull();
+  });
+
+  it("leaves master-off to the card, which says it once as a count", () => {
+    // `master-off` is `enabled && !proxyOn`, and proxyOn is global, so it can
+    // never distinguish one family from another: on the pill it is four
+    // identical capsules restating the card directly above them. DESIGN.md:
+    // "Card-owned states never print on a row."
+    renderHome({
+      proxyOn: false,
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+    });
+    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
+    // The card carries it, once, and countably.
+    expect(screen.getByText(/Off .+ waiting$/)).toBeTruthy();
+  });
+
+  it("still says Not routed when the user is the reason", () => {
+    renderHome({
+      proxyOn: true,
+      domains: [makeDomain({ enabled: false })],
+    });
+    expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.queryByText("Needs trust")).toBeNull();
+  });
+});
+
+describe("Home blocker ordering", () => {
+  /** DESIGN.md, "Blockers outrank inventory": anything that explains why traffic
+   *  is not flowing, and carries the fix, sits above the list. Both banners
+   *  rendered *below* all four rows, so the two states where the user's tools
+   *  are broken opened with green pills on top and the contradicting sentence
+   *  underneath. */
+  function ledgerHeading() {
+    return screen.getByRole("heading", { name: "What routes through Gate" });
+  }
+
+  it("puts the stale-address notice above the ledger", () => {
+    renderHome({
+      staleAgentsHint: true,
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+    });
+    const banner = screen.getByText(/local address changed/);
+    expect(
+      banner.compareDocumentPosition(ledgerHeading()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("puts the routing-change notice above the ledger", () => {
+    renderHome({
+      changeNotice: "on",
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+    });
+    const banner = screen.getByText(/Anything already open/);
+    expect(
+      banner.compareDocumentPosition(ledgerHeading()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the certificate card above the ledger too", () => {
+    renderHome({ caTrusted: false, domains: [makeDomain()] });
+    const card = screen.getByText(/Apps with no gateway setting need/);
+    expect(
+      card.compareDocumentPosition(ledgerHeading()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("tabs to Trust before its explainer, which sits lower", () => {
+    // The sentence wraps, so "What's this?" renders below Trust. DOM order has
+    // to match what the eye meets first or focus travels bottom-then-up.
+    renderHome({ caTrusted: false, domains: [makeDomain()] });
+    const trust = screen.getByRole("button", { name: "Trust" });
+    const explain = screen.getByRole("button", { name: /What.s this/ });
+    expect(
+      trust.compareDocumentPosition(explain) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});

@@ -360,3 +360,26 @@ describe("Routes initial expansion", () => {
     ).toBe("false");
   });
 });
+
+describe("Routes family switch", () => {
+  /** DESIGN.md, "Intent versus Reality": a switch that can read "on" over
+   *  something broken points `aria-describedby` at the sentence that reports
+   *  reality. With the master off every family switch reported
+   *  `aria-checked="true"` beside a "Not routed" pill and carried no
+   *  description, so the control that says "on" said only "on". The sentence
+   *  already existed on the row button next to it. */
+  it("points at the reality sentence when it can read on over nothing flowing", () => {
+    const groups = renderRoutes({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      proxyOn: false,
+    });
+    const toggle = screen.getByRole("switch", { name: "Route Claude through Gate" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    const describedBy = toggle.getAttribute("aria-describedby");
+    expect(describedBy).toBe(`group-desc-${groups[0].id}`);
+    const sentence = document.getElementById(describedBy!);
+    // The family pill leaves master-off to Home's card, so the reality half of
+    // this sentence is the exception line, which is lowercase mid-sentence.
+    expect(sentence?.textContent?.toLowerCase()).toContain("waiting on routing");
+  });
+});

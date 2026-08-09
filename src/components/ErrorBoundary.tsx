@@ -56,11 +56,11 @@ export class ErrorBoundary extends Component<Props, State> {
 
     return (
       <div className="flex h-full flex-col gap-3 overflow-y-auto bg-gc-surface p-6 text-gc-ink">
-        <h1 className="text-[17px] font-semibold tracking-[-0.01em]">Something went wrong</h1>
+        <h1 className="text-gc-panel-title font-semibold tracking-[-0.01em]">Something went wrong</h1>
 
         {/* The lede, and deliberately not the error. This window failed; the
             gateway is a separate process and usually did not. */}
-        <p className="text-[13px] leading-[1.45] text-gc-ink-3">
+        <p className="text-gc-body-md leading-[1.45] text-gc-ink-3">
           This window hit an unexpected error.{" "}
           {routing === "on" ? (
             <span className="font-medium text-gc-ink">
@@ -109,10 +109,10 @@ export class ErrorBoundary extends Component<Props, State> {
             is evidence for a bug report, not the first thing a user reads
             about their own machine. */}
         <details className="mt-auto">
-          <summary className="cursor-pointer py-0.5 text-[11.5px] text-gc-ink-3">
+          <summary className="cursor-pointer py-0.5 text-gc-caption text-gc-ink-3">
             Error details
           </summary>
-          <pre className="mt-1.5 whitespace-pre-wrap break-words rounded bg-gc-sunken p-3 font-mono text-[10.5px] leading-relaxed text-gc-ink-2">
+          <pre className="mt-1.5 whitespace-pre-wrap break-words rounded bg-gc-sunken p-3 font-mono text-gc-label leading-relaxed text-gc-ink-2">
             {error.name}: {error.message}
             {"\n\n"}
             {error.stack ?? "(no stack)"}

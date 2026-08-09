@@ -3,10 +3,12 @@ import type { Account, OAuthStatus } from "../lib/api";
 import { launchAtLoginStatus, setLaunchAtLogin, getAccountKeyPrefix, backfillAccountKeyPrefix } from "../lib/api";
 import { track, trackError } from "../lib/analytics";
 import { classifyError, type ClassifiedError } from "../lib/errors";
-import { GATEWAY_SERVERS } from "../lib/config";
+import { GATEWAY_SERVERS, GATE_DOCS_URL } from "../lib/config";
+import { openExternal } from "../lib/openExternal";
 import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch, ErrorNote, IconButton } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
-import { secretStoreName, trustStoreName, usePlatform } from "../lib/platform";
+import { modKeyLabel, secretStoreName, trustStoreName, usePlatform } from "../lib/platform";
+import { TEXT_SCALES, type TextScale } from "../lib/useTextScale";
 
 function hostOf(url: string): string {
   try {
@@ -58,7 +60,7 @@ function ConfirmPanel({
       aria-label="Confirm"
       className="mx-3.5 mt-2 rounded bg-gc-subtle p-3 shadow-border"
     >
-      <div className="text-[11.5px] leading-snug text-gc-ink-2">{message}</div>
+      <div className="text-gc-caption leading-snug text-gc-ink-2">{message}</div>
       <div className="mt-2.5 flex items-center gap-2">
         {/* Same destructive grammar as the routing takeover: the action that
             destroys something is never the encouraged indigo, and Cancel is
@@ -92,6 +94,8 @@ export function Settings({
   caTrusted,
   proxyBusy,
   onUntrustCa,
+  textScale,
+  onSetTextScale,
 }: {
   account: Account;
   oauth: OAuthStatus | null;
@@ -107,6 +111,10 @@ export function Settings({
   caTrusted: boolean;
   proxyBusy: boolean;
   onUntrustCa: () => void;
+  /** Current text scale, and its setter. Owned by App so the Cmd/Ctrl
+   *  accelerators and this control cannot disagree. */
+  textScale: TextScale;
+  onSetTextScale: (next: TextScale) => void;
 }) {
   const isOAuth = account.auth_mode === "oauth";
   const connected = isOAuth ? (oauth?.signed_in ?? false) : account.has_api_key;
@@ -358,7 +366,7 @@ export function Settings({
           <Icon name="cube" size={16} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-gc-ink">Gateway</div>
+          <div className="text-gc-micro font-medium text-gc-ink">Gateway</div>
         </div>
         <ConnPill
           state={connected ? "connected" : "signedout"}
@@ -381,7 +389,7 @@ export function Settings({
           answers "am I pointed at production or staging?" rendered as
           "gateway.constellationga…". The dev-mode server cards already fit the
           full host at this size in the same 360px. */}
-      <div className="px-3.5 pb-1 font-mono text-[10.5px] text-gc-ink-3">
+      <div className="px-3.5 pb-1 font-mono text-gc-label text-gc-ink-3">
         {hostOf(account.gateway_base_url)}
       </div>
 
@@ -392,20 +400,23 @@ export function Settings({
               <Icon name="shieldCheck" size={16} />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[13px] font-medium text-gc-ink">
+              <div className="truncate text-gc-body-md font-medium text-gc-ink">
                 {oauth?.email ?? (connected ? "Signed in" : "Session expired")}
               </div>
-              <div className="truncate text-[11.5px] text-gc-ink-3">
+              <div className="truncate text-gc-caption text-gc-ink-3">
                 {account.org_name ?? "No organization selected"}
               </div>
             </div>
           </div>
+          {/* `-my-1.5 py-1.5`: both measured 18.8px tall and sat 16px apart on
+              one row, so neither cleared the 24px target minimum nor qualified
+              for 2.5.8's Spacing exception. */}
           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-2 px-3.5 pb-1">
             <button
               type="button"
               onClick={onSwitchOrg}
               disabled={submitting}
-              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent"
+              className="-my-1.5 inline-flex items-center gap-1.5 py-1.5 text-gc-body-sm font-medium text-gc-accent"
             >
               <Icon name="refresh" size={14} />
               Switch organization
@@ -414,7 +425,7 @@ export function Settings({
               type="button"
               onClick={signOut}
               disabled={submitting}
-              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+              className="-my-1.5 inline-flex items-center gap-1.5 py-1.5 text-gc-body-sm font-medium text-gc-ink-3 transition hover:text-gc-ink"
             >
               <Icon name="logOut" size={14} />
               Sign out
@@ -430,7 +441,7 @@ export function Settings({
         {!replacing ? (
           <div className="flex h-9 items-center gap-2 rounded bg-gc-subtle px-3 text-gc-ink-3 shadow-border">
             <Icon name="key" size={14} className="text-gc-ink-4" />
-            <span className="flex-1 font-mono text-[12px] tracking-wide">
+            <span className="flex-1 font-mono text-gc-caption-lg tracking-wide">
               {account.has_api_key
                 ? revealedPrefix
                   ? `${revealedPrefix}••••••••••`
@@ -485,20 +496,20 @@ export function Settings({
         )}
         {errorFor("account")}
         {account.has_api_key && !replacing && (
-          <p className="mt-1.5 text-[11px] text-gc-ink-3">Stored in {secretStore}.</p>
+          <p className="mt-1.5 text-gc-micro text-gc-ink-3">Stored in {secretStore}.</p>
         )}
         {/* Same promise, forward tense, while the new key is in the field.
             The reassurance is worth least when the key is already safe and
             most while the user is handing one over. */}
         {replacing && (
-          <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
+          <p className="mt-1.5 text-gc-micro leading-snug text-gc-ink-3">
             Saved to {secretStore}. Your config files get the gateway URL,
             never the key.
           </p>
         )}
         {confirmReveal && (
           <div className="mt-2 rounded bg-gc-subtle p-3 shadow-border">
-            <div className="text-[11.5px] leading-snug text-gc-ink-2">
+            <div className="text-gc-caption leading-snug text-gc-ink-2">
               Showing the start of your key reads it from {secretStore}, which
               may ask for permission.
             </div>
@@ -506,14 +517,14 @@ export function Settings({
               <button
                 type="button"
                 onClick={revealFromKeychain}
-                className="text-[12.5px] font-medium text-gc-accent"
+                className="text-gc-body-sm font-medium text-gc-accent"
               >
                 Show start of key
               </button>
               <button
                 type="button"
                 onClick={() => setConfirmReveal(false)}
-                className="ml-auto text-[12.5px] font-medium text-gc-ink-3"
+                className="ml-auto text-gc-body-sm font-medium text-gc-ink-3"
               >
                 Cancel
               </button>
@@ -532,7 +543,7 @@ export function Settings({
             // as seven different kinds of thing; the vocabulary is accent for
             // the one encouraged action in a section, ink-3 for the rest, and
             // error-deep reserved for the two that destroy something.
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            className="inline-flex items-center gap-1.5 text-gc-body-sm font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             <Icon name="refresh" size={14} />
             Replace key
@@ -553,25 +564,25 @@ export function Settings({
           type="button"
           disabled={upgrading}
           onClick={handleUpgrade}
-          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-accent transition hover:text-gc-accent-ink disabled:opacity-45"
+          className="inline-flex items-center gap-1.5 text-gc-body-sm font-medium text-gc-accent transition hover:text-gc-accent-ink disabled:opacity-45"
         >
           <Icon name="shieldCheck" size={14} />
           {upgrading ? "Waiting for browser…" : "Switch to Constellation sign-in"}
         </button>
-        <p className="mt-1 text-[11px] leading-snug text-gc-ink-3">
+        <p className="mt-1 text-gc-micro leading-snug text-gc-ink-3">
           Nothing to paste or rotate; your session lives in{" "}
           {secretStoreName(platform, "the")} and refreshes on its own. You can
           switch back anytime.
         </p>
         {upgrading && (
           <div className="mt-2 flex items-center justify-between gap-2">
-            <p className="text-[11px] leading-snug text-gc-ink-3">
+            <p className="text-gc-micro leading-snug text-gc-ink-3">
               Finish signing in on the page that opened in your browser.
             </p>
             <button
               type="button"
               onClick={cancelUpgrade}
-              className="shrink-0 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+              className="shrink-0 text-gc-caption-lg font-medium text-gc-ink-3 transition hover:text-gc-ink"
             >
               Cancel
             </button>
@@ -583,10 +594,47 @@ export function Settings({
 
 
       <SectionLabel>This machine</SectionLabel>
+      {/* Text size, first in the section, because it is the only setting here
+          that changes whether the rest of the screen is legible at all.
+          Cmd/Ctrl +/- does the same thing and is the gesture people already
+          have, but a shortcut nobody is told about is not a mechanism, and
+          WCAG 1.4.4 asks for one that exists. */}
       <div className="flex items-center gap-3 px-3.5 py-2.5">
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-medium text-gc-ink">Launch at login</div>
-          <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
+          <div className="text-gc-body-md font-medium text-gc-ink">Text size</div>
+          <div className="mt-0.5 text-gc-caption leading-snug text-gc-ink-3">
+            Scales everything in this window. {modKeyLabel(platform)} and the plus
+            or minus key does the same.
+          </div>
+        </div>
+        <div
+          role="group"
+          aria-label="Text size"
+          className="flex shrink-0 items-center gap-1 rounded bg-gc-sunken p-0.5"
+        >
+          {TEXT_SCALES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              aria-pressed={textScale === s}
+              onClick={() => onSetTextScale(s)}
+              // Mono and tabular: these are five values of one quantity, and
+              // proportional digits made the row jitter as the label changed.
+              className={`min-w-[34px] rounded px-1.5 py-1 font-mono text-gc-label tabular-nums transition ${
+                textScale === s
+                  ? "bg-gc-surface text-gc-ink shadow-border"
+                  : "text-gc-ink-3 hover:text-gc-ink"
+              }`}
+            >
+              {Math.round(s * 100)}%
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center gap-3 px-3.5 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="text-gc-body-md font-medium text-gc-ink">Launch at login</div>
+          <div className="mt-0.5 text-gc-caption leading-snug text-gc-ink-3">
             Open Gate Connect automatically when you log in. Keeps routing on after a restart.
           </div>
         </div>
@@ -600,7 +648,7 @@ export function Settings({
       {laPendingDisable && (
         <div className="mx-3.5 mb-1 flex items-start gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
           <Icon name="info" size={15} className="mt-px shrink-0 text-gc-ink-3" />
-          <div className="min-w-0 flex-1 text-[11.5px] leading-snug text-gc-ink-2">
+          <div className="min-w-0 flex-1 text-gc-caption leading-snug text-gc-ink-2">
             Gate Connect is still listed in your login items as a safety net,
             so an unexpected restart can’t leave routing broken. It removes
             itself automatically once that’s safe.
@@ -618,7 +666,7 @@ export function Settings({
         <>
           <div className="flex items-start gap-3 px-3.5 py-2.5">
             <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-medium text-gc-ink">Gate certificate</div>
+              <div className="text-gc-body-md font-medium text-gc-ink">Gate certificate</div>
               {/* Collapsed by default, same disclosure Home's certificate card
                   uses. The one line a user scanning Settings needs is whether
                   it is trusted and whether they can remove it; the consequence
@@ -629,13 +677,13 @@ export function Settings({
                   ("certificate store"), which is what pushed this to two lines;
                   it lives in the explanation now, and the pinned footer names
                   it on every screen anyway. */}
-              <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-3">
+              <div className="mt-0.5 text-gc-caption leading-snug text-gc-ink-3">
                 {routingOn ? "Trusted. Turn routing off to remove." : "Trusted on this machine."}{" "}
                 <button
                   type="button"
                   onClick={() => setCertExplain((v) => !v)}
                   aria-expanded={certExplain}
-                  className="font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink"
+                  className="-my-1.5 inline-block py-1.5 font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink"
                 >
                   What&rsquo;s this?
                 </button>
@@ -653,7 +701,7 @@ export function Settings({
               // encouraged action. It still gets a confirm, because by its own
               // copy it deletes a private key and can stop apps routing - it
               // was the only state-destroying action in the app without one.
-              className="shrink-0 text-[12px] font-medium text-gc-error-deep transition hover:brightness-90 disabled:opacity-45"
+              className="shrink-0 text-gc-caption-lg font-medium text-gc-error-deep transition hover:brightness-90 disabled:opacity-45"
             >
               Remove
             </button>
@@ -664,7 +712,7 @@ export function Settings({
               vertically centred against five lines of text, detached from the
               heading it belongs to. */}
           {certExplain && (
-            <p className="px-3.5 pb-1 text-[11.5px] leading-snug text-gc-ink-2">
+            <p className="px-3.5 pb-1 text-gc-caption leading-snug text-gc-ink-2">
               {routingOn
                 ? `Gate created this certificate on this machine, trusted in your ${trustStore}, so apps with no gateway setting of their own can route through the local proxy. Pulling it while routing is on stops every one of them, so removal waits until routing is off. The private key never leaves this machine.`
                 : `Gate created this certificate on this machine, trusted in your ${trustStore}, so apps with no gateway setting of their own can route through the local proxy. Removing it deletes the certificate and its private key from this machine; you can trust a new one anytime.`}
@@ -691,12 +739,33 @@ export function Settings({
             open on purpose and neither changes anything by itself. It used to
             share a row with Reset Gate Connect at the same size, weight and
             icon treatment, so a debug disclosure and the action that forgets
-            the account were literal visual peers. */}
+            the account were literal visual peers.
+
+            Documentation leads the row: it is the only item here that is
+            actually help. This section shipped with two items, neither of which
+            was documentation, in an app that installs a root certificate and
+            runs a local proxy.
+
+            `-my-1.5 py-1.5` on all three: they measured 18.8px tall against the
+            24px target minimum, and two of them sat 16px apart on the same row,
+            so 24px circles centred on each overlapped and 2.5.8's Spacing
+            exception could not rescue them either. The padding makes each target
+            clear 24px in both dimensions, which settles it outright. */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3.5 pb-1">
           <button
             type="button"
+            onClick={() => {
+              void openExternal(GATE_DOCS_URL);
+            }}
+            className="-my-1.5 inline-flex items-center gap-1.5 py-1.5 text-gc-body-sm font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            <Icon name="book" size={14} />
+            Documentation
+          </button>
+          <button
+            type="button"
             onClick={onReplayTour}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            className="-my-1.5 inline-flex items-center gap-1.5 py-1.5 text-gc-body-sm font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             <Icon name="info" size={14} />
             Replay tour
@@ -705,7 +774,7 @@ export function Settings({
             type="button"
             onClick={() => setDevMode((v) => !v)}
             aria-expanded={devMode}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            className="-my-1.5 inline-flex items-center gap-1.5 py-1.5 text-gc-body-sm font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             <Icon name="settings" size={14} />
             Dev mode
@@ -716,7 +785,7 @@ export function Settings({
             {/* Not a SectionLabel: this is a sub-panel of Help, and an h2
                 here made the document outline gain and lose a top-level
                 section every time Dev mode toggled. */}
-            <div className="px-3.5 pb-1.5 pt-1 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+            <div className="px-3.5 pb-1.5 pt-1 font-mono text-gc-label font-medium uppercase tracking-[0.08em] text-gc-ink-3">
               Gateway server
             </div>
             <div className="flex flex-col gap-2 px-3.5 pb-1">
@@ -731,8 +800,8 @@ export function Settings({
                         className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
-                        <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
+                        <div className="text-gc-body-md font-medium text-gc-ink">{server.label}</div>
+                        <div className="truncate font-mono text-gc-label text-gc-ink-3">
                           {hostOf(server.url)}
                         </div>
                       </div>
@@ -763,7 +832,7 @@ export function Settings({
             type="button"
             onClick={() => setConfirmingReset(true)}
             disabled={submitting}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-gc-error-deep disabled:opacity-45"
+            className="-my-1.5 inline-flex items-center gap-1.5 py-1.5 text-gc-body-sm font-medium text-gc-error-deep disabled:opacity-45"
           >
             <Icon name="trash" size={14} />
             Reset Gate Connect

@@ -88,7 +88,7 @@ export function RoutingChangeNotice({
       <div className="flex flex-col gap-1.5">
         <h1
           id="routing-notice-title"
-          className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink"
+          className="text-gc-panel-title font-semibold tracking-[-0.01em] text-gc-ink"
         >
           {/* The heading is the `aria-labelledby` target, so it has to move
               when the step does. It used to read "Routing is off" through all
@@ -103,7 +103,7 @@ export function RoutingChangeNotice({
         {/* Informational state, so ink - error red stays reserved for
             failures (the ErrorNote below). */}
         {closed === null ? (
-          <p className="text-[12.5px] leading-snug text-gc-ink-3">
+          <p className="text-gc-body-sm leading-snug text-gc-ink-3">
             {confirming
               ? // Not "Close everything still running": this closes the agent
                 // process set, so a routed app outside it (ChatGPT desktop,
@@ -121,7 +121,7 @@ export function RoutingChangeNotice({
           // it arrives by swapping a <p> inside an already-open dialog. Without
           // a live region nothing announces it, so a screen-reader user closes
           // every running agent and hears nothing back.
-          <p role="status" aria-live="polite" className="text-[12.5px] leading-snug text-gc-ink-3">
+          <p role="status" aria-live="polite" className="text-gc-body-sm leading-snug text-gc-ink-3">
             {closed > 0
               ? `Closed ${closed} ${closed === 1 ? "app" : "apps"}. Open them again whenever you need them.`
               : "Nothing was running."}

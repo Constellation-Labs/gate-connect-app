@@ -70,6 +70,17 @@ export function secretStoreName(p: Platform, determiner: "your" | "the" = "your"
   }
 }
 
+/** The platform's own name for the accelerator modifier, for copy that teaches a
+ *  shortcut. "Cmd" on macOS and "Ctrl" everywhere else, spelled the way each
+ *  platform's own settings windows spell it, because a Windows user told to
+ *  press Cmd has been told to press a key their keyboard does not have.
+ *
+ *  Lives here with the other platform-named strings for the reason given above
+ *  `secretStoreName`: naming the wrong thing undoes the instruction. */
+export function modKeyLabel(p: Platform): string {
+  return p === "macos" ? "Cmd" : "Ctrl";
+}
+
 /** Where the local proxy's CA has to be trusted. A bare noun: callers supply
  *  the determiner, since this one is a common noun everywhere.
  *

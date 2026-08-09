@@ -38,18 +38,33 @@ export function PopHeader({
     // "Constellation Labs" past that and truncated an 18-character org name.
     // Spanning the full width gives it ~332px, which fixes that case and lets
     // every longer org show more of itself at any size.
-    <div className="sticky top-0 z-[5] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 border-b border-gc-line bg-gc-surface px-3.5 pb-2 pt-3.5">
+    // `flex flex-wrap`, not a two-column grid, and every floor in `em` rather
+    // than `px`. At 200% text the wordmark needs ~200px and the pill and gear
+    // need ~170 in a 332px row, and the grid had no way to say that: the h1 was
+    // `min-w-0` with a `whitespace-nowrap` child, so the wordmark overflowed its
+    // own column and painted straight through the pill. Measured at 2x, "Gate
+    // Connect" and "Routing on" occupied the same pixels.
+    //
+    // With `basis-[8em]` the h1 asks for eight characters' worth of room at
+    // whatever the current size is: 128px at 100%, where it and the pill share
+    // one line comfortably, and 256px at 200%, where their total exceeds the row
+    // and the pill group wraps beneath instead of colliding. One rule, no
+    // breakpoints, and the trigger is the type size itself.
+    <div className="sticky top-0 z-[5] flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-gc-line bg-gc-surface px-3.5 pb-2 pt-3.5">
       <h1
         tabIndex={-1}
         data-screen-focus
-        className="inline-flex min-w-0 items-center gap-2 outline-none"
+        className="inline-flex min-w-0 flex-1 basis-[8em] items-center gap-2 outline-none"
       >
         <ConstellationHexMark size={17} />
-        <span className="whitespace-nowrap text-[14.5px] font-semibold tracking-[-0.02em] text-gc-navy">
+        {/* `truncate` rather than `whitespace-nowrap`: a wordmark that must not
+            wrap still must not overlap its neighbour, and this is the backstop
+            for any size the basis above does not anticipate. */}
+        <span className="truncate text-gc-title font-semibold tracking-[-0.02em] text-gc-navy">
           Gate <span className="text-gc-accent">Connect</span>
         </span>
       </h1>
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-1.5 ml-auto">
         {/* The header pill answers exactly one question: is traffic routing
             through Gate right now? (Signed-in state lives in Settings.)
             "Partly routed" is the honest answer while the CA is untrusted:
@@ -79,9 +94,19 @@ export function PopHeader({
         // h1's gap is 8px, so this is the wordmark's own left edge. It reads as
         // an off-grid value and is the one place in the header that must not be
         // rounded to the 4px scale.
+        // `leading-tight`, not `leading-none`: at 10.5px `leading-none` makes
+        // the line box 10.5px tall while the text's content box is 12px, and
+        // `truncate`'s `overflow: hidden` then clips the bottom pixel off every
+        // descender - the g in "Engineering", the p in "Platform". Measured
+        // `scrollHeight 12` against `clientHeight 11`. The extra 2px of line box
+        // costs nothing here because the row is sized by the wordmark above it.
+        // `w-full`, not `col-span-2`: the header is a flex row now, and a
+        // full-basis item is how a flex child claims its own line. No `mt-1`
+        // either: the row's `gap-y-1` is the same 4px, and keeping both pushed
+        // every screen below the header down by exactly that much.
         <span
           title={workspace}
-          className="col-span-2 mt-1 truncate pl-[25px] font-mono text-[10.5px] leading-none text-gc-ink-3"
+          className="w-full truncate pl-[25px] font-mono text-gc-label leading-tight text-gc-ink-3"
         >
           {workspace}
         </span>

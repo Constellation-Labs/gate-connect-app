@@ -36,7 +36,7 @@ function RoutingHero() {
           WebkitMaskImage: "linear-gradient(180deg,#000 92%,transparent 100%)",
         }}
       />
-      <figcaption className="mt-1.5 text-[10.5px] text-gc-ink-3">
+      <figcaption className="mt-1.5 text-gc-label text-gc-ink-3">
         The Gate Connect popover
       </figcaption>
     </figure>
@@ -216,10 +216,10 @@ export function Onboarding() {
           }`}
         >
           <div className="mb-4">{step.hero}</div>
-          <h1 className="text-balance text-[27px] font-semibold leading-tight">{step.title}</h1>
-          <p className="mt-[7px] text-[13.5px] text-gc-ink-3">{step.sub}</p>
+          <h1 className="text-balance text-gc-display font-semibold leading-tight">{step.title}</h1>
+          <p className="mt-[7px] text-gc-body text-gc-ink-3">{step.sub}</p>
           <div className="mb-[14px] mt-[17px] h-px w-full bg-gc-line" aria-hidden />
-          <div className="mx-auto max-w-[620px] space-y-3 text-left text-[14px] leading-[1.62] text-pretty text-gc-ink-2">
+          <div className="mx-auto max-w-[620px] space-y-3 text-left text-gc-title-sm leading-[1.62] text-pretty text-gc-ink-2">
             {step.body.map((p) => (
               <p key={p.slice(0, 24)}>{p}</p>
             ))}
@@ -242,7 +242,7 @@ export function Onboarding() {
       </div>
 
       <footer className="grid h-[52px] shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-t border-gc-line bg-gc-subtle px-[18px]">
-        <label className="flex w-max cursor-pointer items-center gap-[7px] text-[11.5px] text-gc-ink-3">
+        <label className="flex w-max cursor-pointer items-center gap-[7px] text-gc-caption text-gc-ink-3">
           <span className="relative inline-flex h-[14px] w-[14px] shrink-0 items-center justify-center">
             <input
               type="checkbox"

@@ -62,11 +62,11 @@ export function OAuthOffer({
       <div className="flex flex-col gap-1.5">
         <h1
           id="oauth-offer-title"
-          className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink"
+          className="text-gc-panel-title font-semibold tracking-[-0.01em] text-gc-ink"
         >
           Sign in instead of pasting a key
         </h1>
-        <p className="text-[12.5px] leading-snug text-gc-ink-3">
+        <p className="text-gc-body-sm leading-snug text-gc-ink-3">
           Constellation sign-in keeps your session in{" "}
           {secretStoreName(platform, "the")} and refreshes it on its own, so
           there&rsquo;s nothing to rotate when a key expires. Your gateway and
@@ -89,7 +89,7 @@ export function OAuthOffer({
 
       {/* ink-3, not ink-4: DESIGN.md names ink-3 as the smallest ink that may
           carry real text, and ink-4 measures 4.0:1 on white. */}
-      <p className="text-[11px] leading-snug text-gc-ink-3">
+      <p className="text-gc-micro leading-snug text-gc-ink-3">
         You can switch either way later, under Account in Settings.
       </p>
     </Takeover>

@@ -39,7 +39,7 @@ export const Button = forwardRef<HTMLButtonElement, {
         ? "bg-gc-error-deep text-white hover:brightness-95 active:brightness-90"
         : "bg-gc-surface text-gc-ink shadow-border hover:shadow-border-hover";
   const sizing =
-    size === "sm" ? "h-8 px-3.5 text-[12.5px]" : "h-10 px-4 text-[13.5px]";
+    size === "sm" ? "h-8 px-3.5 text-gc-body-sm" : "h-10 px-4 text-gc-body";
   return (
     <button
       ref={ref}
@@ -85,6 +85,7 @@ export function Switch({
   onClick,
   disabled,
   busy,
+  className = "",
 }: {
   on: boolean;
   /** Id of a node describing what is actually happening, for the cases where
@@ -100,6 +101,9 @@ export function Switch({
   /** An operation is in flight: clicks are ignored but the switch keeps
    * keyboard focus, so toggling never ejects a keyboard user mid-flip. */
   busy?: boolean;
+  /** Layout only, like Button and IconButton already take. Used where a wrapping
+   * flex row needs the switch pushed to the end of its line. */
+  className?: string;
 }) {
   return (
     <button
@@ -121,7 +125,7 @@ export function Switch({
       // panel instead of routing the family, with no error either way. The
       // pseudo-element takes 4px back from the row's padding to make the hit
       // area 30px without moving a pixel of the switch or its focus ring.
-      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-45 ${busy ? "opacity-70" : ""} ${on ? "bg-gc-accent" : "bg-gc-switch-off"}`}
+      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gc-accent disabled:opacity-45 ${busy ? "opacity-70" : ""} ${on ? "bg-gc-accent" : "bg-gc-switch-off"} ${className}`}
     >
       <span
         className={`absolute flex h-[18px] w-[18px] items-center justify-center rounded-full bg-white shadow-sm transition-transform ${on ? "translate-x-[18px]" : "translate-x-[2px]"}`}
@@ -152,7 +156,7 @@ export function CardButton({
 
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <h2 className="px-3.5 pb-1.5 pt-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+    <h2 className="px-3.5 pb-1.5 pt-3 font-mono text-gc-label font-medium uppercase tracking-[0.08em] text-gc-ink-3">
       {children}
     </h2>
   );
@@ -177,7 +181,7 @@ export function Input({
       {leadingIcon && <span className="shrink-0 text-gc-ink-4">{leadingIcon}</span>}
       <input
         type={secret && !revealed ? "password" : "text"}
-        className={`min-w-0 flex-1 bg-transparent text-[13px] text-gc-ink outline-none placeholder:text-gc-ink-3 ${className}`}
+        className={`min-w-0 flex-1 bg-transparent text-gc-body-md text-gc-ink outline-none placeholder:text-gc-ink-3 ${className}`}
         {...rest}
       />
       {/* `IconButton`, not a bare button: this was a 14px glyph with no box at
@@ -210,7 +214,7 @@ export function ConnPill({
 }) {
   if (state === "connected") {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-success-wash px-2 py-1 text-[11px] font-medium text-gc-success-deep">
+      <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-success-wash px-2 py-1 text-gc-micro font-medium text-gc-success-deep ring-1 ring-gc-success-deep/30">
         <span className="h-1.5 w-1.5 rounded-full bg-gc-success-deep" />
         {label ?? "Connected"}
       </span>
@@ -220,7 +224,7 @@ export function ConnPill({
   // the pill tells that truth instead of rounding up to green.
   if (state === "partial") {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-warning-wash px-2 py-1 text-[11px] font-medium text-gc-ink-2">
+      <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-warning-wash px-2 py-1 text-gc-micro font-medium text-gc-ink-2 ring-1 ring-gc-warning-deep/45">
         <span className="h-1.5 w-1.5 rounded-full bg-gc-warning-deep" />
         {label ?? "Partly routed"}
       </span>
@@ -228,7 +232,7 @@ export function ConnPill({
   }
   const fallback = state === "idle" ? "Idle" : "Signed out";
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-[11px] font-medium text-gc-ink-3">
+    <span className="inline-flex items-center gap-1.5 rounded-gc-pill bg-gc-sunken px-2 py-1 text-gc-micro font-medium text-gc-ink-3 ring-1 ring-gc-ink-4/45">
       <span className="h-1.5 w-1.5 rounded-full bg-gc-ink-3" />
       {label ?? fallback}
     </span>
@@ -251,7 +255,7 @@ export function SubHeader({
       <h1
         tabIndex={-1}
         data-screen-focus
-        className="text-[14px] font-semibold tracking-[-0.01em] text-gc-ink outline-none"
+        className="text-gc-title-sm font-semibold tracking-[-0.01em] text-gc-ink outline-none"
       >
         {title}
       </h1>
@@ -284,12 +288,12 @@ export function ErrorNote({
     <div role="alert" className={`flex gap-2.5 rounded bg-gc-sunken px-3 py-2.5 text-left ${className}`}>
       <Icon name="info" size={15} className="mt-px shrink-0 text-gc-error" />
       <div className="min-w-0 flex-1">
-        <div className="text-[11.5px] font-semibold leading-snug text-gc-ink">{error.title}</div>
-        <div className="mt-0.5 text-[11.5px] leading-snug text-gc-ink-2">{error.hint}</div>
+        <div className="text-gc-caption font-semibold leading-snug text-gc-ink">{error.title}</div>
+        <div className="mt-0.5 text-gc-caption leading-snug text-gc-ink-2">{error.hint}</div>
         {error.raw && error.raw !== error.title && (
           <details className="mt-1">
-            <summary className="cursor-pointer py-0.5 text-[11px] text-gc-ink-3">Details</summary>
-            <div className="mt-1 break-all font-mono text-[10.5px] leading-snug text-gc-ink-3">
+            <summary className="cursor-pointer py-0.5 text-gc-micro text-gc-ink-3">Details</summary>
+            <div className="mt-1 break-all font-mono text-gc-label leading-snug text-gc-ink-3">
               {error.raw}
             </div>
             {/* Five error branches tell the user "the details below help when
@@ -300,7 +304,7 @@ export function ErrorNote({
               onClick={() => {
                 void navigator.clipboard.writeText(error.raw).then(() => setCopied(true));
               }}
-              className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+              className="mt-1.5 inline-flex items-center gap-1 text-gc-micro font-medium text-gc-ink-3 transition hover:text-gc-ink"
             >
               <Icon name={copied ? "check" : "copy"} size={12} />
               {copied ? "Copied" : "Copy details"}

@@ -58,6 +58,8 @@ async function renderOn(platform: Platform, props: Partial<React.ComponentProps<
       caTrusted={false}
       proxyBusy={false}
       onUntrustCa={vi.fn()}
+      textScale={1}
+      onSetTextScale={vi.fn()}
       {...props}
     />,
   );
@@ -290,5 +292,53 @@ describe("Settings error placement", () => {
     expect(after(account, note)).toBeTruthy();
     // and specifically below "This machine", not merely below Account.
     expect(after(account, machine)).toBeTruthy();
+  });
+});
+
+describe("Settings help section", () => {
+  /** Three rounds of review reported the same thing: an app that installs a
+   *  root certificate, runs a local MITM proxy and writes to the OS secret store
+   *  had exactly two external URLs and a Help section whose two items were
+   *  "Replay tour" and "Dev mode". */
+  it("offers documentation, not just a tour replay and a debug toggle", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos");
+    const docs = screen.getByRole("button", { name: /Documentation/ });
+    expect(docs).toBeTruthy();
+    // Still last in the row, so the destructive control keeps its isolation.
+    expect(screen.getByRole("button", { name: /Reset Gate Connect/ })).toBeTruthy();
+  });
+});
+
+describe("Settings text size", () => {
+  /** WCAG 1.4.4 (AA) needs a mechanism that exists, and a keyboard shortcut
+   *  nobody is told about is not one. This control is the discoverable copy. */
+  it("offers the five scale steps and marks the current one", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos", { textScale: 1.5 });
+    const group = screen.getByRole("group", { name: "Text size" });
+    expect(group).toBeTruthy();
+    const steps = ["100%", "125%", "150%", "175%", "200%"];
+    for (const s of steps) expect(screen.getByRole("button", { name: s })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "150%" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "100%" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("reports the chosen step to its owner", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    const onSetTextScale = vi.fn();
+    await renderOn("macos", { onSetTextScale });
+    fireEvent.click(screen.getByRole("button", { name: "200%" }));
+    expect(onSetTextScale).toHaveBeenCalledWith(2);
+  });
+
+  it("names the modifier the running platform actually has", async () => {
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("windows");
+    expect(screen.getByText(/Ctrl and the plus/)).toBeTruthy();
+    cleanup();
+    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
+    await renderOn("macos");
+    expect(screen.getByText(/Cmd and the plus/)).toBeTruthy();
   });
 });
