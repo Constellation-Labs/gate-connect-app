@@ -133,6 +133,23 @@ pub enum Request {
         ca_cert_pem: String,
         ca_key_pem: String,
         domains: Vec<ProxyDomain>,
+        /// Keep intercepting after this client's control connection closes.
+        ///
+        /// The daemon otherwise reverts to pass-through on any disconnect,
+        /// which is right for the GUI: it holds the connection for as long as
+        /// routing is meant to be on, so a lost connection means the owner is
+        /// gone and a machine should not be left behind a proxy nobody holds.
+        ///
+        /// It is wrong for the CLI, which is short-lived by construction.
+        /// `gate-connect proxy enable` connected, armed the engine, printed
+        /// success and exited - and the exit cleared every rule, so the engine
+        /// tunnelled everything while status still read "on". This flag is how
+        /// a caller says its own lifetime is not the routing lifetime.
+        ///
+        /// `serde(default)` keeps an older client's message parseable; absent
+        /// means the old always-revert behaviour.
+        #[serde(default)]
+        detached: bool,
         preferred_port: Option<u16>,
         /// Preferred loopback port for the CLI reverse-proxy relay, so it
         /// rebinds the same address across restarts and baked CLI configs stay

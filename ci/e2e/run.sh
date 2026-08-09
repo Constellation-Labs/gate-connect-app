@@ -126,6 +126,15 @@ ckpt() {
 export NODE_TLS_REJECT_UNAUTHORIZED=0
 export ANTHROPIC_API_KEY="sk-ant-e2e-dummy"
 
+# Per-request engine logging. The engine prints `[gate-proxy] <host><path> ->
+# <action>` for every intercepted request, where action is one of passthrough /
+# rewrite->gateway / rewrite-FAILED, and the daemon tees it to
+# <app-support>/proxy/helper.log when this is set. That single field is what
+# separates "the engine never intercepted" from "it intercepted and chose not to
+# rewrite" from "it tried and the gateway hop failed" - none of which are
+# distinguishable from the tool's side, which sees only a provider response.
+export GATE_PROXY_DEBUG=1
+
 PASS=0
 FAIL=0
 
@@ -219,6 +228,10 @@ MOCK_AUTH_PORT="$AUTH_PORT" \
 AUTH_PID=$!
 
 RELAY_PID=""
+# Declared here, beside RELAY_PID and before the trap, for the same reason: the
+# script can exit (set -u) before the engine section is even reached, and the
+# trap must still be able to read it.
+ENGINE_ON=""
 cleanup() {
   # Preserve the status that triggered the trap (the final `test $FAIL -eq 0`,
   # or an early `exit`) before any teardown command clobbers $?.
@@ -226,6 +239,11 @@ cleanup() {
   kill -KILL "$MOCK_PID" 2>/dev/null
   kill -KILL "$AUTH_PID" 2>/dev/null
   [ -n "$RELAY_PID" ] && kill -KILL "$RELAY_PID" 2>/dev/null
+  # Inline rather than via stop_engine: this trap is armed long before that
+  # function is defined, and an early exit would otherwise hit "command not
+  # found". Leaving routing on would strand the runner behind a dead proxy and
+  # a trusted CA.
+  [ -n "$ENGINE_ON" ] && "$CLI" proxy disable >/dev/null 2>&1
   # Codex's Rust binary survives an msys kill and, in the runner's job object,
   # keeps the step from finishing. A real Windows kill of the whole tree lets
   # the step exit. (No-op if codex isn't running; codex.exe doesn't exist off
@@ -284,6 +302,85 @@ stop_relay() {
   kill -KILL "$RELAY_PID" 2>/dev/null
   wait "$RELAY_PID" 2>/dev/null
   RELAY_PID=""
+}
+
+# ---------------------------------------------------------------------------
+# Engine host. OpenClaw and Hermes are PROXY-routed: they take a forward proxy
+# (`proxy.proxyUrl` and `HTTPS_PROXY`) rather than a base URL, so `connect`
+# refuses unless `proxy::engine_proxy_url()` is Some. Only `proxy enable`
+# makes it so - it writes the system-proxy snapshot and the engine port, and
+# `proxy serve` (the relay) writes neither. The other three tools keep using
+# the relay and are untouched by this: the exported NO_PROXY is
+# `localhost,127.0.0.1,::1`, which exempts both the relay and the mocks.
+#
+# Enable also trusts the CA and points the system proxy at the engine. What
+# that costs differs per platform, and only Linux escalates:
+#   - Linux   `update-ca-certificates` into the system store, via run_as_admin.
+#             That picks sudo only when stdout is a TTY and pkexec otherwise,
+#             and a runner has no polkit agent - hence `script`, which supplies
+#             a pty so it takes the (passwordless here) sudo branch.
+#   - macOS   `security add-trusted-cert` into the LOGIN keychain, and
+#             networksetup, which is tried unprivileged first. No escalation.
+#   - Windows `certutil -user -addstore`, per-user. No escalation either, but
+#             see the skip below.
+# ---------------------------------------------------------------------------
+start_engine() {
+  # Windows is held back, and NOT because of privilege: certutil -user and the
+  # HKCU proxy keys both go through unprompted there. The blocker is the engine
+  # LISTENER. `proxy_e2e::exported_proxy_env_routes_an_external_process` fails
+  # on the Windows CI job with curl refused at 127.0.0.1:<engine port> after
+  # 6ms, having been handed the port the engine itself reported, while the same
+  # test passes on Linux and macOS. That is the socket, not the env channel -
+  # which matters here, because these two tools take their proxy from config
+  # (`proxy.proxyUrl`, `~/.hermes/.env`) rather than from the environment, so
+  # they would hit the same dead address. Routing a tool through an address that
+  # refuses connections reports a tool failure for an engine bug, so skip until
+  # that is fixed. (Hermes is absent on Windows regardless - the workflow does
+  # not install it there.)
+  if [ "$OS" = "Windows" ]; then
+    echo "::notice::skipping the engine on Windows - the exported proxy env does not reach the listener there yet"
+    return 1
+  fi
+  ckpt "engine: proxy enable"
+  local rc=0
+  if [ "$OS" = "Linux" ]; then
+    script -qec "\"$CLI\" proxy enable" /dev/null >"$WORK/enable.out" 2>&1 || rc=$?
+  else
+    "$CLI" proxy enable >"$WORK/enable.out" 2>&1 || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "engine: proxy enable failed (rc=$rc)"
+    sed 's/^/    /' "$WORK/enable.out" 2>/dev/null
+    return 1
+  fi
+  ENGINE_ON=1
+  # Hermes' seeded provider is OpenRouter, whose catalog entry ships opt-in, so
+  # without this the engine tunnels openrouter.ai straight past Gate and the
+  # capture stays empty. Anthropic (OpenClaw's provider) is on by default.
+  "$CLI" proxy domain openrouter on >>"$WORK/enable.out" 2>&1 || true
+  # `proxy enable` reports "Proxy:    running on 127.0.0.1:<port>", with no
+  # scheme - matching on one printed an empty checkpoint.
+  ckpt "engine: enabled ($(grep -o '127\.0\.0\.1:[0-9]*' "$WORK/enable.out" | head -n1))"
+}
+
+stop_engine() {
+  [ -n "$ENGINE_ON" ] || return 0
+  # Harvest the daemon's log BEFORE disabling, into $WORK/*.out so the
+  # workflow's existing diagnostics glob picks it up. Located rather than
+  # constructed: app_support_dir resolves three different ways (the test-home
+  # seam on Windows, XDG on Linux, Library/Application Support on macOS) and a
+  # hardcoded guess would silently find nothing.
+  local helper_log
+  helper_log="$(find "$HOME" -path '*/proxy/helper.log' 2>/dev/null | head -n1)"
+  if [ -n "$helper_log" ] && [ -f "$helper_log" ]; then
+    cp "$helper_log" "$WORK/engine-requests.out" 2>/dev/null || true
+    ckpt "engine: captured $(wc -l <"$helper_log" 2>/dev/null || echo 0) request log lines"
+  else
+    ckpt "engine: no helper.log at $helper_log"
+  fi
+  ckpt "engine: proxy disable"
+  "$CLI" proxy disable >/dev/null 2>&1 || true
+  ENGINE_ON=""
 }
 
 # Fake the browser leg of `login --oauth`: run it headless, read the authorize
@@ -379,7 +476,7 @@ fi
 # Run every installed tool against the relay and assert the given auth mode's
 # Gate headers reached the mock gateway. The tool config is mode-independent (it
 # just points at the relay); the relay injects the differing credential.
-run_all_tools() {
+run_relay_tools() {
   local mode="$1"
 
   # --- Claude Code: gate-connect writes the relay base URL + upstream headers
@@ -419,19 +516,45 @@ run_all_tools() {
       opencode run --model "$OPENCODE_MODEL" "ping"
   fi
 
-  # --- OpenClaw: multi-provider, like OpenCode. gate-connect rewrites the
-  #     anthropic provider's baseUrl in ~/.openclaw/openclaw.json to the relay →
-  #     POSTs /v1/messages. We seed a minimal anthropic provider block (with a
-  #     dummy apiKey so openclaw actually fires the call): gate-connect detects
-  #     OpenClaw off the config dir existing, and needs a supported provider
-  #     (anthropic/openai/openrouter) under models.providers to have something to
-  #     route. `infer model run --local` runs one turn straight through the
-  #     provider baseUrl (not the openclaw gateway daemon, which isn't running
-  #     here). Guarded on install + a resolved catalog model.
+}
+
+# The proxy-routed half, run with the relay DOWN and the engine up. The two
+# hosts cannot overlap: on Linux the engine lives in the helper daemon, which
+# hosts a relay of its own and rewrites the persisted relay port on the way up
+# (manager_linux::enable passes relay::load_persisted_port() into set_intercept,
+# then saves whatever came back). With `proxy serve` already holding that port
+# the two fight over it, `connect` writes the wrong one into every tool config,
+# and the relay-routed tools stop reaching the gateway - measured, and it took
+# all ten tools down rather than just these two. macOS has no daemon and passed
+# with both up at once, which is what pinned the cause to the daemon.
+run_engine_tools() {
+  local mode="$1"
+
+  # --- OpenClaw: PROXY-routed since the harnesses moved off per-provider
+  #     baseUrl edits. gate-connect writes `proxy.proxyUrl` (a process-wide
+  #     interceptor over OpenClaw's HTTP clients) plus NODE_EXTRA_CA_CERTS, and
+  #     leaves the provider block alone - so the seeded baseUrl below stays
+  #     CANONICAL. The request goes to the real api.anthropic.com, the engine
+  #     MITMs it on the way out, and rewrites /v1/messages to the mock gateway.
+  #     Nothing dials Anthropic: /v1/messages is a rewrite prefix, so the engine
+  #     never opens the upstream leg.
+  #
+  #     Needle stays /v1/messages: the anthropic catalog entry's upstream is the
+  #     bare host, so the forwarded path is the app's own.
+  #
+  #     We seed a minimal anthropic provider block (with a dummy apiKey so
+  #     openclaw actually fires the call): gate-connect detects OpenClaw off the
+  #     config dir existing, and needs a supported provider under
+  #     models.providers to have something to route. `infer model run --local`
+  #     runs one turn straight through the provider baseUrl (not the openclaw
+  #     gateway daemon, which isn't running here). Guarded on install, a
+  #     resolved catalog model, and the engine.
   if ! command -v openclaw >/dev/null 2>&1; then
     echo "::notice::skipping openclaw - CLI not installed on this runner"
   elif [ -z "$OPENCLAW_MODEL" ]; then
     echo "::notice::skipping openclaw - no anthropic model listed in the catalog"
+  elif [ -z "$ENGINE_ON" ]; then
+    echo "::notice::skipping openclaw - proxy-routed, and the engine is not up"
   else
     mkdir -p "$HOME/.openclaw"
     printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1","apiKey":"sk-ant-e2e-dummy"}}}}' \
@@ -440,35 +563,39 @@ run_all_tools() {
       openclaw infer model run --local --model "anthropic/$OPENCLAW_MODEL" --prompt "ping"
   fi
 
-  # --- Hermes: Python OpenAI-compatible agent. gate-connect rewrites
-  #     model.base_url in ~/.hermes/config.yaml to the relay - and writes nothing
-  #     else, since the relay derives the upstream from the slug in that URL →
-  #     POSTs /openrouter/api/v1/chat/completions, which reaches the gateway as
-  #     /api/v1/chat/completions once the slug is stripped. We
-  #     seed a complete model block the way a configured user's would look:
+  # --- Hermes: Python OpenAI-compatible agent, PROXY-routed like OpenClaw.
+  #     gate-connect writes HTTPS_PROXY / HTTP_PROXY / NO_PROXY / HERMES_CA_BUNDLE
+  #     into ~/.hermes/.env and does not touch config.yaml at all, so the seeded
+  #     base_url below stays CANONICAL and the engine catches the socket
+  #     whichever provider config wins. HERMES_CA_BUNDLE is required rather than
+  #     nice-to-have: hermes installs into a venv, so httpx/requests use a
+  #     pip-installed certifi that knows nothing about the OS trust store.
+  #
+  #     We seed a complete model block the way a configured user's would look:
   #     provider must be set or hermes refuses to run ("No LLM provider
   #     configured"), and base_url must be a public https URL or gate-connect
   #     treats it as local and refuses to route it. provider=custom is hermes'
   #     recipe for an OpenAI-compatible endpoint: it calls model.base_url
-  #     directly using model.api_key. Since hermes talks to the plaintext relay,
-  #     no ssl_verify / custom_providers TLS shim is needed.
+  #     directly using model.api_key.
   #
   #     Seeded with OpenRouter on purpose - it is what a stock `hermes` install
-  #     ships with, and it is the shape that used to fail: the upstream hint was
-  #     derived by stripping the trailing /v1, giving the off-catalog
-  #     `https://openrouter.ai/api` and a 403 on every request. The `/api/v1`
-  #     needle is the regression guard: OpenRouter's inference prefix is `/api/`,
-  #     so a path that arrives as plain `/v1/...` would pass through to the
-  #     user's own account instead of routing through Gate. Guarded on install.
-  if command -v hermes >/dev/null 2>&1; then
+  #     ships with. The needle is /v1/chat/completions, NOT /api/v1/...: the
+  #     openrouter catalog entry carries `/api` in its upstream_url precisely so
+  #     the forwarded path clears Gate's ALB, which routes /api/* to the
+  #     dashboard API. A capture arriving as /api/v1/... would mean that split
+  #     regressed and every OpenRouter request is 404ing short of the proxy.
+  #     Guarded on install and on the engine.
+  if ! command -v hermes >/dev/null 2>&1; then
+    echo "::notice::skipping hermes - CLI not installed on this runner"
+  elif [ -z "$ENGINE_ON" ]; then
+    echo "::notice::skipping hermes - proxy-routed, and the engine is not up"
+  else
     mkdir -p "$HOME/.hermes"
     printf 'model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n  api_key: sk-e2e-dummy\n  api_mode: chat_completions\n' \
       > "$HOME/.hermes/config.yaml"
     export OPENAI_API_KEY="sk-e2e-dummy"
-    run_tool "hermes" "hermes" "/api/v1/chat/completions" "$mode" -- \
+    run_tool "hermes" "hermes" "/v1/chat/completions" "$mode" -- \
       hermes -z "ping" --model openai/gpt-4o-mini
-  else
-    echo "::notice::skipping hermes - CLI not installed on this runner"
   fi
 }
 
@@ -483,8 +610,14 @@ echo "::group::phase: api-key login"
 }
 echo "::endgroup::"
 start_relay || exit 1
-run_all_tools "api-key"
+run_relay_tools "api-key"
 stop_relay
+# Best-effort, like the per-tool guards: a runner that cannot bring the engine
+# up should still prove the three relay-routed tools rather than failing the
+# whole phase. The two proxy-routed tools skip with a notice in that case.
+start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
+run_engine_tools "api-key"
+stop_engine
 "$CLI" logout >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
@@ -495,8 +628,11 @@ echo "::group::phase: oauth login"
 if oauth_login; then
   echo "::endgroup::"
   start_relay || exit 1
-  run_all_tools "oauth"
+  run_relay_tools "oauth"
   stop_relay
+  start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
+  run_engine_tools "oauth"
+  stop_engine
   "$CLI" logout >/dev/null 2>&1 || true
 else
   echo "::endgroup::"

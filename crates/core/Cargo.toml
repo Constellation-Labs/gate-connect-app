@@ -21,6 +21,8 @@ toml_edit.workspace = true
 # that rewrites inference calls to the Gate gateway. tokio is the runtime
 # the proxy engine owns on a background thread; the rest of core stays sync.
 hudsucker.workspace = true
+hyper-rustls.workspace = true
+webpki-roots.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
 http.workspace = true
