@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Real-tools end-to-end driver. Exercises the full relay path: `gate-connect
-# proxy serve` hosts the loopback reverse-proxy relay, `gate-connect connect`
+# proxy relay` hosts the loopback reverse-proxy relay, `gate-connect connect`
 # points each installed AI CLI at that relay (plaintext http), the tool fires one
 # headless request, the relay injects the Gate credential + forwards over TLS to
 # a local HTTPS mock gateway, and we assert the mock received it with the right
@@ -267,15 +267,15 @@ for _ in $(seq 1 40); do
 done
 
 # ---------------------------------------------------------------------------
-# Relay host: `gate-connect proxy serve` binds the loopback relay and blocks.
+# Relay host: `gate-connect proxy relay` binds the loopback relay and blocks.
 # It seeds the credential channels from the current account, so it must be
 # (re)started after each phase's login. connect reads the persisted relay port,
-# so serve must be up before any connect.
+# so the relay must be up before any connect.
 # ---------------------------------------------------------------------------
 start_relay() {
   : > "$WORK/serve.out"
-  ckpt "relay: starting proxy serve"
-  "$CLI" proxy serve >"$WORK/serve.out" 2>&1 &
+  ckpt "relay: starting proxy relay"
+  "$CLI" proxy relay >"$WORK/serve.out" 2>&1 &
   RELAY_PID=$!
   local i=0
   while [ "$i" -lt 30 ]; do
@@ -284,21 +284,21 @@ start_relay() {
       return 0
     }
     kill -0 "$RELAY_PID" 2>/dev/null || {
-      echo "relay: serve exited before becoming ready"
+      echo "relay: host exited before becoming ready"
       sed 's/^/    /' "$WORK/serve.out"
       return 1
     }
     sleep 0.5
     i=$((i + 1))
   done
-  echo "relay: serve did not become ready in time"
+  echo "relay: host did not become ready in time"
   sed 's/^/    /' "$WORK/serve.out"
   return 1
 }
 
 stop_relay() {
   [ -n "$RELAY_PID" ] || return 0
-  ckpt "relay: stopping proxy serve (pid=$RELAY_PID)"
+  ckpt "relay: stopping proxy relay (pid=$RELAY_PID)"
   kill -KILL "$RELAY_PID" 2>/dev/null
   wait "$RELAY_PID" 2>/dev/null
   RELAY_PID=""
@@ -309,7 +309,7 @@ stop_relay() {
 # (`proxy.proxyUrl` and `HTTPS_PROXY`) rather than a base URL, so `connect`
 # refuses unless `proxy::engine_proxy_url()` is Some. Only `proxy enable`
 # makes it so - it writes the system-proxy snapshot and the engine port, and
-# `proxy serve` (the relay) writes neither. The other three tools keep using
+# `proxy relay` (the relay) writes neither. The other three tools keep using
 # the relay and are untouched by this: the exported NO_PROXY is
 # `localhost,127.0.0.1,::1`, which exempts both the relay and the mocks.
 #
@@ -360,7 +360,29 @@ start_engine() {
   "$CLI" proxy domain openrouter on >>"$WORK/enable.out" 2>&1 || true
   # `proxy enable` reports "Proxy:    running on 127.0.0.1:<port>", with no
   # scheme - matching on one printed an empty checkpoint.
-  ckpt "engine: enabled ($(grep -o '127\.0\.0\.1:[0-9]*' "$WORK/enable.out" | head -n1))"
+  local eport
+  eport="$(grep -o '127\.0\.0\.1:[0-9]*' "$WORK/enable.out" | head -n1)"
+  ckpt "engine: enabled ($eport)"
+  # A fresh `proxy status` must see the daemon that was just armed. This is the
+  # daemon-adoption path and nothing else covers it: `self.client` is `Some`
+  # only for the process that enabled and stayed alive, so every CLI invocation
+  # used to report the proxy off while the daemon was intercepting - config and
+  # engine disagreeing, the shape this suite exists to catch. Asserting the
+  # port too, so "running" cannot pass by naming some other engine.
+  #
+  # Linux only: macOS runs the engine in-process, so a separate process has no
+  # daemon to adopt and reporting "stopped" is correct there.
+  if [ "$OS" = "Linux" ]; then
+    local st
+    st="$("$CLI" proxy status 2>&1 | head -n1)"
+    if [ "${st#*running on }" = "$eport" ]; then
+      echo "PASS: proxy status sees the running daemon on $eport"
+      PASS=$((PASS + 1))
+    else
+      echo "FAIL: proxy status does not see the running daemon (expected $eport, got: $st)"
+      FAIL=$((FAIL + 1))
+    fi
+  fi
 }
 
 stop_engine() {
@@ -379,7 +401,82 @@ stop_engine() {
     ckpt "engine: no helper.log at $helper_log"
   fi
   ckpt "engine: proxy disable"
-  "$CLI" proxy disable >/dev/null 2>&1 || true
+  # Count the disarms already in the log before disabling. helper.log is opened
+  # `append`, so it survives the daemon restart between phases and phase B
+  # would otherwise pass on phase A's line - the assertion below has to see a
+  # *new* one, not just any one.
+  local disarms_before=0
+  if [ -n "$helper_log" ] && [ -f "$helper_log" ]; then
+    disarms_before="$(grep -c 'SetPassthrough received' "$helper_log" 2>/dev/null || true)"
+    : "${disarms_before:=0}"
+  fi
+  local rc=0
+  "$CLI" proxy disable >"$WORK/disable.out" 2>&1 || rc=$?
+  # Verify rather than assume. A disable that fails leaves the system-proxy
+  # snapshot on disk, and `proxy relay` refuses to start while that exists (it
+  # means an engine is up, hosting this same relay) - so a swallowed failure
+  # here surfaces as the NEXT phase's start_relay dying, pages away from the
+  # cause. Checking the snapshot, not `proxy status`: on Linux a fresh CLI
+  # process has no control connection to the daemon and status reports
+  # "stopped" whether or not the daemon is intercepting.
+  #
+  # Located rather than constructed, like helper.log above: app_support_dir
+  # resolves three different ways and a hardcoded guess would silently find
+  # nothing, i.e. always "verify" clean.
+  local snapshot
+  snapshot="$(find "$HOME" -path '*/proxy/system-proxy.snapshot.json' 2>/dev/null | head -n1)"
+  if [ "$rc" -ne 0 ] || [ -n "$snapshot" ]; then
+    echo "FAIL: engine: proxy disable did not take (rc=$rc${snapshot:+, snapshot still at $snapshot})"
+    sed 's/^/    /' "$WORK/disable.out" 2>/dev/null
+    FAIL=$((FAIL + 1))
+    # Leave ENGINE_ON set so the EXIT trap tries once more; the runner would
+    # otherwise be left routed through a dead proxy with a trusted CA.
+    return 1
+  fi
+  ckpt "engine: disabled"
+  # The disable must have reached the *daemon*, not merely cleared the snapshot
+  # and removed the drop-in. Those two are local file operations that succeed
+  # whether or not a control connection ever existed, which is exactly how
+  # `proxy disable` looked like it worked while leaving the daemon intercepting
+  # with its ports bound: the CLI held no handle to send SetPassthrough on, and
+  # only newly launched processes stopped routing, because the drop-in was
+  # gone. The daemon logs the disarm, and that line is the only trace the two
+  # cases differ by. Read live rather than from the copy harvested above, which
+  # was taken before the disable, and require the count to have *grown* - see
+  # disarms_before.
+  if [ "$OS" = "Linux" ] && [ -n "$helper_log" ] && [ -f "$helper_log" ]; then
+    local disarms_after
+    disarms_after="$(grep -c 'SetPassthrough received' "$helper_log" 2>/dev/null || true)"
+    : "${disarms_after:=0}"
+    if [ "$disarms_after" -gt "$disarms_before" ]; then
+      echo "PASS: proxy disable reached the daemon and disarmed the engine"
+      PASS=$((PASS + 1))
+    else
+      echo "FAIL: proxy disable never reached the daemon (disarms in $helper_log: $disarms_before -> $disarms_after)"
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+  # Stop the daemon too, not just routing. Pass-through leaves the engine up
+  # with its ports bound - helper.rs is explicit that SetPassthrough and
+  # client-disconnect never stop it - and one of those is the relay port the
+  # next phase's start_relay needs. `proxy relay` now refuses a taken port
+  # rather than silently moving to a fresh one and repointing every tool
+  # config at it, so a leaked daemon fails the next phase instead of quietly
+  # skewing it. No CLI verb stops the daemon; use the pidfile it writes at
+  # startup. No-op on macOS, which runs the engine in-process.
+  local pidfile dpid
+  pidfile="$(find "${XDG_RUNTIME_DIR:-/tmp}" /tmp -name proxyd.pid 2>/dev/null | head -n1)"
+  dpid="$([ -n "$pidfile" ] && cat "$pidfile" 2>/dev/null)"
+  if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
+    ckpt "engine: stopping helper daemon (pid=$dpid)"
+    kill -TERM "$dpid" 2>/dev/null
+    local i=0
+    while [ "$i" -lt 20 ] && kill -0 "$dpid" 2>/dev/null; do
+      sleep 0.25
+      i=$((i + 1))
+    done
+    kill -0 "$dpid" 2>/dev/null && kill -KILL "$dpid" 2>/dev/null
+  fi
   ENGINE_ON=""
 }
 
@@ -522,7 +619,7 @@ run_relay_tools() {
 # hosts cannot overlap: on Linux the engine lives in the helper daemon, which
 # hosts a relay of its own and rewrites the persisted relay port on the way up
 # (manager_linux::enable passes relay::load_persisted_port() into set_intercept,
-# then saves whatever came back). With `proxy serve` already holding that port
+# then saves whatever came back). With `proxy relay` already holding that port
 # the two fight over it, `connect` writes the wrong one into every tool config,
 # and the relay-routed tools stop reaching the gateway - measured, and it took
 # all ten tools down rather than just these two. macOS has no daemon and passed

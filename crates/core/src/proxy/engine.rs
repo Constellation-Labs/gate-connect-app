@@ -643,8 +643,11 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
 /// vanishingly narrow.) Windows keeps the plain bind - its defaults already
 /// allow the rebind, and `SO_REUSEADDR` there *would* let another local
 /// process hijack a live port.
+/// Shared with [`super::relay::serve`], the standalone host, so the two paths
+/// agree on what "the port is taken" means - a live listener, not a TIME_WAIT
+/// remnant of the host that just exited.
 #[cfg(unix)]
-fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
     if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
         return Ok(listener);
     }
@@ -667,7 +670,7 @@ fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
 }
 
 #[cfg(not(unix))]
-fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(("127.0.0.1", port))
 }
 
