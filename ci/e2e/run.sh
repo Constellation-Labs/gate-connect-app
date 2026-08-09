@@ -360,7 +360,29 @@ start_engine() {
   "$CLI" proxy domain openrouter on >>"$WORK/enable.out" 2>&1 || true
   # `proxy enable` reports "Proxy:    running on 127.0.0.1:<port>", with no
   # scheme - matching on one printed an empty checkpoint.
-  ckpt "engine: enabled ($(grep -o '127\.0\.0\.1:[0-9]*' "$WORK/enable.out" | head -n1))"
+  local eport
+  eport="$(grep -o '127\.0\.0\.1:[0-9]*' "$WORK/enable.out" | head -n1)"
+  ckpt "engine: enabled ($eport)"
+  # A fresh `proxy status` must see the daemon that was just armed. This is the
+  # daemon-adoption path and nothing else covers it: `self.client` is `Some`
+  # only for the process that enabled and stayed alive, so every CLI invocation
+  # used to report the proxy off while the daemon was intercepting - config and
+  # engine disagreeing, the shape this suite exists to catch. Asserting the
+  # port too, so "running" cannot pass by naming some other engine.
+  #
+  # Linux only: macOS runs the engine in-process, so a separate process has no
+  # daemon to adopt and reporting "stopped" is correct there.
+  if [ "$OS" = "Linux" ]; then
+    local st
+    st="$("$CLI" proxy status 2>&1 | head -n1)"
+    if [ "${st#*running on }" = "$eport" ]; then
+      echo "PASS: proxy status sees the running daemon on $eport"
+      PASS=$((PASS + 1))
+    else
+      echo "FAIL: proxy status does not see the running daemon (expected $eport, got: $st)"
+      FAIL=$((FAIL + 1))
+    fi
+  fi
 }
 
 stop_engine() {
