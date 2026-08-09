@@ -154,6 +154,7 @@ impl HelperClient {
         ca_cert_pem: &str,
         ca_key_pem: &str,
         domains: &[ProxyDomain],
+        detached: bool,
         preferred_port: Option<u16>,
         preferred_relay_port: Option<u16>,
     ) -> Result<Intercepting> {
@@ -165,6 +166,7 @@ impl HelperClient {
             ca_cert_pem: ca_cert_pem.to_string(),
             ca_key_pem: ca_key_pem.to_string(),
             domains: domains.to_vec(),
+            detached,
             preferred_port,
             preferred_relay_port,
         };

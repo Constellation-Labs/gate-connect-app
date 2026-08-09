@@ -18,14 +18,14 @@
 //! wires the real OS system proxy and installs the engine's MITM CA into the OS
 //! trust store, then drives a naive client that validates the leaf via the OS
 //! store . That path can't be exercised hermetically against a
-//! loopback mock, because the engine's upstream connector (hudsucker's
-//! webpki-roots) validates the gateway cert against Mozilla roots only - it
-//! won't trust a private test CA on the engine->gateway leg - and
-//! `account::save` rejects a plain-http gateway that would otherwise sidestep
-//! that TLS. Closing it would take an engine change (a configurable upstream
-//! root) or bypassing the account guard, so the real-enable + OS-trust wiring
-//! stays unverified by automated tests for now; `ci/e2e/run.sh` covers the
-//! config-file integration path instead, not the built-in proxy.
+//! loopback mock. The engine's upstream connector used to validate the gateway
+//! cert against Mozilla roots only, so it would not trust a private test CA on
+//! the engine->gateway leg; that half is now closed - `engine::upstream_tls_config`
+//! adds a root named by `GATE_CONNECT_TEST_CA`, the same seam the relay reads.
+//! What remains is `account::save` rejecting a plain-http gateway, so a test
+//! wanting the real-enable path must serve HTTPS from that CA rather than reuse
+//! the http mock below. `ci/e2e/run.sh` exercises it end to end that way; a
+//! hermetic version belongs here and does not exist yet.
 
 use std::sync::{Arc, Mutex};
 

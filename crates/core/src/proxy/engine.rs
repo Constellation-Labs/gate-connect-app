@@ -19,9 +19,12 @@ use anyhow::{Context, Result};
 use hudsucker::{
     hyper::{header::HeaderValue, Method, Request, Uri},
     rcgen::{Issuer, KeyPair},
-    rustls::crypto::aws_lc_rs,
+    rustls::crypto::{aws_lc_rs, CryptoProvider},
+    rustls::pki_types::{pem::PemObject, CertificateDer},
+    rustls::{ClientConfig, RootCertStore},
     Body, HttpContext, HttpHandler, Proxy, RequestOrResponse,
 };
+use hyper_rustls::ConfigBuilderExt;
 use tokio::sync::{oneshot, watch};
 
 use crate::proxy::cert_authority::GateCa;
@@ -215,6 +218,57 @@ fn enabled_only(domains: &[ProxyDomain]) -> Vec<ProxyDomain> {
     domains.iter().filter(|d| d.enabled).cloned().collect()
 }
 
+/// TLS config for the engine's own outbound hop - to the gateway for a
+/// rewritten request, and to the real provider for a passthrough path on an
+/// intercepted host.
+///
+/// Exists only because hudsucker's `with_rustls_connector` pins webpki roots
+/// with no way to add one. That is the right default and stays the default, but
+/// it also made the real `proxy enable` path untestable: a hermetic test needs a
+/// loopback gateway, a loopback gateway needs a private CA, and a private CA is
+/// exactly what webpki roots reject. `proxy_e2e`'s module docs have carried that
+/// gap as a known exclusion, and the gap is what let two silent-bypass bugs sit
+/// in the engine path unnoticed.
+///
+/// `GATE_CONNECT_TEST_CA` is the same variable and the same seam the relay
+/// already reads (see [`super::relay`]), so both halves of the proxy trust the
+/// same throwaway CA in a test and neither has one in production - the variable
+/// is never set in a shipped build.
+///
+/// The extra root is ADDED to the public set, never substituted for it. This
+/// connector also carries passthrough traffic to real providers, so a store
+/// holding only the test CA would fail every host that isn't the mock.
+fn upstream_tls_config(provider: CryptoProvider) -> Result<ClientConfig> {
+    let builder = ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .context("selecting TLS protocol versions for the upstream connector")?;
+
+    let Some(path) = std::env::var_os("GATE_CONNECT_TEST_CA") else {
+        return Ok(builder.with_webpki_roots().with_no_client_auth());
+    };
+
+    let mut roots = RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let extra = CertificateDer::pem_file_iter(&path)
+        .with_context(|| format!("reading GATE_CONNECT_TEST_CA {path:?}"))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("parsing GATE_CONNECT_TEST_CA {path:?}"))?;
+    // Loud rather than silent: a seam that quietly added nothing would look
+    // exactly like the failure it exists to rule out.
+    if extra.is_empty() {
+        anyhow::bail!("GATE_CONNECT_TEST_CA {path:?} contains no certificates");
+    }
+    let added = extra.len();
+    for cert in extra {
+        roots
+            .add(cert)
+            .context("adding GATE_CONNECT_TEST_CA to the upstream roots")?;
+    }
+    eprintln!("[gate-proxy] upstream roots: webpki + {added} from GATE_CONNECT_TEST_CA ({path:?})");
+    Ok(builder.with_root_certificates(roots).with_no_client_auth())
+}
+
 /// Whether to emit per-request engine logs to stderr. Off unless
 /// `GATE_PROXY_DEBUG` is set in the environment, so production stays quiet.
 pub(crate) fn debug_log() -> bool {
@@ -357,10 +411,25 @@ impl HttpHandler for GateHandler {
             .map(|h| should_intercept_host(&rules, h))
             .unwrap_or(false);
         if debug_log() {
+            // The enabled set is printed alongside the verdict because the two
+            // have been observed to disagree with what `proxy enable` reports:
+            // the CLI listed anthropic and openrouter as on while the engine
+            // tunnelled both. Without this the log cannot distinguish "the host
+            // is not in the catalog" from "the engine is holding a different
+            // catalog than the one just configured".
+            let enabled: Vec<&str> = rules
+                .iter()
+                .filter(|d| d.enabled)
+                .map(|d| d.slug.as_str())
+                .collect();
             eprintln!(
-                "[gate-proxy] CONNECT {} -> {}",
+                // `rules` is already enabled_only(), so its length IS the
+                // enabled count - saying "total" would imply the catalog size.
+                "[gate-proxy] CONNECT {} -> {} (engine has {} enabled: [{}])",
                 host.unwrap_or("?"),
-                if intercept { "intercept" } else { "tunnel" }
+                if intercept { "intercept" } else { "tunnel" },
+                rules.len(),
+                enabled.join(",")
             );
         }
         intercept
@@ -780,10 +849,25 @@ where
                     }
                 };
 
+                // Hand-built connector rather than `with_rustls_connector`,
+                // which pins webpki roots - see `upstream_tls_config`.
+                let tls = match upstream_tls_config(aws_lc_rs::default_provider()) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(format!("building upstream TLS config: {e:#}")));
+                        return;
+                    }
+                };
+                let https = hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_tls_config(tls)
+                    .https_or_http()
+                    .enable_http1()
+                    .enable_http2()
+                    .build();
                 let proxy = match Proxy::builder()
                     .with_listener(listener)
                     .with_ca(ca)
-                    .with_rustls_connector(aws_lc_rs::default_provider())
+                    .with_http_connector(https)
                     .with_http_handler(handler)
                     .with_graceful_shutdown(async move {
                         let _ = shutdown_rx.await;

@@ -2,16 +2,26 @@
 //!
 //! Unlike every other integration here, OpenClaw routes through Gate's MITM
 //! proxy engine rather than the reverse-proxy relay, and it is configured with
-//! a single key:
+//! two keys:
 //!
 //! ```json5
-//! "proxy": { "proxyUrl": "http://127.0.0.1:<engine-port>" }
+//! "proxy": { "enabled": true, "proxyUrl": "http://127.0.0.1:<engine-port>" }
 //! ```
 //!
-//! Setting that puts OpenClaw in *managed proxy mode*, which installs a
+//! **Both are required, and `enabled` is the load-bearing one.** OpenClaw's
+//! `startProxy` opens with `if (config?.enabled !== true) return null`
+//! (openclaw: `dist/proxy-lifecycle`), and its config schema declares
+//! `enabled: boolean().optional()` with no default, so a `proxy` block carrying
+//! only a URL leaves managed proxy mode switched OFF. This integration wrote
+//! only the URL until the first end-to-end run against a real install caught
+//! it: OpenClaw logged `proxy=none`, went straight to `api.anthropic.com` on
+//! the user's own key, and connect + status reported success throughout. Do not
+//! "simplify" this back to one key.
+//!
+//! With both set, OpenClaw enters *managed proxy mode*, which installs a
 //! process-wide interceptor over `fetch`/undici, `node:http(s)` and WebSocket
 //! clients, and replaces caller-supplied agents so libraries like axios / got /
-//! node-fetch cannot bypass it. That single value is the entire integration:
+//! node-fetch cannot bypass it. Those two values are the entire integration:
 //! **no per-provider `baseUrl`, no provider discovery, no credential, and no
 //! headers.** Which traffic actually reaches Gate is then decided by the
 //! enabled catalog domains - the engine MITMs those and blind-tunnels
@@ -89,6 +99,11 @@ struct State {
     /// Original `proxy.proxyUrl`. `None` means the key was absent.
     #[serde(default)]
     previous_proxy_url: Option<Value>,
+    /// Original `proxy.enabled`. `None` means the key was absent, which is the
+    /// usual case and is why it has to be restored separately from the URL: the
+    /// two are independent keys and a user may have set either alone.
+    #[serde(default)]
+    previous_proxy_enabled: Option<Value>,
     /// Whether a `proxy` object existed at all before connect. When false,
     /// disconnect removes the whole block rather than leaving an empty one.
     #[serde(default)]
@@ -158,6 +173,7 @@ impl Integration for OpenClaw {
         let settings = load_settings()?.unwrap_or_default();
         Ok(compute_status(
             current_proxy_url(&settings).unwrap_or(""),
+            proxy_is_enabled(&settings),
             crate::proxy::persisted_engine_proxy_url().as_deref(),
             crate::proxy::engine_proxy_url().is_some(),
         ))
@@ -192,11 +208,9 @@ impl Integration for OpenClaw {
         let mut state = load_state()?.unwrap_or_default();
         if load_state()?.is_none() {
             state.proxy_existed = settings.get("proxy").is_some_and(Value::is_object);
-            state.previous_proxy_url = settings
-                .get("proxy")
-                .and_then(|v| v.as_object())
-                .and_then(|p| p.get("proxyUrl"))
-                .cloned();
+            let previous = settings.get("proxy").and_then(|v| v.as_object());
+            state.previous_proxy_url = previous.and_then(|p| p.get("proxyUrl")).cloned();
+            state.previous_proxy_enabled = previous.and_then(|p| p.get("enabled")).cloned();
         }
 
         // Point OpenClaw's Node runtime at Gate's CA. A value the user already
@@ -216,9 +230,19 @@ impl Integration for OpenClaw {
             state.ca_env_file_created = applied.file_created;
         }
 
-        // `proxy.loopbackMode` and `proxy.tls` are deliberately untouched - see
-        // the module docs. We own exactly one key.
+        // Both keys are required, and `enabled` is the load-bearing one.
+        // OpenClaw's `startProxy` opens with `if (config?.enabled !== true)
+        // return null` (openclaw: dist/proxy-lifecycle), and `enabled` is
+        // `boolean().optional()` in its config schema with NO default, so a
+        // `proxy` block carrying only a URL leaves managed proxy mode switched
+        // off. Writing just the URL - which this did until now - meant OpenClaw
+        // silently ignored it and went straight to the provider on the user's
+        // own key, while connect succeeded and status read Connected.
+        //
+        // `proxy.loopbackMode` and `proxy.tls` remain deliberately untouched;
+        // see the module docs.
         let proxy = ensure_object(&mut settings, "proxy");
+        proxy.insert("enabled".to_string(), Value::Bool(true));
         proxy.insert("proxyUrl".to_string(), Value::String(proxy_url.to_string()));
 
         save_state(&state)?;
@@ -235,12 +259,17 @@ impl Integration for OpenClaw {
 
         if let Some(mut settings) = load_settings()? {
             if let Some(proxy) = settings.get_mut("proxy").and_then(|v| v.as_object_mut()) {
-                match &state.previous_proxy_url {
-                    Some(v) => {
-                        proxy.insert("proxyUrl".to_string(), v.clone());
-                    }
-                    None => {
-                        proxy.remove("proxyUrl");
+                for (key, previous) in [
+                    ("proxyUrl", &state.previous_proxy_url),
+                    ("enabled", &state.previous_proxy_enabled),
+                ] {
+                    match previous {
+                        Some(v) => {
+                            proxy.insert(key.to_string(), v.clone());
+                        }
+                        None => {
+                            proxy.remove(key);
+                        }
                     }
                 }
                 // Drop a `proxy` block that only existed because we made it,
@@ -302,7 +331,12 @@ impl Integration for OpenClaw {
 /// mode force-clears `no_proxy` and has no bypass list, so OpenClaw has *no*
 /// egress at all until it is cleared. Reported as drift rather than Connected
 /// so the master-off sweep still picks it up for disconnect.
-fn compute_status(configured: &str, expected: Option<&str>, running: bool) -> Status {
+fn compute_status(
+    configured: &str,
+    enabled: bool,
+    expected: Option<&str>,
+    running: bool,
+) -> Status {
     let Some(expected) = expected else {
         return Status::Drifted(
             "Gate has never bound a proxy port, so nothing can be routing yet".into(),
@@ -314,6 +348,18 @@ fn compute_status(configured: &str, expected: Option<&str>, running: bool) -> St
              expected: {expected:?})"
         ));
     }
+    // A matching URL is not enough to be routed: `enabled` is what actually
+    // switches managed proxy mode on, so without it OpenClaw ignores the URL
+    // and reaches the provider directly. Checked separately from the URL
+    // because reporting Connected on this state is precisely the silent bypass
+    // that made the integration inert.
+    if !enabled {
+        return Status::Drifted(
+            "OpenClaw has Gate's proxy URL but proxy.enabled is not true, so it ignores the \
+             proxy and reaches providers directly -- reconnect OpenClaw to fix it"
+                .into(),
+        );
+    }
     if !running {
         return Status::Drifted(format!(
             "the Gate proxy is not running, so OpenClaw has no route out ({configured:?} is a \
@@ -321,6 +367,17 @@ fn compute_status(configured: &str, expected: Option<&str>, running: bool) -> St
         ));
     }
     Status::Connected
+}
+
+/// Whether `proxy.enabled` is literally `true` on disk. Anything else - absent,
+/// `false`, or a non-boolean - is off, matching OpenClaw's own
+/// `config?.enabled !== true` test rather than a looser truthiness read.
+fn proxy_is_enabled(settings: &Map<String, Value>) -> bool {
+    settings
+        .get("proxy")
+        .and_then(|v| v.as_object())
+        .and_then(|p| p.get("enabled"))
+        == Some(&Value::Bool(true))
 }
 
 /// The `proxy.proxyUrl` currently on disk, if any.
@@ -456,11 +513,14 @@ mod tests {
     }
 
     #[test]
-    fn connect_writes_only_proxy_url_and_leaves_siblings_alone() {
-        // The whole integration is one key. `loopbackMode` in particular must
-        // survive: its default is what lets a configured local provider bypass
-        // the proxy, and that is the local-endpoint protection this integration
-        // used to hand-roll.
+    fn connect_writes_both_proxy_keys_and_leaves_siblings_alone() {
+        // The integration is two keys, and `enabled` is not optional garnish:
+        // OpenClaw's startProxy returns early unless it is literally `true`, so
+        // a URL on its own leaves the tool unrouted while everything here still
+        // reports success. `loopbackMode` in particular must survive: its
+        // default is what lets a configured local provider bypass the proxy,
+        // and that is the local-endpoint protection this integration used to
+        // hand-roll.
         let mut settings = Map::new();
         settings.insert(
             "proxy".to_string(),
@@ -469,6 +529,7 @@ mod tests {
         settings.insert("models".to_string(), json!({ "providers": {} }));
 
         let proxy = ensure_object(&mut settings, "proxy");
+        proxy.insert("enabled".to_string(), Value::Bool(true));
         proxy.insert(
             "proxyUrl".to_string(),
             Value::String("http://127.0.0.1:9977".into()),
@@ -476,6 +537,8 @@ mod tests {
 
         let proxy = settings["proxy"].as_object().unwrap();
         assert_eq!(proxy["proxyUrl"], json!("http://127.0.0.1:9977"));
+        // Literally `true`, not a truthy stand-in: OpenClaw tests `!== true`.
+        assert_eq!(proxy["enabled"], json!(true));
         assert_eq!(proxy["loopbackMode"], json!("gateway-only"));
         assert_eq!(proxy["tls"], json!({ "caFile": "/user/ca.pem" }));
         // No provider was touched: no discovery, no baseUrl rewriting.
@@ -483,14 +546,47 @@ mod tests {
     }
 
     #[test]
-    fn compute_status_covers_the_four_states() {
+    fn proxy_is_enabled_matches_openclaws_own_strict_test() {
+        // OpenClaw gates on `config?.enabled !== true`, so only the boolean
+        // counts. A string "true" or a 1 would sail past a truthiness check
+        // here and still leave the tool unrouted, which is the failure this
+        // whole change exists to stop reporting as Connected.
+        let enabled = |v: Value| {
+            let mut s = Map::new();
+            s.insert("proxy".to_string(), v);
+            proxy_is_enabled(&s)
+        };
+        assert!(enabled(json!({ "enabled": true })));
+        assert!(!enabled(json!({ "enabled": false })));
+        assert!(!enabled(json!({ "enabled": "true" })));
+        assert!(!enabled(json!({ "enabled": 1 })));
+        assert!(!enabled(json!({ "proxyUrl": "http://127.0.0.1:9977" })));
+        assert!(!proxy_is_enabled(&Map::new()));
+    }
+
+    #[test]
+    fn compute_status_covers_the_five_states() {
         let ours = "http://127.0.0.1:9977";
 
-        assert_eq!(compute_status(ours, Some(ours), true), Status::Connected);
+        assert_eq!(
+            compute_status(ours, true, Some(ours), true),
+            Status::Connected
+        );
+
+        // Our URL, switch off. The config looks right and the tool is routing
+        // nowhere - the exact state that shipped as Connected before, sending
+        // traffic to the provider on the user's own key.
+        match compute_status(ours, false, Some(ours), true) {
+            Status::Drifted(m) => {
+                assert!(m.contains("proxy.enabled"), "must name the key: {m}");
+                assert!(m.contains("directly"), "must say where traffic goes: {m}");
+            }
+            other => panic!("expected drift, got {other:?}"),
+        }
 
         // Pointed at us but the engine is down. This is the state that leaves
         // OpenClaw with no egress at all, so it must never read as Connected.
-        match compute_status(ours, Some(ours), false) {
+        match compute_status(ours, true, Some(ours), false) {
             Status::Drifted(m) => {
                 assert!(m.contains("no route out"), "unexpected message: {m}");
                 assert!(m.contains("disconnect"), "must offer a way out: {m}");
@@ -499,13 +595,13 @@ mod tests {
         }
 
         // Hand-edited to something else - including a real corporate proxy.
-        match compute_status("http://proxy.corp.example:3128", Some(ours), true) {
+        match compute_status("http://proxy.corp.example:3128", true, Some(ours), true) {
             Status::Drifted(m) => assert!(m.contains("does not match"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
 
         // No port ever bound.
-        match compute_status(ours, None, false) {
+        match compute_status(ours, true, None, false) {
             Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }

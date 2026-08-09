@@ -50,6 +50,11 @@ impl ProxyManager {
         })
     }
 
+    /// No-op here: this platform runs the engine in-process, so there is no
+    /// daemon whose lifetime could outlive the caller and nothing to detach
+    /// from. Present so callers need no `cfg` around it.
+    pub fn set_detached(&self, _detached: bool) {}
+
     pub fn list_domains(&self) -> Result<Vec<ProxyDomain>> {
         config::load_domains()
     }
