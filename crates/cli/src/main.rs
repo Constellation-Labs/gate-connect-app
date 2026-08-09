@@ -522,6 +522,15 @@ fn cmd_clear_upstream(tool: &str) -> Result<()> {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     let mgr = proxy::manager();
+    // This process exits the moment the command finishes, so its lifetime must
+    // not bound the routing lifetime. Without this the Linux daemon reverted
+    // the engine to pass-through as soon as `proxy enable` returned: it cleared
+    // every rule, blind-tunnelled all traffic to the user's own provider, and
+    // left `proxy status` reporting the domains as on. Set for the whole
+    // subcommand rather than just Enable, because any command that reaches
+    // `SetIntercept` (a domain toggle, for one) carries the same flag. No-op on
+    // macOS and Windows, which run the engine in-process.
+    mgr.set_detached(true);
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
         ProxyCmd::Enable => {

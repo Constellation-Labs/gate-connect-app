@@ -583,23 +583,40 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // as key-brokered routing: there is no API key involved at all.
             display_name: "Claude Desktop chat".into(),
             hosts: vec!["claude.ai".into()],
-            upstream_url: "https://claude.ai".into(),
+            // The `/api` MUST ride in the upstream URL, not the forwarded path,
+            // for the same reason it does on OpenRouter below: Gate's ALB routes
+            // `/api/*` to the dashboard API, so a forwarded
+            // `/api/organizations/...` never reaches the gateway proxy at all.
+            // Every path this entry cares about lives under `/api`, so the whole
+            // segment moves upstream-side and the prefixes below are written
+            // POST-STRIP - `decide` and `apply_rewrite` both match and forward
+            // the path Gate will actually see.
+            //
+            // Gate must accept the stripped spelling for the chat surface to
+            // stay classified (gateway-proxy: `CLAUDE_WEB_CHAT_COMPLETION_RE` in
+            // utils/proxy-helpers.ts, which anchors on `^/api/organizations/`).
+            // The Codex and ChatGPT anchors beside it already tolerate both
+            // splits with an optional prefix group; this one needs the same
+            // treatment or the completion call is tagged `api` and loses the
+            // additive-credential policy the session cookie depends on.
+            upstream_url: "https://claude.ai/api".into(),
             // Prefix matching cannot isolate the chat call on its own: the
             // endpoint is `/api/organizations/{org}/chat_conversations/{conv}/completion`,
             // so the varying id sits BEFORE the distinguishing final segment.
-            // Rewriting the whole `/api/organizations/` tree is deliberate and
+            // Rewriting the whole organizations tree is deliberate and
             // safe — Gate classifies only the completion path as the chat
             // surface and forwards the sibling calls (skills, usage,
             // conversation reads) as ordinary passthrough, which it has explicit
             // coverage for. They add audit rows, not behaviour changes.
-            rewrite_prefixes: vec!["/api/organizations/".into()],
+            rewrite_prefixes: vec!["/organizations/".into()],
             // Everything here would be pure noise or actively harmful to route:
             // the updater channel, telemetry batches, and the bootstrap/account
-            // calls the app makes before any conversation exists.
+            // calls the app makes before any conversation exists. Written
+            // post-strip, so these are the app's `/api/desktop/` etc.
             passthrough_prefixes: vec![
-                "/api/desktop/".into(),
-                "/api/event_logging/".into(),
-                "/api/bootstrap/".into(),
+                "/desktop/".into(),
+                "/event_logging/".into(),
+                "/bootstrap/".into(),
             ],
             // Opt-in. This surface carries the user's Claude SESSION cookie
             // rather than an API key, so it should never start intercepting
@@ -947,6 +964,34 @@ mod tests {
             } else {
                 prefix.clone()
             };
+            // A MITM-only entry can be SHADOWED on the relay route: `resolve_endpoint`
+            // breaks ties by longest upstream, so `chatgpt-apps` (bare chatgpt.com)
+            // always loses its `/backend-api/...` paths to the relay `chatgpt` entry
+            // (chatgpt.com/backend-api). That is by design - the two are matched by
+            // different mechanisms, `decide` on HOST and `relay::route` on
+            // `upstream_url` - and no integration ever hands such an endpoint to
+            // `resolve_endpoint`, so the relay invariant does not apply. The
+            // equivalent tie for a MITM entry is that `decide` rewrites the path, so
+            // assert THAT rather than leaving a hole.
+            let shadowed = default_domains().iter().any(|o| {
+                o.slug != d.slug
+                    && o.upstream_url
+                        .starts_with(&format!("{}/", d.upstream_url.trim_end_matches('/')))
+            });
+            if shadowed {
+                let mut mitm = d.clone();
+                mitm.enabled = true;
+                let request_path = format!("{}{path}", upstream_path(&d.upstream_url));
+                assert_eq!(
+                    decide(std::slice::from_ref(&mitm), &d.hosts[0], &request_path),
+                    Decision::Rewrite {
+                        upstream_url: d.upstream_url.clone()
+                    },
+                    "{}: shadowed on the relay route, so `decide` must carry {request_path}",
+                    d.slug
+                );
+                continue;
+            }
             let endpoint = format!("{}{}", d.upstream_url, path);
             let r = resolve_endpoint(&endpoint)
                 .unwrap_or_else(|| panic!("{} endpoint {endpoint} must resolve", d.slug));
@@ -1245,7 +1290,9 @@ mod tests {
         assert!(!d.enabled, "claude-web must be opt-in");
         assert!(d.supported);
         assert_eq!(d.hosts, vec!["claude.ai".to_string()]);
-        assert_eq!(d.upstream_url, "https://claude.ai");
+        // `/api` rides upstream-side so the forwarded path clears Gate's ALB
+        // rule - see `forwarded_paths_avoid_gate_reserved_prefixes`.
+        assert_eq!(d.upstream_url, "https://claude.ai/api");
     }
 
     #[test]
@@ -1254,7 +1301,7 @@ mod tests {
         assert_eq!(
             decide(&d, "claude.ai", CLAUDE_COMPLETION),
             Decision::Rewrite {
-                upstream_url: "https://claude.ai".into()
+                upstream_url: "https://claude.ai/api".into()
             }
         );
         // Query strings must not change the verdict.
@@ -1265,7 +1312,7 @@ mod tests {
                 &format!("{CLAUDE_COMPLETION}?rendering_mode=messages")
             ),
             Decision::Rewrite {
-                upstream_url: "https://claude.ai".into()
+                upstream_url: "https://claude.ai/api".into()
             }
         );
     }
@@ -1300,7 +1347,7 @@ mod tests {
             assert_eq!(
                 decide(&d, "claude.ai", path),
                 Decision::Rewrite {
-                    upstream_url: "https://claude.ai".into()
+                    upstream_url: "https://claude.ai/api".into()
                 }
             );
         }

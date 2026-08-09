@@ -46,6 +46,22 @@ keyring = { version = "3", features = [
 # `tokio` appears here despite the rest of core being sync. `rcgen` is
 # re-exported by hudsucker, so we don't depend on it directly.
 hudsucker = { version = "0.24", features = ["http2"] }
+# The engine's own TLS client to the gateway. hudsucker's
+# `with_rustls_connector` hardcodes webpki roots with no way to add one, so we
+# build the connector ourselves to honour `GATE_CONNECT_TEST_CA` - the seam the
+# relay already has. Features mirror hudsucker's own hyper-rustls exactly (plus
+# `http2`, which its `http2` feature turns on), so this names a crate already
+# compiled in the tree rather than pulling anything new. `webpki-roots` is the
+# same 1.x hyper-rustls resolves to. PEM parsing comes from rustls-pki-types via
+# hudsucker's `rustls` re-export, so it needs no entry of its own.
+hyper-rustls = { version = "0.27", default-features = false, features = [
+  "http1",
+  "http2",
+  "logging",
+  "tls12",
+  "webpki-tokio",
+] }
+webpki-roots = "1"
 tokio = { version = "1", features = [
   "rt-multi-thread",
   "net",

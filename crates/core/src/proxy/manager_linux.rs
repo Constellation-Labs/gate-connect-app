@@ -19,6 +19,7 @@
 //! is a no-op. The CA is left trusted across disable so re-enabling is cheaper;
 //! removing it is a separate explicit action ([`ProxyManager::untrust_ca`]).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
@@ -31,8 +32,14 @@ use crate::account;
 pub struct ProxyManager {
     /// Open control connection to the helper daemon. `Some` exactly while the
     /// proxy is on (intercepting); dropping it reverts the daemon to
-    /// pass-through.
+    /// pass-through - unless [`ProxyManager::set_detached`] said otherwise.
     client: Mutex<Option<HelperClient>>,
+    /// Whether this process's lifetime should NOT bound the routing lifetime.
+    /// False by default, which is right for the GUI: it holds the control
+    /// connection for exactly as long as routing is meant to be on, so a lost
+    /// connection genuinely means "stop routing". A short-lived caller (the
+    /// CLI) sets it, or its own exit would silently un-route the machine.
+    detached: AtomicBool,
 }
 
 static MANAGER: OnceLock<ProxyManager> = OnceLock::new();
@@ -40,6 +47,7 @@ static MANAGER: OnceLock<ProxyManager> = OnceLock::new();
 pub fn manager() -> &'static ProxyManager {
     MANAGER.get_or_init(|| ProxyManager {
         client: Mutex::new(None),
+        detached: AtomicBool::new(false),
     })
 }
 
@@ -88,6 +96,17 @@ impl ProxyManager {
             env_export_separable: crate::proxy::env_export_is_separable(),
             domains: config::load_domains()?,
         })
+    }
+
+    /// Declare that this process's lifetime does not bound the routing
+    /// lifetime, so the daemon keeps intercepting after the control connection
+    /// closes. For short-lived callers only - the CLI. The GUI must never set
+    /// it: its connection IS the signal that someone is still minding the
+    /// proxy, and detaching would leave a machine routed with no owner.
+    ///
+    /// Takes effect on the next `enable`; it travels in `SetIntercept`.
+    pub fn set_detached(&self, detached: bool) {
+        self.detached.store(detached, Ordering::SeqCst);
     }
 
     pub fn list_domains(&self) -> Result<Vec<ProxyDomain>> {
@@ -143,6 +162,7 @@ impl ProxyManager {
             ca.cert_pem(),
             ca.key_pem(),
             &domains,
+            self.detached.load(Ordering::SeqCst),
             preferred_port,
             crate::proxy::relay::load_persisted_port(),
         ) {
@@ -229,17 +249,29 @@ impl ProxyManager {
     /// live - no restart, no prompt.
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
         let domains = config::set_enabled(slug, enabled)?;
-        if let Some(client) = self
-            .client
-            .lock()
-            .expect("proxy client mutex poisoned")
-            .as_mut()
-        {
+        let mut guard = self.client.lock().expect("proxy client mutex poisoned");
+        // Adopt a running daemon when this process has no connection of its
+        // own. `self.client` is only ever `Some` for a caller that enabled the
+        // proxy itself and stayed alive to hold the handle - the GUI. Every CLI
+        // invocation is a fresh process, so without this the toggle wrote
+        // config and stopped there: the engine kept its old rules, `proxy
+        // domains` reported the new state off config, and the provider did not
+        // actually route until routing was turned off and on again. Measured -
+        // it is why the e2e's OpenRouter phase tunnelled while the CLI called
+        // the domain enabled. Same `connect_existing` fallback `status` uses.
+        if guard.is_none() {
+            if let Ok(client) = HelperClient::connect_existing() {
+                *guard = Some(client);
+            }
+        }
+        if let Some(client) = guard.as_mut() {
             // Re-push the full intercept config (cheap; the engine updates its
             // rule set live). Best-effort - a failed live update shouldn't
             // wedge the toggle; the next status reflects reality.
             self.push_intercept(client, &domains);
         }
+        // Released before `status`, which takes the same lock.
+        drop(guard);
         self.status()
     }
 
@@ -265,6 +297,7 @@ impl ProxyManager {
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
+                    self.detached.load(Ordering::SeqCst),
                     system_proxy::load_port().unwrap_or(None),
                     crate::proxy::relay::load_persisted_port(),
                 );
@@ -295,6 +328,7 @@ impl ProxyManager {
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
+                    self.detached.load(Ordering::SeqCst),
                     system_proxy::load_port().unwrap_or(None),
                     crate::proxy::relay::load_persisted_port(),
                 );
@@ -325,6 +359,7 @@ impl ProxyManager {
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
+                    self.detached.load(Ordering::SeqCst),
                     system_proxy::load_port().unwrap_or(None),
                     crate::proxy::relay::load_persisted_port(),
                 );
@@ -351,6 +386,7 @@ impl ProxyManager {
             ca.cert_pem(),
             ca.key_pem(),
             domains,
+            self.detached.load(Ordering::SeqCst),
             system_proxy::load_port().unwrap_or(None),
             crate::proxy::relay::load_persisted_port(),
         ) {
