@@ -13,7 +13,7 @@
 
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -87,6 +87,12 @@ async fn serve() -> Result<()> {
     // (the CLI). Lives outside the connection loop on purpose: the whole point
     // is that it outlives the connection that set it.
     let detached = Arc::new(AtomicBool::new(false));
+    // Control connections currently open. The disarm rule below is "the LAST
+    // client left", not "a client left", which only becomes a distinction once
+    // connections can overlap.
+    let clients = Arc::new(AtomicUsize::new(0));
+    // Shared with every connection task, so it outlives any one of them.
+    let token = Arc::new(token);
     // SAFETY: geteuid never fails.
     let owner_uid = unsafe { libc::geteuid() };
 
@@ -98,19 +104,37 @@ async fn serve() -> Result<()> {
                 continue;
             }
         };
-        // One client at a time - handle to completion, then accept the next.
-        // On disconnect, drop back to pass-through UNLESS the client asked to
-        // be detached: a short-lived caller like `gate-connect proxy enable`
-        // exits as soon as it has armed the engine, and reverting on its exit
-        // silently un-routed the machine while status still read "on".
-        if let Err(e) = handle_conn(stream, owner_uid, &token, &engine, &detached).await {
-            eprintln!("[gate-proxyd] connection ended: {e}");
-        }
-        if detached.load(Ordering::SeqCst) {
-            eprintln!("[gate-proxyd] client disconnected; staying detached and intercepting");
-        } else {
-            set_passthrough(&engine);
-        }
+        // Counted here rather than inside the task: `accept` has returned, so
+        // the peer is connected already, and a client that came and went in the
+        // gap before its task started would otherwise read a count of zero and
+        // disarm a proxy someone else is still minding.
+        clients.fetch_add(1, Ordering::SeqCst);
+        let engine = Arc::clone(&engine);
+        let detached = Arc::clone(&detached);
+        let clients = Arc::clone(&clients);
+        let token = Arc::clone(&token);
+        // One task per connection. Handling one client at a time meant the
+        // GUI's held control connection blocked every other caller: a CLI
+        // `proxy status` waited in the accept backlog until the GUI let go, hit
+        // CONTROL_TIMEOUT, and reported the proxy off while it was on.
+        tokio::spawn(async move {
+            if let Err(e) = handle_conn(stream, owner_uid, &token, &engine, &detached).await {
+                eprintln!("[gate-proxyd] connection ended: {e}");
+            }
+            // On disconnect, drop back to pass-through UNLESS the client asked
+            // to be detached: a short-lived caller like `gate-connect proxy
+            // enable` exits as soon as it has armed the engine, and reverting
+            // on its exit silently un-routed the machine while status still
+            // read "on". `fetch_sub` returns the count *before* the decrement,
+            // so 1 means this task was the last one out; anyone else still
+            // connected keeps the engine armed.
+            let was_last = clients.fetch_sub(1, Ordering::SeqCst) == 1;
+            if detached.load(Ordering::SeqCst) {
+                eprintln!("[gate-proxyd] client disconnected; staying detached and intercepting");
+            } else if was_last {
+                set_passthrough(&engine);
+            }
+        });
     }
 }
 
