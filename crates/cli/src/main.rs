@@ -110,11 +110,15 @@ enum ProxyCmd {
     Enable,
     /// Turn the proxy off and restore the prior system-proxy state.
     Disable,
-    /// Run the reverse-proxy relay as a headless host and block until killed.
+    /// Host ONLY the loopback reverse-proxy relay; blocks until killed.
+    ///
     /// For environments with no menubar app (containers, servers, CI): CLI
-    /// tools pointed at the relay route through Gate with the live credential.
-    /// No CA trust, no system-proxy changes. Sign in first.
-    Serve,
+    /// tools whose config points at the relay route through Gate with the live
+    /// credential. No CA trust and no system-proxy changes, so nothing else on
+    /// this machine is routed - `enable` is the one that does that, and it
+    /// hosts this same relay, so the two are alternatives rather than steps.
+    /// Sign in first.
+    Relay,
     /// List routable provider domains and whether each is enabled.
     Domains,
     /// Enable or disable routing for one provider domain.
@@ -555,7 +559,7 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
             mgr.disable()?;
             println!("Proxy disabled; prior system-proxy state restored.");
         }
-        ProxyCmd::Serve => {
+        ProxyCmd::Relay => {
             // Blocks until killed; hosts only the relay (no CA, no system proxy).
             proxy::serve_relay()?;
         }

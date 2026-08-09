@@ -26,7 +26,10 @@
 //!
 //! [`serve`] runs the same relay standalone (its own runtime, no MITM/CA/system
 //! proxy) as a blocking headless host for environments with no menubar app -
-//! containers, servers, CI.
+//! containers, servers, CI. That is `proxy relay` on the CLI; `proxy enable`
+//! hosts this relay as well as the MITM engine, so the two are alternatives
+//! rather than steps - running both means two processes wanting the same
+//! persisted relay port.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -112,11 +115,32 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
 
 /// Bind the relay's loopback listener, reusing `preferred` (the persisted port)
 /// when free, else an ephemeral port. Non-blocking so tokio can adopt it.
+/// Bind the relay's loopback port, reusing `preferred` (the persisted port) when
+/// there is one.
+///
+/// A taken preferred port is an error rather than a fall back to an ephemeral
+/// one. The fallback looks harmless and is not: the caller persists whatever
+/// port it ends up with, so a second host started while the first is live
+/// repoints the persisted port at itself, and the next `connect` bakes that
+/// into every tool config - while the process actually serving traffic is the
+/// other one, on the old port. Measured: a `proxy relay` run alongside the
+/// desktop app moved the persisted port from 45981 to 44225 while the app kept
+/// serving 45981. Ephemeral is still right when there is no preferred port
+/// (first run), where there is no baked URL to invalidate.
+///
+/// [`super::engine::bind_preferred`] does the binding so this agrees with the
+/// engine on what "taken" means: a live listener, not a TIME_WAIT remnant of a
+/// host that just exited (which would otherwise refuse a legitimate restart).
 fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
     let listener = match preferred {
-        Some(p) => std::net::TcpListener::bind(("127.0.0.1", p))
-            .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
-            .context("binding relay loopback port")?,
+        Some(p) => super::engine::bind_preferred(p).with_context(|| {
+            format!(
+                "the relay port {p} is already in use. Another relay host is likely running \
+                 (`gate-connect proxy relay`, or the Gate app with the proxy enabled - it hosts \
+                 this same relay). Stop that one first; tool configs point at this port, so \
+                 moving to another would silently take them off the running host."
+            )
+        })?,
         None => {
             std::net::TcpListener::bind(("127.0.0.1", 0)).context("binding relay loopback port")?
         }
@@ -295,8 +319,25 @@ async fn accept_loop(listener: TcpListener, state: Arc<RelayState>) {
 /// serves the relay so tools pointed at `http://127.0.0.1:<port>` route through
 /// Gate. Never returns `Ok` while serving.
 pub fn serve() -> Result<()> {
+    // An enabled proxy already hosts this relay, so a second host is never what
+    // the user wants. `bind_relay` would catch it on the port, but only if the
+    // engine's relay is on the port *this* process would pick; refusing up
+    // front also names the cause, which "port in use" cannot. Checked before
+    // the account load so the message doesn't depend on being signed in.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    if super::engine_likely_running() {
+        let where_ = load_persisted_port()
+            .map(|p| format!(" on {}", base_url(p)))
+            .unwrap_or_default();
+        anyhow::bail!(
+            "the Gate proxy is enabled, and it already hosts this relay{where_}. \
+             `proxy relay` is the alternative for machines with no app, not an addition to \
+             it - point your tools at that URL, or run `gate-connect proxy disable` first."
+        );
+    }
+
     let account = crate::account::load()?
-        .context("no Gate account configured - sign in before `proxy serve`")?;
+        .context("no Gate account configured - sign in before `proxy relay`")?;
     let gateway: Uri = account
         .gateway_base_url
         .parse()
@@ -320,13 +361,13 @@ pub fn serve() -> Result<()> {
         let (org_tx, org_rx) =
             watch::channel::<Arc<str>>(Arc::from(crate::account::org_id_for_injection().as_str()));
         // The standalone host always intercepts - routing through Gate is the
-        // whole point of `proxy serve`, and its own loop below keeps the token
+        // whole point of `proxy relay`, and its own loop below keeps the token
         // fresh. The sender lives for the whole (never-ending) block.
         let (_intercept_tx, intercept_rx) = watch::channel(true);
 
         let listener =
             TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
-        // Only the user who launched `proxy serve` may spend its credential.
+        // Only the user who launched `proxy relay` may spend its credential.
         // UID gating is Linux-only (see `engine::peer_uid_for`); elsewhere a
         // loopback peer's UID isn't resolvable, so we can't gate.
         #[cfg(target_os = "linux")]
@@ -343,7 +384,20 @@ pub fn serve() -> Result<()> {
         ));
         tokio::spawn(accept_loop(listener, state));
 
+        // Keep `relay listening on <url>` as the first line, and the only one
+        // carrying a URL: the e2e waits on that substring and scrapes the first
+        // `http://` in the file as the relay base.
         println!("gate-connect relay listening on {}", base_url(port));
+        // Say what this mode is *not*, because the name can't. Nothing here has
+        // touched the CA or the system proxy, so a tool that wasn't pointed at
+        // the relay is still talking to its own provider directly - and that is
+        // indistinguishable from "routing is on" unless we spell it out.
+        println!("  relay only: no CA installed, no system-proxy setting changed.");
+        println!("  Routes only tools whose config points at the URL above.");
+        println!(
+            "  For config-less apps and machine-wide routing, use `gate-connect proxy enable`\n  \
+             instead; it hosts this same relay, so the two are not meant to run together."
+        );
 
         // Keep the OAuth token fresh (`access_token_for_injection` silently
         // refreshes a stale token) and pick up an org switch; block forever

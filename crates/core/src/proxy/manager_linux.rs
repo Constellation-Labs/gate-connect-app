@@ -55,6 +55,26 @@ impl ProxyManager {
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");
+        // Adopt a running daemon when this process has none of its own, the
+        // same fallback `set_domain` uses. `self.client` is `Some` only for a
+        // caller that enabled the proxy and stayed alive holding the handle -
+        // the GUI - so every CLI invocation fell through to the `None` arm
+        // below and reported the proxy off without ever asking the daemon.
+        // Measured: `proxy status` printed `Proxy:    stopped` while the daemon
+        // was live and intercepting on 127.0.0.1:45981.
+        //
+        // Gated on the snapshot because the attempt is not free: connecting to
+        // a daemon that won't answer (a different build - the handshake pins
+        // BUILD_FINGERPRINT - or one busy serving the GUI's held connection)
+        // costs the full CONTROL_TIMEOUT. The snapshot exists for exactly as
+        // long as some process has the system proxy routed through a live
+        // engine, so this spends those 3s only when there is really an engine
+        // to ask, and the proxy-off path stays as cheap as it was.
+        if guard.is_none() && crate::proxy::engine_likely_running() {
+            if let Ok(client) = HelperClient::connect_existing() {
+                *guard = Some(client);
+            }
+        }
         // A dead/stale control connection means the daemon's gone or we lost
         // it - treat as off and drop the handle so a later enable reconnects.
         let (running, port) = match guard.as_mut() {
@@ -217,11 +237,29 @@ impl ProxyManager {
     /// the daemon to pass-through, without computing status. Assumes the caller
     /// holds the cross-process op lock.
     fn disable_inner(&self) -> Result<()> {
-        let client = self
-            .client
-            .lock()
-            .expect("proxy client mutex poisoned")
-            .take();
+        let mut guard = self.client.lock().expect("proxy client mutex poisoned");
+        // Adopt a running daemon when this process has none of its own, like
+        // `status` and `set_domain`. Without this the `if let Some` below was
+        // dead code for the CLI - every invocation is a fresh process, so the
+        // handle was always `None` - and `proxy disable` cleared the snapshot
+        // and removed the drop-in without ever telling the daemon to stop
+        // intercepting. It kept its rule set and its ports; only *newly*
+        // launched processes stopped routing, because the drop-in was gone,
+        // which is why it looked like it had worked.
+        //
+        // Deliberately not gated on the snapshot the way `status` is. Disable
+        // is the forceful path - a daemon still intercepting with no snapshot
+        // is exactly the state a user runs this to escape - and it is rare and
+        // explicit enough to afford the control timeout when there turns out
+        // to be nothing to adopt.
+        if guard.is_none() {
+            if let Ok(client) = HelperClient::connect_existing() {
+                *guard = Some(client);
+            }
+        }
+        let client = guard.take();
+        // Released before `status`, which takes the same lock.
+        drop(guard);
 
         // An unreadable snapshot must not strand traffic - treat it like a
         // missing one and force the drop-in off.

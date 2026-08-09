@@ -129,7 +129,9 @@ pub fn relay_base_url() -> Option<String> {
 /// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no
 /// MITM, no CA trust, no system-proxy changes). For environments with no
 /// menubar app - containers, servers, CI - so CLI tools pointed at the relay
-/// still route through Gate. Blocks until the process is killed.
+/// still route through Gate. Blocks until the process is killed. This backs
+/// `proxy relay`; [`ProxyManager::enable`] hosts the same relay alongside the
+/// MITM engine, so the two are alternatives, not steps.
 pub fn serve_relay() -> anyhow::Result<()> {
     relay::serve()
 }
