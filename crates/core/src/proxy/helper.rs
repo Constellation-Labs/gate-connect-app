@@ -319,6 +319,13 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
             // client going away.
             detached.store(false, Ordering::SeqCst);
             set_passthrough(engine);
+            // Symmetric with the SetIntercept line above. Disarming is the one
+            // state change here that left no trace, and its absence is what
+            // separates "the disable landed" from "the CLI cleared the
+            // snapshot and the drop-in but never reached the daemon, which
+            // kept intercepting" - a case that otherwise looks identical from
+            // outside, because only newly launched processes stop routing.
+            eprintln!("[gate-proxyd] SetPassthrough received; engine disarmed");
             Response::Ok
         }
         Request::Status => {

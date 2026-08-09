@@ -425,6 +425,24 @@ stop_engine() {
     return 1
   fi
   ckpt "engine: disabled"
+  # The disable must have reached the *daemon*, not merely cleared the snapshot
+  # and removed the drop-in. Those two are local file operations that succeed
+  # whether or not a control connection ever existed, which is exactly how
+  # `proxy disable` looked like it worked while leaving the daemon intercepting
+  # with its ports bound: the CLI held no handle to send SetPassthrough on, and
+  # only newly launched processes stopped routing, because the drop-in was
+  # gone. The daemon logs the disarm, and that line is the only trace the two
+  # cases differ by. Read live rather than from the copy harvested above, which
+  # was taken before the disable.
+  if [ "$OS" = "Linux" ] && [ -n "$helper_log" ] && [ -f "$helper_log" ]; then
+    if grep -q 'SetPassthrough received' "$helper_log"; then
+      echo "PASS: proxy disable reached the daemon and disarmed the engine"
+      PASS=$((PASS + 1))
+    else
+      echo "FAIL: proxy disable never reached the daemon (no SetPassthrough in $helper_log)"
+      FAIL=$((FAIL + 1))
+    fi
+  fi
   # Stop the daemon too, not just routing. Pass-through leaves the engine up
   # with its ports bound - helper.rs is explicit that SetPassthrough and
   # client-disconnect never stop it - and one of those is the relay port the
