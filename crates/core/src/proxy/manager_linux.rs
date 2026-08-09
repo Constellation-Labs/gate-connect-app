@@ -249,17 +249,29 @@ impl ProxyManager {
     /// live - no restart, no prompt.
     pub fn set_domain(&self, slug: &str, enabled: bool) -> Result<ProxyState> {
         let domains = config::set_enabled(slug, enabled)?;
-        if let Some(client) = self
-            .client
-            .lock()
-            .expect("proxy client mutex poisoned")
-            .as_mut()
-        {
+        let mut guard = self.client.lock().expect("proxy client mutex poisoned");
+        // Adopt a running daemon when this process has no connection of its
+        // own. `self.client` is only ever `Some` for a caller that enabled the
+        // proxy itself and stayed alive to hold the handle - the GUI. Every CLI
+        // invocation is a fresh process, so without this the toggle wrote
+        // config and stopped there: the engine kept its old rules, `proxy
+        // domains` reported the new state off config, and the provider did not
+        // actually route until routing was turned off and on again. Measured -
+        // it is why the e2e's OpenRouter phase tunnelled while the CLI called
+        // the domain enabled. Same `connect_existing` fallback `status` uses.
+        if guard.is_none() {
+            if let Ok(client) = HelperClient::connect_existing() {
+                *guard = Some(client);
+            }
+        }
+        if let Some(client) = guard.as_mut() {
             // Re-push the full intercept config (cheap; the engine updates its
             // rule set live). Best-effort - a failed live update shouldn't
             // wedge the toggle; the next status reflects reality.
             self.push_intercept(client, &domains);
         }
+        // Released before `status`, which takes the same lock.
+        drop(guard);
         self.status()
     }
 
