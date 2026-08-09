@@ -401,6 +401,15 @@ stop_engine() {
     ckpt "engine: no helper.log at $helper_log"
   fi
   ckpt "engine: proxy disable"
+  # Count the disarms already in the log before disabling. helper.log is opened
+  # `append`, so it survives the daemon restart between phases and phase B
+  # would otherwise pass on phase A's line - the assertion below has to see a
+  # *new* one, not just any one.
+  local disarms_before=0
+  if [ -n "$helper_log" ] && [ -f "$helper_log" ]; then
+    disarms_before="$(grep -c 'SetPassthrough received' "$helper_log" 2>/dev/null || true)"
+    : "${disarms_before:=0}"
+  fi
   local rc=0
   "$CLI" proxy disable >"$WORK/disable.out" 2>&1 || rc=$?
   # Verify rather than assume. A disable that fails leaves the system-proxy
@@ -433,13 +442,17 @@ stop_engine() {
   # only newly launched processes stopped routing, because the drop-in was
   # gone. The daemon logs the disarm, and that line is the only trace the two
   # cases differ by. Read live rather than from the copy harvested above, which
-  # was taken before the disable.
+  # was taken before the disable, and require the count to have *grown* - see
+  # disarms_before.
   if [ "$OS" = "Linux" ] && [ -n "$helper_log" ] && [ -f "$helper_log" ]; then
-    if grep -q 'SetPassthrough received' "$helper_log"; then
+    local disarms_after
+    disarms_after="$(grep -c 'SetPassthrough received' "$helper_log" 2>/dev/null || true)"
+    : "${disarms_after:=0}"
+    if [ "$disarms_after" -gt "$disarms_before" ]; then
       echo "PASS: proxy disable reached the daemon and disarmed the engine"
       PASS=$((PASS + 1))
     else
-      echo "FAIL: proxy disable never reached the daemon (no SetPassthrough in $helper_log)"
+      echo "FAIL: proxy disable never reached the daemon (disarms in $helper_log: $disarms_before -> $disarms_after)"
       FAIL=$((FAIL + 1))
     fi
   fi
