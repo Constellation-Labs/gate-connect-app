@@ -83,28 +83,21 @@ else
   export XDG_CACHE_HOME="$HOME/.cache"
 fi
 
-# macOS: CA trust goes into a login keychain, and a login keychain belongs to
-# the session rather than to $HOME - so the redirect above pointed
-# `add-trusted-cert -k` at a keychain that had never existed, and every `proxy
-# enable` failed with "The specified keychain could not be found".
+# macOS: CA trust goes into a login keychain, which belongs to the OS session
+# rather than to $HOME - so the redirect above pointed `add-trusted-cert -k` at
+# a keychain that had never existed, and every `proxy enable` failed with "The
+# specified keychain could not be found". That is why the engine, and with it
+# openclaw, hermes and the per-OS channel checks, skipped on every macOS run.
 #
-# Naming the runner's real keychain (GATE_CONNECT_TEST_LOGIN_KEYCHAIN) fixes
-# that path, and is deliberately NOT done here, because on its own it makes
-# things worse: against a keychain that exists, `security add-trusted-cert`
-# stops failing fast and instead waits on the Security Agent's "you are making
-# changes to your Certificate Trust Settings" dialog. Headless, that blocked
-# until the job's 8-minute timeout - a hang traded for a skip.
+# Naming the runner's real keychain (the GATE_CONNECT_TEST_LOGIN_KEYCHAIN seam)
+# fixes the path but not the problem: against a keychain that exists,
+# `add-trusted-cert` stops failing fast and waits on the Security Agent dialog
+# instead, which headless means forever. The trust step is interactive by
+# design on macOS and Windows both.
 #
-# The trust step is interactive by design on both macOS and Windows, so the
-# only way to get the engine up unattended is to make `is_trusted()` already
-# true before `enable` runs: it evaluates `security verify-cert -p ssl`, which
-# honours admin-domain trust, so a root pre-installed into the System keychain
-# with sudo (no dialog) would short-circuit `ensure_trusted` entirely. That is
-# what .github/workflows/win-cert-probe.yml is measuring before we build on it.
+# What actually works is not trusting from the harness at all, but arriving
+# already trusted - see mac_pretrust_ca, further down with the engine host.
 #
-# Until then macOS keeps its fast, honest skip: enable fails, the engine is
-# not up, and the per-OS checks say out loud that they sat out.
-
 # The Gate key goes through the file-backed secret seam, since CI has no usable
 # OS keychain headlessly. The gate-connect binary reads this as a native path.
 export GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")"
@@ -262,6 +255,10 @@ ENGINE_PORT=""
 # machine was put back" from "it was never routed", which otherwise pass
 # identically and report green for a run that proved nothing.
 ENGINE_RAN=""
+# The CA the macOS pre-trust installed: set once, read by the EXIT trap for
+# cleanup. Declared up here with ENGINE_ON for the same set -u reason - the
+# trap is armed long before mac_pretrust_ca is even defined.
+MAC_PRETRUSTED=""
 cleanup() {
   # Preserve the status that triggered the trap (the final `test $FAIL -eq 0`,
   # or an early `exit`) before any teardown command clobbers $?.
@@ -274,6 +271,16 @@ cleanup() {
   # found". Leaving routing on would strand the runner behind a dead proxy and
   # a trusted CA.
   [ -n "$ENGINE_ON" ] && "$CLI" proxy disable >/dev/null 2>&1
+  # Take the pre-trusted CA back out of the System keychain. Best-effort and
+  # deliberately without `-t`: removing an admin-domain *trust setting* needs
+  # the interactive Security-Agent authorization this session cannot give (the
+  # same limitation ca.rs documents for its own System-keychain cleanup), so
+  # the cert goes and an inert trust entry for a cert in no keychain may
+  # remain. Runners are throwaway, so this is hygiene rather than a guarantee.
+  if [ -n "$MAC_PRETRUSTED" ]; then
+    sudo security delete-certificate -c "Gate Connect Local CA" \
+      /Library/Keychains/System.keychain >/dev/null 2>&1
+  fi
   # Codex's Rust binary survives an msys kill and, in the runner's job object,
   # keeps the step from finishing. A real Windows kill of the whole tree lets
   # the step exit. (No-op if codex isn't running; codex.exe doesn't exist off
@@ -350,10 +357,74 @@ stop_relay() {
 #             and a runner has no polkit agent - hence `script`, which supplies
 #             a pty so it takes the (passwordless here) sudo branch.
 #   - macOS   `security add-trusted-cert` into the LOGIN keychain, and
-#             networksetup, which is tried unprivileged first. No escalation.
+#             networksetup, which is tried unprivileged first. No escalation -
+#             but the trust call is interactive, hence mac_pretrust_ca below.
 #   - Windows `certutil -user -addstore`, per-user. No escalation either, but
 #             see the skip below.
 # ---------------------------------------------------------------------------
+
+
+# macOS only: put the product's own CA into the admin domain before `enable`
+# runs, so `is_trusted()` is already true and `ensure_trusted()` returns without
+# ever reaching the dialog.
+#
+# Measured on the runner rather than assumed (a throwaway probe workflow, since
+# removed):
+#   - the user-domain call the product makes blocks on the Security Agent's
+#     certificate-trust dialog, forever, headless;
+#   - `sudo security add-trusted-cert -d -k System.keychain` is promptless;
+#   - and admin-domain trust satisfies the `security verify-cert -p ssl` that
+#     `is_trusted()` runs, because that is a policy evaluation rather than a
+#     store lookup.
+#
+# This is why the same trick is not available on Windows, whose `is_trusted()`
+# looks the thumbprint up in the per-user store: nothing can write there without
+# the dialog, and the machine store it could write to is not what gets read.
+#
+# Bootstrap: the CA does not exist until the product generates it, and
+# `is_trusted()` is false while the cert file is missing. So the first enable is
+# run purely to make it write ca-cert.pem - it is killed the moment the file
+# lands, which is just before it would block - and the cert it left behind is
+# what we trust. The second enable, the real one, then short-circuits.
+mac_pretrust_ca() {
+  [ "$OS" = "Darwin" ] || return 0
+  [ -z "$MAC_PRETRUSTED" ] || return 0
+  local cert
+  cert="$(find "$HOME" -path '*/proxy/ca-cert.pem' 2>/dev/null | head -n1)"
+  if [ -z "$cert" ]; then
+    ckpt "pretrust: running one enable to make the product generate its CA"
+    "$CLI" proxy enable >"$WORK/pretrust-enable.out" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+      cert="$(find "$HOME" -path '*/proxy/ca-cert.pem' 2>/dev/null | head -n1)"
+      [ -n "$cert" ] && break
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+      i=$((i + 1))
+    done
+    ckpt "pretrust: cert after ${i}s: ${cert:-none}"
+    kill -TERM "$pid" 2>/dev/null
+    sleep 1
+    kill -KILL "$pid" 2>/dev/null
+    # The blocked `security` child outlives the CLI that spawned it, and it is
+    # holding the dialog. Leaving it around wedges the next trust call.
+    pkill -f "security.*add-trusted-cert" 2>/dev/null
+  fi
+  if [ -z "$cert" ]; then
+    echo "::warning::pretrust: no CA cert appeared - enable will meet the trust dialog and the engine will skip"
+    return 1
+  fi
+  if sudo security add-trusted-cert -d -r trustRoot -p ssl \
+    -k /Library/Keychains/System.keychain "$cert" >"$WORK/pretrust.out" 2>&1; then
+    MAC_PRETRUSTED="$cert"
+    ckpt "pretrust: trusted $cert in the admin domain"
+  else
+    echo "::warning::pretrust: add-trusted-cert failed; the engine will skip"
+    sed 's/^/    /' "$WORK/pretrust.out" 2>/dev/null
+    return 1
+  fi
+}
+
 start_engine() {
   # Windows is held back, and NOT because of privilege: certutil -user and the
   # HKCU proxy keys both go through unprompted there. The blocker is the engine
@@ -371,6 +442,10 @@ start_engine() {
     echo "::notice::skipping the engine on Windows - the exported proxy env does not reach the listener there yet"
     return 1
   fi
+  # Must precede the enable below: it is what keeps that call from meeting the
+  # trust dialog. A failure here is non-fatal - enable then fails the way it
+  # always did and the engine skips, which is the old behaviour, not a new one.
+  mac_pretrust_ca
   ckpt "engine: proxy enable"
   local rc=0
   if [ "$OS" = "Linux" ]; then
