@@ -24,6 +24,22 @@ fn env_path(var: &str) -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
+/// Test seam: the login keychain to install CA trust into.
+///
+/// A login keychain belongs to the OS session, not to `$HOME`, so it is the
+/// one path that must *not* follow the home redirect above. The e2e harness
+/// points every other path at a throwaway home, which made this resolve to a
+/// keychain that had never existed and failed every `add-trusted-cert` with
+/// "The specified keychain could not be found" - so CA trust, and with it the
+/// whole proxy engine, was silently untested on macOS CI.
+///
+/// Unset in production, where the login keychain is exactly where `$HOME` says
+/// it is.
+#[cfg(target_os = "macos")]
+pub fn test_login_keychain() -> Option<PathBuf> {
+    env_path("GATE_CONNECT_TEST_LOGIN_KEYCHAIN")
+}
+
 pub fn home() -> Result<PathBuf> {
     if let Some(home) = test_home_override() {
         return Ok(home);

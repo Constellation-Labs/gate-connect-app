@@ -83,6 +83,21 @@ else
   export XDG_CACHE_HOME="$HOME/.cache"
 fi
 
+# macOS: CA trust goes into a login keychain, which belongs to the OS session
+# rather than to $HOME - so the redirect above pointed `add-trusted-cert -k` at
+# a keychain that had never existed, and every `proxy enable` failed with "The
+# specified keychain could not be found". That is why the engine, and with it
+# openclaw, hermes and the per-OS channel checks, skipped on every macOS run.
+#
+# Naming the runner's real keychain (the GATE_CONNECT_TEST_LOGIN_KEYCHAIN seam)
+# fixes the path but not the problem: against a keychain that exists,
+# `add-trusted-cert` stops failing fast and waits on the Security Agent dialog
+# instead, which headless means forever. The trust step is interactive by
+# design on macOS and Windows both.
+#
+# What actually works is not trusting from the harness at all, but arriving
+# already trusted - see mac_pretrust_ca, further down with the engine host.
+#
 # The Gate key goes through the file-backed secret seam, since CI has no usable
 # OS keychain headlessly. The gate-connect binary reads this as a native path.
 export GATE_CONNECT_TEST_SECRETS="$(winpath "$WORK/secrets")"
@@ -232,6 +247,22 @@ RELAY_PID=""
 # script can exit (set -u) before the engine section is even reached, and the
 # trap must still be able to read it.
 ENGINE_ON=""
+# The loopback port `proxy enable` reported, for the per-OS channel checks.
+# Declared here for the same set -u reason as ENGINE_ON above.
+ENGINE_PORT=""
+# Whether the engine came up at all this run. ENGINE_ON can't answer that after
+# the fact - stop_engine clears it - and the restore checks need to tell "the
+# machine was put back" from "it was never routed", which otherwise pass
+# identically and report green for a run that proved nothing.
+ENGINE_RAN=""
+# The CA the macOS pre-trust installed: set once, read by the EXIT trap for
+# cleanup. Declared up here with ENGINE_ON for the same set -u reason - the
+# trap is armed long before mac_pretrust_ca is even defined.
+MAC_PRETRUSTED=""
+# PID of the `proxy enable --foreground` host on macOS, where the engine lives
+# in the process that enabled it. Declared here with ENGINE_ON so the EXIT trap
+# can stop it under set -u however early the script dies.
+ENGINE_FG_PID=""
 cleanup() {
   # Preserve the status that triggered the trap (the final `test $FAIL -eq 0`,
   # or an early `exit`) before any teardown command clobbers $?.
@@ -243,7 +274,24 @@ cleanup() {
   # function is defined, and an early exit would otherwise hit "command not
   # found". Leaving routing on would strand the runner behind a dead proxy and
   # a trusted CA.
+  # SIGTERM makes it restore the system proxy itself, which is the whole point
+  # of --foreground; the inline disable below is the belt to that braces.
+  if [ -n "$ENGINE_FG_PID" ]; then
+    kill -TERM "$ENGINE_FG_PID" 2>/dev/null
+    sleep 2
+    kill -KILL "$ENGINE_FG_PID" 2>/dev/null
+  fi
   [ -n "$ENGINE_ON" ] && "$CLI" proxy disable >/dev/null 2>&1
+  # Take the pre-trusted CA back out of the System keychain. Best-effort and
+  # deliberately without `-t`: removing an admin-domain *trust setting* needs
+  # the interactive Security-Agent authorization this session cannot give (the
+  # same limitation ca.rs documents for its own System-keychain cleanup), so
+  # the cert goes and an inert trust entry for a cert in no keychain may
+  # remain. Runners are throwaway, so this is hygiene rather than a guarantee.
+  if [ -n "$MAC_PRETRUSTED" ]; then
+    sudo security delete-certificate -c "Gate Connect Local CA" \
+      /Library/Keychains/System.keychain >/dev/null 2>&1
+  fi
   # Codex's Rust binary survives an msys kill and, in the runner's job object,
   # keeps the step from finishing. A real Windows kill of the whole tree lets
   # the step exit. (No-op if codex isn't running; codex.exe doesn't exist off
@@ -320,10 +368,74 @@ stop_relay() {
 #             and a runner has no polkit agent - hence `script`, which supplies
 #             a pty so it takes the (passwordless here) sudo branch.
 #   - macOS   `security add-trusted-cert` into the LOGIN keychain, and
-#             networksetup, which is tried unprivileged first. No escalation.
+#             networksetup, which is tried unprivileged first. No escalation -
+#             but the trust call is interactive, hence mac_pretrust_ca below.
 #   - Windows `certutil -user -addstore`, per-user. No escalation either, but
 #             see the skip below.
 # ---------------------------------------------------------------------------
+
+
+# macOS only: put the product's own CA into the admin domain before `enable`
+# runs, so `is_trusted()` is already true and `ensure_trusted()` returns without
+# ever reaching the dialog.
+#
+# Measured on the runner rather than assumed (a throwaway probe workflow, since
+# removed):
+#   - the user-domain call the product makes blocks on the Security Agent's
+#     certificate-trust dialog, forever, headless;
+#   - `sudo security add-trusted-cert -d -k System.keychain` is promptless;
+#   - and admin-domain trust satisfies the `security verify-cert -p ssl` that
+#     `is_trusted()` runs, because that is a policy evaluation rather than a
+#     store lookup.
+#
+# This is why the same trick is not available on Windows, whose `is_trusted()`
+# looks the thumbprint up in the per-user store: nothing can write there without
+# the dialog, and the machine store it could write to is not what gets read.
+#
+# Bootstrap: the CA does not exist until the product generates it, and
+# `is_trusted()` is false while the cert file is missing. So the first enable is
+# run purely to make it write ca-cert.pem - it is killed the moment the file
+# lands, which is just before it would block - and the cert it left behind is
+# what we trust. The second enable, the real one, then short-circuits.
+mac_pretrust_ca() {
+  [ "$OS" = "Darwin" ] || return 0
+  [ -z "$MAC_PRETRUSTED" ] || return 0
+  local cert
+  cert="$(find "$HOME" -path '*/proxy/ca-cert.pem' 2>/dev/null | head -n1)"
+  if [ -z "$cert" ]; then
+    ckpt "pretrust: running one enable to make the product generate its CA"
+    "$CLI" proxy enable >"$WORK/pretrust-enable.out" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 60 ]; do
+      cert="$(find "$HOME" -path '*/proxy/ca-cert.pem' 2>/dev/null | head -n1)"
+      [ -n "$cert" ] && break
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+      i=$((i + 1))
+    done
+    ckpt "pretrust: cert after ${i}s: ${cert:-none}"
+    kill -TERM "$pid" 2>/dev/null
+    sleep 1
+    kill -KILL "$pid" 2>/dev/null
+    # The blocked `security` child outlives the CLI that spawned it, and it is
+    # holding the dialog. Leaving it around wedges the next trust call.
+    pkill -f "security.*add-trusted-cert" 2>/dev/null
+  fi
+  if [ -z "$cert" ]; then
+    echo "::warning::pretrust: no CA cert appeared - enable will meet the trust dialog and the engine will skip"
+    return 1
+  fi
+  if sudo security add-trusted-cert -d -r trustRoot -p ssl \
+    -k /Library/Keychains/System.keychain "$cert" >"$WORK/pretrust.out" 2>&1; then
+    MAC_PRETRUSTED="$cert"
+    ckpt "pretrust: trusted $cert in the admin domain"
+  else
+    echo "::warning::pretrust: add-trusted-cert failed; the engine will skip"
+    sed 's/^/    /' "$WORK/pretrust.out" 2>/dev/null
+    return 1
+  fi
+}
+
 start_engine() {
   # Windows is held back, and NOT because of privilege: certutil -user and the
   # HKCU proxy keys both go through unprompted there. The blocker is the engine
@@ -341,10 +453,49 @@ start_engine() {
     echo "::notice::skipping the engine on Windows - the exported proxy env does not reach the listener there yet"
     return 1
   fi
+  # Must precede the enable below: it is what keeps that call from meeting the
+  # trust dialog. A failure here is non-fatal - enable then fails the way it
+  # always did and the engine skips, which is the old behaviour, not a new one.
+  mac_pretrust_ca
+  # Hermes' seeded provider is OpenRouter, whose catalog entry ships opt-in, so
+  # without this the engine tunnels openrouter.ai straight past Gate and the
+  # capture stays empty. Anthropic (OpenClaw's provider) is on by default.
+  #
+  # Before the engine starts, not after, and the ordering is load-bearing on
+  # macOS. `set_domain` writes the config and then updates the engine held by
+  # *this* process - and a separate CLI invocation holds none, because macOS
+  # has no daemon to forward the change to (Linux got exactly that in #120).
+  # Toggled after start, the running engine never learned: hermes' traffic was
+  # tunnelled straight to the real openrouter.ai, which answered "HTTP 401:
+  # Missing Authentication header", while the OAuth phase passed only because
+  # it inherited the config the API-key phase had left on disk. Setting it
+  # first means the engine reads it at startup, where no live update is needed.
+  "$CLI" proxy domain openrouter on >"$WORK/domain.out" 2>&1 || true
   ckpt "engine: proxy enable"
   local rc=0
   if [ "$OS" = "Linux" ]; then
     script -qec "\"$CLI\" proxy enable" /dev/null >"$WORK/enable.out" 2>&1 || rc=$?
+  elif [ "$OS" = "Darwin" ]; then
+    # macOS hosts the engine in the process that enabled it - there is no
+    # daemon to adopt it - so a plain `proxy enable` returns, the process
+    # exits, and routing dies with it: the PAC URL is left pointing at a port
+    # nothing answers. `--foreground` parks instead, so the engine lives for
+    # as long as this background process does, which is the phase.
+    "$CLI" proxy enable --foreground >"$WORK/enable.out" 2>&1 &
+    ENGINE_FG_PID=$!
+    local i=0
+    while [ "$i" -lt 60 ]; do
+      grep -q '127\.0\.0\.1:[0-9]' "$WORK/enable.out" 2>/dev/null && break
+      # It parks on success, so an exit means it failed; stop waiting for a
+      # port line that is never coming.
+      kill -0 "$ENGINE_FG_PID" 2>/dev/null || break
+      sleep 1
+      i=$((i + 1))
+    done
+    if ! grep -q '127\.0\.0\.1:[0-9]' "$WORK/enable.out" 2>/dev/null; then
+      rc=1
+      ENGINE_FG_PID=""
+    fi
   else
     "$CLI" proxy enable >"$WORK/enable.out" 2>&1 || rc=$?
   fi
@@ -354,14 +505,15 @@ start_engine() {
     return 1
   fi
   ENGINE_ON=1
-  # Hermes' seeded provider is OpenRouter, whose catalog entry ships opt-in, so
-  # without this the engine tunnels openrouter.ai straight past Gate and the
-  # capture stays empty. Anthropic (OpenClaw's provider) is on by default.
-  "$CLI" proxy domain openrouter on >>"$WORK/enable.out" 2>&1 || true
+  ENGINE_RAN=1
   # `proxy enable` reports "Proxy:    running on 127.0.0.1:<port>", with no
   # scheme - matching on one printed an empty checkpoint.
   local eport
   eport="$(grep -o '127\.0\.0\.1:[0-9]*' "$WORK/enable.out" | head -n1)"
+  # Published for os_channel_checks, which asserts that *this OS's* routing
+  # channel names this exact port - the whole point being that "the engine is
+  # up" and "the OS sends traffic to it" are different claims.
+  ENGINE_PORT="${eport##*:}"
   ckpt "engine: enabled ($eport)"
   # A fresh `proxy status` must see the daemon that was just armed. This is the
   # daemon-adoption path and nothing else covers it: `self.client` is `Some`
@@ -411,7 +563,33 @@ stop_engine() {
     : "${disarms_before:=0}"
   fi
   local rc=0
-  "$CLI" proxy disable >"$WORK/disable.out" 2>&1 || rc=$?
+  if [ -n "$ENGINE_FG_PID" ]; then
+    # The foreground host disables and restores on SIGTERM - that is what the
+    # flag is for - so signalling it IS the disable. Running the CLI's disable
+    # again afterwards would be asking an already-off proxy to turn off, and
+    # this function treats a non-zero disable as a failure. The verification
+    # below (snapshot gone) is what actually proves it took, and it does not
+    # care which of the two did the work.
+    ckpt "engine: stopping the foreground host (pid=$ENGINE_FG_PID)"
+    kill -TERM "$ENGINE_FG_PID" 2>/dev/null
+    local i=0
+    while [ "$i" -lt 20 ] && kill -0 "$ENGINE_FG_PID" 2>/dev/null; do
+      sleep 1
+      i=$((i + 1))
+    done
+    if kill -0 "$ENGINE_FG_PID" 2>/dev/null; then
+      echo "FAIL: the foreground engine host ignored SIGTERM after ${i}s"
+      FAIL=$((FAIL + 1))
+      kill -KILL "$ENGINE_FG_PID" 2>/dev/null
+      rc=1
+    else
+      ckpt "engine: foreground host exited after ${i}s"
+    fi
+    cat "$WORK/enable.out" >"$WORK/disable.out" 2>/dev/null
+    ENGINE_FG_PID=""
+  else
+    "$CLI" proxy disable >"$WORK/disable.out" 2>&1 || rc=$?
+  fi
   # Verify rather than assume. A disable that fails leaves the system-proxy
   # snapshot on disk, and `proxy relay` refuses to start while that exists (it
   # means an engine is up, hosting this same relay) - so a swallowed failure
@@ -478,6 +656,244 @@ stop_engine() {
     kill -0 "$dpid" 2>/dev/null && kill -KILL "$dpid" 2>/dev/null
   fi
   ENGINE_ON=""
+}
+
+# ---------------------------------------------------------------------------
+# Per-OS channel checks.
+#
+# Everything above this point asserts the same thing on all three runners: a
+# tool fired a request and the mock gateway received it with the right headers.
+# That is deliberately platform-blind, and it leaves the platform-specific half
+# unasserted - because "the engine is listening" and "this OS actually sends
+# traffic to it" are different claims, wired by completely different machinery
+# per platform:
+#
+#   macOS    networksetup: the secure-web-proxy slot per network service, plus
+#            a PAC URL for the apps that consult one. Both per service.
+#   Linux    an environment.d drop-in: the variables ARE the system proxy here,
+#            which is why the UI has no separate switch for them.
+#   Windows  neither, yet - the engine is skipped (see start_engine), so the
+#            only per-OS surface reachable is the CA in the per-user root store.
+#
+# These run once, in Phase A: the channel is a property of `proxy enable`, not
+# of which credential the relay injects, so running them again in Phase B would
+# cost minutes to re-assert the same facts.
+#
+# A local helper rather than the inline if/else the rest of the script uses:
+# there are a dozen of these, they all have the same shape, and the shape is
+# what makes them readable side by side.
+# ---------------------------------------------------------------------------
+
+# chk "<label>" <command...>  - PASS if the command succeeds, FAIL if not.
+chk() {
+  local label="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "PASS: $label"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $label"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# Active network services, one per line. The first line of the listing is a
+# header, and a leading `*` marks a disabled service - neither is something
+# `networksetup -getsecurewebproxy` accepts.
+mac_services() {
+  /usr/sbin/networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | grep -v '^\*'
+}
+
+# Is every active service's secure-web-proxy slot off again?
+mac_secure_proxy_all_off() {
+  local svc
+  while IFS= read -r svc; do
+    [ -n "$svc" ] || continue
+    /usr/sbin/networksetup -getsecurewebproxy "$svc" 2>/dev/null |
+      grep -qi "Enabled: Yes" && return 1
+  done <<EOF
+$(mac_services)
+EOF
+  return 0
+}
+
+# The PAC URL macOS was pointed at, if any: `http://127.0.0.1:<pac>/proxy.pac`.
+mac_pac_url() {
+  local svc url
+  while IFS= read -r svc; do
+    [ -n "$svc" ] || continue
+    url="$(/usr/sbin/networksetup -getautoproxyurl "$svc" 2>/dev/null |
+      grep -oE 'http://127\.0\.0\.1:[0-9]+/proxy\.pac' | head -n1)"
+    [ -n "$url" ] && {
+      printf '%s' "$url"
+      return 0
+    }
+  done <<EOF
+$(mac_services)
+EOF
+  return 1
+}
+
+# Is any active service's auto-proxy (PAC) slot switched on?
+#
+# The state, not the URL, is what these assert on in both directions. Restore
+# only issues `-setautoproxystate off` unless the snapshot carried a URL of its
+# own, so macOS keeps our URL string in the field with the switch off - a
+# correct restore. Asserting the string had disappeared would have failed every
+# clean run.
+mac_pac_enabled() {
+  local svc
+  while IFS= read -r svc; do
+    [ -n "$svc" ] || continue
+    /usr/sbin/networksetup -getautoproxyurl "$svc" 2>/dev/null |
+      grep -qi "Enabled: Yes" && return 0
+  done <<EOF
+$(mac_services)
+EOF
+  return 1
+}
+
+mac_pac_disabled() {
+  ! mac_pac_enabled
+}
+
+# `~/.config/environment.d/gate-proxy.conf` - the drop-in systemd --user reads
+# at login, which is what makes the variables the system proxy on Linux.
+linux_dropin() {
+  printf '%s/environment.d/gate-proxy.conf' "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+# Assert this OS's routing channel points at the engine. Engine up.
+os_channel_checks() {
+  if [ -z "$ENGINE_ON" ]; then
+    # Said out loud. A silent return here is indistinguishable from a clean
+    # pass in the log, and on macOS - where `proxy enable` currently fails on
+    # the runner's missing login keychain - that is exactly the reading a
+    # skimmer would take.
+    echo "::notice::skipping the $OS channel checks - the engine did not come up"
+    return 0
+  fi
+  ckpt "os checks: $OS channel (engine on :$ENGINE_PORT)"
+  echo "::group::os checks: $OS routing channel"
+  case "$OS" in
+    Darwin)
+      # PAC only, and the manual slots explicitly off. That is the design -
+      # `enable_pac_command` sets the auto-proxy URL and then runs
+      # `-setwebproxystate off` / `-setsecurewebproxystate off`, so only Gate's
+      # intercepted hosts reach the engine and everything else stays direct.
+      #
+      # This assertion used to demand the opposite (the manual HTTPS slot
+      # pointing at the engine port) and duly failed the first time the engine
+      # ever came up on macOS. Asserting the slots are off is the same check
+      # read the right way round: it still fails if enable leaves a stale
+      # manual proxy behind, which would send everything to the engine.
+      chk "the manual HTTPS slot is off, so the PAC alone governs routing" \
+        mac_secure_proxy_all_off
+      local pac
+      pac="$(mac_pac_url)"
+      if [ -n "$pac" ]; then
+        echo "PASS: a PAC URL is set ($pac)"
+        PASS=$((PASS + 1))
+        chk "the PAC slot is switched on" mac_pac_enabled
+        # And it has to serve a real script, not just be a URL in a settings
+        # pane: the PAC port is bound separately from the proxy port, and the
+        # body is what decides which hosts go to the engine at all.
+        chk "the PAC URL serves a FindProxyForURL script" \
+          sh -c "curl -fsS --max-time 5 '$pac' | grep -q FindProxyForURL"
+        chk "the PAC script routes an enabled domain to the engine" \
+          sh -c "curl -fsS --max-time 5 '$pac' | grep -q 'PROXY 127.0.0.1:$ENGINE_PORT'"
+      else
+        echo "FAIL: no PAC URL set on any active network service"
+        FAIL=$((FAIL + 1))
+      fi
+      # The CA the engine mints leaf certs under, in the login keychain.
+      chk "the Gate CA is in the login keychain" \
+        security find-certificate -c "Gate Connect Local CA"
+      ;;
+    Linux)
+      local dropin
+      dropin="$(linux_dropin)"
+      chk "the environment.d drop-in exists ($dropin)" test -f "$dropin"
+      chk "the drop-in exports the engine port ($ENGINE_PORT)" \
+        grep -q "127.0.0.1:$ENGINE_PORT" "$dropin"
+      # HTTPS_PROXY specifically: HTTP_PROXY alone would leave every TLS
+      # request - i.e. all of them - unrouted.
+      chk "the drop-in sets HTTPS_PROXY" grep -qi '^HTTPS_PROXY=' "$dropin"
+      # NO_PROXY has to exempt loopback or the engine proxies its own gateway
+      # hop back into itself.
+      chk "the drop-in exempts loopback via NO_PROXY" \
+        grep -qi '^NO_PROXY=.*127\.0\.0\.1' "$dropin"
+      # Debian-family layout, which is what the runner is: the anchor lands in
+      # /usr/local/share/ca-certificates and update-ca-certificates links it
+      # into /etc/ssl/certs. The link is the half that means "trusted" - the
+      # anchor alone is just a file we dropped.
+      chk "the CA anchor is installed" \
+        test -f "/usr/local/share/ca-certificates/Gate Connect Local CA.crt"
+      chk "update-ca-certificates linked it into the system store" \
+        test -e "/etc/ssl/certs/Gate_Connect_Local_CA.pem"
+      ;;
+    Windows)
+      echo "::notice::engine skipped on Windows, so there is no system-proxy channel to check here"
+      ;;
+  esac
+  echo "::endgroup::"
+}
+
+# Assert the channel was put back. Engine down (stop_engine already verified
+# the snapshot is gone and, on Linux, that the daemon was disarmed).
+os_restore_checks() {
+  # Without this guard these pass vacuously: "nothing points at the engine" is
+  # trivially true on a machine that was never routed, and it reported two
+  # green assertions on the macOS runner for a phase where `proxy enable` had
+  # failed outright. An assertion that cannot fail is worse than no assertion,
+  # because it is counted.
+  if [ -z "$ENGINE_RAN" ]; then
+    echo "::notice::skipping the $OS restore checks - the engine never came up, so nothing was routed to restore"
+    return 0
+  fi
+  ckpt "os checks: $OS restore"
+  echo "::group::os checks: $OS restore"
+  case "$OS" in
+    Darwin)
+      # Promptless restore is the promise: disable puts the machine's proxy
+      # settings back the way it found them. Left on, every app on the runner
+      # consults a PAC served by a port nothing answers.
+      #
+      # The PAC *state*, not the URL: restore only issues
+      # `-setautoproxystate off` unless the snapshot carried a URL of its own,
+      # so macOS keeps our URL string in the field with the switch off, and
+      # that is a correct restore.
+      chk "the PAC slot is switched off" mac_pac_disabled
+      ;;
+    Linux)
+      # The drop-in outliving disable is the one that bites after a reboot:
+      # systemd --user would re-export a dead proxy at the next login.
+      chk "the environment.d drop-in is removed" sh -c "! test -f '$(linux_dropin)'"
+      ;;
+    Windows) ;;
+  esac
+  echo "::endgroup::"
+}
+
+# Windows: no per-OS check, and it has to stay that way while the engine is
+# held back there.
+#
+# The obvious candidate was a CA round-trip through the per-user root store -
+# `proxy trust-ca`, confirm, `proxy untrust-ca`. It cannot run unattended, and
+# not for a fixable reason: `certutil -user -addstore Root` triggers Windows'
+# native "you are about to install a certificate from a certification authority
+# claiming to represent..." dialog, which `ca_windows` documents as deliberate
+# ("the reassuring gatekeeper prompt the user sees once on enable"). On a
+# headless runner nobody can answer it, so certutil blocks until the job's
+# 8-minute timeout kills the step - which is exactly what it did, twice,
+# taking the OAuth phase with it and leaving an orphaned certutil behind.
+#
+# Suppressing that dialog to make CI green would be testing a product that
+# isn't the one we ship. So Windows keeps the relay-path coverage it already
+# has, and gains per-OS assertions when the engine is unblocked there.
+os_ca_checks() {
+  [ "$OS" = "Windows" ] || return 0
+  echo "::notice::no per-OS checks on Windows - the engine is skipped here, and the CA trust step needs a dialog no CI session can answer"
 }
 
 # Fake the browser leg of `login --oauth`: run it headless, read the authorize
@@ -713,8 +1129,11 @@ stop_relay
 # up should still prove the three relay-routed tools rather than failing the
 # whole phase. The two proxy-routed tools skip with a notice in that case.
 start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
+os_channel_checks
 run_engine_tools "api-key"
 stop_engine
+os_restore_checks
+os_ca_checks
 "$CLI" logout >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------

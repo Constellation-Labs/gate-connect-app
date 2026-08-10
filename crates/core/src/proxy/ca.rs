@@ -169,7 +169,14 @@ pub fn is_trusted() -> Result<bool> {
 }
 
 /// The user's login keychain, where we install CA trust (no root required).
+///
+/// The seam comes first: a login keychain is a property of the OS session
+/// rather than of `$HOME`, so a harness that redirects home must still be able
+/// to name the session's real one. See [`env::test_login_keychain`].
 fn login_keychain() -> Result<PathBuf> {
+    if let Some(path) = env::test_login_keychain() {
+        return Ok(path);
+    }
     Ok(env::home()?.join("Library/Keychains/login.keychain-db"))
 }
 
@@ -235,7 +242,7 @@ pub fn ensure_trusted() -> Result<()> {
     remove_stale_cas()?;
     let cert = cert_path()?;
     let keychain = login_keychain()?;
-    let status = Command::new("/usr/bin/security")
+    let out = Command::new("/usr/bin/security")
         .arg("add-trusted-cert")
         // `-p ssl` scopes the trust setting to TLS server evaluation instead
         // of every policy (S/MIME, code signing, ...). The proxy only ever
@@ -245,11 +252,27 @@ pub fn ensure_trusted() -> Result<()> {
         .args(["-r", "trustRoot", "-p", "ssl", "-k"])
         .arg(&keychain)
         .arg(&cert)
-        .status()
+        .output()
         .context("running security add-trusted-cert")?;
-    if !status.success() {
+    if !out.status.success() {
+        // Say what `security` said. This used to report the cancelled/denied
+        // dialog as fact for *any* non-zero exit, which is a cause it cannot
+        // know: on CI the real failure was "SecCertificateAddToKeychain: The
+        // specified keychain could not be found" - printed by the child, then
+        // contradicted by this line - and a user on a managed Mac or with a
+        // damaged login keychain would be told they declined a prompt that was
+        // never shown. Cancelling is still the likeliest cause when the tool
+        // says nothing, so it stays as the hint for that case only.
+        let detail = String::from_utf8_lossy(&out.stderr);
+        let detail = detail.trim();
+        if detail.is_empty() {
+            anyhow::bail!(
+                "couldn't trust the proxy CA \u{2014} the certificate trust dialog was cancelled or denied"
+            );
+        }
         anyhow::bail!(
-            "couldn't trust the proxy CA \u{2014} the certificate trust dialog was cancelled or denied"
+            "couldn't trust the proxy CA in {}: {detail}",
+            keychain.display()
         );
     }
     Ok(())
