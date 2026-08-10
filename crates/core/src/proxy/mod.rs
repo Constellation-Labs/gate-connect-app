@@ -136,6 +136,49 @@ pub fn serve_relay() -> anyhow::Result<()> {
     relay::serve()
 }
 
+/// Block until the process is asked to stop: SIGINT or SIGTERM on unix, Ctrl-C
+/// on Windows.
+///
+/// Backs `proxy enable --foreground`. The engine lives in the process-lifetime
+/// [`manager`] static, so on macOS - which hosts it in-process, with no daemon
+/// to outlive the caller - routing lasts exactly as long as the process that
+/// enabled it. `proxy enable` returns immediately, so from the CLI the engine
+/// has always died on the way out, leaving the system proxy pointed at a port
+/// nothing answers. Parking here is what lets a headless machine host it
+/// (launchd, systemd, a CI job) instead of only the menubar app.
+///
+/// SIGTERM as well as SIGINT because that is what a service manager sends to
+/// stop a unit; without it the caller could not restore the system proxy on the
+/// way down, which is the whole reason this is worth blocking for.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn wait_for_shutdown() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building the shutdown-wait runtime")?;
+    rt.block_on(async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut term =
+                signal(SignalKind::terminate()).context("installing the SIGTERM handler")?;
+            let mut int =
+                signal(SignalKind::interrupt()).context("installing the SIGINT handler")?;
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = int.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .context("waiting for Ctrl-C")?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
 /// Path to the local root CA's public cert on disk. Tools that ship their own
 /// trust bundle instead of using the OS trust store (Node, Python) have to be
 /// pointed at this to accept the engine's minted leaf certs.

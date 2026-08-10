@@ -259,6 +259,10 @@ ENGINE_RAN=""
 # cleanup. Declared up here with ENGINE_ON for the same set -u reason - the
 # trap is armed long before mac_pretrust_ca is even defined.
 MAC_PRETRUSTED=""
+# PID of the `proxy enable --foreground` host on macOS, where the engine lives
+# in the process that enabled it. Declared here with ENGINE_ON so the EXIT trap
+# can stop it under set -u however early the script dies.
+ENGINE_FG_PID=""
 cleanup() {
   # Preserve the status that triggered the trap (the final `test $FAIL -eq 0`,
   # or an early `exit`) before any teardown command clobbers $?.
@@ -270,6 +274,13 @@ cleanup() {
   # function is defined, and an early exit would otherwise hit "command not
   # found". Leaving routing on would strand the runner behind a dead proxy and
   # a trusted CA.
+  # SIGTERM makes it restore the system proxy itself, which is the whole point
+  # of --foreground; the inline disable below is the belt to that braces.
+  if [ -n "$ENGINE_FG_PID" ]; then
+    kill -TERM "$ENGINE_FG_PID" 2>/dev/null
+    sleep 2
+    kill -KILL "$ENGINE_FG_PID" 2>/dev/null
+  fi
   [ -n "$ENGINE_ON" ] && "$CLI" proxy disable >/dev/null 2>&1
   # Take the pre-trusted CA back out of the System keychain. Best-effort and
   # deliberately without `-t`: removing an admin-domain *trust setting* needs
@@ -450,6 +461,27 @@ start_engine() {
   local rc=0
   if [ "$OS" = "Linux" ]; then
     script -qec "\"$CLI\" proxy enable" /dev/null >"$WORK/enable.out" 2>&1 || rc=$?
+  elif [ "$OS" = "Darwin" ]; then
+    # macOS hosts the engine in the process that enabled it - there is no
+    # daemon to adopt it - so a plain `proxy enable` returns, the process
+    # exits, and routing dies with it: the PAC URL is left pointing at a port
+    # nothing answers. `--foreground` parks instead, so the engine lives for
+    # as long as this background process does, which is the phase.
+    "$CLI" proxy enable --foreground >"$WORK/enable.out" 2>&1 &
+    ENGINE_FG_PID=$!
+    local i=0
+    while [ "$i" -lt 60 ]; do
+      grep -q '127\.0\.0\.1:[0-9]' "$WORK/enable.out" 2>/dev/null && break
+      # It parks on success, so an exit means it failed; stop waiting for a
+      # port line that is never coming.
+      kill -0 "$ENGINE_FG_PID" 2>/dev/null || break
+      sleep 1
+      i=$((i + 1))
+    done
+    if ! grep -q '127\.0\.0\.1:[0-9]' "$WORK/enable.out" 2>/dev/null; then
+      rc=1
+      ENGINE_FG_PID=""
+    fi
   else
     "$CLI" proxy enable >"$WORK/enable.out" 2>&1 || rc=$?
   fi
@@ -521,7 +553,33 @@ stop_engine() {
     : "${disarms_before:=0}"
   fi
   local rc=0
-  "$CLI" proxy disable >"$WORK/disable.out" 2>&1 || rc=$?
+  if [ -n "$ENGINE_FG_PID" ]; then
+    # The foreground host disables and restores on SIGTERM - that is what the
+    # flag is for - so signalling it IS the disable. Running the CLI's disable
+    # again afterwards would be asking an already-off proxy to turn off, and
+    # this function treats a non-zero disable as a failure. The verification
+    # below (snapshot gone) is what actually proves it took, and it does not
+    # care which of the two did the work.
+    ckpt "engine: stopping the foreground host (pid=$ENGINE_FG_PID)"
+    kill -TERM "$ENGINE_FG_PID" 2>/dev/null
+    local i=0
+    while [ "$i" -lt 20 ] && kill -0 "$ENGINE_FG_PID" 2>/dev/null; do
+      sleep 1
+      i=$((i + 1))
+    done
+    if kill -0 "$ENGINE_FG_PID" 2>/dev/null; then
+      echo "FAIL: the foreground engine host ignored SIGTERM after ${i}s"
+      FAIL=$((FAIL + 1))
+      kill -KILL "$ENGINE_FG_PID" 2>/dev/null
+      rc=1
+    else
+      ckpt "engine: foreground host exited after ${i}s"
+    fi
+    cat "$WORK/enable.out" >"$WORK/disable.out" 2>/dev/null
+    ENGINE_FG_PID=""
+  else
+    "$CLI" proxy disable >"$WORK/disable.out" 2>&1 || rc=$?
+  fi
   # Verify rather than assume. A disable that fails leaves the system-proxy
   # snapshot on disk, and `proxy relay` refuses to start while that exists (it
   # means an engine is up, hosting this same relay) - so a swallowed failure
@@ -636,22 +694,6 @@ mac_services() {
   /usr/sbin/networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | grep -v '^\*'
 }
 
-# Does any active service route HTTPS through the given loopback port?
-mac_secure_proxy_on() {
-  local svc out
-  while IFS= read -r svc; do
-    [ -n "$svc" ] || continue
-    out="$(/usr/sbin/networksetup -getsecurewebproxy "$svc" 2>/dev/null)"
-    printf '%s' "$out" | grep -qi "Enabled: Yes" || continue
-    printf '%s' "$out" | grep -q "Server: 127.0.0.1" || continue
-    printf '%s' "$out" | grep -q "Port: $1" || continue
-    return 0
-  done <<EOF
-$(mac_services)
-EOF
-  return 1
-}
-
 # Is every active service's secure-web-proxy slot off again?
 mac_secure_proxy_all_off() {
   local svc
@@ -725,11 +767,18 @@ os_channel_checks() {
   echo "::group::os checks: $OS routing channel"
   case "$OS" in
     Darwin)
-      # The channel that routes GUI apps. `proxy status` reporting "running"
-      # says nothing about this: the listener can be up with networksetup never
-      # touched, which is precisely the config-and-engine-disagree shape.
-      chk "networksetup routes HTTPS through the engine port ($ENGINE_PORT)" \
-        mac_secure_proxy_on "$ENGINE_PORT"
+      # PAC only, and the manual slots explicitly off. That is the design -
+      # `enable_pac_command` sets the auto-proxy URL and then runs
+      # `-setwebproxystate off` / `-setsecurewebproxystate off`, so only Gate's
+      # intercepted hosts reach the engine and everything else stays direct.
+      #
+      # This assertion used to demand the opposite (the manual HTTPS slot
+      # pointing at the engine port) and duly failed the first time the engine
+      # ever came up on macOS. Asserting the slots are off is the same check
+      # read the right way round: it still fails if enable leaves a stale
+      # manual proxy behind, which would send everything to the engine.
+      chk "the manual HTTPS slot is off, so the PAC alone governs routing" \
+        mac_secure_proxy_all_off
       local pac
       pac="$(mac_pac_url)"
       if [ -n "$pac" ]; then
@@ -796,10 +845,14 @@ os_restore_checks() {
   echo "::group::os checks: $OS restore"
   case "$OS" in
     Darwin)
-      # Promptless restore is the promise: disable puts the machine's HTTPS
-      # back the way it was. Left on, every app on the runner points at a dead
-      # port.
-      chk "no service is left pointing at the engine" mac_secure_proxy_all_off
+      # Promptless restore is the promise: disable puts the machine's proxy
+      # settings back the way it found them. Left on, every app on the runner
+      # consults a PAC served by a port nothing answers.
+      #
+      # The PAC *state*, not the URL: restore only issues
+      # `-setautoproxystate off` unless the snapshot carried a URL of its own,
+      # so macOS keeps our URL string in the field with the switch off, and
+      # that is a correct restore.
       chk "the PAC slot is switched off" mac_pac_disabled
       ;;
     Linux)
