@@ -727,3 +727,47 @@ describe("Home command-line tools switch", () => {
     expect(copy.className).not.toContain("text-gc-ink-4");
   });
 });
+
+describe("Home family roster", () => {
+  it("names the members under the family, so a row is not just a category", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [makeDomain()],
+    });
+    // "Anthropic" names a provider; this names the things on the user's machine
+    // that talk to it.
+    expect(screen.getByText("Claude Code · Claude Desktop / Cowork")).toBeTruthy();
+  });
+
+  it("joins with a middot, because a member name can contain a slash", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [makeDomain()],
+    });
+    // "Claude Desktop / Cowork" is one member. Slash-joined, this roster would
+    // read as three tools where there are two.
+    expect(screen.queryByText("Claude Code / Claude Desktop / Cowork")).toBeNull();
+  });
+
+  it("gives the family named by exclusion the roster it most needs", () => {
+    renderHome({
+      tools: [
+        makeTool("opencode", "OpenCode", { kind: "connected" }, "your existing providers"),
+        makeTool("openclaw", "OpenClaw", { kind: "connected" }, "your existing providers"),
+      ],
+    });
+    expect(screen.getByText("Other tools")).toBeTruthy();
+    expect(screen.getByText("OpenCode · OpenClaw")).toBeTruthy();
+  });
+
+  it("yields the line to an exception, which already names a member", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
+      domains: [makeDomain()],
+    });
+    // Both would put a third line on the row that already grew, and print one
+    // tool's name twice.
+    expect(screen.getByText("Claude Code failed")).toBeTruthy();
+    expect(screen.queryByText("Claude Code · Claude Desktop / Cowork")).toBeNull();
+  });
+});

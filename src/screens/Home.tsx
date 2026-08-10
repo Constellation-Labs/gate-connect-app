@@ -800,6 +800,11 @@ function FamilyRow({
   onOpen: () => void;
 }) {
   const label = groupPillLabel(group);
+  // Whether anything renders under the name: the exception sentence, or the
+  // roster when there is no exception. Drives the name row's bottom padding, so
+  // a name and the line that belongs to it read as one group.
+  const roster = !exception && group.members.length > 0;
+  const secondLine = !!exception || roster;
   return (
     <div
       role="listitem"
@@ -842,8 +847,22 @@ function FamilyRow({
           name now asks for 6 characters' worth at the current size (96px at
           100%, 192px at 200%), so at large scales the pill drops to its own line
           and the name keeps the full width. The stretch button is
-          `absolute inset-0`, so a taller row stays entirely clickable. */}
-      <div className="pointer-events-none relative flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2.5">
+          `absolute inset-0`, so a taller row stays entirely clickable.
+
+          Tighter under the name when a second line follows it. The roster and
+          the exception both belong to the name, so 10px of air between a name
+          and its own members read as separation between unrelated things; 4px
+          groups them, which is the "tight groups, generous separation" rule with
+          the row separator doing the separating. It also pays for the roster: at
+          10px the ledger pushed Home from fitting exactly to overflowing by 10px
+          in the mixed state, and a 10px overflow is the worst size there is,
+          because the fold cue fades 22px and would have been hiding less than it
+          obscured. */}
+      <div
+        className={`pointer-events-none relative flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 pt-2.5 ${
+          secondLine ? "pb-1" : "pb-2.5"
+        }`}
+      >
         {/* `truncate`, not two lines: a family name is a proper noun and the
             longest one the catalog can produce is "Other tools". An h3, because
             these are sections of the h2 above them, so the outline nests instead
@@ -856,6 +875,33 @@ function FamilyRow({
           <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
         </div>
       </div>
+      {/* Who is in this family, so a row is not just a category. "Other tools"
+          is named by exclusion and told the user nothing about their own
+          machine; "Anthropic" and "OpenAI" name a provider rather than the
+          things on disk that talk to it. This is the line that makes the ledger
+          answer "what is that?" without opening anything.
+
+          Separated by "·", not "/". Two member names in the real catalog
+          already contain a slash - "Claude Desktop / Cowork" is one member, not
+          two - so a slash-joined roster reads as three tools where there are
+          two. The middot is also what the app already uses to join a domain's
+          hosts, so it is the existing vocabulary for "these, together".
+
+          Not shown when the row has an exception. That sentence takes this
+          line's place and already names a member, so the row stops being
+          anonymous by another route; printing both would repeat a tool name
+          twice on one row and add a third line to the state that already grew.
+
+          No `truncate` and no clamp. It wraps, because a cut roster is a list
+          the user has to open the panel to trust, and the catalog tops out at
+          three or four members so the growth is bounded. */}
+      {roster && (
+        <div className="relative px-3.5 pb-2">
+          <span className="pointer-events-none block text-gc-micro leading-snug text-gc-ink-3">
+            {group.members.map((m) => m.name).join(" · ")}
+          </span>
+        </div>
+      )}
       {exception && (
         <div className="relative flex items-center gap-2 px-3.5 pb-2">
           {/* The sentence carries its own severity, so a failure and a
