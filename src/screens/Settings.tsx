@@ -7,8 +7,7 @@ import { GATEWAY_SERVERS, GATE_DOCS_URL } from "../lib/config";
 import { openExternal } from "../lib/openExternal";
 import { SubHeader, SectionLabel, ConnPill, Button, Input, Switch, ErrorNote, IconButton } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
-import { modKeyLabel, secretStoreName, trustStoreName, usePlatform } from "../lib/platform";
-import { TEXT_SCALES, type TextScale } from "../lib/useTextScale";
+import { secretStoreName, trustStoreName, usePlatform } from "../lib/platform";
 
 function hostOf(url: string): string {
   try {
@@ -94,8 +93,6 @@ export function Settings({
   caTrusted,
   proxyBusy,
   onUntrustCa,
-  textScale,
-  onSetTextScale,
 }: {
   account: Account;
   oauth: OAuthStatus | null;
@@ -111,10 +108,6 @@ export function Settings({
   caTrusted: boolean;
   proxyBusy: boolean;
   onUntrustCa: () => void;
-  /** Current text scale, and its setter. Owned by App so the Cmd/Ctrl
-   *  accelerators and this control cannot disagree. */
-  textScale: TextScale;
-  onSetTextScale: (next: TextScale) => void;
 }) {
   const isOAuth = account.auth_mode === "oauth";
   const connected = isOAuth ? (oauth?.signed_in ?? false) : account.has_api_key;
@@ -594,43 +587,6 @@ export function Settings({
 
 
       <SectionLabel>This machine</SectionLabel>
-      {/* Text size, first in the section, because it is the only setting here
-          that changes whether the rest of the screen is legible at all.
-          Cmd/Ctrl +/- does the same thing and is the gesture people already
-          have, but a shortcut nobody is told about is not a mechanism, and
-          WCAG 1.4.4 asks for one that exists. */}
-      <div className="flex items-center gap-3 px-3.5 py-2.5">
-        <div className="min-w-0 flex-1">
-          <div className="text-gc-body-md font-medium text-gc-ink">Text size</div>
-          <div className="mt-0.5 text-gc-caption leading-snug text-gc-ink-3">
-            Scales everything in this window. {modKeyLabel(platform)} and the plus
-            or minus key does the same.
-          </div>
-        </div>
-        <div
-          role="group"
-          aria-label="Text size"
-          className="flex shrink-0 items-center gap-1 rounded bg-gc-sunken p-0.5"
-        >
-          {TEXT_SCALES.map((s) => (
-            <button
-              key={s}
-              type="button"
-              aria-pressed={textScale === s}
-              onClick={() => onSetTextScale(s)}
-              // Mono and tabular: these are five values of one quantity, and
-              // proportional digits made the row jitter as the label changed.
-              className={`min-w-[34px] rounded px-1.5 py-1 font-mono text-gc-label tabular-nums transition ${
-                textScale === s
-                  ? "bg-gc-surface text-gc-ink shadow-border"
-                  : "text-gc-ink-3 hover:text-gc-ink"
-              }`}
-            >
-              {Math.round(s * 100)}%
-            </button>
-          ))}
-        </div>
-      </div>
       <div className="flex items-center gap-3 px-3.5 py-2.5">
         <div className="min-w-0 flex-1">
           <div className="text-gc-body-md font-medium text-gc-ink">Launch at login</div>
