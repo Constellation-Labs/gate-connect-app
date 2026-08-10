@@ -1,4 +1,4 @@
-name: Probe (Windows cert install)
+name: Probe (cert install)
 
 # THROWAWAY. Answers one question before we build anything on the answer:
 # which mechanism can put a root cert into the per-user Root store on a
@@ -149,3 +149,70 @@ jobs:
 
           Write-Host "================ SUMMARY ================"
           $results | Format-Table -AutoSize | Out-String | Write-Host
+
+  macos:
+    name: mac-cert-probe
+    runs-on: macos-latest
+    timeout-minutes: 12
+    steps:
+      - name: Probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          W="$RUNNER_TEMP/certprobe"; mkdir -p "$W"
+          CERT="$W/probe-ca.pem"
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/k.pem" -out "$CERT" \
+            -days 1 -subj "/CN=Gate Probe CA" 2>/dev/null
+          KC="$HOME/Library/Keychains/login.keychain-db"
+          SYS="/Library/Keychains/System.keychain"
+          echo "login keychain: $KC"
+          security show-keychain-info "$KC" 2>&1 | sed 's/^/    /'
+          echo
+
+          # macOS has no GNU `timeout`. Background + poll + kill, the same shape
+          # run.sh already uses, so a mechanism that opens the Security Agent
+          # dialog reports as blocked instead of hanging the job.
+          bounded() {
+            local secs="$1"; shift
+            "$@" >"$W/out" 2>&1 &
+            local pid=$! i=0
+            while [ "$i" -lt "$secs" ] && kill -0 "$pid" 2>/dev/null; do sleep 1; i=$((i+1)); done
+            if kill -0 "$pid" 2>/dev/null; then
+              kill -KILL "$pid" 2>/dev/null
+              echo "    BLOCKED (still running after ${secs}s - a dialog is waiting)"
+              sed 's/^/      /' "$W/out"
+              return 124
+            fi
+            wait "$pid"; local rc=$?
+            echo "    exit $rc after ${i}s"
+            sed 's/^/      /' "$W/out"
+            return $rc
+          }
+
+          # What is_trusted() actually runs. This is the question that matters:
+          # if an admin-domain root satisfies it, ensure_trusted short-circuits
+          # and `proxy enable` never opens a dialog at all.
+          verify() { security verify-cert -p ssl -c "$CERT" >/dev/null 2>&1; }
+
+          echo "=== baseline: verify-cert before trusting anything"
+          verify && echo "    UNEXPECTED: already trusted" || echo "    not trusted (expected)"
+          echo
+
+          echo "=== 1. user domain, real login keychain (what the product does)"
+          bounded 45 security add-trusted-cert -r trustRoot -p ssl -k "$KC" "$CERT"
+          verify && echo "    verify-cert: TRUSTED" || echo "    verify-cert: not trusted"
+          security remove-trusted-cert "$CERT" >/dev/null 2>&1
+          sudo security delete-certificate -c "Gate Probe CA" "$KC" >/dev/null 2>&1
+          echo
+
+          echo "=== 2. admin domain, System keychain, via sudo (no dialog expected)"
+          bounded 45 sudo security add-trusted-cert -d -r trustRoot -p ssl -k "$SYS" "$CERT"
+          echo "=== 3. does that satisfy verify-cert -p ssl (i.e. is_trusted)?"
+          if verify; then
+            echo "    YES - ensure_trusted would short-circuit and enable would not prompt"
+          else
+            echo "    NO - pre-trusting via the System keychain does not help"
+          fi
+          echo "=== cleanup"
+          sudo security delete-certificate -c "Gate Probe CA" "$SYS" 2>&1 | sed 's/^/    /'
+          verify && echo "    WARNING: still trusted after cleanup" || echo "    cleaned up"

@@ -61,9 +61,6 @@ CA_DIR="$WORK/ca"
 mkdir -p "$CA_DIR" "$WORK/secrets"
 
 # Redirect home so gate-connect AND the tools agree on a throwaway config root.
-# Captured first: the login keychain is the one thing that must keep pointing at
-# the session's real one (see the macOS block below).
-REAL_HOME="$HOME"
 export HOME="$WORK/home"
 mkdir -p "$HOME"
 if [ "$OS" = "Windows" ]; then
@@ -88,26 +85,25 @@ fi
 
 # macOS: CA trust goes into a login keychain, and a login keychain belongs to
 # the session rather than to $HOME - so the redirect above pointed
-# `add-trusted-cert` at a keychain that had never existed and every `proxy
-# enable` failed with "The specified keychain could not be found". The engine
-# was therefore skipped on every macOS run, taking openclaw, hermes and the
-# per-OS channel checks with it. Name the runner's real one instead; this is a
-# throwaway GitHub runner, so installing a root into it costs nothing and is
-# gone with the VM.
-if [ "$OS" = "Darwin" ]; then
-  export GATE_CONNECT_TEST_LOGIN_KEYCHAIN="$REAL_HOME/Library/Keychains/login.keychain-db"
-  if [ -f "$GATE_CONNECT_TEST_LOGIN_KEYCHAIN" ]; then
-    # `add-trusted-cert` needs it unlocked. The runner's keychain is normally
-    # unlocked already; the empty password is the documented default for the
-    # hosted image and this is best-effort either way, since a failure here
-    # only reproduces the old skip rather than making anything worse.
-    security unlock-keychain -p "" "$GATE_CONNECT_TEST_LOGIN_KEYCHAIN" 2>/dev/null ||
-      echo "::notice::could not unlock the login keychain with an empty password; continuing"
-    security show-keychain-info "$GATE_CONNECT_TEST_LOGIN_KEYCHAIN" 2>&1 | sed 's/^/    keychain: /'
-  else
-    echo "::warning::no login keychain at $GATE_CONNECT_TEST_LOGIN_KEYCHAIN - CA trust will fail and the engine will skip"
-  fi
-fi
+# `add-trusted-cert -k` at a keychain that had never existed, and every `proxy
+# enable` failed with "The specified keychain could not be found".
+#
+# Naming the runner's real keychain (GATE_CONNECT_TEST_LOGIN_KEYCHAIN) fixes
+# that path, and is deliberately NOT done here, because on its own it makes
+# things worse: against a keychain that exists, `security add-trusted-cert`
+# stops failing fast and instead waits on the Security Agent's "you are making
+# changes to your Certificate Trust Settings" dialog. Headless, that blocked
+# until the job's 8-minute timeout - a hang traded for a skip.
+#
+# The trust step is interactive by design on both macOS and Windows, so the
+# only way to get the engine up unattended is to make `is_trusted()` already
+# true before `enable` runs: it evaluates `security verify-cert -p ssl`, which
+# honours admin-domain trust, so a root pre-installed into the System keychain
+# with sudo (no dialog) would short-circuit `ensure_trusted` entirely. That is
+# what .github/workflows/win-cert-probe.yml is measuring before we build on it.
+#
+# Until then macOS keeps its fast, honest skip: enable fails, the engine is
+# not up, and the per-OS checks say out loud that they sat out.
 
 # The Gate key goes through the file-backed secret seam, since CI has no usable
 # OS keychain headlessly. The gate-connect binary reads this as a native path.
