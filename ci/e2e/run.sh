@@ -227,6 +227,13 @@ export GATE_COGNITO_HOSTED_DOMAIN="auth.e2e.test"
 export GATE_COGNITO_CLIENT_ID="e2e-client"
 export GATE_CONNECT_TEST_TOKEN_ENDPOINT="http://127.0.0.1:$AUTH_PORT/oauth2/token"
 export GATE_CONNECT_TEST_ORGS_ENDPOINT="http://127.0.0.1:$AUTH_PORT/v1/me/orgs"
+# Audit emits (proxy/provider toggles, key changes) follow the same pattern:
+# their reqwest client uses default roots, so they can't reach the TLS mock.
+# Without this seam every toggle logs a TLS failure to stderr - noise that once
+# poisoned the engine-port grep below - and the audit path itself goes untested.
+export GATE_CONNECT_TEST_AUDIT_ENDPOINT="http://127.0.0.1:$AUTH_PORT/audit/emit"
+AUDIT_LOG="$WORK/audit-emits.jsonl"
+: > "$AUDIT_LOG"
 
 # ---------------------------------------------------------------------------
 # 2. Start the mocks: HTTPS gateway (the relay forwards here) + plain-HTTP auth
@@ -238,7 +245,7 @@ CAPTURE_LOG="$(winpath "$CAPTURE")" MOCK_PORT="$PORT" \
   node "$(winpath "$ROOT/ci/e2e/mock-gateway.mjs")" >"$WORK/mock.out" 2>&1 &
 MOCK_PID=$!
 
-MOCK_AUTH_PORT="$AUTH_PORT" \
+MOCK_AUTH_PORT="$AUTH_PORT" MOCK_AUDIT_LOG="$(winpath "$AUDIT_LOG")" \
   node "$(winpath "$ROOT/ci/e2e/mock-auth.mjs")" >"$WORK/mock-auth.out" 2>&1 &
 AUTH_PID=$!
 
@@ -511,9 +518,11 @@ start_engine() {
   # whether the reload happens at all, not about winning a race with it.
   sleep 4
   # `proxy enable` reports "Proxy:    running on 127.0.0.1:<port>", with no
-  # scheme - matching on one printed an empty checkpoint.
+  # scheme - matching on one printed an empty checkpoint. Anchor on "running on"
+  # rather than any 127.0.0.1:<port>: enable.out also carries stderr, where the
+  # audit instrumentation may print loopback URLs of its own.
   local eport
-  eport="$(grep -o '127\.0\.0\.1:[0-9]*' "$WORK/enable.out" | head -n1)"
+  eport="$(grep -o 'running on 127\.0\.0\.1:[0-9]*' "$WORK/enable.out" | head -n1 | sed 's/^running on //')"
   # Published for os_channel_checks, which asserts that *this OS's* routing
   # channel names this exact port - the whole point being that "the engine is
   # up" and "the OS sends traffic to it" are different claims.
@@ -1157,6 +1166,31 @@ if oauth_login; then
 else
   echo "::endgroup::"
   echo "FAIL: oauth login did not complete; skipping the OAuth phase"
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Audit instrumentation: both phases must have landed events on the mock audit
+# endpoint (login alone emits api_key_saved / org_selected, so this holds even
+# on runners where the engine never comes up). ApiKey mode authenticates with
+# the bearer key and sends no org header - dashboard-api derives the org from
+# the key's scope; OAuth mode sends the access token plus x-org-id. The mock
+# writes one JSON object per line with the keys in a fixed order.
+# ---------------------------------------------------------------------------
+if grep -q '"authorization":"Bearer sk-gw-e2e","orgHeader":null' "$AUDIT_LOG"; then
+  echo "PASS: api-key-mode audit emits carry the key and no org header"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: no api-key-mode audit emit captured (expected Bearer sk-gw-e2e with null org header)"
+  sed 's/^/    /' "$AUDIT_LOG" 2>/dev/null || true
+  FAIL=$((FAIL + 1))
+fi
+if grep -q '"authorization":"Bearer at-e2e","orgHeader":"org-e2e-1"' "$AUDIT_LOG"; then
+  echo "PASS: oauth-mode audit emits carry the access token and x-org-id"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: no oauth-mode audit emit captured (expected Bearer at-e2e with x-org-id org-e2e-1)"
+  sed 's/^/    /' "$AUDIT_LOG" 2>/dev/null || true
   FAIL=$((FAIL + 1))
 fi
 
