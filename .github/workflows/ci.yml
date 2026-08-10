@@ -80,3 +80,28 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # The e2e specs live outside `tsconfig.json`'s `include`, so `pnpm build`
+      # never sees them.
+      - name: Type check e2e
+        run: pnpm typecheck:e2e
+
+      # Chromium only: playwright.config.ts declares one project, and the
+      # popover ships in one webview per platform - none of which is Chromium,
+      # so a browser matrix would buy nothing here.
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Drives the real frontend against a fake Tauri backend (e2e/install.ts).
+      # The Rust side is covered by the `rust` job above and by
+      # e2e-real-tools.yml.
+      - name: E2E (UI)
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
