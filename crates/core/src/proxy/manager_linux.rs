@@ -439,10 +439,35 @@ impl ProxyManager {
         self.status()
     }
 
+    /// Trust the CA machine-wide with no prompt at all, for hosts where nobody
+    /// can answer one. CLI-only (`proxy trust-ca --system-trust`) and never
+    /// wired to a Tauri command: the prompt is deliberate product behaviour on a
+    /// desktop, and this widens the trust to every user on the machine.
+    pub fn trust_ca_system(&self) -> Result<ProxyState> {
+        ca::load_or_create()?; // ensure the cert file exists to trust
+        ca::ensure_trusted_system()?;
+        self.status()
+    }
+
     /// Untrust the CA. Refuses while the proxy is on, since the engine mints
     /// leaf certs the OS would then reject. This is the explicit way to remove
     /// the standing trusted root (disable alone leaves it trusted).
     pub fn untrust_ca(&self) -> Result<ProxyState> {
+        self.refuse_untrust_while_running()?;
+        ca::untrust()?;
+        self.status()
+    }
+
+    /// Remove a machine-wide trust install with no prompt. The counterpart of
+    /// [`ProxyManager::trust_ca_system`], and refuses while running for the same
+    /// reason [`ProxyManager::untrust_ca`] does.
+    pub fn untrust_ca_system(&self) -> Result<ProxyState> {
+        self.refuse_untrust_while_running()?;
+        ca::untrust_system()?;
+        self.status()
+    }
+
+    fn refuse_untrust_while_running(&self) -> Result<()> {
         if self
             .client
             .lock()
@@ -451,8 +476,7 @@ impl ProxyManager {
         {
             anyhow::bail!("turn the proxy off before untrusting the CA");
         }
-        ca::untrust()?;
-        self.status()
+        Ok(())
     }
 
     /// Called once at app startup. A leftover snapshot means the proxy was on

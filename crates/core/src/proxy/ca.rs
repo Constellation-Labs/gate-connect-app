@@ -15,6 +15,12 @@
 //! of inference hosts the user explicitly enables (every other host is
 //! blind-tunnelled, never MITM'd), and the private key never leaves the
 //! keychain. macOS only.
+//!
+//! [`ensure_trusted_system`] is the exception, and the one path that does not
+//! prompt: an opt-in, CLI-only install into the **admin** trust domain, for
+//! machines with nobody to answer a dialog (build agents, headless Macs). It is
+//! never the default and never reachable from the GUI - the dialog is deliberate
+//! product behaviour, not an obstacle.
 
 use std::fs;
 use std::path::PathBuf;
@@ -25,7 +31,7 @@ use hudsucker::rcgen::KeyPair;
 
 use crate::env;
 use crate::keychain;
-use crate::primitives::{run_as_admin, sh_quote};
+use crate::primitives::{run_as_admin, run_as_root_noninteractive, sh_quote};
 use crate::proxy::cert_authority;
 
 /// Subject CN of our CA. Used both as the cert subject and as the lookup
@@ -208,20 +214,27 @@ fn system_keychain_has_ca() -> Result<bool> {
 /// The System-keychain removal surfaces a real failure because it's gated
 /// behind the admin prompt the user just accepted.
 fn remove_stale_cas() -> Result<()> {
-    let _ = Command::new("/usr/bin/security")
-        .args(["delete-certificate", "-c", CA_COMMON_NAME, "-t"])
-        .arg(login_keychain()?)
-        .status();
+    remove_login_keychain_ca();
 
     if system_keychain_has_ca()? {
-        let script = format!(
-            "/usr/bin/security delete-certificate -c {cn} {kc}",
-            cn = sh_quote(CA_COMMON_NAME),
-            kc = sh_quote(SYSTEM_KEYCHAIN),
-        );
-        run_as_admin(&script).context("removing a stale proxy CA from the System keychain")?;
+        run_as_admin(&system_trust_remove_script())
+            .context("removing a stale proxy CA from the System keychain")?;
     }
     Ok(())
+}
+
+/// Best-effort delete of a Gate CA (and its user-domain trust settings, via
+/// `-t`) from the login keychain. Non-privileged and never prompts, so both the
+/// interactive trust path and the headless one can call it; a missing cert just
+/// exits non-zero.
+fn remove_login_keychain_ca() {
+    let Ok(keychain) = login_keychain() else {
+        return;
+    };
+    let _ = Command::new("/usr/bin/security")
+        .args(["delete-certificate", "-c", CA_COMMON_NAME, "-t"])
+        .arg(keychain)
+        .status();
 }
 
 /// Trust the CA if it isn't already. Runs `security add-trusted-cert`
@@ -282,6 +295,13 @@ pub fn ensure_trusted() -> Result<()> {
 /// remove-trusted-cert` directly so its native authorization dialog appears,
 /// then tears down the private key and public cert so an explicit "remove"
 /// leaves nothing behind.
+///
+/// One thing it cannot remove: a machine-wide root installed by
+/// [`ensure_trusted_system`]. That lives in the root-owned System keychain, and
+/// this path is the one the GUI runs, where escalating for a state only a CLI
+/// flag can create would be a surprise. So it finishes everything it can and
+/// then *says* what is left rather than reporting a clean removal over a root
+/// that is still trusted for every user on the box.
 pub fn untrust() -> Result<()> {
     if is_trusted()? {
         let cert = cert_path()?;
@@ -294,7 +314,115 @@ pub fn untrust() -> Result<()> {
             anyhow::bail!("couldn't untrust the proxy CA (security remove-trusted-cert failed)");
         }
     }
-    remove_ca_material()
+    // Read before the teardown: `find-certificate` is keyed on the CN, not on
+    // the cert file, but checking first keeps the report true even if a future
+    // change makes it content-keyed.
+    let machine_wide = system_keychain_has_ca().unwrap_or(false);
+    remove_ca_material()?;
+    if machine_wide {
+        anyhow::bail!(
+            "the per-user trust and the CA's key material are gone, but a machine-wide copy of the CA is still in {SYSTEM_KEYCHAIN} (installed with --system-trust). Remove it with `gate-connect proxy untrust-ca --system-trust` as root."
+        );
+    }
+    Ok(())
+}
+
+/// Install the CA machine-wide, without any dialog. The headless counterpart of
+/// [`ensure_trusted`], reached only from `proxy trust-ca --system-trust`.
+///
+/// `-d` writes the **admin** trust domain (and `-k` the root-owned System
+/// keychain) instead of the user domain, which is the whole trick: the
+/// Security-Agent dialog exists to authorize a user-domain trust-settings
+/// write, and root in the admin domain needs no such authorization.
+///
+/// Measured on GitHub's macOS runner rather than assumed - this exact command
+/// is what `ci/e2e/run.sh` hand-rolled before this flag existed, and it returns
+/// in about a second with no prompt, after which `security verify-cert -p ssl`
+/// is satisfied. That last part is why the flag is worth anything: [`is_trusted`]
+/// is a *policy* evaluation, so it honours admin-domain trust, and a later
+/// `enable` short-circuits instead of reaching the dialog.
+///
+/// What it widens: the CA becomes a trusted TLS root for **every user on this
+/// machine**, where [`ensure_trusted`] deliberately stays per-user. The `-r
+/// trustRoot -p ssl` scoping is carried over from the interactive path, so it
+/// stays an anchor for TLS server evaluation only, not for S/MIME or code
+/// signing. The `is_trusted` check before returning is the guard against a
+/// silent mismatch between what we install and what the policy evaluation
+/// accepts: it fails here, loudly, rather than resurfacing as a dialog on the
+/// next enable.
+pub fn ensure_trusted_system() -> Result<()> {
+    if is_trusted()? {
+        return Ok(());
+    }
+    // Same reasoning as `ensure_trusted`: a stale same-CN root from a prior
+    // install would be stacked alongside ours. Both deletes are best-effort -
+    // a missing cert exits non-zero, and if escalation is unavailable the
+    // install below is what reports it, with the actionable message.
+    remove_login_keychain_ca();
+    if system_keychain_has_ca().unwrap_or(false) {
+        let _ = run_as_root_noninteractive(&system_trust_remove_script());
+    }
+    let cert = cert_path()?;
+    run_as_root_noninteractive(&system_trust_install_script(&cert))
+        .context("installing the proxy CA machine-wide")?;
+    // Trust that does not satisfy our own check would leave the product
+    // re-prompting after a "successful" headless install, which is the failure
+    // this flag exists to remove. Verify rather than assume.
+    if !is_trusted()? {
+        anyhow::bail!(
+            "installed the proxy CA into {SYSTEM_KEYCHAIN}, but `security verify-cert -p ssl` still rejects it"
+        );
+    }
+    Ok(())
+}
+
+/// Remove the machine-wide CA installed by [`ensure_trusted_system`], then the
+/// key material. The headless counterpart of [`untrust`].
+///
+/// It deletes the *certificate* from the System keychain rather than the
+/// admin-domain trust *setting*: `remove-trusted-cert -d` needs the same
+/// interactive Security-Agent authorization that `add-trusted-cert` needs in the
+/// user domain, so there is no promptless way to unset it. Deleting the cert is
+/// enough - `verify-cert` then finds nothing to anchor to, so [`is_trusted`]
+/// goes false, and an admin trust entry naming a cert that is in no keychain is
+/// inert (the same asymmetry `remove_stale_cas` documents).
+pub fn untrust_system() -> Result<()> {
+    if system_keychain_has_ca()? {
+        run_as_root_noninteractive(&system_trust_remove_script())
+            .context("removing the machine-wide proxy CA")?;
+    }
+    // A desktop Mac can hold both installs at once; the per-user half needs the
+    // dialog, so this path can only name it. Read before the teardown, which
+    // deletes the cert file `verify-cert` reads.
+    let per_user_left = is_trusted().unwrap_or(false);
+    remove_ca_material()?;
+    if per_user_left {
+        anyhow::bail!(
+            "the machine-wide CA and its key material are gone, but this login still carries a per-user trust setting for it. Removing that needs the certificate dialog: run `gate-connect proxy untrust-ca`."
+        );
+    }
+    Ok(())
+}
+
+/// The privileged install, as a shell command for [`run_as_root_noninteractive`].
+/// Pure so the flags can be tested without touching a trust store.
+fn system_trust_install_script(cert: &std::path::Path) -> String {
+    format!(
+        "/usr/bin/security add-trusted-cert -d -r trustRoot -p ssl -k {kc} {cert}",
+        kc = sh_quote(SYSTEM_KEYCHAIN),
+        cert = sh_quote(&cert.display().to_string()),
+    )
+}
+
+/// The privileged removal, as a shell command. No `-t`: dropping admin-domain
+/// trust settings needs interactive authorization, and it would make the whole
+/// command fail (see [`untrust_system`]).
+fn system_trust_remove_script() -> String {
+    format!(
+        "/usr/bin/security delete-certificate -c {cn} {kc}",
+        cn = sh_quote(CA_COMMON_NAME),
+        kc = sh_quote(SYSTEM_KEYCHAIN),
+    )
 }
 
 /// Full teardown for an explicit removal: drop the private key from the
@@ -311,5 +439,37 @@ fn remove_ca_material() -> Result<()> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e).with_context(|| format!("removing {}", cert.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The flags are the feature here: `-d` is what makes the install
+    /// promptless, and dropping `-p ssl` would quietly widen a machine-wide
+    /// anchor to every trust policy. Asserted on the command string because the
+    /// install itself needs root and a real trust store.
+    #[test]
+    fn the_machine_wide_install_targets_the_admin_domain_and_stays_ssl_only() {
+        let script = system_trust_install_script(std::path::Path::new("/tmp/ca cert.pem"));
+        assert!(script.contains(" -d "), "{script}");
+        assert!(script.contains("-r trustRoot"), "{script}");
+        assert!(script.contains("-p ssl"), "{script}");
+        assert!(script.contains(SYSTEM_KEYCHAIN), "{script}");
+        // A path with a space must survive the trip through `sh -c`.
+        assert!(script.contains("'/tmp/ca cert.pem'"), "{script}");
+    }
+
+    /// `-t` would ask for the admin-domain trust setting to be unset, which
+    /// needs interactive authorization and fails the whole command - the
+    /// asymmetry `untrust_system` is built around.
+    #[test]
+    fn the_machine_wide_removal_deletes_the_cert_without_touching_trust_settings() {
+        let script = system_trust_remove_script();
+        assert!(script.contains("delete-certificate"), "{script}");
+        assert!(script.contains(CA_COMMON_NAME), "{script}");
+        assert!(script.contains(SYSTEM_KEYCHAIN), "{script}");
+        assert!(!script.contains(" -t"), "{script}");
     }
 }

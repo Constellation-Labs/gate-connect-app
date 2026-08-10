@@ -189,6 +189,67 @@ pub(crate) fn run_as_admin(shell_cmd: &str) -> Result<()> {
     Ok(())
 }
 
+/// Run a shell command as root **without ever prompting**: directly when this
+/// process is already root, and via `sudo -n` otherwise.
+///
+/// This is the escalation for the headless CA-trust path (`--system-trust`),
+/// and it deliberately shares nothing with [`run_as_admin`]. Both of that
+/// helper's branches are prompting branches - a tty `sudo` asks for a password
+/// and the GUI branch (osascript / pkexec) opens a dialog - so on a build agent
+/// or a headless Mac mini they hang or fail with nobody to answer. `sudo -n`
+/// returns immediately instead, and the caller turns that into an error saying
+/// how to re-run.
+///
+/// stdin is closed for the same reason: an unexpected password prompt must fail
+/// fast rather than block a CI job on a read that will never be answered.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn run_as_root_noninteractive(shell_cmd: &str) -> Result<()> {
+    // SAFETY: geteuid never fails.
+    let already_root = unsafe { libc::geteuid() } == 0;
+    let mut cmd = if already_root {
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", shell_cmd]);
+        c
+    } else {
+        let mut c = Command::new("sudo");
+        c.args(["-n", "/bin/sh", "-c", shell_cmd]);
+        c
+    };
+    let out = cmd
+        .stdin(std::process::Stdio::null())
+        .output()
+        .with_context(|| {
+            if already_root {
+                "invoking /bin/sh".to_string()
+            } else {
+                "invoking sudo -n".to_string()
+            }
+        })?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stderr = stderr.trim();
+        if !already_root {
+            anyhow::bail!(
+                "this needs root and sudo would have prompted; re-run as root (or with a passwordless sudo rule){}",
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                }
+            );
+        }
+        anyhow::bail!(
+            "privileged command exited non-zero: {}",
+            if stderr.is_empty() {
+                "(no stderr)"
+            } else {
+                stderr
+            }
+        );
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn sh_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
