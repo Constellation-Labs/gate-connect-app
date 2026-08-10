@@ -235,6 +235,11 @@ ENGINE_ON=""
 # The loopback port `proxy enable` reported, for the per-OS channel checks.
 # Declared here for the same set -u reason as ENGINE_ON above.
 ENGINE_PORT=""
+# Whether the engine came up at all this run. ENGINE_ON can't answer that after
+# the fact - stop_engine clears it - and the restore checks need to tell "the
+# machine was put back" from "it was never routed", which otherwise pass
+# identically and report green for a run that proved nothing.
+ENGINE_RAN=""
 cleanup() {
   # Preserve the status that triggered the trap (the final `test $FAIL -eq 0`,
   # or an early `exit`) before any teardown command clobbers $?.
@@ -357,6 +362,7 @@ start_engine() {
     return 1
   fi
   ENGINE_ON=1
+  ENGINE_RAN=1
   # Hermes' seeded provider is OpenRouter, whose catalog entry ships opt-in, so
   # without this the engine tunnels openrouter.ai straight past Gate and the
   # capture stays empty. Anthropic (OpenClaw's provider) is on by default.
@@ -610,7 +616,14 @@ linux_dropin() {
 
 # Assert this OS's routing channel points at the engine. Engine up.
 os_channel_checks() {
-  [ -n "$ENGINE_ON" ] || return 0
+  if [ -z "$ENGINE_ON" ]; then
+    # Said out loud. A silent return here is indistinguishable from a clean
+    # pass in the log, and on macOS - where `proxy enable` currently fails on
+    # the runner's missing login keychain - that is exactly the reading a
+    # skimmer would take.
+    echo "::notice::skipping the $OS channel checks - the engine did not come up"
+    return 0
+  fi
   ckpt "os checks: $OS channel (engine on :$ENGINE_PORT)"
   echo "::group::os checks: $OS routing channel"
   case "$OS" in
@@ -673,6 +686,15 @@ os_channel_checks() {
 # Assert the channel was put back. Engine down (stop_engine already verified
 # the snapshot is gone and, on Linux, that the daemon was disarmed).
 os_restore_checks() {
+  # Without this guard these pass vacuously: "nothing points at the engine" is
+  # trivially true on a machine that was never routed, and it reported two
+  # green assertions on the macOS runner for a phase where `proxy enable` had
+  # failed outright. An assertion that cannot fail is worse than no assertion,
+  # because it is counted.
+  if [ -z "$ENGINE_RAN" ]; then
+    echo "::notice::skipping the $OS restore checks - the engine never came up, so nothing was routed to restore"
+    return 0
+  fi
   ckpt "os checks: $OS restore"
   echo "::group::os checks: $OS restore"
   case "$OS" in
