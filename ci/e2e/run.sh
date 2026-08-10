@@ -697,13 +697,60 @@ os_restore_checks() {
 # round-trip through the per-user root store. `certutil -user -addstore Root`
 # needs no admin, so this runs unattended - and it is the half of `enable` that
 # would otherwise go untested on Windows entirely.
+#
+# By thumbprint, never by CN, and with `-store` rather than `-verifystore`.
+# Both of those are scars:
+#   - `-verifystore Root` validates every certificate in the store, chain
+#     building and revocation fetches included. It ran past the job's 8-minute
+#     timeout and left an orphaned certutil behind.
+#   - matching the CN is what `ca_windows::is_trusted` was fixed for: a stale
+#     root from a previous install shares our CN with a different key, so a CN
+#     match reports "trusted" while the engine signs leaves under a CA the OS
+#     does not trust. This mirrors what the product itself checks.
+# Every certutil call is bounded, so a hang here can never eat the job again.
+win_ca_thumbprint() {
+  local pem
+  pem="$(find "$HOME" -path '*/proxy/ca-cert.pem' 2>/dev/null | head -n1)"
+  [ -n "$pem" ] || return 1
+  openssl x509 -in "$pem" -noout -fingerprint -sha1 2>/dev/null |
+    sed 's/.*=//; s/://g' | tr '[:lower:]' '[:upper:]'
+}
+
+win_ca_in_root_store() {
+  # A single-cert lookup is instant; 30s is only there so a wedged certutil
+  # fails this assertion instead of the whole job. `timeout` ships with Git
+  # Bash's coreutils - but if an image ever lacks it, fall back to the bare
+  # call rather than reporting an untrusted CA because the bound was missing.
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 30 certutil -user -store Root "$1" >/dev/null 2>&1
+  else
+    certutil -user -store Root "$1" >/dev/null 2>&1
+  fi
+}
+
+# Its own function for the same reason as mac_pac_disabled: chk runs its
+# command in this shell, and negating inside `sh -c` would lose the function.
+win_ca_absent_from_root_store() {
+  ! win_ca_in_root_store "$1"
+}
+
 os_ca_checks() {
   [ "$OS" = "Windows" ] || return 0
   ckpt "os checks: Windows CA round-trip"
   echo "::group::os checks: Windows CA round-trip"
+  # Captured once, from the trusted state, and reused for the untrust check:
+  # untrust may take the PEM with it, and a thumbprint we can no longer read is
+  # a check that would silently pass.
+  local thumb=""
   if "$CLI" proxy trust-ca >"$WORK/trust-ca.out" 2>&1; then
-    chk "the CA is in the per-user root store" \
-      sh -c "certutil -user -verifystore Root | grep -q 'Gate Connect Local CA'"
+    thumb="$(win_ca_thumbprint)"
+    if [ -z "$thumb" ]; then
+      echo "FAIL: trust-ca reported success but no CA PEM was found under \$HOME"
+      FAIL=$((FAIL + 1))
+    else
+      ckpt "os checks: CA thumbprint $thumb"
+      chk "the CA is in the per-user root store" win_ca_in_root_store "$thumb"
+    fi
   else
     echo "FAIL: proxy trust-ca failed"
     sed 's/^/    /' "$WORK/trust-ca.out" 2>/dev/null
@@ -712,8 +759,9 @@ os_ca_checks() {
   # Untrust has to actually remove it: a CA left in a user's root store after
   # they turned Gate off is the one leftover this product cannot ship.
   if "$CLI" proxy untrust-ca >"$WORK/untrust-ca.out" 2>&1; then
-    chk "untrust-ca removes it again" \
-      sh -c "! certutil -user -verifystore Root | grep -q 'Gate Connect Local CA'"
+    if [ -n "$thumb" ]; then
+      chk "untrust-ca removes it again" win_ca_absent_from_root_store "$thumb"
+    fi
   else
     echo "FAIL: proxy untrust-ca failed"
     sed 's/^/    /' "$WORK/untrust-ca.out" 2>/dev/null
