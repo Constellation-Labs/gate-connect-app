@@ -90,6 +90,7 @@ export function Settings({
   onSwitchOrg,
   onSwitchGateway,
   onReplayTour,
+  onOpenDiagnostics,
   routingOn,
   caTrusted,
   proxyBusy,
@@ -107,6 +108,7 @@ export function Settings({
   onSwitchOrg: () => void;
   onSwitchGateway: (url: string) => Promise<void>;
   onReplayTour: () => void;
+  onOpenDiagnostics: () => void;
   routingOn: boolean;
   caTrusted: boolean;
   proxyBusy: boolean;
@@ -746,7 +748,12 @@ export function Settings({
             was documentation, in an app that installs a root certificate and
             runs a local proxy.
 
-            `-my-1.5 py-1.5` on all three: they measured 18.8px tall against the
+            Diagnostics comes after the two items that might answer the
+            question and before Dev mode, which never will: it is what you
+            reach for once reading has not fixed it, and it is for users
+            reporting a problem, not for us poking at one.
+
+            `-my-1.5 py-1.5` on all four: they measured 18.8px tall against the
             24px target minimum, and two of them sat 16px apart on the same row,
             so 24px circles centred on each overlapped and 2.5.8's Spacing
             exception could not rescue them either. The padding makes each target
@@ -769,6 +776,14 @@ export function Settings({
           >
             <Icon name="info" size={14} />
             Replay tour
+          </button>
+          <button
+            type="button"
+            onClick={onOpenDiagnostics}
+            className="-my-1.5 inline-flex items-center gap-1.5 py-1.5 text-gc-body-sm font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            <Icon name="search" size={14} />
+            Diagnostics
           </button>
           <button
             type="button"
