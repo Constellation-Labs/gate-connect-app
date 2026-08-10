@@ -47,3 +47,12 @@ export const GATEWAY_SERVERS: GatewayServer[] = [
  * how two of them ended up with the unslashed form. */
 export const GATE_DASHBOARD_URL = "https://app.constellationgate.ai/";
 export const GATE_API_KEYS_URL = "https://app.constellationgate.ai/api-keys";
+/** Product documentation. Trailing slash for the same opener-allowlist reason
+ *  as the dashboard link above; `docs.constellationgate.ai` matches the
+ *  `https://*.constellationgate.ai/*` capability pattern, so the plumbing works.
+ *
+ *  Why it exists: an app that installs a root certificate, runs a local MITM
+ *  proxy and writes to the OS secret store shipped with no route to
+ *  documentation at all, and a Help section whose two items were "Replay tour"
+ *  and "Dev mode". */
+export const GATE_DOCS_URL = "https://docs.constellationgate.ai/";

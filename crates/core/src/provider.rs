@@ -207,14 +207,34 @@ pub fn list() -> Vec<ProviderState> {
 /// running, enables the provider's proxy domains. Requires a signed-in
 /// account. Idempotent - re-running re-applies the same config.
 pub fn enable(slug: &str) -> Result<ProviderState> {
+    enable_inner(slug, &[])
+}
+
+/// [`enable`] with members to leave alone: the restore path's flavour, so a
+/// member that was already switched off when routing was turned off does not
+/// come back on with the rest of its family. See [`RESTORE_SKIP_MEMBERS`].
+fn enable_skipping(slug: &str, skip: &[String]) -> Result<ProviderState> {
+    enable_inner(slug, skip)
+}
+
+fn enable_inner(slug: &str, skip: &[String]) -> Result<ProviderState> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
     let account = account::load()?
         .context("no Gate account configured - sign in before enabling a provider")?;
+    let skipped = |s: &str| skip.iter().any(|x| x == s);
 
-    let any_detected = p.tool_ids.iter().any(|&id| tool_detected(id));
+    let any_detected = p.tool_ids.iter().any(|&id| {
+        tool_detected(id) && !registry::find(id).is_some_and(|i| skipped(i.id().slug()))
+    });
     let plan = enable_plan(any_detected, proxy_running());
 
     if plan.nothing {
+        // A restore pass for a family whose members are all switched off has
+        // nothing to do, and nothing to complain about. Only a user who asked
+        // for this provider by name gets the explanation.
+        if !skip.is_empty() {
+            return Ok(state(&p));
+        }
         anyhow::bail!(
             "nothing to configure for {}: install its app, or turn on \
              \u{201c}Route through Gate\u{201d} to route it through the proxy",
@@ -229,6 +249,9 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
             };
             if !integ.detect().unwrap_or(false) {
                 continue; // tool not installed - nothing to configure
+            }
+            if skipped(integ.id().slug()) {
+                continue; // switched off before routing stopped; leave it off
             }
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
@@ -249,6 +272,9 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
     // off-intent regardless of proxy state.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     for domain in p.proxy_domain_slugs {
+        if skipped(domain) {
+            continue; // switched off before routing stopped; leave it off
+        }
         if plan.enable_domain {
             crate::proxy::manager()
                 .set_domain(domain, true)
@@ -441,6 +467,22 @@ const PROVIDER_SNAPSHOT: &str = "restore-snapshot.json";
 /// Tool slugs no provider maps (OpenCode and friends), disconnected by the
 /// master-off sweep and reconnected alongside the provider snapshot.
 const SWEPT_TOOLS_SNAPSHOT: &str = "restore-tools-snapshot.json";
+/// Member slugs (tool or proxy domain) that were already switched off inside a
+/// provider the master-off snapshot recorded, so master-on brings the family
+/// back without turning them on too.
+///
+/// [`PROVIDER_SNAPSHOT`] is provider-granularity while [`enable`] turns on
+/// *every* member of a provider, and a provider counts as enabled when any one
+/// member is on. So a family that was on because one member was on came back
+/// with all of them on: switch Claude Desktop off while Claude Code stays on,
+/// toggle routing, and Claude Desktop is routing again, with nothing anywhere
+/// recording that it had been switched off. Master-off destroys the per-member
+/// state on its way out (`disable` clears every domain flag and disconnects
+/// every tool), so the distinction has to be written down before it goes.
+///
+/// Scoped to one master cycle, not a durable preference: it is written at
+/// master-off and cleared once the restore completes.
+const RESTORE_SKIP_MEMBERS: &str = "restore-skip-members.json";
 
 fn snapshot_path(file: &str) -> Result<PathBuf> {
     Ok(crate::env::app_support_dir()?.join("provider").join(file))
@@ -485,6 +527,30 @@ fn master_flow_guard() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Members of `p` that are not carrying traffic right now.
+///
+/// Not-installed tools are left out: absent is not "switched off", and
+/// [`enable`] skips them anyway. A drifted tool counts as off, which is the
+/// conservative reading - its config points somewhere that is not ours, and a
+/// restore has no business overwriting that.
+fn off_members(p: &Provider) -> Vec<String> {
+    let mut out = Vec::new();
+    for &id in p.tool_ids {
+        if tool_detected(id) && !tool_connected(id) {
+            out.push(id.slug().to_string());
+        }
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    if let Ok(domains) = crate::proxy::config::load_domains() {
+        for d in domains {
+            if p.proxy_domain_slugs.contains(&d.slug.as_str()) && !d.enabled {
+                out.push(d.slug);
+            }
+        }
+    }
+    out
+}
+
 /// The provider half of master-off: record every currently-enabled provider,
 /// then disconnect them all. Runs *before* the proxy stops so each provider's
 /// domain is still flippable. Best-effort per provider so one failure can't
@@ -511,6 +577,30 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
         }
     }
     save_snapshot(PROVIDER_SNAPSHOT, &snapshot)?;
+
+    // Which members were *already* off inside the families we just snapshotted.
+    // Recorded before the disable loop below, because that loop is what destroys
+    // the distinction.
+    //
+    // Only the providers in this pass, deliberately. A second off-flow (a quit
+    // teardown right after a master-off) sees every provider off, so `enabled`
+    // is empty and this loop does nothing. Iterating the whole catalog instead
+    // would put every member of every family on the skip list and restore
+    // nothing - the exact inverse of the bug being fixed, and a worse one.
+    let mut skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
+    for slug in &enabled {
+        if let Some(p) = find(slug) {
+            for member in off_members(&p) {
+                if !skip.contains(&member) {
+                    skip.push(member);
+                }
+            }
+        }
+    }
+    if !skip.is_empty() {
+        save_snapshot(RESTORE_SKIP_MEMBERS, &skip)?;
+    }
+
     for slug in &enabled {
         if let Err(e) = disable(slug) {
             eprintln!("[gate] disabling provider {slug:?} during master-off failed: {e}");
@@ -569,15 +659,22 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
 /// providers, which have nothing to configure until the proxy is running).
 pub fn restore_all() -> Result<()> {
     let _guard = master_flow_guard();
+    // Members that were off before routing stopped stay off; the family around
+    // them comes back. See [`RESTORE_SKIP_MEMBERS`].
+    let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
     let mut failed = Vec::new();
     for slug in load_snapshot(PROVIDER_SNAPSHOT)? {
-        if let Err(e) = enable(&slug) {
+        if let Err(e) = enable_skipping(&slug, &skip) {
             eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
             failed.push(slug);
         }
     }
     if failed.is_empty() {
         clear_snapshot(PROVIDER_SNAPSHOT)?;
+        // The cycle is complete, so the skip list has done its job. Held until
+        // now for the same reason the provider snapshot is: a partial restore
+        // gets retried, and the retry needs to know what to leave alone.
+        clear_snapshot(RESTORE_SKIP_MEMBERS)?;
     } else {
         save_snapshot(PROVIDER_SNAPSHOT, &failed)?;
     }

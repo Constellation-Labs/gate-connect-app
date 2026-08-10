@@ -216,8 +216,10 @@ where those variables *are* the system proxy and a switch could not honour
 itself. Turning it off is a real opt-out that survives routing toggles.
 
 **The harnesses are listed.** OpenCode, OpenClaw and Hermes now appear in the
-ledger, forming the "Agent harnesses" group that was dormant while they were
-hidden. `hidden_in_ui` still exists and `env-proxy` still uses it; hiding is
+ledger, forming the "Other tools" group that was dormant while they were
+hidden. (That group was called "Agent harnesses" until the round-15 design pass:
+it is the label on a `filter(t => !claimed.has(t.slug))`, and nobody installs a
+harness.) `hidden_in_ui` still exists and `env-proxy` still uses it; hiding is
 always a UI-boundary decision (`list_tools`), never removal from the registry,
 because the master-off sweep and `restore_swept_tools` walk it.
 

@@ -49,6 +49,7 @@ import { Icon } from "./components/gc/Icon";
 import { track, trackError } from "./lib/analytics";
 import { backendErrorContext, classifyError, type ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
+import { useTextScale } from "./lib/useTextScale";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
@@ -96,12 +97,33 @@ function hostOf(url: string | undefined): string {
   }
 }
 
-/** Drain the backend's buffered failures into the analytics seam. The raw
- * message is classified frontend-side like any invoke rejection; only the
- * title goes over the wire. */
-async function forwardBackendErrors(): Promise<void> {
+/** Contexts whose failure means traffic is not flowing. These are the startup
+ *  restore paths, which is exactly why the buffer exists: they run before the
+ *  webview does, so the user has no other way to learn the engine never came
+ *  up. A failure here is a total routing outage that the popover would
+ *  otherwise render as a healthy screen. */
+const ROUTING_DOWN_CONTEXTS = new Set(["restore_routing", "provider_restore", "provider_reconcile"]);
+
+/** Drain the backend's buffered failures into the analytics seam, and hand back
+ *  the first one that means routing is down so a human sees it too. The raw
+ *  message is classified frontend-side like any invoke rejection; only the
+ *  title goes over the wire.
+ *
+ *  Telemetry was the only consumer. A buffered "failed to bind loopback port
+ *  8317: address in use" produced zero pixels of UI, in the one app whose
+ *  first principle is reassurance through transparency, on the one error class
+ *  the user cannot discover any other way. */
+async function forwardBackendErrors(): Promise<ClassifiedError | null> {
   const errs = await drainBackendErrors().catch(() => []);
-  for (const e of errs) trackError(e.message, backendErrorContext(e.context));
+  let surfaced: ClassifiedError | null = null;
+  for (const e of errs) {
+    const context = backendErrorContext(e.context);
+    trackError(e.message, context);
+    if (!surfaced && ROUTING_DOWN_CONTEXTS.has(e.context)) {
+      surfaced = classifyError(e.message, context);
+    }
+  }
+  return surfaced;
 }
 
 // The routing takeover teaches its lesson once per install; after the first
@@ -173,6 +195,10 @@ function needsOrg(account: Account | null, oauth: OAuthStatus | null): boolean {
 
 export function App() {
   const platform = usePlatform();
+  // Text scaling owns the rem root and the Cmd/Ctrl +/-/0 accelerators. Mounted
+  // here rather than per screen so the shortcuts work on every surface,
+  // including the takeovers.
+  const { scale: textScale, setScale: setTextScale } = useTextScale();
   const [screen, setScreen] = useState<Screen>("loading");
   // Direction of the current screen change, derived during render (the React
   // pattern for adjusting state when an input changes) rather than in an
@@ -201,6 +227,9 @@ export function App() {
   // Set when the org picker hands a user to the API-key fallback, so FirstRun
   // opens on the key form instead of making them find the disclosure again.
   const [startOnKey, setStartOnKey] = useState(false);
+  // Which family the ledger panel should open with, set by the Home row that
+  // opened it. Null when the user arrived from the heading rather than a row.
+  const [routesOpen, setRoutesOpen] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
@@ -438,10 +467,15 @@ export function App() {
 
   // Backend failures buffer Rust-side because they can predate this webview
   // (the startup auto-enable runs before the popover mounts). Sweep the
-  // buffer once at mount, then drain again on each nudge.
+  // buffer once at mount, then drain again on each nudge. A failure that means
+  // routing is down also lands on Home, where blockers render.
   useEffect(() => {
-    void forwardBackendErrors();
-    const unlisten = listen("backend-error-pending", () => void forwardBackendErrors());
+    const sweep = () =>
+      void forwardBackendErrors().then((e) => {
+        if (e) setProviderError(e);
+      });
+    sweep();
+    const unlisten = listen("backend-error-pending", sweep);
     return () => {
       void unlisten.then((f) => f());
     };
@@ -949,7 +983,7 @@ export function App() {
     body = (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
         <ConstellationHexMark size={40} />
-        <span className="text-[14.5px] font-semibold tracking-[-0.02em] text-gc-navy">
+        <span className="text-gc-title font-semibold tracking-[-0.02em] text-gc-navy">
           Gate <span className="text-gc-accent">Connect</span>
         </span>
       </div>
@@ -1014,6 +1048,8 @@ export function App() {
         caTrusted={proxy?.ca_trusted ?? false}
         proxyBusy={proxyBusy}
         onUntrustCa={untrustCa}
+        textScale={textScale}
+        onSetTextScale={setTextScale}
       />
     );
   } else if (screen === "routes") {
@@ -1029,6 +1065,10 @@ export function App() {
         proxyOn={proxy?.running ?? false}
         onEnableRouting={() => void toggleProxy(false)}
         authMode={account?.auth_mode}
+        initialOpen={routesOpen}
+        envExportSeparable={proxy?.env_export_separable ?? false}
+        envExportOn={proxy?.env_export_opted_in ?? false}
+        onToggleEnvExport={() => void toggleEnvExport()}
       />
     );
   } else {
@@ -1068,11 +1108,12 @@ export function App() {
         staleAgentsHint={staleAgentsHint && !staleAgentsDismissed}
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onToggleProxy={() => toggleProxy(true)}
-        envExportSeparable={proxy?.env_export_separable ?? false}
-        envExportOn={proxy?.env_export_opted_in ?? false}
-        onToggleEnvExport={() => void toggleEnvExport()}
         onTrustCa={trustCa}
-        onOpenRoutes={() => setScreen("routes")}
+        onOpenRoutes={(groupId) => {
+          // Carried into the panel so the family the user tapped arrives open.
+          setRoutesOpen(groupId ?? null);
+          setScreen("routes");
+        }}
         onOpenSettings={() => setScreen("settings")}
       />
     );
@@ -1203,9 +1244,14 @@ export function App() {
             into a group detail, i.e. everywhere except the screen people
             actually look at. Now it is pinned, so it is on every screen and
             costs the scroll budget nothing. */}
+        {/* `flex-wrap` on the strip: at 200% the promise and the version cannot
+            share one line, and truncating the product's core reassurance to
+            "Session in your ke…" is the loss of content SC 1.4.4 forbids.
+            Wrapped, the version takes its own line and the sentence keeps all of
+            itself. */}
         {credentialStore && (
-          <div className="flex shrink-0 items-center gap-2 border-t border-gc-line px-3.5 py-2">
-            <span className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-gc-ink-3">
+          <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-0.5 border-t border-gc-line px-3.5 py-2">
+            <span className="flex min-w-0 flex-1 basis-[12em] items-center gap-1.5 text-gc-label text-gc-ink-3">
               <Icon name="key" size={11} className="shrink-0" />
               {/* This slot has to hold "Session in Credential Manager" (146px)
                   and, during the first async tick before the platform
@@ -1224,7 +1270,7 @@ export function App() {
             {/* Suppressed before there is an account: on first run the strip
                 carries the promise and nothing else. */}
             {hasCredential && version && (
-              <span className="ml-auto shrink-0 font-mono text-[10.5px] text-gc-ink-3">
+              <span className="ml-auto shrink-0 font-mono text-gc-label text-gc-ink-3">
                 v{version}
               </span>
             )}

@@ -41,7 +41,7 @@ export function Success({
         <h1
           tabIndex={-1}
           data-screen-focus
-          className="text-[17px] font-semibold tracking-[-0.02em] text-gc-ink outline-none"
+          className="text-gc-panel-title font-semibold tracking-[-0.02em] text-gc-ink outline-none"
         >
           {/* The heading claims only what finished. It used to read "You're
               connected" under a header pill reading "Routing off", which is the
@@ -50,7 +50,7 @@ export function Success({
               landing 40px apart in opposite directions. */}
           {proxyOn ? "You’re connected" : "Account connected"}
         </h1>
-        <p className="mt-1.5 max-w-[280px] text-[12.5px] leading-[1.45] text-gc-ink-3">
+        <p className="mt-1.5 max-w-[280px] text-gc-body-sm leading-[1.45] text-gc-ink-3">
           {/* Three states, not two. The middle one is the reason this split
               matters: with no proxy subsystem to report on, the old copy still
               claimed to be "routing your agents through Gate". */}
@@ -74,7 +74,7 @@ export function Success({
             <button
               type="button"
               onClick={onDone}
-              className="mt-2.5 text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+              className="mt-2.5 text-gc-body-sm font-medium text-gc-ink-3 transition hover:text-gc-ink"
             >
               Not now
             </button>

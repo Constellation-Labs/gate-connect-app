@@ -19,7 +19,7 @@ import type { ProviderState, ProxyDomain, Tool } from "./api";
  * group rather than being wedged into a family they don't belong to.
  */
 
-/** Agent harnesses: the tools whose provider set is decided by the user's
+/** Other tools: the tools whose provider set is decided by the user's
  * config, not by the tool. Connecting one rewrites every well-known provider
  * block it finds, so it can't sit under a single family.
  *
@@ -64,7 +64,7 @@ export interface Group {
   id: string;
   name: string;
   /** The group's name inside a sentence. Family names are proper nouns and
-   * stay capitalised; "agent harnesses" is a common noun and must not. */
+   * stay capitalised; "other tools" is a common noun and must not. */
   switchLabel: string;
   /** One line on what the family covers, shown on its detail screen. */
   blurb: string;
@@ -161,15 +161,23 @@ export function buildGroups(
     };
   });
 
-  // Whatever the catalog didn't claim: the agent harnesses.
+  // Whatever the catalog didn't claim: the tools that route every provider
+  // configured in them rather than one model family.
   const leftovers = installed
     .filter((t) => !claimed.has(t.slug))
     .map((t) => ({ ...memberFromTool(t, opts), coversAllProviders: true }));
   if (leftovers.length > 0) {
     groups.push({
       id: MULTI_PROVIDER_ID,
-      name: "Agent harnesses",
-      switchLabel: "Route agent harnesses through Gate",
+      // "Other tools", not "Agent harnesses". This is the label on a
+      // `filter(t => !claimed.has(t.slug))`, and it surfaced as a family name on
+      // the screen people read daily. PRODUCT.md's positioning says the UI's
+      // nouns are tools and apps; nobody installs a harness, and it was the one
+      // word on Home a first-timer could not map to anything on their machine.
+      // The blurb below is where the category actually gets explained, which is
+      // the right place for a definition the name should not have to carry.
+      name: "Other tools",
+      switchLabel: "Route other tools through Gate",
       blurb: "Tools that route every provider you’ve set up in them, not one model family.",
       members: leftovers,
       routed: leftovers.filter((m) => m.routed).length,

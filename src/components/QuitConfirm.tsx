@@ -71,15 +71,15 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
       <div className="flex flex-col gap-1.5">
         <h1
           id="quit-confirm-title"
-          className="text-[17px] font-semibold tracking-[-0.01em] text-gc-ink"
+          className="text-gc-panel-title font-semibold tracking-[-0.01em] text-gc-ink"
         >
           Quit Gate Connect?
         </h1>
-        <p className="text-[12.5px] leading-snug text-gc-ink-3">
+        <p className="text-gc-body-sm leading-snug text-gc-ink-3">
           {names} still {plural ? "route" : "routes"} through Gate. If you quit now,{" "}
           {plural ? "they" : "it"} can’t connect until Gate Connect runs again.
         </p>
-        <p className="text-[11.5px] leading-snug text-gc-ink-3">
+        <p className="text-gc-caption leading-snug text-gc-ink-3">
           {/* "when Gate Connect starts again", not "at the next start": the next
               start of what was the open question, and the tool's own next launch
               is the wrong answer. Same phrasing as the notification this choice
@@ -101,15 +101,22 @@ export function QuitConfirm({ tools, onCancel }: { tools: string[]; onCancel: ()
         <Button variant="secondary" full disabled={busy} onClick={() => void quitAnyway()}>
           Quit without disconnecting
         </Button>
-        <button
+        {/* A full secondary button, not a text link, so the safe option is the
+            equal of the two that quit. This panel already focuses Cancel on
+            mount, on the reasoning that Enter on an unread panel should not
+            decide how to quit; at 12.5px text it measured 304x18.8 under two
+            40px buttons, so the control the panel points focus at was also the
+            faintest thing on it. RoutingChangeNotice states this rule for its
+            own Cancel and this was the higher-stakes takeover breaking it. */}
+        <Button
           ref={safeRef}
-          type="button"
+          variant="secondary"
+          full
           disabled={busy}
           onClick={onCancel}
-          className="text-[12.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink disabled:opacity-45"
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </Takeover>
   );

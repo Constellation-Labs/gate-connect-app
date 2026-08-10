@@ -7,21 +7,27 @@ import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
 import { GroupMembers } from "./GroupMembers";
 
-/** The ledger, on its own panel: one row per model family, each carrying the
- * pill that answers "is this routing?", a switch that routes the whole family
- * with one flip, and a body that opens the family's fine grain.
+/** The ledger's fine grain, on its own panel: one row per model family, each
+ * carrying the pill that answers "is this routing?", a switch that routes the
+ * whole family with one flip, and a body that opens the family's members.
  *
- * It used to sit on Home under a section label. Home now carries the master
- * control and a labelled door to this panel, which keeps the room that holds a
- * routing card, a certificate ceremony, a wire line, a banner and a launch tip
- * from also holding an itemized list. The cost is that the pills are one
- * navigation further from the tray, so Home's door reports any exception itself
- * rather than leaving the user to come looking.
+ * Home carries the same families as read-only rows, so this panel is where a
+ * family is *changed* rather than where it is first learned about. A row on Home
+ * arrives here with its own family already open, which is why `initialOpen`
+ * exists: tapping a row that says "Claude Code failed" and landing on a
+ * collapsed list would charge a second click for the thing just tapped.
  *
- * A family opens in place rather than pushing a third screen. Its members are
- * themselves expandable, so the whole hierarchy - family, member, mechanism and
- * remedy - is two disclosures deep in one panel, and the popover never stacks a
- * screen it has to animate back out of. */
+ * It also owns the shell-environment channel, at the bottom. That switch is not
+ * a family - it routes every command-line tool at once, whatever provider they
+ * talk to - so it cannot be a row here, and it was a near-identical peer of the
+ * master switch on Home: same 38x22 track, same indigo, 66px apart, telling the
+ * user by geometry that a machine-wide change to git and curl was the routing
+ * switch's equal.
+ *
+ * A family opens in place rather than pushing a third screen, so the whole
+ * hierarchy - family, member, mechanism and remedy - is two disclosures deep in
+ * one panel, and the popover never stacks a screen it has to animate back out
+ * of. */
 export function Routes({
   groups,
   busy,
@@ -33,6 +39,10 @@ export function Routes({
   proxyOn,
   onEnableRouting,
   authMode,
+  initialOpen,
+  envExportSeparable,
+  envExportOn,
+  onToggleEnvExport,
 }: {
   groups: Group[];
   busy: boolean;
@@ -46,6 +56,15 @@ export function Routes({
   proxyOn: boolean;
   onEnableRouting: () => void;
   authMode?: AuthMode;
+  /** The family to arrive with already expanded, when the user got here from a
+   * Home row rather than from the heading. */
+  initialOpen?: string | null;
+  /** Whether the shell-environment channel can be offered at all. False on
+   * Linux, where those variables *are* the system proxy, so a switch could not
+   * honour itself. */
+  envExportSeparable: boolean;
+  envExportOn: boolean;
+  onToggleEnvExport: () => void;
 }) {
   // Which family the user last flipped, so the live region below reports the
   // result of their own action and stays silent about the backend's. The row's
@@ -54,8 +73,9 @@ export function Routes({
   const [flipped, setFlipped] = useState<string | null>(null);
   const flippedGroup = groups.find((g) => g.id === flipped);
   // Which family is expanded. One at a time: two open families in a 360px panel
-  // put the second one's members below the fold with no way to see both.
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  // put the second one's members below the fold with no way to see both. Seeded
+  // from the Home row that got the user here.
+  const [openKey, setOpenKey] = useState<string | null>(initialOpen ?? null);
 
   return (
     <div className="flex grow flex-col">
@@ -99,7 +119,10 @@ export function Routes({
                   className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
                 />
                 <div className="pointer-events-none relative min-w-0 flex-1">
-                  <div className="text-[13.5px] font-semibold text-gc-ink">{group.name}</div>
+                  {/* An h2 under the panel's h1, so four families and up to six
+                      pills are navigable by heading instead of being one
+                      undifferentiated list to a screen reader. */}
+                  <h2 className="text-gc-body font-semibold text-gc-ink">{group.name}</h2>
                   {/* Exception first. Concatenated as `count · exception` the
                       line truncated at 360px and the actionable half was what
                       got cut ("0 of 2 routing · Codex set up els…"). The pill
@@ -110,7 +133,7 @@ export function Routes({
                       whose verb is at the end, so a production-length tool name
                       ate it. The count never needs the second line, so the row
                       only grows in the state that has something to say. */}
-                  <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-gc-ink-3">
+                  <div className="mt-0.5 line-clamp-2 text-gc-micro leading-snug text-gc-ink-3">
                     {/* The sentence carries its own severity. Every exception
                         used to print in the same ink as every other, so a
                         failure and a hand-written setup were typographically
@@ -130,18 +153,36 @@ export function Routes({
                   </div>
                 </div>
                 {/* The visible text truncates at 360px; this carries the whole
-                    sentence, pill state included, to anyone listening. */}
+                    sentence, pill state included, to anyone listening.
+
+                    The exception drops out when the pill already said it. Now
+                    that a dark family names its own cause, `master-off` made
+                    this read "Waiting on routing. 0 of 2 routing. waiting on
+                    routing" - the same fact twice in one description, in the
+                    app whose own Don't forbids saying it twice on one screen. */}
                 <span id={`group-desc-${group.id}`} className="sr-only">
                   {groupPillLabel(group)}. {count}
-                  {exception ? `. ${exception}` : ""}
+                  {exception && exception.toLowerCase() !== groupPillLabel(group).toLowerCase()
+                    ? `. ${exception}`
+                    : ""}
                 </span>
                 <span className="pointer-events-none relative">
                   <GroupPill group={group} />
                 </span>
                 <span className="relative">
+                  {/* Points at the same sentence the row button does. The switch
+                      reports intent and can read "on" while the pill beside it
+                      says nothing is flowing - in `home-off` every one of these
+                      is `aria-checked="true"` over a "Not routed" pill - which is
+                      exactly the case DESIGN.md's "Intent versus Reality" section
+                      requires be wired to assistive tech. The reality sentence
+                      already existed on the row button; the switch just wasn't
+                      looking at it, so the control that says "on" said only
+                      "on". */}
                   <Switch
                     on={group.desired > 0}
                     label={group.switchLabel}
+                    describedBy={`group-desc-${group.id}`}
                     busy={busy}
                     onClick={() => {
                       setFlipped(group.id);
@@ -180,9 +221,59 @@ export function Routes({
         // Reachable without a dead end: reopening the popover re-reads the
         // ledger, so the last tool can be uninstalled while this panel is open.
         // Home explains the empty case in full; this says enough to get back.
-        <p className="px-3.5 py-4 text-[11.5px] leading-snug text-gc-ink-3">
+        <p className="px-3.5 py-4 text-gc-caption leading-snug text-gc-ink-3">
           Nothing is installed to route right now.
         </p>
+      )}
+
+      {/* The other channel, after the families rather than among them. Routing
+          reaches GUI apps through the OS proxy setting and command-line tools
+          through the shell environment; this is the second one, and it spans
+          every family at once, so it is not a row and never was.
+
+          `ink-3`, not `ink-4`. This is two sentences of instruction about the
+          one control in the app that changes something outside the AI tools -
+          `HTTPS_PROXY` reaches git, curl and every process in the shell - and at
+          ink-4 it measured 3.97:1 on white, the only text in the product below
+          the 4.5:1 floor. DESIGN.md scopes ink-4 to "placeholders, muted icons,
+          and incidental mono identifiers only; never sentence copy or labels",
+          and OAuthOffer already carries the note that ink-3 is the smallest ink
+          that may carry real text. ink-3 is 6.90:1.
+
+          Absent entirely on Linux, where the `environment.d` drop-in *is* the
+          system proxy: there the variables cannot be declined without turning
+          routing off, and a switch that cannot honour itself is worse than no
+          switch. `env_export_separable` carries that from the backend rather
+          than the UI guessing at platforms. */}
+      {envExportSeparable && (
+        <div className="flex items-start gap-3 px-3.5 py-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-gc-body-sm font-medium text-gc-ink">Command-line tools</div>
+            <div className="mt-0.5 text-gc-micro leading-snug text-gc-ink-3">
+              Sets <span className="font-mono">HTTPS_PROXY</span> for your whole
+              shell, so OpenCode and other terminal tools route too.
+            </div>
+            {/* Intent and reality, kept apart here the way every ledger row
+                keeps them apart. The switch reports the stored choice, which
+                survives routing being turned off; this line reports that the
+                choice is not in effect. Without it the row painted a saturated
+                indigo track - the colour DESIGN.md reserves for live state - for
+                a channel that cannot be live, in the app whose whole thesis is
+                that its status is truthful. Same words the member pill uses for
+                the same condition, so there is one vocabulary for it. */}
+            {envExportOn && !proxyOn && (
+              <div className="mt-1 text-gc-micro font-medium leading-snug text-gc-ink-2">
+                Waiting on routing
+              </div>
+            )}
+          </div>
+          <Switch
+            on={envExportOn}
+            label="Route command-line tools through Gate"
+            busy={busy}
+            onClick={onToggleEnvExport}
+          />
+        </div>
       )}
     </div>
   );

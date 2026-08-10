@@ -56,7 +56,8 @@ sensitive and makes you feel like grown-ups are running the kitchen.
 
 - Lives in the menu bar / system tray with no dock icon. Left-click toggles a
   popover anchored underneath; right-click opens a menu.
-- The popover is one room: 360px wide, ~520px tall. Every screen works inside
+- The popover is one room: 380px wide and 620px tall, fixed and
+  non-resizable. Every screen works inside
   that frame; content scrolls within the body, header and footer never.
   Secondary surfaces slide as full-popover panels, never stacked modals.
 - Both the app and the `gate-connect` CLI call the same `gate-connect-core`
@@ -134,7 +135,7 @@ sensitive and makes you feel like grown-ups are running the kitchen.
 3. **Optimize for staying, not starting.** Sustained daily routing is the
    success metric; prefer designs that keep long-running state legible and
    trustworthy over ones that only demo well on first run.
-4. **One room, no stacks.** Everything fits the 360px popover; secondary
+4. **One room, no stacks.** Everything fits the 380px popover; secondary
    surfaces slide as full panels, never nested dialogs.
 5. **Mono earns its place.** Precision typography is a signal for identity
    and system state, never a vibe.
@@ -144,3 +145,10 @@ sensitive and makes you feel like grown-ups are running the kitchen.
 Target WCAG 2.1 AA: contrast ratios and full keyboard operability inside the
 popover. Light theme only for the first release, so AA must be met on the
 white popover surface without relying on a dark-mode fallback.
+
+Text resizes to 200% (SC 1.4.4) through the app's own five-step control in
+Settings, not through the OS or a browser zoom. A fixed, non-resizable
+menubar window exposes no other route, so the mechanism has to be ours: the
+type ramp is expressed in rem and scaled from one root variable. Layouts that
+must change at large text key off the type size in `em`, since a single fixed
+window has no width breakpoints to key off instead.

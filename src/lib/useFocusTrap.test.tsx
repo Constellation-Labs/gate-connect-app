@@ -76,3 +76,56 @@ describe("useFocusTrap across step changes", () => {
     expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
   });
 });
+
+describe("useFocusTrap focus visibility and restore", () => {
+  /** Controls draw their ring with `:focus-visible`, which a browser refuses to
+   *  match for focus it did not see the user request. So a takeover that
+   *  deliberately lands focus on the safe option painted no ring on it, and the
+   *  panel pointed at a control the user could not see was selected. One CSS
+   *  rule in index.css keys off this attribute. */
+  it("marks the programmatically focused control so its ring can be drawn", () => {
+    render(<Panel />);
+    const focused = document.activeElement as HTMLElement;
+    expect(focused).toBe(screen.getByRole("button", { name: "Advance" }));
+    expect(focused.hasAttribute("data-initial-focus")).toBe(true);
+  });
+
+  it("drops the marker once the user drives focus themselves", () => {
+    render(<Panel />);
+    const focused = document.activeElement as HTMLElement;
+    fireEvent.blur(focused);
+    expect(focused.hasAttribute("data-initial-focus")).toBe(false);
+  });
+
+  /** The quit confirm is raised by a tray click, so nothing in the popover had
+   *  focus and `previous` is `document.body`. `body.focus()` leaves
+   *  `activeElement` on body, so Escape closed the panel and dropped focus -
+   *  where the sliding panels correctly land on the incoming screen's heading. */
+  it("falls back to the screen heading when nothing opened the dialog", () => {
+    const heading = document.createElement("h1");
+    heading.setAttribute("data-screen-focus", "");
+    heading.setAttribute("tabindex", "-1");
+    document.body.appendChild(heading);
+    try {
+      const { unmount } = render(<Panel />);
+      expect(document.activeElement).not.toBe(document.body);
+      unmount();
+      expect(document.activeElement).toBe(heading);
+    } finally {
+      heading.remove();
+    }
+  });
+
+  it("returns focus to whatever opened the dialog when there was something", () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    try {
+      const { unmount } = render(<Panel />);
+      unmount();
+      expect(document.activeElement).toBe(opener);
+    } finally {
+      opener.remove();
+    }
+  });
+});

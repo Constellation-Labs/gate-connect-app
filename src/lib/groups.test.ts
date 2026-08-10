@@ -86,14 +86,14 @@ describe("buildGroups", () => {
     );
     expect(groups).toHaveLength(1);
     expect(groups[0].id).toBe(MULTI_PROVIDER_ID);
-    expect(groups[0].name).toBe("Agent harnesses");
+    expect(groups[0].name).toBe("Other tools");
     expect(groups[0].members.map((m) => m.name)).toEqual(["OpenCode", "OpenClaw"]);
     expect(groups[0].name).not.toContain("existing providers");
     // No single upstream host is true of these, so the detail must not print one.
     expect(groups[0].members.every((m) => m.coversAllProviders)).toBe(true);
     // Common noun, so it must not stay capitalised inside a sentence the way a
     // family name does.
-    expect(groups[0].switchLabel).toBe("Route agent harnesses through Gate");
+    expect(groups[0].switchLabel).toBe("Route other tools through Gate");
   });
 
   it("builds the fourth row the ledger could not previously reach", () => {

@@ -73,7 +73,18 @@ export function useFocusTrap(
     document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("keydown", onKeyDown, true);
-      previous?.focus?.();
+      // Back to whatever opened the dialog - unless nothing did. The quit
+      // confirm is raised by a tray click, so `previous` is `document.body`,
+      // and `body.focus()` leaves `activeElement` on body: Escape closed the
+      // panel and dropped focus, where the sliding panels correctly land on the
+      // incoming screen's heading. Same target they use, so one Tab after
+      // dismissing a takeover starts at the top of the screen behind it rather
+      // than at the browser chrome.
+      const restore =
+        previous && previous !== document.body && previous.isConnected
+          ? previous
+          : document.querySelector<HTMLElement>("[data-screen-focus]");
+      restore?.focus?.();
     };
   }, [ref]);
 
@@ -92,10 +103,28 @@ export function useFocusTrap(
     // `.focus()` on a disabled element is a silent no-op, so an unchecked
     // chain leaves focus on body precisely when the panel has nothing to
     // offer.
+    //
+    // `data-initial-focus` is what makes that focus *visible*. Every control
+    // here styles its ring with `:focus-visible`, and a browser declines to
+    // match that pseudo-class for focus it did not see the user request - so a
+    // takeover that deliberately points focus at the safe option painted no
+    // ring on it, and the panel pointed at a control the user could not see was
+    // selected. One CSS rule in index.css keys off this attribute; the
+    // alternative was `:focus` styling copied onto every panel's safe button.
+    // `focus({ focusVisible: true })` would be the direct fix but only Firefox
+    // implements it, and this app ships on WebKit and WebView2.
     for (const candidate of [initialFocus?.current, focusables[0], panel]) {
       if (!candidate) continue;
       candidate.focus();
-      if (document.activeElement === candidate) break;
+      if (document.activeElement === candidate) {
+        candidate.setAttribute("data-initial-focus", "");
+        // Once the user drives focus themselves, `:focus-visible` takes over
+        // and the attribute would only keep a ring on a mouse click.
+        candidate.addEventListener("blur", () => candidate.removeAttribute("data-initial-focus"), {
+          once: true,
+        });
+        break;
+      }
     }
   }, [ref, initialFocus, resetKey]);
 }

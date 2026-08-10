@@ -91,11 +91,11 @@ export function OrgPicker({
           <h1
             tabIndex={-1}
             data-screen-focus
-            className="mt-3 text-[17px] font-semibold tracking-[-0.02em] text-gc-navy outline-none"
+            className="mt-3 text-gc-panel-title font-semibold tracking-[-0.02em] text-gc-navy outline-none"
           >
             Choose an organization
           </h1>
-          <p className="mt-1.5 max-w-[290px] text-[12.5px] leading-[1.45] text-gc-ink-3">
+          <p className="mt-1.5 max-w-[290px] text-gc-body-sm leading-[1.45] text-gc-ink-3">
             Pick which organization to route your Gate traffic through.
           </p>
         </div>
@@ -105,7 +105,7 @@ export function OrgPicker({
         {loading && !error && (
           <div
             role="status"
-            className="flex items-center justify-center gap-2 py-8 text-[12.5px] text-gc-ink-3"
+            className="flex items-center justify-center gap-2 py-8 text-gc-body-sm text-gc-ink-3"
           >
             <Icon name="refresh" size={14} className="animate-spin" />
             Loading organizations…
@@ -135,8 +135,8 @@ export function OrgPicker({
                 <Icon name="cube" size={16} />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-[13px] font-medium text-gc-ink">{org.name}</div>
-                <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
+                <div className="truncate text-gc-body-md font-medium text-gc-ink">{org.name}</div>
+                <div className="truncate font-mono text-gc-label text-gc-ink-3">
                   {[org.slug, org.role].filter(Boolean).join(" · ")}
                 </div>
               </div>
@@ -153,7 +153,7 @@ export function OrgPicker({
             now on the screen. */}
         {!loading && !error && orgs?.length === 0 && (
           <div className="flex flex-col items-center gap-3 py-5 text-center">
-            <p className="max-w-[280px] text-[12.5px] leading-snug text-gc-ink-3">
+            <p className="max-w-[280px] text-gc-body-sm leading-snug text-gc-ink-3">
               This account isn&rsquo;t in an organization yet. Create one in the
               Gate dashboard, or use a Gate API key instead.
             </p>
@@ -182,7 +182,7 @@ export function OrgPicker({
           <button
             type="button"
             onClick={onReauth}
-            className="mx-auto mt-1 text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            className="mx-auto mt-1 text-gc-caption-lg font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             Wrong account? Sign out
           </button>

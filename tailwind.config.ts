@@ -203,6 +203,42 @@ export default {
         "gc-lg": "12px",
         "gc-pill": "48px",
       },
+      fontSize: {
+        // The popover's type ramp, in rem against a 16px root.
+        //
+        // These were 138 `text-[Npx]` literals and zero rem, which is why
+        // nothing in the app could be made larger: px is absolute, so a user
+        // who raises their text size saw no change at all (measured: root
+        // 16px -> 32px left a 13.5px heading at 13.5px). Expressed in rem, the
+        // whole ramp scales from one variable, which is what `useTextScale`
+        // drives.
+        //
+        // Eleven steps, not the six DESIGN.md names, because eleven is what the
+        // code actually uses and this pass must not change how anything looks at
+        // 100%. The six canonical names keep their DESIGN.md meaning; the five
+        // in-between steps are named for their role and marked here as the
+        // consolidation candidates they are. Collapsing 11 onto 6 changes
+        // appearance and belongs to a typesetting pass, not to this one.
+        //
+        // Divide by 16 to read the px value back: 0.84375rem * 16 = 13.5px.
+        //
+        // Font size only, deliberately no line-height tuple. Tailwind would emit
+        // `line-height` alongside `font-size` for each of these, which would
+        // change computed leading at every call site that does not already carry
+        // a `leading-*` utility. The existing leading is correct and this pass is
+        // a units change, not a typesetting one.
+        "gc-label": "0.65625rem", // 10.5px - mono section labels, identifiers
+        "gc-micro": "0.6875rem", // 11px   - row exception lines
+        "gc-caption": "0.71875rem", // 11.5px - captions, hints, banner copy
+        "gc-caption-lg": "0.75rem", // 12px   - inline banner actions
+        "gc-body-sm": "0.78125rem", // 12.5px - takeover body, inline links
+        "gc-body-md": "0.8125rem", // 13px   - row titles, member names
+        "gc-body": "0.84375rem", // 13.5px - buttons, inputs, sentence copy
+        "gc-title-sm": "0.875rem", // 14px   - secondary headings
+        "gc-title": "0.90625rem", // 14.5px - panel titles, wordmark
+        "gc-panel-title": "1.0625rem", // 17px   - takeover headings
+        "gc-display": "1.6875rem", // 27px   - onboarding window only
+      },
     },
   },
   plugins: [],

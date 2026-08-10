@@ -111,7 +111,7 @@ export function FirstRun({
         {/* An h1, not a div: this is the first screen of the app and it had no
             heading at all, so a screen reader landed in an unlabelled region
             with nothing to orient by. */}
-        <h1 className="mt-3 text-[17px] font-semibold tracking-[-0.02em] text-gc-navy">
+        <h1 className="mt-3 text-gc-panel-title font-semibold tracking-[-0.02em] text-gc-navy">
           {reauth ? (
             "Welcome back"
           ) : (
@@ -120,7 +120,7 @@ export function FirstRun({
             </>
           )}
         </h1>
-        <p className="mt-1.5 max-w-[290px] text-[12.5px] leading-[1.45] text-gc-ink-3">
+        <p className="mt-1.5 max-w-[290px] text-gc-body-sm leading-[1.45] text-gc-ink-3">
           {reauth
             ? "Your session expired. Sign in again to keep routing your desktop agents through Gate."
             : "Sign in to route your desktop agents through Gate, right from the menu bar."}
@@ -133,13 +133,13 @@ export function FirstRun({
       </Button>
       {signingIn && (
         <div className="mt-2 flex flex-col items-center gap-1.5">
-          <p className="text-center text-[11px] text-gc-ink-3">
+          <p className="text-center text-gc-micro text-gc-ink-3">
             Finish signing in on the page that just opened in your browser.
           </p>
           <button
             type="button"
             onClick={cancelSignIn}
-            className="text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+            className="text-gc-caption-lg font-medium text-gc-ink-3 transition hover:text-gc-ink"
           >
             Cancel
           </button>
@@ -148,20 +148,25 @@ export function FirstRun({
 
       {!showKey ? (
         <div className="mt-4 flex justify-center">
+          {/* `px-2 py-1.5` with the matching negative margins: this measured
+              128x18 under a 320x40 accent button, so it missed the 24px target
+              minimum and read as that button's caption rather than as the second
+              of two choices. The underline is what makes it a choice; the
+              padding is what makes it a target. */}
           <button
             type="button"
             onClick={() => setShowKey(true)}
-            className="text-[12px] font-medium text-gc-ink-3 transition hover:text-gc-ink-2"
+            className="-my-1.5 rounded px-2 py-1.5 text-gc-caption-lg font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink-2 hover:decoration-gc-ink-3"
           >
             Use an API key instead
           </button>
         </div>
       ) : (
         <div className="mt-5">
-          <div className="mb-1.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+          <div className="mb-1.5 font-mono text-gc-label font-medium uppercase tracking-[0.08em] text-gc-ink-3">
             Gate API Key
           </div>
-          <p className="mb-2 text-[11px] leading-snug text-gc-ink-3">
+          <p className="mb-2 text-gc-micro leading-snug text-gc-ink-3">
             Best for CI or headless machines where browser sign-in isn’t
             practical. Otherwise, sign in with Constellation: nothing to
             paste, and it refreshes on its own.
@@ -183,11 +188,11 @@ export function FirstRun({
               suppressed here (no account exists yet), so the one screen that
               handles a live key was the one screen that never named the
               vault. */}
-          <p className="mt-1.5 text-[11px] leading-snug text-gc-ink-3">
+          <p className="mt-1.5 text-gc-micro leading-snug text-gc-ink-3">
             Saved to {secretStoreName(platform)}. Your config files get the
             gateway URL, never the key.
           </p>
-          <p className="mt-1 text-[11px] text-gc-ink-3">
+          <p className="mt-1 text-gc-micro text-gc-ink-3">
             Find it under{" "}
             <button
               type="button"
@@ -214,11 +219,14 @@ export function FirstRun({
       <div className="mt-5">
         {!devMode ? (
           <div className="flex items-baseline justify-center gap-2 text-center">
-            <span className="font-mono text-[10.5px] text-gc-ink-3">{gateway}</span>
+            <span className="font-mono text-gc-label text-gc-ink-3">{gateway}</span>
+            {/* The smallest target in the app at 36x16. `-mx-1.5 -my-1.5` with
+                matching padding takes it to roughly 48x28 without moving the
+                host it sits beside. */}
             <button
               type="button"
               onClick={() => setDevMode(true)}
-              className="text-[10.5px] font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink"
+              className="-mx-1.5 -my-1.5 inline-block px-1.5 py-1.5 text-gc-label font-medium text-gc-ink-3 underline decoration-gc-line-strong underline-offset-2 transition hover:text-gc-ink"
             >
               change
             </button>
@@ -226,13 +234,13 @@ export function FirstRun({
         ) : (
           <>
             <div className="mb-1.5 flex items-center justify-between">
-              <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-gc-ink-3">
+              <span className="font-mono text-gc-label font-medium uppercase tracking-[0.08em] text-gc-ink-3">
                 Gateway server
               </span>
               <button
                 type="button"
                 onClick={() => setDevMode(false)}
-                className="text-[10.5px] font-medium text-gc-ink-3 transition hover:text-gc-ink"
+                className="text-gc-label font-medium text-gc-ink-3 transition hover:text-gc-ink"
               >
                 Hide
               </button>
@@ -249,8 +257,8 @@ export function FirstRun({
                     className="flex items-center gap-3 rounded bg-gc-surface px-3 py-2 text-left shadow-border transition hover:shadow-border-hover disabled:cursor-default disabled:hover:shadow-border"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-medium text-gc-ink">{server.label}</div>
-                      <div className="truncate font-mono text-[10.5px] text-gc-ink-3">
+                      <div className="text-gc-body-md font-medium text-gc-ink">{server.label}</div>
+                      <div className="truncate font-mono text-gc-label text-gc-ink-3">
                         {hostOf(server.url)}
                       </div>
                     </div>

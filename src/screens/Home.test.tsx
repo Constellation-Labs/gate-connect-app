@@ -55,7 +55,7 @@ function makeDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
 }
 
 /** Mirrors the real catalog: Claude Code and Codex are claimed; OpenCode and
- * OpenClaw deliberately are not, so they land in "Agent harnesses". */
+ * OpenClaw deliberately are not, so they land in "Other tools". */
 const CATALOG: ProviderState[] = [
   {
     slug: "anthropic",
@@ -98,9 +98,6 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       staleAgentsHint={false}
       onDismissStaleAgents={vi.fn()}
       onToggleProxy={vi.fn()}
-      envExportSeparable={true}
-      envExportOn={true}
-      onToggleEnvExport={vi.fn()}
       onTrustCa={vi.fn()}
       onOpenRoutes={vi.fn()}
       onOpenSettings={vi.fn()}
@@ -198,37 +195,39 @@ describe("Home master toggle", () => {
   });
 });
 
-describe("Home ledger door", () => {
-  it("names the panel it opens, in the same words the panel uses", () => {
+describe("Home ledger rows", () => {
+  it("heads the list with the words the panel titles itself with", () => {
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [makeDomain()],
     });
-    expect(screen.getByRole("button", { name: /What routes through Gate/ })).toBeTruthy();
+    // The door retired as a control; its sentence stayed as the heading, which
+    // is also what puts the list into the document outline.
+    expect(screen.getByRole("heading", { name: "What routes through Gate" })).toBeTruthy();
   });
 
-  it("opens the ledger", () => {
+  it("opens the ledger on the family the row names", () => {
     const onOpenRoutes = vi.fn();
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       onOpenRoutes,
     });
-    fireEvent.click(screen.getByRole("button", { name: /What routes through Gate/ }));
-    expect(onOpenRoutes).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Claude details" }));
+    // Carrying the id is what stops the panel charging a second click for the
+    // row the user just tapped.
+    expect(onOpenRoutes).toHaveBeenCalledWith("anthropic");
   });
 
-  it("shares one box with the routing control", () => {
+  it("keeps the rows off the routing card", () => {
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [makeDomain()],
     });
-    // Two cards with two 36px tiles stacked 10px apart read as two unrelated
-    // errands; this is one subject at two grains, so it is one box.
-    const door = screen.getByRole("button", { name: /What routes through Gate/ });
+    // The card is one control and its address; a list of the things it governs
+    // is a different grain, so it gets its own surface.
+    const row = screen.getByRole("button", { name: "Claude details" });
     const master = screen.getByRole("switch", { name: "Route through Gate" });
-    const box = door.closest(".shadow-border");
-    expect(box).toBeTruthy();
-    expect(box!.contains(master)).toBe(true);
+    expect(master.closest(".shadow-border")!.contains(row)).toBe(false);
   });
 
   it("puts the dashboard link after anything the app has to say", () => {
@@ -242,7 +241,7 @@ describe("Home ledger door", () => {
     ).toBeTruthy();
   });
 
-  it("lists the families when there is nothing to report", () => {
+  it("gives every family its own row rather than a joined list", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "connected" }),
@@ -250,7 +249,11 @@ describe("Home ledger door", () => {
       ],
       domains: [makeDomain()],
     });
-    expect(screen.getByText("Claude, OpenAI")).toBeTruthy();
+    // The door printed "Claude, OpenAI" as one line of prose. A row per family
+    // is what lets each carry its own pill, which is the point of the screen.
+    expect(screen.getByRole("button", { name: "Claude details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "OpenAI details" })).toBeTruthy();
+    expect(screen.queryByText("Claude, OpenAI")).toBeNull();
   });
 
   it("still names the families when routing is off", () => {
@@ -269,21 +272,20 @@ describe("Home ledger door", () => {
     expect(screen.getByText("Off · 1 waiting")).toBeTruthy();
   });
 
-  it("reports the failure rather than the inventory, in its own ink", () => {
-    // The rows moved to their own panel, so this door is the only thing left on
-    // Home that can answer "is anything wrong?". A mid-task user who opens the
-    // popover and reads a tidy list of family names while a tool is broken has
-    // been told the opposite of the truth.
+  it("names the failure and keeps the family it belongs to, in its own ink", () => {
+    // The door had to choose, and chose the exception, so a mid-task user read
+    // "Claude Code failed" without learning which of four families to open. A
+    // row carries both.
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
       domains: [makeDomain()],
     });
     const note = screen.getByText("Claude Code failed");
     expect(note.className).toContain("text-gc-error-deep");
-    expect(screen.queryByText("Claude")).toBeNull();
+    expect(screen.getByText("Claude")).toBeTruthy();
   });
 
-  it("prefers a failure over a quieter exception when both are present", () => {
+  it("floats the failure to the top and still shows the quieter exception", () => {
     renderHome({
       tools: [
         makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" }),
@@ -291,8 +293,26 @@ describe("Home ledger door", () => {
       ],
       domains: [makeDomain()],
     });
-    expect(screen.getByText("Claude Code failed")).toBeTruthy();
-    expect(screen.queryByText("Codex set up elsewhere")).toBeNull();
+    // Both are reported now, because there is a row for each. What the ranking
+    // buys is that the one needing a human most is the first thing on screen.
+    const failure = screen.getByText("Claude Code failed");
+    const drift = screen.getByText("Codex set up elsewhere");
+    expect(
+      failure.compareDocumentPosition(drift) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("leaves the certificate to the card that can fix it", () => {
+    // A member is only untrusted while the CA card is up, so printing
+    // "certificate not trusted" on each affected row would repeat the card's own
+    // sentence beside the only button that resolves it.
+    renderHome({
+      caTrusted: false,
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+      domains: [makeDomain()],
+    });
+    expect(screen.getByRole("button", { name: "Trust" })).toBeTruthy();
+    expect(screen.queryByText("certificate not trusted")).toBeNull();
   });
 
   it("keeps a hand-written setup in the quieter ink", () => {
@@ -315,7 +335,8 @@ describe("Home ledger door", () => {
     // over a family whose own pill read grey "Not routed", which is the one
     // screen a user opens *because* a tool stopped working.
     expect(screen.queryByText("Routing on")).toBeNull();
-    expect(screen.getByText("Partly routed")).toBeTruthy();
+    // Twice: the header's roll-up and the family's own pill, which agree.
+    expect(screen.getAllByText("Partly routed")).toHaveLength(2);
   });
 
   it("keeps the header honest when a failure leaves nothing routing", () => {
@@ -454,9 +475,15 @@ describe("Home master card is a control that owns up", () => {
       ],
       domains: [makeDomain()],
     });
-    // A family switch skips a hand-written setup, so without this the
-    // denominator sets a target the controls can't hit.
-    expect(screen.getByText(/needs attention/)).toBeTruthy();
+    // A family switch skips a hand-written setup, so a bare denominator would
+    // set a target the controls can't hit. The card used to carry a "· 1 needs
+    // attention" clause for this; the row now names the member instead, which
+    // is the same duty discharged by something the user can act on. Counting it
+    // in the card as well made one fault arrive in three vocabularies before
+    // the user learned which tool it was.
+    expect(screen.getByText("Codex set up elsewhere")).toBeTruthy();
+    expect(screen.getByText("On · 2 of 3 routing")).toBeTruthy();
+    expect(screen.queryByText(/needs attention/)).toBeNull();
   });
 
   it("stays quiet about attention when everything is reachable", () => {
@@ -484,7 +511,7 @@ describe("Home says what is waiting", () => {
   it("does not offer to close apps when nothing is installed", () => {
     renderHome({ changeNotice: "on", tools: [], domains: [] });
     expect(screen.queryByText(/Routing is on\./)).toBeNull();
-    expect(screen.getByText(/Nothing to route yet/)).toBeTruthy();
+    expect(screen.getByText(/Install a tool to route/)).toBeTruthy();
   });
 });
 
@@ -535,41 +562,90 @@ describe("Home quiet-state honesty", () => {
   });
 });
 
-describe("Home command-line tools switch", () => {
-  const NAME = "Route command-line tools through Gate";
-
-  it("toggles the shell-environment channel without touching the master", () => {
-    const onToggleEnvExport = vi.fn();
-    const onToggleProxy = vi.fn();
-    renderHome({ onToggleEnvExport, onToggleProxy });
-    fireEvent.click(screen.getByRole("switch", { name: NAME }));
-    expect(onToggleEnvExport).toHaveBeenCalledTimes(1);
-    // The sub-setting must never start or stop the engine as a side effect.
-    expect(onToggleProxy).not.toHaveBeenCalled();
+describe("Home family pill vocabulary", () => {
+  it("says why a family is dark instead of reusing the switched-off grey", () => {
+    // Switched on, master on, certificate untrusted. This rendered "Not routed",
+    // byte-identical to a family the user turned off - and then jumped to green
+    // when they pressed Trust, teaching them the pill is approximate.
+    renderHome({ caTrusted: false, domains: [makeDomain({ enabled: true })] });
+    expect(screen.getAllByText("Needs trust").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Not routed")).toBeNull();
   });
 
-  it("reflects the backend's choice rather than the master's state", () => {
-    renderHome({ envExportOn: false, proxyOn: true });
-    expect(screen.getByRole("switch", { name: NAME }).getAttribute("aria-checked")).toBe("false");
+  it("leaves master-off to the card, which says it once as a count", () => {
+    // `master-off` is `enabled && !proxyOn`, and proxyOn is global, so it can
+    // never distinguish one family from another: on the pill it is four
+    // identical capsules restating the card directly above them. DESIGN.md:
+    // "Card-owned states never print on a row."
+    renderHome({
+      proxyOn: false,
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+    });
+    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
+    // The card carries it, once, and countably.
+    expect(screen.getByText(/Off .+ waiting$/)).toBeTruthy();
   });
 
-  it("is absent where the channel cannot be separated from routing", () => {
-    // Linux: the environment.d drop-in *is* the system proxy, so a switch here
-    // could not honour itself. Better no control than one that lies.
-    renderHome({ envExportSeparable: false });
-    expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
-    // The master switch is unaffected.
-    expect(screen.getByRole("switch", { name: "Route through Gate" })).toBeTruthy();
+  it("still says Not routed when the user is the reason", () => {
+    renderHome({
+      proxyOn: true,
+      domains: [makeDomain({ enabled: false })],
+    });
+    expect(screen.getAllByText("Not routed").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Waiting on routing")).toBeNull();
+    expect(screen.queryByText("Needs trust")).toBeNull();
+  });
+});
+
+describe("Home blocker ordering", () => {
+  /** DESIGN.md, "Blockers outrank inventory": anything that explains why traffic
+   *  is not flowing, and carries the fix, sits above the list. Both banners
+   *  rendered *below* all four rows, so the two states where the user's tools
+   *  are broken opened with green pills on top and the contradicting sentence
+   *  underneath. */
+  function ledgerHeading() {
+    return screen.getByRole("heading", { name: "What routes through Gate" });
+  }
+
+  it("puts the stale-address notice above the ledger", () => {
+    renderHome({
+      staleAgentsHint: true,
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+    });
+    const banner = screen.getByText(/local address changed/);
+    expect(
+      banner.compareDocumentPosition(ledgerHeading()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
-  it("sits inside the routing card, under the master switch", () => {
-    renderHome();
-    const master = screen.getByRole("switch", { name: "Route through Gate" });
-    const sub = screen.getByRole("switch", { name: NAME });
-    const card = master.closest("div.shadow-border");
-    expect(card).toBeTruthy();
-    expect(card!.contains(sub)).toBe(true);
-    // Order matters: it is the master's sub-setting, not a peer above it.
-    expect(master.compareDocumentPosition(sub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  it("puts the routing-change notice above the ledger", () => {
+    renderHome({
+      changeNotice: "on",
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
+    });
+    const banner = screen.getByText(/Anything already open/);
+    expect(
+      banner.compareDocumentPosition(ledgerHeading()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the certificate card above the ledger too", () => {
+    renderHome({ caTrusted: false, domains: [makeDomain()] });
+    const card = screen.getByText(/Apps with no gateway setting need/);
+    expect(
+      card.compareDocumentPosition(ledgerHeading()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("tabs to Trust before its explainer, which sits lower", () => {
+    // The sentence wraps, so "What's this?" renders below Trust. DOM order has
+    // to match what the eye meets first or focus travels bottom-then-up.
+    renderHome({ caTrusted: false, domains: [makeDomain()] });
+    const trust = screen.getByRole("button", { name: "Trust" });
+    const explain = screen.getByRole("button", { name: /What.s this/ });
+    expect(
+      trust.compareDocumentPosition(explain) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

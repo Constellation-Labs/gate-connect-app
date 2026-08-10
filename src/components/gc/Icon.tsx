@@ -26,7 +26,8 @@ export type IconName =
   | "x"
   | "plus"
   | "search"
-  | "logOut";
+  | "logOut"
+  | "book";
 
 const PATHS: Record<IconName, JSX.Element> = {
   shieldCheck: (
@@ -136,6 +137,12 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
       <path d="m16 17 5-5-5-5" />
       <path d="M21 12H9" />
+    </>
+  ),
+  book: (
+    <>
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
     </>
   ),
 };
