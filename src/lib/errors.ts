@@ -119,6 +119,21 @@ export function classifyError(
     };
   }
 
+  // The Windows certificate trust dialog was declined or dismissed
+  // (`ca_windows.rs` bails with this sentence when certutil -addstore exits
+  // non-zero). certutil reports no "user cancelled" string of its own, so this
+  // fell past the cancelled-prompt branch below all the way to the generic
+  // fallback, which answered "Try again. If it keeps failing, the details
+  // below help when reporting it." - advice for a bug, on the one failure that
+  // is the user's own deliberate No. Names the dialog and the button instead.
+  if (lc.includes("certificate trust dialog was cancelled")) {
+    return {
+      title: "The certificate wasn’t trusted",
+      hint: "Click Trust again and choose Yes in the Windows security warning. Apps with no gateway setting can’t route until it’s trusted.",
+      raw,
+    };
+  }
+
   // Auth prompt cancelled (macOS osascript exits -128; the Windows and Linux
   // credential prompts report their own cancels through the same branch).
   if (
@@ -153,7 +168,11 @@ export function classifyError(
         : context === "sign_out"
           ? "Sign out"
           : context === "trust_ca"
-            ? "Trust certificate"
+            ? // "Trust", not "Trust certificate": both buttons that raise this
+              // prompt (Home's certificate card, the family panel's banner) are
+              // labelled Trust, and this hint's whole job is naming the control
+              // the user pressed.
+              "Trust"
             : context === "untrust_ca"
               ? "Remove"
               : context === "close_agents" || context === "quit_disable"

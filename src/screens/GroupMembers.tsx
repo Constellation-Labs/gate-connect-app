@@ -5,7 +5,13 @@ import { classifyError, type ClassifiedError } from "../lib/errors";
 import { trackError } from "../lib/analytics";
 import { Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
 import { MemberPill, memberPillLabel } from "../components/GroupPill";
-import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
+import {
+  secretStoreName,
+  trustPromptHint,
+  trustPromptWaiting,
+  usePlatform,
+  type Platform,
+} from "../lib/platform";
 import { Icon } from "../components/gc/Icon";
 
 /** Host only, for the mono identifier slot. */
@@ -118,6 +124,7 @@ export function GroupMembers({
   onToggleTool,
   onSetDomain,
   onTrustCa,
+  trustPending,
   proxyOn,
   onEnableRouting,
   authMode,
@@ -130,6 +137,9 @@ export function GroupMembers({
   /** The remedy for a needs-trust member, offered where the problem is named
    * rather than back on Home. Rejects on failure so the row can show it. */
   onTrustCa: () => Promise<void>;
+  /** Whether the OS trust dialog is up and we're blocked on it, so the banner
+   * can name the dialog instead of showing a dead button. */
+  trustPending: boolean;
   /** Whether the engine is running. A member can be switched on and still not
    * route, which is what the master-off state is. */
   proxyOn: boolean;
@@ -202,8 +212,15 @@ export function GroupMembers({
           flipping a member switch moved its pill from "Routed" to "Not routed"
           silently. The switch's own `aria-checked` is announced by the platform;
           this is the reality half. */}
+      {/* `trustPending` first, as on Home: while the OS dialog is up, the thing
+          a screen-reader user needs is the instruction for a window they were
+          never told had opened. */}
       <span aria-live="polite" className="sr-only">
-        {changedMember ? `${changedMember.name}, ${memberPillLabel(changedMember)}` : ""}
+        {trustPending
+          ? trustPromptWaiting(platform)
+          : changedMember
+            ? `${changedMember.name}, ${memberPillLabel(changedMember)}`
+            : ""}
       </span>
       {group.desired > 0 && !proxyOn && (
         // `flex-wrap` with an `em` basis on the sentence, the rule the routing
@@ -246,8 +263,20 @@ export function GroupMembers({
         <div className="mx-3.5 mb-2 flex flex-wrap items-center gap-x-2.5 gap-y-2 rounded bg-gc-warning-wash px-3 py-2.5">
           <Icon name="info" size={15} className="shrink-0 text-gc-warning" />
           <div className="min-w-0 flex-1 basis-[9em] text-gc-caption leading-snug text-gc-ink-2">
-            {untrusted.length === 1 ? `${untrusted[0].name} needs` : "These need"} the
-            Gate certificate. It never leaves this machine.
+            {/* Same handoff sentence Home's card carries, for the same reason
+                and in the same words: this button raises the same OS dialog,
+                and a user who trusts from here must not meet an unannounced
+                system security warning that the other screen would have warned
+                them about. Present tense while we're blocked on it. */}
+            {trustPending ? (
+              trustPromptWaiting(platform)
+            ) : (
+              <>
+                {untrusted.length === 1 ? `${untrusted[0].name} needs` : "These need"} the
+                Gate certificate. It never leaves this machine.{" "}
+                <span className="text-gc-ink-3">{trustPromptHint(platform)}</span>
+              </>
+            )}
           </div>
           <Button
             variant="accent"
@@ -256,7 +285,7 @@ export function GroupMembers({
             disabled={busy}
             onClick={() => void trustFromRow(untrusted[0])}
           >
-            Trust
+            {trustPending ? "Waiting…" : "Trust"}
           </Button>
         </div>
       )}

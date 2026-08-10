@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { secretStoreName, trustStoreName, type Platform } from "./platform";
+import {
+  secretStoreName,
+  trustPromptHint,
+  trustPromptWaiting,
+  trustStoreName,
+  type Platform,
+} from "./platform";
 
 const PLATFORMS: Platform[] = ["macos", "windows", "linux", "unknown"];
 
@@ -53,6 +59,56 @@ describe("trustStoreName", () => {
   it("never confuses the CA trust store with the secret store", () => {
     for (const p of PLATFORMS) {
       expect(trustStoreName(p)).not.toBe(secretStoreName(p));
+    }
+  });
+});
+
+describe("trustPromptHint", () => {
+  it("warns the Windows user that a security warning is coming, and that it's expected", () => {
+    const hint = trustPromptHint("windows");
+    expect(hint).toContain("security warning");
+    expect(hint).toContain("expected");
+    // The button that ends it. "Confirm"/"OK" name nothing on that dialog.
+    expect(hint).toContain("Yes");
+  });
+
+  it("names the password prompt on macOS and Linux, not a Yes button", () => {
+    expect(trustPromptHint("macos")).toContain("password");
+    expect(trustPromptHint("linux")).toContain("password");
+    expect(trustPromptHint("macos")).not.toContain("Yes");
+    expect(trustPromptHint("linux")).not.toContain("Yes");
+  });
+
+  it("still sets an expectation on an unresolved platform", () => {
+    // `unknown` is the state for the first async tick, so this string does
+    // reach the screen: it must not be empty, and must not guess a mechanism.
+    const hint = trustPromptHint("unknown");
+    expect(hint.length).toBeGreaterThan(0);
+    expect(hint).not.toContain("password");
+    expect(hint).not.toContain("Windows");
+  });
+});
+
+describe("trustPromptWaiting", () => {
+  it("names the certificate Windows is quoting back, so the user can match it", () => {
+    // Exactly the CN in cert_authority.rs. A near-miss here is worse than
+    // silence: the dialog quotes the real name, and a mismatch is what a
+    // careful user would read as "this is not the app that asked".
+    expect(trustPromptWaiting("windows")).toContain("Gate Connect Local CA");
+    expect(trustPromptWaiting("windows")).toContain("Yes");
+  });
+
+  it("is present tense on every platform, because the dialog is already up", () => {
+    for (const p of PLATFORMS) {
+      const waiting = trustPromptWaiting(p);
+      expect(waiting.length).toBeGreaterThan(0);
+      expect(waiting).not.toContain("will ask");
+    }
+  });
+
+  it("differs from the pre-click hint everywhere, so the swap is visible", () => {
+    for (const p of PLATFORMS) {
+      expect(trustPromptWaiting(p)).not.toBe(trustPromptHint(p));
     }
   });
 });

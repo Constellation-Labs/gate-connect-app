@@ -41,6 +41,7 @@ export function FamilyPanel({
   onToggleTool,
   onSetDomain,
   onTrustCa,
+  trustPending,
   proxyOn,
   onEnableRouting,
   authMode,
@@ -54,6 +55,7 @@ export function FamilyPanel({
   onToggleTool: (slug: string, routed: boolean) => Promise<void>;
   onSetDomain: (slug: string, enabled: boolean) => Promise<void>;
   onTrustCa: () => Promise<void>;
+  trustPending: boolean;
   proxyOn: boolean;
   onEnableRouting: () => void;
   authMode?: AuthMode;
@@ -135,6 +137,7 @@ export function FamilyPanel({
         onToggleTool={onToggleTool}
         onSetDomain={onSetDomain}
         onTrustCa={onTrustCa}
+        trustPending={trustPending}
         proxyOn={proxyOn}
         onEnableRouting={onEnableRouting}
         authMode={authMode}
