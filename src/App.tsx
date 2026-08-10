@@ -39,6 +39,7 @@ import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
 import { FamilyPanel } from "./screens/FamilyPanel";
 import { Settings } from "./screens/Settings";
+import { Diagnostics } from "./screens/Diagnostics";
 import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
@@ -63,6 +64,7 @@ type Screen =
   | "orgpicker"
   | "home"
   | "settings"
+  | "diagnostics"
   | "success"
   | "family";
 
@@ -79,6 +81,10 @@ const SCREEN_DEPTH: Record<Screen, number> = {
   success: 2,
   home: 0,
   settings: 1,
+  // One level below Settings, which is where it is reached from: a report
+  // about the machine is a leaf, and Back returns to the section that opened
+  // it rather than to Home.
+  diagnostics: 2,
   // A family has a screen of its own again, and it is the only thing on it. It
   // sits at depth 1 rather than 2 because it opens straight off Home: the
   // all-families ledger that used to be the level in between is gone, since
@@ -599,6 +605,12 @@ export function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
       if (quitTools !== null || routingNotice !== null) return;
+      // Diagnostics pops to Settings, not to Home: it is one level deeper, and
+      // Escape should undo the last step rather than the last two.
+      if (screen === "diagnostics") {
+        setScreen("settings");
+        return;
+      }
       if (screen === "settings" || screen === "family") {
         setProviderError(null);
         setScreen("home");
@@ -1073,12 +1085,25 @@ export function App() {
         onReplayTour={() => {
           openOnboardingWindow("settings").catch(() => {});
         }}
+        onOpenDiagnostics={() => setScreen("diagnostics")}
         routingOn={proxyOn}
         caTrusted={proxy?.ca_trusted ?? false}
         proxyBusy={proxyBusy}
         onUntrustCa={untrustCa}
         textScale={textScale}
         onSetTextScale={setTextScale}
+      />
+    );
+  } else if (screen === "diagnostics") {
+    body = (
+      <Diagnostics
+        onBack={() => setScreen("settings")}
+        version={version}
+        account={account}
+        oauth={oauth}
+        proxy={proxy}
+        providers={providers}
+        tools={tools}
       />
     );
   } else if (screen === "family" && openGroup) {
