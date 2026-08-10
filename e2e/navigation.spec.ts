@@ -86,15 +86,6 @@ test.describe("navigation", () => {
     await expect(header).toBeVisible();
     await expect(footer).toBeVisible();
   });
-
-  test("the vault is named per platform", async ({ boot }) => {
-    const app = await boot({ platform: "windows" });
-
-    // Not "keychain" on Windows: a reassurance that names the wrong vault is
-    // worth nothing.
-    await expect(app.page.getByText(/Credential Manager/)).toBeVisible();
-    await expect(app.page.getByText(/keychain/i)).toHaveCount(0);
-  });
 });
 
 /** Settings' own controls, which reach commands nothing else does. */

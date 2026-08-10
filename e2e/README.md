@@ -24,7 +24,10 @@ handoffs, backend events arriving unprompted, a command rejecting.
   tests and, against real AI CLIs and a real relay, by `ci/e2e/run.sh`.
 - **Cross-browser rendering.** One Chromium project. The app ships in one
   webview per platform and none of them is Chromium; a matrix here would be
-  coverage of something we don't ship.
+  coverage of something we don't ship. `platform.spec.ts` covers what the app
+  *does* per platform (chrome, nouns, which controls exist) by faking
+  `app_platform`; how any of it paints in WKWebView, WebView2 or WebKitGTK is
+  not covered by anything.
 - **Re-testing one screen's branches.** If it can be asserted by rendering a
   single component with props, it belongs in a `.test.tsx` next to that
   component - those run in a second and these don't.
