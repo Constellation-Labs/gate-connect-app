@@ -107,6 +107,7 @@ jobs:
                        elseif ($r.ok)    { 'exited 0 but the cert is NOT in the store' }
                        else              { 'failed, no dialog' }
             Write-Host "    $verdict  (${secs}s)"
+            if ($r.out -and $r.out.Trim()) { Write-Host "    output: $($r.out.Trim())" }
             Write-Host "    cleanup delstore: ok=$($del.ok) timedout=$($del.timedout)"
             Write-Host ""
             $script:results += [pscustomobject]@{ Mechanism = $name; Verdict = $verdict; Seconds = $secs }
@@ -159,6 +160,11 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          # GitHub runs `shell: bash` with -e, so the first bounded call that
+          # reports a blocked dialog (rc 124) killed the step before reaching
+          # the cases this probe exists to answer. A probe whose whole purpose
+          # is to observe failures must not abort on one.
+          set +e
           W="$RUNNER_TEMP/certprobe"; mkdir -p "$W"
           CERT="$W/probe-ca.pem"
           openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/k.pem" -out "$CERT" \
