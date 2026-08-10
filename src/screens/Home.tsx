@@ -4,7 +4,7 @@ import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import type { Group, GroupException } from "../lib/groups";
-import { buildGroups, groupSummary } from "../lib/groups";
+import { buildGroups, groupSummary, MULTI_PROVIDER_ID } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, ErrorNote, Button } from "../components/gc/ui";
 import { GroupPill, groupPillLabel } from "../components/GroupPill";
@@ -800,10 +800,23 @@ function FamilyRow({
   onOpen: () => void;
 }) {
   const label = groupPillLabel(group);
-  // Whether anything renders under the name: the exception sentence, or the
-  // roster when there is no exception. Drives the name row's bottom padding, so
-  // a name and the line that belongs to it read as one group.
-  const roster = !exception && group.members.length > 0;
+  // The roster, on the one family whose name does not say what is in it.
+  //
+  // Same rule the panel's `blurb` already follows, one layer up: a family named
+  // after a provider says what it covers, and "Claude Code · Claude Desktop /
+  // Cowork" under an h3 reading "Anthropic" is close enough to the same fact
+  // that it cost a line for very little. "Other tools" is named by exclusion, so
+  // it is the row that cannot be read at all without its members, and the one
+  // the user could not map to anything on their own machine.
+  //
+  // Measured, the provider rosters were also the ones earning least where space
+  // was tightest: with a restart notice up, the two rows still showing a roster
+  // were "OpenRouter · OpenRouter apps" and the one that mattered, while
+  // Anthropic and OpenAI were showing exceptions and had no roster anyway.
+  //
+  // Suppressed by an exception for the same reason as before: that sentence
+  // takes this slot and already names a member.
+  const roster = !exception && group.id === MULTI_PROVIDER_ID && group.members.length > 0;
   const secondLine = !!exception || roster;
   return (
     <div
@@ -875,11 +888,11 @@ function FamilyRow({
           <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
         </div>
       </div>
-      {/* Who is in this family, so a row is not just a category. "Other tools"
-          is named by exclusion and told the user nothing about their own
-          machine; "Anthropic" and "OpenAI" name a provider rather than the
-          things on disk that talk to it. This is the line that makes the ledger
-          answer "what is that?" without opening anything.
+      {/* Who is in this family, so the row that cannot be read without it is not
+          just a category. "Other tools" is the label on a
+          `filter(t => !claimed.has(t.slug))`; it tells the user nothing about
+          their own machine, and the panel's blurb explaining it is a click away.
+          This is the line that answers "what is that?" in place.
 
           Separated by "·", not "/". Two member names in the real catalog
           already contain a slash - "Claude Desktop / Cowork" is one member, not
@@ -887,14 +900,9 @@ function FamilyRow({
           two. The middot is also what the app already uses to join a domain's
           hosts, so it is the existing vocabulary for "these, together".
 
-          Not shown when the row has an exception. That sentence takes this
-          line's place and already names a member, so the row stops being
-          anonymous by another route; printing both would repeat a tool name
-          twice on one row and add a third line to the state that already grew.
-
           No `truncate` and no clamp. It wraps, because a cut roster is a list
-          the user has to open the panel to trust, and the catalog tops out at
-          three or four members so the growth is bounded. */}
+          the user has to open the panel to trust, and this family holds two or
+          three tools so the growth is bounded. */}
       {roster && (
         <div className="relative px-3.5 pb-2">
           <span className="pointer-events-none block text-gc-micro leading-snug text-gc-ink-3">

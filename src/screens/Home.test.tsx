@@ -729,45 +729,50 @@ describe("Home command-line tools switch", () => {
 });
 
 describe("Home family roster", () => {
-  it("names the members under the family, so a row is not just a category", () => {
-    renderHome({
-      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
-      domains: [makeDomain()],
-    });
-    // "Anthropic" names a provider; this names the things on the user's machine
-    // that talk to it.
-    expect(screen.getByText("Claude Code · Claude Desktop / Cowork")).toBeTruthy();
-  });
-
-  it("joins with a middot, because a member name can contain a slash", () => {
-    renderHome({
-      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
-      domains: [makeDomain()],
-    });
-    // "Claude Desktop / Cowork" is one member. Slash-joined, this roster would
-    // read as three tools where there are two.
-    expect(screen.queryByText("Claude Code / Claude Desktop / Cowork")).toBeNull();
-  });
-
-  it("gives the family named by exclusion the roster it most needs", () => {
+  it("names the members of the family named by exclusion", () => {
     renderHome({
       tools: [
         makeTool("opencode", "OpenCode", { kind: "connected" }, "your existing providers"),
         makeTool("openclaw", "OpenClaw", { kind: "connected" }, "your existing providers"),
       ],
     });
+    // "Other tools" is the label on a filter; it is the one row a first-timer
+    // cannot map to anything on their own machine.
     expect(screen.getByText("Other tools")).toBeTruthy();
     expect(screen.getByText("OpenCode · OpenClaw")).toBeTruthy();
   });
 
-  it("yields the line to an exception, which already names a member", () => {
+  it("joins with a middot, because a member name can contain a slash", () => {
     renderHome({
-      tools: [makeTool("claude-code", "Claude Code", { kind: "error", message: "bad json" })],
+      tools: [makeTool("opencode", "OpenCode", { kind: "connected" }, "your existing providers")],
+      domains: [makeDomain({ slug: "anthropic" })],
+    });
+    // "Claude Desktop / Cowork" is one member. A slash-joined roster would read
+    // as two tools where there is one, anywhere a family holds such a name.
+    expect(screen.queryByText(/OpenCode \/ /)).toBeNull();
+  });
+
+  it("stays off a family whose name already says what it covers", () => {
+    renderHome({
+      tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
       domains: [makeDomain()],
     });
-    // Both would put a third line on the row that already grew, and print one
-    // tool's name twice.
-    expect(screen.getByText("Claude Code failed")).toBeTruthy();
+    // Same rule the panel's blurb follows: "Claude Code · Claude Desktop /
+    // Cowork" under an h3 reading "Anthropic" costs a line for nearly the same
+    // fact, and these are the rows that carry an exception instead.
+    expect(screen.getByText("Claude")).toBeTruthy();
     expect(screen.queryByText("Claude Code · Claude Desktop / Cowork")).toBeNull();
+  });
+
+  it("yields the line to an exception, which already names a member", () => {
+    renderHome({
+      tools: [
+        makeTool("opencode", "OpenCode", { kind: "error", message: "bad json" }, "your existing providers"),
+        makeTool("openclaw", "OpenClaw", { kind: "connected" }, "your existing providers"),
+      ],
+    });
+    // Both would put a third line on the row that already grew.
+    expect(screen.getByText("OpenCode failed")).toBeTruthy();
+    expect(screen.queryByText("OpenCode · OpenClaw")).toBeNull();
   });
 });
