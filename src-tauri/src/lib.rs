@@ -517,6 +517,20 @@ fn app_platform() -> &'static str {
     std::env::consts::OS
 }
 
+/// Backend half of the diagnostics report: the facts about this install the
+/// webview has no other way to see (OS build, data dir, persisted ports, and
+/// the live OS-side readback of both proxy channels). Never fails - an
+/// unresolvable field comes back null, because the machines that need this
+/// report are the ones where probes fail. Carries no credential; see
+/// `gate_connect_core::diagnostics`.
+///
+/// On macOS this shells out to `networksetup` once per active network
+/// service, so it is bound to an explicit user action rather than any poll.
+#[tauri::command]
+fn diagnostics() -> gate_connect_core::diagnostics::Diagnostics {
+    gate_connect_core::diagnostics::collect()
+}
+
 // ---- Providers ----
 //
 // One user-facing switch per model provider. Orchestrates the config
@@ -1007,6 +1021,29 @@ fn running_agents_count() -> u32 {
     count
 }
 
+/// The Unix second before which a running process counts as pre-routing: the
+/// last in-process enable, falling back to our own process start when routing
+/// was already up before we launched (detached Linux engine). `None` when
+/// neither is available, which callers degrade on rather than guessing.
+///
+/// Extracted so the count probe and the diagnostics listing cannot answer
+/// "does this process predate routing" two different ways.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn routing_bound_unix() -> Option<u64> {
+    use sysinfo::{ProcessesToUpdate, System};
+    let enabled_at = ROUTING_ENABLED_AT_UNIX.load(Ordering::Acquire);
+    if enabled_at != 0 {
+        return Some(enabled_at);
+    }
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sysinfo::get_current_pid()
+        .ok()
+        .and_then(|pid| sys.process(pid))
+        .map(|p| p.start_time())
+        .filter(|start| *start != 0)
+}
+
 /// Count running agent processes that were started *before* routing last came
 /// up, i.e. the ones that resolved their connection pre-Gate and genuinely
 /// need a restart to route. Same process set as `running_agents_count`; the
@@ -1015,22 +1052,11 @@ fn running_agents_count() -> u32 {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn stale_agents_count() -> u32 {
-    use sysinfo::{ProcessesToUpdate, System};
-    let mut bound = ROUTING_ENABLED_AT_UNIX.load(Ordering::Acquire);
-    if bound == 0 {
-        let mut sys = System::new();
-        sys.refresh_processes(ProcessesToUpdate::All, true);
-        bound = sysinfo::get_current_pid()
-            .ok()
-            .and_then(|pid| sys.process(pid))
-            .map(|p| p.start_time())
-            .unwrap_or(0);
-    }
-    if bound == 0 {
+    let Some(bound) = routing_bound_unix() else {
         // No usable bound: degrade to "every running agent counts", the
         // pre-timestamp behavior, rather than silently claiming freshness.
         return running_agents_count();
-    }
+    };
     let mut count = 0u32;
     for_each_agent_process(|process| {
         if process.start_time() < bound {
@@ -1038,6 +1064,67 @@ fn stale_agents_count() -> u32 {
         }
     });
     count
+}
+
+/// One running AI tool, as the diagnostics report lists it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RunningAgent {
+    /// Process name as the OS spells it, original case - "Claude" is the
+    /// desktop app, "claude" the CLI, and which one is running matters.
+    name: String,
+    pid: u32,
+    /// Process start, Unix seconds. 0 when the platform wouldn't say.
+    started_at_unix: u64,
+    /// Started before routing last came up, so it resolved its connection
+    /// pre-Gate and needs a restart to route. Same rule as
+    /// [`stale_agents_count`], via [`routing_bound_unix`].
+    predates_routing: bool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RunningAgentsDto {
+    /// The names this scan looks for ([`AGENT_PROCESS_NAMES`]). Reported so an
+    /// empty list reads as "none of these three were running" rather than "no
+    /// AI tools are running" - the scan does not cover Hermes or OpenClaw, and
+    /// a report that hid that would be read as evidence they were stopped.
+    scanned_names: Vec<String>,
+    agents: Vec<RunningAgent>,
+}
+
+/// The running agent processes themselves, not just how many: name, pid, when
+/// each started, and whether it predates routing. Same process set and the
+/// same staleness rule as the two count probes, so the diagnostics report and
+/// the routing takeover can never disagree about what is running.
+///
+/// Deliberately carries no command line: argv on these tools routinely holds
+/// prompts, file paths and occasionally a key, and this list is built to be
+/// pasted into a support thread.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn running_agents() -> RunningAgentsDto {
+    let bound = routing_bound_unix();
+    let mut agents = Vec::new();
+    for_each_agent_process(|process| {
+        let started_at_unix = process.start_time();
+        agents.push(RunningAgent {
+            name: process.name().to_string_lossy().to_string(),
+            pid: process.pid().as_u32(),
+            started_at_unix,
+            // No usable bound degrades to "everything predates routing", the
+            // same conservative direction `stale_agents_count` takes.
+            predates_routing: bound.map(|b| started_at_unix < b).unwrap_or(true),
+        });
+    });
+    // Oldest first: the ones that predate routing are the ones being looked
+    // for, and a stable order keeps two reports from the same machine
+    // diffable.
+    agents.sort_by_key(|agent| agent.started_at_unix);
+    RunningAgentsDto {
+        scanned_names: AGENT_PROCESS_NAMES.iter().map(|n| n.to_string()).collect(),
+        agents,
+    }
 }
 
 /// Terminate running agent processes (CLIs and desktop apps, see
@@ -1321,6 +1408,7 @@ pub fn run() {
                     oauth_list_orgs,
                     set_org,
                     app_platform,
+                    diagnostics,
                     unpin_popover,
                     pin_popover,
                     open_onboarding_window,
@@ -1345,6 +1433,7 @@ pub fn run() {
                     routed_clients_stale,
                     running_agents_count,
                     stale_agents_count,
+                    running_agents,
                     close_running_agents,
                     drain_backend_errors,
                 ]
@@ -1371,6 +1460,7 @@ pub fn run() {
                     oauth_list_orgs,
                     set_org,
                     app_platform,
+                    diagnostics,
                     unpin_popover,
                     pin_popover,
                     open_onboarding_window,
