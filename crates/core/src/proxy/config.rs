@@ -28,6 +28,18 @@ fn config_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("proxy").join("domains.json"))
 }
 
+/// Last-modified time of the domains file, or `None` when it does not exist
+/// yet or cannot be stat'd.
+///
+/// For watchers that need to notice a write made by *another process*: a
+/// second `gate-connect` invocation toggling a domain writes this file, and
+/// whoever is hosting the engine has no other way to learn of it. Deliberately
+/// a stat rather than a full parse, so polling it costs nothing.
+#[cfg(target_os = "macos")]
+pub(crate) fn domains_file_mtime() -> Option<std::time::SystemTime> {
+    fs::metadata(config_path().ok()?).ok()?.modified().ok()
+}
+
 fn read_file() -> Result<DomainsFile> {
     let path = config_path()?;
     match fs::read_to_string(&path) {
