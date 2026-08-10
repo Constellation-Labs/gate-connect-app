@@ -1,0 +1,151 @@
+name: Probe (Windows cert install)
+
+# THROWAWAY. Answers one question before we build anything on the answer:
+# which mechanism can put a root cert into the per-user Root store on a
+# headless GitHub Windows runner *without* the native trust dialog.
+#
+# We know the product's own path prompts - `certutil -user -addstore Root` is
+# documented in ca_windows.rs as deliberately showing it, and it blocked the
+# real-tools job until the 8-minute timeout, twice. That is the baseline case
+# below, included so the probe proves it rather than assumes it.
+#
+# Every mechanism is bounded, so a prompting one reports "TIMED OUT (blocked
+# on a dialog)" instead of hanging the runner. Delete this workflow once the
+# answer is recorded.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/win-cert-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: win-cert-probe
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - name: Probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $work = Join-Path $env:RUNNER_TEMP 'certprobe'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          $pem = Join-Path $work 'probe-ca.pem'
+          $cer = Join-Path $work 'probe-ca.cer'
+
+          # A real self-signed CA on disk, the same shape the product hands to
+          # certutil (a PEM path).
+          & openssl req -x509 -newkey rsa:2048 -nodes -keyout (Join-Path $work 'k.pem') `
+            -out $pem -days 1 -subj "/CN=Gate Probe CA" 2>$null
+          & openssl x509 -outform der -in $pem -out $cer 2>$null
+          $fp = (& openssl x509 -in $pem -noout -fingerprint -sha1)
+          $thumb = ($fp -replace '.*=','') -replace ':',''
+          $thumb = $thumb.Trim().ToUpper()
+
+          Write-Host "session interactive : $([Environment]::UserInteractive)"
+          Write-Host "running as admin    : $((New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator))"
+          Write-Host "probe CA thumbprint : $thumb"
+          Write-Host ""
+
+          # Run a native command with a hard bound. A mechanism that pops the
+          # trust dialog blocks here; that is the signal we are after.
+          function Invoke-Bounded([string]$file, [string[]]$argv, [int]$sec = 45) {
+            $psi = New-Object Diagnostics.ProcessStartInfo
+            $psi.FileName = $file
+            foreach ($a in $argv) { $psi.ArgumentList.Add($a) }
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $p = [Diagnostics.Process]::Start($psi)
+            if (-not $p.WaitForExit($sec * 1000)) {
+              try { $p.Kill($true) } catch {}
+              return @{ ok = $false; timedout = $true; code = -1 }
+            }
+            return @{ ok = ($p.ExitCode -eq 0); timedout = $false; code = $p.ExitCode }
+          }
+
+          # Same bound for a PowerShell scriptblock (the cmdlet / .NET paths).
+          function Invoke-BoundedBlock([scriptblock]$sb, [int]$sec = 45) {
+            $j = Start-Job -ScriptBlock $sb
+            if (-not (Wait-Job $j -Timeout $sec)) {
+              Stop-Job $j -ErrorAction SilentlyContinue
+              Remove-Job $j -Force -ErrorAction SilentlyContinue
+              return @{ ok = $false; timedout = $true }
+            }
+            $out = Receive-Job $j 2>&1
+            $ok = ($j.State -eq 'Completed')
+            Remove-Job $j -Force -ErrorAction SilentlyContinue
+            return @{ ok = $ok; timedout = $false; out = ($out | Out-String) }
+          }
+
+          function Test-Present([string]$scope, [string]$thumb) {
+            $argv = if ($scope -eq 'user') { @('-user','-store','Root',$thumb) } else { @('-store','Root',$thumb) }
+            return (Invoke-Bounded 'certutil' $argv 20).ok
+          }
+
+          function Remove-Probe([string]$scope, [string]$thumb) {
+            $argv = if ($scope -eq 'user') { @('-user','-delstore','Root',$thumb) } else { @('-delstore','Root',$thumb) }
+            $r = Invoke-Bounded 'certutil' $argv 20
+            return @{ ok = $r.ok; timedout = $r.timedout }
+          }
+
+          $results = @()
+          function Probe([string]$name, [string]$scope, [scriptblock]$install) {
+            Write-Host "=== $name"
+            Remove-Probe $scope $thumb | Out-Null      # start clean
+            $t0 = Get-Date
+            $r = & $install
+            $secs = [int]((Get-Date) - $t0).TotalSeconds
+            $present = if ($r.timedout) { $false } else { Test-Present $scope $thumb }
+            $del = Remove-Probe $scope $thumb
+            $verdict = if ($r.timedout) { 'PROMPTED (blocked until the bound)' }
+                       elseif ($present) { 'PROMPTLESS - cert landed in the store' }
+                       elseif ($r.ok)    { 'exited 0 but the cert is NOT in the store' }
+                       else              { 'failed, no dialog' }
+            Write-Host "    $verdict  (${secs}s)"
+            Write-Host "    cleanup delstore: ok=$($del.ok) timedout=$($del.timedout)"
+            Write-Host ""
+            $script:results += [pscustomobject]@{ Mechanism = $name; Verdict = $verdict; Seconds = $secs }
+          }
+
+          # 1. The product's own path. Expected to prompt; here to prove it.
+          Probe 'certutil -user -addstore Root (what the product does)' 'user' {
+            Invoke-Bounded 'certutil' @('-user','-addstore','Root',$pem)
+          }
+
+          # 2. Same, with -f. -f is force/overwrite and is NOT documented to
+          #    suppress the root-trust dialog - worth one run to be sure.
+          Probe 'certutil -f -user -addstore Root' 'user' {
+            Invoke-Bounded 'certutil' @('-f','-user','-addstore','Root',$pem)
+          }
+
+          # 3. The cmdlet path, which goes through the store API rather than
+          #    the CryptUI import wizard.
+          Probe 'Import-Certificate -CertStoreLocation Cert:\CurrentUser\Root' 'user' {
+            $c = $cer
+            Invoke-BoundedBlock { Import-Certificate -FilePath $using:c -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null }
+          }
+
+          # 4. Raw .NET store API.
+          Probe 'X509Store(Root, CurrentUser).Add()' 'user' {
+            $c = $cer
+            Invoke-BoundedBlock {
+              $cert = New-Object Security.Cryptography.X509Certificates.X509Certificate2 $using:c
+              $store = New-Object Security.Cryptography.X509Certificates.X509Store 'Root','CurrentUser'
+              $store.Open('ReadWrite'); $store.Add($cert); $store.Close()
+            }
+          }
+
+          # 5. Machine store with admin. No dialog because elevation is the
+          #    gate instead - but a different store and a broader trust scope
+          #    than the product ever touches.
+          Probe 'certutil -addstore -f Root (LocalMachine, admin)' 'machine' {
+            Invoke-Bounded 'certutil' @('-addstore','-f','Root',$pem)
+          }
+
+          Write-Host "================ SUMMARY ================"
+          $results | Format-Table -AutoSize | Out-String | Write-Host
