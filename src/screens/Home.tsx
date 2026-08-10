@@ -4,7 +4,7 @@ import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import type { Group, GroupException } from "../lib/groups";
-import { buildGroups, groupSummary } from "../lib/groups";
+import { buildGroups, groupSummary, MULTI_PROVIDER_ID } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, ErrorNote, Button } from "../components/gc/ui";
 import { GroupPill, groupPillLabel } from "../components/GroupPill";
@@ -800,6 +800,24 @@ function FamilyRow({
   onOpen: () => void;
 }) {
   const label = groupPillLabel(group);
+  // The roster, on the one family whose name does not say what is in it.
+  //
+  // Same rule the panel's `blurb` already follows, one layer up: a family named
+  // after a provider says what it covers, and "Claude Code · Claude Desktop /
+  // Cowork" under an h3 reading "Anthropic" is close enough to the same fact
+  // that it cost a line for very little. "Other tools" is named by exclusion, so
+  // it is the row that cannot be read at all without its members, and the one
+  // the user could not map to anything on their own machine.
+  //
+  // Measured, the provider rosters were also the ones earning least where space
+  // was tightest: with a restart notice up, the two rows still showing a roster
+  // were "OpenRouter · OpenRouter apps" and the one that mattered, while
+  // Anthropic and OpenAI were showing exceptions and had no roster anyway.
+  //
+  // Suppressed by an exception for the same reason as before: that sentence
+  // takes this slot and already names a member.
+  const roster = !exception && group.id === MULTI_PROVIDER_ID && group.members.length > 0;
+  const secondLine = !!exception || roster;
   return (
     <div
       role="listitem"
@@ -842,8 +860,22 @@ function FamilyRow({
           name now asks for 6 characters' worth at the current size (96px at
           100%, 192px at 200%), so at large scales the pill drops to its own line
           and the name keeps the full width. The stretch button is
-          `absolute inset-0`, so a taller row stays entirely clickable. */}
-      <div className="pointer-events-none relative flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2.5">
+          `absolute inset-0`, so a taller row stays entirely clickable.
+
+          Tighter under the name when a second line follows it. The roster and
+          the exception both belong to the name, so 10px of air between a name
+          and its own members read as separation between unrelated things; 4px
+          groups them, which is the "tight groups, generous separation" rule with
+          the row separator doing the separating. It also pays for the roster: at
+          10px the ledger pushed Home from fitting exactly to overflowing by 10px
+          in the mixed state, and a 10px overflow is the worst size there is,
+          because the fold cue fades 22px and would have been hiding less than it
+          obscured. */}
+      <div
+        className={`pointer-events-none relative flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 pt-2.5 ${
+          secondLine ? "pb-1" : "pb-2.5"
+        }`}
+      >
         {/* `truncate`, not two lines: a family name is a proper noun and the
             longest one the catalog can produce is "Other tools". An h3, because
             these are sections of the h2 above them, so the outline nests instead
@@ -856,6 +888,28 @@ function FamilyRow({
           <Icon name="chevronRight" size={15} stroke={2} className="shrink-0 text-gc-ink-4" />
         </div>
       </div>
+      {/* Who is in this family, so the row that cannot be read without it is not
+          just a category. "Other tools" is the label on a
+          `filter(t => !claimed.has(t.slug))`; it tells the user nothing about
+          their own machine, and the panel's blurb explaining it is a click away.
+          This is the line that answers "what is that?" in place.
+
+          Separated by "·", not "/". Two member names in the real catalog
+          already contain a slash - "Claude Desktop / Cowork" is one member, not
+          two - so a slash-joined roster reads as three tools where there are
+          two. The middot is also what the app already uses to join a domain's
+          hosts, so it is the existing vocabulary for "these, together".
+
+          No `truncate` and no clamp. It wraps, because a cut roster is a list
+          the user has to open the panel to trust, and this family holds two or
+          three tools so the growth is bounded. */}
+      {roster && (
+        <div className="relative px-3.5 pb-2">
+          <span className="pointer-events-none block text-gc-micro leading-snug text-gc-ink-3">
+            {group.members.map((m) => m.name).join(" · ")}
+          </span>
+        </div>
+      )}
       {exception && (
         <div className="relative flex items-center gap-2 px-3.5 pb-2">
           {/* The sentence carries its own severity, so a failure and a
