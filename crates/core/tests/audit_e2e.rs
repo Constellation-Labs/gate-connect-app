@@ -23,7 +23,6 @@
 //! parallel. That seam earns its place because an account's base URL must be
 //! https, so it can never name a loopback mock itself.
 
-
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
@@ -384,7 +383,10 @@ fn api_key_mode_emits_without_a_selected_org_and_ignores_one() {
 
     // Pure ApiKey user: no org ever selected.
     assert!(
-        matches!(audit::credential(None), Some(Credential { org_id: None, .. })),
+        matches!(
+            audit::credential(None),
+            Some(Credential { org_id: None, .. })
+        ),
         "no selected org must not skip an ApiKey-mode emit"
     );
 

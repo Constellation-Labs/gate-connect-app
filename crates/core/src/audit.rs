@@ -193,7 +193,6 @@ pub fn emit(
     Ok(())
 }
 
-
 /// The credential for an audit emit. `None` means there is nothing to
 /// authenticate with, so the emit is skipped (and logged by the funnel).
 ///
