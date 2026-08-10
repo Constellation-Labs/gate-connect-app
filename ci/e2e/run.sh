@@ -61,6 +61,9 @@ CA_DIR="$WORK/ca"
 mkdir -p "$CA_DIR" "$WORK/secrets"
 
 # Redirect home so gate-connect AND the tools agree on a throwaway config root.
+# Captured first: the login keychain is the one thing that must keep pointing at
+# the session's real one (see the macOS block below).
+REAL_HOME="$HOME"
 export HOME="$WORK/home"
 mkdir -p "$HOME"
 if [ "$OS" = "Windows" ]; then
@@ -81,6 +84,29 @@ else
   export XDG_CONFIG_HOME="$HOME/.config"
   export XDG_DATA_HOME="$HOME/.local/share"
   export XDG_CACHE_HOME="$HOME/.cache"
+fi
+
+# macOS: CA trust goes into a login keychain, and a login keychain belongs to
+# the session rather than to $HOME - so the redirect above pointed
+# `add-trusted-cert` at a keychain that had never existed and every `proxy
+# enable` failed with "The specified keychain could not be found". The engine
+# was therefore skipped on every macOS run, taking openclaw, hermes and the
+# per-OS channel checks with it. Name the runner's real one instead; this is a
+# throwaway GitHub runner, so installing a root into it costs nothing and is
+# gone with the VM.
+if [ "$OS" = "Darwin" ]; then
+  export GATE_CONNECT_TEST_LOGIN_KEYCHAIN="$REAL_HOME/Library/Keychains/login.keychain-db"
+  if [ -f "$GATE_CONNECT_TEST_LOGIN_KEYCHAIN" ]; then
+    # `add-trusted-cert` needs it unlocked. The runner's keychain is normally
+    # unlocked already; the empty password is the documented default for the
+    # hosted image and this is best-effort either way, since a failure here
+    # only reproduces the old skip rather than making anything worse.
+    security unlock-keychain -p "" "$GATE_CONNECT_TEST_LOGIN_KEYCHAIN" 2>/dev/null ||
+      echo "::notice::could not unlock the login keychain with an empty password; continuing"
+    security show-keychain-info "$GATE_CONNECT_TEST_LOGIN_KEYCHAIN" 2>&1 | sed 's/^/    keychain: /'
+  else
+    echo "::warning::no login keychain at $GATE_CONNECT_TEST_LOGIN_KEYCHAIN - CA trust will fail and the engine will skip"
+  fi
 fi
 
 # The Gate key goes through the file-backed secret seam, since CI has no usable
@@ -715,81 +741,25 @@ os_restore_checks() {
   echo "::endgroup::"
 }
 
-# Windows' only reachable per-OS surface while the engine is held back: the CA
-# round-trip through the per-user root store. `certutil -user -addstore Root`
-# needs no admin, so this runs unattended - and it is the half of `enable` that
-# would otherwise go untested on Windows entirely.
+# Windows: no per-OS check, and it has to stay that way while the engine is
+# held back there.
 #
-# By thumbprint, never by CN, and with `-store` rather than `-verifystore`.
-# Both of those are scars:
-#   - `-verifystore Root` validates every certificate in the store, chain
-#     building and revocation fetches included. It ran past the job's 8-minute
-#     timeout and left an orphaned certutil behind.
-#   - matching the CN is what `ca_windows::is_trusted` was fixed for: a stale
-#     root from a previous install shares our CN with a different key, so a CN
-#     match reports "trusted" while the engine signs leaves under a CA the OS
-#     does not trust. This mirrors what the product itself checks.
-# Every certutil call is bounded, so a hang here can never eat the job again.
-win_ca_thumbprint() {
-  local pem
-  pem="$(find "$HOME" -path '*/proxy/ca-cert.pem' 2>/dev/null | head -n1)"
-  [ -n "$pem" ] || return 1
-  openssl x509 -in "$pem" -noout -fingerprint -sha1 2>/dev/null |
-    sed 's/.*=//; s/://g' | tr '[:lower:]' '[:upper:]'
-}
-
-win_ca_in_root_store() {
-  # A single-cert lookup is instant; 30s is only there so a wedged certutil
-  # fails this assertion instead of the whole job. `timeout` ships with Git
-  # Bash's coreutils - but if an image ever lacks it, fall back to the bare
-  # call rather than reporting an untrusted CA because the bound was missing.
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 30 certutil -user -store Root "$1" >/dev/null 2>&1
-  else
-    certutil -user -store Root "$1" >/dev/null 2>&1
-  fi
-}
-
-# Its own function for the same reason as mac_pac_disabled: chk runs its
-# command in this shell, and negating inside `sh -c` would lose the function.
-win_ca_absent_from_root_store() {
-  ! win_ca_in_root_store "$1"
-}
-
+# The obvious candidate was a CA round-trip through the per-user root store -
+# `proxy trust-ca`, confirm, `proxy untrust-ca`. It cannot run unattended, and
+# not for a fixable reason: `certutil -user -addstore Root` triggers Windows'
+# native "you are about to install a certificate from a certification authority
+# claiming to represent..." dialog, which `ca_windows` documents as deliberate
+# ("the reassuring gatekeeper prompt the user sees once on enable"). On a
+# headless runner nobody can answer it, so certutil blocks until the job's
+# 8-minute timeout kills the step - which is exactly what it did, twice,
+# taking the OAuth phase with it and leaving an orphaned certutil behind.
+#
+# Suppressing that dialog to make CI green would be testing a product that
+# isn't the one we ship. So Windows keeps the relay-path coverage it already
+# has, and gains per-OS assertions when the engine is unblocked there.
 os_ca_checks() {
   [ "$OS" = "Windows" ] || return 0
-  ckpt "os checks: Windows CA round-trip"
-  echo "::group::os checks: Windows CA round-trip"
-  # Captured once, from the trusted state, and reused for the untrust check:
-  # untrust may take the PEM with it, and a thumbprint we can no longer read is
-  # a check that would silently pass.
-  local thumb=""
-  if "$CLI" proxy trust-ca >"$WORK/trust-ca.out" 2>&1; then
-    thumb="$(win_ca_thumbprint)"
-    if [ -z "$thumb" ]; then
-      echo "FAIL: trust-ca reported success but no CA PEM was found under \$HOME"
-      FAIL=$((FAIL + 1))
-    else
-      ckpt "os checks: CA thumbprint $thumb"
-      chk "the CA is in the per-user root store" win_ca_in_root_store "$thumb"
-    fi
-  else
-    echo "FAIL: proxy trust-ca failed"
-    sed 's/^/    /' "$WORK/trust-ca.out" 2>/dev/null
-    FAIL=$((FAIL + 1))
-  fi
-  # Untrust has to actually remove it: a CA left in a user's root store after
-  # they turned Gate off is the one leftover this product cannot ship.
-  if "$CLI" proxy untrust-ca >"$WORK/untrust-ca.out" 2>&1; then
-    if [ -n "$thumb" ]; then
-      chk "untrust-ca removes it again" win_ca_absent_from_root_store "$thumb"
-    fi
-  else
-    echo "FAIL: proxy untrust-ca failed"
-    sed 's/^/    /' "$WORK/untrust-ca.out" 2>/dev/null
-    FAIL=$((FAIL + 1))
-  fi
-  echo "::endgroup::"
+  echo "::notice::no per-OS checks on Windows - the engine is skipped here, and the CA trust step needs a dialog no CI session can answer"
 }
 
 # Fake the browser leg of `login --oauth`: run it headless, read the authorize
