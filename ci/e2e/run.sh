@@ -457,20 +457,6 @@ start_engine() {
   # trust dialog. A failure here is non-fatal - enable then fails the way it
   # always did and the engine skips, which is the old behaviour, not a new one.
   mac_pretrust_ca
-  # Hermes' seeded provider is OpenRouter, whose catalog entry ships opt-in, so
-  # without this the engine tunnels openrouter.ai straight past Gate and the
-  # capture stays empty. Anthropic (OpenClaw's provider) is on by default.
-  #
-  # Before the engine starts, not after, and the ordering is load-bearing on
-  # macOS. `set_domain` writes the config and then updates the engine held by
-  # *this* process - and a separate CLI invocation holds none, because macOS
-  # has no daemon to forward the change to (Linux got exactly that in #120).
-  # Toggled after start, the running engine never learned: hermes' traffic was
-  # tunnelled straight to the real openrouter.ai, which answered "HTTP 401:
-  # Missing Authentication header", while the OAuth phase passed only because
-  # it inherited the config the API-key phase had left on disk. Setting it
-  # first means the engine reads it at startup, where no live update is needed.
-  "$CLI" proxy domain openrouter on >"$WORK/domain.out" 2>&1 || true
   ckpt "engine: proxy enable"
   local rc=0
   if [ "$OS" = "Linux" ]; then
@@ -506,6 +492,24 @@ start_engine() {
   fi
   ENGINE_ON=1
   ENGINE_RAN=1
+  # Hermes' seeded provider is OpenRouter, whose catalog entry ships opt-in, so
+  # without this the engine tunnels openrouter.ai straight past Gate and the
+  # capture stays empty. Anthropic (OpenClaw's provider) is on by default.
+  #
+  # Deliberately AFTER the engine is up, which is the ordering a person
+  # actually takes and the one that used to be silently broken: a separate
+  # `gate-connect` process writes the config, and on macOS - which hosts the
+  # engine in whichever process enabled it, with no daemon to forward to - the
+  # running engine never learned. hermes' traffic went to the real
+  # openrouter.ai and came back "HTTP 401: Missing Authentication header".
+  #
+  # It works now because the engine watches the domains file, so this is a
+  # regression test for that: put the toggle back before the engine starts and
+  # this suite would pass whether or not the reload works.
+  "$CLI" proxy domain openrouter on >"$WORK/domain.out" 2>&1 || true
+  # The watcher polls at 1s. Waiting a few ticks keeps the assertion about
+  # whether the reload happens at all, not about winning a race with it.
+  sleep 4
   # `proxy enable` reports "Proxy:    running on 127.0.0.1:<port>", with no
   # scheme - matching on one printed an empty checkpoint.
   local eport
