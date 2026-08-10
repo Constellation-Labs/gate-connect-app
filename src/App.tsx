@@ -36,7 +36,7 @@ import {
 import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
-import { Routes } from "./screens/Routes";
+import { FamilyPanel } from "./screens/FamilyPanel";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
@@ -63,7 +63,7 @@ type Screen =
   | "home"
   | "settings"
   | "success"
-  | "routes";
+  | "family";
 
 /** How deep each screen sits in the popover. In one 360px room, direction is
  *  the only navigational metaphor available: without it a push and a pop look
@@ -78,9 +78,11 @@ const SCREEN_DEPTH: Record<Screen, number> = {
   success: 2,
   home: 0,
   settings: 1,
-  // The ledger is a panel off Home. A family no longer has a screen of its own:
-  // it expands inside its ledger row, so there is nothing at depth 2.
-  routes: 1,
+  // A family has a screen of its own again, and it is the only thing on it. It
+  // sits at depth 1 rather than 2 because it opens straight off Home: the
+  // all-families ledger that used to be the level in between is gone, since
+  // Home already lists every family and the panel only ever showed one.
+  family: 1,
 };
 
 // Proxy domains hidden from the Apps ledger. "chatgpt" exists so the relay
@@ -229,7 +231,7 @@ export function App() {
   const [startOnKey, setStartOnKey] = useState(false);
   // Which family the ledger panel should open with, set by the Home row that
   // opened it. Null when the user arrived from the heading rather than a row.
-  const [routesOpen, setRoutesOpen] = useState<string | null>(null);
+  const [openFamily, setOpenFamily] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
@@ -590,7 +592,7 @@ export function App() {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
       if (quitTools !== null || routingNotice !== null) return;
-      if (screen === "settings" || screen === "routes") {
+      if (screen === "settings" || screen === "family") {
         setProviderError(null);
         setScreen("home");
       }
@@ -975,6 +977,14 @@ export function App() {
     proxyOn,
     caTrusted: proxy?.ca_trusted ?? false,
   });
+  // The family whose panel is open, re-resolved from the ledger on every render
+  // so a toggle inside the panel repaints it. `undefined` when the family
+  // stopped existing while its panel was up - a tool uninstalled between
+  // popover opens - and the render below falls through to Home rather than
+  // holding a panel about nothing. The old all-families panel handled the same
+  // case with a "nothing is installed to route" sentence; a panel titled with a
+  // family that no longer exists cannot say that about itself.
+  const openGroup = groups.find((g) => g.id === openFamily);
 
   let body: ReactNode;
   if (screen === "loading") {
@@ -1052,10 +1062,10 @@ export function App() {
         onSetTextScale={setTextScale}
       />
     );
-  } else if (screen === "routes") {
+  } else if (screen === "family" && openGroup) {
     body = (
-      <Routes
-        groups={groups}
+      <FamilyPanel
+        group={openGroup}
         busy={proxyBusy}
         onBack={() => setScreen("home")}
         onToggleGroup={(id, on) => void setGroupRouted(id, on)}
@@ -1065,10 +1075,6 @@ export function App() {
         proxyOn={proxy?.running ?? false}
         onEnableRouting={() => void toggleProxy(false)}
         authMode={account?.auth_mode}
-        initialOpen={routesOpen}
-        envExportSeparable={proxy?.env_export_separable ?? false}
-        envExportOn={proxy?.env_export_opted_in ?? false}
-        onToggleEnvExport={() => void toggleEnvExport()}
       />
     );
   } else {
@@ -1109,12 +1115,14 @@ export function App() {
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onToggleProxy={() => toggleProxy(true)}
         onTrustCa={trustCa}
-        onOpenRoutes={(groupId) => {
-          // Carried into the panel so the family the user tapped arrives open.
-          setRoutesOpen(groupId ?? null);
-          setScreen("routes");
+        onOpenFamily={(groupId) => {
+          setOpenFamily(groupId);
+          setScreen("family");
         }}
         onOpenSettings={() => setScreen("settings")}
+        envExportSeparable={proxy?.env_export_separable ?? false}
+        envExportOn={proxy?.env_export_opted_in ?? false}
+        onToggleEnvExport={() => void toggleEnvExport()}
       />
     );
   }
@@ -1260,8 +1268,19 @@ export function App() {
                   the product's core promise truncated on Windows and briefly
                   everywhere. The button moved into Home's ledger heading; the
                   strip is back to a label and a version, which is what it was
-                  measured for. */}
-              <span className="truncate">
+                  measured for.
+
+                  Wraps rather than truncates. `flex-wrap` on the strip gave
+                  this line the full width, but `truncate` then cut the sentence
+                  anyway: at 200% it needs 360px and the widest a 380px window
+                  can offer it is 324px, so it rendered "Session in your
+                  system's secu…". That is loss of content under SC 1.4.4, on
+                  the one sentence carrying PRODUCT.md's first principle - where
+                  the key lives - at exactly the text size a low-vision user
+                  asked for. Two lines in a fixed footer costs 14px once; the
+                  truncation cost the promise. Nothing changes at 100%, where it
+                  has always fit on one line. */}
+              <span>
                 {!hasCredential
                   ? `Credentials live in ${credentialStore}`
                   : `${account?.auth_mode === "oauth" ? "Session" : "Key"} in ${credentialStore}`}

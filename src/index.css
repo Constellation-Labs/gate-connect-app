@@ -62,19 +62,70 @@
     background: transparent;
   }
 
-  /* Respect the OS reduced-motion preference - disables the popover's
-     panel transitions, hover translates, and skeleton shimmer. Matches the
-     contract baked into cg/tokens.css for the rest of the Constellation
-     Gate surfaces. */
+  /* Respect the OS reduced-motion preference by removing travel, not by
+     removing feedback.
+
+     This was a blanket `animation-duration: 0.01ms` / `transition-duration:
+     0.01ms` on every element, which measured 137 elements collapsed to
+     1e-05s against 10 animated in the default state. It took the popover's
+     directional grammar with it. `SCREEN_DEPTH` in App.tsx exists so a push
+     and a pop differ, and DESIGN.md is explicit that in one 380px room
+     "direction is the only navigational metaphor available: without it a push
+     and a pop look identical". Zeroing every duration did not soften that
+     metaphor, it deleted it: opening a family panel and returning to Home
+     became the same event on screen. The user who sets this preference to
+     avoid vestibular discomfort was the one user left with no cue that the
+     screen had changed at all.
+
+     What the preference is actually about is motion - travel, parallax,
+     scaling - not recolouring. So the rule now splits the two:
+
+     1. Nothing transitions a property that moves. The whitelist below is
+        Tailwind's `transition` property list minus `transform`, `filter` and
+        `backdrop-filter`, so a colour, shadow or opacity change still eases
+        while the Switch thumb's 18px slide arrives instantly. One rule, and
+        it covers any translate added later without needing to know about it.
+     2. The three animations that travel cross-fade in place instead. They
+        keep saying "this changed" - which is the part that carries meaning -
+        and stop saying it by moving 28px.
+
+     Direction itself is genuinely sacrificed here, and that is the honest
+     trade: no animation can convey direction without moving. It is
+     recoverable from the static layout, since a panel wears a back chevron
+     and its own h1 while Home wears neither.
+
+     `animation-iteration-count` is deliberately not clamped to 1 any more.
+     The only infinite animation in the app is the `animate-spin` loader on
+     the org picker, and freezing a loading spinner does not reduce motion so
+     much as remove the one thing telling the user to wait. */
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
-      animation-duration: 0.01ms !important;
-      animation-iteration-count: 1 !important;
-      transition-duration: 0.01ms !important;
+      transition-property: color, background-color, border-color,
+        text-decoration-color, fill, stroke, opacity, box-shadow !important;
       scroll-behavior: auto !important;
     }
+
+    .ob-slide-in-fwd,
+    .ob-slide-in-back,
+    .gc-panel-in {
+      animation-name: gc-fade-in !important;
+      animation-duration: 120ms !important;
+      animation-timing-function: linear !important;
+    }
+  }
+}
+
+/* The reduced-motion stand-in for every animation that would otherwise
+   travel. 120ms, linear: long enough to register as a change, short enough
+   that it never reads as latency on a routine navigation. */
+@keyframes gc-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 

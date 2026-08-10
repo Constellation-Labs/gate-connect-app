@@ -66,8 +66,19 @@ export interface Group {
   /** The group's name inside a sentence. Family names are proper nouns and
    * stay capitalised; "other tools" is a common noun and must not. */
   switchLabel: string;
-  /** One line on what the family covers, shown on its detail screen. */
-  blurb: string;
+  /** What the family covers, shown under its name on the family panel, and
+   * only where the name does not already say it.
+   *
+   * Present for the multi-provider group alone. It carried a line for every
+   * family until 2026-08-10 and none of them were ever rendered: the field was
+   * introduced to hold the definition that "Agent harnesses" used to carry in
+   * its name, and the definition then went nowhere for two rounds while the
+   * only description of these tools in the whole UI was the 25-character
+   * identifier slot on a member row. The per-family lines were dropped rather
+   * than shown, because "Everything that talks to Anthropic." under an h1
+   * reading "Anthropic" is the same fact twice. "Other tools" is the one family
+   * named by exclusion, so it is the one that owes the user a sentence. */
+  blurb?: string;
   members: GroupMember[];
   /** How many members are actually carrying traffic. Drives the pill. */
   routed: number;
@@ -154,7 +165,6 @@ export function buildGroups(
       id: provider.slug,
       name: provider.display_name,
       switchLabel: `Route ${provider.display_name} through Gate`,
-      blurb: `Everything that talks to ${provider.display_name}.`,
       members,
       routed: members.filter((m) => m.routed).length,
       desired: members.filter((m) => m.desired).length,
@@ -178,7 +188,20 @@ export function buildGroups(
       // the right place for a definition the name should not have to carry.
       name: "Other tools",
       switchLabel: "Route other tools through Gate",
-      blurb: "Tools that route every provider you’ve set up in them, not one model family.",
+      // Which providers, and which not. The old line said these tools "route
+      // every provider you've set up in them", which is the reading the code
+      // does not support and the more alarming of the two a user might take: it
+      // promises Gate stands in front of everything they configured. It does
+      // not. OpenCode repoints only providers that are both on Gate's known
+      // list and covered by the proxy catalog, and skips the rest at connect
+      // time because the relay would 403 them; OpenClaw and Hermes do no
+      // provider discovery at all and let the enabled catalog domains decide
+      // what the engine intercepts, blind-tunnelling everything else. Three
+      // mechanisms, one user-visible boundary: Gate takes what it covers and
+      // leaves the rest alone. The second sentence is the one that matters to
+      // someone running a local model.
+      blurb:
+        "Tools that talk to several providers, not one model family. Gate routes the ones it covers; anything else, including a local model, keeps going where it always did.",
       members: leftovers,
       routed: leftovers.filter((m) => m.routed).length,
       desired: leftovers.filter((m) => m.desired).length,
