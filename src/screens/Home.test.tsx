@@ -99,8 +99,11 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       onDismissStaleAgents={vi.fn()}
       onToggleProxy={vi.fn()}
       onTrustCa={vi.fn()}
-      onOpenRoutes={vi.fn()}
+      onOpenFamily={vi.fn()}
       onOpenSettings={vi.fn()}
+      envExportSeparable={true}
+      envExportOn={true}
+      onToggleEnvExport={vi.fn()}
       {...props}
     />,
   );
@@ -206,16 +209,17 @@ describe("Home ledger rows", () => {
     expect(screen.getByRole("heading", { name: "What routes through Gate" })).toBeTruthy();
   });
 
-  it("opens the ledger on the family the row names", () => {
-    const onOpenRoutes = vi.fn();
+  it("opens the row's own family, not a list of all of them", () => {
+    const onOpenFamily = vi.fn();
     renderHome({
       tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })],
-      onOpenRoutes,
+      onOpenFamily,
     });
     fireEvent.click(screen.getByRole("button", { name: "Claude details" }));
-    // Carrying the id is what stops the panel charging a second click for the
-    // row the user just tapped.
-    expect(onOpenRoutes).toHaveBeenCalledWith("anthropic");
+    // Four chevrons used to reach one panel that differed only by which family
+    // arrived expanded. The id is the destination now, not a hint about where to
+    // scroll once you get there.
+    expect(onOpenFamily).toHaveBeenCalledWith("anthropic");
   });
 
   it("keeps the rows off the routing card", () => {
@@ -647,5 +651,79 @@ describe("Home blocker ordering", () => {
     expect(
       trust.compareDocumentPosition(explain) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+});
+
+describe("Home command-line tools switch", () => {
+  const NAME = "Route command-line tools through Gate";
+  const withFamily = { tools: [makeTool("claude-code", "Claude Code", { kind: "connected" })] };
+
+  it("toggles the shell-environment channel without touching routing", () => {
+    const onToggleEnvExport = vi.fn();
+    const onToggleProxy = vi.fn();
+    renderHome({ ...withFamily, onToggleEnvExport, onToggleProxy });
+    fireEvent.click(screen.getByRole("switch", { name: NAME }));
+    expect(onToggleEnvExport).toHaveBeenCalledTimes(1);
+    // It spans every family, so it must never move the master as a side effect.
+    expect(onToggleProxy).not.toHaveBeenCalled();
+  });
+
+  it("reflects the backend's choice rather than the master's state", () => {
+    renderHome({ ...withFamily, proxyOn: true, envExportOn: false });
+    expect(screen.getByRole("switch", { name: NAME }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("is absent where the channel cannot be separated from routing", () => {
+    // Linux: the environment.d drop-in *is* the system proxy, so a switch here
+    // could not honour itself. Better no control than one that lies.
+    renderHome({ ...withFamily, envExportSeparable: false });
+    expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
+  });
+
+  it("sits below the ledger, not beside the master switch", () => {
+    // The arrangement this replaced put the two switches 66px apart wearing the
+    // same track in the same indigo, which said a machine-wide change to git and
+    // curl was routing's equal. The ledger between them is the fix.
+    renderHome(withFamily);
+    const master = screen.getByRole("switch", { name: "Route through Gate" });
+    const shell = screen.getByRole("switch", { name: NAME });
+    const heading = screen.getByRole("heading", { name: "What routes through Gate" });
+    expect(master.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(heading.compareDocumentPosition(shell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("stays a line rather than a card, so the master keeps the weight", () => {
+    renderHome(withFamily);
+    const row = screen.getByText("Command-line tools").closest("div")!.parentElement!;
+    expect(row.className).not.toContain("shadow-border");
+  });
+
+  it("is absent when there is no ledger to separate it from the master", () => {
+    // With nothing installed the two switches would be adjacent again, which is
+    // exactly the geometry that failed. Costs nothing: the panel this used to
+    // live on was reachable only through a family row.
+    renderHome({ tools: [], domains: [] });
+    expect(screen.queryByRole("switch", { name: NAME })).toBeNull();
+  });
+
+  it("answers for reading on over a channel that cannot be live", () => {
+    renderHome({ ...withFamily, proxyOn: false, envExportOn: true });
+    const toggle = screen.getByRole("switch", { name: NAME });
+    // The switch reports the stored choice, which survives routing being turned
+    // off. It points at the card's status line rather than repeating it: the
+    // master card owns `master-off` and says it once, countably.
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    const described = document.getElementById(toggle.getAttribute("aria-describedby")!);
+    expect(described?.textContent).toMatch(/^Off/);
+    expect(screen.queryByText("Waiting on routing")).toBeNull();
+  });
+
+  it("carries its instruction in ink that clears AA", () => {
+    // ink-4 measured 3.97:1 on white, the only text in the app below 4.5:1, and
+    // this is two sentences about a machine-wide change to git and curl.
+    renderHome(withFamily);
+    const copy = screen.getByText(/for your whole/);
+    expect(copy.className).toContain("text-gc-ink-3");
+    expect(copy.className).not.toContain("text-gc-ink-4");
   });
 });

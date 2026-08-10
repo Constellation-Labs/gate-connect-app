@@ -96,16 +96,22 @@ function RawDetail({ raw, alert }: { raw: string; alert: boolean }) {
   );
 }
 
-/** One model family's fine grain, rendered inside its own expanded row on the
- * ledger rather than on a screen of its own. The members expand in place a
- * second time, so a family and a member are two disclosures in one panel and
- * there is no third screen at all.
+/** One model family's fine grain: the per-member mechanism (config file vs
+ * proxy), the state that needs attention, and the remedy for it.
  *
- * No group heading and no group switch: the ledger row this opens under already
- * carries the family name, its pill, its count and the switch that routes the
- * whole family, and repeating any of it 20px lower said everything twice. What
- * belongs here is what the row cannot show - the per-member mechanism (config
- * file vs proxy), the state that needs attention, and the remedy for it. */
+ * This is the body of `FamilyPanel` now, not the contents of an expanded
+ * accordion row. Two things follow from the level change and nothing else does.
+ * The subtle fill and the 24px indent are gone, because both existed to say
+ * "these belong to the row above" and there is no longer a row above; the
+ * members are the panel's primary content and sit on the popover's own white
+ * with the full width. And the banners below, which were always group-scoped,
+ * are now panel-level rather than nested two disclosures deep - same copy, same
+ * remedies, one level up.
+ *
+ * Still no family heading and no family switch. The panel's h1 carries the name
+ * and the row under it carries the switch, its pill and its count, so repeating
+ * any of that here would say everything twice, exactly as it would have inside
+ * the old row. */
 export function GroupMembers({
   group,
   busy,
@@ -188,7 +194,7 @@ export function GroupMembers({
   }
 
   return (
-    <div className="flex flex-col bg-gc-subtle pt-2.5">
+    <div className="flex flex-col pt-2.5">
       {/* Member flips were the one class of state change in the app that reached
           no live region. The panel's own region reports the family the user
           flipped, and `aria-describedby` carries a member's state when focus
@@ -200,13 +206,24 @@ export function GroupMembers({
         {changedMember ? `${changedMember.name}, ${memberPillLabel(changedMember)}` : ""}
       </span>
       {group.desired > 0 && !proxyOn && (
-        <div className="mx-3.5 mb-2 flex items-center gap-2.5 rounded bg-gc-sunken px-3 py-2.5">
+        // `flex-wrap` with an `em` basis on the sentence, the rule the routing
+        // card and the ledger rows already use. At 200% the icon and an `sm`
+        // button left the sentence ~115px of a 380px row and broke it over
+        // seven lines with the button floating mid-paragraph; given its own
+        // line the remedy costs one row and the sentence reads.
+        <div className="mx-3.5 mb-2 flex flex-wrap items-center gap-x-2.5 gap-y-2 rounded bg-gc-sunken px-3 py-2.5">
           <Icon name="info" size={15} className="shrink-0 text-gc-ink-3" />
-          <div className="min-w-0 flex-1 text-gc-caption leading-snug text-gc-ink-2">
+          <div className="min-w-0 flex-1 basis-[9em] text-gc-caption leading-snug text-gc-ink-2">
             Switched on, but routing is off, so nothing here is going through
             Gate.
           </div>
-          <Button variant="accent" size="sm" disabled={busy} onClick={onEnableRouting}>
+          <Button
+            variant="accent"
+            size="sm"
+            className="ml-auto shrink-0"
+            disabled={busy}
+            onClick={onEnableRouting}
+          >
             Turn on routing
           </Button>
         </div>
@@ -226,16 +243,16 @@ export function GroupMembers({
         // is not. Warning wash with the colour on the icon and the sentence in
         // ink, per the Wash-First rule, and the same words Home's card uses so
         // the two screens do not describe one certificate two ways.
-        <div className="mx-3.5 mb-2 flex items-center gap-2.5 rounded bg-gc-warning-wash px-3 py-2.5">
+        <div className="mx-3.5 mb-2 flex flex-wrap items-center gap-x-2.5 gap-y-2 rounded bg-gc-warning-wash px-3 py-2.5">
           <Icon name="info" size={15} className="shrink-0 text-gc-warning" />
-          <div className="min-w-0 flex-1 text-gc-caption leading-snug text-gc-ink-2">
+          <div className="min-w-0 flex-1 basis-[9em] text-gc-caption leading-snug text-gc-ink-2">
             {untrusted.length === 1 ? `${untrusted[0].name} needs` : "These need"} the
             Gate certificate. It never leaves this machine.
           </div>
           <Button
             variant="accent"
             size="sm"
-            className="shrink-0"
+            className="ml-auto shrink-0"
             disabled={busy}
             onClick={() => void trustFromRow(untrusted[0])}
           >
@@ -272,27 +289,66 @@ export function GroupMembers({
         </div>
       )}
 
-      <div className="flex flex-col border-t border-gc-line">
-        {group.members.map((member) => {
+      {/* No `border-t`. The panel's control block above already closes itself
+          with a hairline, and a second one 10px below it drew two rules across
+          the panel in the healthy state, which is most families most of the
+          time. The rows carry their own separators, so the list needs no lid.
+
+          A real list, because these are the panel's primary content now. The
+          old panel exposed its four families as the list and left the members
+          as anonymous divs; there are no families here to enumerate, so the
+          role belongs to the level that has something to count. */}
+      <div role="list" className="flex flex-col">
+        {group.members.map((member, i) => {
           const open = openKey === member.key;
           const raw = rawDetail(member);
+          // No rule under the last one, the same as Home's ledger. The end of
+          // the list is marked by there being nothing after it, and on a long
+          // family the trailing rule landed a few dozen pixels above the
+          // footer's own hairline, which reads as two lines with nothing
+          // between them rather than as a boundary.
+          const last = i === group.members.length - 1;
           return (
-            <div key={member.key} className="border-b border-gc-line">
+            <div
+              key={member.key}
+              role="listitem"
+              className={last ? "" : "border-b border-gc-line"}
+            >
               {/* One hit area for the whole row, identifier line included.
                   The stretch button used to cover only the upper line, so the
                   bottom 40% of a row that highlights as one block did nothing
                   when clicked - and on Home the equivalent row is clickable
-                  end to end. */}
+                  end to end.
+
+                  What `pointer-events-none` does and does not do: it decides
+                  clicks, not the accessibility tree. The tree measured on
+                  2026-08-10 contains every one of these spans as StaticText -
+                  the pill label, the mechanism chip, the host, "Details" - so
+                  none of this was ever hidden from a screen reader. What the
+                  stretch button loses is its own *name*: it is an empty sibling
+                  covering the row rather than an ancestor of the text, so name
+                  computation finds nothing in it, which is why it carries
+                  `aria-label` and points `aria-describedby` at the state. Worth
+                  stating precisely, because "pointer-events-none hides it from
+                  the a11y tree" is wrong and would be a dangerous thing to
+                  believe somewhere it mattered. */}
               <div
                 className={`relative transition ${
                   open ? "bg-gc-subtle" : "hover:bg-gc-subtle"
                 }`}
               >
+                {/* Points at the same sentence the switch beside it does, which
+                    Home's equivalent row has always done and this one did not:
+                    the measured AX tree had `button "Claude Code details"` with
+                    no description sitting next to `switch ... desc="Error"`. The
+                    row is the thing a keyboard user reaches first, so it should
+                    not be the one that says least. */}
                 <button
                   type="button"
                   onClick={() => toggleOpen(member.key)}
                   aria-expanded={open}
                   aria-label={`${member.name} details`}
+                  aria-describedby={`member-state-${member.key}`}
                   className="absolute inset-0 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gc-accent"
                 />
                 {/* `pointer-events-none`, matching Home's row wrapper. Without
@@ -303,18 +359,46 @@ export function GroupMembers({
                     The children below are individually transparent to clicks;
                     the wrapper was not, which is the inverse of the bug the
                     comment above describes fixing. The switch re-enables
-                    pointer events on itself. */}
-                <div className="pointer-events-none relative flex items-center gap-2.5 py-2.5 pl-6 pr-3.5">
-                  <div className="pointer-events-none relative min-w-0 flex-1">
+                    pointer events on itself.
+
+                    `pl-3.5`, not `pl-6`. The 10px indent said "this belongs to
+                    the family row above it"; on a panel about one family there
+                    is no such row, and the indent was 10px taken from the one
+                    line in the app that reports both a tool's name and its
+                    state.
+
+                    `flex-wrap` with an `em` basis on the name, which is the rule
+                    the routing card, Home's family rows and this panel's own
+                    control row all use, and which this row was the last one on
+                    the surface not to use. Measured at 200%, `line-clamp-2` cut
+                    "Claude Desktop / Cowork" from the 107px of text it needs to
+                    72px - loss of content under SC 1.4.4 - and "Hermes" wanted
+                    94px in an 80px box. The pill and the switch travel together
+                    to their own line so the name keeps the full width, rather
+                    than each shrinking the one thing on the row that names what
+                    the user came to look at. */}
+                <div className="pointer-events-none relative flex flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2.5">
+                  <div className="pointer-events-none relative min-w-0 flex-1 basis-[7em]">
                     {/* Two lines, not `truncate`. The 10px hierarchy indent plus
                         the widest member pill left 130px for a name that needs
                         151, and "Claude Desktop / Cowork" clipped in exactly the
                         state the user opened the row to act on. Wrapping is the
-                        answer the family's exception line already uses. */}
-                    <div className="line-clamp-2 text-gc-body-md font-medium leading-snug text-gc-ink">
+                        answer the family's exception line already uses.
+
+                        An h2 under the panel's h1, so the members stay navigable
+                        by heading. They were plain divs when the families above
+                        them were the h2s; with the family promoted to the title,
+                        dropping the heading here would have left a panel whose
+                        outline was one h1 and nothing else. */}
+                    <h2 className="line-clamp-2 text-gc-body-md font-medium leading-snug text-gc-ink">
                       {member.name}
-                    </div>
+                    </h2>
                   </div>
+                  {/* Pill and switch as one group, so they wrap together. Left
+                      as siblings they broke apart at large text and put the
+                      state capsule on a line of its own with the control that
+                      changes it on the next one. */}
+                  <div className="ml-auto flex shrink-0 items-center gap-2.5">
                   <span className="pointer-events-none relative">
                     <MemberPill member={member} />
                   </span>
@@ -337,6 +421,7 @@ export function GroupMembers({
                       {memberPillLabel(member)}
                     </span>
                   </span>
+                  </div>
                 </div>
 
               {/* Its own full-width line, below the name/pill/switch row. In
@@ -344,19 +429,45 @@ export function GroupMembers({
                   the pill the shorter the identifier: "Set up elsewhere" left
                   49px and rendered "api.ope…", "Waiting on routing" left 44px
                   and rendered "api.an…". The identifier was cut hardest in
-                  exactly the two states that report a problem. */}
-              <div className="pointer-events-none relative flex items-center gap-1.5 pb-2 pl-6 pr-3.5">
+                  exactly the two states that report a problem.
+
+                  Wrapping, for the same reason and by the same rule as the row
+                  above. Moving off that row fixed the pill's competition but not
+                  the chip's and "Details"': both are `shrink-0`, so at 200% they
+                  held their size while the host - the only thing on this line
+                  that cannot be shortened without lying - was measured at 51px
+                  of the 214px it needs, three times per panel. It now asks for
+                  an `em` basis of its own and "Details" drops to a second line
+                  before the host gives up a character. */}
+              <div className="pointer-events-none relative flex flex-wrap items-center gap-x-1.5 gap-y-1 px-3.5 pb-2">
                 <span className="shrink-0 rounded bg-gc-sunken px-1.5 py-px font-mono text-gc-label text-gc-ink-3">
                   {member.kind === "config" ? "config file" : "proxy"}
                 </span>
                 {/* Mono is for identifiers only. A harness has no single
                     upstream to name - its `default_upstream_url` is a
                     placeholder constant, not what it actually routes - so say
-                    so in prose rather than print a host that lies. */}
+                    so in prose rather than print a host that lies.
+
+                    "the providers Gate routes", not "all your providers". The
+                    old phrasing read as "everything you configured in this
+                    tool", which is the one claim the code does not make: a
+                    provider Gate's catalog does not cover is skipped, not
+                    repointed. The panel's blurb carries the other half, that
+                    what Gate does not cover is left alone, so this slot only
+                    has to stop overclaiming.
+
+                    No `truncate` on this branch, unlike the host below it. A
+                    partial host is a lie, so that one has to cut rather than
+                    wrap; this is a phrase, and a phrase can wrap. Keeping the
+                    class here clipped the new wording at 200% the moment it
+                    landed - a constraint the slot only ever had because prose
+                    was sharing a class with an identifier. */}
                 {member.coversAllProviders ? (
-                  <span className="truncate text-gc-label text-gc-ink-3">all your providers</span>
+                  <span className="min-w-0 flex-1 basis-[8em] text-gc-label leading-snug text-gc-ink-3">
+                    the providers Gate routes
+                  </span>
                 ) : (
-                  <span className="truncate font-mono text-gc-label text-gc-ink-3">
+                  <span className="min-w-0 flex-1 basis-[8em] truncate font-mono text-gc-label text-gc-ink-3">
                     {member.kind === "proxy"
                       ? (member.domain?.hosts ?? []).join(" · ")
                       : hostOf(member.tool?.default_upstream_url)}
@@ -385,7 +496,12 @@ export function GroupMembers({
               </div>
 
               {open && (
-                <div className="bg-gc-subtle pb-3 pl-6 pr-3.5">
+                // `bg-gc-subtle` finally does something here. The whole member
+                // region used to sit on subtle, so an open row painting itself
+                // subtle was invisible against its own container and the
+                // disclosure had no fill of its own. On the panel's white the
+                // open row and its body read as one tinted block.
+                <div className="bg-gc-subtle px-3.5 pb-3">
                   <p className="text-gc-caption leading-snug text-gc-ink-2">
                     {explain(member, platform)}
                   </p>

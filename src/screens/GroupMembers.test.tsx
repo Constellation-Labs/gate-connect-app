@@ -89,8 +89,17 @@ describe("GroupMembers", () => {
     // constant api.anthropic.com, which is wrong the moment the user has
     // OpenAI configured in it.
     renderDetail([tool("opencode", "OpenCode", { kind: "detected" })], []);
-    expect(screen.getByText("all your providers")).toBeTruthy();
+    expect(screen.getByText("the providers Gate routes")).toBeTruthy();
     expect(screen.queryByText("https://api.anthropic.com")).toBeNull();
+  });
+
+  it("does not claim it routes every provider the user configured", () => {
+    // "all your providers" promised Gate stands in front of everything set up
+    // in the tool. It does not: a provider the catalog does not cover is
+    // skipped at connect time, not repointed, and OpenClaw and Hermes never
+    // read the tool's providers at all.
+    renderDetail([tool("opencode", "OpenCode", { kind: "detected" })], []);
+    expect(screen.queryByText("all your providers")).toBeNull();
   });
 
   it("toggles one member without touching the rest", async () => {

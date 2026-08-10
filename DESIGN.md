@@ -298,9 +298,24 @@ calls for it.
 
 Motion follows one grammar: direction-aware slides. Onboarding steps
 slide 28px horizontally (260ms, cubic-bezier(0.2, 0.7, 0.3, 1)); the
-update panel rises 16px over the room (240ms, same curve). The OS
-reduced-motion preference collapses all of it to instant; that contract
-is global and non-negotiable.
+update panel rises 16px over the room (240ms, same curve).
+
+**Reduced motion removes travel, not feedback.** The OS preference used to
+collapse everything to 0.01ms, which measured 137 elements frozen against
+10 animated normally and took the directional grammar with it: in one
+380px room direction is the only navigational metaphor there is, so
+zeroing every duration made a push and a pop the same event on screen for
+the one user who asked for less motion. The contract now splits the two.
+Nothing transitions a property that moves (the guard whitelists colour,
+background, border, fill, stroke, opacity and shadow, so the Switch
+thumb's 18px slide arrives instantly while a hover still eases), and the
+three travelling animations cross-fade in place instead at 120ms linear.
+Direction is genuinely given up under the preference, since no animation
+conveys it without moving; it stays recoverable from the static layout,
+because a panel wears a back chevron and its own h1 and Home wears
+neither. Infinite animations are no longer clamped to one iteration: the
+only one is the org picker's loading spinner, and a frozen spinner does
+not reduce motion, it removes the instruction to wait.
 
 ### Named Rules
 **The One Room Rule.** Every screen works inside the 380px frame without
@@ -466,9 +481,9 @@ Quiet and precise: color states, not size or shadow theatrics.
   a weight decision and does not need to reach 3:1 at every level.
 - A ring, not a border: solid 1px borders are what this system draws with
   box-shadow instead.
-- Pills report system state truthfully and are never decorative. On the
-  ledger panel a pill sits beside a switch that reports intent, and the two
-  are allowed to disagree; on Home a pill carries its row alone.
+- Pills report system state truthfully and are never decorative. On a family
+  panel a pill sits beside a switch that reports intent, and the two are
+  allowed to disagree; on Home a pill carries its row alone.
 
 ### Ledger Rows (Home)
 The list of model families is Home's primary content, not a panel behind a
@@ -476,7 +491,7 @@ door. PRODUCT.md's second principle puts it there and the vertical budget
 allows it: parked behind a door, Home measured 33% empty with nothing
 scrolling.
 - **Anatomy:** family name (13px medium ink, `truncate`), status pill,
-  stroked chevron. No switch and no expander: those are the ledger panel's
+  stroked chevron. No switch and no expander: those are the family panel's
   job, and keeping them off this row is what stops Home re-crowding.
 - **Height:** 44px at rest. A row with an exception grows by its sentence
   (11px, two lines maximum, error in Error Deep and everything quieter in
@@ -487,13 +502,42 @@ scrolling.
   certificate both belong to the card above, which is also the thing that
   can fix them; printed per row they repeat one sentence up to four times
   directly under the card that just said it.
-- **Depth grammar:** the row navigates (stroked chevron), the panel's family
-  row expands in place (filled caret, rotating), and the member level drops
-  the glyph for the word "Details". Three depths, three affordances, no
-  glyph doing two jobs.
+- **Depth grammar:** the row navigates (stroked chevron) and the member level
+  drops the glyph for the word "Details". Two depths, two affordances, no glyph
+  doing two jobs. There was a third for as long as the panel listed every
+  family and expanded one in place (filled caret, rotating); the panel is
+  about one family now, so nothing is left to open in place and the caret
+  retired with the accordion.
+- **Every door leads somewhere different.** Four rows carrying four chevrons
+  into one panel that varied only by which family arrived expanded is a
+  promise the destination did not keep, and three of that panel's four
+  visible rows were a copy of the screen the user had just left. A row's
+  chevron opens that row's family.
 - **Headings:** the group heading is an h2 and family names are h3 beneath
-  it on Home; on the ledger panel, whose title is the h1, families are h2.
+  it on Home; on a family panel, whose title is the h1, the members are h2.
   Four families and six pills must be navigable by heading.
+
+### Family Panel
+One family per panel, opened from its row on Home. The panel's h1 is the
+family's own name, not the question Home heads its rows with.
+- **Anatomy:** a control row directly under the header carrying the label
+  "Route through Gate" (the h1 already said which family), the count on a
+  second line, then the family pill and the family switch pushed right;
+  then the group-level banners; then the members.
+- **The count, not the exception.** Every exception `groupSummary` can name
+  (error, needs-trust, master-off, drifted) has a banner below it with the
+  remedy attached, so printing the summary sentence here too would state one
+  fact twice and put the shorter, unactionable copy first. The count is the
+  half the banners do not carry, and it is the one screen where the
+  denominator is itemized directly beneath it.
+- **No family name below the h1, no shell-environment switch.** The switch
+  that sets `HTTPS_PROXY` spans every family at once, so a panel about one
+  family is the one place it cannot live; Home carries it.
+- **Members are the list.** `role="list"` belongs to the members here, since
+  there are no families on this screen to enumerate.
+- **`flex-wrap` with an `em` basis** on the control row's text column, the
+  same rule the routing card and the ledger rows use: at 200% the pill and
+  switch drop to their own line rather than starving the label.
 
 ### Cards / Rows
 - **Corner Style:** 10px radius.
@@ -554,14 +598,29 @@ disagree on screen. The switch reports intent; a pill or a note reports
 what is actually happening.
 - Anything that reports intent must not paint itself in live-state indigo
   when it cannot be live. The shell-environment channel's stored choice
-  survives routing being turned off, so its row carries "Waiting on
-  routing" beside the switch rather than implying a live channel.
+  survives routing being turned off, so the switch has to answer for reading
+  "on" over a channel that cannot carry anything.
 - Use the existing vocabulary for the condition. "Waiting on routing" is
   what the member pill says for exactly this state; a second phrasing for
   one condition is a second thing to learn.
+- **Which sentence reports reality depends on the screen.** On a family
+  panel, whose subject is one family, the reality sentence is the panel's
+  own. On Home the master card already reports "Off · N waiting" once and
+  countably, so nothing further down repeats it: the shell-environment
+  switch points `aria-describedby` at that line instead of printing a second
+  copy 190px below it. This is the same rule that keeps `master-off` off the
+  ledger rows, applied to the one control on Home that is not a row.
 - Wire it to assistive tech: a switch that can read "on" over something
   broken points `aria-describedby` at the sentence that reports reality, so
   one control speaks both channels.
+- **The shell-environment switch is a line, not a card, and sits below the
+  ledger.** It routes every command-line tool at once, so it belongs to no
+  family and cannot live on a family panel. Its first stay on Home failed
+  geometrically: 66px under the master switch, same 38x22 track, same indigo,
+  which said by proximity that changing git and curl was routing's equal. The
+  ledger between them and the absence of card weight are what make the second
+  stay different. It is withheld entirely when no family is installed, since
+  an empty ledger restores exactly that adjacency.
 
 ## Do's and Don'ts
 
@@ -572,8 +631,11 @@ what is actually happening.
   buttons, switch on-states, active icon tiles, links.
 - **Do** set identifiers (URLs, hosts, workspace names, key placeholders,
   section labels) in Geist Mono at 10.5 to 11px; keep pills' text sans.
-- **Do** honor `prefers-reduced-motion` for every animation; the global
-  collapse in index.css is the contract.
+- **Do** honor `prefers-reduced-motion` by removing travel rather than
+  feedback: no transition on a property that moves, and a 120ms cross-fade
+  where a slide would have been. See the Motion paragraph above; the old
+  blanket-duration collapse is not the contract any more. The rule that has
+  not changed: every animation must answer to the preference somehow.
 - **Do** keep every screen inside the 380px popover; secondary surfaces
   slide as full panels with the 260ms directional grammar.
 - **Do** meet WCAG 2.1 AA contrast on white; ink-3 (#55596f) is the

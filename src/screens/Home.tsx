@@ -42,8 +42,11 @@ export function Home({
   onDismissStaleAgents,
   onToggleProxy,
   onTrustCa,
-  onOpenRoutes,
+  onOpenFamily,
   onOpenSettings,
+  envExportSeparable,
+  envExportOn,
+  onToggleEnvExport,
 }: {
   workspace: string;
   /** The gateway host on its own, separate from `workspace`: the header now
@@ -70,12 +73,19 @@ export function Home({
   onDismissStaleAgents: () => void;
   onToggleProxy: () => void;
   onTrustCa: () => void;
-  /** Opens the ledger panel with `groupId`'s family already expanded, so a row
-   * that reports a fault is also the way to it. Without the target the user
-   * arrives at a collapsed list and pays a second click to reach the row they
-   * just tapped. */
-  onOpenRoutes: (groupId?: string) => void;
+  /** Opens `groupId`'s own panel. The id is required: every row leads to its
+   * own family, so there is no longer a target-less way in. It used to be
+   * optional because the ledger heading was a button that opened a list of all
+   * four families collapsed; that list is gone, and with it the only caller
+   * that had nothing to name. */
+  onOpenFamily: (groupId: string) => void;
   onOpenSettings: () => void;
+  /** Whether the shell-environment channel can be offered at all. False on
+   * Linux, where those variables *are* the system proxy, so a switch could not
+   * honour itself. */
+  envExportSeparable: boolean;
+  envExportOn: boolean;
+  onToggleEnvExport: () => void;
 }) {
   const platform = usePlatform();
   const trustStore = trustStoreName(platform);
@@ -287,7 +297,12 @@ export function Home({
                           outline, so the outline read h1 -> h2 "What routes
                           through Gate" with the master switch unheaded. */}
                       <h2 className="text-gc-body font-semibold text-gc-ink">Routing</h2>
-                      <div className="mt-0.5 text-gc-caption text-gc-ink-3">
+                      {/* Identified, because it is the screen's one report of
+                          whether anything is flowing: the shell-channel switch
+                          below points at it for the reality half of its own
+                          state, the way a family switch used to point at its
+                          row's sentence. */}
+                      <div id="routing-status" className="mt-0.5 text-gc-caption text-gc-ink-3">
                         {/* The count survives the certificate state. Dropping it
                             was backwards: that is exactly when the user wants to
                             know how much is still working.
@@ -573,10 +588,76 @@ export function Home({
                   exception={kind === "master-off" || kind === "needs-trust" ? null : exception}
                   kind={kind}
                   last={i === ranked.length - 1}
-                  onOpen={() => onOpenRoutes(group.id)}
+                  onOpen={() => onOpenFamily(group.id)}
                 />
               ))}
             </div>
+          </div>
+        )}
+
+        {/* The other channel, back on Home now that the panel it lived on is
+            about one family and this belongs to none of them: it routes every
+            command-line tool at once, whatever provider they talk to.
+
+            Home is where it started and where it failed once, so the placement
+            is the whole design. The recorded failure was geometric: it sat 66px
+            under the master switch wearing the same 38x22 track in the same
+            indigo, telling the user by proximity that a machine-wide change to
+            git and curl was routing's equal. Two things keep that from
+            recurring. It sits *below* the ledger, so four family rows put
+            ~190px between the two switches and they are no longer a pair. And
+            it is a line, not a card - no `shadow-border`, matching the launch
+            tip below it - so the master switch keeps card weight and this reads
+            as a preference in the margin.
+
+            Only with families on screen. The empty state has no ledger to put
+            between the two switches, which is exactly the adjacency that failed,
+            and it costs nothing: the old panel was reachable only through a
+            family row, so a machine with nothing installed never had a route to
+            this control either.
+
+            `ink-3`, not `ink-4`. This is two sentences of instruction about the
+            one control in the app that changes something outside the AI tools -
+            `HTTPS_PROXY` reaches git, curl and every process in the shell - and
+            at ink-4 it measured 3.97:1 on white, the only text in the product
+            below the 4.5:1 floor. ink-3 is 6.90:1.
+
+            Absent entirely on Linux, where the `environment.d` drop-in *is* the
+            system proxy: there the variables cannot be declined without turning
+            routing off, and a switch that cannot honour itself is worse than no
+            switch. `env_export_separable` carries that from the backend rather
+            than the UI guessing at platforms. */}
+        {envExportSeparable && groups.length > 0 && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <div className="min-w-0 flex-1 basis-[8em]">
+              <div className="text-gc-body-sm font-medium text-gc-ink">Command-line tools</div>
+              <div className="mt-0.5 text-gc-micro leading-snug text-gc-ink-3">
+                Sets <span className="font-mono">HTTPS_PROXY</span> for your whole
+                shell, so OpenCode and other terminal tools route too.
+              </div>
+              {/* No "Waiting on routing" line here, unlike the panel this came
+                  from. That panel had no master card, so the sentence had
+                  nowhere else to live; Home's card sits 190px up reporting
+                  "Off · N waiting", and DESIGN.md's own rule is that
+                  card-owned states never reprint further down - it is why the
+                  ledger rows below suppress `master-off` too. Printing it here
+                  would be the third copy of one fact on one screen.
+
+                  The switch still has to answer for reading "on" over a channel
+                  that cannot be live, which is what Intent versus Reality
+                  requires. It points at the card's status line: the reality
+                  sentence for this condition on this screen, in the vocabulary
+                  the screen already uses, rather than a second phrasing of it
+                  20px away. */}
+            </div>
+            <Switch
+              className="ml-auto"
+              on={envExportOn}
+              label="Route command-line tools through Gate"
+              describedBy={envExportOn && !proxyOn && showProxy ? "routing-status" : undefined}
+              busy={busy}
+              onClick={onToggleEnvExport}
+            />
           </div>
         )}
 
@@ -728,11 +809,17 @@ function FamilyRow({
     >
       {/* Stretch button over the whole row, Trust as a sibling above it - the
           same layering the panel uses for its switch. `aria-describedby` is what
-          makes the row readable without eyes: the pill and the exception sit in
-          `pointer-events-none` spans so this button can cover them, which also
-          takes them out of the accessibility tree. Without it the row announces
+          makes the row readable without eyes: this button is an empty sibling
+          covering the row rather than an ancestor of its text, so name
+          computation finds nothing inside it and the row would announce
           "Claude details, button" and never "Claude Code failed", which is the
-          one thing it exists to say. */}
+          one thing it exists to say.
+
+          Not because `pointer-events-none` hides anything: it decides clicks,
+          not the accessibility tree, and the tree measured on 2026-08-10 has the
+          pill, the count and the exception all present as StaticText. The
+          description is what binds them to the control; it was never a rescue of
+          unreachable content. */}
       <button
         type="button"
         onClick={onOpen}
