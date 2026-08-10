@@ -107,7 +107,18 @@ enum ProxyCmd {
     Status,
     /// Turn the proxy on: trust the local CA and route the system proxy
     /// through the loopback engine. May prompt for elevation.
-    Enable,
+    Enable {
+        /// Stay in the foreground hosting the engine; Ctrl-C (or SIGTERM)
+        /// stops it and restores the prior system-proxy state.
+        ///
+        /// The engine runs inside this process, so without this the command
+        /// returns and routing goes with it - fine while the menubar app is
+        /// running, since it hosts its own, but it is why a machine with no
+        /// app cannot route through the engine from the CLI. Use this to host
+        /// it from launchd, systemd, or a CI job.
+        #[arg(long)]
+        foreground: bool,
+    },
     /// Turn the proxy off and restore the prior system-proxy state.
     Disable,
     /// Host ONLY the loopback reverse-proxy relay; blocks until killed.
@@ -537,7 +548,7 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     mgr.set_detached(true);
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
-        ProxyCmd::Enable => {
+        ProxyCmd::Enable { foreground } => {
             // Restore providers a prior master-off disabled, before enabling -
             // otherwise the all-off state trips `enable`'s "at least one
             // provider" precondition (mirrors the app's proxy_enable flow).
@@ -554,6 +565,18 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
             println!("Proxy enabled.");
             print_proxy_state(&state);
             print_proxy_hint();
+            if foreground {
+                println!();
+                println!("Hosting the proxy engine. Press Ctrl-C to stop routing and restore");
+                println!("the previous system-proxy settings.");
+                proxy::wait_for_shutdown()?;
+                // Restoring here is the point of blocking: a service manager
+                // sends SIGTERM, and an engine that vanished without reverting
+                // would leave the machine pointed at a dead loopback port.
+                println!();
+                mgr.disable()?;
+                println!("Proxy disabled; prior system-proxy state restored.");
+            }
         }
         ProxyCmd::Disable => {
             mgr.disable()?;
