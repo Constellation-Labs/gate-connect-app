@@ -815,9 +815,18 @@ fn proxy_set_domain(
     slug: String,
     enabled: bool,
 ) -> Result<gate_connect_core::proxy::ProxyState, String> {
-    gate_connect_core::proxy::manager()
+    let state = gate_connect_core::proxy::manager()
         .set_domain(&slug, enabled)
-        .map_err(|e| format!("{e:#}"))
+        .map_err(|e| format!("{e:#}"))?;
+
+    // Audited here rather than inside `ProxyManager::set_domain`, because
+    // `provider::enable` / `provider::disable` drive that method internally -
+    // instrumenting it there would turn one operator action into N+1 events.
+    // This command is the operator toggling one domain by hand.
+    if let Ok(Some(base_url)) = gate_connect_core::account::load_base_url() {
+        gate_connect_core::audit::domain_toggled(&base_url, None, &slug, enabled);
+    }
+    Ok(state)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

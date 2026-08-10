@@ -21,7 +21,6 @@ pub mod primitives;
 pub mod provider;
 pub mod proxy;
 pub mod registry;
-pub mod session;
 
 pub mod integrations {
     pub mod claude_code;

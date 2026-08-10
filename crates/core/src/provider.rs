@@ -19,7 +19,6 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::account;
 use crate::audit;
-use crate::oauth;
 use crate::registry::{self, ConnectInput, Status, ToolId};
 
 /// A user-facing provider: the union of the config integrations and proxy
@@ -224,16 +223,6 @@ fn enable_inner(slug: &str, skip: &[String]) -> Result<ProviderState> {
     let account = account::load()?
         .context("no Gate account configured - sign in before enabling a provider")?;
     let skipped = |s: &str| skip.iter().any(|x| x == s);
-
-    // Cache the auth token for this session (used by subsequent audit calls).
-    let auth_token = match account.auth_mode {
-        account::AuthMode::ApiKey => account.api_key.clone(),
-        account::AuthMode::OAuth => oauth::access_token_for_injection(),
-    };
-    if !auth_token.is_empty() {
-        crate::session::set_auth_token(auth_token);
-    }
-
     let any_detected = p.tool_ids.iter().any(|&id| {
         tool_detected(id) && !registry::find(id).is_some_and(|i| skipped(i.id().slug()))
     });
@@ -298,19 +287,14 @@ fn enable_inner(slug: &str, skip: &[String]) -> Result<ProviderState> {
 
     let state = state(&p);
 
-    // Emit audit event (best-effort; don't fail if audit fails).
-    // Account was already loaded, and auth_token is cached in session.
-    let org_id = crate::account::org_id_for_injection();
-    if !org_id.is_empty() {
-        if let Some(cached_token) = crate::session::get_auth_token() {
-            let _ = audit::provider_enabled(
-                &account.gateway_base_url,
-                &cached_token,
-                &org_id,
-                p.display_name,
-            );
-        }
-    }
+    // Best-effort audit. The account is already loaded here, so its key is the
+    // in-hand credential for ApiKey mode; OAuth mode ignores it and reads the
+    // live access token.
+    audit::provider_enabled(
+        &account.gateway_base_url,
+        Some(&account.api_key),
+        p.display_name,
+    );
 
     Ok(state)
 }
@@ -351,20 +335,11 @@ pub fn disable(slug: &str) -> Result<ProviderState> {
 
     let state = state(&p);
 
-    // Emit audit event if we have a cached token from this session.
-    // If the user never configured a provider in this session, skip silently (best-effort).
-    let org_id = crate::account::org_id_for_injection();
-    if !org_id.is_empty() {
-        if let Some(auth_token) = crate::session::get_auth_token() {
-            if let Ok(Some(account)) = account::load() {
-                let _ = audit::provider_disabled(
-                    &account.gateway_base_url,
-                    &auth_token,
-                    &org_id,
-                    p.display_name,
-                );
-            }
-        }
+    // Best-effort audit. `load_base_url` rather than `load`, because the URL is
+    // all this path needs; `audit::credential` reaches for the key itself when
+    // the mode calls for one, so passing `None` costs no coverage.
+    if let Ok(Some(base_url)) = account::load_base_url() {
+        audit::provider_disabled(&base_url, None, p.display_name);
     }
 
     Ok(state)

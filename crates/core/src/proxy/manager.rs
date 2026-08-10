@@ -19,7 +19,6 @@ use anyhow::{Context, Result};
 use super::{ca, config, engine, system_proxy, ProxyDomain, ProxyState};
 use crate::account;
 use crate::audit;
-use crate::oauth;
 
 pub struct ProxyManager {
     engine: Mutex<Option<engine::RunningEngine>>,
@@ -160,16 +159,6 @@ impl ProxyManager {
         let account = account::load()?
             .context("no Gate account configured - sign in before enabling the proxy")?;
 
-        // Cache the auth token for this session. Used by disable audit and other
-        // call sites to emit without re-prompting for keychain access.
-        let auth_token = match account.auth_mode {
-            account::AuthMode::ApiKey => account.api_key.clone(),
-            account::AuthMode::OAuth => oauth::access_token_for_injection(),
-        };
-        if !auth_token.is_empty() {
-            crate::session::set_auth_token(auth_token);
-        }
-
         let domains = config::load_domains()?;
         // No enabled-domains guard here: the master switch owns whether the
         // engine runs, while providers/domains own what it intercepts. Starting
@@ -291,16 +280,12 @@ impl ProxyManager {
         }
         drop(guard);
 
-        // Emit audit event (best-effort; don't fail if audit fails).
-        // Account was already loaded, and auth_token is cached in session.
-        let org_id = crate::account::org_id_for_injection();
-        if !org_id.is_empty() {
-            if let Some(cached_token) = crate::session::get_auth_token() {
-                let port = self.status().ok().and_then(|s| s.port).unwrap_or(0);
-                let _ =
-                    audit::proxy_enabled(&account.gateway_base_url, &cached_token, &org_id, port);
-            }
-        }
+        // Best-effort audit. The account is already loaded here, so its key is
+        // the in-hand credential for ApiKey mode. `port` stays an Option: when
+        // `status()` fails, the record says `null` rather than inventing a 0 that
+        // a reader could not tell from a real port.
+        let port = self.status().ok().and_then(|s| s.port);
+        audit::proxy_enabled(&account.gateway_base_url, Some(&account.api_key), port);
 
         self.status()
     }
@@ -310,6 +295,19 @@ impl ProxyManager {
     /// so it can't be canceled and strand traffic. The CA is left trusted.
     pub fn disable(&self) -> Result<ProxyState> {
         self.disable_inner()?;
+
+        // Best-effort audit, deliberately here rather than in `disable_inner`:
+        // `disable_quiet` shares that body and runs at app exit, which is not an
+        // operator action, and a network call with a 5s ceiling on the quit path
+        // is exactly the hang that function exists to avoid.
+        //
+        // `load_base_url` rather than `load`, because the URL is all this path
+        // needs; `audit::credential` reaches for the key itself when the mode
+        // calls for one, so passing `None` costs no coverage.
+        if let Ok(Some(base_url)) = account::load_base_url() {
+            audit::proxy_disabled(&base_url, None);
+        }
+
         self.status()
     }
 
@@ -361,17 +359,6 @@ impl ProxyManager {
             running.stop();
         }
         let _ = system_proxy::clear_snapshot();
-
-        // Emit audit event if we have a cached token from this session.
-        // If the user never enabled proxy in this session, skip silently (best-effort).
-        let org_id = crate::account::org_id_for_injection();
-        if !org_id.is_empty() {
-            if let Some(auth_token) = crate::session::get_auth_token() {
-                if let Ok(Some(account)) = account::load() {
-                    let _ = audit::proxy_disabled(&account.gateway_base_url, &auth_token, &org_id);
-                }
-            }
-        }
 
         Ok(())
     }

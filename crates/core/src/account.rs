@@ -158,26 +158,11 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         let user = env::current_user()?;
         keychain::set(&service(), &user, key)?;
 
-        // Emit audit event (best-effort; don't fail if audit fails)
-        let org_id = org_id_for_injection();
-        if !org_id.is_empty() {
-            let new_prefix = key.chars().take(12).collect::<String>();
-            let _ = audit::api_key_saved(gateway_base_url, key, &org_id, old_prefix, &new_prefix);
-        }
-
-        // Cache the auth token for this session based on current auth mode.
-        // If ApiKey mode, the token is the API key we just saved.
-        // If OAuth mode, the token is the OAuth access token (key is stored but not used for auth).
-        let auth_mode = read_account_file()?
-            .map(|f| f.auth_mode)
-            .unwrap_or_default();
-        let auth_token = match auth_mode {
-            AuthMode::ApiKey => key.to_string(),
-            AuthMode::OAuth => crate::oauth::access_token_for_injection(),
-        };
-        if !auth_token.is_empty() {
-            crate::session::set_auth_token(auth_token);
-        }
+        // Best-effort audit of the rotation. `key` is passed as the caller's
+        // already-in-hand credential, not as the bearer: in OAuth mode the
+        // gateway wants the Cognito token, and `audit::credential` picks by mode.
+        let new_prefix = key.chars().take(12).collect::<String>();
+        audit::api_key_saved(gateway_base_url, Some(key), old_prefix, &new_prefix);
     }
     Ok(())
 }
@@ -221,9 +206,14 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
 /// existing `account.json`.
 pub fn set_org(org_id: &str, org_name: &str) -> Result<()> {
     let mut file = read_account_file()?.context("no account configured")?;
+    let gateway_base_url = file.gateway_base_url.clone();
     file.org_id = Some(org_id.to_string());
     file.org_name = Some(org_name.to_string());
-    write_account_file(&file)
+    write_account_file(&file)?;
+    // After the write, so the emit authenticates as the org the operator just
+    // switched *to* - the trail lands where the subsequent traffic will.
+    audit::org_selected(&gateway_base_url, None, org_id, org_name);
+    Ok(())
 }
 
 /// Drop the selected org, keeping everything else. Used when the gateway
@@ -265,8 +255,17 @@ pub fn org_id_for_injection() -> String {
 /// an existing `account.json` .
 pub fn set_auth_mode(mode: AuthMode) -> Result<()> {
     let mut file = read_account_file()?.context("no account configured")?;
+    let gateway_base_url = file.gateway_base_url.clone();
     file.auth_mode = mode;
-    write_account_file(&file)
+    write_account_file(&file)?;
+    // After the write: `audit::credential` reads the persisted mode to choose a
+    // header, so emitting before it would authenticate as the mode being left.
+    let label = match mode {
+        AuthMode::OAuth => "oauth",
+        AuthMode::ApiKey => "api-key",
+    };
+    audit::auth_mode_changed(&gateway_base_url, None, label);
+    Ok(())
 }
 
 /// Current persisted auth mode, defaulting to `ApiKey` when no account exists
@@ -278,8 +277,21 @@ pub fn auth_mode() -> Result<AuthMode> {
 }
 
 pub fn has_api_key() -> Result<bool> {
+    Ok(stored_api_key()?.is_some())
+}
+
+/// The stored Gate key, read straight from the keychain.
+///
+/// Distinct from [`backfill_api_key_prefix`], which is gated behind an explicit
+/// confirmation: that one *reveals* the secret to the user, while this hands it
+/// to code that is about to authenticate with it. This is the same read [`load`]
+/// already performs on every proxy enable, provider enable, and startup
+/// reconcile, against an item this app created in [`save`] - so on macOS the
+/// per-(item, application) ACL already covers it, and no caller pays a dialog
+/// that the enable path has not already paid.
+pub fn stored_api_key() -> Result<Option<String>> {
     let user = env::current_user()?;
-    Ok(keychain::get(&service(), &user)?.is_some())
+    keychain::get(&service(), &user)
 }
 
 /// Leading characters of the stored Gate key - through the random part that
@@ -311,11 +323,22 @@ pub fn backfill_api_key_prefix() -> Result<Option<String>> {
 }
 
 pub fn clear() -> Result<()> {
+    let user = env::current_user()?;
+
+    // Audit the disconnect *before* destroying anything. Both credentials die
+    // below - the keychain delete takes the Gate key, `oauth::clear()` takes the
+    // access token - so after either there is nothing left to authenticate the
+    // record of their removal with. The key read here is free: this function is
+    // about to delete the same keychain item, so it is not a new prompt.
+    if let Some(base_url) = load_base_url()? {
+        let key = keychain::get(&service(), &user).unwrap_or(None);
+        audit::api_key_cleared(&base_url, key.as_deref(), api_key_prefix()?.as_deref());
+    }
+
     let path = config_path()?;
     if path.exists() {
         fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
     }
-    let user = env::current_user()?;
     keychain::delete(&service(), &user)?;
     // A full disconnect forgets every credential, so any OAuth tokens go too -
     // nothing is left behind in the secret store .

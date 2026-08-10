@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 
 use super::{ca, config, engine, system_proxy, ProxyDomain, ProxyState};
 use crate::account;
+use crate::audit;
 
 pub struct ProxyManager {
     engine: Mutex<Option<engine::RunningEngine>>,
@@ -191,6 +192,14 @@ impl ProxyManager {
             anyhow::bail!("proxy engine exited unexpectedly while enabling");
         }
         drop(guard);
+
+        // Best-effort audit, matching `manager.rs`. The account is already
+        // loaded here, so its key is the in-hand credential for ApiKey mode;
+        // `port` stays an Option so an unreadable status records `null` rather
+        // than a fabricated 0.
+        let port = self.status().ok().and_then(|s| s.port);
+        audit::proxy_enabled(&account.gateway_base_url, Some(&account.api_key), port);
+
         self.status()
     }
 
@@ -199,6 +208,15 @@ impl ProxyManager {
     /// so it can't be cancelled and strand traffic. The CA is left trusted.
     pub fn disable(&self) -> Result<ProxyState> {
         self.disable_inner()?;
+
+        // Best-effort audit, deliberately here rather than in `disable_inner`:
+        // `disable_quiet` shares that body and runs at app exit, which is not an
+        // operator action. `load_base_url` rather than `load` - see the same
+        // block in `manager.rs`.
+        if let Ok(Some(base_url)) = account::load_base_url() {
+            audit::proxy_disabled(&base_url, None);
+        }
+
         self.status()
     }
 

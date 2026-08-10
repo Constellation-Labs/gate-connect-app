@@ -149,13 +149,14 @@ pub fn ensure() -> Result<PathBuf> {
 #[cfg(test)]
 #[cfg(not(target_os = "windows"))]
 mod tests {
+    use super::*;
+
     #[test]
     fn system_roots_are_a_real_bundle_not_a_single_cert() {
         // The whole point of this module: a tool that takes a `cafile` replaces
         // its trust store with that file, so the base must carry the platform's
         // full root set. One cert would break every non-Gate TLS call.
-        let roots =
-            super::system_roots_pem().expect("a system CA bundle must exist on this platform");
+        let roots = system_roots_pem().expect("a system CA bundle must exist on this platform");
         let count = roots.matches("BEGIN CERTIFICATE").count();
         assert!(
             count > 10,
