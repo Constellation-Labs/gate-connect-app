@@ -60,6 +60,7 @@ function renderDetail(
       onToggleTool={vi.fn(() => Promise.resolve())}
       onSetDomain={vi.fn(() => Promise.resolve())}
       onTrustCa={vi.fn()}
+      trustPending={false}
       proxyOn={true}
       onEnableRouting={vi.fn()}
       {...props}
@@ -217,6 +218,7 @@ describe("GroupMembers intent versus flow", () => {
             onToggleTool={vi.fn(() => Promise.resolve())}
         onSetDomain={vi.fn(() => Promise.resolve())}
         onTrustCa={vi.fn()}
+        trustPending={false}
       proxyOn={true}
       onEnableRouting={vi.fn()}
         {...props}
@@ -265,6 +267,24 @@ describe("GroupMembers intent versus flow", () => {
     // Expanding the member must not add a second button for the same action.
     expect(screen.getAllByRole("button", { name: "Trust" })).toHaveLength(1);
   });
+
+  it("warns about the system dialog here too, not only on Home", () => {
+    renderUntrusted();
+    // The same button raising the same OS dialog: a user who trusts from the
+    // panel must not be the only one who meets it unannounced. (The platform
+    // mock pins macOS, so this is the password-prompt wording.)
+    expect(screen.getByText(/ask for your login password/)).toBeTruthy();
+  });
+
+  it("swaps to the present tense while the dialog is up", () => {
+    renderUntrusted({ trustPending: true, busy: true });
+    // Banner and live region, the same instruction seen and heard.
+    expect(screen.getAllByText(/asking for your login password/)).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Waiting…" })).toBeTruthy();
+    // The banner is one sentence at a time: the pre-click warning and the
+    // member's name give way to the instruction for the dialog on screen.
+    expect(screen.queryByText(/will ask for your login password/)).toBeNull();
+  });
 });
 
 describe("GroupMembers master-off remedy", () => {
@@ -283,6 +303,7 @@ describe("GroupMembers master-off remedy", () => {
             onToggleTool={vi.fn(() => Promise.resolve())}
         onSetDomain={vi.fn(() => Promise.resolve())}
         onTrustCa={vi.fn()}
+        trustPending={false}
         proxyOn={false}
         onEnableRouting={vi.fn()}
         {...props}
@@ -327,6 +348,7 @@ describe("GroupMembers certificate failure", () => {
         // A cancelled admin prompt: the likeliest failure in the app, and it
         // used to produce no on-screen feedback at all.
         onTrustCa={() => Promise.reject("User canceled (-128)")}
+        trustPending={false}
         proxyOn={true}
         onEnableRouting={vi.fn()}
       />,

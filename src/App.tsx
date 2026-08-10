@@ -26,6 +26,7 @@ import {
   disconnectTool,
   launchAtLoginStatus,
   unpinPopover,
+  pinPopover,
   openOnboardingWindow,
   routedClientsStale,
   runningAgentsCount,
@@ -234,6 +235,12 @@ export function App() {
   const [openFamily, setOpenFamily] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
+  // Whether we are blocked on the OS certificate-trust dialog. Distinct from
+  // `proxyBusy` because it is the only busy state with something to say: the
+  // screens swap in per-platform copy naming the dialog that is on screen (see
+  // `trustPromptWaiting`), which is what turns an unexplained system security
+  // warning into the step the user was told to expect.
+  const [trustPending, setTrustPending] = useState(false);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
   // The provider catalog is the grouping contract for Home's ledger
@@ -857,6 +864,14 @@ export function App() {
     if (proxyBusy) return;
     setProviderError(null);
     setProxyBusy(true);
+    // Two things the generic `proxyBusy` cannot do. It disables the button but
+    // says nothing, so the wait for a system trust dialog looked like a frozen
+    // popover; `trustPending` lets the screens name the dialog while it is up.
+    // And the dialog steals focus, which the dismiss-on-blur handler reads as
+    // a click-away - so without the pin the window hides, taking that sentence
+    // with it, on the one action in the app that hands off to the OS.
+    setTrustPending(true);
+    await pinPopover().catch(() => {});
     try {
       setProxy(await proxyTrustCa());
       track("ca_trusted");
@@ -876,6 +891,10 @@ export function App() {
       throw err;
     } finally {
       setProxyBusy(false);
+      setTrustPending(false);
+      // Unpin whichever way it went: a declined dialog leaves the user looking
+      // at the error in a popover that must still dismiss normally.
+      await unpinPopover().catch(() => {});
     }
   }, [proxyBusy]);
 
@@ -1072,6 +1091,7 @@ export function App() {
         onToggleTool={setToolRouted}
         onSetDomain={setDomain}
         onTrustCa={trustCa}
+        trustPending={trustPending}
         proxyOn={proxy?.running ?? false}
         onEnableRouting={() => void toggleProxy(false)}
         authMode={account?.auth_mode}
@@ -1115,6 +1135,7 @@ export function App() {
         onDismissStaleAgents={() => setStaleAgentsDismissed(true)}
         onToggleProxy={() => toggleProxy(true)}
         onTrustCa={trustCa}
+        trustPending={trustPending}
         onOpenFamily={(groupId) => {
           setOpenFamily(groupId);
           setScreen("family");

@@ -91,3 +91,54 @@ export function modKeyLabel(p: Platform): string {
 export function trustStoreName(p: Platform): string {
   return p === "macos" ? "keychain" : "certificate store";
 }
+
+/** What the OS is about to ask, said *before* the user clicks Trust.
+ *
+ *  Trusting the CA is the one action in the app that hands the user off to a
+ *  system dialog, and each platform raises a different one: Windows shows a
+ *  security warning naming the certificate, macOS raises the Security Agent
+ *  for the login password, Linux escalates to sudo/pkexec. An unexpected
+ *  security dialog reads as something going wrong - naming it first turns it
+ *  into the step the user was told to expect.
+ *
+ *  Windows gets the reassurance rather than the detail: its dialog is a red
+ *  "Security Warning" written to make you hesitate, so what the user needs
+ *  before clicking is that it's expected and which button ends it. The
+ *  certificate's own name belongs in `trustPromptWaiting`, where it can be
+ *  matched against the name the dialog is quoting back. */
+export function trustPromptHint(p: Platform): string {
+  switch (p) {
+    case "windows":
+      return "Windows will show a security warning: that’s expected, choose Yes.";
+    case "macos":
+      return "macOS will ask for your login password.";
+    case "linux":
+      return "You’ll be asked for your administrator password.";
+    default:
+      return "Your system will ask you to confirm.";
+  }
+}
+
+/** The same handoff, said *while* the OS dialog is up and we're blocked on it.
+ *
+ *  Present tense and an instruction, because at this point the dialog is on
+ *  screen and the only thing left is which button to press. Without it the
+ *  popover just sits there with a disabled button while a scary-looking system
+ *  warning waits somewhere on screen, possibly behind the window.
+ *
+ *  Windows quotes the CA's common name back at the user ("claiming to
+ *  represent: Gate Connect Local CA"), so naming it here is what lets them
+ *  match the dialog in front of them to the app that raised it. Must match
+ *  `cert_authority.rs`'s CA_COMMON_NAME exactly. */
+export function trustPromptWaiting(p: Platform): string {
+  switch (p) {
+    case "windows":
+      return "Windows is asking you to confirm “Gate Connect Local CA”. Choose Yes to finish.";
+    case "macos":
+      return "macOS is asking for your login password. Enter it to finish.";
+    case "linux":
+      return "Enter your administrator password to finish.";
+    default:
+      return "Your system is asking you to confirm. Approve it to finish.";
+  }
+}

@@ -1090,6 +1090,17 @@ fn unpin_popover() {
     POPOVER_PINNED.store(false, Ordering::Release);
 }
 
+/// Pin the popover open for the duration of a call that raises a system trust
+/// dialog. Without this, `proxy_trust_ca` is the one action in the app that
+/// hides the window it was clicked in: the OS dialog takes focus, the
+/// `Focused(false)` handler hides the popover, and the copy telling the user
+/// what to click goes with it. The frontend pins before the call and unpins
+/// in its `finally`, so a cancelled dialog restores click-away dismissal too.
+#[tauri::command]
+fn pin_popover() {
+    POPOVER_PINNED.store(true, Ordering::Release);
+}
+
 /// Open (or refocus) the full-size onboarding window. `source` rides along as
 /// a query param so the flow can report whether it was a first launch or a
 /// replay from Settings.
@@ -1311,6 +1322,7 @@ pub fn run() {
                     set_org,
                     app_platform,
                     unpin_popover,
+                    pin_popover,
                     open_onboarding_window,
                     reveal_popover,
                     quit_app,
@@ -1360,6 +1372,7 @@ pub fn run() {
                     set_org,
                     app_platform,
                     unpin_popover,
+                    pin_popover,
                     open_onboarding_window,
                     reveal_popover,
                     quit_app,

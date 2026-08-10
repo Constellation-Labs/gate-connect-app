@@ -121,6 +121,12 @@ export const switchGateway = (baseUrl: string) =>
  *  Called once the user interacts with the startup window. */
 export const unpinPopover = () => invoke<void>("unpin_popover");
 
+/** Hold the popover open across a call that raises a system dialog: the dialog
+ *  takes focus, and without the pin the dismiss-on-blur handler would hide the
+ *  window along with the copy telling the user what to click. Always paired
+ *  with `unpinPopover` in a `finally`. */
+export const pinPopover = () => invoke<void>("pin_popover");
+
 /** Open (or refocus) the full-size onboarding window. `source` tags the
  *  analytics events with how the intro was reached. */
 export const openOnboardingWindow = (source: "firstrun" | "settings") =>

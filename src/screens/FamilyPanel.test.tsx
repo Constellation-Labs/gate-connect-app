@@ -81,6 +81,7 @@ function renderPanel(
       onToggleTool={vi.fn()}
       onSetDomain={vi.fn()}
       onTrustCa={vi.fn()}
+      trustPending={false}
       proxyOn={proxyOn}
       onEnableRouting={vi.fn()}
       {...props}
