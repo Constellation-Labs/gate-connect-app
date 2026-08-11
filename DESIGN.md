@@ -251,10 +251,10 @@ leading at each call site that does not already carry a `leading-*` utility.
 
 ### Text scaling
 The popover scales its own type: five steps from 100% to 200%, driven by
-`useTextScale`, with the control in Settings and a Cmd/Ctrl plus-minus
-shortcut. WCAG 2.1 SC 1.4.4 asks for 200% without loss of content or
-function, and a fixed, non-resizable menubar window exposes no other way to
-get there.
+`useTextScale` and reached with the Cmd/Ctrl plus-minus shortcut (and
+Cmd/Ctrl 0 to reset). WCAG 2.1 SC 1.4.4 asks for 200% without loss of
+content or function, and a fixed, non-resizable menubar window exposes no
+other way to get there.
 
 **Not webview zoom**, though that would be one call. The app root is
 `h-full w-full`, so the CSS layout width *is* the window width: zooming a

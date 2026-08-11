@@ -207,7 +207,7 @@ export function App() {
   // Text scaling owns the rem root and the Cmd/Ctrl +/-/0 accelerators. Mounted
   // here rather than per screen so the shortcuts work on every surface,
   // including the takeovers.
-  const { scale: textScale, setScale: setTextScale } = useTextScale();
+  useTextScale();
   const [screen, setScreen] = useState<Screen>("loading");
   // Direction of the current screen change, derived during render (the React
   // pattern for adjusting state when an input changes) rather than in an
@@ -1090,8 +1090,6 @@ export function App() {
         caTrusted={proxy?.ca_trusted ?? false}
         proxyBusy={proxyBusy}
         onUntrustCa={untrustCa}
-        textScale={textScale}
-        onSetTextScale={setTextScale}
       />
     );
   } else if (screen === "diagnostics") {
