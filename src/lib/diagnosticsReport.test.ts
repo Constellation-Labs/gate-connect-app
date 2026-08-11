@@ -134,6 +134,7 @@ function report(overrides: Partial<Parameters<typeof buildDiagnosticsReport>[0]>
     now: NOW,
     version: "1.4.2",
     platform: "linux",
+    analyticsId: { kind: "id", value: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" },
     backend,
     account,
     oauth,
@@ -157,6 +158,7 @@ describe("buildDiagnosticsReport", () => {
     expect(text).toContain("Ubuntu 25.10");
     expect(text).toContain("6.14.0-33-generic");
     expect(text).toContain("/home/x/.local/share/Gate Connect");
+    expect(text).toContain("analytics id    0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b");
     expect(text).toContain("https://gateway.constellationgate.ai");
     expect(text).toContain("someone@example.com");
     expect(text).toContain("session expires in 47m");
@@ -168,6 +170,11 @@ describe("buildDiagnosticsReport", () => {
     expect(text).toContain("system proxy    environment.d drop-in present");
     expect(text).toContain("restore intent  on");
     expect(text).toContain("launch at login on");
+  });
+
+  it("distinguishes analytics never having started from an id it could not read", () => {
+    expect(report({ analyticsId: { kind: "disabled" } })).toContain("analytics id    disabled");
+    expect(report({ analyticsId: { kind: "unavailable" } })).toContain("analytics id    unknown");
   });
 
   it("names each running tool, how long it has been up, and whether it predates routing", () => {

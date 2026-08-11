@@ -14,7 +14,11 @@ vi.mock("../lib/api", () => ({
   routedClientsStale: vi.fn(),
   runningAgents: vi.fn(),
 }));
-vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
+vi.mock("../lib/analytics", () => ({
+  track: vi.fn(),
+  trackError: vi.fn(),
+  analyticsId: () => ({ kind: "id", value: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" }),
+}));
 import {
   diagnostics as fetchDiagnostics,
   launchAtLoginStatus,

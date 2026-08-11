@@ -16,7 +16,7 @@ import {
   runningAgents as fetchRunningAgents,
 } from "../lib/api";
 import { buildDiagnosticsReport } from "../lib/diagnosticsReport";
-import { trackError } from "../lib/analytics";
+import { analyticsId, trackError } from "../lib/analytics";
 import { usePlatform } from "../lib/platform";
 import { SubHeader, Button } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
@@ -112,6 +112,7 @@ export function Diagnostics({
         now: generatedAt,
         version,
         platform,
+        analyticsId: analyticsId(),
         backend,
         account,
         oauth,
