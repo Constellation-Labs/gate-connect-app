@@ -15,7 +15,9 @@
 //! Windows has a single per-user WinINET proxy, so there is no service
 //! enumeration here; enable/disable act on that one global setting.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -27,6 +29,91 @@ pub struct ProxyManager {
 }
 
 static MANAGER: OnceLock<ProxyManager> = OnceLock::new();
+
+/// Whether a domain watcher is already running, so repeated enables don't
+/// stack them.
+static WATCHER_ALIVE: AtomicBool = AtomicBool::new(false);
+
+/// How often the watcher stats the domains file. A toggle from another process
+/// is a human action, so a second's latency is imperceptible; the cost is one
+/// `stat` per tick against a file in the app-support dir.
+const WATCH_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// Keep a running engine in step with the domains config after another process
+/// writes it.
+///
+/// Windows, like macOS, hosts the engine inside whichever process enabled it,
+/// with no daemon to forward changes to - so [`ProxyManager::set_domain`]
+/// updates the engine held by *its own* process and nothing else. From a second
+/// process (`gate-connect proxy domain <slug> on` while the menubar app is
+/// routing) that handle is `None`: the file was written, `proxy domains`
+/// reported the new set, and the engine went on intercepting the old one. The
+/// symptom is silence rather than an error - the engine blind-tunnels the host
+/// to its real upstream, so the app works and nothing reaches Gate.
+///
+/// Config and engine disagreeing is precisely the failure this subsystem is
+/// meant not to have. Linux fixed its version in #120 by forwarding to the
+/// daemon, macOS in #132 with this watcher; Windows was left with neither, which
+/// is why this is a port rather than a new mechanism - keep the two in step.
+///
+/// Watching the file rather than adding a control socket, because the file is
+/// already the contract between processes here, and reloading it is safe by
+/// construction: [`config::load_domains`] starts from the built-in catalog and
+/// applies only per-slug enabled flags, forcing unsupported entries off. So a
+/// reload can flip a catalog entry and can never point the MITM at a host the
+/// build does not ship - the same guarantee the Linux daemon enforces by
+/// validating requests against the catalog.
+///
+/// Retires on its own when the engine stops, so a disable/enable cycle does not
+/// accumulate threads.
+fn spawn_domain_watcher() {
+    // `swap` rather than load-then-store: two enables racing here would
+    // otherwise both see `false` and start a watcher each.
+    if WATCHER_ALIVE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let mgr = manager();
+        let mut seen = config::domains_file_mtime();
+        loop {
+            std::thread::sleep(WATCH_INTERVAL);
+            // Never hold the lock across the sleep above: enable/disable take
+            // it for whole sequences, and this thread must not be what makes
+            // a user-facing toggle wait.
+            let engine_gone = mgr
+                .engine
+                .lock()
+                .expect("proxy engine mutex poisoned")
+                .is_none();
+            if engine_gone {
+                WATCHER_ALIVE.store(false, Ordering::SeqCst);
+                return;
+            }
+            let current = config::domains_file_mtime();
+            if current == seen {
+                continue;
+            }
+            seen = current;
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                // A torn or unreadable read is not worth acting on: the engine
+                // keeps the rules it has, and the next tick tries again.
+                Err(e) => {
+                    eprintln!("gate proxy: could not reload proxy domains ({e}); keeping current");
+                    continue;
+                }
+            };
+            if let Some(running) = mgr
+                .engine
+                .lock()
+                .expect("proxy engine mutex poisoned")
+                .as_ref()
+            {
+                running.update_domains(&domains);
+            }
+        }
+    });
+}
 
 pub fn manager() -> &'static ProxyManager {
     MANAGER.get_or_init(|| ProxyManager {
@@ -171,6 +258,9 @@ impl ProxyManager {
         }
 
         *guard = Some(running);
+        // The engine now has whatever the config said at startup. Keep it in
+        // step with writes made by *other* processes for as long as it runs.
+        spawn_domain_watcher();
 
         // The crash fail-safe defers while we hold the lock; if the engine
         // died somewhere in this sequence, revert here instead of leaving
