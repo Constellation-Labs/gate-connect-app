@@ -117,6 +117,37 @@ pub fn engine_likely_running() -> bool {
         .unwrap_or(false)
 }
 
+/// The engine port a *different* process is hosting right now, if there is one.
+///
+/// macOS and Windows keep the engine inside whichever process enabled it, with
+/// no daemon to ask, so a second process cannot tell "nobody is routing" from
+/// "the menubar app is routing" by looking at its own handle - it holds `None`
+/// either way. That blindness is what let a second `enable` start a competing
+/// engine and record Gate's own PAC as the state to restore, and what made
+/// `proxy status` report "stopped" while the machine was demonstrably routed.
+///
+/// [`engine_likely_running`] alone is not enough to decide either question: the
+/// snapshot survives a crash, so treating its presence as "an engine is live"
+/// would refuse the enable that is the user's way back. Probing the persisted
+/// port separates the two, exactly as `bind_preferred` separates a live
+/// listener from a TIME_WAIT remnant - a live listener accepts, a dead port
+/// refuses. Both conditions are required: the snapshot proves *Gate* turned
+/// routing on, the probe proves someone is still serving it.
+///
+/// Linux has no use for this - its engine is a daemon with a control socket, so
+/// a second process adopts it rather than guessing (see `manager_linux`).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn engine_hosted_elsewhere() -> Option<u16> {
+    if !engine_likely_running() {
+        return None;
+    }
+    let port = system_proxy::load_port().ok().flatten()?;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250))
+        .ok()
+        .map(|_| port)
+}
+
 /// The loopback base URL CLI tools point at to route through the reverse-proxy
 /// relay, or `None` if no relay port has ever been bound (so nothing to point
 /// at yet). Reads the persisted port, so it's stable across restarts and valid
@@ -1574,5 +1605,58 @@ mod tests {
             ),
             Decision::Passthrough
         );
+    }
+
+    /// The distinction `engine_hosted_elsewhere` exists to draw, and the one
+    /// that decides whether `enable` refuses: a snapshot on disk means Gate
+    /// turned routing on, not that anyone is still serving it. A crashed
+    /// session leaves the file behind, and refusing an enable on that basis
+    /// would lock the user out of the command that fixes their machine.
+    ///
+    /// macOS/Windows only, like the function - Linux adopts its daemon instead
+    /// of probing. Verified on Linux while writing by widening both cfgs, so
+    /// the assertion is not taken on trust until a mac or Windows runner sees it.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn a_snapshot_without_a_listener_is_not_a_hosted_engine() {
+        use std::net::TcpListener;
+
+        let home = std::env::temp_dir().join(format!(
+            "gate-hosted-elsewhere-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock before the epoch")
+                .as_nanos()
+        ));
+        crate::env::set_app_support_dir_for_tests(Some(home.clone()));
+
+        // Nothing on disk at all: nobody has ever routed.
+        assert_eq!(engine_hosted_elsewhere(), None, "no snapshot, no engine");
+
+        // A live listener, and a snapshot recording that routing is on. This is
+        // the menubar-app-is-running case, and the only one that must refuse.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("binding a probe listener");
+        let port = listener.local_addr().expect("listener address").port();
+        system_proxy::save_port(port).expect("persisting the port");
+        system_proxy::save_snapshot(&system_proxy::snapshot().expect("reading the system proxy"))
+            .expect("saving a snapshot");
+        assert_eq!(
+            engine_hosted_elsewhere(),
+            Some(port),
+            "a snapshot plus a live listener is another process hosting the engine"
+        );
+
+        // Same snapshot, listener gone: the crashed-session case. Enable has to
+        // go through, so this must read as "nobody is hosting".
+        drop(listener);
+        assert_eq!(
+            engine_hosted_elsewhere(),
+            None,
+            "a snapshot left by a crash must not look like a live engine"
+        );
+
+        crate::env::set_app_support_dir_for_tests(None);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
