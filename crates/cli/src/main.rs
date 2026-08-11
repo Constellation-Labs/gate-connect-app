@@ -595,6 +595,14 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
         ProxyCmd::Domain { slug, state } => {
             let enabled = matches!(state, Toggle::On);
             let st = mgr.set_domain(&slug, enabled)?;
+            // Audited at the command layer, mirroring the app's
+            // `proxy_set_domain`: `provider::enable` / `disable` drive
+            // `set_domain` internally, so instrumenting the manager would turn
+            // one operator action into N+1 events. This arm is the operator
+            // toggling one domain by hand from the CLI.
+            if let Ok(Some(base_url)) = account::load_base_url() {
+                gate_connect_core::audit::domain_toggled(&base_url, None, &slug, enabled);
+            }
             println!("{} {slug}.", if enabled { "Enabled" } else { "Disabled" });
             print_proxy_domains(&st.domains);
         }
