@@ -673,6 +673,15 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // session surface the moment someone enabled "Claude" — defeating
             // the opt-in above. It is reached only through the domain-level
             // toggle (`proxy domain claude-web on`), like the google domains.
+            //
+            // That exclusion also keeps this entry off the Home ledger
+            // entirely, because `buildGroups` (src/lib/groups.ts) builds a row
+            // only for domains some provider claims. Right now that is wanted:
+            // this is a hidden, CLI-only option. It is TEMPORARY - the intent is
+            // to surface it in the UI soon, at which point ledger visibility
+            // needs to stop riding on `proxy_domain_slugs` so this can be shown
+            // without also joining the provider switch's cascade, which the
+            // paragraph above must still prevent.
             enabled: false,
             supported: true,
         },
@@ -760,6 +769,15 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // Opt-in, and ordered BEFORE the relay `chatgpt` entry on purpose:
             // `decide` returns on the FIRST enabled host match, so with the relay
             // entry first this one would be unreachable for MITM traffic.
+            //
+            // Like `claude-web` above, this slug is in no provider's
+            // `proxy_domain_slugs`, so it has no Home ledger row and no UI
+            // switch: a hidden, CLI-only option (`proxy domain chatgpt-apps
+            // on`). Wanted for now, and TEMPORARY - it should surface in the UI
+            // alongside `claude-web`. The chat half of this entry
+            // (`/backend-api/f/conversation`) is a session-cookie surface too,
+            // so whatever exposes it must not put it behind the OpenAI provider
+            // switch's cascade.
             enabled: false,
             supported: true,
         },
