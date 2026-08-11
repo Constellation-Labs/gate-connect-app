@@ -621,6 +621,21 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
         .local_addr()
         .context("reading listener socket address")?
         .port();
+    // Losing the preferred port is the quiet half of a restart. The PAC is
+    // rewritten and self-heals, but the exported `HTTPS_PROXY` is read once at
+    // a process's launch, so every tool already running keeps dialling the old
+    // port - and a proxy that refuses fails every request, where a stale PAC
+    // merely falls back to DIRECT. Say so: the only symptom otherwise is a tool
+    // that cannot connect, with nothing anywhere naming the reason.
+    if let Some(wanted) = preferred {
+        if wanted != port {
+            eprintln!(
+                "gate proxy: wanted the previous loopback port {wanted}, but it was taken; \
+                 bound {port} instead. Tools started before this keep using {wanted} until \
+                 they restart."
+            );
+        }
+    }
     listener
         .set_nonblocking(true)
         .context("setting the loopback listener non-blocking")?;
