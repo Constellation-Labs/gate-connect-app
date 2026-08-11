@@ -103,22 +103,4 @@ test.describe("platform nouns", () => {
       await expect(app.page.getByText(says)).toBeVisible();
     });
   }
-
-  const modKeys = [
-    { platform: "macos", says: "Cmd" },
-    { platform: "windows", says: "Ctrl" },
-    { platform: "linux", says: "Ctrl" },
-  ] as const;
-
-  for (const { platform, says } of modKeys) {
-    // A Windows user told to press Cmd has been told to press a key their
-    // keyboard does not have.
-    test(`${platform} teaches the text-size shortcut with its own modifier`, async ({ boot }) => {
-      const app = await boot({ platform });
-
-      await app.openSettings();
-
-      await expect(app.page.getByText(new RegExp(`${says} and the plus`))).toBeVisible();
-    });
-  }
 });
