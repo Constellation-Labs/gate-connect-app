@@ -137,6 +137,18 @@ function memberFromDomain(
 /**
  * Build the Home ledger. Not-installed tools and unsupported domains are left
  * out: the ledger lists what could actually route today.
+ *
+ * The `provider.domain_slugs` check below is load-bearing twice over, which is
+ * worth knowing before touching it: it decides which domains a family switch
+ * cascades to AND, as a side effect, which domains are visible at all. The two
+ * chat-protocol entries in the backend catalog (`claude-web` and
+ * `chatgpt-apps`) are in no provider's set, so today they have no row and no
+ * switch - hidden, CLI-only options (`proxy domain <slug> on`). That is
+ * intended for now but TEMPORARY: both are meant to reach the UI soon, and
+ * doing that means giving visibility its own signal rather than reusing
+ * `domain_slugs`, because they must stay out of the cascade even once shown
+ * (they intercept session-cookie surfaces, not key-brokered ones - see the
+ * comments on those entries in crates/core/src/proxy/mod.rs).
  */
 export function buildGroups(
   providers: ProviderState[],
