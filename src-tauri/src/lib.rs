@@ -340,9 +340,13 @@ async fn clear_account() -> Result<(), String> {
 /// forget the current Gate key, so the UI can prompt for an
 /// environment-appropriate one. Managed tools are disconnected first - their
 /// config embeds the old gateway+key, and a later key rotation would push the
-/// new key into configs still pointing at the old gateway. Mirrors the URL
-/// validation in `save_account` and the disconnect-first order in
-/// `clear_account`.
+/// new key into configs still pointing at the old gateway. The proxy engine is
+/// stopped for the same reason: it pins the gateway URL at start (only the key,
+/// token, org, and domains update live), so leaving it up would keep traffic
+/// rewritten to the old environment while the new environment's token gets
+/// pushed in - a 401 on every proxied call, with the org list, which goes
+/// direct, still working. Mirrors the URL validation in `save_account` and the
+/// disconnect-first order in `clear_account`.
 #[tauri::command]
 async fn switch_gateway(base_url: String) -> Result<(), String> {
     if base_url.len() > 2048 {
@@ -358,6 +362,14 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
     // Off the main thread: per-tool config I/O plus keychain delete.
     tauri::async_runtime::spawn_blocking(move || {
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
+        // Before the account moves, so the engine can never be up against an
+        // account it wasn't started from. A failure aborts the switch: routing
+        // to the old gateway with the new environment's credential is the state
+        // this whole command exists to avoid.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager()
+            .shutdown_engine()
+            .map_err(|e| format!("{e:#}"))?;
         account::switch_gateway(&base_url).map_err(|e| format!("{e:#}"))
     })
     .await

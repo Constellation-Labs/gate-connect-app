@@ -15,6 +15,14 @@
 //! of inference hosts the user explicitly enables (every other host is
 //! blind-tunnelled, never MITM'd), and the private key never leaves the
 //! credential store. Windows counterpart of the macOS [`super::ca`] module.
+//!
+//! [`ensure_trusted_system`] is the exception, and the one path with no dialog:
+//! an opt-in, CLI-only install into the machine (`LocalMachine`) root store from
+//! an already-elevated process, for machines with nobody to answer a
+//! confirmation (build agents, headless boxes). It is never the default and
+//! never reachable from the GUI. [`is_trusted`] consults both stores so a
+//! machine-wide install actually satisfies the product, rather than leaving
+//! `enable` re-prompting over a root the OS already trusts.
 
 use std::fs;
 use std::os::windows::process::CommandExt;
@@ -169,22 +177,56 @@ fn cert_thumbprint() -> Result<Option<String>> {
 
 /// Whether the **current on-disk CA** is trusted - keyed on the cert's
 /// thumbprint, not its name. We look the cert's SHA-1 thumbprint up in the
-/// per-user root store (`certutil -user -store Root <thumbprint>`), which
-/// exits 0 only when a cert with that exact thumbprint is present.
+/// root store (`certutil -store Root <thumbprint>`), which exits 0 only when a
+/// cert with that exact thumbprint is present.
+///
+/// Both stores count: the per-user one (`HKCU`, where [`ensure_trusted`] puts
+/// it) and the machine one (`LocalMachine`, where [`ensure_trusted_system`]
+/// does). Checking only the per-user store - which is what this did - would
+/// report "not trusted" after a successful `--system-trust` install and make
+/// every `enable` re-prompt for a root the OS already trusts. Unlike macOS,
+/// where `verify-cert` is a policy evaluation that honours the admin domain for
+/// free, a `certutil` store lookup sees exactly the store it is pointed at.
 ///
 /// The previous check matched the CN, which a stale root from a prior install
 /// satisfies - it shares our CN but has a different key/fingerprint. That made
 /// `ensure_trusted` no-op while the engine signed leaves with a *different*,
 /// untrusted CA, so every MITM handshake failed with no recovery. Matching the
 /// thumbprint catches the mismatch and lets `ensure_trusted` re-install.
-/// Read-only / non-privileged.
+/// Read-only / non-privileged in both stores.
 pub fn is_trusted() -> Result<bool> {
     let thumb = match cert_thumbprint()? {
         Some(t) => t,
         None => return Ok(false),
     };
+    Ok(root_store_has(Scope::User, &thumb)? || root_store_has(Scope::Machine, &thumb)?)
+}
+
+/// Which root store a `certutil` call addresses. `-user` is the per-user store
+/// (`HKCU`, no admin); its absence means the machine store (`LocalMachine`,
+/// admin to write, world-readable).
+#[derive(Clone, Copy)]
+enum Scope {
+    User,
+    Machine,
+}
+
+impl Scope {
+    /// The `certutil` prefix args for this scope, ahead of the verb.
+    fn args(self) -> &'static [&'static str] {
+        match self {
+            Scope::User => &["-user"],
+            Scope::Machine => &[],
+        }
+    }
+}
+
+/// Whether `id` (a thumbprint or a CN) matches a cert in this scope's root
+/// store. Read-only, so the machine store needs no elevation.
+fn root_store_has(scope: Scope, id: &str) -> Result<bool> {
     let out = certutil()
-        .args(["-user", "-store", "Root", &thumb])
+        .args(scope.args())
+        .args(["-store", "Root", id])
         .output()
         .context("running certutil -store Root")?;
     Ok(out.status.success())
@@ -222,8 +264,19 @@ pub fn ensure_trusted() -> Result<()> {
 /// <CN>` deletes our cert from the per-user root store by common name; then the
 /// private key and public cert are torn down so an explicit "remove" leaves
 /// nothing behind.
+///
+/// One thing it cannot remove: a machine-wide root installed by
+/// [`ensure_trusted_system`]. That store needs an elevated process, and this is
+/// the path the GUI runs, where a UAC prompt for a state only a CLI flag can
+/// create would be a surprise. So it finishes everything it can and then *says*
+/// what is left rather than reporting a clean removal over a root that is still
+/// trusted for every user on the box.
 pub fn untrust() -> Result<()> {
-    if is_trusted()? {
+    // Scoped to the per-user store, not `is_trusted()`: that now answers for
+    // both stores, so on a machine where only the `--system-trust` copy exists
+    // it would send `certutil -user -delstore` after a cert that isn't there
+    // and turn a nothing-to-do into a hard failure.
+    if per_user_store_has_our_ca() {
         let status = certutil()
             .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
             .status()
@@ -232,7 +285,122 @@ pub fn untrust() -> Result<()> {
             anyhow::bail!("couldn't untrust the proxy CA (certutil -delstore Root failed)");
         }
     }
+    // Read before the teardown: the lookup is thumbprint-keyed on the cert file
+    // that `remove_ca_material` is about to delete.
+    let machine_wide = machine_store_has_our_ca();
+    remove_ca_material()?;
+    if machine_wide {
+        anyhow::bail!(
+            "the per-user trust and the CA's key material are gone, but a machine-wide copy of the CA is still in the LocalMachine Root store (installed with --system-trust). Remove it with `gate-connect proxy untrust-ca --system-trust` from an elevated prompt."
+        );
+    }
+    Ok(())
+}
+
+/// Install the CA into the **machine** root store, without any dialog. The
+/// headless counterpart of [`ensure_trusted`], reached only from `proxy
+/// trust-ca --system-trust`.
+///
+/// `certutil -addstore Root` (no `-user`) writes `LocalMachine`, which requires
+/// an elevated process and, precisely because the caller already holds
+/// administrator rights, shows none of the "you are about to install a
+/// certificate…" confirmation the per-user path triggers. That confirmation has
+/// no keyboard-free answer, which is what makes the per-user path unusable on a
+/// build agent.
+///
+/// What it widens: the CA becomes a trusted TLS root for **every user on this
+/// machine**, where [`ensure_trusted`] deliberately stays per-user. `-f`
+/// overwrites an existing entry rather than failing, so a re-run after the CA is
+/// regenerated converges instead of stacking a second same-CN root.
+///
+/// Not elevation-detected up front: there is no reliable non-`unsafe` check, so
+/// we run the command and translate its failure into an instruction.
+pub fn ensure_trusted_system() -> Result<()> {
+    if is_trusted()? {
+        return Ok(());
+    }
+    // A prior install may have left a same-CN root (different key) in the
+    // per-user store, where it would keep shadowing ours. Best-effort, and
+    // non-privileged - this is the user's own store.
+    let _ = certutil()
+        .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
+        .status();
+    let cert = cert_path()?;
+    let out = certutil()
+        .args(["-addstore", "-f", "Root"])
+        .arg(&cert)
+        .output()
+        .context("running certutil -addstore Root")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "couldn't install the proxy CA machine-wide; `certutil -addstore Root` needs an elevated (Administrator) prompt{}",
+            certutil_detail(&out)
+        );
+    }
+    Ok(())
+}
+
+/// Remove the machine-wide CA installed by [`ensure_trusted_system`], then the
+/// key material. The headless counterpart of [`untrust`], and elevated for the
+/// same reason the install is.
+pub fn untrust_system() -> Result<()> {
+    if machine_store_has_our_ca() {
+        let out = certutil()
+            .args(["-delstore", "Root", CA_COMMON_NAME])
+            .output()
+            .context("running certutil -delstore Root")?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "couldn't remove the machine-wide proxy CA; `certutil -delstore Root` needs an elevated (Administrator) prompt{}",
+                certutil_detail(&out)
+            );
+        }
+    }
+    // A desktop Windows box can hold both installs at once, and the per-user
+    // half is this process's to remove. Read before the teardown, which deletes
+    // the cert file the thumbprint is computed from.
+    if per_user_store_has_our_ca() {
+        let _ = certutil()
+            .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
+            .status();
+    }
     remove_ca_material()
+}
+
+/// Whether the per-user root store holds our *current* CA, by thumbprint.
+/// Unanswerable reads as "no" - see [`machine_store_has_our_ca`].
+fn per_user_store_has_our_ca() -> bool {
+    store_has_our_ca(Scope::User)
+}
+
+/// Whether the machine root store holds our *current* CA, by thumbprint. Any
+/// failure to answer (no cert on disk, certutil missing) reads as "no", because
+/// every caller uses this to decide whether to attempt an elevated removal or to
+/// warn about a leftover - and inventing a leftover would be the worse error.
+fn machine_store_has_our_ca() -> bool {
+    store_has_our_ca(Scope::Machine)
+}
+
+fn store_has_our_ca(scope: Scope) -> bool {
+    cert_thumbprint()
+        .ok()
+        .flatten()
+        .and_then(|t| root_store_has(scope, &t).ok())
+        .unwrap_or(false)
+}
+
+/// certutil's own complaint, appended to our message when there is one. Its
+/// output is localized and often UTF-16, so this is `from_utf8_lossy` on
+/// purpose: a mangled hint is still a hint, and it never feeds a decision (the
+/// thumbprint path in [`cert_thumbprint`] is the one that must not be scraped).
+fn certutil_detail(out: &std::process::Output) -> String {
+    let text = String::from_utf8_lossy(&out.stderr);
+    let text = text.trim();
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!(": {text}")
+    }
 }
 
 /// Full teardown for an explicit removal: drop the private key from the

@@ -146,3 +146,33 @@ gate-connect proxy disable
 
 `status` reports `not installed`, `detected`, `connected`, or
 `drifted: <reason>`.
+
+### Headless CA trust
+
+Trusting the CA normally shows the OS's certificate dialog, which is the
+point on a desktop and impossible on a machine with no one at the keyboard.
+For build agents, containers and headless servers:
+
+```bash
+sudo gate-connect proxy trust-ca --system-trust    # elevated prompt on Windows
+gate-connect proxy enable
+...
+gate-connect proxy untrust-ca --system-trust
+```
+
+`--system-trust` installs the CA machine-wide rather than for one user (the
+macOS admin trust domain, the Windows `LocalMachine` root store, the Linux
+system bundle) and never prompts: it runs the privileged step directly when
+already root and via `sudo -n` otherwise, so a host that would have asked for
+a password fails immediately with instructions instead of hanging. A later
+`proxy enable` then finds the CA already trusted and shows nothing.
+
+It is CLI-only and never the default - the app's own trust path keeps its
+dialog. The trade it makes: the CA becomes a trusted TLS root for **every
+user on that machine**, so it belongs on hosts you own end to end, and
+`untrust-ca --system-trust` is how you take it back.
+
+Nothing else changes: only the provider domains you enable are intercepted,
+every other host is blind-tunnelled, and the CA's private key still lives in
+the OS secret store. If you only need CLI tools routed and no interception at
+all, `proxy relay` needs no CA and no system-proxy change.

@@ -140,9 +140,24 @@ enum ProxyCmd {
         state: Toggle,
     },
     /// Trust the local proxy CA without turning the proxy on.
-    TrustCa,
+    TrustCa {
+        /// Install the CA machine-wide instead of for this user, with no
+        /// dialog. For hosts where nobody can answer one: build agents,
+        /// containers, headless servers. Needs root (macOS/Linux) or an
+        /// elevated prompt (Windows), never prompts for it, and makes the CA a
+        /// trusted TLS root for EVERY user on this machine. The default,
+        /// per-user path and its confirmation dialog are what a desktop should
+        /// use.
+        #[arg(long)]
+        system_trust: bool,
+    },
     /// Remove the local proxy CA's trust. Requires the proxy to be off.
-    UntrustCa,
+    UntrustCa {
+        /// Remove a machine-wide install (the one `trust-ca --system-trust`
+        /// makes) with no dialog. Same privileges, same non-interactive rule.
+        #[arg(long)]
+        system_trust: bool,
+    },
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -606,13 +621,30 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
             println!("{} {slug}.", if enabled { "Enabled" } else { "Disabled" });
             print_proxy_domains(&st.domains);
         }
-        ProxyCmd::TrustCa => {
-            mgr.trust_ca()?;
-            println!("Proxy CA trusted.");
+        ProxyCmd::TrustCa { system_trust } => {
+            if system_trust {
+                // Said before it happens, not after. This is the one trust path
+                // with no OS dialog to describe what is about to change, so the
+                // description has to come from us.
+                println!(
+                    "Installing the proxy CA machine-wide. It becomes a trusted TLS root for every user on this host, and nothing will ask for confirmation."
+                );
+                mgr.trust_ca_system()?;
+                println!("Proxy CA trusted machine-wide.");
+                println!("Remove it with `gate-connect proxy untrust-ca --system-trust`.");
+            } else {
+                mgr.trust_ca()?;
+                println!("Proxy CA trusted.");
+            }
         }
-        ProxyCmd::UntrustCa => {
-            mgr.untrust_ca()?;
-            println!("Proxy CA trust removed.");
+        ProxyCmd::UntrustCa { system_trust } => {
+            if system_trust {
+                mgr.untrust_ca_system()?;
+                println!("Machine-wide proxy CA trust removed.");
+            } else {
+                mgr.untrust_ca()?;
+                println!("Proxy CA trust removed.");
+            }
         }
     }
     Ok(())

@@ -952,10 +952,10 @@ export function App() {
 
   const switchGatewayServer = useCallback(async (url: string) => {
     await switchGateway(url);
-    // Switching forgets the stored key, disconnects managed tools, and leaves
-    // the running proxy/providers pointed at the old gateway. Rather than patch
-    // all that live, relaunch into a clean session that re-reads the new
-    // account and lets the user enter an environment-appropriate key.
+    // Switching forgets the stored key, disconnects managed tools, and stops
+    // the proxy engine (which pins the gateway URL at start). Relaunch into a
+    // clean session that re-reads the new account and lets the user enter an
+    // environment-appropriate key, rather than patching the rest live.
     await relaunch();
   }, []);
 
