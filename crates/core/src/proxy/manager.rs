@@ -299,6 +299,22 @@ impl ProxyManager {
         self.disable_inner()
     }
 
+    /// Stop the engine so the next [`enable`](Self::enable) builds a fresh one
+    /// from the current account.
+    ///
+    /// For a gateway switch. The engine takes `gateway_base_url` at start and
+    /// keeps it - unlike the key, token, org, and domains, there is no live
+    /// update for it - so a surviving engine would go on rewriting to the *old*
+    /// environment's gateway while the refresh loop pushes the *new*
+    /// environment's token into it, and that gateway rejects the bearer: a 401
+    /// on every proxied call, with control-plane calls (which go direct) still
+    /// working. Here that is exactly what a disable already does, since the
+    /// engine lives in this process; the Linux manager has to go further and
+    /// replace the daemon that outlives the GUI.
+    pub fn shutdown_engine(&self) -> Result<()> {
+        self.disable_inner()
+    }
+
     /// Shared body of [`disable`](Self::disable) /
     /// [`disable_quiet`](Self::disable_quiet): revert the system proxy and stop
     /// the engine, without computing status.

@@ -232,6 +232,27 @@ impl ProxyManager {
         self.disable_inner()
     }
 
+    /// Stop the engine outright and replace the daemon hosting it, rather than
+    /// dropping it to pass-through the way [`disable`](Self::disable) does.
+    ///
+    /// For a gateway switch. The engine takes `gateway_base_url` at start and
+    /// keeps it - unlike the key, token, org, and domains, there is no live
+    /// update for it, and `SetIntercept` against an already-running engine
+    /// ignores the one it carries. Since the daemon outlives the GUI, a
+    /// surviving engine would go on rewriting to the *old* environment's
+    /// gateway while the refresh loop pushes the *new* environment's token into
+    /// it, and that gateway rejects the bearer: a 401 on every proxied call,
+    /// with control-plane calls (which go direct) still working.
+    pub fn shutdown_engine(&self) -> Result<()> {
+        // Cross-process lock: serialize against a concurrent app/CLI enable.
+        let _op_lock = FileLock::acquire(&system_proxy::op_lock_path()?, true)?;
+        // Revert the drop-in before the daemon dies, so nothing newly launched
+        // resolves a proxy that's about to stop answering.
+        self.disable_inner()?;
+        super::helper_client::shutdown_daemon();
+        Ok(())
+    }
+
     /// Shared body of [`disable`](Self::disable) /
     /// [`disable_quiet`](Self::disable_quiet): revert the system proxy and drop
     /// the daemon to pass-through, without computing status. Assumes the caller
