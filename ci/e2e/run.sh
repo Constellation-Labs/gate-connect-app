@@ -266,6 +266,11 @@ SYSTEM_TRUSTED=""
 # run the engine in the process that enabled it. Declared here with ENGINE_ON so
 # the EXIT trap can stop it under set -u however early the script dies.
 ENGINE_FG_PID=""
+# Set once the domain-reload assertion has run. It is a phase-A claim: the
+# domains file outlives the phase, so from phase B on the domain it toggles is
+# already enabled and the assertion could no longer tell a reload from the
+# starting state.
+RELOAD_ASSERTED=""
 cleanup() {
   # Preserve the status that triggered the trap (the final `test $FAIL -eq 0`,
   # or an early `exit`) before any teardown command clobbers $?.
@@ -475,10 +480,17 @@ start_engine() {
   # no TLS. hermes covers this on Linux and macOS by routing real traffic, but
   # the workflow does not install hermes on Windows, so without this the
   # platform that lacked the watcher longest would still assert nothing about it.
+  #
+  # Phase A only, like the per-OS channel checks and for a sharper reason: the
+  # domains file outlives the phase, so by phase B openrouter is already on and
+  # the "before" side would carry it. That is not a reload, and asserting it
+  # would be asserting nothing - which is how phase B first read on macOS.
   local pac_url="" pac_before=""
-  pac_url="$(os_pac_url)"
-  if [ -n "$pac_url" ]; then
-    pac_before="$(curl -fsS --max-time 5 "$pac_url" 2>/dev/null || true)"
+  if [ -z "$RELOAD_ASSERTED" ]; then
+    pac_url="$(os_pac_url)"
+    if [ -n "$pac_url" ]; then
+      pac_before="$(curl -fsS --max-time 5 "$pac_url" 2>/dev/null || true)"
+    fi
   fi
   "$CLI" proxy domain openrouter on >"$WORK/domain.out" 2>&1 || true
   # The watcher polls at 1s. Waiting a few ticks keeps the assertion about
@@ -486,6 +498,7 @@ start_engine() {
   sleep 4
   if [ -n "$pac_url" ]; then
     local pac_after
+    RELOAD_ASSERTED=1
     pac_after="$(curl -fsS --max-time 5 "$pac_url" 2>/dev/null || true)"
     # Both directions asserted. "After" alone would also pass if the domain had
     # been on all along, which is the very ordering mistake this test exists to
@@ -591,6 +604,21 @@ stop_engine() {
     fi
     cat "$WORK/enable.out" >"$WORK/disable.out" 2>/dev/null
     ENGINE_FG_PID=""
+    # Windows is the exception to the paragraph above: signalling the host is
+    # NOT the disable there. Git Bash's `kill` cannot deliver a POSIX signal to
+    # a native Win32 process - it terminates it - and `wait_for_shutdown` on
+    # Windows waits on Ctrl-C, which a TerminateProcess never becomes. So the
+    # host dies with routing still on, leaving the snapshot behind and the PAC
+    # pointing at a dead port; the first CI run of this branch failed exactly
+    # that way, and took phase B's start_relay down with it (the relay refuses
+    # to start while a snapshot says an engine is up).
+    #
+    # A second process can do the restore because it does not need engine state:
+    # `disable_inner` reads the on-disk snapshot, which is the same path that
+    # recovers from a crashed engine.
+    if [ "$OS" = "Windows" ]; then
+      "$CLI" proxy disable >>"$WORK/disable.out" 2>&1 || rc=$?
+    fi
   else
     "$CLI" proxy disable >"$WORK/disable.out" 2>&1 || rc=$?
   fi
