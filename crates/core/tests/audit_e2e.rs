@@ -445,3 +445,75 @@ fn unknown_port_is_null_rather_than_zero() {
         "ApiKey mode must leave the org to the key's scope"
     );
 }
+
+/// `clear()` is the recovery path for a corrupt `account.json`, so the audit
+/// read at its top must never stop the deletion. A propagating `?` on
+/// `load_base_url()` once made disconnect fail before removing anything -
+/// stranding the operator on the exact file they were trying to reset.
+#[test]
+fn clear_succeeds_when_account_json_is_corrupt() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let data = TempDataDir::set();
+    keychain::use_in_memory_backend();
+    account::save("https://gw.example.test", Some("sk-gw-stored")).unwrap();
+
+    // Corrupt the file the save just wrote, wherever the platform put it.
+    let account_json = find_file(&data.dir, "account.json").expect("save wrote account.json");
+    fs::write(&account_json, "{ not json").unwrap();
+
+    account::clear().expect("disconnect must survive a corrupt account.json");
+    assert!(
+        !account_json.exists(),
+        "the corrupt file is exactly what clear() must remove"
+    );
+}
+
+/// The repoint event must land at the OLD gateway, carry the new URL, and be
+/// authenticated with the credential as it was *before* the switch -
+/// `switch_gateway` deletes the stored key right after, so a late credential
+/// read would find nothing and skip the one record of where the trail went.
+#[test]
+fn gateway_switch_emits_to_the_old_gateway_naming_the_new_one() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _data = TempDataDir::set();
+    keychain::use_in_memory_backend();
+    account::save("https://old.example.test", Some("sk-gw-stored")).unwrap();
+
+    let (base, rx) = spawn_mock("201 Created", "{}");
+    std::env::set_var(
+        "GATE_CONNECT_TEST_AUDIT_ENDPOINT",
+        format!("{base}/audit/emit"),
+    );
+
+    account::switch_gateway("https://new.example.test").unwrap();
+
+    let req = rx.recv().expect("mock captured the request");
+    assert_eq!(req.header("authorization"), Some("Bearer sk-gw-stored"));
+    assert_eq!(req.body["data"]["action"], "gateway_switched");
+    assert_eq!(
+        req.body["data"]["gateway"]["previousUrl"],
+        "https://old.example.test"
+    );
+    assert_eq!(
+        req.body["data"]["gateway"]["newUrl"],
+        "https://new.example.test"
+    );
+}
+
+/// Walk `dir` for a file named `name`. The app-support layout under the
+/// test-home seam differs per platform, so the tests locate rather than
+/// construct the path.
+fn find_file(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in fs::read_dir(&d).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|f| f == name) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}

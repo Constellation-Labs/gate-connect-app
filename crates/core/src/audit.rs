@@ -16,6 +16,11 @@
 //! misses that listener rule and falls through to the gateway catch-all - which
 //! answers a misleading 401 about passthrough tokens rather than a 404.
 //!
+//! **Deploy order:** the endpoint ships on the gate repo's AG-487 branch and
+//! does not exist on gate `main`. That branch must be merged and deployed
+//! before this client ships, or every emit falls through to the gateway
+//! catch-all and fails - visibly in the log, but invisibly in the trail.
+//!
 //! The request shape is fixed by that controller and its `AuditAuthGuard`:
 //! `eventType` must be in `GATE_CONNECT_EMITTABLE_EVENT_TYPES`, `message` is
 //! capped at 512 chars, `data` at 64KB, and both credential kinds ride the
@@ -36,6 +41,12 @@
 //!   the key read in [`credential`] is the same one `enable` already makes, so
 //!   coverage does not depend on the auth mode.
 //!
+//! One event per operator action. The master switch emits exactly one
+//! `proxy_enabled` / `proxy_disabled`; the provider restore and sweep it runs
+//! internally suppress their per-provider emits, the same way `set_domain`
+//! stays silent when `provider::enable` / `disable` drive it. `provider_*`
+//! events therefore always mean "the operator toggled that provider by hand".
+//!
 //! Deliberately not instrumented: `ProxyManager::disable_quiet`, the app-exit
 //! path. Process shutdown is not an operator action, and a network call with a
 //! 5s ceiling on the quit path is exactly the hang that function exists to
@@ -43,7 +54,30 @@
 
 use anyhow::{Context, Result};
 use serde_json::json;
+use std::sync::Mutex;
 use std::time::Duration;
+
+/// Emits still in flight, so short-lived processes can [`flush`] before exit.
+/// Finished handles are pruned on every push, so the long-lived app never
+/// accumulates more entries than it has emits actually running.
+static IN_FLIGHT: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Wait for every emit still in flight (each is bounded by the 5s ceiling).
+///
+/// For the CLI, whose process ends when the command does: without this, a
+/// `login` or `logout` would exit before the detached POST completes and the
+/// event would be silently dropped. The desktop app never calls it - there the
+/// process outlives the emit by hours, and the app-exit stance is the same as
+/// `disable_quiet`'s: shutdown never waits on the audit trail.
+pub fn flush() {
+    let handles: Vec<_> = {
+        let mut guard = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        guard.drain(..).collect()
+    };
+    for handle in handles {
+        let _ = handle.join();
+    }
+}
 
 /// Where to POST the event, or `None` to skip emitting entirely.
 ///
@@ -254,16 +288,28 @@ pub fn credential(api_key: Option<&str>) -> Option<Credential> {
     }
 }
 
-/// Resolve the credential, emit, and log whichever way it goes. The single
-/// best-effort funnel every wrapper below goes through, so no call site has to
-/// remember to discard a `Result` or to log a skip.
+/// Resolve the credential, then emit from a detached thread, logging whichever
+/// way it goes. The single best-effort funnel every wrapper below goes through,
+/// so no call site has to remember to discard a `Result` or to log a skip.
+///
+/// Split deliberately: the credential is resolved *here*, synchronously, so an
+/// emit captures the auth mode / org / key as they are at the moment of the
+/// action - [`crate::account::clear`] and [`crate::account::switch_gateway`]
+/// destroy or repoint those immediately after emitting, and a thread that read
+/// them late would record the wrong (or no) identity. Only the network POST
+/// moves off-thread: it is the part with the 5s ceiling, and several call sites
+/// (`disable`, `set_domain`, `set_org`, `set_auth_mode`) did no network I/O at
+/// all before they were instrumented - a menubar toggle must not stall on an
+/// unreachable gateway for an event that is explicitly best-effort. The cost is
+/// that an emit in flight at process exit is dropped, which matches the stance
+/// on `disable_quiet`: shutdown never waits on the audit trail.
 ///
 /// `api_key` is the caller's already-in-hand Gate key, if it has one - see
 /// [`credential`].
 fn emit_best_effort(
     gateway_url: &str,
     api_key: Option<&str>,
-    action: &str,
+    action: &'static str,
     message: &str,
     data: serde_json::Value,
 ) {
@@ -275,9 +321,16 @@ fn emit_best_effort(
         eprintln!("gate audit: skipped {action} - no credential to authenticate with");
         return;
     };
-    if let Err(e) = emit(gateway_url, &credential, message, data) {
-        eprintln!("gate audit: {action} not recorded ({e:#})");
-    }
+    let gateway_url = gateway_url.to_string();
+    let message = message.to_string();
+    let handle = std::thread::spawn(move || {
+        if let Err(e) = emit(&gateway_url, &credential, &message, data) {
+            eprintln!("gate audit: {action} not recorded ({e:#})");
+        }
+    });
+    let mut guard = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+    guard.retain(|h| !h.is_finished());
+    guard.push(handle);
 }
 
 /// Record that the proxy master switch was turned on. `port` is `None` when the
@@ -443,6 +496,26 @@ pub fn org_selected(gateway_url: &str, api_key: Option<&str>, org_id: &str, org_
             "org": {
                 "id": org_id,
                 "name": org_name,
+            }
+        }),
+    )
+}
+
+/// Record that the account was repointed at a different gateway. Must be called
+/// with the OLD gateway as the destination and *before* the switch is written:
+/// repointing moves where every subsequent event goes, so this is the last
+/// record the old trail will ever get - and it names where the stream went.
+pub fn gateway_switched(gateway_url: &str, api_key: Option<&str>, old_url: &str, new_url: &str) {
+    emit_best_effort(
+        gateway_url,
+        api_key,
+        "gateway_switched",
+        &format!("Gateway URL changed to {new_url}"),
+        json!({
+            "action": "gateway_switched",
+            "gateway": {
+                "previousUrl": old_url,
+                "newUrl": new_url,
             }
         }),
     )

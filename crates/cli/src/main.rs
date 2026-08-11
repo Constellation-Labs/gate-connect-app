@@ -163,7 +163,7 @@ fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
-    match cli.command {
+    let result = match cli.command {
         Command::Login {
             base_url,
             api_key,
@@ -185,7 +185,12 @@ fn main() -> Result<()> {
         Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
-    }
+    };
+    // Audit emits run on detached threads so they never stall a command; this
+    // process ends when the command does, so wait for any still in flight
+    // (bounded by the emit timeout) or they would be silently dropped.
+    gate_connect_core::audit::flush();
+    result
 }
 
 fn cmd_login(

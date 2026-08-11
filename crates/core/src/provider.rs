@@ -208,17 +208,21 @@ pub fn list() -> Vec<ProviderState> {
 /// running, enables the provider's proxy domains. Requires a signed-in
 /// account. Idempotent - re-running re-applies the same config.
 pub fn enable(slug: &str) -> Result<ProviderState> {
-    enable_inner(slug, &[])
+    enable_inner(slug, &[], true)
 }
 
 /// [`enable`] with members to leave alone: the restore path's flavour, so a
 /// member that was already switched off when routing was turned off does not
 /// come back on with the rest of its family. See [`RESTORE_SKIP_MEMBERS`].
+/// No audit event: the master switch that drives the restore already emitted
+/// one `proxy_enabled`, and `provider_enabled` is reserved for the operator
+/// toggling that provider by hand (see the one-event-per-action rule in
+/// [`crate::audit`]).
 fn enable_skipping(slug: &str, skip: &[String]) -> Result<ProviderState> {
-    enable_inner(slug, skip)
+    enable_inner(slug, skip, false)
 }
 
-fn enable_inner(slug: &str, skip: &[String]) -> Result<ProviderState> {
+fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderState> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
     let account = account::load()?
         .context("no Gate account configured - sign in before enabling a provider")?;
@@ -290,11 +294,13 @@ fn enable_inner(slug: &str, skip: &[String]) -> Result<ProviderState> {
     // Best-effort audit. The account is already loaded here, so its key is the
     // in-hand credential for ApiKey mode; OAuth mode ignores it and reads the
     // live access token.
-    audit::provider_enabled(
-        &account.gateway_base_url,
-        Some(&account.api_key),
-        p.display_name,
-    );
+    if audit {
+        audit::provider_enabled(
+            &account.gateway_base_url,
+            Some(&account.api_key),
+            p.display_name,
+        );
+    }
 
     Ok(state)
 }
@@ -302,6 +308,14 @@ fn enable_inner(slug: &str, skip: &[String]) -> Result<ProviderState> {
 /// Turn a provider off. Reverts the config integration(s) and, if the proxy is
 /// running, disables the provider's proxy domains. Promptless and idempotent.
 pub fn disable(slug: &str) -> Result<ProviderState> {
+    disable_inner(slug, true)
+}
+
+/// [`disable`] with the audit emit optional: the master-off sweep passes
+/// `false`, because that sweep is one operator action (the master switch) that
+/// already emits a single `proxy_disabled` - see the one-event-per-action rule
+/// in [`crate::audit`].
+fn disable_inner(slug: &str, audit: bool) -> Result<ProviderState> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
 
     for &id in p.tool_ids {
@@ -338,8 +352,10 @@ pub fn disable(slug: &str) -> Result<ProviderState> {
     // Best-effort audit. `load_base_url` rather than `load`, because the URL is
     // all this path needs; `audit::credential` reaches for the key itself when
     // the mode calls for one, so passing `None` costs no coverage.
-    if let Ok(Some(base_url)) = account::load_base_url() {
-        audit::provider_disabled(&base_url, None, p.display_name);
+    if audit {
+        if let Ok(Some(base_url)) = account::load_base_url() {
+            audit::provider_disabled(&base_url, None, p.display_name);
+        }
     }
 
     Ok(state)
@@ -622,7 +638,9 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
     }
 
     for slug in &enabled {
-        if let Err(e) = disable(slug) {
+        // `disable_inner(_, false)`: the sweep is the master switch's doing,
+        // and that one operator action already emits `proxy_disabled`.
+        if let Err(e) = disable_inner(slug, false) {
             eprintln!("[gate] disabling provider {slug:?} during master-off failed: {e}");
         }
     }

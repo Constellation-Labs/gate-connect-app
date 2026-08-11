@@ -182,6 +182,18 @@ fn write_account_file(file: &AccountFile) -> Result<()> {
 /// one. Managed tools are disconnected by the command layer first (same as
 /// [`clear`]), since their config embeds the old gateway+key.
 pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
+    // Audit the repoint *before* anything is written, so the record lands at
+    // the OLD gateway - the trail that would otherwise just stop with no
+    // explanation. Repointing the app moves where every subsequent event goes
+    // (including any record of this switch), which makes it the most direct
+    // way to take the audit stream dark; the event carries the new URL so a
+    // reader of the old trail can see where the stream went. Same ordering
+    // argument as `api_key_cleared` in [`clear`], and non-propagating for the
+    // same reason.
+    if let Ok(Some(old_base_url)) = load_base_url() {
+        audit::gateway_switched(&old_base_url, None, &old_base_url, gateway_base_url);
+    }
+
     save(gateway_base_url, None)?; // new URL on disk, key untouched
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?; // forget the old key
@@ -323,22 +335,30 @@ pub fn backfill_api_key_prefix() -> Result<Option<String>> {
 }
 
 pub fn clear() -> Result<()> {
-    let user = env::current_user()?;
-
     // Audit the disconnect *before* destroying anything. Both credentials die
     // below - the keychain delete takes the Gate key, `oauth::clear()` takes the
     // access token - so after either there is nothing left to authenticate the
     // record of their removal with. The key read here is free: this function is
     // about to delete the same keychain item, so it is not a new prompt.
-    if let Some(base_url) = load_base_url()? {
-        let key = keychain::get(&service(), &user).unwrap_or(None);
-        audit::api_key_cleared(&base_url, key.as_deref(), api_key_prefix()?.as_deref());
+    //
+    // Every read in this block swallows its error: `clear()` is the recovery
+    // path for a corrupt `account.json`, so nothing audit-related may stop the
+    // deletions below. A `?` here once made disconnect fail before removing
+    // anything - stranding the operator on the exact file they were trying to
+    // reset.
+    if let Ok(Some(base_url)) = load_base_url() {
+        let key = env::current_user()
+            .ok()
+            .and_then(|user| keychain::get(&service(), &user).unwrap_or(None));
+        let prefix = api_key_prefix().ok().flatten();
+        audit::api_key_cleared(&base_url, key.as_deref(), prefix.as_deref());
     }
 
     let path = config_path()?;
     if path.exists() {
         fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
     }
+    let user = env::current_user()?;
     keychain::delete(&service(), &user)?;
     // A full disconnect forgets every credential, so any OAuth tokens go too -
     // nothing is left behind in the secret store .
