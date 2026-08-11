@@ -127,6 +127,32 @@ function safely(what: string, fn: () => void): void {
   }
 }
 
+/**
+ * The anonymous device id, or why there is none to show. Three states because
+ * "analytics never started" and "it started and we could not read the id" are
+ * different findings when a support thread is asking why no events arrived.
+ */
+export type AnalyticsId =
+  | { kind: "id"; value: string }
+  | { kind: "disabled" }
+  | { kind: "unavailable" };
+
+/**
+ * The id PostHog files this install's events under, for the diagnostics report.
+ * Since we never `identify`, it is the randomly generated device id - the one
+ * string that lets a pasted report be lined up against its event stream.
+ */
+export function analyticsId(): AnalyticsId {
+  if (!enabled) return { kind: "disabled" };
+  try {
+    const value = posthog.get_distinct_id();
+    return value ? { kind: "id", value } : { kind: "unavailable" };
+  } catch (e) {
+    console.warn("[gate] analytics get_distinct_id failed", e);
+    return { kind: "unavailable" };
+  }
+}
+
 export function track(event: AnalyticsEvent, props?: Props): void {
   if (!enabled) return;
   safely("capture", () => posthog.capture(event, sanitize(props)));

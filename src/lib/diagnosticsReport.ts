@@ -11,6 +11,7 @@ import type {
   Tool,
 } from "./api";
 import type { Platform } from "./platform";
+import type { AnalyticsId } from "./analytics";
 
 /**
  * The copy-pasteable support report.
@@ -26,7 +27,9 @@ import type { Platform } from "./platform";
  * to leave the machine, so nothing in it may be a secret once it has. Email
  * and org *are* printed - they are the account's identity, they are already on
  * screen in Settings, and without them a support thread cannot find the
- * account it is about.
+ * account it is about. The analytics id is printed on the same grounds: it is
+ * a random per-install id, not a credential, and it is what lets a pasted
+ * report be joined to the events this install actually sent.
  *
  * The layout is plain text with mono-aligned labels rather than JSON: it gets
  * pasted into chat threads and issues, where a human reads it first.
@@ -42,6 +45,10 @@ export interface DiagnosticsInput {
   /** App version from `getVersion()`; empty while it is still loading. */
   version: string;
   platform: Platform;
+  /** Which id this install's events are filed under, so a report and an event
+   *  stream can be lined up. `disabled` is itself the answer to "why do I see
+   *  no events for this user". */
+  analyticsId: AnalyticsId;
   /** Null when the backend snapshot failed. The report still renders - a
    *  missing section is itself a finding. */
   backend: Diagnostics | null;
@@ -139,11 +146,25 @@ export function toolStatusLine(status: Status): string {
   }
 }
 
+/** The analytics id line. `disabled` says analytics never started on this
+ *  install; UNKNOWN says it did and the id would not come back. */
+function analyticsIdValue(id: AnalyticsId): string {
+  switch (id.kind) {
+    case "id":
+      return id.value;
+    case "disabled":
+      return "disabled";
+    case "unavailable":
+      return UNKNOWN;
+  }
+}
+
 export function buildDiagnosticsReport(input: DiagnosticsInput): string {
   const {
     now,
     version,
     platform,
+    analyticsId,
     backend,
     account,
     oauth,
@@ -171,6 +192,7 @@ export function buildDiagnosticsReport(input: DiagnosticsInput): string {
   // Linux only; folded into the version string on the other two.
   if (backend?.os_kernel) lines.push(row("kernel", backend.os_kernel));
   lines.push(row("data dir", orUnknown(backend?.data_dir)));
+  lines.push(row("analytics id", analyticsIdValue(analyticsId)));
 
   lines.push("", "[account]");
   if (!account) {
