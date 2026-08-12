@@ -21,6 +21,17 @@ import { usePlatform } from "../lib/platform";
 import { SubHeader, Button } from "../components/gc/ui";
 import { Icon } from "../components/gc/Icon";
 
+/** How long the running-tools scan gets before the panel stops waiting for it.
+ *
+ * That probe walks the whole process table - a `/proc` entry per process on
+ * Linux - and it is the only one here that can take real time. Nothing else in
+ * the report depends on it, so a table that won't answer must not be able to
+ * hold the other three probes' findings hostage: the panel renders without the
+ * scan (`scan unknown`) rather than sitting on "Collecting…" indefinitely.
+ * Generous, because a slow answer is still the right answer - this is the
+ * ceiling on a hang, not a latency budget. */
+const AGENT_SCAN_TIMEOUT_MS = 3000;
+
 /** The whole state of this install, as text a user can hand to someone else.
  *
  * Shown before it is copied, never copied blind. This app installs a root
@@ -73,6 +84,7 @@ export function Diagnostics({
 
   useEffect(() => {
     let active = true;
+    let scanTimer: ReturnType<typeof setTimeout> | undefined;
     // Best-effort across the board, and sequential rather than parallel: on
     // macOS the backend snapshot shells out per network service, and these
     // all touch the same subsystems.
@@ -85,8 +97,15 @@ export function Diagnostics({
       const stale = await routedClientsStale().catch(() => false);
       // One process-table walk for the whole section: the list carries both
       // counts the routing takeover uses, so there is no reason to scan three
-      // times over.
-      const running = await fetchRunningAgents().catch(() => null);
+      // times over. Raced against a timer - see AGENT_SCAN_TIMEOUT_MS - so a
+      // process table that never answers costs the scan and nothing else.
+      const running = await Promise.race([
+        fetchRunningAgents().catch(() => null),
+        new Promise<null>((resolve) => {
+          scanTimer = setTimeout(() => resolve(null), AGENT_SCAN_TIMEOUT_MS);
+        }),
+      ]);
+      clearTimeout(scanTimer);
       if (!active) return;
       setBackend(snapshot);
       setLaunchAtLogin(lal);
@@ -96,6 +115,7 @@ export function Diagnostics({
     })();
     return () => {
       active = false;
+      clearTimeout(scanTimer);
     };
   }, []);
 
