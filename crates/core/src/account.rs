@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::audit;
 use crate::env;
 use crate::keychain;
 use crate::primitives;
@@ -135,6 +136,7 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     // on disk so a URL-only edit doesn't drop it. The auth mode is likewise
     // preserved - it's chosen via [`set_auth_mode`], not by saving a URL/key.
     let existing = read_account_file()?;
+    let old_prefix = existing.as_ref().and_then(|f| f.api_key_prefix.as_deref());
     let api_key_prefix = match api_key {
         Some(key) => Some(key.chars().take(12).collect()),
         None => existing.as_ref().and_then(|f| f.api_key_prefix.clone()),
@@ -143,7 +145,7 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     // setters, not by saving a URL/key.
     let auth_mode = existing.as_ref().map(|f| f.auth_mode).unwrap_or_default();
     let org_id = existing.as_ref().and_then(|f| f.org_id.clone());
-    let org_name = existing.and_then(|f| f.org_name.clone());
+    let org_name = existing.as_ref().and_then(|f| f.org_name.clone());
     write_account_file(&AccountFile {
         gateway_base_url: gateway_base_url.to_string(),
         api_key_prefix,
@@ -155,6 +157,12 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     if let Some(key) = api_key {
         let user = env::current_user()?;
         keychain::set(&service(), &user, key)?;
+
+        // Best-effort audit of the rotation. `key` is passed as the caller's
+        // already-in-hand credential, not as the bearer: in OAuth mode the
+        // gateway wants the Cognito token, and `audit::credential` picks by mode.
+        let new_prefix = key.chars().take(12).collect::<String>();
+        audit::api_key_saved(gateway_base_url, Some(key), old_prefix, &new_prefix);
     }
     Ok(())
 }
@@ -174,6 +182,18 @@ fn write_account_file(file: &AccountFile) -> Result<()> {
 /// one. Managed tools are disconnected by the command layer first (same as
 /// [`clear`]), since their config embeds the old gateway+key.
 pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
+    // Audit the repoint *before* anything is written, so the record lands at
+    // the OLD gateway - the trail that would otherwise just stop with no
+    // explanation. Repointing the app moves where every subsequent event goes
+    // (including any record of this switch), which makes it the most direct
+    // way to take the audit stream dark; the event carries the new URL so a
+    // reader of the old trail can see where the stream went. Same ordering
+    // argument as `api_key_cleared` in [`clear`], and non-propagating for the
+    // same reason.
+    if let Ok(Some(old_base_url)) = load_base_url() {
+        audit::gateway_switched(&old_base_url, None, &old_base_url, gateway_base_url);
+    }
+
     save(gateway_base_url, None)?; // new URL on disk, key untouched
     let user = env::current_user()?;
     keychain::delete(&service(), &user)?; // forget the old key
@@ -198,9 +218,14 @@ pub fn switch_gateway(gateway_base_url: &str) -> Result<()> {
 /// existing `account.json`.
 pub fn set_org(org_id: &str, org_name: &str) -> Result<()> {
     let mut file = read_account_file()?.context("no account configured")?;
+    let gateway_base_url = file.gateway_base_url.clone();
     file.org_id = Some(org_id.to_string());
     file.org_name = Some(org_name.to_string());
-    write_account_file(&file)
+    write_account_file(&file)?;
+    // After the write, so the emit authenticates as the org the operator just
+    // switched *to* - the trail lands where the subsequent traffic will.
+    audit::org_selected(&gateway_base_url, None, org_id, org_name);
+    Ok(())
 }
 
 /// Drop the selected org, keeping everything else. Used when the gateway
@@ -242,8 +267,17 @@ pub fn org_id_for_injection() -> String {
 /// an existing `account.json` .
 pub fn set_auth_mode(mode: AuthMode) -> Result<()> {
     let mut file = read_account_file()?.context("no account configured")?;
+    let gateway_base_url = file.gateway_base_url.clone();
     file.auth_mode = mode;
-    write_account_file(&file)
+    write_account_file(&file)?;
+    // After the write: `audit::credential` reads the persisted mode to choose a
+    // header, so emitting before it would authenticate as the mode being left.
+    let label = match mode {
+        AuthMode::OAuth => "oauth",
+        AuthMode::ApiKey => "api-key",
+    };
+    audit::auth_mode_changed(&gateway_base_url, None, label);
+    Ok(())
 }
 
 /// Current persisted auth mode, defaulting to `ApiKey` when no account exists
@@ -255,8 +289,21 @@ pub fn auth_mode() -> Result<AuthMode> {
 }
 
 pub fn has_api_key() -> Result<bool> {
+    Ok(stored_api_key()?.is_some())
+}
+
+/// The stored Gate key, read straight from the keychain.
+///
+/// Distinct from [`backfill_api_key_prefix`], which is gated behind an explicit
+/// confirmation: that one *reveals* the secret to the user, while this hands it
+/// to code that is about to authenticate with it. This is the same read [`load`]
+/// already performs on every proxy enable, provider enable, and startup
+/// reconcile, against an item this app created in [`save`] - so on macOS the
+/// per-(item, application) ACL already covers it, and no caller pays a dialog
+/// that the enable path has not already paid.
+pub fn stored_api_key() -> Result<Option<String>> {
     let user = env::current_user()?;
-    Ok(keychain::get(&service(), &user)?.is_some())
+    keychain::get(&service(), &user)
 }
 
 /// Leading characters of the stored Gate key - through the random part that
@@ -288,6 +335,25 @@ pub fn backfill_api_key_prefix() -> Result<Option<String>> {
 }
 
 pub fn clear() -> Result<()> {
+    // Audit the disconnect *before* destroying anything. Both credentials die
+    // below - the keychain delete takes the Gate key, `oauth::clear()` takes the
+    // access token - so after either there is nothing left to authenticate the
+    // record of their removal with. The key read here is free: this function is
+    // about to delete the same keychain item, so it is not a new prompt.
+    //
+    // Every read in this block swallows its error: `clear()` is the recovery
+    // path for a corrupt `account.json`, so nothing audit-related may stop the
+    // deletions below. A `?` here once made disconnect fail before removing
+    // anything - stranding the operator on the exact file they were trying to
+    // reset.
+    if let Ok(Some(base_url)) = load_base_url() {
+        let key = env::current_user()
+            .ok()
+            .and_then(|user| keychain::get(&service(), &user).unwrap_or(None));
+        let prefix = api_key_prefix().ok().flatten();
+        audit::api_key_cleared(&base_url, key.as_deref(), prefix.as_deref());
+    }
+
     let path = config_path()?;
     if path.exists() {
         fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;

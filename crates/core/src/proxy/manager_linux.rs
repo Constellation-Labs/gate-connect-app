@@ -28,6 +28,7 @@ use super::flock::FileLock;
 use super::helper_client::HelperClient;
 use super::{ca, config, system_proxy, ProxyDomain, ProxyState};
 use crate::account;
+use crate::audit;
 
 pub struct ProxyManager {
     /// Open control connection to the helper daemon. `Some` exactly while the
@@ -208,6 +209,15 @@ impl ProxyManager {
 
         *guard = Some(client);
         drop(guard);
+
+        // Best-effort audit, matching `manager.rs`. The account is already
+        // loaded here, so its key is the in-hand credential for ApiKey mode.
+        audit::proxy_enabled(
+            &account.gateway_base_url,
+            Some(&account.api_key),
+            Some(port),
+        );
+
         self.status()
     }
 
@@ -218,6 +228,15 @@ impl ProxyManager {
         // Cross-process lock: serialize against a concurrent app/CLI enable.
         let _op_lock = FileLock::acquire(&system_proxy::op_lock_path()?, true)?;
         self.disable_inner()?;
+
+        // Best-effort audit, deliberately here rather than in `disable_inner`:
+        // `disable_quiet` shares that body and runs at app exit, which is not an
+        // operator action. `load_base_url` rather than `load` - see the same
+        // block in `manager.rs`.
+        if let Ok(Some(base_url)) = account::load_base_url() {
+            audit::proxy_disabled(&base_url, None);
+        }
+
         self.status()
     }
 

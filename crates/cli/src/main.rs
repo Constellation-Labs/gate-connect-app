@@ -178,7 +178,7 @@ fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
-    match cli.command {
+    let result = match cli.command {
         Command::Login {
             base_url,
             api_key,
@@ -200,7 +200,12 @@ fn main() -> Result<()> {
         Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
-    }
+    };
+    // Audit emits run on detached threads so they never stall a command; this
+    // process ends when the command does, so wait for any still in flight
+    // (bounded by the emit timeout) or they would be silently dropped.
+    gate_connect_core::audit::flush();
+    result
 }
 
 fn cmd_login(
@@ -605,6 +610,14 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
         ProxyCmd::Domain { slug, state } => {
             let enabled = matches!(state, Toggle::On);
             let st = mgr.set_domain(&slug, enabled)?;
+            // Audited at the command layer, mirroring the app's
+            // `proxy_set_domain`: `provider::enable` / `disable` drive
+            // `set_domain` internally, so instrumenting the manager would turn
+            // one operator action into N+1 events. This arm is the operator
+            // toggling one domain by hand from the CLI.
+            if let Ok(Some(base_url)) = account::load_base_url() {
+                gate_connect_core::audit::domain_toggled(&base_url, None, &slug, enabled);
+            }
             println!("{} {slug}.", if enabled { "Enabled" } else { "Disabled" });
             print_proxy_domains(&st.domains);
         }
