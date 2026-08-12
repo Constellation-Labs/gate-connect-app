@@ -54,7 +54,7 @@ import { buildGroups } from "./lib/groups";
 import { useTextScale } from "./lib/useTextScale";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
-import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
+import { TOUR_SEEN_EVENT, CA_TRUSTED_EVENT } from "./screens/Onboarding";
 import { secretStoreName, usePlatform } from "./lib/platform";
 import { useWindowReopen } from "./lib/useWindowReopen";
 
@@ -558,6 +558,17 @@ export function App() {
     };
   }, []);
 
+  // The intro can install the certificate now that it warns about the dialog
+  // first, and it does so in its own webview - so this one is holding a
+  // ProxyState that still says untrusted. Silent refresh (`announce: false`):
+  // trusting starts nothing, so there is no session to report.
+  useEffect(() => {
+    const unlisten = listen(CA_TRUSTED_EVENT, () => void refreshState(false));
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, [refreshState]);
+
   // (triggered by the initial load reading the key) can't dismiss it before
   // it's seen. Once the user actually interacts, release the pin so normal
   // click-away dismissal resumes.
@@ -659,6 +670,58 @@ export function App() {
     setScreen(orgPickerReturn);
   }, [refreshAccount, orgPickerReturn]);
 
+  /** Trust the CA with the OS dialog announced rather than sprung. Two things
+   * the generic `proxyBusy` cannot do. It disables the button but says nothing,
+   * so the wait for a system trust dialog looked like a frozen popover;
+   * `trustPending` lets the screens name the dialog while it is up. And the
+   * dialog steals focus, which the dismiss-on-blur handler reads as a
+   * click-away - so without the pin the window hides, taking that sentence
+   * with it, on the one action in the app that hands off to the OS.
+   *
+   * Assumes the caller owns `proxyBusy`, and throws on refusal: every caller
+   * has its own thing to say about that. */
+  const runTrustCa = useCallback(async () => {
+    setTrustPending(true);
+    await pinPopover().catch(() => {});
+    try {
+      setProxy(await proxyTrustCa());
+      track("ca_trusted");
+    } catch (err) {
+      // Re-sync before handing the failure on, so the screens read backend
+      // truth rather than the state we entered the dialog with.
+      try {
+        setProxy(await proxyStatus());
+      } catch {
+        /* noop */
+      }
+      throw err;
+    } finally {
+      setTrustPending(false);
+      // Unpin whichever way it went: a declined dialog leaves the user looking
+      // at the error in a popover that must still dismiss normally.
+      await unpinPopover().catch(() => {});
+    }
+  }, []);
+
+  /** Trust the CA *before* running a command whose backend would trust it
+   * implicitly. `enable()` calls `ensure_trusted` (manager*.rs), so the master
+   * switch and every connect that auto-enables the engine used to spring the
+   * system dialog with no warning copy and an unpinned popover: on Windows
+   * that is a red "Security Warning" quoting a certificate name, arriving with
+   * the app nowhere on screen. Home's certificate card explains all this, but
+   * it is gated on routing already being on, so on a fresh machine the first
+   * dialog always beat the card that describes it.
+   *
+   * Doing it here, warned, means the dialog never appears unannounced. A
+   * refusal throws and aborts the caller - exactly what the implicit path did
+   * (`ensure_trusted()?` fails the whole enable), so nothing that used to
+   * succeed stops working - and the caller's own error context names the
+   * control to press again. */
+  const ensureCaTrusted = useCallback(async () => {
+    // Null on a platform with no proxy subsystem: nothing to trust.
+    if (proxy && !proxy.ca_trusted) await runTrustCa();
+  }, [proxy, runTrustCa]);
+
   // `takeover: true` (the home-screen toggle) surfaces the result as the
   // full-popover routing notice; the Routing screen's toggle keeps its
   // inline hints instead.
@@ -668,6 +731,8 @@ export function App() {
       setProxyBusy(true);
       setProviderError(null);
       try {
+        // Turning on is the path that trusts the CA; disable never prompts.
+        if (!proxy?.running) await ensureCaTrusted();
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
         setProxy(next);
         track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
@@ -711,7 +776,7 @@ export function App() {
         setProxyBusy(false);
       }
     },
-    [proxy, proxyBusy],
+    [proxy, proxyBusy, ensureCaTrusted],
   );
 
   // Toggle one proxy domain (an "Apps" ledger row). Applied live by the
@@ -753,8 +818,14 @@ export function App() {
       setProxyBusy(true);
       try {
         const tool = tools.find((t) => t.slug === slug);
-        if (routed) await connectTool(slug, tool?.default_upstream_url ?? "");
-        else await disconnectTool(slug);
+        if (routed) {
+          // Connect auto-enables the engine, which trusts the CA; disconnect
+          // never prompts.
+          await ensureCaTrusted();
+          await connectTool(slug, tool?.default_upstream_url ?? "");
+        } else {
+          await disconnectTool(slug);
+        }
         track("tool_toggled", { tool: slug, routed });
       } catch (e) {
         trackError(e, "connect", { tool: slug, routed });
@@ -773,7 +844,7 @@ export function App() {
         setProxyBusy(false);
       }
     },
-    [proxyBusy, tools, proxy],
+    [proxyBusy, tools, proxy, ensureCaTrusted],
   );
 
   // Route (or unroute) a whole model family from one switch. Runs the same
@@ -796,6 +867,21 @@ export function App() {
       const wasRunning = proxy?.running ?? false;
       setProxyBusy(true);
       setProviderError(null);
+      // Ahead of the loop, not inside it: a config member's connect auto-enables
+      // the engine, which trusts the CA, so the system dialog belongs before the
+      // first command rather than sprung from member three. A refusal aborts the
+      // whole family, which is what the implicit trust already did to that
+      // member's connect.
+      if (on) {
+        try {
+          await ensureCaTrusted();
+        } catch (e) {
+          trackError(e, "connect", { provider: id, enabled: on });
+          setProviderError(classifyError(e, "connect", account?.auth_mode));
+          setProxyBusy(false);
+          return;
+        }
+      }
       // One member failing used to abort the loop and surface "Couldn't
       // connect this tool", naming nobody, reporting no partial success, and
       // pushing the culprit row below the fold. Now every member is attempted
@@ -843,7 +929,7 @@ export function App() {
       setChangeNotice(noticeFor(on, running, wasRunning));
       setProxyBusy(false);
     },
-    [proxyBusy, providers, tools, proxy],
+    [proxyBusy, providers, tools, proxy, account, ensureCaTrusted],
   );
 
   /** Toggle the shell-environment channel, the master's sub-setting. Its own
@@ -876,17 +962,8 @@ export function App() {
     if (proxyBusy) return;
     setProviderError(null);
     setProxyBusy(true);
-    // Two things the generic `proxyBusy` cannot do. It disables the button but
-    // says nothing, so the wait for a system trust dialog looked like a frozen
-    // popover; `trustPending` lets the screens name the dialog while it is up.
-    // And the dialog steals focus, which the dismiss-on-blur handler reads as
-    // a click-away - so without the pin the window hides, taking that sentence
-    // with it, on the one action in the app that hands off to the OS.
-    setTrustPending(true);
-    await pinPopover().catch(() => {});
     try {
-      setProxy(await proxyTrustCa());
-      track("ca_trusted");
+      await runTrustCa();
     } catch (err) {
       // Surface it, don't just log it. This used to call trackError alone, so
       // a cancelled admin prompt - the likeliest failure in the app - produced
@@ -895,20 +972,11 @@ export function App() {
       // the member-level button in GroupMembers can show it in place.
       trackError(err, "trust_ca");
       setProviderError(classifyError(err, "trust_ca"));
-      try {
-        setProxy(await proxyStatus());
-      } catch {
-        /* noop */
-      }
       throw err;
     } finally {
       setProxyBusy(false);
-      setTrustPending(false);
-      // Unpin whichever way it went: a declined dialog leaves the user looking
-      // at the error in a popover that must still dismiss normally.
-      await unpinPopover().catch(() => {});
     }
-  }, [proxyBusy]);
+  }, [proxyBusy, runTrustCa]);
 
   const untrustCa = useCallback(async () => {
     if (proxyBusy) return;

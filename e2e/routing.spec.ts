@@ -72,6 +72,70 @@ test.describe("routing", () => {
     expect((await app.state()).proxy.running).toBe(false);
   });
 
+  test("the master switch trusts the certificate before it enables", async ({ boot }) => {
+    const app = await boot();
+
+    await app.routingSwitch.click();
+
+    // Settled first: the pin is released in a `finally` that lands after the
+    // switch repaints, and reading the log before that makes the bracket below
+    // straddle the launch pin instead.
+    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
+    await expect
+      .poll(async () => {
+        const cmds = (await app.calls()).map((c) => c.cmd);
+        return cmds.lastIndexOf("unpin_popover") > cmds.indexOf("proxy_trust_ca");
+      })
+      .toBe(true);
+
+    // The invariant: `enable()` trusts the CA itself (manager*.rs), which used
+    // to spring the OS dialog with nothing on screen naming it - a red security
+    // warning on Windows, over a popover that dismisses on focus loss. Trusting
+    // first means the app is holding `trustPending` while the dialog is up, so
+    // the screens can say which button ends it and the popover stays pinned.
+    const cmds = (await app.calls()).map((c) => c.cmd);
+    const trust = cmds.indexOf("proxy_trust_ca");
+    const enable = cmds.indexOf("proxy_enable");
+    expect(trust).toBeGreaterThanOrEqual(0);
+    expect(enable).toBeGreaterThan(trust);
+    // Pinned for the dialog, released after it: the pin exists because the
+    // dialog steals focus and the popover would otherwise hide itself.
+    expect(cmds.indexOf("pin_popover")).toBeLessThan(trust);
+  });
+
+  test("an already-trusted certificate raises no second prompt", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: false, ca_trusted: true },
+    });
+
+    await app.routingSwitch.click();
+
+    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
+    // Nothing to trust, so nothing to warn about: the pre-flight has to stay
+    // out of the way of the promptless path.
+    const cmds = (await app.calls()).map((c) => c.cmd);
+    expect(cmds).not.toContain("proxy_trust_ca");
+    expect(cmds).not.toContain("pin_popover");
+  });
+
+  test("declining the certificate leaves routing off and says so", async ({ boot }) => {
+    const app = await boot({
+      failures: {
+        proxy_trust_ca: "couldn’t trust the proxy CA: the certificate trust dialog was cancelled or denied",
+      },
+    });
+
+    await app.routingSwitch.click();
+
+    // Aborted before the engine was asked for anything - the same outcome the
+    // implicit trust produced (`ensure_trusted()?` fails the whole enable),
+    // reached without a second unexplained dialog.
+    const cmds = (await app.calls()).map((c) => c.cmd);
+    expect(cmds).not.toContain("proxy_enable");
+    await expect(app.page.getByText(/certificate|trust/i).first()).toBeVisible();
+    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "false");
+  });
+
   test("an untrusted certificate is fixed from the card, not from the row", async ({ boot }) => {
     const app = await boot({
       proxy: {

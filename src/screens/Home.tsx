@@ -399,8 +399,16 @@ export function Home({
             re-crowding into the screen the door was invented to fix. */}
         {/* Gated on `partial`, not just an untrusted CA: with no app rows
             switched on the certificate blocks nothing, and a warning card
-            would contradict the green header pill. */}
-        {showProxy && partial && (
+            would contradict the green header pill.
+
+            `trustPending` opens the same gate, because the master switch now
+            trusts the CA *before* it enables (App.tsx's `ensureCaTrusted`) and
+            that runs with `partial` still false - no domains on, no engine up.
+            Without this the OS security dialog arrived over a screen that said
+            nothing about it, which is the confusion this card exists to
+            prevent. The waiting sentence below is what the user needs in those
+            seconds, and this card is where it lives. */}
+        {showProxy && (partial || trustPending) && (
           <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
             <div className="flex items-center gap-2.5">
               <div className="order-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning-deep">

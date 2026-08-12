@@ -2,10 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { track } from "../lib/analytics";
+import { proxyStatus, proxyTrustCa } from "../lib/api";
+import { track, trackError } from "../lib/analytics";
+import { classifyError } from "../lib/errors";
 import { setTourSeen } from "../lib/tour";
 import { Button } from "../components/gc/ui";
-import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
+import { Icon } from "../components/gc/Icon";
+import {
+  secretStoreName,
+  trustPromptHint,
+  trustPromptWaiting,
+  trustStoreName,
+  usePlatform,
+  type Platform,
+} from "../lib/platform";
 import appIcon from "../assets/app-icon.png";
 import routingScreen from "../assets/app-integrations.png";
 import whereMacos from "../assets/where-is-gate-connect-macos.png";
@@ -15,6 +25,13 @@ import whereWindows from "../assets/where-is-gate-connect-windows.png";
 /** Broadcast when the intro is completed, so the popover window can record
  * the seen-flag in its own storage without waiting for a restart. */
 export const TOUR_SEEN_EVENT = "gc:tour-seen";
+
+/** Broadcast when the intro trusts the CA, so the popover re-reads proxy state
+ * instead of rendering an untrusted certificate until something else refreshes
+ * it. Not the backend's `proxy-state-changed`: that one means "routing came up
+ * behind your back" and the popover announces it (banner + analytics), which
+ * would be a lie about a trust that started nothing. */
+export const CA_TRUSTED_EVENT = "gc:ca-trusted";
 
 /** Step 2 hero - the popover's Routing screen shown as a framed screenshot,
  * sized to sit above the title. */
@@ -50,6 +67,170 @@ const WHERE_IMAGE: Record<Platform, string> = {
   unknown: whereMacos,
 };
 
+/** The shape of the system dialog each platform raises for the CA trust, as
+ * the buttons the user has to pick between. Windows is the one that prompted
+ * this screen: `certutil -user -addstore Root` raises a red "Security Warning"
+ * quoting the certificate's name, which reads as something having gone wrong
+ * unless the user was told to expect it. */
+const TRUST_DIALOG: Record<
+  Platform,
+  { title: string; confirm: string; dismiss: string; password: boolean }
+> = {
+  windows: { title: "Security Warning", confirm: "Yes", dismiss: "No", password: false },
+  macos: { title: "Gate Connect", confirm: "OK", dismiss: "Cancel", password: true },
+  linux: {
+    title: "Authentication required",
+    confirm: "Authenticate",
+    dismiss: "Cancel",
+    password: true,
+  },
+  unknown: { title: "Confirm", confirm: "OK", dismiss: "Cancel", password: true },
+};
+
+/** Step 3 hero: the system dialog, drawn rather than screenshotted.
+ *
+ * A capture would be wrong on half the machines that see it (the warning is
+ * worded and framed differently across Windows versions), and the point is not
+ * pixel fidelity - it is that a window of roughly this shape is about to
+ * appear, and which button ends it. Drawn in the app's own tokens and
+ * `aria-hidden`, with the instruction carried in the step's real copy.
+ *
+ * `trusted` replaces it with the settled state: previewing a dialog nobody is
+ * going to see would be the same lie the copy above it stopped telling. */
+function TrustHero({ platform, trusted }: { platform: Platform; trusted: boolean | null }) {
+  const dialog = TRUST_DIALOG[platform];
+  if (trusted) {
+    return (
+      <div
+        aria-hidden
+        className="mx-auto flex h-[76px] w-[76px] items-center justify-center rounded-[20px] bg-gc-accent-wash text-gc-accent"
+      >
+        <Icon name="shieldCheck" size={36} />
+      </div>
+    );
+  }
+  return (
+    <figure>
+      <div
+        aria-hidden
+        className="mx-auto w-full max-w-[300px] rounded-[10px] bg-gc-surface p-3.5 text-left shadow-border"
+      >
+        <div className="flex items-center gap-2">
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] bg-gc-warning-wash text-gc-warning-deep">
+            <Icon name="info" size={13} />
+          </span>
+          <span className="text-gc-body-sm font-medium text-gc-ink">{dialog.title}</span>
+        </div>
+        {/* Skeleton lines, not lorem text: inventing sentences the OS does not
+            say would teach the user to look for words that never appear. */}
+        <div className="mt-2.5 flex-col gap-1.5">
+          <span className="block h-[6px] w-full rounded-full bg-gc-line" />
+          <span className="block h-[6px] w-4/5 rounded-full bg-gc-line" />
+        </div>
+        {dialog.password && <div className="mt-2.5 h-[26px] rounded bg-gc-sunken" />}
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <span className="rounded bg-gc-sunken px-2.5 py-1 text-gc-label text-gc-ink-3">
+            {dialog.dismiss}
+          </span>
+          <span className="rounded bg-gc-accent px-2.5 py-1 text-gc-label font-medium text-white">
+            {dialog.confirm}
+          </span>
+        </div>
+      </div>
+      <figcaption className="mt-1.5 text-gc-label text-gc-ink-3">
+        Roughly what your system will show
+      </figcaption>
+    </figure>
+  );
+}
+
+/** Whether the proxy CA is already trusted on this machine. `null` while the
+ * read is in flight, and on a platform with no proxy subsystem - either way
+ * there is nothing to say yet, so the certificate step renders no controls.
+ *
+ * Lifted out of the step's own component because the step's *copy* turns on it
+ * too: promising a system prompt to someone whose certificate is already
+ * installed describes a dialog that will never appear. */
+function useCaTrusted(): [boolean | null, (trusted: boolean) => void] {
+  const [trusted, setTrusted] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    proxyStatus()
+      .then((s) => {
+        if (alive) setTrusted(s.ca_trusted);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return [trusted, setTrusted];
+}
+
+/** The certificate step's controls: install now, or move on and meet the
+ * prompt later from the popover. */
+function TrustStep({
+  platform,
+  trusted,
+  onTrusted,
+}: {
+  platform: Platform;
+  trusted: boolean | null;
+  onTrusted: (trusted: boolean) => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function install() {
+    setError(null);
+    setPending(true);
+    try {
+      const state = await proxyTrustCa();
+      onTrusted(state.ca_trusted);
+      track("ca_trusted", { source: "tour" });
+      // The popover is a separate webview holding its own copy of proxy state,
+      // so without this it renders an untrusted certificate until the next
+      // thing that happens to re-read it.
+      void emit(CA_TRUSTED_EVENT);
+    } catch (e) {
+      trackError(e, "trust_ca");
+      // The classified hint names the button to press again, which here is the
+      // one directly below it.
+      setError(classifyError(e, "trust_ca").title);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  if (trusted === null) return null;
+
+  if (trusted) {
+    return (
+      <p className="mt-4 flex items-center justify-center gap-1.5 text-gc-title-sm text-gc-ink-2">
+        <Icon name="check" size={15} className="text-gc-accent" />
+        Installed. Nothing to do here.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-4 flex-col items-center gap-2">
+      <Button variant="accent" size="sm" disabled={pending} onClick={() => void install()}>
+        {pending ? "Waiting…" : "Install certificate"}
+      </Button>
+      {/* Present tense while the dialog is up, because at that point it may be
+          covering the window this sentence is written in. `aria-live` because
+          a screen-reader user is not told the dialog opened at all. */}
+      <p aria-live="polite" className="text-gc-caption text-gc-ink-3">
+        {pending
+          ? trustPromptWaiting(platform)
+          : "Skipping is fine: the popover offers it again the first time you route one of those apps."}
+      </p>
+      {error && <p className="text-gc-caption text-gc-error">{error}</p>}
+    </div>
+  );
+}
+
 /** Where the tray icon lives, in this OS's own vocabulary. */
 function whereItLives(platform: Platform): string {
   switch (platform) {
@@ -68,9 +249,11 @@ type Step = {
   sub: string;
   body: string[];
   locate?: boolean;
+  /** Renders the install-the-certificate controls under the copy. */
+  trust?: boolean;
 };
 
-function buildSteps(platform: Platform): Step[] {
+function buildSteps(platform: Platform, caTrusted: boolean | null): Step[] {
   return [
     {
       hero: (
@@ -97,6 +280,26 @@ function buildSteps(platform: Platform): Step[] {
         "For Claude Code and Codex, Gate Connect points the app’s own config at your gateway and restores it when you disconnect. For apps like Claude Desktop or ChatGPT, it routes the provider’s domain through a local proxy.",
         `Connected apps route through Gate; unselected apps stay unchanged. Your Gate key stays in ${secretStoreName(platform)}, not a plain file.`,
       ],
+    },
+    // Third, not last: it belongs with "how to turn it on" (it is the rest of
+    // that answer), and the tour still has to end on the step that tells the
+    // user where the app lives. Putting the OS dialog on its own full-width
+    // screen is the whole point - the popover is 360px and has room for one
+    // sentence about it, which is how the warning kept losing to the dialog.
+    {
+      hero: <TrustHero platform={platform} trusted={caTrusted} />,
+      // Already-trusted machines (a replay from Settings, a reinstall the
+      // certificate survived) must not be promised a dialog that will not
+      // arrive: the copy reports rather than warns.
+      title: caTrusted ? "The certificate is in place" : "One prompt to expect",
+      sub: caTrusted
+        ? "Already installed on this machine, so nothing will interrupt you."
+        : trustPromptHint(platform),
+      body: [
+        `Apps like Claude Desktop have no gateway setting to point anywhere, so Gate Connect routes them through a proxy running on this machine. That proxy needs a certificate your ${trustStoreName(platform)} trusts${caTrusted ? "" : ", and installing it is the one step where your system asks you to confirm"}.`,
+        "The certificate is generated on this machine and never leaves it. Nothing but the local proxy uses it, and you can remove it from Settings whenever routing is off.",
+      ],
+      trust: true,
     },
     {
       hero: (
@@ -139,7 +342,8 @@ function buildSteps(platform: Platform): Step[] {
  * the user back to the tray popover (see the Rust CloseRequested handler). */
 export function Onboarding() {
   const platform = usePlatform();
-  const steps = buildSteps(platform);
+  const [caTrusted, setCaTrusted] = useCaTrusted();
+  const steps = buildSteps(platform, caTrusted);
   const [index, setIndex] = useState(0);
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
   // Starts clear: opting out of the intro should be a choice the user makes,
@@ -224,6 +428,9 @@ export function Onboarding() {
               <p key={p.slice(0, 24)}>{p}</p>
             ))}
           </div>
+          {step.trust && (
+            <TrustStep platform={platform} trusted={caTrusted} onTrusted={setCaTrusted} />
+          )}
           {/* The button kit, not a fourth skin. This was accent-wash fill
               with accent text and a seam - a shape DESIGN.md's vocabulary
               does not contain, and the Provisional Indigo rule says not to
