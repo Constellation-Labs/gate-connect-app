@@ -538,7 +538,12 @@ fn app_platform() -> &'static str {
 ///
 /// On macOS this shells out to `networksetup` once per active network
 /// service, so it is bound to an explicit user action rather than any poll.
-#[tauri::command]
+///
+/// `(async)` so the body runs on the blocking pool: a plain sync command runs
+/// inline on the main thread, which on Linux is the GTK loop that also drives
+/// the webview's IPC - every probe here would freeze the popover for its own
+/// duration.
+#[tauri::command(async)]
 fn diagnostics() -> gate_connect_core::diagnostics::Diagnostics {
     gate_connect_core::diagnostics::collect()
 }
@@ -1013,11 +1018,26 @@ fn mark_routing_enabled() {
 /// Visit every running agent process (see [`AGENT_PROCESS_NAMES`]), skipping
 /// our own pid. Shared by the close command and the count probe so both match
 /// the exact same process set.
+///
+/// Processes only, and only the fields `/proc/<pid>/stat` already carries.
+/// sysinfo counts *threads* as processes and leaves that on by default -
+/// `ProcessRefreshKind::nothing()` sets `tasks: true`, and the `refresh_processes`
+/// convenience adds `.with_tasks()` on top - so the default walk descends into
+/// every process's `task/` directory and runs a full read (`stat`, `statm`,
+/// `io`, `cmdline`, `readlink exe`) per thread. On a 526-process desktop that
+/// is 3.4k entries and ~140ms of procfs instead of 536 entries and ~10ms, and
+/// it puts any thread whose `comm` matches an agent name in the list as if it
+/// were a second copy of the tool. Name, pid and start time - all this needs -
+/// come from `stat`, which is read either way.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
-    use sysinfo::{ProcessesToUpdate, System};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
     let own_pid = sysinfo::get_current_pid().ok();
     for (pid, process) in sys.processes() {
         if Some(*pid) == own_pid {
@@ -1034,8 +1054,13 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
 /// Count running agent processes without touching them. Lets the frontend
 /// skip the "close running agents" routing takeover when there is nothing to
 /// close.
+///
+/// `(async)`, like every probe here that walks the process table: sync would
+/// put the walk on the main thread, which on Linux is the GTK loop. This one
+/// runs on the boot path, where a blocked loop is a window that looks like it
+/// never opened.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn running_agents_count() -> u32 {
     let mut count = 0u32;
     for_each_agent_process(|_| count += 1);
@@ -1051,16 +1076,29 @@ fn running_agents_count() -> u32 {
 /// "does this process predate routing" two different ways.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn routing_bound_unix() -> Option<u64> {
-    use sysinfo::{ProcessesToUpdate, System};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
     let enabled_at = ROUTING_ENABLED_AT_UNIX.load(Ordering::Acquire);
     if enabled_at != 0 {
         return Some(enabled_at);
     }
+    // Our own pid only. `All` would walk every process in the table to read
+    // one field off exactly one of them, and this fallback is the *Linux* path
+    // (the detached engine is what leaves `ROUTING_ENABLED_AT_UNIX` at 0), so
+    // the listing below would otherwise scan the table twice per call.
+    //
+    // `without_tasks` matters even here: the pid filter is applied *after* the
+    // walk, so with threads left on this still descends every `task/` dir to
+    // then throw all of it away (~14ms, against ~0.5ms for the one process we
+    // asked for). Same refresh kind as `for_each_agent_process`, whose comment
+    // has the rest of the reasoning.
+    let pid = sysinfo::get_current_pid().ok()?;
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-    sysinfo::get_current_pid()
-        .ok()
-        .and_then(|pid| sys.process(pid))
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        false,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    sys.process(pid)
         .map(|p| p.start_time())
         .filter(|start| *start != 0)
 }
@@ -1070,8 +1108,12 @@ fn routing_bound_unix() -> Option<u64> {
 /// need a restart to route. Same process set as `running_agents_count`; the
 /// bound is the last in-process enable, falling back to our own process start
 /// when routing was already up before we launched (detached Linux engine).
+///
+/// `(async)` for the reason on [`running_agents_count`], and doubly so here:
+/// the fallback bound costs a second refresh, and this is the probe the boot
+/// path and the `proxy-state-changed` handler both call.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn stale_agents_count() -> u32 {
     let Some(bound) = routing_bound_unix() else {
         // No usable bound: degrade to "every running agent counts", the
@@ -1122,8 +1164,12 @@ struct RunningAgentsDto {
 /// Deliberately carries no command line: argv on these tools routinely holds
 /// prompts, file paths and occasionally a key, and this list is built to be
 /// pasted into a support thread.
+///
+/// `(async)` for the same reason as [`diagnostics`]: this walks the whole
+/// process table, and a sync command would do that on the main thread - the
+/// GTK loop on Linux - with the popover frozen until it returns.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn running_agents() -> RunningAgentsDto {
     let bound = routing_bound_unix();
     let mut agents = Vec::new();
@@ -1155,8 +1201,11 @@ fn running_agents() -> RunningAgentsDto {
 /// Returns how many processes were signalled - 0 means none were running.
 /// Best-effort: processes we can't signal (another user's, already gone) are
 /// skipped, not errors.
+///
+/// `(async)` on top of the walk's own reason: this one also blocks on
+/// signalling every match, and it runs from a button the user is watching.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn close_running_agents() -> u32 {
     use sysinfo::Signal;
     let mut closed = 0u32;

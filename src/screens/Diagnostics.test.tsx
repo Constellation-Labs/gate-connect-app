@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
-import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import type { Account, Diagnostics as BackendDiagnostics, ProxyState } from "../lib/api";
 import { Diagnostics } from "./Diagnostics";
 
@@ -130,6 +130,28 @@ describe("Diagnostics", () => {
     );
     // What the popover itself knows is unaffected by a failed probe.
     expect(screen.getByLabelText("Diagnostics report").textContent).toContain("routing         on");
+  });
+
+  it("renders the rest of the report when the process scan never answers", async () => {
+    // The one probe that walks the whole process table, hung. Everything else
+    // has landed, and a support thread needs those findings more than it needs
+    // to know which tools were running.
+    resolveProbes();
+    (runningAgents as Mock).mockReturnValue(new Promise(() => {}));
+    vi.useFakeTimers();
+    try {
+      renderPanel();
+      // Past the scan's ceiling: the three resolved probes settle on the
+      // microtask queue this drains, then the timer fires.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      const pre = screen.getByLabelText("Diagnostics report");
+      expect(pre.textContent).toContain("Ubuntu 25.10");
+      expect(pre.textContent).toContain("scan            unknown");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("goes back to where it was opened from", async () => {
