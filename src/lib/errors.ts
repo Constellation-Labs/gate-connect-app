@@ -57,6 +57,21 @@ export interface ClassifiedError {
   raw: string;
 }
 
+/** The user pressed Not now on the certificate pre-flight (`CertificateNotice`).
+ *
+ * Thrown rather than returned because it has to abort the caller from inside
+ * `ensureCaTrusted`, exactly as a failed trust does - but it must never reach
+ * `classifyError`. A refused OS dialog is a surprise worth explaining; declining
+ * our own screen is a choice the user made on purpose, one second ago, and
+ * answering it with a red note explaining what they just decided is the app
+ * arguing with them. Callers guard their catch on this and abort silently. */
+export class TrustDeclined extends Error {
+  constructor() {
+    super("certificate trust declined by the user");
+    this.name = "TrustDeclined";
+  }
+}
+
 /**
  * Normalize an unknown error payload into a searchable string. Errors come
  * across the Tauri boundary as plain strings, but JS-side throws and

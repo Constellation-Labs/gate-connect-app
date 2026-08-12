@@ -31,6 +31,11 @@ test.describe("sign in", () => {
     // Routing is off and there is a proxy subsystem, so Success offers the
     // last step rather than claiming to be routing.
     await app.page.getByRole("button", { name: "Turn on routing" }).click();
+    // The first routing a new account ever turns on, so it is also the first
+    // time the certificate is needed: the pre-flight lands here, which is the
+    // moment it exists for.
+    await expect(app.page.getByText("One prompt to expect")).toBeVisible();
+    await app.page.getByRole("button", { name: "Install certificate" }).click();
     await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
     expect((await app.state()).proxy.running).toBe(true);
   });

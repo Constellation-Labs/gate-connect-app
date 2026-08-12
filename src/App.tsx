@@ -45,11 +45,17 @@ import { UpdatePanel } from "./components/UpdatePanel";
 import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { OAuthOffer } from "./components/OAuthOffer";
+import { CertificateNotice } from "./components/CertificateNotice";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
 import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
 import { track, trackError } from "./lib/analytics";
-import { backendErrorContext, classifyError, type ClassifiedError } from "./lib/errors";
+import {
+  backendErrorContext,
+  classifyError,
+  TrustDeclined,
+  type ClassifiedError,
+} from "./lib/errors";
 import { buildGroups } from "./lib/groups";
 import { useTextScale } from "./lib/useTextScale";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
@@ -247,6 +253,12 @@ export function App() {
   // `trustPromptWaiting`), which is what turns an unexplained system security
   // warning into the step the user was told to expect.
   const [trustPending, setTrustPending] = useState(false);
+  // Whether the certificate pre-flight is on screen. It suspends whatever the
+  // user just turned on until they answer, so the answer arrives through a
+  // resolver rather than a state read: `ensureCaTrusted` awaits a promise the
+  // panel's two buttons settle.
+  const [trustAsk, setTrustAsk] = useState(false);
+  const trustDecision = useRef<((install: boolean) => void) | null>(null);
   const [providerError, setProviderError] = useState<ClassifiedError | null>(null);
   const [tools, setTools] = useState<Tool[]>([]);
   // The provider catalog is the grouping contract for Home's ledger
@@ -659,6 +671,81 @@ export function App() {
     setScreen(orgPickerReturn);
   }, [refreshAccount, orgPickerReturn]);
 
+  /** Trust the CA with the OS dialog announced rather than sprung. Two things
+   * the generic `proxyBusy` cannot do. It disables the button but says nothing,
+   * so the wait for a system trust dialog looked like a frozen popover;
+   * `trustPending` lets the screens name the dialog while it is up. And the
+   * dialog steals focus, which the dismiss-on-blur handler reads as a
+   * click-away - so without the pin the window hides, taking that sentence
+   * with it, on the one action in the app that hands off to the OS.
+   *
+   * Assumes the caller owns `proxyBusy`, and throws on refusal: every caller
+   * has its own thing to say about that. */
+  const runTrustCa = useCallback(async () => {
+    setTrustPending(true);
+    await pinPopover().catch(() => {});
+    try {
+      setProxy(await proxyTrustCa());
+      track("ca_trusted");
+    } catch (err) {
+      // Re-sync before handing the failure on, so the screens read backend
+      // truth rather than the state we entered the dialog with.
+      try {
+        setProxy(await proxyStatus());
+      } catch {
+        /* noop */
+      }
+      throw err;
+    } finally {
+      setTrustPending(false);
+      // Unpin whichever way it went: a declined dialog leaves the user looking
+      // at the error in a popover that must still dismiss normally.
+      await unpinPopover().catch(() => {});
+    }
+  }, []);
+
+  /** Trust the CA *before* running a command whose backend would trust it
+   * implicitly, with a screen in front of it. `enable()` calls `ensure_trusted`
+   * (manager*.rs), so the master switch and every connect that auto-enables the
+   * engine used to spring the system dialog with no warning copy and an unpinned
+   * popover: on Windows that is a red "Security Warning" quoting a certificate
+   * name, arriving with the app nowhere on screen.
+   *
+   * `CertificateNotice` takes the room first, explains what the dialog is and
+   * which button ends it, and waits. Installing runs the same warned, pinned
+   * path the explicit Trust buttons use. Declining throws `TrustDeclined`, which
+   * aborts the caller exactly as a failed trust does (`ensure_trusted()?` fails
+   * the whole enable) but which callers report as nothing at all - see the
+   * sentinel's own note.
+   *
+   * The panel is pinned for its whole life, not just for the OS dialog: it asks
+   * the user to read and decide, and an unpinned popover hides itself the moment
+   * they glance at another window. */
+  const ensureCaTrusted = useCallback(async () => {
+    // Null on a platform with no proxy subsystem: nothing to trust, and nothing
+    // to interrupt the user with.
+    if (!proxy || proxy.ca_trusted) return;
+    setTrustAsk(true);
+    await pinPopover().catch(() => {});
+    try {
+      const install = await new Promise<boolean>((resolve) => {
+        trustDecision.current = resolve;
+      });
+      if (!install) throw new TrustDeclined();
+      await runTrustCa();
+    } finally {
+      trustDecision.current = null;
+      setTrustAsk(false);
+      // `pin_popover` is a boolean, not a refcount, so `runTrustCa`'s own unpin
+      // has already dropped this pin by the time we get here on the install
+      // path. That lands a microtask before this line, with the panel on its way
+      // out either way, so there is no moment where the user is reading an
+      // unpinned panel. This is the pin for the deciding, and the reason the
+      // one in `runTrustCa` is not enough on its own.
+      await unpinPopover().catch(() => {});
+    }
+  }, [proxy, runTrustCa]);
+
   // `takeover: true` (the home-screen toggle) surfaces the result as the
   // full-popover routing notice; the Routing screen's toggle keeps its
   // inline hints instead.
@@ -668,6 +755,8 @@ export function App() {
       setProxyBusy(true);
       setProviderError(null);
       try {
+        // Turning on is the path that trusts the CA; disable never prompts.
+        if (!proxy?.running) await ensureCaTrusted();
         const next = proxy?.running ? await proxyDisable() : await proxyEnable();
         setProxy(next);
         track(next.running ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
@@ -696,6 +785,10 @@ export function App() {
         // carries the restored domains) and refresh the tool ledger.
         setTools(await listTools().catch(() => []));
       } catch (e) {
+        // The user pressed Not now on the pre-flight: the switch stays off and
+        // that is the whole story. Nothing was attempted, so there is no failure
+        // to report and nothing to re-sync.
+        if (e instanceof TrustDeclined) return;
         trackError(e, "proxy_toggle");
         // Surface why the toggle failed (e.g. on Linux the CA-trust admin step
         // or a missing network service) instead of silently reverting - a
@@ -711,7 +804,7 @@ export function App() {
         setProxyBusy(false);
       }
     },
-    [proxy, proxyBusy],
+    [proxy, proxyBusy, ensureCaTrusted],
   );
 
   // Toggle one proxy domain (an "Apps" ledger row). Applied live by the
@@ -750,13 +843,30 @@ export function App() {
     async (slug: string, routed: boolean) => {
       if (proxyBusy) return;
       const wasRunning = proxy?.running ?? false;
+      // Set when the user declines the certificate pre-flight, because the
+      // `finally` below runs on that path too and its notice would announce a
+      // connection that was never attempted.
+      let declined = false;
       setProxyBusy(true);
       try {
         const tool = tools.find((t) => t.slug === slug);
-        if (routed) await connectTool(slug, tool?.default_upstream_url ?? "");
-        else await disconnectTool(slug);
+        if (routed) {
+          // Connect auto-enables the engine, which trusts the CA; disconnect
+          // never prompts.
+          await ensureCaTrusted();
+          await connectTool(slug, tool?.default_upstream_url ?? "");
+        } else {
+          await disconnectTool(slug);
+        }
         track("tool_toggled", { tool: slug, routed });
       } catch (e) {
+        // Not a failure and not the caller's problem: the user answered Not now
+        // on our own screen, so this resolves quietly rather than rethrowing
+        // into the row's error note.
+        if (e instanceof TrustDeclined) {
+          declined = true;
+          return;
+        }
         trackError(e, "connect", { tool: slug, routed });
         throw e;
       } finally {
@@ -769,11 +879,11 @@ export function App() {
         } catch {
           /* non-macOS: no proxy subsystem */
         }
-        setChangeNotice(noticeFor(routed, running, wasRunning));
+        if (!declined) setChangeNotice(noticeFor(routed, running, wasRunning));
         setProxyBusy(false);
       }
     },
-    [proxyBusy, tools, proxy],
+    [proxyBusy, tools, proxy, ensureCaTrusted],
   );
 
   // Route (or unroute) a whole model family from one switch. Runs the same
@@ -796,6 +906,24 @@ export function App() {
       const wasRunning = proxy?.running ?? false;
       setProxyBusy(true);
       setProviderError(null);
+      // Ahead of the loop, not inside it: a config member's connect auto-enables
+      // the engine, which trusts the CA, so the system dialog belongs before the
+      // first command rather than sprung from member three. A refusal aborts the
+      // whole family, which is what the implicit trust already did to that
+      // member's connect.
+      if (on) {
+        try {
+          await ensureCaTrusted();
+        } catch (e) {
+          setProxyBusy(false);
+          // A declined pre-flight aborts the family the same way, minus the
+          // note: the user just chose this on our own screen.
+          if (e instanceof TrustDeclined) return;
+          trackError(e, "connect", { provider: id, enabled: on });
+          setProviderError(classifyError(e, "connect", account?.auth_mode));
+          return;
+        }
+      }
       // One member failing used to abort the loop and surface "Couldn't
       // connect this tool", naming nobody, reporting no partial success, and
       // pushing the culprit row below the fold. Now every member is attempted
@@ -843,7 +971,7 @@ export function App() {
       setChangeNotice(noticeFor(on, running, wasRunning));
       setProxyBusy(false);
     },
-    [proxyBusy, providers, tools, proxy],
+    [proxyBusy, providers, tools, proxy, account, ensureCaTrusted],
   );
 
   /** Toggle the shell-environment channel, the master's sub-setting. Its own
@@ -876,17 +1004,8 @@ export function App() {
     if (proxyBusy) return;
     setProviderError(null);
     setProxyBusy(true);
-    // Two things the generic `proxyBusy` cannot do. It disables the button but
-    // says nothing, so the wait for a system trust dialog looked like a frozen
-    // popover; `trustPending` lets the screens name the dialog while it is up.
-    // And the dialog steals focus, which the dismiss-on-blur handler reads as
-    // a click-away - so without the pin the window hides, taking that sentence
-    // with it, on the one action in the app that hands off to the OS.
-    setTrustPending(true);
-    await pinPopover().catch(() => {});
     try {
-      setProxy(await proxyTrustCa());
-      track("ca_trusted");
+      await runTrustCa();
     } catch (err) {
       // Surface it, don't just log it. This used to call trackError alone, so
       // a cancelled admin prompt - the likeliest failure in the app - produced
@@ -895,20 +1014,11 @@ export function App() {
       // the member-level button in GroupMembers can show it in place.
       trackError(err, "trust_ca");
       setProviderError(classifyError(err, "trust_ca"));
-      try {
-        setProxy(await proxyStatus());
-      } catch {
-        /* noop */
-      }
       throw err;
     } finally {
       setProxyBusy(false);
-      setTrustPending(false);
-      // Unpin whichever way it went: a declined dialog leaves the user looking
-      // at the error in a popover that must still dismiss normally.
-      await unpinPopover().catch(() => {});
     }
-  }, [proxyBusy]);
+  }, [proxyBusy, runTrustCa]);
 
   const untrustCa = useCallback(async () => {
     if (proxyBusy) return;
@@ -1184,7 +1294,11 @@ export function App() {
   // Any full-popover takeover is up, so the room behind it is not the user's
   // to read or click.
   const obscured =
-    quitTools !== null || routingNotice !== null || updateTakeoverVisible || oauthOffer;
+    quitTools !== null ||
+    routingNotice !== null ||
+    updateTakeoverVisible ||
+    oauthOffer ||
+    trustAsk;
 
   // Whether the body has content below the fold, so the scroll region can fade
   // its bottom edge instead of letting the footer's hairline cut a row in half.
@@ -1227,12 +1341,15 @@ export function App() {
       {platform === "linux" && <LinuxTitleBar />}
       {/* Renders the startup takeover as an absolute overlay, or (on reopen)
           the slim update banner in-flow at the top of the popover - hence its
-          placement above the body. The takeover defers while the quit or
-          routing takeover is up, so it can never mount under one (z-20 vs
-          the quit takeover's z-30 / over the routing notice's z-10) and trap
-          focus in a hidden panel. */}
+          placement above the body. The takeover defers while another one is up,
+          so it can never mount under one (z-20 vs the quit takeover's z-30 /
+          over the routing notice's z-10) and trap focus in a hidden panel. The
+          certificate pre-flight shares its z-20 and is deferred to for a second
+          reason: an operation is suspended waiting on that panel's answer. */}
       <UpdatePanel
-        suppressTakeover={quitTools !== null || routingNotice !== null || oauthOffer}
+        suppressTakeover={
+          quitTools !== null || routingNotice !== null || oauthOffer || trustAsk
+        }
         onTakeoverVisibleChange={setUpdateTakeoverVisible}
       />
       {routingNotice !== null && screen !== "loading" && (
@@ -1246,6 +1363,17 @@ export function App() {
       {quitTools !== null && (
         <QuitConfirm tools={quitTools} onCancel={() => setQuitTools(null)} />
       )}
+      {/* The pre-flight for the OS certificate dialog. Not gated on a screen:
+          the master switch, a tool row and a family switch can all reach it, and
+          the operation behind it is already suspended waiting for this answer. */}
+      {trustAsk && (
+        <CertificateNotice
+          platform={platform}
+          pending={trustPending}
+          onInstall={() => trustDecision.current?.(true)}
+          onDecline={() => trustDecision.current?.(false)}
+        />
+      )}
       {/* Lowest-priority takeover: anything the user just did, or a pending
           update, outranks an offer they did not ask for. Dismissing marks it
           seen whichever way they leave, so it never returns. */}
@@ -1253,6 +1381,7 @@ export function App() {
         screen === "home" &&
         quitTools === null &&
         routingNotice === null &&
+        !trustAsk &&
         !updateTakeoverVisible && (
           <OAuthOffer
             onUpgrade={upgradeToOAuth}

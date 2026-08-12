@@ -12,12 +12,15 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ close, onCloseRequested }),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+// The one command the tour issues: `reveal_popover` from the last step. It
+// returns a promise because the real `invoke` always does.
+const invoke = vi.fn(async (_cmd: string) => undefined);
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (cmd: string) => invoke(cmd) }));
 vi.mock("../lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/platform")>()),
   usePlatform: () => "macos",
 }));
-vi.mock("../lib/analytics", () => ({ track: vi.fn() }));
+vi.mock("../lib/analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 vi.mock("../lib/tour", () => ({ setTourSeen: vi.fn(), TOUR_SEEN_EVENT: "gc:tour-seen" }));
 
 import { track } from "../lib/analytics";
@@ -27,6 +30,11 @@ import { Onboarding } from "./Onboarding";
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // `clearAllMocks` clears calls but keeps implementations, and two tests below
+  // make `track` and `setTourSeen` throw on purpose. Left in place they fake a
+  // failure in every later test.
+  (track as Mock).mockImplementation(() => {});
+  (setTourSeen as Mock).mockImplementation(() => {});
 });
 
 /** Walk to the last step and press Get started. */

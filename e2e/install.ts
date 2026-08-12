@@ -168,6 +168,7 @@ export function installFakeTauri(state: BackendState): void {
     },
 
     // ---- window / tray plumbing
+    pin_popover: () => null,
     unpin_popover: () => null,
     open_onboarding_window: () => null,
 

@@ -246,7 +246,7 @@ export function GroupMembers({
         </div>
       )}
 
-      {untrusted.length > 0 && (
+      {(untrusted.length > 0 || trustPending) && (
         // The last member state to get a banner, and the only blocking one that
         // did not have one: `master-off`, `error` and `drifted` each announced
         // themselves at group level while the certificate was named on the
@@ -254,6 +254,12 @@ export function GroupMembers({
         // down inside a member. Since the family row says "certificate not
         // trusted", the level that reports the problem is now also a level that
         // can fix it.
+        //
+        // `trustPending` shows it with no untrusted member too: flipping a
+        // config member on trusts the CA first (App.tsx's `ensureCaTrusted`),
+        // and at that moment no member reads needs-trust yet - the engine is
+        // still coming up. Without this the OS dialog appeared over a panel
+        // that never mentioned it.
         //
         // Mutually exclusive with the master-off banner above: a member can only
         // be untrusted while the engine is running, and only master-off while it
@@ -283,7 +289,14 @@ export function GroupMembers({
             size="sm"
             className="ml-auto shrink-0"
             disabled={busy}
-            onClick={() => void trustFromRow(untrusted[0])}
+            // `untrusted` is empty in the `trustPending` case above, so the row
+            // to reopen on failure may not exist. The button is disabled for
+            // that whole window (`busy` covers it), so this only guards the
+            // state from being reachable at all.
+            onClick={() => {
+              const first = untrusted[0];
+              if (first) void trustFromRow(first);
+            }}
           >
             {trustPending ? "Waiting…" : "Trust"}
           </Button>
