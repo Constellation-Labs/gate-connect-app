@@ -1045,8 +1045,13 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
 /// Count running agent processes without touching them. Lets the frontend
 /// skip the "close running agents" routing takeover when there is nothing to
 /// close.
+///
+/// `(async)`, like every probe here that walks the process table: sync would
+/// put the walk on the main thread, which on Linux is the GTK loop. This one
+/// runs on the boot path, where a blocked loop is a window that looks like it
+/// never opened.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn running_agents_count() -> u32 {
     let mut count = 0u32;
     for_each_agent_process(|_| count += 1);
@@ -1094,8 +1099,12 @@ fn routing_bound_unix() -> Option<u64> {
 /// need a restart to route. Same process set as `running_agents_count`; the
 /// bound is the last in-process enable, falling back to our own process start
 /// when routing was already up before we launched (detached Linux engine).
+///
+/// `(async)` for the reason on [`running_agents_count`], and doubly so here:
+/// the fallback bound costs a second refresh, and this is the probe the boot
+/// path and the `proxy-state-changed` handler both call.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn stale_agents_count() -> u32 {
     let Some(bound) = routing_bound_unix() else {
         // No usable bound: degrade to "every running agent counts", the
@@ -1183,8 +1192,11 @@ fn running_agents() -> RunningAgentsDto {
 /// Returns how many processes were signalled - 0 means none were running.
 /// Best-effort: processes we can't signal (another user's, already gone) are
 /// skipped, not errors.
+///
+/// `(async)` on top of the walk's own reason: this one also blocks on
+/// signalling every match, and it runs from a button the user is watching.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn close_running_agents() -> u32 {
     use sysinfo::Signal;
     let mut closed = 0u32;
