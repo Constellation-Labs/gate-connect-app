@@ -9,6 +9,9 @@ test.describe("routing", () => {
     const app = await boot();
 
     await app.routingSwitch.click();
+    // An untrusted CA puts the pre-flight in front of the enable; the test
+    // dedicated to that ordering is below.
+    await app.page.getByRole("button", { name: "Install certificate" }).click();
 
     await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
     const state = await app.state();
@@ -34,7 +37,9 @@ test.describe("routing", () => {
   });
 
   test("with agents running, the first toggle offers to close them", async ({ boot }) => {
-    const app = await boot({ runningAgents: 2 });
+    // `ca_trusted`, here and in the two tests below, so the certificate
+    // pre-flight stays out of a test that is about the close-agents takeover.
+    const app = await boot({ runningAgents: 2, proxy: { ca_trusted: true } });
 
     await app.routingSwitch.click();
 
@@ -49,7 +54,7 @@ test.describe("routing", () => {
   });
 
   test("with nothing running, the toggle is silent", async ({ boot }) => {
-    const app = await boot({ runningAgents: 0 });
+    const app = await boot({ runningAgents: 0, proxy: { ca_trusted: true } });
 
     await app.routingSwitch.click();
     await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
@@ -62,6 +67,7 @@ test.describe("routing", () => {
   test("a failed enable says why and re-syncs the switch", async ({ boot }) => {
     const app = await boot({
       failures: { proxy_enable: "failed to trust the CA: user cancelled the admin prompt" },
+      proxy: { ca_trusted: true },
     });
 
     await app.routingSwitch.click();
@@ -76,6 +82,13 @@ test.describe("routing", () => {
     const app = await boot();
 
     await app.routingSwitch.click();
+
+    // The pre-flight owns the room before the OS dialog does, and nothing has
+    // been asked of the backend yet: the switch waits on this answer.
+    const install = app.page.getByRole("button", { name: "Install certificate" });
+    await expect(install).toBeVisible();
+    expect((await app.calls()).map((c) => c.cmd)).not.toContain("proxy_trust_ca");
+    await install.click();
 
     // Settled first: the pin is released in a `finally` that lands after the
     // switch repaints, and reading the log before that makes the bracket below
@@ -113,12 +126,13 @@ test.describe("routing", () => {
     await expect(app.routingSwitch).toHaveAttribute("aria-checked", "true");
     // Nothing to trust, so nothing to warn about: the pre-flight has to stay
     // out of the way of the promptless path.
+    await expect(app.page.getByText("One prompt to expect")).toBeHidden();
     const cmds = (await app.calls()).map((c) => c.cmd);
     expect(cmds).not.toContain("proxy_trust_ca");
     expect(cmds).not.toContain("pin_popover");
   });
 
-  test("declining the certificate leaves routing off and says so", async ({ boot }) => {
+  test("refusing the system dialog leaves routing off and says so", async ({ boot }) => {
     const app = await boot({
       failures: {
         proxy_trust_ca: "couldn’t trust the proxy CA: the certificate trust dialog was cancelled or denied",
@@ -126,14 +140,37 @@ test.describe("routing", () => {
     });
 
     await app.routingSwitch.click();
+    await app.page.getByRole("button", { name: "Install certificate" }).click();
 
     // Aborted before the engine was asked for anything - the same outcome the
     // implicit trust produced (`ensure_trusted()?` fails the whole enable),
     // reached without a second unexplained dialog.
+    await expect(app.routingSwitch).toHaveAttribute("aria-checked", "false");
     const cmds = (await app.calls()).map((c) => c.cmd);
     expect(cmds).not.toContain("proxy_enable");
+    // A refused OS dialog is a surprise, so it gets explained.
     await expect(app.page.getByText(/certificate|trust/i).first()).toBeVisible();
+  });
+
+  test("Not now abandons the toggle without raising the dialog or an error", async ({
+    boot,
+  }) => {
+    const app = await boot();
+
+    await app.routingSwitch.click();
+    await app.page.getByRole("button", { name: "Not now" }).click();
+
+    // The decline is the user's own click on our own screen one second ago:
+    // nothing is attempted, and nothing is explained back at them.
+    await expect(app.page.getByText("One prompt to expect")).toBeHidden();
     await expect(app.routingSwitch).toHaveAttribute("aria-checked", "false");
+    const cmds = (await app.calls()).map((c) => c.cmd);
+    expect(cmds).not.toContain("proxy_trust_ca");
+    expect(cmds).not.toContain("proxy_enable");
+    // Click-away dismissal has to come back: the pre-flight pinned the popover
+    // so the user could read it.
+    expect(cmds.lastIndexOf("unpin_popover")).toBeGreaterThan(cmds.indexOf("pin_popover"));
+    await expect(app.page.getByText(/couldn’t|wasn’t trusted/i)).toBeHidden();
   });
 
   test("an untrusted certificate is fixed from the card, not from the row", async ({ boot }) => {
