@@ -122,6 +122,24 @@ impl ProxyManager {
             .as_ref()
             .map(|e| (Some(e.port()), Some(e.pac_port())))
             .unwrap_or((None, None));
+        // Holding no engine handle is not the same as nothing running: on this
+        // platform the engine lives in whichever process enabled it, so a CLI
+        // invocation beside a routing menubar app has `None` here while the
+        // machine is fully routed. Reporting "stopped" then is not a partial
+        // truth, it is the wrong answer, and it read as one during a real
+        // triage - `Proxy: stopped` printed directly above a domain table read
+        // from disk that correctly said `anthropic on`.
+        //
+        // The ports come from the same files the hosting process wrote, so a
+        // cross-process status names the engine that is actually serving rather
+        // than the one this process would have started.
+        let (port, pac_port) = match port {
+            Some(_) => (port, pac_port),
+            None => match crate::proxy::engine_hosted_elsewhere() {
+                Some(p) => (Some(p), system_proxy::load_pac_port().unwrap_or(None)),
+                None => (None, None),
+            },
+        };
         Ok(ProxyState {
             running: port.is_some(),
             port,
@@ -154,6 +172,27 @@ impl ProxyManager {
         if guard.is_some() {
             drop(guard);
             return self.status();
+        }
+        // The lock above only orders concurrent enables *within* this process.
+        // Across processes there is nothing to hold, so this is where a second
+        // one has to be refused: the comment above is exactly what happens
+        // otherwise, and the snapshot it would take is of a machine already
+        // pointed at the first engine. Restoring that later hands the user back
+        // a PAC aimed at a port nothing answers - the one outcome this
+        // subsystem is written to make impossible.
+        //
+        // Refusing rather than adopting, because there is nothing to adopt: no
+        // daemon, no control socket, and the running engine belongs to another
+        // process's memory. Linux adopts instead (`manager_linux`), and
+        // `relay::serve` already refuses on the same ground.
+        if let Some(other) = crate::proxy::engine_hosted_elsewhere() {
+            drop(guard);
+            anyhow::bail!(
+                "the Gate proxy is already enabled, hosted by another process on \
+                 127.0.0.1:{other}. Starting a second engine would take the system proxy \
+                 over from it and record Gate's own settings as the ones to restore. Quit \
+                 that process, or run `gate-connect proxy disable` first."
+            );
         }
 
         let account = account::load()?
