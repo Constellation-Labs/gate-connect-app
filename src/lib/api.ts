@@ -213,6 +213,12 @@ export interface ProviderState {
   /** Slugs of the proxy domains this provider covers. With `tool_slugs`,
    * a family's whole membership - what Home's ledger groups by. */
   domain_slugs: string[];
+  /** Slugs of this family's chat-protocol domains: listed under the family,
+   * excluded from its switch. Kept apart from `domain_slugs` rather than
+   * merged with a flag, because that field means "what the family switch
+   * flips" everywhere it is read, and these must never be flipped by it -
+   * they intercept a session-cookie surface, not a key-brokered one. */
+  chat_domain_slugs: string[];
 }
 
 export const listProviders = () => invoke<ProviderState[]>("list_providers");

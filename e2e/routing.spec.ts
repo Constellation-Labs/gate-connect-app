@@ -255,6 +255,40 @@ test.describe("family panel", () => {
     expect(await app.lastCall("provider_enable")).toBeNull();
   });
 
+  test("the chat surface has its own switch, and the family switch never touches it", async ({
+    boot,
+  }) => {
+    // claude.ai carries the user's session cookie rather than a brokered key,
+    // so it is the one member the family switch must leave where it is. The
+    // backend enforces the same rule by keeping the slug out of the provider's
+    // `proxy_domain_slugs`; this is the frontend half of it.
+    const app = await boot({
+      proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
+    });
+
+    await app.familyRow("Claude").click();
+    const chat = app.page.getByRole("switch", { name: "Route Claude Desktop chat through Gate" });
+    await expect(chat).toHaveAttribute("aria-checked", "false");
+
+    // The whole family on: Claude Code and Claude apps route, the chat row does
+    // not move.
+    await app.page.getByRole("switch", { name: "Route Claude through Gate" }).click();
+    await expect
+      .poll(async () => (await app.state()).proxy.domains.find((d) => d.slug === "anthropic")?.enabled)
+      .toBe(true);
+    expect((await app.state()).proxy.domains.find((d) => d.slug === "claude-web")?.enabled).toBe(
+      false,
+    );
+    await expect(chat).toHaveAttribute("aria-checked", "false");
+
+    // Its own switch is the only thing that routes it.
+    await chat.click();
+    await expect.poll(() => app.lastCall("proxy_set_domain")).toEqual({
+      slug: "claude-web",
+      enabled: true,
+    });
+  });
+
   test("a member that fails to connect names itself and stays off", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },

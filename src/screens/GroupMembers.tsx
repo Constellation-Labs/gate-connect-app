@@ -37,11 +37,22 @@ function explain(member: GroupMember, platform: Platform): string {
       : `${member.name}’s config points at Gate, but routing is off, so it can’t reach the gateway.`;
   }
   if (member.kind === "proxy") {
-    return member.attention === "needs-trust"
-      ? `${member.name} is switched on, but the local certificate isn’t trusted yet, so its traffic isn’t routing.`
-      : member.routed
-        ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
-        : `${member.name} routes through Gate’s local proxy once you switch it on.`;
+    if (member.attention === "needs-trust") {
+      return `${member.name} is switched on, but the local certificate isn’t trusted yet, so its traffic isn’t routing.`;
+    }
+    // The one member kind whose switch is not the family's to flip, and the one
+    // whose traffic carries no API key at all. Both facts belong here: the row
+    // sits under a family whose switch will leave it exactly where it is, and
+    // the thing being routed is the user's signed-in session, which is a
+    // different promise from "Gate holds your key in the keychain".
+    if (member.chat) {
+      return member.routed
+        ? `${member.name} goes through Gate on your signed-in session, not an API key, so Gate records and inspects these conversations rather than brokering a credential for them. The family switch above leaves this row alone.`
+        : `${member.name} sends your signed-in session, not an API key. Switch it on and Gate records and inspects those conversations; the family switch above leaves this row alone either way.`;
+    }
+    return member.routed
+      ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
+      : `${member.name} routes through Gate’s local proxy once you switch it on.`;
   }
   switch (member.tool?.status.kind) {
     case "connected":

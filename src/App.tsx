@@ -930,7 +930,13 @@ export function App() {
       // and the failures are named.
       const failed: string[] = [];
       let lastError: unknown = null;
-      for (const member of group.members) {
+      // Chat members are excluded, not skipped inside the loop: they intercept
+      // a session-cookie surface (claude.ai, the ChatGPT app's own turn), so
+      // routing one is a deliberate per-row act and must not ride a family
+      // switch. This mirrors the backend, where those slugs are kept out of
+      // `proxy_domain_slugs` for the same reason - see `provider.rs`.
+      const cascade = group.members.filter((m) => !m.chat);
+      for (const member of cascade) {
         try {
           if (member.kind === "config" && member.tool) {
             if (on && !member.desired && member.attention !== "drifted") {
@@ -956,7 +962,7 @@ export function App() {
           title:
             failed.length === 1
               ? `Couldn’t ${on ? "connect" : "disconnect"} ${failed[0]}`
-              : `Couldn’t ${on ? "connect" : "disconnect"} ${failed.length} of ${group.members.length}: ${failed.join(", ")}`,
+              : `Couldn’t ${on ? "connect" : "disconnect"} ${failed.length} of ${cascade.length}: ${failed.join(", ")}`,
         });
       }
       setTools(await listTools().catch(() => tools));

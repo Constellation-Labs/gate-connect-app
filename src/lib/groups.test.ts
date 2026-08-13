@@ -32,6 +32,7 @@ function provider(
   display_name: string,
   tool_slugs: string[],
   domain_slugs: string[],
+  chat_domain_slugs: string[] = [],
 ): ProviderState {
   return {
     slug,
@@ -41,16 +42,31 @@ function provider(
     available: true,
     tool_slugs,
     domain_slugs,
+    chat_domain_slugs,
   };
 }
 
 /** Mirrors the real catalog: Claude Code and Codex are each claimed by one
- * provider; OpenCode / OpenClaw / Hermes deliberately are not. */
+ * provider; OpenCode / OpenClaw / Hermes deliberately are not. Claude also
+ * carries the chat surface, which the catalog keeps out of `domain_slugs` so
+ * the family switch cannot reach it. */
 const CATALOG = [
-  provider("anthropic", "Claude", ["claude-code"], ["anthropic"]),
-  provider("openai", "OpenAI", ["codex"], ["openai"]),
+  provider("anthropic", "Claude", ["claude-code"], ["anthropic"], ["claude-web"]),
+  provider("openai", "OpenAI", ["codex"], ["openai"], ["chatgpt-apps"]),
   provider("openrouter", "OpenRouter", [], ["openrouter"]),
 ];
+
+/** The chat-protocol domain as the backend ships it: supported, off. */
+function chatDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
+  return domain({
+    slug: "claude-web",
+    display_name: "Claude Desktop chat",
+    hosts: ["claude.ai"],
+    upstream_url: "https://claude.ai/api",
+    enabled: false,
+    ...overrides,
+  });
+}
 
 const ON = { proxyOn: true, caTrusted: true };
 
@@ -155,6 +171,49 @@ describe("buildGroups", () => {
     const byId = Object.fromEntries(groups.map((g) => [g.id, g]));
     expect(byId.openai.members[0].attention).toBe("drifted");
     expect(byId.anthropic.members[0].attention).toBe("error");
+  });
+
+  it("gives a chat surface a row under its family, after the cascaded members", () => {
+    const [claude] = buildGroups(
+      CATALOG,
+      [tool("claude-code", "Claude Code", { kind: "connected" })],
+      [domain(), chatDomain()],
+      ON,
+    );
+    expect(claude.members.map((m) => m.name)).toEqual([
+      "Claude Code",
+      "Claude Desktop / Cowork",
+      "Claude Desktop chat",
+    ]);
+    expect(claude.members.map((m) => m.chat)).toEqual([undefined, undefined, true]);
+  });
+
+  it("keeps a chat surface out of the family switch's count", () => {
+    // The switch is driven by `cascadeDesired` precisely so this case cannot
+    // happen: the chat row is the only thing switched on, so a `desired`-driven
+    // switch would read "on" over a family routing nothing it can flip, and
+    // clicking it would ask to turn off an already-off set.
+    const [claude] = buildGroups(
+      CATALOG,
+      [],
+      [domain({ enabled: false }), chatDomain({ enabled: true })],
+      ON,
+    );
+    expect(claude.desired).toBe(1);
+    expect(claude.cascadeDesired).toBe(0);
+    // Reality still speaks for every member: the chat surface IS routing.
+    expect(claude.routed).toBe(1);
+    expect(groupSummary(claude).count).toBe("1 of 2 routing");
+  });
+
+  it("does not let a family switch reach the chat surface", () => {
+    // `App.tsx`'s `setGroupRouted` filters on `chat`, and the backend keeps
+    // these slugs out of `proxy_domain_slugs` for the same reason. This pins
+    // the field the frontend half filters on.
+    const [claude] = buildGroups(CATALOG, [], [domain(), chatDomain()], ON);
+    const cascade = claude.members.filter((m) => !m.chat);
+    expect(cascade.map((m) => m.key)).toEqual(["anthropic"]);
+    expect(claude.cascadeDesired).toBe(1);
   });
 });
 

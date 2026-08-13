@@ -701,18 +701,13 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // Deliberately NOT attached to the `anthropic` provider's
             // `proxy_domain_slugs` (see `provider.rs`): `provider::enable` turns
             // on every domain a provider lists, so attaching it would route the
-            // session surface the moment someone enabled "Claude" — defeating
-            // the opt-in above. It is reached only through the domain-level
-            // toggle (`proxy domain claude-web on`), like the google domains.
-            //
-            // That exclusion also keeps this entry off the Home ledger
-            // entirely, because `buildGroups` (src/lib/groups.ts) builds a row
-            // only for domains some provider claims. Right now that is wanted:
-            // this is a hidden, CLI-only option. It is TEMPORARY - the intent is
-            // to surface it in the UI soon, at which point ledger visibility
-            // needs to stop riding on `proxy_domain_slugs` so this can be shown
-            // without also joining the provider switch's cascade, which the
-            // paragraph above must still prevent.
+            // session surface the moment someone enabled "Claude" - defeating
+            // the opt-in above. It rides that provider's `chat_domain_slugs`
+            // instead, which is how it reaches the Home ledger: `buildGroups`
+            // (src/lib/groups.ts) gives it a row and a switch under Claude, and
+            // `setGroupRouted` filters it out of the family cascade, so the only
+            // thing that can enable it is that row's own switch (or
+            // `proxy domain claude-web on` from the CLI).
             enabled: false,
             supported: true,
         },
@@ -802,13 +797,12 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // entry first this one would be unreachable for MITM traffic.
             //
             // Like `claude-web` above, this slug is in no provider's
-            // `proxy_domain_slugs`, so it has no Home ledger row and no UI
-            // switch: a hidden, CLI-only option (`proxy domain chatgpt-apps
-            // on`). Wanted for now, and TEMPORARY - it should surface in the UI
-            // alongside `claude-web`. The chat half of this entry
-            // (`/backend-api/f/conversation`) is a session-cookie surface too,
-            // so whatever exposes it must not put it behind the OpenAI provider
-            // switch's cascade.
+            // `proxy_domain_slugs` and rides `chat_domain_slugs` instead: it
+            // gets a Home ledger row and a switch under OpenAI, and the family
+            // switch's cascade skips it, so the chat half of this entry
+            // (`/backend-api/f/conversation`, a session-cookie surface) can only
+            // be enabled from its own row or from `proxy domain chatgpt-apps
+            // on`. Whatever else exposes this entry must keep that property.
             enabled: false,
             supported: true,
         },

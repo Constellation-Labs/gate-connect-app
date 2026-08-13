@@ -81,6 +81,7 @@ const providers: ProviderState[] = [
     available: true,
     tool_slugs: ["claude-code"],
     domain_slugs: ["anthropic"],
+    chat_domain_slugs: [],
   },
   {
     slug: "openai",
@@ -90,6 +91,7 @@ const providers: ProviderState[] = [
     available: false,
     tool_slugs: ["codex"],
     domain_slugs: ["chatgpt"],
+    chat_domain_slugs: [],
   },
 ];
 
