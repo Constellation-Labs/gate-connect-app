@@ -34,6 +34,19 @@ pub struct Provider {
     /// Proxy domains to flip when the proxy is running (macOS / Windows /
     /// Linux, best-effort).
     pub proxy_domain_slugs: &'static [&'static str],
+    /// Chat-protocol domains that belong to this family on the UI ledger but
+    /// that this provider's switch must NEVER flip.
+    ///
+    /// Two facts, one field, and they have to stay together. These surfaces
+    /// (claude.ai, chatgpt.com's conversation endpoint) carry the user's
+    /// SESSION COOKIE rather than a brokered API key, so enabling one is a
+    /// deliberate per-domain act - which is why they are not in
+    /// `proxy_domain_slugs`, the list [`enable`] and [`disable`] cascade over.
+    /// They still belong to a model family for the user, though, so the ledger
+    /// needs a way to show the row under "Claude" or "OpenAI" without that
+    /// membership dragging them into the cascade. Visibility used to ride on
+    /// `proxy_domain_slugs`, which is exactly why they were invisible.
+    pub chat_domain_slugs: &'static [&'static str],
 }
 
 /// Built-in provider catalog. Claude leads, then OpenAI/Codex; both follow the
@@ -56,9 +69,11 @@ pub fn providers() -> Vec<Provider> {
             // Only the api.anthropic.com domain. The `claude-web` chat domain is
             // deliberately absent: `enable` below turns on EVERY domain a
             // provider lists, so adding it here would start intercepting the
-            // user's claude.ai session the moment they enabled Claude. That
-            // surface is reached through its own domain toggle instead.
+            // user's claude.ai session the moment they enabled Claude. It rides
+            // `chat_domain_slugs` instead, which shows it on the ledger under
+            // Claude and leaves the flipping to its own switch.
             proxy_domain_slugs: &["anthropic"],
+            chat_domain_slugs: &["claude-web"],
         },
         Provider {
             slug: "openai",
@@ -66,6 +81,10 @@ pub fn providers() -> Vec<Provider> {
             subtitle: "Codex + OpenAI API",
             tool_ids: &[ToolId::Codex],
             proxy_domain_slugs: &["openai"],
+            // Same split as Claude above: `chatgpt-apps` covers the ChatGPT
+            // app's own chat turn (a session-cookie surface) alongside Codex's
+            // tool plane, so it is listed under OpenAI but never cascaded.
+            chat_domain_slugs: &["chatgpt-apps"],
         },
         Provider {
             slug: "openrouter",
@@ -76,6 +95,9 @@ pub fn providers() -> Vec<Provider> {
             // be running, like Cowork).
             tool_ids: &[],
             proxy_domain_slugs: &["openrouter"],
+            // No chat surface: OpenRouter is an API host, and there is no
+            // session-cookie product in front of it.
+            chat_domain_slugs: &[],
         },
     ]
 }
@@ -107,6 +129,12 @@ pub struct ProviderState {
     /// `Integration::upstream_provider_name`, which is deliberately "your
     /// existing providers" for the multi-provider tools.
     pub domain_slugs: Vec<String>,
+    /// Slugs of this family's chat-protocol domains: shown on the ledger under
+    /// the family, excluded from its switch. Kept apart from `domain_slugs`
+    /// rather than merged with a flag, because every existing consumer of that
+    /// field means "what the family switch governs" and would be wrong about
+    /// these. See [`Provider::chat_domain_slugs`].
+    pub chat_domain_slugs: Vec<String>,
 }
 
 /// What [`enable`] should do, given the two facts that drive the locked
@@ -196,6 +224,7 @@ pub fn state(p: &Provider) -> ProviderState {
         available: any_detected || proxy_running(),
         tool_slugs: p.tool_ids.iter().map(|id| id.slug().to_string()).collect(),
         domain_slugs: p.proxy_domain_slugs.iter().map(|s| s.to_string()).collect(),
+        chat_domain_slugs: p.chat_domain_slugs.iter().map(|s| s.to_string()).collect(),
     }
 }
 
