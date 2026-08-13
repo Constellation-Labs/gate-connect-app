@@ -255,36 +255,40 @@ test.describe("family panel", () => {
     expect(await app.lastCall("provider_enable")).toBeNull();
   });
 
-  test("the chat surface has its own switch, and the family switch never touches it", async ({
+  test("the subscription surface has its own switch, and the family switch never touches it", async ({
     boot,
   }) => {
-    // claude.ai carries the user's session cookie rather than a brokered key,
-    // so it is the one member the family switch must leave where it is. The
-    // backend enforces the same rule by keeping the slug out of the provider's
-    // `proxy_domain_slugs`; this is the frontend half of it.
+    // chatgpt.com's Responses endpoint is reached with the user's ChatGPT
+    // subscription bearer rather than a brokered key, so it is the one member the
+    // family switch must leave where it is. The backend enforces the same rule by
+    // keeping the slug out of the provider's `proxy_domain_slugs`; this is the
+    // frontend half of it. It is also the switch OpenClaw's subscription traffic
+    // depends on, which its `connect` used to flip unasked.
     const app = await boot({
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
     });
 
-    await app.familyRow("Claude").click();
-    const chat = app.page.getByRole("switch", { name: "Route Claude Desktop chat through Gate" });
-    await expect(chat).toHaveAttribute("aria-checked", "false");
+    await app.familyRow("OpenAI").click();
+    const subscription = app.page.getByRole("switch", {
+      name: "Route ChatGPT (Codex subscription) through Gate",
+    });
+    await expect(subscription).toHaveAttribute("aria-checked", "false");
 
-    // The whole family on: Claude Code and Claude apps route, the chat row does
-    // not move.
-    await app.page.getByRole("switch", { name: "Route Claude through Gate" }).click();
+    // The whole family on: Codex and the OpenAI apps route, this row does not
+    // move.
+    await app.page.getByRole("switch", { name: "Route OpenAI through Gate" }).click();
     await expect
-      .poll(async () => (await app.state()).proxy.domains.find((d) => d.slug === "anthropic")?.enabled)
+      .poll(async () => (await app.state()).proxy.domains.find((d) => d.slug === "openai")?.enabled)
       .toBe(true);
-    expect((await app.state()).proxy.domains.find((d) => d.slug === "claude-web")?.enabled).toBe(
+    expect((await app.state()).proxy.domains.find((d) => d.slug === "chatgpt")?.enabled).toBe(
       false,
     );
-    await expect(chat).toHaveAttribute("aria-checked", "false");
+    await expect(subscription).toHaveAttribute("aria-checked", "false");
 
     // Its own switch is the only thing that routes it.
-    await chat.click();
+    await subscription.click();
     await expect.poll(() => app.lastCall("proxy_set_domain")).toEqual({
-      slug: "claude-web",
+      slug: "chatgpt",
       enabled: true,
     });
   });

@@ -34,18 +34,22 @@ pub struct Provider {
     /// Proxy domains to flip when the proxy is running (macOS / Windows /
     /// Linux, best-effort).
     pub proxy_domain_slugs: &'static [&'static str],
-    /// Chat-protocol domains that belong to this family on the UI ledger but
-    /// that this provider's switch must NEVER flip.
+    /// Domains that belong to this family on the UI ledger but that this
+    /// provider's switch must NEVER flip.
     ///
-    /// Two facts, one field, and they have to stay together. These surfaces
-    /// (claude.ai, chatgpt.com's conversation endpoint) carry the user's
-    /// SESSION COOKIE rather than a brokered API key, so enabling one is a
-    /// deliberate per-domain act - which is why they are not in
-    /// `proxy_domain_slugs`, the list [`enable`] and [`disable`] cascade over.
-    /// They still belong to a model family for the user, though, so the ledger
-    /// needs a way to show the row under "Claude" or "OpenAI" without that
+    /// Two facts, one field, and they have to stay together. What these surfaces
+    /// share is the credential: a SESSION COOKIE (claude.ai, chatgpt.com's
+    /// conversation endpoint) or a SUBSCRIPTION BEARER (chatgpt.com's Codex
+    /// Responses endpoint) rather than a brokered API key. Routing someone's
+    /// signed-in identity is a deliberate per-domain act - which is why they are
+    /// not in `proxy_domain_slugs`, the list [`enable`] and [`disable`] cascade
+    /// over. They still belong to a model family for the user, though, so the
+    /// ledger needs a way to show the row under "Claude" or "OpenAI" without that
     /// membership dragging them into the cascade. Visibility used to ride on
     /// `proxy_domain_slugs`, which is exactly why they were invisible.
+    ///
+    /// The name is historical: the first surfaces this served were chat ones.
+    /// The test of membership is the credential, not the protocol.
     pub chat_domain_slugs: &'static [&'static str],
 }
 
@@ -73,7 +77,13 @@ pub fn providers() -> Vec<Provider> {
             // `chat_domain_slugs` instead, which shows it on the ledger under
             // Claude and leaves the flipping to its own switch.
             proxy_domain_slugs: &["anthropic"],
-            chat_domain_slugs: &["claude-web"],
+            // Empty for now, deliberately. The field and the row it drives ship
+            // here because OpenClaw needs one below, but the two chat surfaces
+            // that motivated the mechanism (`claude-web` here, `chatgpt-apps`
+            // under OpenAI) are still being validated, and a row is an
+            // invitation to flip it. They stay CLI-only until the branch
+            // validating them lands, which re-adds exactly these two slugs.
+            chat_domain_slugs: &[],
         },
         Provider {
             slug: "openai",
@@ -81,10 +91,20 @@ pub fn providers() -> Vec<Provider> {
             subtitle: "Codex + OpenAI API",
             tool_ids: &[ToolId::Codex],
             proxy_domain_slugs: &["openai"],
-            // Same split as Claude above: `chatgpt-apps` covers the ChatGPT
-            // app's own chat turn (a session-cookie surface) alongside Codex's
-            // tool plane, so it is listed under OpenAI but never cascaded.
-            chat_domain_slugs: &["chatgpt-apps"],
+            // Same split as Claude above: a domain listed here gets a ledger row
+            // under OpenAI and a switch of its own, and the family switch's
+            // cascade never reaches it, because what these carry is the user's
+            // own signed-in credential rather than a key Gate brokers.
+            //
+            // `chatgpt` is the ChatGPT-subscription Responses endpoint. It is
+            // wired now because OpenClaw's managed proxy mode sends its
+            // subscription model calls to that host and this switch is the only
+            // thing that lets Gate see them - `integrations/openclaw.rs` used to
+            // flip the domain itself, which is what this row replaces.
+            //
+            // `chatgpt-apps` is deliberately not here yet, for the reason given
+            // on Claude's entry above.
+            chat_domain_slugs: &["chatgpt"],
         },
         Provider {
             slug: "openrouter",
@@ -805,14 +825,14 @@ mod tests {
 
     #[test]
     fn the_chatgpt_domains_are_not_reachable_by_enabling_the_openai_provider() {
-        // ChatGPT-subscription traffic (chatgpt.com) is enabled per-tool by
-        // `integrations/openclaw.rs`, which is the only thing that can read the
-        // user's auth mode. Hanging it off this switch instead would start
-        // intercepting chatgpt.com for every OpenAI user, including the API-key
-        // users who never call that host - `enable` turns on EVERY domain a
-        // provider lists. Codex needs neither slug here: its embedded agent
-        // ignores the system proxy and routes via the relay, which resolves
-        // slugs off the catalog rather than off the enabled flags.
+        // Both chatgpt.com entries stay off this switch, because `enable` turns
+        // on EVERY domain a provider lists: hanging them here would intercept
+        // that host for every OpenAI user, including the API-key users who never
+        // call it. `chatgpt` reaches the user through `chat_domain_slugs`
+        // instead - its own row, its own switch, outside the cascade. Codex needs
+        // neither slug enabled: its embedded agent ignores the system proxy and
+        // routes via the relay, which resolves slugs off the catalog rather than
+        // off the enabled flags.
         let p = find("openai").expect("openai provider present");
         assert!(!p.proxy_domain_slugs.contains(&"chatgpt"));
         assert!(!p.proxy_domain_slugs.contains(&"chatgpt-apps"));
@@ -906,16 +926,23 @@ mod tests {
     #[test]
     fn chat_domains_reach_the_ledger_without_reaching_the_cascade() {
         // The other half of the test above, and the half that keeps the fix in
-        // place: excluding these slugs from `proxy_domain_slugs` is also what
-        // used to hide them from Home, so the exclusion alone is indistinguishable
-        // from having dropped them. `chat_domain_slugs` is what `buildGroups`
-        // reads to give each one a row and a switch of its own; if it ever went
-        // empty, the domains would silently become CLI-only again.
-        let anthropic = find("anthropic").expect("anthropic provider present");
-        assert_eq!(anthropic.chat_domain_slugs, &["claude-web"]);
+        // place: excluding a slug from `proxy_domain_slugs` is also what used to
+        // hide it from Home, so the exclusion alone is indistinguishable from
+        // having dropped it. `chat_domain_slugs` is what `buildGroups` reads to
+        // give one a row and a switch of its own; if this went empty, the domain
+        // would silently become CLI-only again - which is the state OpenClaw's
+        // connect used to paper over by flipping it unasked.
         let openai = find("openai").expect("openai provider present");
-        assert_eq!(openai.chat_domain_slugs, &["chatgpt-apps"]);
-        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt-apps"));
+        assert_eq!(openai.chat_domain_slugs, &["chatgpt"]);
+        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt"));
+
+        // Still deferred, both of them: the surfaces under validation get their
+        // rows when that branch lands, and this asserts they are not exposed
+        // ahead of it rather than merely forgotten.
+        let anthropic = find("anthropic").expect("anthropic provider present");
+        assert!(anthropic.chat_domain_slugs.is_empty());
+        assert!(!openai.chat_domain_slugs.contains(&"chatgpt-apps"));
+
         // Every slug named must exist in the domain catalog, or the row is
         // promised and never rendered.
         let catalog = crate::proxy::default_domains();

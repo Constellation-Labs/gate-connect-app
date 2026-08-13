@@ -218,10 +218,13 @@ describe("FamilyPanel is about one family", () => {
     expect(onToggleGroup).toHaveBeenCalledWith("anthropic", true);
   });
 
-  it("says what the chat row routes, since it is a session and not a key", () => {
+  it("says what a credential-sensitive row routes, since it is not a brokered key", () => {
+    // Wording that has to hold for both rows of this kind: claude.ai's session
+    // cookie and the ChatGPT subscription behind Codex's Responses endpoint.
+    // "conversations" would be wrong about the second.
     renderPanel({ domains: [makeDomain(), makeChatDomain()] });
     fireEvent.click(screen.getByRole("button", { name: "Claude Desktop chat details" }));
-    expect(screen.getByText(/signed-in session, not an API key/)).toBeTruthy();
+    expect(screen.getByText(/already signed in with, not an API key Gate brokers/)).toBeTruthy();
     expect(screen.getByText(/family switch above leaves this row alone/)).toBeTruthy();
   });
 

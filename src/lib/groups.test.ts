@@ -47,12 +47,13 @@ function provider(
 }
 
 /** Mirrors the real catalog: Claude Code and Codex are each claimed by one
- * provider; OpenCode / OpenClaw / Hermes deliberately are not. Claude also
- * carries the chat surface, which the catalog keeps out of `domain_slugs` so
- * the family switch cannot reach it. */
+ * provider; OpenCode / OpenClaw / Hermes deliberately are not. Both families
+ * also carry credential-sensitive domains, which the catalog keeps out of
+ * `domain_slugs` so the family switch cannot reach them - and OpenAI carries
+ * two of them, both on chatgpt.com. */
 const CATALOG = [
   provider("anthropic", "Claude", ["claude-code"], ["anthropic"], ["claude-web"]),
-  provider("openai", "OpenAI", ["codex"], ["openai"], ["chatgpt-apps"]),
+  provider("openai", "OpenAI", ["codex"], ["openai"], ["chatgpt-apps", "chatgpt"]),
   provider("openrouter", "OpenRouter", [], ["openrouter"]),
 ];
 
@@ -214,6 +215,53 @@ describe("buildGroups", () => {
     const cascade = claude.members.filter((m) => !m.chat);
     expect(cascade.map((m) => m.key)).toEqual(["anthropic"]);
     expect(claude.cascadeDesired).toBe(1);
+  });
+
+  it("gives OpenAI both of its credential-sensitive rows, each on its own switch", () => {
+    // Two entries claim chatgpt.com and each serves paths the other ignores:
+    // the app's chat turn, and the Responses endpoint a ChatGPT subscription
+    // reaches (the one OpenClaw's model calls need). Rows rather than a
+    // side effect of connecting a tool, which is what OpenClaw used to do.
+    const groups = buildGroups(
+      CATALOG,
+      [tool("codex", "Codex", { kind: "detected" }, "OpenAI")],
+      [
+        domain({
+          slug: "openai",
+          display_name: "OpenAI apps",
+          hosts: ["api.openai.com"],
+          enabled: false,
+        }),
+        chatDomain({
+          slug: "chatgpt-apps",
+          display_name: "ChatGPT app chat + Codex tools",
+          hosts: ["chatgpt.com"],
+          enabled: true,
+        }),
+        chatDomain({
+          slug: "chatgpt",
+          display_name: "ChatGPT (Codex subscription)",
+          hosts: ["chatgpt.com"],
+          enabled: true,
+        }),
+      ],
+      ON,
+    );
+    const openai = groups.find((g) => g.id === "openai");
+    expect(openai?.members.map((m) => m.key)).toEqual([
+      "codex",
+      "openai",
+      "chatgpt-apps",
+      "chatgpt",
+    ]);
+    expect(openai?.members.filter((m) => m.chat).map((m) => m.key)).toEqual([
+      "chatgpt-apps",
+      "chatgpt",
+    ]);
+    // Both switched on, and the family switch still reads off, because neither
+    // is its to flip - however many of them there are.
+    expect(openai?.desired).toBe(2);
+    expect(openai?.cascadeDesired).toBe(0);
   });
 });
 

@@ -184,6 +184,21 @@ const OPENAI_DOMAIN: DomainFixture = {
   supported: true,
 };
 
+/** The ChatGPT-subscription Responses endpoint: off, supported, and reached only
+ *  through its own row, because what it carries is the user's subscription
+ *  bearer rather than a brokered key. Also the switch OpenClaw's subscription
+ *  model calls need, which its `connect` used to flip unasked. */
+export const CHATGPT_DOMAIN: DomainFixture = {
+  slug: "chatgpt",
+  display_name: "ChatGPT (Codex subscription)",
+  hosts: ["chatgpt.com"],
+  upstream_url: "https://chatgpt.com/backend-api",
+  rewrite_prefixes: ["/codex/responses"],
+  passthrough_prefixes: [],
+  enabled: false,
+  supported: true,
+};
+
 /** A signed-in OAuth account with an org picked, routing off, three installed
  *  tools. The state most specs start from; each one narrows it with `merge`. */
 export function defaultState(): BackendState {
@@ -214,7 +229,12 @@ export function defaultState(): BackendState {
       ca_trusted: false,
       env_export_opted_in: false,
       env_export_separable: true,
-      domains: [{ ...ANTHROPIC_DOMAIN }, { ...CLAUDE_WEB_DOMAIN }, { ...OPENAI_DOMAIN }],
+      domains: [
+        { ...ANTHROPIC_DOMAIN },
+        { ...CLAUDE_WEB_DOMAIN },
+        { ...OPENAI_DOMAIN },
+        { ...CHATGPT_DOMAIN },
+      ],
     },
     tools: [{ ...CLAUDE_CODE }, { ...CODEX }, { ...OPENCODE }],
     providers: [
@@ -226,7 +246,7 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["claude-code"],
         domain_slugs: ["anthropic"],
-        chat_domain_slugs: ["claude-web"],
+        chat_domain_slugs: [],
       },
       {
         slug: "openai",
@@ -236,7 +256,7 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["codex"],
         domain_slugs: ["openai"],
-        chat_domain_slugs: ["chatgpt-apps"],
+        chat_domain_slugs: ["chatgpt"],
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
