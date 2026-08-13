@@ -246,7 +246,7 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["claude-code"],
         domain_slugs: ["anthropic"],
-        chat_domain_slugs: [],
+        chat_domain_slugs: ["claude-web"],
       },
       {
         slug: "openai",
@@ -256,7 +256,7 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["codex"],
         domain_slugs: ["openai"],
-        chat_domain_slugs: ["chatgpt"],
+        chat_domain_slugs: ["chatgpt", "chatgpt-apps"],
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },

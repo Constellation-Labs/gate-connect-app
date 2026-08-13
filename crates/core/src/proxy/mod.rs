@@ -741,10 +741,12 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // `proxy_domain_slugs` (see `provider.rs`): `provider::enable` turns
             // on every domain a provider lists, so attaching it would route the
             // session surface the moment someone enabled "Claude" - defeating
-            // the opt-in above. `chat_domain_slugs` is the field that will give
-            // it a ledger row without joining that cascade; it is not listed
-            // there yet, so for now this entry stays CLI-only (`proxy domain
-            // claude-web on`), pending the branch validating this surface.
+            // the opt-in above. It rides that provider's `chat_domain_slugs`
+            // instead, which is how it reaches the Home ledger: `buildGroups`
+            // (src/lib/groups.ts) gives it a row and a switch under Claude, and
+            // `setGroupRouted` filters it out of the family cascade, so the only
+            // thing that can enable it is that row's own switch (or
+            // `proxy domain claude-web on` from the CLI).
             enabled: false,
             supported: true,
         },
@@ -838,12 +840,12 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // without reading this file.
             //
             // Like `claude-web` above, this slug is in no provider's
-            // `proxy_domain_slugs`, and not in `chat_domain_slugs` yet either, so
-            // it stays CLI-only (`proxy domain chatgpt-apps on`) pending the
-            // branch validating this surface. Whatever exposes it must keep the
-            // cascade property: the chat half here
-            // (`/backend-api/f/conversation`) carries a session cookie, so no
-            // family switch may ever reach it.
+            // `proxy_domain_slugs` and rides `chat_domain_slugs` instead: it
+            // gets a Home ledger row and a switch under OpenAI, and the family
+            // switch's cascade skips it, so the chat half of this entry
+            // (`/backend-api/f/conversation`, a session-cookie surface) can only
+            // be enabled from its own row or from `proxy domain chatgpt-apps
+            // on`. Whatever else exposes this entry must keep that property.
             enabled: false,
             supported: true,
         },
