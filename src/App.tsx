@@ -98,10 +98,13 @@ const SCREEN_DEPTH: Record<Screen, number> = {
   family: 1,
 };
 
-// Proxy domains hidden from the Apps ledger. "chatgpt" exists so the relay
-// recognizes the Codex integration's upstream hint - it's plumbing for the
-// Codex tool, not an app the user routes independently.
-const HIDDEN_DOMAIN_SLUGS = new Set<string>(["chatgpt"]);
+// Every supported domain in the catalog now belongs to some family's ledger,
+// so nothing is filtered out of it here. `chatgpt` used to be, on the grounds
+// that it existed only so the relay could recognise the Codex integration's
+// upstream hint. That stopped being true: OpenClaw's managed proxy mode sends
+// its ChatGPT-subscription model calls to the same host through the MITM
+// engine, and that switch is the only thing that lets Gate see them, so it is
+// something the user routes deliberately - see `provider::chat_domain_slugs`.
 
 function hostOf(url: string | undefined): string {
   if (!url) return "";
@@ -1114,10 +1117,7 @@ export function App() {
   const workspace = orgName ?? gatewayHost;
   const proxyOn = proxy?.running ?? false;
   const showProxy = proxy !== null;
-  // Proxy domains minus internal plumbing entries.
-  const visibleDomains = (proxy?.domains ?? []).filter(
-    (d) => !HIDDEN_DOMAIN_SLUGS.has(d.slug),
-  );
+  const visibleDomains = proxy?.domains ?? [];
   // The ledger, grouped by model family; the group screen reads the same
   // shape Home renders so both stay in step after a toggle.
   const groups = buildGroups(providers, tools, visibleDomains, {
