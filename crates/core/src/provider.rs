@@ -113,7 +113,9 @@ pub struct ProviderState {
     pub display_name: String,
     pub subtitle: String,
     /// Headline on/off: at least one of the provider's tool integrations is
-    /// configured to route through Gate.
+    /// configured to route through Gate. Reads only what this provider's
+    /// switch governs, so a family whose chat domain alone is on still reports
+    /// off - that domain answers to its own switch and nothing else.
     pub enabled: bool,
     /// Whether the switch can do anything right now: a tool is installed (the
     /// config route) or the proxy is running (the domain route). When false
@@ -899,5 +901,32 @@ mod tests {
         let p = find("anthropic").expect("anthropic provider present");
         assert!(!p.proxy_domain_slugs.contains(&"claude-web"));
         assert_eq!(p.proxy_domain_slugs, &["anthropic"]);
+    }
+
+    #[test]
+    fn chat_domains_reach_the_ledger_without_reaching_the_cascade() {
+        // The other half of the test above, and the half that keeps the fix in
+        // place: excluding these slugs from `proxy_domain_slugs` is also what
+        // used to hide them from Home, so the exclusion alone is indistinguishable
+        // from having dropped them. `chat_domain_slugs` is what `buildGroups`
+        // reads to give each one a row and a switch of its own; if it ever went
+        // empty, the domains would silently become CLI-only again.
+        let anthropic = find("anthropic").expect("anthropic provider present");
+        assert_eq!(anthropic.chat_domain_slugs, &["claude-web"]);
+        let openai = find("openai").expect("openai provider present");
+        assert_eq!(openai.chat_domain_slugs, &["chatgpt-apps"]);
+        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt-apps"));
+        // Every slug named must exist in the domain catalog, or the row is
+        // promised and never rendered.
+        let catalog = crate::proxy::default_domains();
+        for p in providers() {
+            for slug in p.chat_domain_slugs {
+                assert!(
+                    catalog.iter().any(|d| d.slug == *slug),
+                    "{} names a chat domain no catalog entry provides: {slug}",
+                    p.slug
+                );
+            }
+        }
     }
 }
