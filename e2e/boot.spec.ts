@@ -42,6 +42,7 @@ test.describe("boot", () => {
           available: true,
           tool_slugs: ["claude-code"],
           domain_slugs: ["anthropic"],
+          chat_domain_slugs: [],
         },
       ],
       tools: [

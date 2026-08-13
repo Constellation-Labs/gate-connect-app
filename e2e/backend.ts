@@ -44,6 +44,10 @@ export interface ProviderFixture {
   available: boolean;
   tool_slugs: string[];
   domain_slugs: string[];
+  /** The family's chat-protocol domains: listed under it on the ledger, never
+   *  flipped by its switch. Separate from `domain_slugs` for exactly that
+   *  reason - see `ProviderState` in src/lib/api.ts. */
+  chat_domain_slugs: string[];
 }
 
 export interface DomainFixture {
@@ -154,12 +158,42 @@ const ANTHROPIC_DOMAIN: DomainFixture = {
   supported: true,
 };
 
+/** Claude Desktop's chat surface. Off, supported, and reached only through its
+ *  own row: it carries the user's claude.ai session cookie rather than a
+ *  brokered key. In `defaultState`'s domain list because the shipped catalog
+ *  always carries it: the row exists on every ledger, switched off. */
+export const CLAUDE_WEB_DOMAIN: DomainFixture = {
+  slug: "claude-web",
+  display_name: "Claude Desktop chat",
+  hosts: ["claude.ai"],
+  upstream_url: "https://claude.ai/api",
+  rewrite_prefixes: ["/organizations/"],
+  passthrough_prefixes: [],
+  enabled: false,
+  supported: true,
+};
+
 const OPENAI_DOMAIN: DomainFixture = {
   slug: "openai",
   display_name: "OpenAI apps",
   hosts: ["api.openai.com"],
   upstream_url: "https://gateway.constellationgate.ai",
   rewrite_prefixes: ["/v1"],
+  passthrough_prefixes: [],
+  enabled: false,
+  supported: true,
+};
+
+/** The ChatGPT-subscription Responses endpoint: off, supported, and reached only
+ *  through its own row, because what it carries is the user's subscription
+ *  bearer rather than a brokered key. Also the switch OpenClaw's subscription
+ *  model calls need, which its `connect` used to flip unasked. */
+export const CHATGPT_DOMAIN: DomainFixture = {
+  slug: "chatgpt",
+  display_name: "ChatGPT (Codex subscription)",
+  hosts: ["chatgpt.com"],
+  upstream_url: "https://chatgpt.com/backend-api",
+  rewrite_prefixes: ["/codex/responses"],
   passthrough_prefixes: [],
   enabled: false,
   supported: true,
@@ -195,7 +229,12 @@ export function defaultState(): BackendState {
       ca_trusted: false,
       env_export_opted_in: false,
       env_export_separable: true,
-      domains: [{ ...ANTHROPIC_DOMAIN }, { ...OPENAI_DOMAIN }],
+      domains: [
+        { ...ANTHROPIC_DOMAIN },
+        { ...CLAUDE_WEB_DOMAIN },
+        { ...OPENAI_DOMAIN },
+        { ...CHATGPT_DOMAIN },
+      ],
     },
     tools: [{ ...CLAUDE_CODE }, { ...CODEX }, { ...OPENCODE }],
     providers: [
@@ -207,6 +246,7 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["claude-code"],
         domain_slugs: ["anthropic"],
+        chat_domain_slugs: [],
       },
       {
         slug: "openai",
@@ -216,6 +256,7 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["codex"],
         domain_slugs: ["openai"],
+        chat_domain_slugs: ["chatgpt"],
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },

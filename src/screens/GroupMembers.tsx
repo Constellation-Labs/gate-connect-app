@@ -37,11 +37,25 @@ function explain(member: GroupMember, platform: Platform): string {
       : `${member.name}’s config points at Gate, but routing is off, so it can’t reach the gateway.`;
   }
   if (member.kind === "proxy") {
-    return member.attention === "needs-trust"
-      ? `${member.name} is switched on, but the local certificate isn’t trusted yet, so its traffic isn’t routing.`
-      : member.routed
-        ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
-        : `${member.name} routes through Gate’s local proxy once you switch it on.`;
+    if (member.attention === "needs-trust") {
+      return `${member.name} is switched on, but the local certificate isn’t trusted yet, so its traffic isn’t routing.`;
+    }
+    // The one member kind whose switch is not the family's to flip, and the one
+    // whose traffic carries no API key at all. Both facts belong here: the row
+    // sits under a family whose switch will leave it exactly where it is, and
+    // the thing being routed is a credential the user is already signed in with
+    // - a session cookie, or a subscription their tools authenticate with -
+    // which is a different promise from "Gate holds your key in the keychain".
+    // Deliberately not the word "conversations": one of these rows carries the
+    // Codex subscription endpoint, whose traffic is model calls, not chat.
+    if (member.chat) {
+      return member.routed
+        ? `${member.name} goes through Gate on the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it. The family switch above leaves this row alone.`
+        : `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers. Switch it on and Gate records and inspects that traffic; the family switch above leaves this row alone either way.`;
+    }
+    return member.routed
+      ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
+      : `${member.name} routes through Gate’s local proxy once you switch it on.`;
   }
   switch (member.tool?.status.kind) {
     case "connected":

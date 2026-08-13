@@ -589,22 +589,36 @@ pub(crate) fn strip_upstream_path<'a>(path: &'a str, upstream_path: &str) -> Opt
 }
 
 /// Decide what to do with a request given its host + path. Passthrough
-/// prefixes win over rewrite prefixes; a matched host with an unmatched
-/// path is left alone (passthrough) rather than rewritten.
+/// prefixes win over rewrite prefixes; an intercepted host whose path no entry
+/// claims is left alone (passthrough) rather than rewritten.
 ///
 /// Prefixes are matched against the path *as Gate will receive it* - i.e. after
 /// the domain's own [`upstream_path`] is removed, since that segment rides in
 /// the upstream header instead. For a bare-host upstream the two are identical.
+///
+/// **Every enabled entry claiming the host gets a look, not just the first.**
+/// Two entries can name one host with different URL splits - `chatgpt-apps`
+/// carries the app's real paths off a bare host, `chatgpt` carries Codex's
+/// Responses call with `/backend-api` in the upstream - and each deliberately
+/// ignores the other's paths. Stopping at the first host match made the earlier
+/// entry silently swallow the later one's traffic as an unclaimed passthrough,
+/// so enabling both switches routed less than enabling one. Since both are now
+/// rows the user can toggle independently (`provider::chat_domain_slugs`), that
+/// combination has to behave. A host-matching entry that claims neither the path
+/// nor its subtree simply abstains; only if nobody claims it does the request
+/// fall through to `Passthrough`.
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
+    let mut host_matched = false;
     for d in domains.iter().filter(|d| d.enabled) {
         if !d.matches_host(host) {
             continue;
         }
+        host_matched = true;
         // A path outside the upstream's own subtree is not this domain's
-        // traffic at all; leave it alone rather than forwarding a path Gate
-        // would reassemble into a URL the provider never served.
+        // traffic at all; abstain rather than forwarding a path Gate would
+        // reassemble into a URL the provider never served.
         let Some(path) = strip_upstream_path(path, upstream_path(&d.upstream_url)) else {
-            return Decision::Passthrough;
+            continue;
         };
         if d.passthrough_prefixes
             .iter()
@@ -620,6 +634,11 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
                 upstream_url: d.upstream_url.clone(),
             };
         }
+    }
+    // Intercepted (some enabled entry owns the host) but claimed by no entry's
+    // prefixes: forward to the real upstream untouched, which is what an
+    // unrecognised path on a routed host has always done.
+    if host_matched {
         return Decision::Passthrough;
     }
     Decision::Tunnel
@@ -721,18 +740,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // Deliberately NOT attached to the `anthropic` provider's
             // `proxy_domain_slugs` (see `provider.rs`): `provider::enable` turns
             // on every domain a provider lists, so attaching it would route the
-            // session surface the moment someone enabled "Claude" — defeating
-            // the opt-in above. It is reached only through the domain-level
-            // toggle (`proxy domain claude-web on`), like the google domains.
-            //
-            // That exclusion also keeps this entry off the Home ledger
-            // entirely, because `buildGroups` (src/lib/groups.ts) builds a row
-            // only for domains some provider claims. Right now that is wanted:
-            // this is a hidden, CLI-only option. It is TEMPORARY - the intent is
-            // to surface it in the UI soon, at which point ledger visibility
-            // needs to stop riding on `proxy_domain_slugs` so this can be shown
-            // without also joining the provider switch's cascade, which the
-            // paragraph above must still prevent.
+            // session surface the moment someone enabled "Claude" - defeating
+            // the opt-in above. `chat_domain_slugs` is the field that will give
+            // it a ledger row without joining that cascade; it is not listed
+            // there yet, so for now this entry stays CLI-only (`proxy domain
+            // claude-web on`), pending the branch validating this surface.
             enabled: false,
             supported: true,
         },
@@ -817,31 +829,47 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // above, so it needs an explicit passthrough to stay unrouted —
             // passthrough prefixes are checked first in `decide`.
             passthrough_prefixes: vec!["/backend-api/f/conversation/prepare".into()],
-            // Opt-in, and ordered BEFORE the relay `chatgpt` entry on purpose:
-            // `decide` returns on the FIRST enabled host match, so with the relay
-            // entry first this one would be unreachable for MITM traffic.
+            // Opt-in, and no longer order-sensitive against the `chatgpt` entry
+            // below: `decide` consults every enabled entry claiming the host, so
+            // each of the two serves its own paths whether one, the other, or
+            // both are switched on. It used to stop at the first host match,
+            // which made this entry swallow the Responses call sitting in that
+            // one - a hazard that mattered the moment either became togglable
+            // without reading this file.
             //
             // Like `claude-web` above, this slug is in no provider's
-            // `proxy_domain_slugs`, so it has no Home ledger row and no UI
-            // switch: a hidden, CLI-only option (`proxy domain chatgpt-apps
-            // on`). Wanted for now, and TEMPORARY - it should surface in the UI
-            // alongside `claude-web`. The chat half of this entry
-            // (`/backend-api/f/conversation`) is a session-cookie surface too,
-            // so whatever exposes it must not put it behind the OpenAI provider
-            // switch's cascade.
+            // `proxy_domain_slugs`, and not in `chat_domain_slugs` yet either, so
+            // it stays CLI-only (`proxy domain chatgpt-apps on`) pending the
+            // branch validating this surface. Whatever exposes it must keep the
+            // cascade property: the chat half here
+            // (`/backend-api/f/conversation`) carries a session cookie, so no
+            // family switch may ever reach it.
             enabled: false,
             supported: true,
         },
         ProxyDomain {
             slug: "chatgpt".into(),
             display_name: "ChatGPT (Codex subscription)".into(),
-            // ChatGPT-subscription Codex talks to the Responses API at
-            // chatgpt.com/backend-api/codex/responses (bearer = the user's
-            // ChatGPT OAuth token, passed through). Codex reaches Gate via the
-            // manual integration (integrations/codex.rs), whose base_url points
-            // at the loopback relay; its own embedded agent ignores the system
-            // proxy, so the MITM engine never captures this traffic. This entry
-            // exists so the relay recognizes the tool-supplied upstream hint.
+            // The Responses API a ChatGPT-subscription login talks to:
+            // chatgpt.com/backend-api/codex/responses, bearer = the user's
+            // ChatGPT OAuth token, passed through. TWO clients arrive here by
+            // different routes, which is why the entry has to serve both:
+            //
+            // - Codex, via the relay. Its `base_url` points at the loopback
+            //   relay (integrations/codex.rs) because its embedded agent ignores
+            //   the system proxy; the relay matches this entry on `upstream_url`.
+            // - OpenClaw, via the MITM engine. Managed proxy mode honours the
+            //   proxy, so `decide` matches this entry on HOST and the engine
+            //   rewrites the call - provided this domain is on, which is the
+            //   user's own switch to flip (`provider::chat_domain_slugs` gives
+            //   it a row under OpenAI). `integrations/openclaw.rs` prints a note
+            //   naming this slug rather than enabling it.
+            //
+            // Both routes work off one split because `engine::apply_rewrite`
+            // strips the upstream's own path from the forwarded path exactly as
+            // the relay does, so a real `/backend-api/codex/responses` and
+            // Codex's rewritten `/codex/responses` both arrive at the gateway as
+            // `/codex/responses` under this upstream.
             hosts: vec!["chatgpt.com".into()],
             // Shape matches integrations/codex.rs exactly, because the relay
             // exact-matches the `X-Gate-Upstream-Url` header codex.rs writes:
@@ -849,10 +877,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // client-side path is the short `/codex/responses` (Codex's
             // base_url is `<relay>/codex`, wire_api appends `/responses`). The
             // gateway concatenates path onto upstream, yielding
-            // `https://chatgpt.com/backend-api/codex/responses`. This is a
-            // different split than the MITM convention (bare host + full
-            // `/backend-api/codex/responses` path) because the relay sees
-            // Codex's rewritten path, not the real upstream path.
+            // `https://chatgpt.com/backend-api/codex/responses`. That is the
+            // opposite split from the `chatgpt-apps` entry above, which carries
+            // the app's real paths off a bare host. The two coexist on one host
+            // because `decide` consults every enabled entry rather than
+            // stopping at the first - see its docs.
             upstream_url: "https://chatgpt.com/backend-api".into(),
             rewrite_prefixes: vec!["/codex/responses".into()],
             passthrough_prefixes: vec![],
@@ -1607,8 +1636,8 @@ mod tests {
     #[test]
     fn enabling_only_the_relay_entry_keeps_todays_passthrough_behaviour() {
         // A user who enabled Codex CLI but not the desktop tools must see no
-        // change: the relay entry matches the host first and passes everything
-        // except its own short path through.
+        // change: the relay entry claims only its own short path and everything
+        // else on the host is forwarded untouched.
         let mut relay_only: Vec<ProxyDomain> = default_domains()
             .into_iter()
             .filter(|d| d.slug == "chatgpt")
@@ -1619,6 +1648,49 @@ mod tests {
             Decision::Passthrough
         );
     }
+
+    #[test]
+    fn both_chatgpt_entries_on_route_each_others_paths_untouched() {
+        // The state a user can now reach from the ledger: two rows under OpenAI,
+        // both switched on, one host. Each entry has to serve its own paths.
+        // Stopping at the first host match sent the Responses call - the one
+        // OpenClaw's subscription traffic depends on - into the chat entry, which
+        // ignores that path on purpose, so it was forwarded unrouted while both
+        // switches read "on".
+        let both: Vec<ProxyDomain> = default_domains()
+            .into_iter()
+            .map(|mut d| {
+                d.enabled = d.slug == "chatgpt" || d.slug == "chatgpt-apps";
+                d
+            })
+            .collect();
+
+        assert_eq!(
+            decide(&both, "chatgpt.com", "/backend-api/codex/responses"),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com/backend-api".into()
+            },
+            "the Responses call belongs to the `chatgpt` entry's split"
+        );
+        assert_eq!(
+            decide(&both, "chatgpt.com", "/backend-api/f/conversation"),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com".into()
+            },
+            "and the app's chat turn still belongs to `chatgpt-apps`"
+        );
+        // An explicit passthrough in one entry is not overridden by the other
+        // abstaining, and a path neither claims still reaches the real host.
+        assert_eq!(
+            decide(&both, "chatgpt.com", "/backend-api/f/conversation/prepare"),
+            Decision::Passthrough
+        );
+        assert_eq!(
+            decide(&both, "chatgpt.com", "/api/auth/session"),
+            Decision::Passthrough
+        );
+    }
+
     #[test]
     fn chatgpt_apps_rewrites_the_chat_turn() {
         let d = chatgpt_apps();

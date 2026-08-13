@@ -255,6 +255,44 @@ test.describe("family panel", () => {
     expect(await app.lastCall("provider_enable")).toBeNull();
   });
 
+  test("the subscription surface has its own switch, and the family switch never touches it", async ({
+    boot,
+  }) => {
+    // chatgpt.com's Responses endpoint is reached with the user's ChatGPT
+    // subscription bearer rather than a brokered key, so it is the one member the
+    // family switch must leave where it is. The backend enforces the same rule by
+    // keeping the slug out of the provider's `proxy_domain_slugs`; this is the
+    // frontend half of it. It is also the switch OpenClaw's subscription traffic
+    // depends on, which its `connect` used to flip unasked.
+    const app = await boot({
+      proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },
+    });
+
+    await app.familyRow("OpenAI").click();
+    const subscription = app.page.getByRole("switch", {
+      name: "Route ChatGPT (Codex subscription) through Gate",
+    });
+    await expect(subscription).toHaveAttribute("aria-checked", "false");
+
+    // The whole family on: Codex and the OpenAI apps route, this row does not
+    // move.
+    await app.page.getByRole("switch", { name: "Route OpenAI through Gate" }).click();
+    await expect
+      .poll(async () => (await app.state()).proxy.domains.find((d) => d.slug === "openai")?.enabled)
+      .toBe(true);
+    expect((await app.state()).proxy.domains.find((d) => d.slug === "chatgpt")?.enabled).toBe(
+      false,
+    );
+    await expect(subscription).toHaveAttribute("aria-checked", "false");
+
+    // Its own switch is the only thing that routes it.
+    await subscription.click();
+    await expect.poll(() => app.lastCall("proxy_set_domain")).toEqual({
+      slug: "chatgpt",
+      enabled: true,
+    });
+  });
+
   test("a member that fails to connect names itself and stays off", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, port: 8899, pac_port: 8898, ca_trusted: true },

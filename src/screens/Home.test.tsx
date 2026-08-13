@@ -65,6 +65,7 @@ const CATALOG: ProviderState[] = [
     available: true,
     tool_slugs: ["claude-code"],
     domain_slugs: ["anthropic"],
+    chat_domain_slugs: [],
   },
   {
     slug: "openai",
@@ -74,6 +75,7 @@ const CATALOG: ProviderState[] = [
     available: true,
     tool_slugs: ["codex"],
     domain_slugs: ["openai"],
+    chat_domain_slugs: [],
   },
 ];
 

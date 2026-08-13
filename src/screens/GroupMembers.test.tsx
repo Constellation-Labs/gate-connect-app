@@ -44,6 +44,7 @@ const CATALOG: ProviderState[] = [
     available: true,
     tool_slugs: ["claude-code", "openclaw", "codex"],
     domain_slugs: ["anthropic"],
+    chat_domain_slugs: [],
   },
 ];
 
