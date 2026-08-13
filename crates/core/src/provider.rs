@@ -77,13 +77,7 @@ pub fn providers() -> Vec<Provider> {
             // `chat_domain_slugs` instead, which shows it on the ledger under
             // Claude and leaves the flipping to its own switch.
             proxy_domain_slugs: &["anthropic"],
-            // Empty for now, deliberately. The field and the row it drives ship
-            // here because OpenClaw needs one below, but the two chat surfaces
-            // that motivated the mechanism (`claude-web` here, `chatgpt-apps`
-            // under OpenAI) are still being validated, and a row is an
-            // invitation to flip it. They stay CLI-only until the branch
-            // validating them lands, which re-adds exactly these two slugs.
-            chat_domain_slugs: &[],
+            chat_domain_slugs: &["claude-web"],
         },
         Provider {
             slug: "openai",
@@ -102,9 +96,9 @@ pub fn providers() -> Vec<Provider> {
             // thing that lets Gate see them - `integrations/openclaw.rs` used to
             // flip the domain itself, which is what this row replaces.
             //
-            // `chatgpt-apps` is deliberately not here yet, for the reason given
-            // on Claude's entry above.
-            chat_domain_slugs: &["chatgpt"],
+            // `chatgpt-apps` covers the ChatGPT app's own chat turn (a
+            // session-cookie surface) alongside Codex's tool plane.
+            chat_domain_slugs: &["chatgpt", "chatgpt-apps"],
         },
         Provider {
             slug: "openrouter",
