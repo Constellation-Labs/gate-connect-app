@@ -36,16 +36,17 @@
 //! `docs/harness-integration-validation.md` H2 and H3.
 //!
 //! **ChatGPT-subscription auth needs a second catalog domain.** When the
-//! `openai` entry in `auth.profiles` is `"mode": "oauth"` rather than an API
-//! key, OpenClaw's model calls go to `chatgpt.com/backend-api/codex/responses`
-//! (openclaw: `packages/ai/src/providers/openai-chatgpt-responses.ts`), not to
+//! `openai` entry in `auth.profiles` carries a bearer-style `mode` (`oauth`,
+//! the subscription login, or `token`) rather than an API key, OpenClaw's model
+//! calls go to `chatgpt.com/backend-api/codex/responses` (openclaw:
+//! `packages/ai/src/providers/openai-chatgpt-responses.ts`), not to
 //! `api.openai.com` - so the `openai` domain the OpenAI provider switch enables
 //! covers none of it and the engine blind-tunnels the CONNECT, exactly as if
 //! the integration were not there. Nothing else turns that domain on: no
 //! provider lists OpenClaw in its `tool_ids`, so `provider::enable`'s domain
 //! cascade never runs here. `connect` therefore enables the `chatgpt` catalog
-//! domain itself and records whether it was the one to do it, so `disconnect`
-//! can hand it back.
+//! domain itself and records the claim *before* applying it, so a failed write
+//! can never strand interception with nothing tracking it.
 //!
 //! Codex hits the same auth-mode split and solves it the other way - a
 //! `base_url` rewrite onto the relay (`integrations/codex.rs`) - because its
@@ -202,7 +203,7 @@ impl Integration for OpenClaw {
         Ok(compute_status(
             current_proxy_url(&settings).unwrap_or(""),
             proxy_is_enabled(&settings),
-            &disabled_extra_domains(openai_auth_mode(&settings)),
+            || disabled_extra_domains(openai_auth_mode(&settings)),
             crate::proxy::persisted_engine_proxy_url().as_deref(),
             crate::proxy::engine_proxy_url().is_some(),
         ))
@@ -233,9 +234,12 @@ impl Integration for OpenClaw {
         let mut settings = load_settings()?.unwrap_or_default();
 
         // Preserve the ORIGINAL snapshot across re-connects: a second connect
-        // must not record our own intermediate proxyUrl as the user's.
+        // must not record our own intermediate proxyUrl as the user's. Read
+        // once - every undo-log field below is conditioned on it, and nothing
+        // here writes the sidecar until the end.
+        let first_connect = load_state()?.is_none();
         let mut state = load_state()?.unwrap_or_default();
-        if load_state()?.is_none() {
+        if first_connect {
             state.proxy_existed = settings.get("proxy").is_some_and(Value::is_object);
             let previous = settings.get("proxy").and_then(|v| v.as_object());
             state.previous_proxy_url = previous.and_then(|p| p.get("proxyUrl")).cloned();
@@ -254,7 +258,7 @@ impl Integration for OpenClaw {
         )?;
         // Only record a fresh write; a re-connect must keep the first answer,
         // or disconnect would leave behind a line we did add.
-        if load_state()?.is_none() {
+        if first_connect {
             state.ca_env_added = !applied.added.is_empty();
             state.ca_env_file_created = applied.file_created;
         }
@@ -282,23 +286,35 @@ impl Integration for OpenClaw {
         // provider maps OpenClaw, so `provider::enable`'s domain cascade never
         // runs for it and this is the only place the domain can come from.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        for &slug in extra_domain_slugs(openai_auth_mode(&settings)) {
-            let was_enabled = crate::proxy::config::load_domains()
-                .map(|ds| ds.iter().any(|d| d.slug == slug && d.enabled))
-                .unwrap_or(false);
-            crate::proxy::manager()
-                .set_domain(slug, true)
-                .with_context(|| format!("enabling the {slug:?} proxy domain for OpenClaw"))?;
-            // Only a domain we switched on is ours to switch back off, and only
-            // the first connect gets to decide that: a re-connect sees our own
-            // enabled flag, would record `false`, and disconnect would then
-            // strand chatgpt.com interception on.
-            if load_state()?.is_none() && !was_enabled {
-                state.chatgpt_domain_added = true;
-            }
+        let extra_domains = extra_domain_slugs(openai_auth_mode(&settings));
+
+        // Claim the domain BEFORE switching it on, because the two ways of
+        // getting this wrong are not symmetric. Recording a claim we then fail
+        // to apply is harmless - disconnect switches off something already off.
+        // Applying one we fail to record strands chatgpt.com interception with
+        // nothing tracking it, and it does not take a crash: if `save_state`
+        // fails here the user simply retries, and the retry sees the domain we
+        // already enabled, records `false`, and loses the claim for good.
+        //
+        // Only the first connect gets a say. A re-connect sees our own enabled
+        // flag and would record `false` over a live claim.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if first_connect && !disabled_extra_domains(openai_auth_mode(&settings)).is_empty() {
+            state.chatgpt_domain_added = true;
         }
 
         save_state(&state)?;
+
+        // Applied unconditionally, not just for the slugs currently off: the
+        // call also re-pushes the intercept rules to the live engine, which is
+        // worth re-asserting on every connect.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        for &slug in extra_domains {
+            crate::proxy::manager()
+                .set_domain(slug, true)
+                .with_context(|| format!("enabling the {slug:?} proxy domain for OpenClaw"))?;
+        }
+
         write_settings(&settings)?;
 
         eprintln!("note: OpenClaw reads proxy.proxyUrl at gateway startup -- {RESTART_HINT}.");
@@ -351,19 +367,17 @@ impl Integration for OpenClaw {
             )?;
         }
 
-        // Give the `chatgpt` domain back only if we took it. Best-effort and
-        // config-first for the same reason `provider::disable` is: the engine
-        // may already be stopped, and a flag we failed to flip is not worth
-        // failing a disconnect over - the next connect re-asserts it anyway.
+        // Give the `chatgpt` domain back only if we took it. One call covers a
+        // running and a stopped engine alike: every platform's `set_domain`
+        // opens with `config::set_enabled` and only then pushes to a live
+        // engine, best-effort. Branching on our own view of whether the engine
+        // is up would be strictly worse - if it reads down while the engine is
+        // actually serving, the config write lands but the live rules keep
+        // intercepting chatgpt.com until a restart. Best-effort: a flag we
+        // failed to flip is not worth failing a disconnect over.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         if state.chatgpt_domain_added {
-            let _ = if crate::proxy::engine_proxy_url().is_some() {
-                crate::proxy::manager()
-                    .set_domain(CHATGPT_DOMAIN_SLUG, false)
-                    .map(|_| ())
-            } else {
-                crate::proxy::config::set_enabled(CHATGPT_DOMAIN_SLUG, false).map(|_| ())
-            };
+            let _ = crate::proxy::manager().set_domain(CHATGPT_DOMAIN_SLUG, false);
         }
 
         // Only drop the sidecar once the restored config is on disk: losing it
@@ -400,15 +414,17 @@ impl Integration for OpenClaw {
 /// egress at all until it is cleared. Reported as drift rather than Connected
 /// so the master-off sweep still picks it up for disconnect.
 ///
-/// `missing_domains` are the catalog slugs this auth mode needs that are
-/// switched off right now (see [`disabled_extra_domains`]). Its own state
-/// because it is the one kind of drift that survives a perfectly healthy
+/// `missing_domains` yields the catalog slugs this auth mode needs that are
+/// switched off right now (see [`disabled_extra_domains`]). Taken lazily
+/// because it reads the domain config off disk and only the last branch below
+/// consults it, while `status` itself sits on the UI's polling path. Its own
+/// state because it is the one kind of drift that survives a perfectly healthy
 /// config: the user runs `openclaw models auth login`, their traffic moves from
 /// api.openai.com to chatgpt.com, and nothing about `openclaw.json` changes.
 fn compute_status(
     configured: &str,
     enabled: bool,
-    missing_domains: &[&str],
+    missing_domains: impl FnOnce() -> Vec<&'static str>,
     expected: Option<&str>,
     running: bool,
 ) -> Status {
@@ -450,7 +466,8 @@ fn compute_status(
     // the config stays byte-identical while the traffic moves hosts. Drift
     // rather than Connected also puts it in reach of
     // `provider::reconcile_unmapped_tools`, whose re-connect is the fix.
-    if let Some(slug) = missing_domains.first() {
+    let missing = missing_domains();
+    if let Some(slug) = missing.first() {
         return Status::Drifted(format!(
             "OpenClaw is logged into OpenAI with a ChatGPT subscription, so its model calls go \
              to chatgpt.com -- but the {slug:?} proxy domain is off, so Gate tunnels them \
@@ -502,35 +519,55 @@ fn current_proxy_url(settings: &Map<String, Value>) -> Option<&str> {
         .and_then(|v| v.as_str())
 }
 
-/// Which credential OpenClaw's OpenAI auth profile carries. The two modes talk
+/// Which credential OpenClaw's OpenAI auth profile carries. The two shapes talk
 /// to different hosts, so they need different catalog domains intercepted: a
 /// pasted key reaches `api.openai.com` (the `openai` domain, already covered by
-/// the OpenAI provider switch), a ChatGPT-subscription login reaches
-/// `chatgpt.com` (the `chatgpt` domain, covered by nothing). Same split
-/// `integrations/codex.rs` reads out of `~/.codex/auth.json`, except OpenClaw
-/// records it in `openclaw.json` itself.
+/// the OpenAI provider switch), a bearer-style login reaches `chatgpt.com` (the
+/// `chatgpt` domain, covered by nothing). Same split `integrations/codex.rs`
+/// reads out of `~/.codex/auth.json`, except OpenClaw records it in
+/// `openclaw.json` itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenAiAuthMode {
-    /// `openclaw models auth login` against a ChatGPT subscription.
-    Oauth,
+    /// `openclaw models auth login` against a ChatGPT subscription (`oauth`),
+    /// or a static bearer pasted in its place (`token`).
+    Bearer,
     /// A pasted `sk-...` key.
     ApiKey,
 }
+
+/// Modes in OpenClaw's `AuthProfileConfig` (openclaw: `src/config/types.auth.ts`
+/// declares `api_key | aws-sdk | oauth | token`) that authenticate with a bearer
+/// rather than a provider key.
+///
+/// `token` is in here even though only `oauth` is the ChatGPT-subscription
+/// login, because the honest signal for "does this reach chatgpt.com" is the
+/// model's api (`openai-chatgpt-responses`), not the auth mode - the mode only
+/// correlates. Given that, the two errors are not symmetric: over-matching
+/// intercepts a host the user never calls on a path (`/codex/responses`) they
+/// never hit, while under-matching restores the silent tunnel this module
+/// exists to close. So the doubtful mode is included.
+const BEARER_MODES: &[&str] = &["oauth", "token"];
 
 /// Read `auth.profiles.*` and report how OpenClaw authenticates to OpenAI.
 ///
 /// Profile keys are `openai:<account>` - `openai:default` for a pasted key,
 /// `openai:<email>` for a subscription login - so the key is not a reliable
-/// discriminator; the `provider` / `mode` pair inside is. *Any* OpenAI profile
-/// in `oauth` mode counts, because a user with both can pick either per agent
+/// discriminator; the `provider` / `mode` pair inside is. *Any* bearer-mode
+/// OpenAI profile counts, because a user with both can pick either per agent
 /// and the domain has to be on if either can reach chatgpt.com.
+///
+/// This is the same read OpenClaw's own doctor does (`hasConfigOAuthProfiles`
+/// in `src/commands/doctor-auth-legacy-oauth.ts` walks `cfg.auth.profiles` and
+/// tests `mode`), so `openclaw.json` is authoritative here and the
+/// `auth-profiles.json` sidecar - which holds the secret and spells the field
+/// `type` - does not need consulting.
 ///
 /// Anything unreadable - no `auth` block, a non-object profile, an unfamiliar
 /// mode string - falls through to `ApiKey`. That is the conservative answer
 /// rather than the lenient one: it is the mode that enables no extra domain, so
 /// a misread never starts intercepting a host the user isn't talking to.
 fn openai_auth_mode(settings: &Map<String, Value>) -> OpenAiAuthMode {
-    let oauth = settings
+    let bearer = settings
         .get("auth")
         .and_then(|v| v.as_object())
         .and_then(|a| a.get("profiles"))
@@ -543,11 +580,12 @@ fn openai_auth_mode(settings: &Map<String, Value>) -> OpenAiAuthMode {
                         .and_then(|p| p.get(key))
                         .and_then(|v| v.as_str())
                 };
-                field("provider") == Some("openai") && field("mode") == Some("oauth")
+                field("provider") == Some("openai")
+                    && field("mode").is_some_and(|m| BEARER_MODES.contains(&m))
             })
         });
-    if oauth {
-        OpenAiAuthMode::Oauth
+    if bearer {
+        OpenAiAuthMode::Bearer
     } else {
         OpenAiAuthMode::ApiKey
     }
@@ -556,7 +594,7 @@ fn openai_auth_mode(settings: &Map<String, Value>) -> OpenAiAuthMode {
 /// Catalog domains this integration has to switch on itself, on top of whatever
 /// the user's provider switches already cover.
 ///
-/// Only `chatgpt`, and only in OAuth mode. Deliberately NOT the `chatgpt-apps`
+/// Only `chatgpt`, and only in bearer mode. Deliberately NOT the `chatgpt-apps`
 /// entry beside it, which claims the same host: `decide` returns on the FIRST
 /// enabled host match, `chatgpt-apps` is ordered ahead in the catalog, and it
 /// passes `/backend-api/codex/responses` through on purpose (that path belongs
@@ -565,7 +603,7 @@ fn openai_auth_mode(settings: &Map<String, Value>) -> OpenAiAuthMode {
 /// this exists to remove.
 fn extra_domain_slugs(mode: OpenAiAuthMode) -> &'static [&'static str] {
     match mode {
-        OpenAiAuthMode::Oauth => &[CHATGPT_DOMAIN_SLUG],
+        OpenAiAuthMode::Bearer => &[CHATGPT_DOMAIN_SLUG],
         // api.openai.com only, which the OpenAI provider switch already
         // enables. Turning chatgpt.com interception on here would MITM a host
         // an API-key user never calls.
@@ -753,14 +791,14 @@ mod tests {
         let ours = "http://127.0.0.1:9977";
 
         assert_eq!(
-            compute_status(ours, true, &[], Some(ours), true),
+            compute_status(ours, true, Vec::new, Some(ours), true),
             Status::Connected
         );
 
         // Our URL, switch off. The config looks right and the tool is routing
         // nowhere - the exact state that shipped as Connected before, sending
         // traffic to the provider on the user's own key.
-        match compute_status(ours, false, &[], Some(ours), true) {
+        match compute_status(ours, false, Vec::new, Some(ours), true) {
             Status::Drifted(m) => {
                 assert!(m.contains("proxy.enabled"), "must name the key: {m}");
                 assert!(m.contains("directly"), "must say where traffic goes: {m}");
@@ -770,7 +808,7 @@ mod tests {
 
         // Pointed at us but the engine is down. This is the state that leaves
         // OpenClaw with no egress at all, so it must never read as Connected.
-        match compute_status(ours, true, &[], Some(ours), false) {
+        match compute_status(ours, true, Vec::new, Some(ours), false) {
             Status::Drifted(m) => {
                 assert!(m.contains("no route out"), "unexpected message: {m}");
                 assert!(m.contains("disconnect"), "must offer a way out: {m}");
@@ -782,7 +820,7 @@ mod tests {
         match compute_status(
             "http://proxy.corp.example:3128",
             true,
-            &[],
+            Vec::new,
             Some(ours),
             true,
         ) {
@@ -791,7 +829,7 @@ mod tests {
         }
 
         // No port ever bound.
-        match compute_status(ours, true, &[], None, false) {
+        match compute_status(ours, true, Vec::new, None, false) {
             Status::Drifted(m) => assert!(m.contains("never bound"), "unexpected: {m}"),
             other => panic!("expected drift, got {other:?}"),
         }
@@ -800,7 +838,7 @@ mod tests {
         // ran `openclaw models auth login` after connecting, so their model
         // calls moved to chatgpt.com while every file this integration owns
         // stayed byte-identical. Nothing but this check can see it.
-        match compute_status(ours, true, &["chatgpt"], Some(ours), true) {
+        match compute_status(ours, true, || vec!["chatgpt"], Some(ours), true) {
             Status::Drifted(m) => {
                 assert!(m.contains("chatgpt"), "must name the domain: {m}");
                 assert!(m.contains("Reconnect"), "must offer the fix: {m}");
@@ -820,7 +858,7 @@ mod tests {
             (true, Some(ours), false, "no route out"),
             (true, None, false, "never bound"),
         ] {
-            match compute_status(ours, enabled, &["chatgpt"], expected, running) {
+            match compute_status(ours, enabled, || vec!["chatgpt"], expected, running) {
                 Status::Drifted(m) => assert!(m.contains(want), "expected {want:?}, got {m}"),
                 other => panic!("expected drift, got {other:?}"),
             }
@@ -847,7 +885,7 @@ mod tests {
             mode(json!({ "auth": { "profiles": {
                 "openai:someone@example.com": { "provider": "openai", "mode": "oauth" }
             } } })),
-            OpenAiAuthMode::Oauth
+            OpenAiAuthMode::Bearer
         );
         // Pasted key: the shape a real install writes alongside
         // `auth-profiles.json`.
@@ -872,7 +910,7 @@ mod tests {
                 "openai:default": { "provider": "openai", "mode": "api_key" },
                 "openai:someone@example.com": { "provider": "openai", "mode": "oauth" }
             } } })),
-            OpenAiAuthMode::Oauth
+            OpenAiAuthMode::Bearer
         );
         // No auth block at all - every config written before the user ran
         // `openclaw models auth login`.
@@ -880,16 +918,35 @@ mod tests {
             mode(json!({ "proxy": { "enabled": true } })),
             OpenAiAuthMode::ApiKey
         );
-        // Junk in the profile slot must not panic or read as oauth.
+        // Junk in the profile slot must not panic or read as bearer.
         assert_eq!(
             mode(json!({ "auth": { "profiles": { "openai:default": "oauth" } } })),
             OpenAiAuthMode::ApiKey
         );
+        // `token` counts too. Only `oauth` is the subscription login, but the
+        // honest signal is the model's api, not the auth mode, and the two
+        // errors are not symmetric - see BEARER_MODES.
+        assert_eq!(
+            mode(json!({ "auth": { "profiles": {
+                "openai:default": { "provider": "openai", "mode": "token" }
+            } } })),
+            OpenAiAuthMode::Bearer
+        );
+        // The other two modes openclaw declares stay on the API-key side.
+        for m in ["api_key", "aws-sdk"] {
+            assert_eq!(
+                mode(json!({ "auth": { "profiles": {
+                    "openai:default": { "provider": "openai", "mode": m }
+                } } })),
+                OpenAiAuthMode::ApiKey,
+                "mode {m:?} must not pull in chatgpt.com"
+            );
+        }
     }
 
     #[test]
     fn only_oauth_mode_pulls_in_a_second_domain() {
-        assert_eq!(extra_domain_slugs(OpenAiAuthMode::Oauth), &["chatgpt"]);
+        assert_eq!(extra_domain_slugs(OpenAiAuthMode::Bearer), &["chatgpt"]);
         // No regression for the API-key user: their traffic is api.openai.com,
         // which the OpenAI provider switch already covers.
         assert!(extra_domain_slugs(OpenAiAuthMode::ApiKey).is_empty());
@@ -924,7 +981,7 @@ mod tests {
         // `decide` and `apply_rewrite` both strip the `/backend-api` the
         // upstream already carries, so the relay entry's URL split works
         // unchanged on the MITM route.
-        let ours = catalog(extra_domain_slugs(OpenAiAuthMode::Oauth));
+        let ours = catalog(extra_domain_slugs(OpenAiAuthMode::Bearer));
         assert!(should_intercept_host(&ours, "chatgpt.com"));
         assert_eq!(
             decide(&ours, "chatgpt.com", MODEL_CALL),
