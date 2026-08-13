@@ -773,6 +773,22 @@ mod tests {
     }
 
     #[test]
+    fn the_chatgpt_domains_are_not_reachable_by_enabling_the_openai_provider() {
+        // ChatGPT-subscription traffic (chatgpt.com) is enabled per-tool by
+        // `integrations/openclaw.rs`, which is the only thing that can read the
+        // user's auth mode. Hanging it off this switch instead would start
+        // intercepting chatgpt.com for every OpenAI user, including the API-key
+        // users who never call that host - `enable` turns on EVERY domain a
+        // provider lists. Codex needs neither slug here: its embedded agent
+        // ignores the system proxy and routes via the relay, which resolves
+        // slugs off the catalog rather than off the enabled flags.
+        let p = find("openai").expect("openai provider present");
+        assert!(!p.proxy_domain_slugs.contains(&"chatgpt"));
+        assert!(!p.proxy_domain_slugs.contains(&"chatgpt-apps"));
+        assert_eq!(p.proxy_domain_slugs, &["openai"]);
+    }
+
+    #[test]
     fn anthropic_provider_maps_to_claude_code_and_anthropic_domain() {
         let p = find("anthropic").expect("anthropic provider present");
         assert_eq!(p.display_name, "Claude");
