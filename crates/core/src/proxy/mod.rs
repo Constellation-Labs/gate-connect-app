@@ -533,6 +533,26 @@ pub(crate) fn should_intercept_host(domains: &[ProxyDomain], host: &str) -> bool
     domains.iter().any(|d| d.enabled && d.matches_host(host))
 }
 
+/// The catalog entry that would MITM `host`, whether or not it is switched on.
+/// The question [`should_intercept_host`] cannot answer: a caller that wants to
+/// *report* on a host's coverage needs the entry precisely when it is off.
+///
+/// Catalog order decides, and deliberately so - it is the order [`decide`]
+/// resolves in, which returns on the first enabled host match. That is what
+/// makes `chatgpt.com` answer with the MITM `chatgpt-apps` entry rather than the
+/// relay-only `chatgpt` one behind it on the same host. Unsupported entries are
+/// skipped: Gate cannot upstream them, so there is no switch worth naming.
+///
+/// Host-level, not URL-level, unlike [`resolve_endpoint`]: the engine gates MITM
+/// on the CONNECT host alone, so a base URL's path has no bearing on whether its
+/// traffic is visible.
+pub(crate) fn domain_claiming_host<'a>(
+    domains: &'a [ProxyDomain],
+    host: &str,
+) -> Option<&'a ProxyDomain> {
+    domains.iter().find(|d| d.supported && d.matches_host(host))
+}
+
 /// The path component of a catalog `upstream_url` - `/api` for
 /// `https://openrouter.ai/api`, `""` for a bare host. Gate appends the
 /// forwarded path to the upstream URL verbatim, so this segment is the part of
@@ -1183,6 +1203,35 @@ mod tests {
         assert_eq!(
             decide(&d, "api.anthropic.com", "/v1/messages"),
             Decision::Tunnel
+        );
+    }
+
+    #[test]
+    fn the_entry_that_would_claim_a_host_is_found_while_it_is_off() {
+        // What an integration needs to *report* on its tool's upstream: which
+        // switch covers this host, given it is not on? Every catalog entry but
+        // `anthropic` ships disabled, so `should_intercept_host` cannot say.
+        let all = default_domains();
+        let d = domain_claiming_host(&all, "openrouter.ai").expect("openrouter.ai is claimed");
+        assert_eq!(d.slug, "openrouter");
+        assert!(!d.enabled, "and the caller can see it is off");
+
+        assert_eq!(
+            domain_claiming_host(&all, "OPENROUTER.AI").map(|d| d.slug.as_str()),
+            Some("openrouter"),
+            "host matching is case-insensitive"
+        );
+        assert!(domain_claiming_host(&all, "api.together.xyz").is_none());
+        assert!(
+            domain_claiming_host(&all, "api.openai.com.evil.test").is_none(),
+            "a suffix of a claimed host is not that host"
+        );
+
+        // Two entries name chatgpt.com. Catalog order has to answer with the
+        // MITM one, because that is the order `decide` resolves in.
+        assert_eq!(
+            domain_claiming_host(&all, "chatgpt.com").map(|d| d.slug.as_str()),
+            Some("chatgpt-apps")
         );
     }
 

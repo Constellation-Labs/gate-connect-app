@@ -585,6 +585,13 @@ fn hermes_disconnect_leaves_no_gate_residue() {
         "config.yaml must not be touched at all"
     );
 
+    // A re-connect has to be a no-op that succeeds, not a refusal: it is how a
+    // drifted Hermes is repaired, including unattended by `reconcile_enabled`.
+    // It used to fail here, objecting to .env variables that were Gate's own.
+    integ
+        .connect(&connect_input(9977))
+        .expect("a re-connect must be idempotent");
+
     // Not Connected here: no engine is running against this temp HOME. Drift is
     // the truthful answer and still counts as managed for the master-off sweep.
     match integ.status().unwrap() {
