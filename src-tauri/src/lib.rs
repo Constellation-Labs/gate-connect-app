@@ -275,13 +275,37 @@ fn backfill_account_key_prefix() -> Result<Option<String>, String> {
     account::backfill_api_key_prefix().map_err(|e| format!("{e:#}"))
 }
 
+/// Is this gateway base URL's scheme acceptable?
+///
+/// This is the IPC boundary, so the check is deliberately defensive: a
+/// compromised renderer must not be able to repoint the app at a plaintext host
+/// and harvest the key off the wire. Production rule is therefore `https` only,
+/// and `crates/core`'s `account::save` enforces the same rule again underneath.
+///
+/// Debug builds also accept `http://localhost` and `http://127.0.0.1` so the app
+/// can talk to a gateway running on this machine. Host-exact, so
+/// `http://localhost.evil.test` is still refused, and `#[cfg(debug_assertions)]`
+/// compiles it out of `tauri build` (which is `--release`). Mirrors the guard in
+/// `account::is_acceptable_gateway_url`; both must agree or the UI and the core
+/// disagree about what is valid.
+fn base_url_scheme_ok(parsed: &url::Url) -> bool {
+    if parsed.scheme() == "https" {
+        return true;
+    }
+    #[cfg(debug_assertions)]
+    if parsed.scheme() == "http" {
+        return matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"));
+    }
+    false
+}
+
 #[tauri::command]
 async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), String> {
     if base_url.len() > 2048 {
         return Err("base url is unexpectedly long (>2048 bytes)".into());
     }
     let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
-    if parsed.scheme() != "https" {
+    if !base_url_scheme_ok(&parsed) {
         return Err("base url must use https".into());
     }
     if parsed.host_str().is_none() {
@@ -349,7 +373,7 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
         return Err("base url is unexpectedly long (>2048 bytes)".into());
     }
     let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
-    if parsed.scheme() != "https" {
+    if !base_url_scheme_ok(&parsed) {
         return Err("base url must use https".into());
     }
     if parsed.host_str().is_none() {
@@ -482,6 +506,18 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("set auth mode join error: {e}"))?
+}
+
+/// TEMPORARY (AG-572): fetch the 24-hour activity overview as raw JSON so the
+/// dev-only viewer can render it. Raw rather than typed while the gateway
+/// contract is still moving; see `gate_connect_core::activity`.
+#[tauri::command]
+async fn activity_overview() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::activity::overview_json().map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("activity overview join error: {e}"))?
 }
 
 /// List the orgs the signed-in user may act on (for the org picker). Reads the
@@ -1308,6 +1344,7 @@ pub fn run() {
                     oauth_sign_out,
                     set_auth_mode,
                     oauth_list_orgs,
+                    activity_overview,
                     set_org,
                     app_platform,
                     unpin_popover,
@@ -1357,6 +1394,7 @@ pub fn run() {
                     oauth_sign_out,
                     set_auth_mode,
                     oauth_list_orgs,
+                    activity_overview,
                     set_org,
                     app_platform,
                     unpin_popover,

@@ -107,6 +107,14 @@ export const setAuthMode = (oauth: boolean) => invoke<void>("set_auth_mode", { o
 /** List the orgs the signed-in user may act on, for the picker. */
 export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
 
+/** TEMPORARY (AG-572): the 24-hour activity overview, as raw JSON text.
+ *
+ * Raw rather than typed on purpose. The gateway contract is still moving, so
+ * the dev-only viewer renders whatever comes back and the two cannot drift
+ * while fields are still being agreed. Replace with a typed DTO once the
+ * response shape is signed off. */
+export const activityOverview = () => invoke<string>("activity_overview");
+
 /** Persist the selected org and push X-Gate-Org-Id into a running engine/relay
  * live (no restart). */
 export const setOrg = (orgId: string, orgName: string) =>
