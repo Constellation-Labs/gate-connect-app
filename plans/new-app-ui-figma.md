@@ -291,10 +291,33 @@ Two values were **inferred, not sampled**: the action pill backgrounds
 level in Figma and 100/900 is the standard Tailwind badge pairing, matching the
 50 -> 200 tile gradients, but they are worth a spot check.
 
-### Phase 6 - Settings pane
+### Phase 6 - Settings pane (DONE)
 
-Section cards per the table above. Reuses the row shape from Phase 5's tables.
-Rewrites `src/screens/Settings.tsx` (825 lines) and its 310-line test.
+`src/components/gc/SettingsPane.tsx` - `SettingsPane` plus `SettingsSection`,
+`SettingsRow`, `SettingsAction`; private `Row`, `ActionButton`. Named
+`SettingsPane`, not `Settings`, so it does not read as a drop-in for
+`screens/Settings.tsx`, which stays until the shell swap.
+
+Rows are uniform enough across all six sections that the pane takes a
+declarative section/row model rather than a prop per field. Reuses `Card` and
+`BaseSwitch`.
+
+Button vocabulary, read off the design:
+
+- **outline + blue label** for Rename, Copy, Upgrade plan, Replace key,
+  Replay tutorial, Check for updates
+- **filled red** for the two destructive ones, Disconnect and Review reset
+- Startup rows pair an "On"/"Off" label with the switch
+- values that are identifiers render mono: install ID, API key, version
+
+Nine glyphs added: `monitorSmartphone`, `idCard`, `user`, `receipt`, `globe`,
+`link`, `power`, `bell`, `codeXml`.
+
+The danger card's `red-50` fill and `red-200` border are **inferred** from the
+red section heading, not sampled.
+
+Still outstanding: `screens/Settings.tsx` (825 lines) and its 310-line test are
+untouched - they get retired in Phase 9, not here.
 
 ### Phase 7 - App detail pane
 
