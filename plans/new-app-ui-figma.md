@@ -1,0 +1,333 @@
+# New app UI: matching the Gate Connect Figma
+
+Source: https://www.figma.com/design/9FrccCojXy0f8QD8Wm5Lln/Gate-Connect
+File key `9FrccCojXy0f8QD8Wm5Lln`, single page `Components` (113:16762).
+
+## What the Figma actually contains
+
+The file has five pages, only one of which the MCP `get_metadata` call
+reported: `Components`, `Flows` (containing `Overview`, `Settings`, `App`),
+`Sandbox`, and `Icons`.
+
+- **Overview** - dashboard: stat tiles, Messages bar chart, Policies table,
+  Token savings table. Annotated **App dimensions: 1024x720px**.
+- **Settings** - fully transcribed below.
+- **App** - a per-app detail view, two sections (`App / Main screens` and
+  `App / Select a model`). Selecting an app in the sidebar opens its own pane
+  with per-app stats, a Messages chart, a model picker (App default vs Gate
+  model) and a Recent activity table. This is a third screen type beyond
+  Overview and Settings.
+- **Sandbox** - scratch. Layers are named `Screenshot 2026-05-14 at 1:26:15 PM`,
+  `overview-dimensions`, `mask`, plus duplicates. **Not a spec source; ignore.**
+- **Icons** - glyph library.
+
+### Settings screen (transcribed from `Flows / Settings`)
+
+Sections, each a card with 8px radius; rows are label + value + trailing action.
+
+| Section | Row | Value | Action |
+| --- | --- | --- | --- |
+| Device | Device | MacBook Pro | Rename |
+| | Install ID | `gc_a1b2c3d4` | Copy |
+| Account | Login ID | jdoe@acme.com | - |
+| | Gate plan | Free | Upgrade plan |
+| Connection | Gateway | Managed by Gate | - |
+| | API key | `sk-gw*****************` | Replace key |
+| | Active session | - | **Disconnect** (destructive) |
+| Startup | Launch at login<br>"Keeps routing on after restart" | On | switch |
+| | Notifications<br>"Alert me when a request is blocked or flagged" | On | switch |
+| About | Tutorial | - | Replay tutorial |
+| | Version | v0.1.4 | Check for updates |
+| Danger zone | Reset Gate Connect<br>"Turn routing off, disconnect tools, remove this account or key, and start setup again." | - | **Review reset** (destructive) |
+
+"Danger zone" is a red section heading; its card carries a red tint and border.
+
+### Components page
+
+Only component/state frames.
+
+| Node | Name | Size |
+| --- | --- | --- |
+| 113:16763 | `nav/topbar` | 1024x48 |
+| 113:16775 | `banner/update` | 1024x48 |
+| 113:16786 | `banner/routing` | 1024x48 |
+| 113:16889 | `banner/partly-routing` | 1024x48 |
+| 113:16898 | `banner/alert/multiple-apps` | 726x68 |
+| 113:16919 | `banner/alert/single-app` | 726x68 |
+| 113:16794 | `nav/sidebar/overview` | 250x573 |
+| 121:33326 | `nav/sidebar/settings` | 250x573 |
+| 121:33421 | `nav/sidebar/settings` (row hover) | 250x573 |
+| 116:17428 | `topnav/menu` | 224x114 |
+
+## Reading the file without MCP quota
+
+The Figma MCP server allows only **6 read calls per month** on a View seat.
+When exhausted, read the file through the browser instead. Two things that do
+NOT work: mouse-wheel `scroll` never reaches the WebGL canvas, and clicking the
+canvas selects a nested child so `shift+2` zooms to the wrong thing.
+
+What works: **click the frame in the Layers panel, then press `shift+2`**
+(zoom to selection). Switch pages by clicking them in the Pages list, then
+`shift+1` to fit. Allow ~10s after a page switch; the first
+`Page.captureScreenshot` after navigation often times out at 30s, so wait and
+retry once.
+
+
+## The three forks that gated implementation (all RESOLVED)
+
+Decided 2026-08-14: **the Figma wins on all three.** The app becomes a
+1024x720 window, adopts the shadcn-flavoured token names, and CLAUDE.md's
+Aesthetic Direction gets rewritten rather than obeyed. Detail kept below for
+the record.
+
+### 1. Window model: popover → window
+
+`src-tauri/tauri.conf.json` today is a 380×620 `resizable: false`,
+`decorations: false`, `alwaysOnTop: true`, `skipTaskbar: true` menubar
+popover. The design is 1024 wide with **macOS traffic lights** at
+top-left (113:16764, three 12px ellipses) and a **Minimize2** button at
+top-right (113:16774).
+
+That is a regular application window, not a popover. Deciding this
+rewrites:
+
+- `tauri.conf.json` - width, `resizable`, `alwaysOnTop`, `skipTaskbar`
+- `src-tauri/src/lib.rs` - transparent window + CALayer `cornerRadius`
+- `src/components/LinuxTitleBar.tsx` - already draws its own chrome
+- `pinPopover` / `unpinPopover` in `src/lib/api.ts` - popover-only concepts
+
+Open sub-question: what does Minimize2 do? Plausibly "collapse back to
+the menubar popover", which would mean keeping *both* shells.
+
+### 2. Design system: bespoke `cg/` → shadcn/ui
+
+The returned tokens are shadcn CSS variable names on the default Tailwind
+palette:
+
+```
+--base/card        white
+--base/background  #f9fafb
+--base/border      #e5e7eb
+--base/input       #d1d5db
+--base/primary     #203de2   ← blue-ribbon/700
+--base/muted-foreground #6b7280
+tailwind-colors/neutral/{50,600,900}
+tailwind-colors/amber/600  #d97706   "Not protected"
+green                      #16a34a   "Protected"
+```
+
+The Button frames link to `ui.shadcn.com/docs/components/button`. The repo
+has **no** shadcn, radix, cva, tailwind-merge, clsx, or lucide dependency,
+and runs a bespoke OKLCH ink system in `tailwind.config.ts` + `.impeccable/design.json`.
+
+### 3. CLAUDE.md conflicts
+
+The project's own `CLAUDE.md` Aesthetic Direction contradicts the design
+on four locked points:
+
+| CLAUDE.md says | Figma does |
+| --- | --- |
+| "Primary is ink-900, **never blue**" | `--base/primary #203de2` on active nav, switches, links |
+| "Brand indigo is reserved for the logo glyph only" | Wordmark "Gate" in `#1d37b6`, blue switches |
+| "**Shadow-as-border.** No 1px solid borders on cards" | 1px `--base/border` on sidebar, org switcher, topbar, nav item |
+| "12px modal radius **LOCKED**" | 4px and 8px radii throughout |
+| Status pill is "the single most important pixel" | Per-app toggle **Switch**, pill gone |
+| Light surface, ink-on-paper | `banner/update` is dot-matrix navy |
+
+If the Figma wins, CLAUDE.md's Aesthetic Direction section needs rewriting
+in the same PR, otherwise every future session fights the design.
+
+## Copy / model changes
+
+- "Protected" / "Not protected" replaces the connected/routed vocabulary.
+- Relative timestamps per app: "Protected - 2m ago", "- 25s ago".
+- Sidebar counter `PROTECTED APPS  4/4` (mono eyebrow, 12px, tracking 1.2px).
+- Banner right-rail: `Routing · 2 of 4 Apps` / `Partly routed · 0 of 4 Apps`.
+- Alert copy: "Codex isn't protected / It's config changed outside Gate, so
+  its traffic isn't routed. Reconnect to restore protection."
+- `topnav/menu`: Visit dashboard, Contact support, Read Gate docs.
+
+## Reuse inventory
+
+Already in `src/components/gc/`, reusable:
+
+- `ui.tsx` - `Button`, `IconButton`, `Switch`, `CardButton`, `SectionLabel`
+- `Icon.tsx` - 16 glyphs: shieldCheck, layers, settings, chevronRight,
+  caretRight, chevronLeft, cube, key, copy, eye, eyeOff, check, refresh,
+  trash, info, x, plus, search, logOut, book
+- `PopHeader.tsx`, `ConstellationHexMark.tsx`
+
+New glyphs the design needs (lucide names): `UsersRound`, `ChevronsUpDown`,
+`LayoutDashboard`, `Settings2`, `ShieldBan`, `TriangleAlert`, `Headset`,
+`BookOpenText`, `SquareArrowOutUpRight`, `Ellipsis`, `Minimize2`.
+
+## Navigation rewrite
+
+`src/App.tsx` uses a depth-ranked push/pop stack (`Screen` union +
+per-screen `depth`) because "the popover is one room". The design replaces
+that with a **persistent sidebar + swapped content pane**. The depth
+metaphor and the slide animations become dead code.
+
+Screens affected: `Home.tsx` (972 lines), `Settings.tsx` (825),
+`GroupMembers.tsx` (660) - plus their tests (`Home.test.tsx` 822 lines,
+`Settings.test.tsx` 310, `GroupMembers.test.tsx` 406) will break on any
+DOM restructure.
+
+## Verified token values
+
+Sampled from Figma's properties panel (readable on a View seat, no MCP quota).
+The design uses **Tailwind's default palette** throughout, so most of these need
+no new tokens - the config uses `extend`, leaving `neutral`/`amber`/`green`/`gray`
+intact.
+
+Primary ramp (needs config entries, `blue-ribbon`):
+
+| Stop | Hex | Used by |
+| --- | --- | --- |
+| 700 | `#203DE2` | switches, active nav, links |
+| 800 | `#1D37B6` | "Gate" wordmark, update banner gradient start |
+| 900 | `#172563` | update banner gradient end |
+
+Status tile - one shape, two palettes. 28x28, `rounded-base` (4px), 4px padding,
+1px border, vertical gradient from the 50 stop to the 200 stop, icon stroked at
+the 700 stop:
+
+| Variant | Gradient | Border | Icon |
+| --- | --- | --- | --- |
+| protecting | `green/50 #F0FDF4` -> `green/200 #BBF7D0` | `green/300 #86EFAC` | `green/700 #15803D` |
+| partly routing | `amber/50 #FFFBEB` -> `amber/200 #FDE68A` | `amber/300 #FCD34D` | `amber/700` |
+
+Banner geometry:
+
+| Banner | Size | Padding | Fill | Bottom border |
+| --- | --- | --- | --- | --- |
+| `banner/update` | 1024 x hug 48 | 12 / 16 | gradient 800 -> 900 + dot matrix | 1px |
+| `banner/routing` | 1024 x 48 | 8 / 16 | `base/card` #FFFFFF | 1px `base/border` #E5E7EB |
+| `banner/partly-routing` | 1024 x 48 | 8 / 16 | `base/card` | 1px `base/border` |
+
+All are `flex-row`, `justify-between`.
+
+## Implementation plan
+
+### Phase 1 - Token layer (DONE)
+
+`tailwind.config.ts`: `base.*` semantic colors, `blue-ribbon` ramp,
+`shadow-base-{2xs,xs,lg}`, `rounded-base`, `tracking-eyebrow`,
+`text-base-{2xs,xs}` in rem. Add `blue-ribbon.900` when the update banner lands.
+
+### Phase 2 - Sidebar (DONE)
+
+`src/components/gc/Sidebar.tsx` - `Sidebar`, `SidebarView`, `SidebarApp`,
+plus private `OrgSwitcher`, `NavItem`, `AppRow`, `AppSwitch`.
+`Icon.tsx` gained `usersRound`, `chevronsUpDown`, `layoutDashboard`, `settings2`.
+
+### Phase 3 - Banners (DONE)
+
+New `src/components/gc/banners/`:
+
+- `StatusTile` - the shared 28x28 gradient tile, variant `protecting | partly`.
+- `RoutingBanner` - white, status tile + message, right rail
+  `Routing · 2 of 4 Apps` (green) or `Partly routed · 0 of 4 Apps` (amber).
+  Replaces nothing; this is new.
+- `UpdateBanner` - the navy gradient + dot matrix, "Update available - v0.5.0",
+  outline `Update` button, dismiss X. Retargets the slim-banner branch already
+  inside `UpdatePanel.tsx` (which today also owns a startup takeover).
+- `AlertBanner` - amber card, 36x36 tile, `TriangleAlert`, title + body, a
+  switch and a dismiss X. Two variants: `single-app`, and `multiple-apps` which
+  adds prev/next chevrons to page between apps.
+
+New glyphs needed: `shieldBan`, `triangleAlert`, `refreshCw`. `shieldCheck` and
+`x` already exist.
+
+### Phase 4 - Topbar and window chrome (DONE)
+
+`src/components/gc/Topbar.tsx` - `Topbar`, `TopnavMenu`, `TopnavAction`, plus
+private `WindowControls`, `TrafficLight`, `OutlineIconButton`. Glyphs added:
+`ellipsis`, `minimize2`, `squareArrowOutUpRight`, `headset`, `bookOpenText`.
+Reuses the existing `ConstellationHexMark` at 24px - its aspect ratio (0.8628)
+matches the Figma lockup's 20.708x24 exactly.
+
+**Window controls are the system's, not ours.** The design draws its own
+traffic lights (and draws them green / yellow / red, the reverse of macOS);
+decided 2026-08-14 to drop them and let the OS render real ones. The topbar
+keeps a 60px `aria-hidden` spacer where they sat, so the brand lockup holds its
+drawn position (504px of 1024) and never slides underneath them.
+
+This makes the Phase 9 window config load-bearing, because today
+`tauri.conf.json` sets `decorations: false` and no controls exist at all:
+
+- **macOS** - `decorations: true` with `titleBarStyle: "Overlay"` and
+  `hiddenTitle: true`, so the OS paints the traffic lights over our topbar.
+- **Windows** - system controls sit top **right**, not left, where our Ellipsis
+  and Minimize2 buttons already are. The 60px left spacer is wasted there and
+  the right cluster will collide. Needs a platform-conditional layout.
+- **Linux** - `LinuxTitleBar.tsx` already draws its own chrome; reconcile.
+
+### Phase 5 - Overview pane
+
+- `PaneHeader` - title + right-aligned "Last 24 hours".
+- `StatTile` x3 - MESSAGES `1,284`, BLOCKED/FLAGGED `20`, TOKENS SAVED
+  `38%` with a `+$310` delta.
+- `MessagesChart` - stacked bars, legend Total messages / Blocked / Flagged /
+  Redacted. **No chart library in the repo.** Recommend hand-rolled SVG over
+  adding recharts: the mark is simple, and hand-rolling keeps the bars on the
+  design tokens instead of fighting a library's theme layer.
+- `PolicyTable` - Policy type / Action / Status. Rows: Prompt injection
+  detection `BLOCK`, PII/PHI scanner `FLAG`, Credential & secrets scanner
+  `REDACT`, each with an On pill. Footer link `Manage policies` (external).
+- `SavingsTable` - Compression, Caching, both On. Footer `Manage savings`.
+
+### Phase 6 - Settings pane
+
+Section cards per the table above. Reuses the row shape from Phase 5's tables.
+Rewrites `src/screens/Settings.tsx` (825 lines) and its 310-line test.
+
+### Phase 7 - App detail pane
+
+Per-app view reached by selecting an app in the sidebar: per-app stats, a
+Messages chart, a **model picker** (App default vs Gate model) with a
+confirmation modal, and a Recent activity table.
+
+### Phase 8 - Modals
+
+`switch-organization`, `organization-switched`, `review-config` (config drift),
+`apply-changes-to-running-apps`, `close-affected-apps`, `model-switch-confirm`.
+Maps onto today's `RoutingChangeNotice`, `QuitConfirm`, `CertificateNotice`,
+`OAuthOffer` takeovers - but as centred dialogs, not full-popover panels.
+
+### Phase 9 - Shell swap
+
+- `tauri.conf.json`: 380x620 non-resizable -> 1024x720; drop `alwaysOnTop`
+  and `skipTaskbar`; decide `resizable`. Turn `decorations` back on so the OS
+  draws the window controls (see Phase 4 for the per-platform detail) - without
+  this the app has no close/minimise affordance at all.
+- `src-tauri/src/lib.rs`: the transparent-window + CALayer `cornerRadius` work
+  is popover-specific.
+- `App.tsx`: replace the depth-ranked push/pop `Screen` stack with
+  sidebar + content pane. The `depth` map and slide animations become dead code.
+- Retire `pinPopover` / `unpinPopover` from `lib/api.ts`.
+
+### Phase 10 - Tests and docs
+
+`Home.test.tsx` (822), `Settings.test.tsx` (310), `GroupMembers.test.tsx` (406)
+will all break on DOM restructure. Rewrite CLAUDE.md's Aesthetic Direction in
+the same PR.
+
+## Open questions
+
+1. **`PROTECTED APPS 4/4`** reads 4/4 in every frame while switch states vary,
+   sitting above two off switches with "2 of 4 Apps" beside it. Either it means
+   something other than protected-count, or it was never bound. The sidebar
+   currently computes protected-over-total.
+2. **App brand logos** - no marks in the repo; `AppRow` falls back to an
+   initial. Four SVGs need exporting (`claude-color`, `claudecode`, `codex`,
+   `opencode`).
+3. **Do groups survive?** The design lists four apps flat. The current app has a
+   group/family model (`GroupMembers.tsx` 660 lines, `FamilyPanel.tsx`,
+   `lib/groups.ts`, `GroupPill.tsx`). Nothing in the new UI shows it.
+4. **Where does Diagnostics go?** `Diagnostics.tsx` has no home in the new
+   Settings, which stops at About / Danger zone.
+5. **What does `Minimize2` do?** Possibly collapse back to a menubar popover,
+   which would mean keeping both shells.
+6. **Onboarding / FirstRun / OrgPicker / Success** are undesigned in the new UI.
+
