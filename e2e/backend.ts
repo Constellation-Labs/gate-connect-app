@@ -199,6 +199,25 @@ export const CHATGPT_DOMAIN: DomainFixture = {
   supported: true,
 };
 
+/** The ChatGPT app's own chat turn plus Codex's tool plane, sharing chatgpt.com
+ *  with the entry above under a different URL split. Same deal as the two rows
+ *  above - off, supported, its own row - because the chat half carries the
+ *  user's session cookie. Present here because the provider names it in
+ *  `chat_domain_slugs`, and a slug named there with no domain to match is a row
+ *  the ledger promises and never renders; `provider.rs`'s
+ *  `chat_domains_reach_the_ledger_without_reaching_the_cascade` asserts the same
+ *  pairing on the backend catalog. */
+export const CHATGPT_APPS_DOMAIN: DomainFixture = {
+  slug: "chatgpt-apps",
+  display_name: "ChatGPT app chat + Codex tools",
+  hosts: ["chatgpt.com"],
+  upstream_url: "https://chatgpt.com",
+  rewrite_prefixes: ["/backend-api/f/conversation", "/backend-api/ps/mcp", "/backend-api/wham/"],
+  passthrough_prefixes: ["/backend-api/f/conversation/prepare"],
+  enabled: false,
+  supported: true,
+};
+
 /** A signed-in OAuth account with an org picked, routing off, three installed
  *  tools. The state most specs start from; each one narrows it with `merge`. */
 export function defaultState(): BackendState {
@@ -234,6 +253,7 @@ export function defaultState(): BackendState {
         { ...CLAUDE_WEB_DOMAIN },
         { ...OPENAI_DOMAIN },
         { ...CHATGPT_DOMAIN },
+        { ...CHATGPT_APPS_DOMAIN },
       ],
     },
     tools: [{ ...CLAUDE_CODE }, { ...CODEX }, { ...OPENCODE }],

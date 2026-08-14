@@ -97,10 +97,12 @@ export function FamilyPanel({
               points at the pill's own words for anyone listening rather than
               announcing "on" and stopping there. */}
           {/* `cascadeDesired`, not `desired`: this switch governs the family's
-              key-brokered members only. Its chat member (claude.ai, the ChatGPT
-              app's own turn) carries a session cookie and is flipped from its
-              own row alone, so counting it here would let one chat row render
-              the family switch "on" over a family that is entirely off. */}
+              key-brokered members only. Its chat members (claude.ai under
+              Claude; the ChatGPT app's own turn and the Codex subscription
+              endpoint under OpenAI) carry a session cookie or a subscription
+              bearer and are flipped from their own rows alone, so counting them
+              here would let one chat row render the family switch "on" over a
+              family that is entirely off. */}
           <Switch
             on={group.cascadeDesired > 0}
             label={group.switchLabel}

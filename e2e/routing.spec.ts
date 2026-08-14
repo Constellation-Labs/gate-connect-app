@@ -272,18 +272,30 @@ test.describe("family panel", () => {
     const subscription = app.page.getByRole("switch", {
       name: "Route ChatGPT (Codex subscription) through Gate",
     });
+    const apps = app.page.getByRole("switch", {
+      name: "Route ChatGPT app chat + Codex tools through Gate",
+    });
     await expect(subscription).toHaveAttribute("aria-checked", "false");
+    await expect(apps).toHaveAttribute("aria-checked", "false");
 
-    // The whole family on: Codex and the OpenAI apps route, this row does not
-    // move.
-    await app.page.getByRole("switch", { name: "Route OpenAI through Gate" }).click();
-    await expect
-      .poll(async () => (await app.state()).proxy.domains.find((d) => d.slug === "openai")?.enabled)
-      .toBe(true);
-    expect((await app.state()).proxy.domains.find((d) => d.slug === "chatgpt")?.enabled).toBe(
-      false,
-    );
+    // The whole family on: Codex and the OpenAI apps route, neither of these
+    // rows moves.
+    const family = app.page.getByRole("switch", { name: "Route OpenAI through Gate" });
+    await family.click();
+    // The family switch reads its own state back from `proxy_status`, which
+    // `setGroupRouted` calls after the member loop - so "checked" is the point
+    // where every member has been attempted and the call log below is final.
+    // Waiting on the domain state alone would not be: chat rows sort last, so a
+    // regression's stray call arrives after the cascaded one has already landed.
+    await expect(family).toHaveAttribute("aria-checked", "true");
+    expect(
+      (await app.calls()).filter((c) => c.cmd === "proxy_set_domain").map((c) => c.args.slug),
+    ).toEqual(["openai"]);
+    const domains = (await app.state()).proxy.domains;
+    expect(domains.find((d) => d.slug === "chatgpt")?.enabled).toBe(false);
+    expect(domains.find((d) => d.slug === "chatgpt-apps")?.enabled).toBe(false);
     await expect(subscription).toHaveAttribute("aria-checked", "false");
+    await expect(apps).toHaveAttribute("aria-checked", "false");
 
     // Its own switch is the only thing that routes it.
     await subscription.click();
@@ -310,11 +322,13 @@ test.describe("family panel", () => {
     await expect(chat).toHaveAttribute("aria-checked", "false");
 
     // The whole family on: Claude Code and Claude apps route, the chat row does
-    // not move.
-    await app.page.getByRole("switch", { name: "Route Claude through Gate" }).click();
-    await expect
-      .poll(async () => (await app.state()).proxy.domains.find((d) => d.slug === "anthropic")?.enabled)
-      .toBe(true);
+    // not move. Same completion signal as the test above.
+    const family = app.page.getByRole("switch", { name: "Route Claude through Gate" });
+    await family.click();
+    await expect(family).toHaveAttribute("aria-checked", "true");
+    expect(
+      (await app.calls()).filter((c) => c.cmd === "proxy_set_domain").map((c) => c.args.slug),
+    ).toEqual(["anthropic"]);
     expect((await app.state()).proxy.domains.find((d) => d.slug === "claude-web")?.enabled).toBe(
       false,
     );
