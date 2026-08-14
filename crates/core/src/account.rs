@@ -117,6 +117,35 @@ fn read_account_file() -> Result<Option<AccountFile>> {
     Ok(Some(parsed))
 }
 
+/// Is this a gateway URL we accept?
+///
+/// Production rule: `https://` only. The key travels on every request and the
+/// proxy exports this host machine-wide, so plaintext is never acceptable for a
+/// real gateway.
+///
+/// Debug builds additionally accept `http://localhost` and `http://127.0.0.1`,
+/// so a developer can point the app at a gateway running on their own machine
+/// (`pnpm --filter @gate/gateway-proxy dev` serves plain HTTP on :3000).
+/// `#[cfg(debug_assertions)]` means this cannot reach a release build: `tauri
+/// build` compiles with `--release`, so the shipped app enforces https for every
+/// URL including loopback.
+fn is_acceptable_gateway_url(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    #[cfg(debug_assertions)]
+    {
+        // Host-exact, not a prefix match: `http://localhost.evil.test` must not
+        // pass. Port and path are free-form, so `http://127.0.0.1:3000` works.
+        if let Ok(parsed) = reqwest::Url::parse(url) {
+            if parsed.scheme() == "http" {
+                return matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"));
+            }
+        }
+    }
+    false
+}
+
 /// Persist account state.
 ///
 /// `api_key = Some(value)` writes the key to keychain (creating or
@@ -128,7 +157,7 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
     if gateway_base_url.len() > 2048 {
         anyhow::bail!("gateway base URL is unexpectedly long (>2048 bytes)");
     }
-    if !gateway_base_url.starts_with("https://") {
+    if !is_acceptable_gateway_url(gateway_base_url) {
         anyhow::bail!("gateway base URL must be https://");
     }
     // Recompute the prefix from a new key; otherwise preserve the one already

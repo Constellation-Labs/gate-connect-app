@@ -90,6 +90,7 @@ export function Settings({
   onSwitchOrg,
   onSwitchGateway,
   onReplayTour,
+  onOpenActivityDebug,
   routingOn,
   caTrusted,
   proxyBusy,
@@ -107,6 +108,9 @@ export function Settings({
   onSwitchOrg: () => void;
   onSwitchGateway: (url: string) => Promise<void>;
   onReplayTour: () => void;
+  /** TEMPORARY (AG-572): opens the raw activity-endpoint viewer. Optional so
+   * the scaffolding never forces churn on Settings' existing tests. */
+  onOpenActivityDebug?: () => void;
   routingOn: boolean;
   caTrusted: boolean;
   proxyBusy: boolean;
@@ -770,6 +774,16 @@ export function Settings({
             <Icon name="info" size={14} />
             Replay tour
           </button>
+          {/* TEMPORARY (AG-572): a way into the raw activity viewer while the
+              real Overview is blocked on design. Remove with ActivityDebug. */}
+          {onOpenActivityDebug && <button
+            type="button"
+            onClick={onOpenActivityDebug}
+            className="-my-1.5 inline-flex items-center gap-1.5 py-1.5 text-gc-body-sm font-medium text-gc-ink-3 transition hover:text-gc-ink"
+          >
+            <Icon name="info" size={14} />
+            Activity (debug)
+          </button>}
           <button
             type="button"
             onClick={() => setDevMode((v) => !v)}

@@ -37,6 +37,7 @@ import { FirstRun } from "./screens/FirstRun";
 import { OrgPicker } from "./screens/OrgPicker";
 import { Home } from "./screens/Home";
 import { FamilyPanel } from "./screens/FamilyPanel";
+import { ActivityDebug } from "./screens/ActivityDebug";
 import { Settings } from "./screens/Settings";
 import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
@@ -63,7 +64,9 @@ type Screen =
   | "home"
   | "settings"
   | "success"
-  | "family";
+  | "family"
+  // TEMPORARY (AG-572): raw JSON viewer for the activity endpoint.
+  | "activitydebug";
 
 /** How deep each screen sits in the popover. In one 360px room, direction is
  *  the only navigational metaphor available: without it a push and a pop look
@@ -83,6 +86,8 @@ const SCREEN_DEPTH: Record<Screen, number> = {
   // all-families ledger that used to be the level in between is gone, since
   // Home already lists every family and the panel only ever showed one.
   family: 1,
+  // Opens from Settings, so it sits one level deeper than Settings does.
+  activitydebug: 2,
 };
 
 // Proxy domains hidden from the Apps ledger. "chatgpt" exists so the relay
@@ -1054,6 +1059,7 @@ export function App() {
         onReplayTour={() => {
           openOnboardingWindow("settings").catch(() => {});
         }}
+        onOpenActivityDebug={() => setScreen("activitydebug")}
         routingOn={proxyOn}
         caTrusted={proxy?.ca_trusted ?? false}
         proxyBusy={proxyBusy}
@@ -1062,6 +1068,8 @@ export function App() {
         onSetTextScale={setTextScale}
       />
     );
+  } else if (screen === "activitydebug") {
+    body = <ActivityDebug onBack={() => setScreen("settings")} />;
   } else if (screen === "family" && openGroup) {
     body = (
       <FamilyPanel

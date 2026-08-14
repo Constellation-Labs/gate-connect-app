@@ -31,6 +31,17 @@ export interface GatewayServer {
 export const GATEWAY_SERVERS: GatewayServer[] = [
   { label: "Production", url: "https://gateway.constellationgate.ai" },
   { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
+  // TEMPORARY (AG-572): a gateway running on this machine
+  // (`pnpm --filter @gate/gateway-proxy dev` serves plain HTTP on :3000).
+  //
+  // `import.meta.env.DEV` is false in every `vite build`, so this entry cannot
+  // reach a shipped bundle - the same belt-and-braces as the `debug_assertions`
+  // guard on the http://localhost exception in `account.rs`. Without both, there
+  // is no way to point the app at a local gateway: FirstRun does not ask for a
+  // URL, it uses DEFAULT_GATEWAY_BASE_URL and offers only this list afterwards.
+  ...(import.meta.env.DEV
+    ? [{ label: "Local (dev)", url: "http://localhost:3000" }]
+    : []),
 ];
 
 /** The Gate dashboard.
