@@ -319,18 +319,54 @@ red section heading, not sampled.
 Still outstanding: `screens/Settings.tsx` (825 lines) and its 310-line test are
 untouched - they get retired in Phase 9, not here.
 
-### Phase 7 - App detail pane
+### Phase 7 - App detail pane (DONE)
 
-Per-app view reached by selecting an app in the sidebar: per-app stats, a
-Messages chart, a **model picker** (App default vs Gate model) with a
-confirmation modal, and a Recent activity table.
+`src/components/gc/AppPane.tsx` - `AppPane` plus `ModelChoice`, `GateModel`,
+`ActivityEntry`, `ActivityStatus`, `ActivitySecurity`; private `ModelSelection`,
+`ModelOption`, `InfoRow`, `RecentActivity`, `Pill`.
 
-### Phase 8 - Modals
+The stat card and Messages chart are identical to the Overview's, so they moved
+to `src/components/gc/metrics.tsx` (`StatTiles`, `MessagesChart`, `UsageStats`,
+`MessagesBucket`) and both panes import them. `OverviewStats` was renamed
+`UsageStats` in the move - nothing consumed it yet.
+
+Structure: header (app tile, name, protected status, On + switch), stat tiles,
+Messages chart, Model selection, Recent activity.
+
+Model selection is a two-option radio group (App default / Gate model), the
+selected one carrying a `base-primary` border and a `circleCheck`. Below it,
+"Current Gate model" with vendor + mono model id and a `Change model` button,
+then Gate credits with `Add credits`.
+
+Recent activity is Time / Status / Security / Conversation / Action, with mono
+uppercase pills - status `success | error`, security
+`allow | flagged | redacted | blocked` - and a `View` button per row.
+
+Glyphs added: `circleCheck`, `creditCard`.
+
+The **Gate model option's icon is a placeholder** (`layers`). The design draws a
+three-node cluster that reads as brand art rather than a lucide glyph;
+`ModelOption` takes a `ReactNode` so the real mark can be passed without
+inventing one.
+
+### Phase 8 - Modals (NEXT)
 
 `switch-organization`, `organization-switched`, `review-config` (config drift),
 `apply-changes-to-running-apps`, `close-affected-apps`, `model-switch-confirm`.
 Maps onto today's `RoutingChangeNotice`, `QuitConfirm`, `CertificateNotice`,
 `OAuthOffer` takeovers - but as centred dialogs, not full-popover panels.
+
+`model-switch-confirm` is already transcribed, seen while reading Phase 7:
+
+- brand mark in a rounded tile, title "Use a Gate model for Claude Desktop?"
+- subtitle in `base-primary`: "Your next requests will use Constellation Gate
+  PAYG credits"
+- a card showing vendor + mono model id with a `PAYG` pill on the right
+- a second card: "Gate credits:" / "$10.25 available", then body copy
+  "<App>'s own model preference is not changed. You can return to App default
+  at any time."
+- buttons right-aligned: `Keep App default` (outline), `Use Gate credits`
+  (filled `base-primary`)
 
 ### Phase 9 - Shell swap
 

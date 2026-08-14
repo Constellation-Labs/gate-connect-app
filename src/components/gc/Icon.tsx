@@ -47,7 +47,9 @@ export type IconName =
   | "link"
   | "power"
   | "bell"
-  | "codeXml";
+  | "codeXml"
+  | "circleCheck"
+  | "creditCard";
 
 const PATHS: Record<IconName, JSX.Element> = {
   shieldCheck: (
@@ -307,6 +309,18 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="m18 16 4-4-4-4" />
       <path d="m6 8-4 4 4 4" />
       <path d="m14.5 4-5 16" />
+    </>
+  ),
+  circleCheck: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m9 12 2 2 4-4" />
+    </>
+  ),
+  creditCard: (
+    <>
+      <rect width="20" height="14" x="2" y="5" rx="2" />
+      <path d="M2 10h20" />
     </>
   ),
 };
