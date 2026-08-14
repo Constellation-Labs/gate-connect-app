@@ -791,14 +791,31 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // matched by `decide` on HOST — which is why the two can share a
             // host without colliding, and why the split below differs.
             //
-            // What this can and cannot capture: Codex's embedded Rust agent
-            // ignores the system proxy, so its MODEL calls stay invisible to the
-            // engine (they route via the relay instead — see below). The Electron
-            // shell DOES honour the system proxy, and the tool-plane calls
-            // observed in a capture came from it: `/backend-api/wham/*` carried a
-            // Chromium user-agent. `/backend-api/ps/mcp` sends no user-agent at
-            // all, so whether the engine sees it is genuinely unverified — this
-            // entry is how we find out.
+            // What this can and cannot capture. The Electron shell honours the
+            // system proxy, and the tool-plane calls observed in a capture came
+            // from it: `/backend-api/wham/*` carried a Chromium user-agent.
+            // `/backend-api/ps/mcp` sends no user-agent at all, so which
+            // component emits it is still unverified, though the engine does see
+            // it.
+            //
+            // The desktop app's MODEL call is visible too, and is NOT served by
+            // this entry — it is served by the `chatgpt` entry below, whose
+            // upstream path absorbs `/backend-api` and leaves
+            // `/codex/responses` for its rewrite prefix. Confirmed 2026-08-14
+            // from a captured Gate row whose body carried
+            // `<app-context># Codex desktop context`, `workspace_kind:
+            // "projectless"` and Windows paths under `Documents\Codex`.
+            //
+            // This comment previously said the opposite — that Codex's embedded
+            // Rust agent ignores the system proxy, so its model calls stay
+            // invisible to the engine. That holds for the standalone CLI, whose
+            // agent routes via the relay, and it is why the exclusion below is
+            // still correct. It does NOT hold for the desktop app, and stating it
+            // unconditionally cost two debugging sessions: the traffic was
+            // assumed unreachable when it was merely on the other row. Which row
+            // is the whole point, because `chatgpt-apps` and `chatgpt` are
+            // separate switches and this one's NAME implies it carries Codex's
+            // prompts. It does not.
             hosts: vec!["chatgpt.com".into()],
             // MITM convention: `engine::apply_rewrite` preserves the request path
             // and query VERBATIM and swaps only scheme + authority, so the
@@ -810,9 +827,15 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // Only the two path families Gate classifies as native surfaces:
             // the MCP tool plane (`codex-mcp`, scanned for indirect injection)
             // and the task/settings reads (`codex-tasks`). Deliberately NOT
-            // `/backend-api/codex/responses` — the model call belongs to the
-            // relay route, and rewriting it here would send it upstream with the
-            // wrong split. Plugin-store listings are left out as pure noise.
+            // `/backend-api/codex/responses` — that path belongs to the `chatgpt`
+            // entry, which serves it on BOTH routes, and claiming it here would
+            // send it upstream under this entry's bare-host split. The URL would
+            // still resolve; what breaks is that one endpoint would then carry two
+            // different `X-Gate-Upstream-Url` values depending on how it arrived,
+            // which is the split-mismatch class that once left MITM traffic
+            // classified as plain `api`. Excluding it is not a coverage gap: this
+            // entry sits FIRST in catalog order, so claiming it would shadow the
+            // other. Plugin-store listings are left out as pure noise.
             // `/backend-api/f/conversation` is the ChatGPT app's own chat turn
             // (Gate's `chatgpt-web-chat` surface): one message per request, reply
             // as a `delta_encoding: v1` SSE stream. It lives in THIS entry rather
