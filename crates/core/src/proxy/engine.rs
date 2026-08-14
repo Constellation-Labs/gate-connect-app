@@ -28,7 +28,10 @@ use hyper_rustls::ConfigBuilderExt;
 use tokio::sync::{oneshot, watch};
 
 use crate::proxy::cert_authority::GateCa;
-use crate::proxy::{decide, should_intercept_host, Decision, ProxyDomain};
+use crate::proxy::{
+    classify_client, decide, rules_for_client, should_intercept_host, ClientClass, Decision,
+    ProxyDomain,
+};
 
 /// Everything the engine needs to run one session. The account + CA are
 /// fixed for the engine's lifetime; the domain set can be updated live via
@@ -446,7 +449,13 @@ impl HttpHandler for GateHandler {
         if req.method() == Method::CONNECT {
             return req.into();
         }
-        let rules = self.rules.borrow().clone();
+        // Some entries route every proxy-honouring client EXCEPT the vendor's own
+        // website, which shares their host (see `BROWSER_EXCLUDED_SLUGS`).
+        // Classify before `decide` and hand it a narrowed rule set, so the
+        // client filter composes with the `enabled` one instead of adding a
+        // second kind of veto inside the routing decision.
+        let client = classify_client(|name| req.headers().get(name).and_then(|v| v.to_str().ok()));
+        let rules = rules_for_client(&self.rules.borrow(), client);
         let host = req.uri().host().map(str::to_owned);
         // Path only, never `path_and_query()`: some providers pass the API key
         // as a URL query param (e.g. Google `...?key=...`), and this value is
@@ -502,8 +511,14 @@ impl HttpHandler for GateHandler {
                 "none"
             };
             let ver = format!("{:?}", req.version());
+            // `client` is in here because an app-only entry declining a request
+            // and the host not being routed at all both surface as
+            // `passthrough`. Without it the log cannot tell "we chose not to
+            // take the browser's traffic" from "this domain is off", which is
+            // the same class of ambiguity the CONNECT line above prints the
+            // enabled set to resolve. Neither signal it reads is a credential.
             eprintln!(
-                "[gate-proxy] {} {}{} [{ver}] auth={auth} -> {action}",
+                "[gate-proxy] {} {}{} [{ver}] auth={auth} client={client:?} -> {action}",
                 req.method(),
                 host.as_deref().unwrap_or("?"),
                 path,

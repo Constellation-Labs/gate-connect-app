@@ -588,6 +588,130 @@ pub(crate) fn strip_upstream_path<'a>(path: &'a str, upstream_path: &str) -> Opt
     }
 }
 
+/// Which front-end sent an intercepted request.
+///
+/// The app and the browser share `chatgpt.com` and even share endpoints - both
+/// POST `/backend-api/f/conversation` - so the host+path pair that drives
+/// [`decide`] cannot tell them apart. This can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientClass {
+    /// A first-party desktop app: the ChatGPT app shell, Codex, or Codex's MCP
+    /// client.
+    App,
+    /// A browser tab on the vendor's website.
+    Web,
+    /// Neither signature matched. Every third-party client that honours the
+    /// system proxy lands here - OpenClaw, Hermes, an in-house script - and all
+    /// of them are routed. Only [`Web`](Self::Web) is held back.
+    Unknown,
+}
+
+/// Entries that decline BROWSER traffic while routing everything else.
+///
+/// `chatgpt-apps` is here because its switch is named after an app but matches
+/// on host, so flipping it also routed the user's browser tabs, carrying the
+/// browsing session's own cookie to Gate. The exclusion is deliberately narrow:
+/// it drops only what is positively identified as the website, so OpenClaw,
+/// Hermes and anything else proxy-honouring keep their route.
+///
+/// That choice sets the failure direction, and it is the opposite of the one an
+/// app-only rule would give. If the website stops sending the markers
+/// [`classify_client`] looks for, browser traffic classifies as `Unknown` and is
+/// routed again. The alternative - route only a positively-identified app - fails
+/// the other way and would have silently dropped every third-party client, which
+/// is the larger loss.
+///
+/// `claude-web` is NOT here, and that is a gap rather than a decision: claude.ai
+/// has the same app-and-browser overlap, but no capture of it exists yet, so
+/// there are no markers to key on. Add it when there are.
+///
+/// A code-level policy rather than a `ProxyDomain` field on purpose: a
+/// serialized field would imply a per-domain switch the UI does not have. When
+/// it grows one, this becomes that field and the constant goes away.
+const BROWSER_EXCLUDED_SLUGS: &[&str] = &["chatgpt-apps"];
+
+/// Classify a request from its headers.
+///
+/// `originator` is the primary signal: it is the vendor's own "which front-end
+/// is this" field, it was present on EVERY app request to a routed path in the
+/// captures, and on none of the web ones. The user-agent prefix is the fallback,
+/// because a build that drops `originator` but still says `ChatGPTBrowser`
+/// should keep routing.
+///
+/// The web markers are what routing actually keys on, so they are matched
+/// POSITIVELY: `Web` means "this is the website", never "no app signal found".
+/// Anything unrecognised is [`ClientClass::Unknown`] and gets routed.
+///
+/// The app check runs FIRST and is load-bearing even though `App` and `Unknown`
+/// route alike today. If a future app build starts sending one of the web
+/// markers, that check is what stops it being mistaken for the browser and
+/// losing its route.
+///
+/// A bare browser-shaped user-agent is deliberately NOT a web signal. Plenty of
+/// agents copy a Chrome user-agent verbatim, so treating it as one would exclude
+/// exactly the third-party clients this is meant to keep.
+///
+/// Both signals are trivially spoofable, which is fine: this decides whose
+/// traffic Gate is allowed to *see*, not what it is allowed to do. Forging it
+/// only affects the forger's own requests.
+pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientClass {
+    if header("originator").is_some_and(|v| !v.trim().is_empty()) {
+        return ClientClass::App;
+    }
+    let ua = header("user-agent").unwrap_or_default();
+    // `ChatGPTBrowser` prefixes the app shell's otherwise browser-shaped UA;
+    // the other two are Codex's native agent and its MCP client.
+    if ua.starts_with("ChatGPTBrowser")
+        || ua.starts_with("Codex Desktop/")
+        || ua.starts_with("codex-mcp-client/")
+    {
+        return ClientClass::App;
+    }
+    // Emitted by the website and never by the app in any capture.
+    if [
+        "oai-device-id",
+        "oai-client-version",
+        "x-openai-target-route",
+    ]
+    .iter()
+    .any(|h| header(h).is_some())
+    {
+        return ClientClass::Web;
+    }
+    ClientClass::Unknown
+}
+
+/// Narrow what each entry CLAIMS for this client, before [`decide`] reads them.
+///
+/// A browser-excluding entry facing a [`ClientClass::Web`] request keeps its
+/// hosts and loses its rewrite prefixes. It therefore still matches the host,
+/// claims no path, and falls through to `decide`'s existing unclaimed-path
+/// `Passthrough` - no new branch inside the routing decision, which stays a pure
+/// function of the entries it is handed. Every other client class passes through
+/// untouched.
+///
+/// Removing the entry outright is the obvious implementation and is wrong.
+/// `decide` reports `Tunnel` when NO enabled entry names the host, meaning "not
+/// a host we intercept" - and by the time this runs the CONNECT has already been
+/// intercepted and the bytes decrypted, because `should_intercept_host` matches
+/// on host alone and cannot see these headers. Reporting `Tunnel` there would
+/// state something untrue about a connection we are already inside. Declining to
+/// rewrite is what actually happened, and `Passthrough` is the word for it.
+pub fn rules_for_client(domains: &[ProxyDomain], client: ClientClass) -> Vec<ProxyDomain> {
+    domains
+        .iter()
+        .map(|d| {
+            if client != ClientClass::Web || !BROWSER_EXCLUDED_SLUGS.contains(&d.slug.as_str()) {
+                return d.clone();
+            }
+            ProxyDomain {
+                rewrite_prefixes: Vec::new(),
+                ..d.clone()
+            }
+        })
+        .collect()
+}
+
 /// Decide what to do with a request given its host + path. Passthrough
 /// prefixes win over rewrite prefixes; an intercepted host whose path no entry
 /// claims is left alone (passthrough) rather than rewritten.
@@ -1287,6 +1411,134 @@ mod tests {
             domain_claiming_host(&all, "chatgpt.com").map(|d| d.slug.as_str()),
             Some("chatgpt-apps")
         );
+    }
+
+    /// Header lookup over a fixed list, in the shape `classify_client` wants.
+    fn hdrs<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<&'a str> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, v)| *v)
+        }
+    }
+
+    const WEB_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                          (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+
+    #[test]
+    fn the_originator_header_identifies_the_app() {
+        // Present on every app request to a routed path in the captures, and on
+        // none of the web ones.
+        assert_eq!(
+            classify_client(hdrs(&[
+                ("originator", "Codex Desktop"),
+                ("user-agent", WEB_UA)
+            ])),
+            ClientClass::App,
+            "originator outranks a browser-shaped user-agent"
+        );
+        assert_eq!(
+            classify_client(hdrs(&[("originator", "   ")])),
+            ClientClass::Unknown,
+            "a blank originator is not a claim"
+        );
+    }
+
+    #[test]
+    fn the_user_agent_prefix_is_the_fallback_signal() {
+        // A build that drops `originator` but still names itself should keep
+        // routing, so each app UA family is matched on its own.
+        for ua in [
+            "ChatGPTBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/151.0.0.0",
+            "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)",
+            "codex-mcp-client/0.148.0-alpha.9",
+        ] {
+            assert_eq!(
+                classify_client(hdrs(&[("user-agent", ua)])),
+                ClientClass::App,
+                "{ua}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_website_is_identified_positively_not_by_absence() {
+        // "Definitely the browser" is its own finding; otherwise every unknown
+        // client would read as web and silently lose routing it should keep.
+        assert_eq!(
+            classify_client(hdrs(&[("user-agent", WEB_UA), ("oai-device-id", "abc")])),
+            ClientClass::Web
+        );
+        assert_eq!(
+            classify_client(hdrs(&[("user-agent", WEB_UA)])),
+            ClientClass::Unknown,
+            "a bare browser UA on its own is not enough to call it the website"
+        );
+        assert_eq!(classify_client(hdrs(&[])), ClientClass::Unknown);
+    }
+
+    #[test]
+    fn only_the_browser_loses_the_shared_chat_turn() {
+        // The whole point: the app and the website POST the same endpoint on the
+        // same host, so only the client class separates them. Everything that is
+        // not the website keeps the route, which is what lets OpenClaw, Hermes
+        // and any other proxy-honouring client through the same entry.
+        const TURN: &str = "/backend-api/f/conversation";
+        let all: Vec<ProxyDomain> = default_domains()
+            .into_iter()
+            .map(|mut d| {
+                d.enabled = d.slug == "chatgpt-apps";
+                d
+            })
+            .collect();
+
+        for class in [ClientClass::App, ClientClass::Unknown] {
+            assert_eq!(
+                decide(&rules_for_client(&all, class), "chatgpt.com", TURN),
+                Decision::Rewrite {
+                    upstream_url: "https://chatgpt.com".into()
+                },
+                "{class:?} must keep the route"
+            );
+        }
+        assert_eq!(
+            decide(
+                &rules_for_client(&all, ClientClass::Web),
+                "chatgpt.com",
+                TURN
+            ),
+            Decision::Passthrough,
+            "the website must reach the real host untouched"
+        );
+    }
+
+    #[test]
+    fn an_unidentified_client_still_routes_every_entry() {
+        // OpenClaw reaches the `chatgpt` entry through the MITM engine and sends
+        // neither an originator nor an app user-agent, so it classifies as
+        // Unknown. It must keep its route on every entry, browser-excluding or
+        // not, or this change silently breaks subscription-mode OpenClaw.
+        let mut relay: Vec<ProxyDomain> = default_domains()
+            .into_iter()
+            .filter(|d| d.slug == "chatgpt")
+            .collect();
+        relay[0].enabled = true;
+        assert_eq!(
+            decide(
+                &rules_for_client(&relay, ClientClass::Unknown),
+                "chatgpt.com",
+                "/backend-api/codex/responses"
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com/backend-api".into()
+            }
+        );
+        // And an entry that is not browser-excluding keeps every prefix even for
+        // the website, so this cannot quietly become a global browser ban.
+        let anth = rules_for_client(&anthropic(), ClientClass::Web);
+        assert_eq!(anth.len(), anthropic().len());
+        assert_eq!(anth[0].rewrite_prefixes, anthropic()[0].rewrite_prefixes);
     }
 
     #[test]
