@@ -263,19 +263,33 @@ This makes the Phase 9 window config load-bearing, because today
   the right cluster will collide. Needs a platform-conditional layout.
 - **Linux** - `LinuxTitleBar.tsx` already draws its own chrome; reconcile.
 
-### Phase 5 - Overview pane
+### Phase 5 - Overview pane (DONE)
 
-- `PaneHeader` - title + right-aligned "Last 24 hours".
-- `StatTile` x3 - MESSAGES `1,284`, BLOCKED/FLAGGED `20`, TOKENS SAVED
-  `38%` with a `+$310` delta.
-- `MessagesChart` - stacked bars, legend Total messages / Blocked / Flagged /
-  Redacted. **No chart library in the repo.** Recommend hand-rolled SVG over
-  adding recharts: the mark is simple, and hand-rolling keeps the bars on the
-  design tokens instead of fighting a library's theme layer.
-- `PolicyTable` - Policy type / Action / Status. Rows: Prompt injection
-  detection `BLOCK`, PII/PHI scanner `FLAG`, Credential & secrets scanner
-  `REDACT`, each with an On pill. Footer link `Manage policies` (external).
-- `SavingsTable` - Compression, Caching, both On. Footer `Manage savings`.
+`src/components/gc/Overview.tsx` - `Overview` plus the types the 24-hour
+backend will need to satisfy (`OverviewStats`, `MessagesBucket`, `Policy`,
+`PolicyAction`, `Saving`); private `StatTiles`, `Stat`, `MessagesChart`,
+`PolicyTable`, `SavingsTable`, `StatusPill`, `ManageLink`. `Card` went into
+`base.tsx` since the Settings pane uses the same surface.
+
+Chart is hand-rolled from stacked divs, no chart library: the mark is four
+rectangles, and hand-rolling keeps the series on design tokens. Bars are the
+design's 20px and distribute across the card, so 24 buckets or 6 both work.
+
+Verified against Figma: pane `gray/100`, card Fill 726 / r8 / `#E5E7EB` /
+`shadow/sm`, bars 20px, legend swatches 12x12 r2.
+
+Measured values worth keeping:
+
+- pane padding 24, gap between cards 16
+- stat tiles are one card of three columns divided by `border-l`
+- action pill label is `mono/label-12` (Geist Mono Medium 12/16, 6% tracking)
+- pane title and section captions are `heading/20` (Geist Medium 20/24, -1%)
+- window frame radius is 8px, not the popover's 12px
+
+Two values were **inferred, not sampled**: the action pill backgrounds
+(`red/amber/purple-100`) and the On pill (`green-100`). Text sits at the 900
+level in Figma and 100/900 is the standard Tailwind badge pairing, matching the
+50 -> 200 tile gradients, but they are worth a spot check.
 
 ### Phase 6 - Settings pane
 
@@ -330,4 +344,15 @@ the same PR.
 5. **What does `Minimize2` do?** Possibly collapse back to a menubar popover,
    which would mean keeping both shells.
 6. **Onboarding / FirstRun / OrgPicker / Success** are undesigned in the new UI.
+7. **Does the chart's `total` series double-count?** The Figma legend calls the
+   blue series "Total messages" but stacks it *underneath* blocked, flagged and
+   redacted. Read literally the bar sums to more than the total. `MessagesBucket`
+   currently treats the four as additive, so `total` means "everything not
+   otherwise accounted for". Worth settling in the 24-hour backend's response
+   shape rather than in the component: if the API really returns a grand total,
+   the chart should subtract rather than stack.
+8. **Tailwind version skew.** The design names shadows on Tailwind v4's scale
+   (v4 `shadow-xs` == v3 `shadow-sm`); the repo is on v3.4.17. The `base-*`
+   shadow tokens absorb the mapping, but any new value read off Figma needs
+   shifting one step before use.
 

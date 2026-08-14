@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { IconName } from "./Icon";
 import { Icon } from "./Icon";
 
@@ -7,6 +8,28 @@ import { Icon } from "./Icon";
  * variable names. Distinct from `gc/ui.tsx`, which is the menu-bar popover's
  * primitive set and stays until those screens migrate.
  */
+
+/**
+ * The surface every content section sits on (Figma `card/policies` and its
+ * siblings): white, 8px radius, a 1px `base/border` hairline and `shadow/sm`.
+ * Shared with the Settings pane, which uses the same shape per section.
+ */
+export function Card({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  /** Layout only, for callers that need to change the internal padding. */
+  className?: string;
+}) {
+  return (
+    <section
+      className={`rounded-lg border border-base-border bg-base-card shadow-base-sm ${className}`}
+    >
+      {children}
+    </section>
+  );
+}
 
 /**
  * The 28x28 status chip that fronts the routing banners, and at 36px the alert

@@ -160,6 +160,19 @@ export default {
           900: "#172563",
         },
 
+        // Messages chart series (Figma legend swatches, sampled individually).
+        // Named for the series rather than the hue for two reasons: the meaning
+        // is what call sites care about, and three of the four are Tailwind
+        // defaults while `blue` is REDEFINED as an OKLCH ramp further up this
+        // file - so `bg-blue-400` would silently render the wrong colour.
+        // Levels are the design's own and are not uniform: 400, 400, 400, 500.
+        chart: {
+          messages: "#60a5fa", // tailwind blue/400
+          blocked: "#f87171", // tailwind red/400
+          flagged: "#fbbf24", // tailwind amber/400
+          redacted: "#a855f7", // tailwind purple/500
+        },
+
         // ── Gate Connect popover palette (Claude Design handoff). ──
         // Indigo-forward; scoped to the Connect popover only. See header note.
         gc: {
@@ -229,8 +242,13 @@ export default {
         // New app UI (Figma `shadow/2xs`, `shadow/xs`, `shadow/lg`). Namespaced
         // rather than overriding Tailwind's `shadow-lg`, which the popover
         // screens still use.
+        // The design names these on Tailwind v4's scale, where everything
+        // shifted one step down (v4 `shadow-xs` is v3 `shadow-sm`). This repo is
+        // on v3.4, so Figma `shadow/sm` is v3's DEFAULT `shadow`, not `shadow-sm`.
+        // Spelled out here so the mapping does not have to be re-derived.
         "base-2xs": "0 1px 0 0 rgba(0,0,0,0.05)",
         "base-xs": "0 1px 2px 0 rgba(0,0,0,0.05)",
+        "base-sm": "0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)",
         "base-lg":
           "0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.08)",
       },
@@ -248,6 +266,10 @@ export default {
       letterSpacing: {
         // New app UI `mono/eyebrow`: Geist Mono Medium 12/16 at 10% tracking.
         eyebrow: "1.2px",
+        // `mono/label-12`: same face at 6% - the action pills (BLOCK/FLAG/REDACT).
+        label: "0.72px",
+        // `heading/20`: Geist Medium 20/24 at -1% - pane titles and captions.
+        heading: "-0.2px",
       },
       fontSize: {
         // The popover's type ramp, in rem against a 16px root.
