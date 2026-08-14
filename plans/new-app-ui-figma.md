@@ -349,24 +349,42 @@ three-node cluster that reads as brand art rather than a lucide glyph;
 `ModelOption` takes a `ReactNode` so the real mark can be passed without
 inventing one.
 
-### Phase 8 - Modals (NEXT)
+### Phase 8 - Modals (DONE)
 
-`switch-organization`, `organization-switched`, `review-config` (config drift),
-`apply-changes-to-running-apps`, `close-affected-apps`, `model-switch-confirm`.
-Maps onto today's `RoutingChangeNotice`, `QuitConfirm`, `CertificateNotice`,
-`OAuthOffer` takeovers - but as centred dialogs, not full-popover panels.
+`src/components/gc/Modal.tsx` - `Modal`, `ModalSubject`, `ModalNote`,
+`ModalOption`, plus `ModalTone`, `ModalButton`, `PillTone`.
 
-`model-switch-confirm` is already transcribed, seen while reading Phase 7:
+All seven dialogs in the file are drawn from one template, so this is one
+component with slots rather than seven near-copies:
 
-- brand mark in a rounded tile, title "Use a Gate model for Claude Desktop?"
-- subtitle in `base-primary`: "Your next requests will use Constellation Gate
-  PAYG credits"
-- a card showing vendor + mono model id with a `PAYG` pill on the right
-- a second card: "Gate credits:" / "$10.25 available", then body copy
-  "<App>'s own model preference is not changed. You can return to App default
-  at any time."
-- buttons right-aligned: `Keep App default` (outline), `Use Gate credits`
-  (filled `base-primary`)
+    tone tile + title + subtitle
+    optional subject card (icon, name, description, status pill)
+    optional note block
+    right-aligned secondary / primary buttons
+
+600px wide, 12px radius, centred over a scrim. Reuses the repo's existing
+`useFocusTrap`, pointing initial focus at the *secondary* button whenever the
+primary is destructive - the hazard that hook's own comment calls out.
+
+The seven, and how they map onto the template:
+
+| Dialog | Tone | Subject pill | Buttons |
+| --- | --- | --- | --- |
+| Switch organization | neutral | (radio list instead) | Cancel / Switch organization |
+| Organization switched | success | - | Done |
+| Review `<app>` configuration | warning | `DETECTED` amber | Keep existing config / Replace config and protect |
+| Apply changes to running apps | warning | `OPEN` green | Close affected apps / I will reopen later |
+| Close affected apps now? | warning | `OPEN` green | Go back / **Close `<app>`** (red) |
+| Change is ready | success | - | Done |
+| Use a Gate model for `<app>`? | neutral | `PAYG` | Keep App default / Use Gate credits |
+
+Note that "Apply changes to running apps" makes the *less* destructive option
+primary: `I will reopen later` is the filled button, `Close affected apps` the
+outline one.
+
+Still to build: the seven concrete dialogs that compose this template. The
+component and every piece they need exist; what remains is wiring copy and
+handlers, which belongs with the shell in Phase 9.
 
 ### Phase 9 - Shell swap
 
@@ -410,7 +428,12 @@ the same PR.
    otherwise accounted for". Worth settling in the 24-hour backend's response
    shape rather than in the component: if the API really returns a grand total,
    the chart should subtract rather than stack.
-8. **Tailwind version skew.** The design names shadows on Tailwind v4's scale
+9. **The sidebar has more app states than `SidebarApp` models.** Seen behind the
+   config-drift dialogs: rows read `Config drifted` (amber) and
+   `Not routed - Off`, not just `Protected` / `Not protected`. `SidebarApp`
+   currently carries `isProtected: boolean` plus `since`, which cannot express
+   either. Needs a status union before the sidebar is wired to real data.
+10. **Tailwind version skew.** The design names shadows on Tailwind v4's scale
    (v4 `shadow-xs` == v3 `shadow-sm`); the repo is on v3.4.17. The `base-*`
    shadow tokens absorb the mapping, but any new value read off Figma needs
    shifting one step before use.
