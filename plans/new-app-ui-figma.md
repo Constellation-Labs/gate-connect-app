@@ -382,9 +382,20 @@ Note that "Apply changes to running apps" makes the *less* destructive option
 primary: `I will reopen later` is the filled button, `Close affected apps` the
 outline one.
 
-Still to build: the seven concrete dialogs that compose this template. The
-component and every piece they need exist; what remains is wiring copy and
-handlers, which belongs with the shell in Phase 9.
+`src/components/gc/dialogs.tsx` holds the seven concrete dialogs -
+`SwitchOrganizationDialog`, `OrganizationSwitchedDialog`, `ReviewConfigDialog`,
+`ApplyChangesDialog`, `CloseAppsDialog`, `ChangeReadyDialog`,
+`UseGateModelDialog`. Copy lives with them rather than in the shell, so it stays
+next to the design it came from and the shell supplies only names and handlers.
+
+`ModalSubject` grew a `variant`: `subject` names a thing and describes it (bold
+name over grey detail), `identity` inverts that for the model row where the
+vendor is a quiet label above a mono model id. `Modal` grew `subtitleTone`,
+because the Gate-model dialog is the one place the design states its cost
+consequence in `base-primary` rather than grey.
+
+`OrganizationSwitchedDialog`'s copy was read at low resolution and is the least
+certain of the seven.
 
 ### Phase 9 - Shell swap
 

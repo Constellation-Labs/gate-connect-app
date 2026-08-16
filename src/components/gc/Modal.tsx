@@ -39,6 +39,7 @@ export function Modal({
   icon,
   title,
   subtitle,
+  subtitleTone = "muted",
   children,
   secondary,
   primary,
@@ -48,6 +49,9 @@ export function Modal({
   icon: IconName;
   title: string;
   subtitle?: string;
+  /** The Gate-model dialog states its cost consequence in `base-primary`
+   * rather than muted grey, which is the only place the design does this. */
+  subtitleTone?: "muted" | "primary";
   children?: ReactNode;
   secondary?: ModalButton;
   primary?: ModalButton;
@@ -87,7 +91,13 @@ export function Modal({
               {title}
             </h2>
             {subtitle && (
-              <p className="mt-1 text-sm leading-5 text-neutral-600">{subtitle}</p>
+              <p
+                className={`mt-1 text-sm leading-5 ${
+                  subtitleTone === "primary" ? "text-base-primary" : "text-neutral-600"
+                }`}
+              >
+                {subtitle}
+              </p>
             )}
           </div>
         </div>
@@ -142,14 +152,23 @@ export function ModalSubject({
   icon,
   title,
   description,
+  variant = "subject",
   pill,
 }: {
   /** 16px mark, brand or glyph. */
   icon: ReactNode;
   title: string;
   description?: string;
+  /**
+   * `subject` names a thing and describes it: bold name over grey detail, used
+   * for the drifted app and the running process. `identity` inverts that for
+   * the model row, where the vendor is the quiet label and the mono model id is
+   * the thing being named.
+   */
+  variant?: "subject" | "identity";
   pill?: { label: string; tone: PillTone };
 }) {
+  const identity = variant === "identity";
   return (
     <div className="flex items-center gap-3 rounded-lg border border-base-border p-3">
       <span
@@ -159,9 +178,25 @@ export function ModalSubject({
         {icon}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium leading-5 text-neutral-900">{title}</p>
+        <p
+          className={
+            identity
+              ? "truncate text-base-2xs leading-4 text-base-muted-foreground"
+              : "truncate text-sm font-medium leading-5 text-neutral-900"
+          }
+        >
+          {title}
+        </p>
         {description && (
-          <p className="truncate text-sm leading-5 text-neutral-600">{description}</p>
+          <p
+            className={
+              identity
+                ? "truncate font-mono text-sm leading-5 text-neutral-900"
+                : "truncate text-sm leading-5 text-neutral-600"
+            }
+          >
+            {description}
+          </p>
         )}
       </div>
       {pill && (
