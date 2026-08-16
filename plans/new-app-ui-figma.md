@@ -424,9 +424,13 @@ the same PR.
 2. **App brand logos** - no marks in the repo; `AppRow` falls back to an
    initial. Four SVGs need exporting (`claude-color`, `claudecode`, `codex`,
    `opencode`).
-3. **Do groups survive?** The design lists four apps flat. The current app has a
-   group/family model (`GroupMembers.tsx` 660 lines, `FamilyPanel.tsx`,
-   `lib/groups.ts`, `GroupPill.tsx`). Nothing in the new UI shows it.
+3. **Groups: RESOLVED 2026-08-16 - they keep a home.** The design lists apps
+   flat, which cannot express routing's real shape: families (Claude, OpenAI,
+   OpenRouter, plus the multi-provider "Other tools" bucket) own a master
+   switch, and their members route either through a tool's own config file or
+   through the local proxy - the latter being the chat domains, which the drawn
+   UI does not show at all. `FamiliesPane` gives them a third sidebar
+   destination. **Not in the Figma**; expect it to be redrawn.
 4. **Where does Diagnostics go?** `Diagnostics.tsx` has no home in the new
    Settings, which stops at About / Danger zone.
 5. **What does `Minimize2` do?** Possibly collapse back to a menubar popover,
@@ -439,11 +443,13 @@ the same PR.
    otherwise accounted for". Worth settling in the 24-hour backend's response
    shape rather than in the component: if the API really returns a grand total,
    the chart should subtract rather than stack.
-9. **The sidebar has more app states than `SidebarApp` models.** Seen behind the
-   config-drift dialogs: rows read `Config drifted` (amber) and
-   `Not routed - Off`, not just `Protected` / `Not protected`. `SidebarApp`
-   currently carries `isProtected: boolean` plus `since`, which cannot express
-   either. Needs a status union before the sidebar is wired to real data.
+9. **Sidebar app states: RESOLVED 2026-08-16.** `SidebarApp` now carries an
+   `AppStatus` union (`protected` / `not-protected` / `drifted` /
+   `not-routed`), and separately an `on` boolean. The split is deliberate and
+   `lib/groups.ts` explains why: observed routing drives the status line, user
+   intent drives the switch. Conflating them made the switch destructive, since
+   an enabled-but-unrouted member rendered off and clicking it turned the
+   setting off rather than on.
 10. **Tailwind version skew.** The design names shadows on Tailwind v4's scale
    (v4 `shadow-xs` == v3 `shadow-sm`); the repo is on v3.4.17. The `base-*`
    shadow tokens absorb the mapping, but any new value read off Figma needs
