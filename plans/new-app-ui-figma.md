@@ -59,6 +59,20 @@ Only component/state frames.
 | 121:33421 | `nav/sidebar/settings` (row hover) | 250x573 |
 | 116:17428 | `topnav/menu` | 224x114 |
 
+## How the designer marks readiness (from Chad, 2026-08-14)
+
+- **A white check mark in a section title above a flow means that flow is
+  ready.** Sections without one are still moving.
+- **Every main frame is named for the step it represents**, deliberately so MCP
+  reads and this work can tell which state a frame is. Trust the names.
+- **Hidden layers were stripped and 2,000+ layers renamed** with Figma's own
+  agent, because MCP struggles with hidden layers. Reads after 2026-08-14 are
+  against the cleaned file.
+- **The designs are frozen as of 2026-08-14**, with one exception: dialog
+  states are still being worked on. Do not chase dialog changes until the
+  designer says they are done - `Modal.tsx` and `dialogs.tsx` are the parts most
+  likely to move.
+
 ## Reading the file without MCP quota
 
 The Figma MCP server allows only **6 read calls per month** on a View seat.
