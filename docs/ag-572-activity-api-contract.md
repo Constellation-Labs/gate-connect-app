@@ -365,6 +365,38 @@ security-action bucketing variant, not a new metrics pipeline.
 - Reuse the `SessionProbe` discipline from `org.rs`: only a definite 401 is a
   rejection. A metrics failure must never sign the user out.
 
+## 11a. Installation scoping: decisions
+
+Settled 2026-08-17. These close open decisions 7-10 in section 9.
+
+- **Reuse `gateway_org_machines`.** Do not invent a second installation entity.
+  That table is already `(org_id, machine_id)` unique with `first_seen_at`,
+  `last_seen_at` and a `trust_status` of `unverified` / `verified`, and it already
+  carries a worked-out threat model from the audit-ingest path (first sight
+  registers unverified; a scoped key forging a machine id is recorded as SEC-H8).
+  What changes is that inference requests start writing to it too, not just
+  `POST /v1/audit`.
+- **Label is the raw UUID for now.** Hostname would be friendlier and is often a
+  person's real name, so it is a privacy decision nobody needs to take yet. A
+  display name can land later without moving the identifier.
+- **A user sees only their own installation.** Cross-installation visibility,
+  probably for Owner and Admin, is explicitly out of scope. Note this is the same
+  shape as the `securityEvents` policy, which already answers "no" for everyone,
+  so the conservative default costs nothing to keep.
+- **Unattributed traffic groups as "unknown", and must not change any existing
+  behaviour.** Every historical row has no installation, and so does any
+  `sk-gw-*` key used outside Gate Connect. Two consequences follow and are
+  requirements rather than preferences: an absent installation must never filter
+  a request out of a total the user already sees, and the column must be nullable
+  with no backfill, so nothing that works today starts failing.
+
+**The risk to state before anyone writes it.** Stamping an installation id is a
+change to the *data plane* of the desktop app: the header rides on every proxied
+request, in both the relay and the MITM engine. It has to fail open. A missing,
+malformed, or unwritable installation id must degrade to today's behaviour -
+unattributed traffic - and never break the request carrying the user's actual
+work.
+
 ## 12. Deferred follow-ups (not AG-572)
 
 Recorded 2026-08-12 so they are not silently absorbed into this ticket.

@@ -2,11 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
 import {
+  connectTool,
   getAccount,
   launchAtLoginStatus,
   listProviders,
   listTools,
+  proxyEnable,
   proxyStatus,
+  proxyTrustCa,
 } from "./lib/api";
 import { buildGroups } from "./lib/groups";
 import type { Group, GroupMember } from "./lib/groups";
@@ -18,6 +21,9 @@ import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import { useActivity } from "./lib/activity";
+import { buildNotices } from "./lib/notices";
+import type { NoticeAction } from "./lib/notices";
+import { AlertBanner } from "./components/gc/banners";
 import type { ActivityView } from "./lib/activity";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
 import { DiagnosticsDialog } from "./components/gc/dialogs";
@@ -85,6 +91,48 @@ export function NewUiApp() {
           })
         : [],
     [providers, tools, proxy],
+  );
+
+  // Re-read the routing facts the notices are built from. Their whole point is
+  // that they disappear once acted on, which only works if the state behind them
+  // is refetched rather than assumed.
+  const refreshRouting = useCallback(async () => {
+    const [t, px] = await Promise.all([
+      listTools().catch(() => tools),
+      proxyStatus().catch(() => proxy),
+    ]);
+    setTools(t);
+    setProxy(px);
+  }, [tools, proxy]);
+
+  const [dismissedNotices, setDismissedNotices] = useState<string[]>([]);
+  const [noticePage, setNoticePage] = useState(0);
+  const [noticeBusy, setNoticeBusy] = useState(false);
+
+  const notices = useMemo(
+    () => buildNotices(groups).filter((n) => !dismissedNotices.includes(n.id)),
+    [groups, dismissedNotices],
+  );
+
+  /** Perform a notice's action, then re-read state so it clears itself. */
+  const runNoticeAction = useCallback(
+    async (action: NoticeAction) => {
+      if (noticeBusy) return;
+      setNoticeBusy(true);
+      try {
+        if (action.kind === "enable-routing") await proxyEnable();
+        else if (action.kind === "trust-certificate") await proxyTrustCa();
+        else await connectTool(action.slug, action.upstreamUrl);
+      } catch {
+        // Swallowed on purpose for now: the shell has nowhere to render a
+        // failure yet, and the notice staying put is itself the signal that
+        // nothing changed. Wire this to the error surface when one exists.
+      } finally {
+        await refreshRouting();
+        setNoticeBusy(false);
+      }
+    },
+    [noticeBusy, refreshRouting],
   );
 
   const apps = useMemo<SidebarApp[]>(
@@ -215,7 +263,44 @@ export function NewUiApp() {
           // real reading and would claim the user had no traffic.
           pending={activity.view === null && activity.error === null}
           period={activity.view?.period ?? "Last 24 hours"}
-          alert={<ActivityGaps view={activity.view} error={activity.error} />}
+          alert={
+            <>
+              {notices.length > 0 && (
+                <AlertBanner
+                  // Keyed so switching pages remounts rather than animating one
+                  // card's text into another's.
+                  key={notices[Math.min(noticePage, notices.length - 1)].id}
+                  title={notices[Math.min(noticePage, notices.length - 1)].title}
+                  body={notices[Math.min(noticePage, notices.length - 1)].body}
+                  switchLabel={notices[Math.min(noticePage, notices.length - 1)].switchLabel}
+                  // The switch reflects the state being fixed, which is always
+                  // "not routing". Toggling it performs the action.
+                  on={false}
+                  onToggle={() =>
+                    void runNoticeAction(
+                      notices[Math.min(noticePage, notices.length - 1)].action,
+                    )
+                  }
+                  onDismiss={() =>
+                    setDismissedNotices((d) => [
+                      ...d,
+                      notices[Math.min(noticePage, notices.length - 1)].id,
+                    ])
+                  }
+                  paging={
+                    notices.length > 1
+                      ? {
+                          onPrev: () =>
+                            setNoticePage((p) => (p - 1 + notices.length) % notices.length),
+                          onNext: () => setNoticePage((p) => (p + 1) % notices.length),
+                        }
+                      : undefined
+                  }
+                />
+              )}
+              <ActivityGaps view={activity.view} error={activity.error} />
+            </>
+          }
         />
       )}
     </AppShell>
