@@ -1,13 +1,17 @@
 //! Tauri shell. The Rust surface here is small on purpose: every command
 //! delegates to `gate-connect-core` so the CLI and the GUI exercise the
-//! same code path. Beyond commands, this file sets up the tray presentation:
-//! no dock icon, hidden window on launch, click the tray to toggle a normal
-//! 1024x720 window.
+//! same code path. Beyond commands, this file sets up a normal 1024x720 window
+//! plus a tray icon that toggles it, and a close button that hides rather than
+//! quits so the tray always has something to bring back.
 //!
-//! The tray no longer places that window. It used to anchor it under the icon,
-//! at the cursor, or under the menu bar depending on platform, which is right
-//! for a popover and wrong for a window the user can move and resize. Placement
-//! is now the window's own: centred on first launch, and left alone after.
+//! It used to be a menu-bar popover, and three habits of that had to go. The
+//! tray placed the window (under the icon, at the cursor, or under the menu bar
+//! by platform), so it now only toggles visibility and placement is the
+//! window's own: centred on first launch, untouched after. Focus loss dismissed
+//! it, which for a window means vanishing whenever the user clicks another app.
+//! And on macOS it was promoted to a non-activating NSPanel with a hand-rolled
+//! corner radius, its own space behaviour and a click-outside watcher, none of
+//! which a regular window wants. The dock icon is back with them gone.
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
@@ -897,15 +901,15 @@ async fn proxy_untrust_ca() -> Result<gate_connect_core::proxy::ProxyState, Stri
 const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
 
 /// When the startup popover was shown. Used to ignore the spurious focus-loss
-/// an Accessory (menu-bar) app can emit before it becomes frontmost, which
-/// would otherwise immediately hide the popover we open on launch.
-/// While true, the popover ignores focus-loss instead of hiding. Set at
-/// macOS launch so the keychain-password dialog (and the first-run screen)
-/// can't make the window vanish before the user has even seen it - a focus
-/// steal by that system dialog would otherwise trip the dismiss-on-blur
-/// handler. Cleared by [`unpin_popover`] once the user interacts, restoring
-/// normal click-away dismissal. Defaults off so non-macOS behavior is
-/// unchanged (only the macOS startup path pins it).
+/// Vestigial. This once suppressed dismiss-on-blur while the keychain dialog or
+/// first-run screen held focus, so a focus steal could not make the popover
+/// vanish before the user had seen it. Nothing dismisses on blur any more - a
+/// window stays put when you click another app - so the flag is written by
+/// [`pin_popover`] / [`unpin_popover`] and read nowhere.
+///
+/// Kept because `App.tsx`, still reachable as the popover fallback, invokes
+/// both commands; removing them would make those calls fail. Delete all three
+/// together when the popover screens go.
 static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 
 /// Whether the popover is currently shown. Tracks the hidden→visible edge so
@@ -1594,34 +1598,12 @@ pub fn run() {
                     });
                 }
             }
-            // Click outside the popover → dismiss. Linux is excluded: there the
-            // window is a normal decorated, taskbar-visible window (see setup),
-            // and a dismiss-on-blur reflex fights its own title bar - grabbing
-            // the CSD title bar or close button momentarily blurs the GTK
-            // toplevel, so minimizing here would yank drag/close out from under
-            // the user. Linux dismisses via its native controls instead.
-            #[cfg(not(target_os = "linux"))]
-            if let WindowEvent::Focused(false) = event {
-                // While pinned (first launch, through the keychain-password
-                // dialog and first-run, until the user engages), a focus loss
-                // - the keychain dialog stealing focus, or the spurious blur an
-                // Accessory app emits right after the startup show - must not
-                // hide the popover, or the user never sees the window.
-                if POPOVER_PINNED.load(Ordering::Acquire) {
-                    return;
-                }
-                let _ = window.hide();
-                POPOVER_VISIBLE.store(false, Ordering::Release);
-            }
         })
         .setup(|app| {
             // Lets failure sites without a handle of their own nudge the
             // popover to drain buffered analytics errors.
             let _ = APP_HANDLE.set(app.handle().clone());
 
-            // Hide the dock icon - Gate Connect lives in the menu bar.
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Launch at login defaults ON: arm the login item the first time
             // we run so routing persists across a restart out of the box. A
@@ -1972,38 +1954,7 @@ pub fn run() {
                 });
             }
 
-            // Linux dismisses the popover by minimizing (see the Focused(false)
-            // handler), so it needs a taskbar/dock entry to restore from -
-            // override the config's skipTaskbar:true here. macOS hides from the
-            // dock via the Accessory activation policy instead, and Windows
-            // keeps its hide-to-tray behavior, so neither wants this.
-            #[cfg(target_os = "linux")]
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_skip_taskbar(false);
-                // Stay borderless (config `decorations: false`): the native CSD
-                // title-bar buttons don't reliably bind on Wayland/GNOME, so the
-                // frontend draws its own chrome (`LinuxTitleBar`) and calls the
-                // Tauri window APIs directly. A native title bar here would just
-                // compete with that custom strip.
-                //
-                // Drop the config's alwaysOnTop on Linux: with no dismiss-on-blur
-                // here (see the Focused handler), an always-on-top window would
-                // float over everything with no way to recede when the user
-                // switches apps. As a normal window it sinks behind on focus
-                // loss and is re-summoned from the taskbar or tray.
-                let _ = window.set_always_on_top(false);
-            }
 
-            // Round the NSWindow content view's CALayer so the transparent
-            // window itself has rounded corners - without this, CSS-rounded
-            // corners on the popover expose the dark window behind them.
-            #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("main") {
-                promote_to_nonactivating_panel(&window);
-                apply_window_corner_radius(&window, 12.0);
-                apply_popover_space_behavior(&window);
-                install_click_outside_dismiss(app.handle());
-            }
             #[cfg(target_os = "macos")]
             watch_menu_bar_appearance(app.handle());
 
@@ -2094,11 +2045,10 @@ pub fn run() {
             // Show it here, from Rust: a hidden WKWebView reports visibility
             // "hidden" and WebKit suspends requestAnimationFrame, so revealing
             // from the frontend never fires and the popover never opens on
-            // launch. The blank-window flash that a synchronous show otherwise
-            // causes (the window appears before WKWebView's first paint) is
-            // handled by painting the rounded content layer white up front (see
-            // `apply_window_corner_radius`), so the first frame is the splash's
-            // white card rather than a transparent flash.
+            // launch. A synchronous show can flash an unpainted window before
+            // WKWebView's first frame; the window is opaque now (config
+            // `transparent: false`), so that flash is the window's own
+            // background rather than a see-through hole.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main").filter(|_| !silent_launch) {
                 POPOVER_PINNED.store(true, Ordering::Release);
@@ -2306,114 +2256,6 @@ fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
     }
 }
 
-/// Let the popover render over the active Space, including a full-screen app's.
-#[cfg(target_os = "macos")]
-fn apply_popover_space_behavior(window: &tauri::WebviewWindow) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-
-    const CAN_JOIN_ALL_SPACES: u64 = 1 << 0;
-    const FULL_SCREEN_AUXILIARY: u64 = 1 << 8;
-    const NS_STATUS_WINDOW_LEVEL: i64 = 25;
-
-    let Ok(ns_window_ptr) = window.ns_window() else {
-        return;
-    };
-    if ns_window_ptr.is_null() {
-        return;
-    }
-
-    unsafe {
-        let ns_window: *mut AnyObject = ns_window_ptr.cast();
-        let behavior: u64 = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
-        let () = msg_send![ns_window, setCollectionBehavior: behavior];
-        let () = msg_send![ns_window, setLevel: NS_STATUS_WINDOW_LEVEL];
-    }
-}
-
-/// NSPanel subclass whose canBecomeKey/MainWindow return YES - a borderless
-/// window can't become key otherwise, which blocks the cursor and keyboard.
-#[cfg(target_os = "macos")]
-fn key_panel_class() -> &'static objc2::runtime::AnyClass {
-    use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
-    use objc2::{class, sel};
-    use std::ffi::CStr;
-
-    const NAME: &CStr = c"GateConnectKeyPanel";
-
-    if let Some(cls) = AnyClass::get(NAME) {
-        return cls;
-    }
-
-    // Raw-pointer receiver keeps the fn type non-higher-ranked for add_method.
-    extern "C" fn yes(_this: *mut AnyObject, _sel: Sel) -> Bool {
-        Bool::YES
-    }
-
-    let mut builder = ClassBuilder::new(NAME, class!(NSPanel))
-        .expect("GateConnectKeyPanel: class name should be unique in-process");
-    unsafe {
-        builder.add_method(
-            sel!(canBecomeKeyWindow),
-            yes as extern "C" fn(*mut AnyObject, Sel) -> Bool,
-        );
-        builder.add_method(
-            sel!(canBecomeMainWindow),
-            yes as extern "C" fn(*mut AnyObject, Sel) -> Bool,
-        );
-    }
-    builder.register()
-}
-
-/// Make the popover a non-activating NSPanel: it can take key focus over a
-/// full-screen app without activating us, which would leave that Space.
-#[cfg(target_os = "macos")]
-fn promote_to_nonactivating_panel(window: &tauri::WebviewWindow) {
-    use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
-
-    const NONACTIVATING_PANEL: u64 = 1 << 7;
-
-    let Ok(ns_window_ptr) = window.ns_window() else {
-        return;
-    };
-    if ns_window_ptr.is_null() {
-        return;
-    }
-
-    unsafe {
-        let ns_window: *mut AnyObject = ns_window_ptr.cast();
-        let panel_cls: &AnyClass = key_panel_class();
-        objc2::ffi::object_setClass(ns_window, panel_cls);
-        let mask: u64 = msg_send![ns_window, styleMask];
-        let () = msg_send![ns_window, setStyleMask: mask | NONACTIVATING_PANEL];
-        let () = msg_send![ns_window, setBecomesKeyOnlyIfNeeded: false];
-        let () = msg_send![ns_window, setHidesOnDeactivate: false];
-    }
-}
-
-/// Dismiss the popover on click-outside; a non-activating panel emits no blur
-/// event, so we watch for mouse-downs delivered to other apps instead.
-#[cfg(target_os = "macos")]
-fn install_click_outside_dismiss(app: &tauri::AppHandle) {
-    use block2::RcBlock;
-    use objc2_app_kit::{NSEvent, NSEventMask};
-
-    let handle = app.clone();
-    let block = RcBlock::new(move |_event: core::ptr::NonNull<NSEvent>| {
-        if let Some(window) = handle.get_webview_window("main") {
-            if window.is_visible().unwrap_or(false) {
-                let _ = window.hide();
-                POPOVER_VISIBLE.store(false, Ordering::Release);
-            }
-        }
-    });
-    let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown;
-    if let Some(token) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block) {
-        std::mem::forget(token); // dropping the token removes the monitor
-    }
-}
-
 /// Last menu-bar appearance the tray icon was painted for, so the watcher can
 /// tell a real flip from a redundant sample: -1 unknown, 0 light, 1 dark.
 #[cfg(target_os = "macos")]
@@ -2560,65 +2402,5 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
         let ns_window: *mut AnyObject = ns_window_ptr.cast();
         let () = msg_send![ns_window, orderFrontRegardless];
         let () = msg_send![ns_window, makeKeyWindow];
-    }
-}
-
-/// Round the corners of the underlying NSWindow on macOS.
-///
-/// The window is created with `transparent: false`, so it needs no macOS
-/// private API. On its own that yields a square, opaque window. To get a
-/// rounded shape we use only public AppKit/QuartzCore:
-/// 1. make the NSWindow non-opaque with a clear background, so the corner
-///    regions outside the radius render transparent rather than painting
-///    the default window background;
-/// 2. layer-back the content view and mask its CALayer to a corner radius.
-///
-/// The webview body stays opaque (white from CSS), so the corners read as
-/// cleanly rounded against the desktop.
-#[cfg(target_os = "macos")]
-fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
-    use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send};
-
-    let Ok(ns_window_ptr) = window.ns_window() else {
-        return;
-    };
-    if ns_window_ptr.is_null() {
-        return;
-    }
-
-    // SAFETY: `ns_window()` hands us a borrowed NSWindow pointer that lives
-    // as long as the Tauri window. We only call documented AppKit/QuartzCore
-    // selectors on the main thread (Tauri's setup callback runs on main).
-    unsafe {
-        let ns_window: *mut AnyObject = ns_window_ptr.cast();
-        // Drop Tauri's private-API transparency: make the NSWindow
-        // non-opaque with a clear background using only public AppKit, so
-        // the corner regions outside the rounded mask render transparent
-        // instead of painting the default opaque window background.
-        let clear_color: *mut AnyObject = msg_send![class!(NSColor), clearColor];
-        let () = msg_send![ns_window, setOpaque: false];
-        let () = msg_send![ns_window, setBackgroundColor: clear_color];
-        let content_view: *mut AnyObject = msg_send![ns_window, contentView];
-        if content_view.is_null() {
-            return;
-        }
-        // Layer-back the content view so it actually has a CALayer to mask.
-        let () = msg_send![content_view, setWantsLayer: true];
-        let layer: *mut AnyObject = msg_send![content_view, layer];
-        if layer.is_null() {
-            return;
-        }
-        let () = msg_send![layer, setCornerRadius: radius];
-        let () = msg_send![layer, setMasksToBounds: true];
-        // Paint the masked layer white so the window's first on-screen frame is
-        // a white rounded card - matching the splash background - instead of the
-        // transparent/blank flash the clear window background shows before
-        // WKWebView paints. The webview's opaque white body draws over this once
-        // it renders, so the handoff is seamless. Clipped to the corner mask, so
-        // the rounded corners stay transparent.
-        let white: *mut AnyObject = msg_send![class!(NSColor), whiteColor];
-        let white_cg: *mut AnyObject = msg_send![white, CGColor];
-        let () = msg_send![layer, setBackgroundColor: white_cg];
     }
 }
