@@ -2,6 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { App } from "./App";
+import { NewUiApp } from "./NewUiApp";
+import { newUiEnabled } from "./lib/newUi";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./screens/Onboarding";
 import { initAnalytics, captureException } from "./lib/analytics";
@@ -33,9 +35,15 @@ const isOnboardingWindow = (() => {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
+    {/* The onboarding window keeps its own content whatever the shell flag
+        says - it is a separate window with a separate job. */}
     {isOnboardingWindow ? (
       <ErrorBoundary>
         <Onboarding />
+      </ErrorBoundary>
+    ) : newUiEnabled() ? (
+      <ErrorBoundary>
+        <NewUiApp />
       </ErrorBoundary>
     ) : (
       <ErrorBoundary>
