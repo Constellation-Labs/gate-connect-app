@@ -435,8 +435,17 @@ export function ReplaceApiKeyDialog({
   );
 }
 
-/** Disconnecting is not "are you sure", it undoes the setup - hence the red
- *  tone and a primary that names what it does. */
+/**
+ * End the signed-in session. Red tone and a primary that names what it does,
+ * because it stops this device talking to Gate.
+ *
+ * The drawn copy says protection turns off, apps stop routing and the API key is
+ * removed from the keychain. That describes Reset, which is a separate row on the
+ * same screen; this one sits under "Active session" and ends the session, leaving
+ * the account and the tools' configs alone. Copy corrected to match what it does
+ * rather than shipping two destructive actions that claim the same consequences.
+ * Raised with the designer.
+ */
 export function DisconnectGateDialog({
   onCancel,
   onDisconnect,
@@ -458,8 +467,8 @@ export function DisconnectGateDialog({
       onDismiss={onCancel}
     >
       <p className="text-sm leading-5 text-neutral-600">
-        Protection turns off, your apps stop routing through Gate, and your API key is
-        removed from the keychain.
+        This device signs out of Gate and stops sending activity. Your apps keep their
+        current configuration, and signing back in restores routing.
       </p>
     </Modal>
   );

@@ -1,6 +1,17 @@
 import { useCallback, useState } from "react";
-import { getAccount, oauthListOrgs, saveAccount, setLaunchAtLogin, setOrg } from "./api";
-import type { Account, Org } from "./api";
+import {
+  clearAccount,
+  getAccount,
+  oauthListOrgs,
+  oauthSignOut,
+  oauthStatus,
+  proxyDisable,
+  proxyStatus,
+  saveAccount,
+  setLaunchAtLogin,
+  setOrg,
+} from "./api";
+import type { Account, OAuthStatus, Org, ProxyState } from "./api";
 import { launchAtLoginStatus } from "./api";
 import { track, trackError } from "./analytics";
 
@@ -26,7 +37,9 @@ import { track, trackError } from "./analytics";
 export type SettingsPrompt =
   | { kind: "replace-key" }
   | { kind: "switch-org"; orgs: Org[]; selectedId: string }
-  | { kind: "org-switched"; name: string };
+  | { kind: "org-switched"; name: string }
+  | { kind: "disconnect" }
+  | { kind: "reset"; acknowledged: boolean };
 
 export interface SettingsActions {
   prompt: SettingsPrompt | null;
@@ -46,20 +59,33 @@ export interface SettingsActions {
   openSwitchOrg: () => Promise<void>;
   selectOrg: (id: string) => void;
   confirmSwitchOrg: () => Promise<void>;
+  openDisconnect: () => void;
+  confirmDisconnect: () => Promise<void>;
+  openReset: () => void;
+  acknowledgeReset: (next: boolean) => void;
+  confirmReset: () => Promise<void>;
 }
 
 export function useSettingsActions({
   account,
+  proxyRunning,
   launchAtLogin,
   onLaunchAtLogin,
   onAccount,
+  onSession,
+  onProxy,
   onError,
 }: {
   account: Account | null;
+  /** Whether the engine is running, so reset knows to stop it first. */
+  proxyRunning: boolean;
   launchAtLogin: boolean;
   /** Both the enabled flag and whether an opt-out is still pending. */
   onLaunchAtLogin: (state: { enabled: boolean; pendingDisable: boolean }) => void;
   onAccount: (account: Account | null) => void;
+  /** Both credentials at once, for the two actions that end the session. */
+  onSession: (next: { account: Account | null; oauth: OAuthStatus | null }) => void;
+  onProxy: (next: ProxyState | null) => void;
   onError: (err: unknown) => void;
 }): SettingsActions {
   const [prompt, setPrompt] = useState<SettingsPrompt | null>(null);
@@ -190,6 +216,80 @@ export function useSettingsActions({
     }
   }, [prompt, busy, onAccount, onError]);
 
+  const openDisconnect = useCallback(() => setPrompt({ kind: "disconnect" }), []);
+
+  /**
+   * End the OAuth session, keeping the account and the tools' connections.
+   *
+   * Scoped to the session because that is the row it lives under, and because
+   * removing the account is what Reset is for. The drawn dialog copy says the
+   * API key is removed from the keychain, which describes Reset rather than
+   * this; implemented as a sign-out and the copy corrected. Raised with the
+   * designer.
+   */
+  const confirmDisconnect = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await oauthSignOut();
+      const [acct, oauth] = await Promise.all([
+        getAccount().catch(() => null),
+        oauthStatus().catch(() => null),
+      ]);
+      onSession({ account: acct, oauth });
+      setPrompt(null);
+    } catch (err) {
+      onError(err);
+      trackError(err, "sign_out");
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, onSession, onError]);
+
+  const openReset = useCallback(() => setPrompt({ kind: "reset", acknowledged: false }), []);
+
+  const acknowledgeReset = useCallback((next: boolean) => {
+    setPrompt((p) => (p?.kind === "reset" ? { ...p, acknowledged: next } : p));
+  }, []);
+
+  /**
+   * Turn routing off, then remove the account. The order is the point.
+   *
+   * A failed disable can leave system HTTPS pointed at an engine port that is
+   * about to die, so this aborts rather than continuing to `clearAccount` and
+   * stranding the machine's traffic on a dead proxy. `clearAccount` itself
+   * disconnects managed tools before wiping anything, so a failure there leaves
+   * the user still signed in - which is why the error surfaces instead of the
+   * window dropping to sign-in over a half-reset state.
+   */
+  const confirmReset = useCallback(async () => {
+    if (prompt?.kind !== "reset" || !prompt.acknowledged || busy) return;
+    setBusy(true);
+    try {
+      if (proxyRunning) {
+        try {
+          onProxy(await proxyDisable());
+        } catch (err) {
+          // Re-read so the UI shows what the engine actually did, then abort.
+          onProxy(await proxyStatus().catch(() => null));
+          throw err;
+        }
+      }
+      await clearAccount();
+      track("workspace_forgotten");
+      // Nothing to route and nobody to route for. The derived setup stage picks
+      // this up and shows sign-in; there is no separate "go to first run" step
+      // that could disagree with what is on disk.
+      onSession({ account: null, oauth: null });
+      setPrompt(null);
+    } catch (err) {
+      onError(err);
+      trackError(err, "forget");
+    } finally {
+      setBusy(false);
+    }
+  }, [prompt, busy, proxyRunning, onProxy, onSession, onError]);
+
   return {
     prompt,
     busy,
@@ -197,6 +297,11 @@ export function useSettingsActions({
     setNewKey,
     copied,
     dismissPrompt,
+    openDisconnect,
+    confirmDisconnect,
+    openReset,
+    acknowledgeReset,
+    confirmReset,
     toggleLaunchAtLogin,
     copyText,
     openReplaceKey,

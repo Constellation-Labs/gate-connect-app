@@ -577,14 +577,14 @@ the same PR.
 
 The queue downstream PRs draw from, in the order that unblocks the most.
 
-1. **First run, then disconnect and reset.** `setup.tsx` has `WelcomePane`,
-   `OrgPickerPane` and `ConnectedPane`, all presentational, and no API-key form
-   at all. Until the shell can show them, `clear_account` and `oauth_sign_out`
-   have nowhere to return the user: they would leave a window still listing apps
-   it can no longer route. Both Settings rows are therefore passed no handler,
-   which omits them (see `buildSettingsSections`). Wiring first run is what
-   unblocks them, and it is the last thing standing between the new shell and
-   retiring the popover.
+1. **First run, disconnect and reset: DONE.** `lib/useSetup.ts` derives the
+   stage from account and OAuth state rather than storing it, which is what makes
+   reset work - clearing the account is the whole handoff, with no separate "show
+   first run" flag to disagree with what is on disk. Two things cannot be derived
+   and are flagged in the hook: whether the confirmation pane has been seen (a
+   returning user must not be greeted by it) and the org-picker dead end's escape
+   to the key form. `isSignedIn` / `needsOrg` moved to `lib/session.ts` so both
+   shells cannot drift on what counts as signed in.
 2. **Updates.** `banners.tsx` has `UpdateBanner` and nothing drives it.
    `components/UpdatePanel.tsx` holds the real flow - `check()` from
    `plugin-updater`, then download/install bracketed by
@@ -606,8 +606,28 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    pending the 24-hour endpoint. Open question 7 (whether `total` double-counts)
    should be settled in that response shape, not in the chart.
 7. **Retire the popover.** `App.tsx`, `screens/`, `gc/ui.tsx`, the `gc.*`
-   palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together,
-   once 1 lands and the e2e suite can be repointed at the new shell.
+   palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together.
+   Item 1 was the blocker and is done, so what remains is repointing the e2e
+   suite at the new shell and deleting; the popover's own specs go with it.
 
 Rows the design draws that have no backend command at all: device rename,
 notifications, plan upgrade. They render their value and omit their control.
+
+Two rows are gated on the account's auth mode rather than hidden outright:
+**Replace key** appears only for an API-key account (on an OAuth account
+`saveAccount` with a key would flip `auth_mode`, quietly converting the account
+behind a button that says "replace"), and **Disconnect Gate** only for an OAuth
+account, which is the only one with a session to end.
+
+## Copy corrections to raise with the designer
+
+Two dialogs say something the action does not do. Both are implemented correctly
+and the reason is recorded at the component:
+
+- **Replace API key** labels its second field "New device name", copy-pasted from
+  the rename dialog. Shipped as "New API key": the drawn label would put a wrong
+  word on the one screen where the user handles a credential.
+- **Disconnect Gate** says protection turns off, apps stop routing and the key is
+  removed from the keychain. That describes Reset, a separate row on the same
+  screen. Implemented as ending the session, and the body copy corrected, rather
+  than shipping two destructive actions that claim the same consequences.

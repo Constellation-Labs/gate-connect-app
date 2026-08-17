@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import type { Account, Org, ProxyState, ProviderState, Tool } from "./lib/api";
+import type { Account, OAuthStatus, Org, ProxyState, ProviderState, Tool } from "./lib/api";
 import {
   getAccount,
   launchAtLoginStatus,
   listProviders,
   listTools,
+  oauthStatus,
   openOnboardingWindow,
   proxyStatus,
 } from "./lib/api";
 import { useRouting } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
+import { useSetup } from "./lib/useSetup";
 import { classifyError } from "./lib/errors";
 import type { ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
@@ -26,9 +28,18 @@ import { Overview } from "./components/gc/Overview";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
 import {
+  ConnectedPane,
+  OrgPickerPane,
+  SetupLayout,
+  WelcomePane,
+} from "./components/gc/setup";
+import type { SetupOrganization } from "./components/gc/setup";
+import {
   DiagnosticsDialog,
+  DisconnectGateDialog,
   OrganizationSwitchedDialog,
   ReplaceApiKeyDialog,
+  ResetGateConnectDialog,
   ReviewConfigDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
@@ -64,6 +75,10 @@ export function NewUiApp() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
+  const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
+  // Whether the first read has landed. A null account before it does is not the
+  // same as no account, and treating them alike flashes sign-in at every user.
+  const [loaded, setLoaded] = useState(false);
   const [version, setVersion] = useState("");
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [view, setView] = useState<SidebarView>({ kind: "overview" });
@@ -96,11 +111,12 @@ export function NewUiApp() {
 
   useEffect(() => {
     void (async () => {
-      const [t, p, px, acct, v, launch] = await Promise.all([
+      const [t, p, px, acct, oauthState, v, launch] = await Promise.all([
         listTools().catch(() => [] as Tool[]),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
         getAccount().catch(() => null),
+        oauthStatus().catch(() => null),
         getVersion().catch(() => ""),
         launchAtLoginStatus().catch(() => null),
       ]);
@@ -108,8 +124,10 @@ export function NewUiApp() {
       setProviders(p);
       setProxy(px);
       setAccount(acct);
+      setOAuth(oauthState);
       setVersion(v);
       setLaunchAtLogin(launch?.enabled ?? false);
+      setLoaded(true);
     })();
   }, []);
 
@@ -170,11 +188,30 @@ export function NewUiApp() {
 
   const noop = useCallback(() => {}, []);
 
+  const onSession = useCallback(
+    ({ account: a, oauth: o }: { account: Account | null; oauth: OAuthStatus | null }) => {
+      setAccount(a);
+      setOAuth(o);
+    },
+    [],
+  );
+
+  const setup = useSetup({
+    loaded,
+    account,
+    oauth,
+    onSession,
+    onProxy: setProxy,
+  });
+
   const settings = useSettingsActions({
     account,
+    proxyRunning: proxy?.running ?? false,
     launchAtLogin,
     onLaunchAtLogin: ({ enabled }) => setLaunchAtLogin(enabled),
     onAccount: setAccount,
+    onSession,
+    onProxy: setProxy,
     onError: (e) => setActionError(classifyError(e, "generic")),
   });
 
@@ -200,7 +237,14 @@ export function NewUiApp() {
         launchAtLogin,
         version: version ? `v${version}` : "-",
         onCopyInstallId: installId ? () => void settings.copyText(installId) : noop,
-        onReplaceKey: settings.openReplaceKey,
+        // Only where there is a key to replace. On an OAuth account `saveAccount`
+        // with a key would flip auth_mode to api_key, quietly converting the
+        // account behind a button that says "replace".
+        onReplaceKey: account?.auth_mode === "api_key" ? settings.openReplaceKey : undefined,
+        // Only where there is a session to end. An API-key account never had one;
+        // reset is its way out.
+        onDisconnect: account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
+        onReviewReset: settings.openReset,
         onToggleLaunchAtLogin: () => void settings.toggleLaunchAtLogin(),
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
@@ -231,6 +275,8 @@ export function NewUiApp() {
       installId,
       settings.copyText,
       settings.openReplaceKey,
+      settings.openDisconnect,
+      settings.openReset,
       settings.toggleLaunchAtLogin,
       platform,
       proxy,
@@ -239,6 +285,16 @@ export function NewUiApp() {
       noop,
     ],
   );
+
+  // The picker needs its list, and only it knows when it is on screen. Guarded on
+  // `orgs === null` so a genuine empty list - the dead end the pane draws - does
+  // not re-read forever.
+  const setupStageKind = setup.stage.kind;
+  const setupOrgs = setup.orgs;
+  const loadOrgs = setup.loadOrgs;
+  useEffect(() => {
+    if (setupStageKind === "org-picker" && setupOrgs === null) void loadOrgs();
+  }, [setupStageKind, setupOrgs, loadOrgs]);
 
   const protectedCount = apps.filter((a) => a.status.kind === "protected").length;
 
@@ -274,6 +330,60 @@ export function NewUiApp() {
     setMenuOpen(false);
     if (action === "dashboard") void openExternal(GATE_DASHBOARD_URL);
   }, []);
+
+  const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;
+
+  // Before there is a usable credential there is nothing to navigate, so the
+  // window is chrome plus one centred card rather than the shell with an empty
+  // sidebar. The stage is derived from what is on disk, so reset and a dead
+  // session both land here without anything having to route them.
+  if (setup.stage.kind === "loading") {
+    // A sub-frame gap before the first read lands. Painting the sign-in card and
+    // replacing it a frame later is worse than painting nothing.
+    return null;
+  }
+  if (setup.stage.kind !== "ready") {
+    const stage = setup.stage;
+    return (
+      <SetupLayout
+        menuOpen={menuOpen}
+        onMenuToggle={() => setMenuOpen((v) => !v)}
+        onMenuSelect={onMenuSelect}
+      >
+        {stage.kind === "welcome" ? (
+          <WelcomePane
+            reauth={stage.reauth}
+            onSignIn={() => void setup.signIn()}
+            apiKeyOpen={setup.apiKeyOpen}
+            onToggleApiKey={setup.toggleApiKey}
+            apiKey={setup.apiKey}
+            onApiKeyChange={setup.setApiKey}
+            onConnectWithApiKey={() => void setup.connectWithApiKey()}
+            busy={setup.busy}
+            error={setupError && <SetupNote error={setupError} />}
+          />
+        ) : stage.kind === "org-picker" ? (
+          <OrgPickerPane
+            organizations={(setup.orgs ?? []).map(toSetupOrg)}
+            selectedId={setup.selectedOrgId}
+            onSelect={setup.selectOrg}
+            onContinue={() => void setup.confirmOrg()}
+            onUseApiKey={setup.useApiKeyInstead}
+            busy={setup.busy}
+            error={setupError && <SetupNote error={setupError} />}
+          />
+        ) : (
+          <ConnectedPane
+            workspace={account?.org_name ?? account?.gateway_base_url ?? "Gate"}
+            offerRouting={!!proxy && !proxy.running}
+            busy={setup.busy}
+            onTurnOnRouting={() => void setup.turnOnRouting()}
+            onDone={setup.finish}
+          />
+        )}
+      </SetupLayout>
+    );
+  }
 
   return (
     <AppShell
@@ -359,6 +469,18 @@ export function NewUiApp() {
             organizationName={settings.prompt.name}
             onDone={settings.dismissPrompt}
           />
+        ) : settings.prompt?.kind === "disconnect" ? (
+          <DisconnectGateDialog
+            onCancel={settings.dismissPrompt}
+            onDisconnect={() => void settings.confirmDisconnect()}
+          />
+        ) : settings.prompt?.kind === "reset" ? (
+          <ResetGateConnectDialog
+            acknowledged={settings.prompt.acknowledged}
+            onAcknowledgedChange={settings.acknowledgeReset}
+            onCancel={settings.dismissPrompt}
+            onReset={() => void settings.confirmReset()}
+          />
         ) : undefined
       }
     >
@@ -436,6 +558,20 @@ function toDialogOrg(org: Org): DialogOrganization {
     initials: initialsOf(org.name),
     meta: [org.slug, org.role].filter(Boolean).join(" · "),
   };
+}
+
+/** The setup panes take the same shape as the dialog's org rows. */
+function toSetupOrg(org: Org): SetupOrganization {
+  return toDialogOrg(org);
+}
+
+/** Title plus remedy, the same two lines the popover's `ErrorNote` shows. */
+function SetupNote({ error }: { error: ClassifiedError }) {
+  return (
+    <>
+      <span className="font-medium">{error.title}</span> {error.hint}
+    </>
+  );
 }
 
 function initialsOf(name: string): string {
