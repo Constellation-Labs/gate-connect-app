@@ -108,6 +108,7 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
         upstream_url: url,
         rewrite_prefixes: vec!["/v1/".into()],
         passthrough_prefixes: Vec::new(),
+        rewrite_suffixes: Vec::new(),
         enabled: true,
         supported: true,
     })

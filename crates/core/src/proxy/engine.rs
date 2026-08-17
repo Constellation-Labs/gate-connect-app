@@ -1206,6 +1206,7 @@ mod tests {
             upstream_url: "https://api.anthropic.com".into(),
             rewrite_prefixes: vec!["/v1/".into()],
             passthrough_prefixes: vec![],
+            rewrite_suffixes: Vec::new(),
             enabled: true,
             supported: true,
         }];
