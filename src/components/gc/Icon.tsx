@@ -48,6 +48,7 @@ export type IconName =
   | "bell"
   | "codeXml"
   | "circleCheck"
+  | "circleX"
   | "creditCard";
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -306,6 +307,13 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <circle cx="12" cy="12" r="10" />
       <path d="m9 12 2 2 4-4" />
+    </>
+  ),
+  circleX: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="m15 9-6 6" />
+      <path d="m9 9 6 6" />
     </>
   ),
   creditCard: (
