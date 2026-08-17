@@ -14,6 +14,7 @@ import {
 import { useRouting } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
+import { useRunningApps } from "./lib/useRunningApps";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
@@ -30,6 +31,11 @@ import { AppPane } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
+import {
+  ApplyChangesDialog,
+  ChangeReadyDialog,
+  CloseAppsDialog,
+} from "./components/gc/dialogs";
 import {
   ConnectedPane,
   OrgPickerPane,
@@ -168,6 +174,25 @@ export function NewUiApp() {
     },
   });
   const routingBusy = routing.busy;
+
+  const runningApps = useRunningApps({
+    onError: (e) => setActionError(classifyError(e, "close_agents")),
+  });
+
+  /**
+   * A tool's config was rewritten. If that app is open it is still on its old
+   * route until it restarts, so offer to close it - but only when something was
+   * actually written, which is why `setAppRouted` reports back.
+   */
+  const routeApp = useCallback(
+    async (slug: string, next: boolean, force = false) => {
+      setActionError(null);
+      if (await routing.setAppRouted(slug, next, force)) {
+        await runningApps.offerAfterChange();
+      }
+    },
+    [routing, runningApps],
+  );
 
   const groups = useMemo<Group[]>(
     () =>
@@ -336,10 +361,7 @@ export function NewUiApp() {
       body="Its config changed outside Gate, so its traffic isn't routed. Reconnect to restore protection."
       on={false}
       switchLabel={drifted[0].name}
-      onToggle={() => {
-        setActionError(null);
-        void routing.setAppRouted(drifted[0].slug, true);
-      }}
+      onToggle={() => void routeApp(drifted[0].slug, true)}
       onDismiss={noop}
       paging={
         drifted.length > 1
@@ -444,10 +466,7 @@ export function NewUiApp() {
           />
         ) : undefined
       }
-      onToggleApp={(slug, next) => {
-        setActionError(null);
-        void routing.setAppRouted(slug, next);
-      }}
+      onToggleApp={(slug, next) => void routeApp(slug, next)}
       dialog={
         routing.prompt?.kind === "drift" ? (
           <ReviewConfigDialog
@@ -474,6 +493,23 @@ export function NewUiApp() {
               machine and is removed when you reset Gate Connect.
             </p>
           </Modal>
+        ) : runningApps.stage?.kind === "offer" ? (
+          <ApplyChangesDialog
+            apps={runningApps.stage.apps.map((name) => ({ name }))}
+            onCloseApps={runningApps.goToConfirm}
+            onReopenLater={runningApps.dismiss}
+          />
+        ) : runningApps.stage?.kind === "confirm" ? (
+          <CloseAppsDialog
+            apps={runningApps.stage.apps.map((name) => ({ name }))}
+            onGoBack={runningApps.goBack}
+            onCloseApps={() => void runningApps.closeApps()}
+          />
+        ) : runningApps.stage?.kind === "done" ? (
+          <ChangeReadyDialog
+            app={{ name: closedLabel(runningApps.stage.apps) }}
+            onDone={runningApps.dismiss}
+          />
         ) : diagnosticsReport !== null ? (
           <DiagnosticsDialog
             report={diagnosticsReport}
@@ -532,7 +568,7 @@ export function NewUiApp() {
             if (!member) return;
             void (member.kind === "proxy"
               ? routing.setDomainRouted(key, next)
-              : routing.setAppRouted(key, next));
+              : routeApp(key, next));
           }}
         />
       ) : view.kind === "app" ? (
@@ -593,6 +629,15 @@ function toDialogOrg(org: Org): DialogOrganization {
     initials: initialsOf(org.name),
     meta: [org.slug, org.role].filter(Boolean).join(" · "),
   };
+}
+
+/**
+ * `ChangeReadyDialog` names one subject ("Codex closed successfully"), so naming
+ * a single app when that is what was closed, and staying vague when it was
+ * several, beats asserting something that was not true.
+ */
+function closedLabel(apps: string[]): string {
+  return apps.length === 1 ? apps[0] : "The affected apps";
 }
 
 /**

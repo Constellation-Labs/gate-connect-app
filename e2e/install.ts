@@ -257,11 +257,21 @@ export function installFakeTauri(state: BackendState): void {
     // ---- agents / quit
     routed_clients_stale: () => state.routedClientsStale,
     running_agents_count: () => state.runningAgents,
+    running_agents: () => ({
+      scanned_names: ["claude", "codex", "opencode"],
+      agents: state.runningAgentNames.map((name, i) => ({
+        name,
+        pid: 100 + i,
+        started_at_unix: 1_700_000_000,
+        predates_routing: true,
+      })),
+    }),
     stale_agents_count: () => state.staleAgents,
     close_running_agents: () => {
-      const n = state.runningAgents;
+      const n = state.runningAgents || state.runningAgentNames.length;
       state.runningAgents = 0;
       state.staleAgents = 0;
+      state.runningAgentNames = [];
       return n;
     },
     quit_app: () => null,
