@@ -3,7 +3,6 @@ import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import type { Account, OAuthStatus, Org, ProxyState, ProviderState, Tool } from "./lib/api";
 import {
-  connectTool,
   getAccount,
   launchAtLoginStatus,
   listProviders,
@@ -210,11 +209,19 @@ export function NewUiApp() {
   const runNoticeAction = useCallback(
     async (action: NoticeAction) => {
       if (noticeBusy) return;
+      // Re-adopting goes through `useRouting`, not a bare `connectTool`: it
+      // overwrites a config somebody hand-wrote, which the design gates behind
+      // the review dialog, and it may need the certificate first. That hook owns
+      // both gates, reports failures and re-reads state on its own.
+      if (action.kind === "reconnect") {
+        setActionError(null);
+        await routing.setAppRouted(action.slug, true);
+        return;
+      }
       setNoticeBusy(true);
       try {
         if (action.kind === "enable-routing") await proxyEnable();
-        else if (action.kind === "trust-certificate") await proxyTrustCa();
-        else await connectTool(action.slug, action.upstreamUrl);
+        else await proxyTrustCa();
       } catch {
         // Swallowed on purpose for now: the shell has nowhere to render a
         // failure yet, and the notice staying put is itself the signal that
@@ -224,7 +231,7 @@ export function NewUiApp() {
         setNoticeBusy(false);
       }
     },
-    [noticeBusy, refreshRouting],
+    [noticeBusy, refreshRouting, routing.setAppRouted],
   );
 
   const apps = useMemo<SidebarApp[]>(
