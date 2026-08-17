@@ -5,9 +5,14 @@ import type { Account, Org } from "./api";
 import { useSettingsActions } from "./useSettingsActions";
 
 vi.mock("./api", () => ({
+  clearAccount: vi.fn(),
   getAccount: vi.fn(),
   launchAtLoginStatus: vi.fn(),
   oauthListOrgs: vi.fn(),
+  oauthSignOut: vi.fn(),
+  oauthStatus: vi.fn(),
+  proxyDisable: vi.fn(),
+  proxyStatus: vi.fn(),
   saveAccount: vi.fn(),
   setLaunchAtLogin: vi.fn(),
   setOrg: vi.fn(),
@@ -15,9 +20,14 @@ vi.mock("./api", () => ({
 vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 
 import {
+  clearAccount,
   getAccount,
   launchAtLoginStatus,
   oauthListOrgs,
+  oauthSignOut,
+  oauthStatus,
+  proxyDisable,
+  proxyStatus,
   saveAccount,
   setLaunchAtLogin,
   setOrg,
@@ -37,24 +47,35 @@ const ORGS: Org[] = [
 ];
 
 /** Drives the hook from a component, since it owns state. */
-function harness(over: { account?: Account | null; launchAtLogin?: boolean } = {}) {
+function harness(
+  over: {
+    account?: Account | null;
+    launchAtLogin?: boolean;
+    proxyRunning?: boolean;
+  } = {},
+) {
   const api: { current: ReturnType<typeof useSettingsActions> | null } = { current: null };
   const onLaunchAtLogin = vi.fn();
   const onAccount = vi.fn();
+  const onSession = vi.fn();
+  const onProxy = vi.fn();
   const onError = vi.fn();
 
   function Probe() {
     api.current = useSettingsActions({
       account: over.account === undefined ? ACCOUNT : over.account,
+      proxyRunning: over.proxyRunning ?? false,
       launchAtLogin: over.launchAtLogin ?? false,
       onLaunchAtLogin,
       onAccount,
+      onSession,
+      onProxy,
       onError,
     });
     return null;
   }
   render(<Probe />);
-  return { api, onLaunchAtLogin, onAccount, onError };
+  return { api, onLaunchAtLogin, onAccount, onSession, onProxy, onError };
 }
 
 beforeEach(() => {
@@ -64,6 +85,11 @@ beforeEach(() => {
   (setLaunchAtLogin as Mock).mockResolvedValue(undefined);
   (setOrg as Mock).mockResolvedValue(undefined);
   (oauthListOrgs as Mock).mockResolvedValue(ORGS);
+  (oauthSignOut as Mock).mockResolvedValue(undefined);
+  (oauthStatus as Mock).mockResolvedValue({ signed_in: false, email: null, expires_at_unix: 0 });
+  (clearAccount as Mock).mockResolvedValue(undefined);
+  (proxyDisable as Mock).mockResolvedValue({ running: false });
+  (proxyStatus as Mock).mockResolvedValue({ running: true });
   (launchAtLoginStatus as Mock).mockResolvedValue({ enabled: true, pending_disable: false });
 });
 afterEach(cleanup);
@@ -255,6 +281,135 @@ describe("useSettingsActions: switching organization", () => {
 
     expect(onError).toHaveBeenCalled();
     expect(api.current!.prompt?.kind).toBe("switch-org");
+  });
+});
+
+describe("useSettingsActions: disconnecting", () => {
+  it("ends the session and keeps the account", async () => {
+    // Scoped to the session: removing the account is what reset is for.
+    const { api, onSession } = harness();
+
+    act(() => api.current!.openDisconnect());
+    expect(api.current!.prompt).toEqual({ kind: "disconnect" });
+
+    await act(async () => {
+      await api.current!.confirmDisconnect();
+    });
+
+    expect(oauthSignOut).toHaveBeenCalled();
+    expect(clearAccount).not.toHaveBeenCalled();
+    expect(onSession).toHaveBeenCalled();
+    expect(api.current!.prompt).toBeNull();
+  });
+
+  it("keeps the dialog open when the sign-out fails", async () => {
+    (oauthSignOut as Mock).mockRejectedValue(new Error("nope"));
+    const { api, onError } = harness();
+
+    act(() => api.current!.openDisconnect());
+    await act(async () => {
+      await api.current!.confirmDisconnect();
+    });
+
+    expect(onError).toHaveBeenCalled();
+    expect(api.current!.prompt).toEqual({ kind: "disconnect" });
+  });
+});
+
+describe("useSettingsActions: resetting", () => {
+  it("refuses until the consequences are acknowledged", async () => {
+    const { api } = harness();
+
+    act(() => api.current!.openReset());
+    await act(async () => {
+      await api.current!.confirmReset();
+    });
+
+    expect(clearAccount).not.toHaveBeenCalled();
+
+    act(() => api.current!.acknowledgeReset(true));
+    await act(async () => {
+      await api.current!.confirmReset();
+    });
+
+    expect(clearAccount).toHaveBeenCalled();
+  });
+
+  it("stops routing before removing the account", async () => {
+    // The order is the point: clearing the account while the engine is up leaves
+    // system HTTPS pointed at a port that is about to die.
+    const { api } = harness({ proxyRunning: true });
+
+    act(() => api.current!.openReset());
+    act(() => api.current!.acknowledgeReset(true));
+    await act(async () => {
+      await api.current!.confirmReset();
+    });
+
+    expect((proxyDisable as Mock).mock.invocationCallOrder[0]).toBeLessThan(
+      (clearAccount as Mock).mock.invocationCallOrder[0],
+    );
+  });
+
+  it("aborts rather than stranding traffic on a dead proxy", async () => {
+    (proxyDisable as Mock).mockRejectedValue(new Error("disable failed"));
+    const { api, onError, onProxy } = harness({ proxyRunning: true });
+
+    act(() => api.current!.openReset());
+    act(() => api.current!.acknowledgeReset(true));
+    await act(async () => {
+      await api.current!.confirmReset();
+    });
+
+    expect(clearAccount).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalled();
+    // Re-read, so the window shows what the engine actually did.
+    expect(proxyStatus).toHaveBeenCalled();
+    expect(onProxy).toHaveBeenLastCalledWith({ running: true });
+  });
+
+  it("does not touch the engine when it is already off", async () => {
+    const { api } = harness({ proxyRunning: false });
+
+    act(() => api.current!.openReset());
+    act(() => api.current!.acknowledgeReset(true));
+    await act(async () => {
+      await api.current!.confirmReset();
+    });
+
+    expect(proxyDisable).not.toHaveBeenCalled();
+    expect(clearAccount).toHaveBeenCalled();
+  });
+
+  it("clears the session so the window falls back to sign-in on its own", async () => {
+    // The setup stage is derived from what is on disk, so this is the whole
+    // handoff - there is no separate "go to first run" step to disagree with it.
+    const { api, onSession } = harness();
+
+    act(() => api.current!.openReset());
+    act(() => api.current!.acknowledgeReset(true));
+    await act(async () => {
+      await api.current!.confirmReset();
+    });
+
+    expect(onSession).toHaveBeenCalledWith({ account: null, oauth: null });
+  });
+
+  it("leaves the user signed in when the wipe fails", async () => {
+    // clear_account disconnects managed tools before wiping, so a failure means
+    // we are still signed in; dropping to sign-in would show a half-reset app.
+    (clearAccount as Mock).mockRejectedValue(new Error("nope"));
+    const { api, onError, onSession } = harness();
+
+    act(() => api.current!.openReset());
+    act(() => api.current!.acknowledgeReset(true));
+    await act(async () => {
+      await api.current!.confirmReset();
+    });
+
+    expect(onError).toHaveBeenCalled();
+    expect(onSession).not.toHaveBeenCalled();
+    expect(api.current!.prompt?.kind).toBe("reset");
   });
 });
 

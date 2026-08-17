@@ -59,7 +59,10 @@ test.describe("new UI settings", () => {
   });
 
   test("cancelling the key dialog writes nothing", async ({ boot }) => {
-    const app = await boot({});
+    // An API-key account: the row is gated to accounts that have a key to replace.
+    const app = await boot({
+      account: { has_api_key: true, auth_mode: "api_key", org_id: null, org_name: null },
+    });
 
     await app.page.getByRole("button", { name: "Settings" }).click();
     await app.page.getByRole("button", { name: "Replace key" }).click();
@@ -123,17 +126,18 @@ test.describe("new UI settings", () => {
 
   test("rows with no backend show no control", async ({ boot }) => {
     // Hidden rather than dead: the user cannot tell an inert control from a
-    // broken one, and on the Danger zone card cannot tell it from "already done".
+    // broken one. Reset is wired now, so the Danger zone is back - see
+    // new-ui-firstrun.spec.ts.
     const app = await boot({});
 
     await app.page.getByRole("button", { name: "Settings" }).click();
     await expect(app.page.getByRole("heading", { name: "Device" })).toBeVisible();
 
-    for (const gone of ["Rename device", "Upgrade plan", "Check for updates", "Review reset"]) {
+    for (const gone of ["Rename device", "Upgrade plan", "Check for updates"]) {
       await expect(app.page.getByRole("button", { name: gone })).toHaveCount(0);
     }
     await expect(app.page.getByRole("switch", { name: "Notifications" })).toHaveCount(0);
-    await expect(app.page.getByRole("heading", { name: "Danger zone" })).toHaveCount(0);
+    await expect(app.page.getByRole("heading", { name: "Danger zone" })).toBeVisible();
   });
 
   test("the diagnostics report can be copied", async ({ boot, context }) => {

@@ -95,7 +95,7 @@ export function buildSettingsSections({
   onRenameDevice?: () => void;
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
-  onReplaceKey: () => void;
+  onReplaceKey?: () => void;
   onDisconnect?: () => void;
   onToggleLaunchAtLogin: () => void;
   onToggleNotifications?: () => void;
@@ -155,7 +155,7 @@ export function buildSettingsSections({
           label: "API key",
           value: apiKeyMasked,
           mono: true,
-          action: { label: "Replace key", onClick: onReplaceKey },
+          action: onReplaceKey ? { label: "Replace key", onClick: onReplaceKey } : undefined,
         },
         ...(onDisconnect
           ? [
