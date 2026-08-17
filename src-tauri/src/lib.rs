@@ -1,8 +1,17 @@
 //! Tauri shell. The Rust surface here is small on purpose: every command
 //! delegates to `gate-connect-core` so the CLI and the GUI exercise the
-//! same code path. Beyond commands, this file sets up the menu-bar / tray
-//! presentation: no dock icon, hidden window on launch, click the tray
-//! to toggle a popover-style window anchored under the icon.
+//! same code path. Beyond commands, this file sets up a normal 1024x720 window
+//! plus a tray icon that toggles it, and a close button that hides rather than
+//! quits so the tray always has something to bring back.
+//!
+//! It used to be a menu-bar popover, and three habits of that had to go. The
+//! tray placed the window (under the icon, at the cursor, or under the menu bar
+//! by platform), so it now only toggles visibility and placement is the
+//! window's own: centred on first launch, untouched after. Focus loss dismissed
+//! it, which for a window means vanishing whenever the user clicks another app.
+//! And on macOS it was promoted to a non-activating NSPanel with a hand-rolled
+//! corner radius, its own space behaviour and a click-outside watcher, none of
+//! which a regular window wants. The dock icon is back with them gone.
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
@@ -14,10 +23,8 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, PhysicalPosition, WindowEvent,
+    Manager, WindowEvent,
 };
-#[cfg(not(target_os = "linux"))]
-use tauri::{Position, Size};
 // Used by the startup auto-enable to nudge the popover to re-read state, and
 // by `report_backend_error` to nudge a drain.
 use tauri::Emitter;
@@ -364,9 +371,13 @@ async fn clear_account() -> Result<(), String> {
 /// forget the current Gate key, so the UI can prompt for an
 /// environment-appropriate one. Managed tools are disconnected first - their
 /// config embeds the old gateway+key, and a later key rotation would push the
-/// new key into configs still pointing at the old gateway. Mirrors the URL
-/// validation in `save_account` and the disconnect-first order in
-/// `clear_account`.
+/// new key into configs still pointing at the old gateway. The proxy engine is
+/// stopped for the same reason: it pins the gateway URL at start (only the key,
+/// token, org, and domains update live), so leaving it up would keep traffic
+/// rewritten to the old environment while the new environment's token gets
+/// pushed in - a 401 on every proxied call, with the org list, which goes
+/// direct, still working. Mirrors the URL validation in `save_account` and the
+/// disconnect-first order in `clear_account`.
 #[tauri::command]
 async fn switch_gateway(base_url: String) -> Result<(), String> {
     if base_url.len() > 2048 {
@@ -382,6 +393,14 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
     // Off the main thread: per-tool config I/O plus keychain delete.
     tauri::async_runtime::spawn_blocking(move || {
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
+        // Before the account moves, so the engine can never be up against an
+        // account it wasn't started from. A failure aborts the switch: routing
+        // to the old gateway with the new environment's credential is the state
+        // this whole command exists to avoid.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager()
+            .shutdown_engine()
+            .map_err(|e| format!("{e:#}"))?;
         account::switch_gateway(&base_url).map_err(|e| format!("{e:#}"))
     })
     .await
@@ -551,6 +570,25 @@ async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
 #[tauri::command]
 fn app_platform() -> &'static str {
     std::env::consts::OS
+}
+
+/// Backend half of the diagnostics report: the facts about this install the
+/// webview has no other way to see (OS build, data dir, persisted ports, and
+/// the live OS-side readback of both proxy channels). Never fails - an
+/// unresolvable field comes back null, because the machines that need this
+/// report are the ones where probes fail. Carries no credential; see
+/// `gate_connect_core::diagnostics`.
+///
+/// On macOS this shells out to `networksetup` once per active network
+/// service, so it is bound to an explicit user action rather than any poll.
+///
+/// `(async)` so the body runs on the blocking pool: a plain sync command runs
+/// inline on the main thread, which on Linux is the GTK loop that also drives
+/// the webview's IPC - every probe here would freeze the popover for its own
+/// duration.
+#[tauri::command(async)]
+fn diagnostics() -> gate_connect_core::diagnostics::Diagnostics {
+    gate_connect_core::diagnostics::collect()
 }
 
 // ---- Providers ----
@@ -837,9 +875,18 @@ fn proxy_set_domain(
     slug: String,
     enabled: bool,
 ) -> Result<gate_connect_core::proxy::ProxyState, String> {
-    gate_connect_core::proxy::manager()
+    let state = gate_connect_core::proxy::manager()
         .set_domain(&slug, enabled)
-        .map_err(|e| format!("{e:#}"))
+        .map_err(|e| format!("{e:#}"))?;
+
+    // Audited here rather than inside `ProxyManager::set_domain`, because
+    // `provider::enable` / `provider::disable` drive that method internally -
+    // instrumenting it there would turn one operator action into N+1 events.
+    // This command is the operator toggling one domain by hand.
+    if let Ok(Some(base_url)) = gate_connect_core::account::load_base_url() {
+        gate_connect_core::audit::domain_toggled(&base_url, None, &slug, enabled);
+    }
+    Ok(state)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -890,15 +937,15 @@ async fn proxy_untrust_ca() -> Result<gate_connect_core::proxy::ProxyState, Stri
 const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
 
 /// When the startup popover was shown. Used to ignore the spurious focus-loss
-/// an Accessory (menu-bar) app can emit before it becomes frontmost, which
-/// would otherwise immediately hide the popover we open on launch.
-/// While true, the popover ignores focus-loss instead of hiding. Set at
-/// macOS launch so the keychain-password dialog (and the first-run screen)
-/// can't make the window vanish before the user has even seen it - a focus
-/// steal by that system dialog would otherwise trip the dismiss-on-blur
-/// handler. Cleared by [`unpin_popover`] once the user interacts, restoring
-/// normal click-away dismissal. Defaults off so non-macOS behavior is
-/// unchanged (only the macOS startup path pins it).
+/// Vestigial. This once suppressed dismiss-on-blur while the keychain dialog or
+/// first-run screen held focus, so a focus steal could not make the popover
+/// vanish before the user had seen it. Nothing dismisses on blur any more - a
+/// window stays put when you click another app - so the flag is written by
+/// [`pin_popover`] / [`unpin_popover`] and read nowhere.
+///
+/// Kept because `App.tsx`, still reachable as the popover fallback, invokes
+/// both commands; removing them would make those calls fail. Delete all three
+/// together when the popover screens go.
 static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 
 /// Whether the popover is currently shown. Tracks the hidden→visible edge so
@@ -1014,11 +1061,26 @@ fn mark_routing_enabled() {
 /// Visit every running agent process (see [`AGENT_PROCESS_NAMES`]), skipping
 /// our own pid. Shared by the close command and the count probe so both match
 /// the exact same process set.
+///
+/// Processes only, and only the fields `/proc/<pid>/stat` already carries.
+/// sysinfo counts *threads* as processes and leaves that on by default -
+/// `ProcessRefreshKind::nothing()` sets `tasks: true`, and the `refresh_processes`
+/// convenience adds `.with_tasks()` on top - so the default walk descends into
+/// every process's `task/` directory and runs a full read (`stat`, `statm`,
+/// `io`, `cmdline`, `readlink exe`) per thread. On a 526-process desktop that
+/// is 3.4k entries and ~140ms of procfs instead of 536 entries and ~10ms, and
+/// it puts any thread whose `comm` matches an agent name in the list as if it
+/// were a second copy of the tool. Name, pid and start time - all this needs -
+/// come from `stat`, which is read either way.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
-    use sysinfo::{ProcessesToUpdate, System};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
     let own_pid = sysinfo::get_current_pid().ok();
     for (pid, process) in sys.processes() {
         if Some(*pid) == own_pid {
@@ -1035,12 +1097,53 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
 /// Count running agent processes without touching them. Lets the frontend
 /// skip the "close running agents" routing takeover when there is nothing to
 /// close.
+///
+/// `(async)`, like every probe here that walks the process table: sync would
+/// put the walk on the main thread, which on Linux is the GTK loop. This one
+/// runs on the boot path, where a blocked loop is a window that looks like it
+/// never opened.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn running_agents_count() -> u32 {
     let mut count = 0u32;
     for_each_agent_process(|_| count += 1);
     count
+}
+
+/// The Unix second before which a running process counts as pre-routing: the
+/// last in-process enable, falling back to our own process start when routing
+/// was already up before we launched (detached Linux engine). `None` when
+/// neither is available, which callers degrade on rather than guessing.
+///
+/// Extracted so the count probe and the diagnostics listing cannot answer
+/// "does this process predate routing" two different ways.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn routing_bound_unix() -> Option<u64> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let enabled_at = ROUTING_ENABLED_AT_UNIX.load(Ordering::Acquire);
+    if enabled_at != 0 {
+        return Some(enabled_at);
+    }
+    // Our own pid only. `All` would walk every process in the table to read
+    // one field off exactly one of them, and this fallback is the *Linux* path
+    // (the detached engine is what leaves `ROUTING_ENABLED_AT_UNIX` at 0), so
+    // the listing below would otherwise scan the table twice per call.
+    //
+    // `without_tasks` matters even here: the pid filter is applied *after* the
+    // walk, so with threads left on this still descends every `task/` dir to
+    // then throw all of it away (~14ms, against ~0.5ms for the one process we
+    // asked for). Same refresh kind as `for_each_agent_process`, whose comment
+    // has the rest of the reasoning.
+    let pid = sysinfo::get_current_pid().ok()?;
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        false,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    sys.process(pid)
+        .map(|p| p.start_time())
+        .filter(|start| *start != 0)
 }
 
 /// Count running agent processes that were started *before* routing last came
@@ -1048,25 +1151,18 @@ fn running_agents_count() -> u32 {
 /// need a restart to route. Same process set as `running_agents_count`; the
 /// bound is the last in-process enable, falling back to our own process start
 /// when routing was already up before we launched (detached Linux engine).
+///
+/// `(async)` for the reason on [`running_agents_count`], and doubly so here:
+/// the fallback bound costs a second refresh, and this is the probe the boot
+/// path and the `proxy-state-changed` handler both call.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn stale_agents_count() -> u32 {
-    use sysinfo::{ProcessesToUpdate, System};
-    let mut bound = ROUTING_ENABLED_AT_UNIX.load(Ordering::Acquire);
-    if bound == 0 {
-        let mut sys = System::new();
-        sys.refresh_processes(ProcessesToUpdate::All, true);
-        bound = sysinfo::get_current_pid()
-            .ok()
-            .and_then(|pid| sys.process(pid))
-            .map(|p| p.start_time())
-            .unwrap_or(0);
-    }
-    if bound == 0 {
+    let Some(bound) = routing_bound_unix() else {
         // No usable bound: degrade to "every running agent counts", the
         // pre-timestamp behavior, rather than silently claiming freshness.
         return running_agents_count();
-    }
+    };
     let mut count = 0u32;
     for_each_agent_process(|process| {
         if process.start_time() < bound {
@@ -1076,6 +1172,71 @@ fn stale_agents_count() -> u32 {
     count
 }
 
+/// One running AI tool, as the diagnostics report lists it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RunningAgent {
+    /// Process name as the OS spells it, original case - "Claude" is the
+    /// desktop app, "claude" the CLI, and which one is running matters.
+    name: String,
+    pid: u32,
+    /// Process start, Unix seconds. 0 when the platform wouldn't say.
+    started_at_unix: u64,
+    /// Started before routing last came up, so it resolved its connection
+    /// pre-Gate and needs a restart to route. Same rule as
+    /// [`stale_agents_count`], via [`routing_bound_unix`].
+    predates_routing: bool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RunningAgentsDto {
+    /// The names this scan looks for ([`AGENT_PROCESS_NAMES`]). Reported so an
+    /// empty list reads as "none of these three were running" rather than "no
+    /// AI tools are running" - the scan does not cover Hermes or OpenClaw, and
+    /// a report that hid that would be read as evidence they were stopped.
+    scanned_names: Vec<String>,
+    agents: Vec<RunningAgent>,
+}
+
+/// The running agent processes themselves, not just how many: name, pid, when
+/// each started, and whether it predates routing. Same process set and the
+/// same staleness rule as the two count probes, so the diagnostics report and
+/// the routing takeover can never disagree about what is running.
+///
+/// Deliberately carries no command line: argv on these tools routinely holds
+/// prompts, file paths and occasionally a key, and this list is built to be
+/// pasted into a support thread.
+///
+/// `(async)` for the same reason as [`diagnostics`]: this walks the whole
+/// process table, and a sync command would do that on the main thread - the
+/// GTK loop on Linux - with the popover frozen until it returns.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command(async)]
+fn running_agents() -> RunningAgentsDto {
+    let bound = routing_bound_unix();
+    let mut agents = Vec::new();
+    for_each_agent_process(|process| {
+        let started_at_unix = process.start_time();
+        agents.push(RunningAgent {
+            name: process.name().to_string_lossy().to_string(),
+            pid: process.pid().as_u32(),
+            started_at_unix,
+            // No usable bound degrades to "everything predates routing", the
+            // same conservative direction `stale_agents_count` takes.
+            predates_routing: bound.map(|b| started_at_unix < b).unwrap_or(true),
+        });
+    });
+    // Oldest first: the ones that predate routing are the ones being looked
+    // for, and a stable order keeps two reports from the same machine
+    // diffable.
+    agents.sort_by_key(|agent| agent.started_at_unix);
+    RunningAgentsDto {
+        scanned_names: AGENT_PROCESS_NAMES.iter().map(|n| n.to_string()).collect(),
+        agents,
+    }
+}
+
 /// Terminate running agent processes (CLIs and desktop apps, see
 /// [`AGENT_PROCESS_NAMES`]) so their next launch picks up the routing change.
 /// Graceful where the platform allows it (SIGTERM on
@@ -1083,8 +1244,11 @@ fn stale_agents_count() -> u32 {
 /// Returns how many processes were signalled - 0 means none were running.
 /// Best-effort: processes we can't signal (another user's, already gone) are
 /// skipped, not errors.
+///
+/// `(async)` on top of the walk's own reason: this one also blocks on
+/// signalling every match, and it runs from a button the user is watching.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
+#[tauri::command(async)]
 fn close_running_agents() -> u32 {
     use sysinfo::Signal;
     let mut closed = 0u32;
@@ -1126,6 +1290,17 @@ fn unpin_popover() {
     POPOVER_PINNED.store(false, Ordering::Release);
 }
 
+/// Pin the popover open for the duration of a call that raises a system trust
+/// dialog. Without this, `proxy_trust_ca` is the one action in the app that
+/// hides the window it was clicked in: the OS dialog takes focus, the
+/// `Focused(false)` handler hides the popover, and the copy telling the user
+/// what to click goes with it. The frontend pins before the call and unpins
+/// in its `finally`, so a cancelled dialog restores click-away dismissal too.
+#[tauri::command]
+fn pin_popover() {
+    POPOVER_PINNED.store(true, Ordering::Release);
+}
+
 /// Open (or refocus) the full-size onboarding window. `source` rides along as
 /// a query param so the flow can report whether it was a first launch or a
 /// replay from Settings.
@@ -1165,18 +1340,17 @@ async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result
     Ok(())
 }
 
-/// Bring the tray popover back on screen, anchored under the tray icon where
-/// the platform can report one. The onboarding flow calls this from its
-/// "locate Gate Connect" button and on close, so the handoff always ends at
-/// the popover.
+/// Bring the main window back on screen, wherever the user left it. The
+/// onboarding flow calls this from its "locate Gate Connect" button and on
+/// close, so the handoff always ends at the app.
+///
+/// Deliberately does not reposition. This is a 1024x720 window, not a tray
+/// popover: moving it out from under the user's cursor on every reveal is
+/// exactly what a window must not do.
 fn reveal_popover_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    #[cfg(not(target_os = "linux"))]
-    if let Some(rect) = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten()) {
-        anchor_under_tray(&window, rect.position, rect.size);
-    }
     #[cfg(target_os = "linux")]
     let _ = window.unminimize();
     let _ = window.show();
@@ -1347,7 +1521,9 @@ pub fn run() {
                     activity_overview,
                     set_org,
                     app_platform,
+                    diagnostics,
                     unpin_popover,
+                    pin_popover,
                     open_onboarding_window,
                     reveal_popover,
                     quit_app,
@@ -1370,6 +1546,7 @@ pub fn run() {
                     routed_clients_stale,
                     running_agents_count,
                     stale_agents_count,
+                    running_agents,
                     close_running_agents,
                     drain_backend_errors,
                 ]
@@ -1397,7 +1574,9 @@ pub fn run() {
                     activity_overview,
                     set_org,
                     app_platform,
+                    diagnostics,
                     unpin_popover,
+                    pin_popover,
                     open_onboarding_window,
                     reveal_popover,
                     quit_app,
@@ -1457,34 +1636,12 @@ pub fn run() {
                     });
                 }
             }
-            // Click outside the popover → dismiss. Linux is excluded: there the
-            // window is a normal decorated, taskbar-visible window (see setup),
-            // and a dismiss-on-blur reflex fights its own title bar - grabbing
-            // the CSD title bar or close button momentarily blurs the GTK
-            // toplevel, so minimizing here would yank drag/close out from under
-            // the user. Linux dismisses via its native controls instead.
-            #[cfg(not(target_os = "linux"))]
-            if let WindowEvent::Focused(false) = event {
-                // While pinned (first launch, through the keychain-password
-                // dialog and first-run, until the user engages), a focus loss
-                // - the keychain dialog stealing focus, or the spurious blur an
-                // Accessory app emits right after the startup show - must not
-                // hide the popover, or the user never sees the window.
-                if POPOVER_PINNED.load(Ordering::Acquire) {
-                    return;
-                }
-                let _ = window.hide();
-                POPOVER_VISIBLE.store(false, Ordering::Release);
-            }
         })
         .setup(|app| {
             // Lets failure sites without a handle of their own nudge the
             // popover to drain buffered analytics errors.
             let _ = APP_HANDLE.set(app.handle().clone());
 
-            // Hide the dock icon - Gate Connect lives in the menu bar.
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Launch at login defaults ON: arm the login item the first time
             // we run so routing persists across a restart out of the box. A
@@ -1835,38 +1992,7 @@ pub fn run() {
                 });
             }
 
-            // Linux dismisses the popover by minimizing (see the Focused(false)
-            // handler), so it needs a taskbar/dock entry to restore from -
-            // override the config's skipTaskbar:true here. macOS hides from the
-            // dock via the Accessory activation policy instead, and Windows
-            // keeps its hide-to-tray behavior, so neither wants this.
-            #[cfg(target_os = "linux")]
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_skip_taskbar(false);
-                // Stay borderless (config `decorations: false`): the native CSD
-                // title-bar buttons don't reliably bind on Wayland/GNOME, so the
-                // frontend draws its own chrome (`LinuxTitleBar`) and calls the
-                // Tauri window APIs directly. A native title bar here would just
-                // compete with that custom strip.
-                //
-                // Drop the config's alwaysOnTop on Linux: with no dismiss-on-blur
-                // here (see the Focused handler), an always-on-top window would
-                // float over everything with no way to recede when the user
-                // switches apps. As a normal window it sinks behind on focus
-                // loss and is re-summoned from the taskbar or tray.
-                let _ = window.set_always_on_top(false);
-            }
 
-            // Round the NSWindow content view's CALayer so the transparent
-            // window itself has rounded corners - without this, CSS-rounded
-            // corners on the popover expose the dark window behind them.
-            #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("main") {
-                promote_to_nonactivating_panel(&window);
-                apply_window_corner_radius(&window, 12.0);
-                apply_popover_space_behavior(&window);
-                install_click_outside_dismiss(app.handle());
-            }
             #[cfg(target_os = "macos")]
             watch_menu_bar_appearance(app.handle());
 
@@ -1887,14 +2013,11 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
-                            // On Linux the SNI/AppIndicator tray doesn't hand us
-                            // a click rect, and on GNOME the left-click path
-                            // often never fires - users reach this code path via
-                            // the right-click menu. Anchor at the current cursor.
-                            #[cfg(target_os = "linux")]
-                            if let Ok(cursor) = app.cursor_position() {
-                                anchor_at_cursor(&window, cursor);
-                            }
+                            // On Linux the SNI/AppIndicator tray hands us no
+                            // click rect and GNOME often never fires the
+                            // left-click path, so the right-click menu is how
+                            // users reach this. Either way it only reveals the
+                            // window; it does not place it.
                             #[cfg(target_os = "linux")]
                             let _ = window.unminimize();
                             let _ = window.show();
@@ -1908,7 +2031,6 @@ pub fn run() {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
-                        rect,
                         ..
                     } = event
                     {
@@ -1927,18 +2049,12 @@ pub fn run() {
                                 let _ = window.hide();
                                 POPOVER_VISIBLE.store(false, Ordering::Release);
                             } else {
-                                // Linux trays don't report a usable rect; fall
-                                // back to the cursor position so the popover lands
-                                // near the user's click.
-                                #[cfg(target_os = "linux")]
-                                {
-                                    let _ = &rect;
-                                    if let Ok(cursor) = app.cursor_position() {
-                                        anchor_at_cursor(&window, cursor);
-                                    }
-                                }
-                                #[cfg(not(target_os = "linux"))]
-                                anchor_under_tray(&window, rect.position, rect.size);
+                                // No repositioning: the tray toggles
+                                // visibility now, it does not own placement. A
+                                // window that jumped under the menu bar on every
+                                // tray click would lose wherever the user had
+                                // put it - which is why the click rect is no
+                                // longer even read.
                                 #[cfg(target_os = "linux")]
                                 let _ = window.unminimize();
                                 let _ = window.show();
@@ -1967,29 +2083,20 @@ pub fn run() {
             // Show it here, from Rust: a hidden WKWebView reports visibility
             // "hidden" and WebKit suspends requestAnimationFrame, so revealing
             // from the frontend never fires and the popover never opens on
-            // launch. The blank-window flash that a synchronous show otherwise
-            // causes (the window appears before WKWebView's first paint) is
-            // handled by painting the rounded content layer white up front (see
-            // `apply_window_corner_radius`), so the first frame is the splash's
-            // white card rather than a transparent flash.
+            // launch. A synchronous show can flash an unpainted window before
+            // WKWebView's first frame; the window is opaque now (config
+            // `transparent: false`), so that flash is the window's own
+            // background rather than a see-through hole.
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main").filter(|_| !silent_launch) {
                 POPOVER_PINNED.store(true, Ordering::Release);
 
-                // macOS: the tray icon has no laid-out rect yet at setup, and the
-                // stale value it reports lands the popover in the wrong corner -
-                // so place it deterministically under the menu bar instead.
-                #[cfg(target_os = "macos")]
-                position_startup(&window);
-                // Windows: the tray rect is reliable here; anchor under it when
-                // present, otherwise keep the configured default position.
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = app
-                        .tray_by_id("main")
-                        .and_then(|t| t.rect().ok().flatten())
-                        .map(|rect| anchor_under_tray(&window, rect.position, rect.size));
-                }
+                // Centre on the primary display. Window position is not
+                // persisted across launches, so every launch is a first launch
+                // as far as placement goes; centring is the sane default for a
+                // 1024x720 window. Within a session, hide/show keeps whatever
+                // position the user chose.
+                let _ = window.center();
                 let _ = window.show();
                 let _ = window.set_focus();
             }
@@ -2058,66 +2165,6 @@ pub fn run() {
             let _ = &event;
             let _ = &app_handle;
         });
-}
-
-/// Position the popover window centered horizontally on the tray icon
-/// and just above or below it, whichever side has room on the current
-/// monitor. macOS's menu bar lives at the top so the popover anchors
-/// below the icon; Windows' taskbar is typically at the bottom and
-/// anchoring below would push the popover off-screen - so we flip it
-/// above the icon. X is clamped to the monitor bounds so a tray icon
-/// near a screen edge doesn't push the popover past it.
-/// Pick the monitor whose physical bounds contain point (x, y) - used to
-/// place the popover on the same display as the tray icon that was clicked,
-/// not whichever monitor the window happened to be on last. Falls back to the
-/// window's current monitor, then the primary, so we always have somewhere to
-/// show. Coordinates are physical pixels in the virtual-desktop space, matching
-/// `Monitor::position()`/`size()`.
-#[cfg(not(target_os = "linux"))]
-fn monitor_at(window: &tauri::WebviewWindow, x: f64, y: f64) -> Option<tauri::Monitor> {
-    let contains = |m: &tauri::Monitor| {
-        let p = m.position();
-        let s = m.size();
-        x >= p.x as f64
-            && x < p.x as f64 + s.width as f64
-            && y >= p.y as f64
-            && y < p.y as f64 + s.height as f64
-    };
-    window
-        .available_monitors()
-        .ok()
-        .and_then(|ms| ms.into_iter().find(contains))
-        .or_else(|| window.current_monitor().ok().flatten())
-        .or_else(|| window.primary_monitor().ok().flatten())
-}
-
-/// On launch, place the popover at the top-right of the main display - just
-/// under the macOS menu bar, where the tray icon lives - so first-time users
-/// who double-click the app from Applications actually see the UI instead of a
-/// seemingly-dead menu-bar icon. Subsequent opens reposition under the clicked
-/// tray icon via `anchor_under_tray`.
-#[cfg(target_os = "macos")]
-fn position_startup(window: &tauri::WebviewWindow) {
-    let Some(m) = window
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| window.current_monitor().ok().flatten())
-    else {
-        return;
-    };
-    let scale = m.scale_factor();
-    let mp = m.position();
-    let ms = m.size();
-    let win_w = window
-        .outer_size()
-        .map(|s| s.width as f64)
-        .unwrap_or(380.0 * scale);
-    let margin = 8.0 * scale;
-    let menubar = 28.0 * scale; // clear the macOS menu bar
-    let x = (mp.x as f64 + ms.width as f64 - win_w - margin).round() as i32;
-    let y = (mp.y as f64 + menubar).round() as i32;
-    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
 /// Build the tray image, recoloring the hex mark to a high-contrast tone for
@@ -2244,213 +2291,6 @@ fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
             "Gate Connect · routing off"
         };
         let _ = tray.set_tooltip(Some(text.to_string()));
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn anchor_under_tray(window: &tauri::WebviewWindow, tray_pos: Position, tray_size: Size) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let pos = tray_pos.to_physical::<f64>(scale);
-    let size = tray_size.to_physical::<f64>(scale);
-
-    let window_w_px = window
-        .outer_size()
-        .map(|s| s.width as f64)
-        .unwrap_or(380.0 * scale);
-    let window_h_px = window
-        .outer_size()
-        .map(|s| s.height as f64)
-        .unwrap_or(720.0 * scale);
-
-    let tray_center_x = pos.x + size.width / 2.0;
-    let tray_top_y = pos.y;
-    let tray_bottom_y = pos.y + size.height;
-    let gap = 6.0 * scale;
-
-    // Fall back to the unbounded below-icon placement if we can't read
-    // the monitor - better than refusing to show the window.
-    let (mon_x, mon_y, mon_w, mon_h) = match monitor_at(window, tray_center_x, tray_top_y) {
-        Some(m) => {
-            let p = m.position();
-            let s = m.size();
-            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
-        }
-        None => {
-            let x = (tray_center_x - window_w_px / 2.0).round() as i32;
-            let y = (tray_bottom_y + gap).round() as i32;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-            return;
-        }
-    };
-
-    let space_below = (mon_y + mon_h) - tray_bottom_y;
-    let y = if space_below >= window_h_px + gap {
-        tray_bottom_y + gap
-    } else {
-        tray_top_y - window_h_px - gap
-    };
-
-    let x = (tray_center_x - window_w_px / 2.0)
-        .max(mon_x + 4.0)
-        .min(mon_x + mon_w - window_w_px - 4.0);
-
-    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-}
-
-/// Position the popover above or below the cursor on Linux, where
-/// the tray protocol (SNI/AppIndicator) doesn't expose a usable icon
-/// rect - and on GNOME, where the left-click event often never fires
-/// at all. The cursor is the only positioning hint we can trust. On
-/// Wayland the compositor may ignore `set_position` outright; on X11
-/// this lands the popover near where the user clicked.
-#[cfg(target_os = "linux")]
-fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-
-    let window_w_px = window
-        .outer_size()
-        .map(|s| s.width as f64)
-        .unwrap_or(380.0 * scale);
-    let window_h_px = window
-        .outer_size()
-        .map(|s| s.height as f64)
-        .unwrap_or(720.0 * scale);
-
-    let gap = 6.0 * scale;
-
-    let (mon_x, mon_y, mon_w, mon_h) = match window.current_monitor().ok().flatten() {
-        Some(m) => {
-            let p = m.position();
-            let s = m.size();
-            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
-        }
-        None => {
-            let x = (cursor.x - window_w_px / 2.0).round() as i32;
-            let y = (cursor.y + gap).round() as i32;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-            return;
-        }
-    };
-
-    let space_below = (mon_y + mon_h) - cursor.y;
-    let y = if space_below >= window_h_px + gap {
-        cursor.y + gap
-    } else {
-        cursor.y - window_h_px - gap
-    };
-
-    let x = (cursor.x - window_w_px / 2.0)
-        .max(mon_x + 4.0)
-        .min(mon_x + mon_w - window_w_px - 4.0);
-
-    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-}
-
-/// Let the popover render over the active Space, including a full-screen app's.
-#[cfg(target_os = "macos")]
-fn apply_popover_space_behavior(window: &tauri::WebviewWindow) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-
-    const CAN_JOIN_ALL_SPACES: u64 = 1 << 0;
-    const FULL_SCREEN_AUXILIARY: u64 = 1 << 8;
-    const NS_STATUS_WINDOW_LEVEL: i64 = 25;
-
-    let Ok(ns_window_ptr) = window.ns_window() else {
-        return;
-    };
-    if ns_window_ptr.is_null() {
-        return;
-    }
-
-    unsafe {
-        let ns_window: *mut AnyObject = ns_window_ptr.cast();
-        let behavior: u64 = CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
-        let () = msg_send![ns_window, setCollectionBehavior: behavior];
-        let () = msg_send![ns_window, setLevel: NS_STATUS_WINDOW_LEVEL];
-    }
-}
-
-/// NSPanel subclass whose canBecomeKey/MainWindow return YES - a borderless
-/// window can't become key otherwise, which blocks the cursor and keyboard.
-#[cfg(target_os = "macos")]
-fn key_panel_class() -> &'static objc2::runtime::AnyClass {
-    use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
-    use objc2::{class, sel};
-    use std::ffi::CStr;
-
-    const NAME: &CStr = c"GateConnectKeyPanel";
-
-    if let Some(cls) = AnyClass::get(NAME) {
-        return cls;
-    }
-
-    // Raw-pointer receiver keeps the fn type non-higher-ranked for add_method.
-    extern "C" fn yes(_this: *mut AnyObject, _sel: Sel) -> Bool {
-        Bool::YES
-    }
-
-    let mut builder = ClassBuilder::new(NAME, class!(NSPanel))
-        .expect("GateConnectKeyPanel: class name should be unique in-process");
-    unsafe {
-        builder.add_method(
-            sel!(canBecomeKeyWindow),
-            yes as extern "C" fn(*mut AnyObject, Sel) -> Bool,
-        );
-        builder.add_method(
-            sel!(canBecomeMainWindow),
-            yes as extern "C" fn(*mut AnyObject, Sel) -> Bool,
-        );
-    }
-    builder.register()
-}
-
-/// Make the popover a non-activating NSPanel: it can take key focus over a
-/// full-screen app without activating us, which would leave that Space.
-#[cfg(target_os = "macos")]
-fn promote_to_nonactivating_panel(window: &tauri::WebviewWindow) {
-    use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
-
-    const NONACTIVATING_PANEL: u64 = 1 << 7;
-
-    let Ok(ns_window_ptr) = window.ns_window() else {
-        return;
-    };
-    if ns_window_ptr.is_null() {
-        return;
-    }
-
-    unsafe {
-        let ns_window: *mut AnyObject = ns_window_ptr.cast();
-        let panel_cls: &AnyClass = key_panel_class();
-        objc2::ffi::object_setClass(ns_window, panel_cls);
-        let mask: u64 = msg_send![ns_window, styleMask];
-        let () = msg_send![ns_window, setStyleMask: mask | NONACTIVATING_PANEL];
-        let () = msg_send![ns_window, setBecomesKeyOnlyIfNeeded: false];
-        let () = msg_send![ns_window, setHidesOnDeactivate: false];
-    }
-}
-
-/// Dismiss the popover on click-outside; a non-activating panel emits no blur
-/// event, so we watch for mouse-downs delivered to other apps instead.
-#[cfg(target_os = "macos")]
-fn install_click_outside_dismiss(app: &tauri::AppHandle) {
-    use block2::RcBlock;
-    use objc2_app_kit::{NSEvent, NSEventMask};
-
-    let handle = app.clone();
-    let block = RcBlock::new(move |_event: core::ptr::NonNull<NSEvent>| {
-        if let Some(window) = handle.get_webview_window("main") {
-            if window.is_visible().unwrap_or(false) {
-                let _ = window.hide();
-                POPOVER_VISIBLE.store(false, Ordering::Release);
-            }
-        }
-    });
-    let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown;
-    if let Some(token) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block) {
-        std::mem::forget(token); // dropping the token removes the monitor
     }
 }
 
@@ -2600,65 +2440,5 @@ fn order_front_regardless(window: &tauri::WebviewWindow) {
         let ns_window: *mut AnyObject = ns_window_ptr.cast();
         let () = msg_send![ns_window, orderFrontRegardless];
         let () = msg_send![ns_window, makeKeyWindow];
-    }
-}
-
-/// Round the corners of the underlying NSWindow on macOS.
-///
-/// The window is created with `transparent: false`, so it needs no macOS
-/// private API. On its own that yields a square, opaque window. To get a
-/// rounded shape we use only public AppKit/QuartzCore:
-/// 1. make the NSWindow non-opaque with a clear background, so the corner
-///    regions outside the radius render transparent rather than painting
-///    the default window background;
-/// 2. layer-back the content view and mask its CALayer to a corner radius.
-///
-/// The webview body stays opaque (white from CSS), so the corners read as
-/// cleanly rounded against the desktop.
-#[cfg(target_os = "macos")]
-fn apply_window_corner_radius(window: &tauri::WebviewWindow, radius: f64) {
-    use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send};
-
-    let Ok(ns_window_ptr) = window.ns_window() else {
-        return;
-    };
-    if ns_window_ptr.is_null() {
-        return;
-    }
-
-    // SAFETY: `ns_window()` hands us a borrowed NSWindow pointer that lives
-    // as long as the Tauri window. We only call documented AppKit/QuartzCore
-    // selectors on the main thread (Tauri's setup callback runs on main).
-    unsafe {
-        let ns_window: *mut AnyObject = ns_window_ptr.cast();
-        // Drop Tauri's private-API transparency: make the NSWindow
-        // non-opaque with a clear background using only public AppKit, so
-        // the corner regions outside the rounded mask render transparent
-        // instead of painting the default opaque window background.
-        let clear_color: *mut AnyObject = msg_send![class!(NSColor), clearColor];
-        let () = msg_send![ns_window, setOpaque: false];
-        let () = msg_send![ns_window, setBackgroundColor: clear_color];
-        let content_view: *mut AnyObject = msg_send![ns_window, contentView];
-        if content_view.is_null() {
-            return;
-        }
-        // Layer-back the content view so it actually has a CALayer to mask.
-        let () = msg_send![content_view, setWantsLayer: true];
-        let layer: *mut AnyObject = msg_send![content_view, layer];
-        if layer.is_null() {
-            return;
-        }
-        let () = msg_send![layer, setCornerRadius: radius];
-        let () = msg_send![layer, setMasksToBounds: true];
-        // Paint the masked layer white so the window's first on-screen frame is
-        // a white rounded card - matching the splash background - instead of the
-        // transparent/blank flash the clear window background shows before
-        // WKWebView paints. The webview's opaque white body draws over this once
-        // it renders, so the handoff is seamless. Clipped to the corner mask, so
-        // the rounded corners stay transparent.
-        let white: *mut AnyObject = msg_send![class!(NSColor), whiteColor];
-        let white_cg: *mut AnyObject = msg_send![white, CGColor];
-        let () = msg_send![layer, setBackgroundColor: white_cg];
     }
 }

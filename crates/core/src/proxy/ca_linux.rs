@@ -31,7 +31,7 @@ use hudsucker::rcgen::KeyPair;
 
 use crate::env;
 use crate::keychain;
-use crate::primitives::{run_as_admin, sh_quote};
+use crate::primitives::{run_as_admin, run_as_root_noninteractive, sh_quote};
 use crate::proxy::cert_authority;
 
 /// Subject CN of our CA. Used both as the cert subject and as the basename of
@@ -186,16 +186,30 @@ pub fn ensure_trusted() -> Result<()> {
         return Ok(());
     }
     let store = trust_store()?;
-    let cert = cert_path()?;
-    let parent = store.anchor.parent().context("anchor path has no parent")?;
-    let script = format!(
-        "/bin/mkdir -p {parent} && /usr/bin/install -m 0644 {src} {dst} && {update}",
-        parent = sh_quote(&parent.display().to_string()),
-        src = sh_quote(&cert.display().to_string()),
-        dst = sh_quote(&store.anchor.display().to_string()),
-        update = store.install_cmd,
-    );
-    run_as_admin(&script).context("installing the proxy CA into the system trust store")?;
+    run_as_admin(&anchor_install_script(&store, &cert_path()?))
+        .context("installing the proxy CA into the system trust store")?;
+    Ok(())
+}
+
+/// Trust the CA machine-wide **without any prompt**, for hosts where nobody can
+/// answer one (build agents, containers, headless servers). Reached only from
+/// `proxy trust-ca --system-trust`.
+///
+/// Linux has no per-user root store, so this installs the same anchor in the
+/// same place as [`ensure_trusted`] - the only difference is the escalation.
+/// [`run_as_admin`] picks `sudo` when stdout is a tty and `pkexec` otherwise, so
+/// a script with redirected output on a host with no polkit agent fails at the
+/// authentication agent rather than at anything to do with certificates (the
+/// workaround being to hand it a pty). `run_as_root_noninteractive` needs
+/// neither: it runs the command directly when already root and via `sudo -n`
+/// otherwise, and turns "would have prompted" into an error that says so.
+pub fn ensure_trusted_system() -> Result<()> {
+    if is_trusted()? {
+        return Ok(());
+    }
+    let store = trust_store()?;
+    run_as_root_noninteractive(&anchor_install_script(&store, &cert_path()?))
+        .context("installing the proxy CA into the system trust store")?;
     Ok(())
 }
 
@@ -206,14 +220,47 @@ pub fn ensure_trusted() -> Result<()> {
 pub fn untrust() -> Result<()> {
     let store = trust_store()?;
     if store.anchor.exists() {
-        let script = format!(
-            "/bin/rm -f {dst} && {refresh}",
-            dst = sh_quote(&store.anchor.display().to_string()),
-            refresh = store.refresh_cmd,
-        );
-        run_as_admin(&script).context("removing the proxy CA from the system trust store")?;
+        run_as_admin(&anchor_remove_script(&store))
+            .context("removing the proxy CA from the system trust store")?;
     }
     remove_ca_material()
+}
+
+/// Remove the CA's trust without a prompt. The headless counterpart of
+/// [`untrust`]: same anchor, same rebuild, non-interactive escalation.
+pub fn untrust_system() -> Result<()> {
+    let store = trust_store()?;
+    if store.anchor.exists() {
+        run_as_root_noninteractive(&anchor_remove_script(&store))
+            .context("removing the proxy CA from the system trust store")?;
+    }
+    remove_ca_material()
+}
+
+/// Install the anchor and rebuild the bundle, as one shell command so a single
+/// escalation covers both. Pure, so the interactive and headless callers cannot
+/// drift and the shape is testable without root or a trust store.
+fn anchor_install_script(store: &TrustStore, cert: &std::path::Path) -> String {
+    // The anchor is a filename joined onto its directory, so `parent` is always
+    // Some; falling back to the anchor itself keeps this total rather than
+    // introducing an error case no input can reach.
+    let parent = store.anchor.parent().unwrap_or(&store.anchor);
+    format!(
+        "/bin/mkdir -p {parent} && /usr/bin/install -m 0644 {src} {dst} && {update}",
+        parent = sh_quote(&parent.display().to_string()),
+        src = sh_quote(&cert.display().to_string()),
+        dst = sh_quote(&store.anchor.display().to_string()),
+        update = store.install_cmd,
+    )
+}
+
+/// Delete the anchor and rebuild the bundle, as one shell command.
+fn anchor_remove_script(store: &TrustStore) -> String {
+    format!(
+        "/bin/rm -f {dst} && {refresh}",
+        dst = sh_quote(&store.anchor.display().to_string()),
+        refresh = store.refresh_cmd,
+    )
 }
 
 /// Full teardown for an explicit removal: drop the private key from the secret
@@ -230,5 +277,64 @@ fn remove_ca_material() -> Result<()> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e).with_context(|| format!("removing {}", cert.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn debian_store() -> TrustStore {
+        TrustStore {
+            anchor: PathBuf::from("/usr/local/share/ca-certificates/Gate CA.crt"),
+            install_cmd: "update-ca-certificates",
+            refresh_cmd: "update-ca-certificates --fresh",
+        }
+    }
+
+    /// The install is one shell command on purpose: it runs behind a single
+    /// escalation, so a missing `&&` would rebuild the bundle even when the
+    /// copy failed, leaving `is_trusted` false and nothing saying why.
+    #[test]
+    fn the_anchor_install_copies_then_rebuilds_under_one_escalation() {
+        let script = anchor_install_script(&debian_store(), std::path::Path::new("/tmp/ca.pem"));
+        let (copy, update) = script
+            .split_once("&& update-ca-certificates")
+            .expect(&script);
+        assert!(
+            copy.contains("/usr/bin/install -m 0644 '/tmp/ca.pem'"),
+            "{script}"
+        );
+        assert!(
+            copy.contains("/bin/mkdir -p '/usr/local/share/ca-certificates'"),
+            "{script}"
+        );
+        assert!(update.is_empty(), "{script}");
+    }
+
+    /// The anchor filename carries the CA's common name, which has a space in
+    /// it. Unquoted, `install` would see two paths and the rebuild would run
+    /// over a file that was never written.
+    #[test]
+    fn the_anchor_path_survives_the_space_in_the_ca_name() {
+        let store = debian_store();
+        let install = anchor_install_script(&store, std::path::Path::new("/tmp/ca.pem"));
+        let remove = anchor_remove_script(&store);
+        let quoted = "'/usr/local/share/ca-certificates/Gate CA.crt'";
+        assert!(install.contains(quoted), "{install}");
+        assert!(remove.contains(quoted), "{remove}");
+    }
+
+    /// Removal has to rebuild with the *refresh* command: on Debian
+    /// `update-ca-certificates` only adds, so dropping the anchor without
+    /// `--fresh` leaves the CA in the consolidated bundle and still trusted.
+    #[test]
+    fn the_anchor_removal_rebuilds_the_bundle_from_scratch() {
+        let script = anchor_remove_script(&debian_store());
+        assert!(script.starts_with("/bin/rm -f "), "{script}");
+        assert!(
+            script.ends_with("&& update-ca-certificates --fresh"),
+            "{script}"
+        );
     }
 }

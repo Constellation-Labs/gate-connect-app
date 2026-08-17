@@ -69,7 +69,7 @@ impl HelperClient {
             // down in `connect_existing`; give it a moment, then force-kill if
             // it's still holding the socket, so `spawn_daemon` below isn't
             // wedged behind its singleton flock.
-            Err(e) if e.is::<StaleDaemon>() => replace_stale_daemon(),
+            Err(e) if e.is::<StaleDaemon>() => ensure_daemon_gone(),
             Err(_) => {}
         }
         spawn_daemon()?;
@@ -219,11 +219,33 @@ impl HelperClient {
     }
 }
 
-/// Replace a daemon that reported an incompatible protocol. It was already
-/// asked to `Shutdown` in `connect_existing` (a no-op if it didn't understand
-/// the request); give it a moment to exit on its own, then force-kill it so the
-/// singleton flock is free for the replacement `spawn_daemon`.
-fn replace_stale_daemon() {
+/// Ask a running daemon to exit, and make sure it's gone. No-op when nothing is
+/// listening.
+///
+/// The counterpart of a clean disable, which only drops the daemon to
+/// pass-through and leaves the engine (and its port) alive. Needed when the
+/// engine's *start-time* config changes - today only `gateway_base_url`, which
+/// has no live update the way the key / token / org do - because the daemon
+/// outlives the GUI, so nothing short of replacing it re-reads that value.
+pub fn shutdown_daemon() {
+    match HelperClient::connect_existing() {
+        Ok(mut client) => {
+            let _ = client.round_trip(&Request::Shutdown, CONTROL_TIMEOUT);
+        }
+        // A stale daemon was already sent `Shutdown` inside `connect_existing`,
+        // so it still needs the wait/kill below. Any other error means nothing
+        // reachable is listening - there's nothing to shut down.
+        Err(e) if !e.is::<StaleDaemon>() => return,
+        Err(_) => {}
+    }
+    ensure_daemon_gone();
+}
+
+/// Wait for a daemon that has already been asked to `Shutdown` to actually go
+/// away, force-killing it if it doesn't. Callers need it gone, not merely
+/// notified: the singleton flock it holds would otherwise make the replacement
+/// `spawn_daemon` bail as a duplicate.
+fn ensure_daemon_gone() {
     if wait_for_daemon_gone() {
         return;
     }

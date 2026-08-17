@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // The specs run in node (Playwright) but the injected script runs in the
+    // page, so both lib sets are in play. No `vite/client`: nothing here reads
+    // import.meta.env.
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": [".", "../playwright.config.ts"]
+}

@@ -57,6 +57,121 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # The one path CI could not otherwise see. `proxy trust-ca --system-trust`
+  # writes the LocalMachine Root store, and nothing else in CI exercises it:
+  # the real-tools suite skips the Windows engine phase for the listener bug,
+  # and the workspace tests only typecheck the cfg-gated module.
+  #
+  # It needs no engine, no mocks and no login, so the listener bug does not
+  # block it - `status` reads CA trust straight from `ca::is_trusted()`.
+  #
+  # Measured before it was built (throwaway probe, since deleted): on this
+  # runner the per-user `certutil -user -addstore Root` the app uses blocks on
+  # the trust dialog until killed, `Cert:\CurrentUser\Root` and the raw
+  # X509Store do too, and `certutil -addstore -f Root` into LocalMachine lands
+  # the cert in under a second with no dialog. The runner is already admin, so
+  # elevation is not in the way. That last mechanism is what this job asserts
+  # stays true - hence the bounds below: the regression to fear is the dialog
+  # coming back, and a dialog does not fail, it waits.
+  win-system-trust:
+    name: Windows machine-wide CA trust
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.86.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-system-trust
+
+      - name: Build the CLI
+        run: cargo build -p gate-connect-cli
+
+      - name: Trust round-trip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $CN   = 'Gate Connect Local CA'
+          $cli  = Join-Path $PWD 'target\debug\gate-connect.exe'
+          $work = Join-Path $env:RUNNER_TEMP 'gc-system-trust'
+          New-Item -ItemType Directory -Force -Path "$work\home", "$work\secrets" | Out-Null
+          # The CA cert and key go to a throwaway home; the store write is the
+          # only thing here that touches the real machine.
+          $env:GATE_CONNECT_TEST_HOME    = "$work\home"
+          $env:GATE_CONNECT_TEST_SECRETS = "$work\secrets"
+
+          # Every call is bounded, and a timeout is a failure. 60s is ~60x the
+          # measured install, and the dialog this guards against blocked the
+          # probe for as long as it was given.
+          function Invoke-Bounded([string]$file, [string[]]$argv, [int]$sec = 60) {
+            $psi = New-Object Diagnostics.ProcessStartInfo
+            $psi.FileName = $file
+            foreach ($a in $argv) { $psi.ArgumentList.Add($a) }
+            $psi.UseShellExecute        = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError  = $true
+            $p = [Diagnostics.Process]::Start($psi)
+            # Read both pipes before waiting: a child that fills one while we
+            # block on exit would deadlock instead of reporting.
+            $out = $p.StandardOutput.ReadToEndAsync()
+            $err = $p.StandardError.ReadToEndAsync()
+            if (-not $p.WaitForExit($sec * 1000)) {
+              try { $p.Kill($true) } catch {}
+              return @{ ok = $false; timedout = $true; text = "(timed out after ${sec}s)" }
+            }
+            return @{ ok = ($p.ExitCode -eq 0); timedout = $false; text = ($out.Result + $err.Result) }
+          }
+
+          $fail = 0
+          function Check([string]$what, [bool]$cond, [string]$detail = '') {
+            if ($cond) {
+              Write-Host "PASS: $what"
+            } else {
+              Write-Host "FAIL: $what"
+              if ($detail) { Write-Host ($detail -replace '(?m)^', '    ') }
+              $script:fail++
+            }
+          }
+
+          $before = Invoke-Bounded $cli @('proxy', 'status')
+          Check 'status starts untrusted' ($before.text -match 'CA trust: not trusted') $before.text
+
+          $trust = Invoke-Bounded $cli @('proxy', 'trust-ca', '--system-trust')
+          Check 'trust-ca --system-trust returns, with no dialog' ((-not $trust.timedout) -and $trust.ok) $trust.text
+
+          # Which store it landed in is the whole point: the per-user one is
+          # what prompts, so an install that went there would be the regression
+          # rather than the feature.
+          Check 'the CA is in the LocalMachine Root store' (Invoke-Bounded 'certutil' @('-store', 'Root', $CN) 30).ok
+          Check 'the CA is not in the per-user Root store' (-not (Invoke-Bounded 'certutil' @('-user', '-store', 'Root', $CN) 30).ok)
+
+          # The half that used to be missing: a store lookup sees only the store
+          # it is pointed at, so before this PR a machine-wide install still read
+          # as untrusted here and every enable re-prompted.
+          $after = Invoke-Bounded $cli @('proxy', 'status')
+          Check 'status sees the machine-wide install as trusted' ($after.text -match 'CA trust: trusted') $after.text
+
+          $untrust = Invoke-Bounded $cli @('proxy', 'untrust-ca', '--system-trust')
+          Check 'untrust-ca --system-trust returns, with no dialog' ((-not $untrust.timedout) -and $untrust.ok) $untrust.text
+          Check 'the CA is gone from the LocalMachine Root store' (-not (Invoke-Bounded 'certutil' @('-store', 'Root', $CN) 30).ok)
+
+          $end = Invoke-Bounded $cli @('proxy', 'status')
+          Check 'status reports it untrusted again' ($end.text -match 'CA trust: not trusted') $end.text
+
+          if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }
+
+      # A run that fails midway can leave the root installed. The runner is
+      # throwaway, but a machine-wide root is not the kind of thing to leave
+      # lying around on the strength of that.
+      - name: Remove the CA from the machine store
+        if: always()
+        shell: pwsh
+        run: |
+          certutil -delstore Root "Gate Connect Local CA" 2>&1 | Out-Null
+          exit 0
+
   web:
     name: Web (frontend)
     runs-on: ubuntu-latest
@@ -80,3 +195,28 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # The e2e specs live outside `tsconfig.json`'s `include`, so `pnpm build`
+      # never sees them.
+      - name: Type check e2e
+        run: pnpm typecheck:e2e
+
+      # Chromium only: playwright.config.ts declares one project, and the
+      # popover ships in one webview per platform - none of which is Chromium,
+      # so a browser matrix would buy nothing here.
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Drives the real frontend against a fake Tauri backend (e2e/install.ts).
+      # The Rust side is covered by the `rust` job above and by
+      # e2e-real-tools.yml.
+      - name: E2E (UI)
+        run: pnpm test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

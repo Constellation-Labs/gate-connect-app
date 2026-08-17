@@ -65,6 +65,7 @@ const CATALOG: ProviderState[] = [
     available: true,
     tool_slugs: ["claude-code"],
     domain_slugs: ["anthropic"],
+    chat_domain_slugs: [],
   },
   {
     slug: "openai",
@@ -74,12 +75,15 @@ const CATALOG: ProviderState[] = [
     available: true,
     tool_slugs: ["codex"],
     domain_slugs: ["openai"],
+    chat_domain_slugs: [],
   },
 ];
 
 function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, platform: Platform = "macos") {
   (usePlatform as Mock).mockReturnValue(platform);
-  render(
+  // Returned so a test can reach the sr-only live region, which has no role
+  // and no accessible name to query by.
+  return render(
     <Home
       workspace="Constellation Labs"
       gatewayHost="gateway.constellationgate.ai"
@@ -99,6 +103,7 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       onDismissStaleAgents={vi.fn()}
       onToggleProxy={vi.fn()}
       onTrustCa={vi.fn()}
+      trustPending={false}
       onOpenFamily={vi.fn()}
       onOpenSettings={vi.fn()}
       envExportSeparable={true}
@@ -148,6 +153,45 @@ describe("Home CA-trust card", () => {
     renderHome({ caTrusted: false, domains: [makeDomain()], onTrustCa });
     fireEvent.click(screen.getByRole("button", { name: "Trust" }));
     expect(onTrustCa).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns a Windows user about the security warning before they click", () => {
+    renderHome({ caTrusted: false, domains: [makeDomain()] }, "windows");
+    // Outside the disclosure: an unannounced OS security dialog is exactly what
+    // makes this ceremony feel like something went wrong, and the users who
+    // open "What's this?" are the ones who least need warning.
+    expect(screen.getByText(/security warning: that’s expected, choose Yes/)).toBeTruthy();
+  });
+
+  it("names the login password on macOS instead of the Windows dialog", () => {
+    renderHome({ caTrusted: false, domains: [makeDomain()] }, "macos");
+    expect(screen.getByText(/ask for your login password/)).toBeTruthy();
+  });
+
+  it("names the dialog on screen while it is up, and says the button is not dead", () => {
+    renderHome(
+      { caTrusted: false, domains: [makeDomain()], trustPending: true, busy: true },
+      "windows",
+    );
+    // The certificate the dialog is quoting back, so the user can match the two.
+    // Twice: the sentence on the card and the announcement in the live region
+    // below, which is the same instruction for someone who cannot see either
+    // the card change or the dialog appear.
+    expect(screen.getAllByText(/Gate Connect Local CA/)).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Waiting…" })).toBeTruthy();
+    // The pre-click phrasing is gone: the warning is no longer coming, it's here.
+    expect(screen.queryByText(/that’s expected, choose Yes/)).toBeNull();
+  });
+
+  it("announces the dialog, which a screen-reader user cannot see appear", () => {
+    const { container } = renderHome(
+      { caTrusted: false, domains: [makeDomain()], trustPending: true, busy: true },
+      "windows",
+    );
+    const live = container.querySelector('[aria-live="polite"]');
+    // Outranks "Routing on, certificate not trusted": that state is old news
+    // next to a modal the user has not been told about.
+    expect(live?.textContent).toContain("Gate Connect Local CA");
   });
 
   it("suppresses the change notice, so the blocker is the only thing to read", () => {

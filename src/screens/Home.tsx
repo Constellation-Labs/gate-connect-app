@@ -9,7 +9,7 @@ import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, ErrorNote, Button } from "../components/gc/ui";
 import { GroupPill, groupPillLabel } from "../components/GroupPill";
 import { Icon } from "../components/gc/Icon";
-import { trustStoreName, usePlatform } from "../lib/platform";
+import { trustPromptHint, trustPromptWaiting, trustStoreName, usePlatform } from "../lib/platform";
 import { openExternal } from "../lib/openExternal";
 import { GATE_DASHBOARD_URL } from "../lib/config";
 
@@ -42,6 +42,7 @@ export function Home({
   onDismissStaleAgents,
   onToggleProxy,
   onTrustCa,
+  trustPending,
   onOpenFamily,
   onOpenSettings,
   envExportSeparable,
@@ -73,6 +74,9 @@ export function Home({
   onDismissStaleAgents: () => void;
   onToggleProxy: () => void;
   onTrustCa: () => void;
+  /** Whether the OS trust dialog is up and we're blocked on it. Swaps the
+   * certificate card's sentence for the one that names that dialog. */
+  trustPending: boolean;
   /** Opens `groupId`'s own panel. The id is required: every row leads to its
    * own family, so there is no longer a target-less way in. It used to be
    * optional because the ledger heading was a button that opened a list of all
@@ -249,14 +253,22 @@ export function Home({
           region used to fire on every state change including ones nobody
           asked for, so a screen-reader user got an unprompted "Routing on,
           2 of 5 routing" when the backend enabled itself at startup. */}
+      {/* `trustPending` outranks the routing headline: the OS dialog is modal to
+          the user's attention, and a screen-reader user cannot see that it
+          appeared at all. The sighted cue for it is a sentence on a card and a
+          changed button label, neither of which this region would otherwise
+          report - so during those seconds the announcement is the instruction,
+          not the state. */}
       <span aria-live="polite" className="sr-only">
-        {interacted
-          ? proxyOn
-            ? partial
-              ? "Routing on, certificate not trusted"
-              : `Routing on, ${routedCount} of ${routableCount} routing`
-            : "Routing off"
-          : ""}
+        {trustPending
+          ? trustPromptWaiting(platform)
+          : interacted
+            ? proxyOn
+              ? partial
+                ? "Routing on, certificate not trusted"
+                : `Routing on, ${routedCount} of ${routableCount} routing`
+              : "Routing off"
+            : ""}
       </span>
       <div className="flex flex-col gap-2.5 p-3.5">
         {/* One box, two parts: the master control and the door to what it
@@ -387,8 +399,16 @@ export function Home({
             re-crowding into the screen the door was invented to fix. */}
         {/* Gated on `partial`, not just an untrusted CA: with no app rows
             switched on the certificate blocks nothing, and a warning card
-            would contradict the green header pill. */}
-        {showProxy && partial && (
+            would contradict the green header pill.
+
+            `trustPending` opens the same gate, because the master switch now
+            trusts the CA *before* it enables (App.tsx's `ensureCaTrusted`) and
+            that runs with `partial` still false - no domains on, no engine up.
+            Without this the OS security dialog arrived over a screen that said
+            nothing about it, which is the confusion this card exists to
+            prevent. The waiting sentence below is what the user needs in those
+            seconds, and this card is where it lives. */}
+        {showProxy && (partial || trustPending) && (
           <div className="rounded-[10px] bg-gc-surface p-3.5 shadow-border">
             <div className="flex items-center gap-2.5">
               <div className="order-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] bg-gc-warning-wash text-gc-warning-deep">
@@ -424,7 +444,10 @@ export function Home({
                   onTrustCa();
                 }}
               >
-                Trust
+                {/* The label carries the wait too. Disabled-but-unchanged, it
+                    read as a dead button while the OS dialog sat on top of the
+                    app for however long the user takes to decide. */}
+                {trustPending ? "Waiting…" : "Trust"}
               </Button>
               <div className="order-2 min-w-0 flex-1 text-gc-body-sm font-medium leading-snug text-gc-ink">
                 Apps with no gateway setting need the Gate certificate.{" "}
@@ -447,6 +470,25 @@ export function Home({
                 </button>
               </div>
             </div>
+            {/* The handoff, outside the disclosure. Trusting the CA is the one
+                action here that raises a system dialog, and an unannounced OS
+                security warning reads as something having gone wrong - so this
+                sentence is worth its line even on the card with the least room
+                to spare. Inside "What's this?" it would only reach users who
+                already know what a root CA is, which is precisely not the
+                audience that needs warning.
+
+                Present tense while we're blocked on it, ink-2 rather than
+                ink-3: for those seconds it is the most important sentence on
+                the screen, and the dialog it describes may be covering the
+                window it's written in. */}
+            <p
+              className={`mt-2 text-gc-caption leading-snug ${
+                trustPending ? "text-gc-ink-2" : "text-gc-ink-3"
+              }`}
+            >
+              {trustPending ? trustPromptWaiting(platform) : trustPromptHint(platform)}
+            </p>
             {caExplain && (
               <>
                 <p className="mt-2 text-gc-caption leading-snug text-gc-ink-2">

@@ -155,7 +155,20 @@ jobs:
           ARCH=x86_64 /tmp/squashfs-root/AppRun "$BUNDLE/squashfs-root" "$APPIMAGE"
 
           pnpm exec tauri signer sign "$APPIMAGE"
-          gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE.sig" --clobber
+
+          # Upload under the name the API actually stores. GitHub replaces
+          # spaces in asset names with dots, so the bundle's "Gate
+          # Connect_<v>_amd64.AppImage" lands as "Gate.Connect_...", but gh
+          # derives the asset name from the local basename and matches
+          # --clobber against that literal. Uploading the spaced path looks
+          # for an asset that never exists, so the pre-strip file tauri-action
+          # uploaded moments ago survives - and this step still exits 0. Only
+          # a re-run exposes it (on a first attempt there is nothing to
+          # clobber yet), which is how v0.2.0 shipped a pre-strip AppImage.
+          SANITIZED=${NAME// /.}
+          cp "$APPIMAGE" "/tmp/$SANITIZED"
+          cp "$APPIMAGE.sig" "/tmp/$SANITIZED.sig"
+          gh release upload "$TAG" "/tmp/$SANITIZED" "/tmp/$SANITIZED.sig" --clobber
 
           gh release download "$TAG" -p latest.json -O /tmp/latest.json --clobber
           jq --arg sig "$(cat "$APPIMAGE.sig")" '
@@ -165,6 +178,32 @@ jobs:
           ' /tmp/latest.json > /tmp/latest.json.new
           mv /tmp/latest.json.new /tmp/latest.json
           gh release upload "$TAG" /tmp/latest.json --clobber
+
+          # Read back what the release now serves, rather than trusting that
+          # the uploads landed. A lost upload here hands every AppImage user a
+          # window that aborts on EGL, with a signature and manifest that
+          # agree with the broken binary so the updater installs it happily -
+          # a silent failure this step exists to prevent, so it must be fatal.
+          EXPECTED_SIZE=$(stat -c%s "$APPIMAGE")
+          PUBLISHED_SIZE=$(gh release view "$TAG" --json assets \
+            -q ".assets[] | select(.name == \"$SANITIZED\") | .size")
+          if [ "$PUBLISHED_SIZE" != "$EXPECTED_SIZE" ]; then
+            echo "$SANITIZED is published at ${PUBLISHED_SIZE:-no such asset} bytes," \
+              "expected $EXPECTED_SIZE (the stripped build)" >&2
+            exit 1
+          fi
+          # Every AppImage entry gets the same signature, so `unique` collapses
+          # to one value unless an entry was missed - which would also fail here.
+          gh release download "$TAG" -p latest.json -O /tmp/latest.published.json --clobber
+          PUBLISHED_SIG=$(jq -r '
+            [.platforms[] | select((.url // "") | endswith(".AppImage")) | .signature]
+            | unique | .[]
+          ' /tmp/latest.published.json)
+          if [ "$PUBLISHED_SIG" != "$(cat "$APPIMAGE.sig")" ]; then
+            echo "latest.json signature does not match the re-signed AppImage" >&2
+            exit 1
+          fi
+          echo "Verified $SANITIZED ($EXPECTED_SIZE bytes) and its latest.json signature"
       # Add version-less copies of each platform's primary installer alongside
       # the versioned assets, so a stable /releases/latest/download/<name> URL
       # always resolves to the newest published release. The versioned assets

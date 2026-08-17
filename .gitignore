@@ -12,3 +12,8 @@
 
 # Impeccable live-overlay working state (transient; snapshots in critique/ are tracked)
 .impeccable/live/
+
+# Playwright e2e output (traces, screenshots, HTML report).
+/test-results/
+/playwright-report/
+/blob-report/

@@ -5,7 +5,13 @@ import { classifyError, type ClassifiedError } from "../lib/errors";
 import { trackError } from "../lib/analytics";
 import { Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
 import { MemberPill, memberPillLabel } from "../components/GroupPill";
-import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
+import {
+  secretStoreName,
+  trustPromptHint,
+  trustPromptWaiting,
+  usePlatform,
+  type Platform,
+} from "../lib/platform";
 import { Icon } from "../components/gc/Icon";
 
 /** Host only, for the mono identifier slot. */
@@ -31,11 +37,25 @@ function explain(member: GroupMember, platform: Platform): string {
       : `${member.name}’s config points at Gate, but routing is off, so it can’t reach the gateway.`;
   }
   if (member.kind === "proxy") {
-    return member.attention === "needs-trust"
-      ? `${member.name} is switched on, but the local certificate isn’t trusted yet, so its traffic isn’t routing.`
-      : member.routed
-        ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
-        : `${member.name} routes through Gate’s local proxy once you switch it on.`;
+    if (member.attention === "needs-trust") {
+      return `${member.name} is switched on, but the local certificate isn’t trusted yet, so its traffic isn’t routing.`;
+    }
+    // The one member kind whose switch is not the family's to flip, and the one
+    // whose traffic carries no API key at all. Both facts belong here: the row
+    // sits under a family whose switch will leave it exactly where it is, and
+    // the thing being routed is a credential the user is already signed in with
+    // - a session cookie, or a subscription their tools authenticate with -
+    // which is a different promise from "Gate holds your key in the keychain".
+    // Deliberately not the word "conversations": one of these rows carries the
+    // Codex subscription endpoint, whose traffic is model calls, not chat.
+    if (member.chat) {
+      return member.routed
+        ? `${member.name} goes through Gate on the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it. The family switch above leaves this row alone.`
+        : `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers. Switch it on and Gate records and inspects that traffic; the family switch above leaves this row alone either way.`;
+    }
+    return member.routed
+      ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
+      : `${member.name} routes through Gate’s local proxy once you switch it on.`;
   }
   switch (member.tool?.status.kind) {
     case "connected":
@@ -118,6 +138,7 @@ export function GroupMembers({
   onToggleTool,
   onSetDomain,
   onTrustCa,
+  trustPending,
   proxyOn,
   onEnableRouting,
   authMode,
@@ -130,6 +151,9 @@ export function GroupMembers({
   /** The remedy for a needs-trust member, offered where the problem is named
    * rather than back on Home. Rejects on failure so the row can show it. */
   onTrustCa: () => Promise<void>;
+  /** Whether the OS trust dialog is up and we're blocked on it, so the banner
+   * can name the dialog instead of showing a dead button. */
+  trustPending: boolean;
   /** Whether the engine is running. A member can be switched on and still not
    * route, which is what the master-off state is. */
   proxyOn: boolean;
@@ -202,8 +226,15 @@ export function GroupMembers({
           flipping a member switch moved its pill from "Routed" to "Not routed"
           silently. The switch's own `aria-checked` is announced by the platform;
           this is the reality half. */}
+      {/* `trustPending` first, as on Home: while the OS dialog is up, the thing
+          a screen-reader user needs is the instruction for a window they were
+          never told had opened. */}
       <span aria-live="polite" className="sr-only">
-        {changedMember ? `${changedMember.name}, ${memberPillLabel(changedMember)}` : ""}
+        {trustPending
+          ? trustPromptWaiting(platform)
+          : changedMember
+            ? `${changedMember.name}, ${memberPillLabel(changedMember)}`
+            : ""}
       </span>
       {group.desired > 0 && !proxyOn && (
         // `flex-wrap` with an `em` basis on the sentence, the rule the routing
@@ -229,7 +260,7 @@ export function GroupMembers({
         </div>
       )}
 
-      {untrusted.length > 0 && (
+      {(untrusted.length > 0 || trustPending) && (
         // The last member state to get a banner, and the only blocking one that
         // did not have one: `master-off`, `error` and `drifted` each announced
         // themselves at group level while the certificate was named on the
@@ -237,6 +268,12 @@ export function GroupMembers({
         // down inside a member. Since the family row says "certificate not
         // trusted", the level that reports the problem is now also a level that
         // can fix it.
+        //
+        // `trustPending` shows it with no untrusted member too: flipping a
+        // config member on trusts the CA first (App.tsx's `ensureCaTrusted`),
+        // and at that moment no member reads needs-trust yet - the engine is
+        // still coming up. Without this the OS dialog appeared over a panel
+        // that never mentioned it.
         //
         // Mutually exclusive with the master-off banner above: a member can only
         // be untrusted while the engine is running, and only master-off while it
@@ -246,17 +283,36 @@ export function GroupMembers({
         <div className="mx-3.5 mb-2 flex flex-wrap items-center gap-x-2.5 gap-y-2 rounded bg-gc-warning-wash px-3 py-2.5">
           <Icon name="info" size={15} className="shrink-0 text-gc-warning" />
           <div className="min-w-0 flex-1 basis-[9em] text-gc-caption leading-snug text-gc-ink-2">
-            {untrusted.length === 1 ? `${untrusted[0].name} needs` : "These need"} the
-            Gate certificate. It never leaves this machine.
+            {/* Same handoff sentence Home's card carries, for the same reason
+                and in the same words: this button raises the same OS dialog,
+                and a user who trusts from here must not meet an unannounced
+                system security warning that the other screen would have warned
+                them about. Present tense while we're blocked on it. */}
+            {trustPending ? (
+              trustPromptWaiting(platform)
+            ) : (
+              <>
+                {untrusted.length === 1 ? `${untrusted[0].name} needs` : "These need"} the
+                Gate certificate. It never leaves this machine.{" "}
+                <span className="text-gc-ink-3">{trustPromptHint(platform)}</span>
+              </>
+            )}
           </div>
           <Button
             variant="accent"
             size="sm"
             className="ml-auto shrink-0"
             disabled={busy}
-            onClick={() => void trustFromRow(untrusted[0])}
+            // `untrusted` is empty in the `trustPending` case above, so the row
+            // to reopen on failure may not exist. The button is disabled for
+            // that whole window (`busy` covers it), so this only guards the
+            // state from being reachable at all.
+            onClick={() => {
+              const first = untrusted[0];
+              if (first) void trustFromRow(first);
+            }}
           >
-            Trust
+            {trustPending ? "Waiting…" : "Trust"}
           </Button>
         </div>
       )}

@@ -15,18 +15,106 @@
 //! Windows has a single per-user WinINET proxy, so there is no service
 //! enumeration here; enable/disable act on that one global setting.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
 use super::{ca, config, engine, system_proxy, ProxyDomain, ProxyState};
 use crate::account;
+use crate::audit;
 
 pub struct ProxyManager {
     engine: Mutex<Option<engine::RunningEngine>>,
 }
 
 static MANAGER: OnceLock<ProxyManager> = OnceLock::new();
+
+/// Whether a domain watcher is already running, so repeated enables don't
+/// stack them.
+static WATCHER_ALIVE: AtomicBool = AtomicBool::new(false);
+
+/// How often the watcher stats the domains file. A toggle from another process
+/// is a human action, so a second's latency is imperceptible; the cost is one
+/// `stat` per tick against a file in the app-support dir.
+const WATCH_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// Keep a running engine in step with the domains config after another process
+/// writes it.
+///
+/// Windows, like macOS, hosts the engine inside whichever process enabled it,
+/// with no daemon to forward changes to - so [`ProxyManager::set_domain`]
+/// updates the engine held by *its own* process and nothing else. From a second
+/// process (`gate-connect proxy domain <slug> on` while the menubar app is
+/// routing) that handle is `None`: the file was written, `proxy domains`
+/// reported the new set, and the engine went on intercepting the old one. The
+/// symptom is silence rather than an error - the engine blind-tunnels the host
+/// to its real upstream, so the app works and nothing reaches Gate.
+///
+/// Config and engine disagreeing is precisely the failure this subsystem is
+/// meant not to have. Linux fixed its version in #120 by forwarding to the
+/// daemon, macOS in #132 with this watcher; Windows was left with neither, which
+/// is why this is a port rather than a new mechanism - keep the two in step.
+///
+/// Watching the file rather than adding a control socket, because the file is
+/// already the contract between processes here, and reloading it is safe by
+/// construction: [`config::load_domains`] starts from the built-in catalog and
+/// applies only per-slug enabled flags, forcing unsupported entries off. So a
+/// reload can flip a catalog entry and can never point the MITM at a host the
+/// build does not ship - the same guarantee the Linux daemon enforces by
+/// validating requests against the catalog.
+///
+/// Retires on its own when the engine stops, so a disable/enable cycle does not
+/// accumulate threads.
+fn spawn_domain_watcher() {
+    // `swap` rather than load-then-store: two enables racing here would
+    // otherwise both see `false` and start a watcher each.
+    if WATCHER_ALIVE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let mgr = manager();
+        let mut seen = config::domains_file_mtime();
+        loop {
+            std::thread::sleep(WATCH_INTERVAL);
+            // Never hold the lock across the sleep above: enable/disable take
+            // it for whole sequences, and this thread must not be what makes
+            // a user-facing toggle wait.
+            let engine_gone = mgr
+                .engine
+                .lock()
+                .expect("proxy engine mutex poisoned")
+                .is_none();
+            if engine_gone {
+                WATCHER_ALIVE.store(false, Ordering::SeqCst);
+                return;
+            }
+            let current = config::domains_file_mtime();
+            if current == seen {
+                continue;
+            }
+            seen = current;
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                // A torn or unreadable read is not worth acting on: the engine
+                // keeps the rules it has, and the next tick tries again.
+                Err(e) => {
+                    eprintln!("gate proxy: could not reload proxy domains ({e}); keeping current");
+                    continue;
+                }
+            };
+            if let Some(running) = mgr
+                .engine
+                .lock()
+                .expect("proxy engine mutex poisoned")
+                .as_ref()
+            {
+                running.update_domains(&domains);
+            }
+        }
+    });
+}
 
 pub fn manager() -> &'static ProxyManager {
     MANAGER.get_or_init(|| ProxyManager {
@@ -44,6 +132,24 @@ impl ProxyManager {
             .as_ref()
             .map(|e| (Some(e.port()), Some(e.pac_port())))
             .unwrap_or((None, None));
+        // Holding no engine handle is not the same as nothing running: on this
+        // platform the engine lives in whichever process enabled it, so a CLI
+        // invocation beside a routing menubar app has `None` here while the
+        // machine is fully routed. Reporting "stopped" then is not a partial
+        // truth, it is the wrong answer, and it read as one during a real
+        // triage - `Proxy: stopped` printed directly above a domain table read
+        // from disk that correctly said `anthropic on`.
+        //
+        // The ports come from the same files the hosting process wrote, so a
+        // cross-process status names the engine that is actually serving rather
+        // than the one this process would have started.
+        let (port, pac_port) = match port {
+            Some(_) => (port, pac_port),
+            None => match crate::proxy::engine_hosted_elsewhere() {
+                Some(p) => (Some(p), system_proxy::load_pac_port().unwrap_or(None)),
+                None => (None, None),
+            },
+        };
         Ok(ProxyState {
             running: port.is_some(),
             port,
@@ -76,6 +182,27 @@ impl ProxyManager {
         if guard.is_some() {
             drop(guard);
             return self.status();
+        }
+        // The lock above only orders concurrent enables *within* this process.
+        // Across processes there is nothing to hold, so this is where a second
+        // one has to be refused: the comment above is exactly what happens
+        // otherwise, and the snapshot it would take is of a machine already
+        // pointed at the first engine. Restoring that later hands the user back
+        // a PAC aimed at a port nothing answers - the one outcome this
+        // subsystem is written to make impossible.
+        //
+        // Refusing rather than adopting, because there is nothing to adopt: no
+        // daemon, no control socket, and the running engine belongs to another
+        // process's memory. Linux adopts instead (`manager_linux`), and
+        // `relay::serve` already refuses on the same ground.
+        if let Some(other) = crate::proxy::engine_hosted_elsewhere() {
+            drop(guard);
+            anyhow::bail!(
+                "the Gate proxy is already enabled, hosted by another process on \
+                 127.0.0.1:{other}. Starting a second engine would take the system proxy \
+                 over from it and record Gate's own settings as the ones to restore. Quit \
+                 that process, or run `gate-connect proxy disable` first."
+            );
         }
 
         let account = account::load()?
@@ -171,6 +298,9 @@ impl ProxyManager {
         }
 
         *guard = Some(running);
+        // The engine now has whatever the config said at startup. Keep it in
+        // step with writes made by *other* processes for as long as it runs.
+        spawn_domain_watcher();
 
         // The crash fail-safe defers while we hold the lock; if the engine
         // died somewhere in this sequence, revert here instead of leaving
@@ -191,6 +321,14 @@ impl ProxyManager {
             anyhow::bail!("proxy engine exited unexpectedly while enabling");
         }
         drop(guard);
+
+        // Best-effort audit, matching `manager.rs`. The account is already
+        // loaded here, so its key is the in-hand credential for ApiKey mode;
+        // `port` stays an Option so an unreadable status records `null` rather
+        // than a fabricated 0.
+        let port = self.status().ok().and_then(|s| s.port);
+        audit::proxy_enabled(&account.gateway_base_url, Some(&account.api_key), port);
+
         self.status()
     }
 
@@ -199,6 +337,15 @@ impl ProxyManager {
     /// so it can't be cancelled and strand traffic. The CA is left trusted.
     pub fn disable(&self) -> Result<ProxyState> {
         self.disable_inner()?;
+
+        // Best-effort audit, deliberately here rather than in `disable_inner`:
+        // `disable_quiet` shares that body and runs at app exit, which is not an
+        // operator action. `load_base_url` rather than `load` - see the same
+        // block in `manager.rs`.
+        if let Ok(Some(base_url)) = account::load_base_url() {
+            audit::proxy_disabled(&base_url, None);
+        }
+
         self.status()
     }
 
@@ -210,6 +357,22 @@ impl ProxyManager {
     /// hang the quit. Reverting the proxy and stopping the engine never needs
     /// certutil.
     pub fn disable_quiet(&self) -> Result<()> {
+        self.disable_inner()
+    }
+
+    /// Stop the engine so the next [`enable`](Self::enable) builds a fresh one
+    /// from the current account.
+    ///
+    /// For a gateway switch. The engine takes `gateway_base_url` at start and
+    /// keeps it - unlike the key, token, org, and domains, there is no live
+    /// update for it - so a surviving engine would go on rewriting to the *old*
+    /// environment's gateway while the refresh loop pushes the *new*
+    /// environment's token into it, and that gateway rejects the bearer: a 401
+    /// on every proxied call, with control-plane calls (which go direct) still
+    /// working. Here that is exactly what a disable already does, since the
+    /// engine lives in this process; the Linux manager has to go further and
+    /// replace the daemon that outlives the GUI.
+    pub fn shutdown_engine(&self) -> Result<()> {
         self.disable_inner()
     }
 
@@ -314,10 +477,35 @@ impl ProxyManager {
         self.status()
     }
 
+    /// Trust the CA machine-wide with no prompt at all, for hosts where nobody
+    /// can answer one. CLI-only (`proxy trust-ca --system-trust`) and never
+    /// wired to a Tauri command: the prompt is deliberate product behaviour on a
+    /// desktop, and this widens the trust to every user on the machine.
+    pub fn trust_ca_system(&self) -> Result<ProxyState> {
+        ca::load_or_create()?; // ensure the cert file exists to trust
+        ca::ensure_trusted_system()?;
+        self.status()
+    }
+
     /// Untrust the CA. Refuses while the engine is running, since the engine
     /// mints leaf certs the OS would then reject. This is the explicit way to
     /// remove the standing trusted root (disable alone leaves it trusted).
     pub fn untrust_ca(&self) -> Result<ProxyState> {
+        self.refuse_untrust_while_running()?;
+        ca::untrust()?;
+        self.status()
+    }
+
+    /// Remove a machine-wide trust install with no prompt. The counterpart of
+    /// [`ProxyManager::trust_ca_system`], and refuses while running for the same
+    /// reason [`ProxyManager::untrust_ca`] does.
+    pub fn untrust_ca_system(&self) -> Result<ProxyState> {
+        self.refuse_untrust_while_running()?;
+        ca::untrust_system()?;
+        self.status()
+    }
+
+    fn refuse_untrust_while_running(&self) -> Result<()> {
         if self
             .engine
             .lock()
@@ -326,8 +514,7 @@ impl ProxyManager {
         {
             anyhow::bail!("turn the proxy off before untrusting the CA");
         }
-        ca::untrust()?;
-        self.status()
+        Ok(())
     }
 
     /// Fail-safe invoked from the engine thread if the engine exits without a

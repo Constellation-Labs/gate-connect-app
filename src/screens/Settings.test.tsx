@@ -54,12 +54,11 @@ async function renderOn(platform: Platform, props: Partial<React.ComponentProps<
       onSwitchOrg={vi.fn()}
       onSwitchGateway={vi.fn()}
       onReplayTour={vi.fn()}
+      onOpenDiagnostics={vi.fn()}
       routingOn={false}
       caTrusted={false}
       proxyBusy={false}
       onUntrustCa={vi.fn()}
-      textScale={1}
-      onSetTextScale={vi.fn()}
       {...props}
     />,
   );
@@ -307,38 +306,5 @@ describe("Settings help section", () => {
     expect(docs).toBeTruthy();
     // Still last in the row, so the destructive control keeps its isolation.
     expect(screen.getByRole("button", { name: /Reset Gate Connect/ })).toBeTruthy();
-  });
-});
-
-describe("Settings text size", () => {
-  /** WCAG 1.4.4 (AA) needs a mechanism that exists, and a keyboard shortcut
-   *  nobody is told about is not one. This control is the discoverable copy. */
-  it("offers the five scale steps and marks the current one", async () => {
-    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
-    await renderOn("macos", { textScale: 1.5 });
-    const group = screen.getByRole("group", { name: "Text size" });
-    expect(group).toBeTruthy();
-    const steps = ["100%", "125%", "150%", "175%", "200%"];
-    for (const s of steps) expect(screen.getByRole("button", { name: s })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "150%" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "100%" }).getAttribute("aria-pressed")).toBe("false");
-  });
-
-  it("reports the chosen step to its owner", async () => {
-    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
-    const onSetTextScale = vi.fn();
-    await renderOn("macos", { onSetTextScale });
-    fireEvent.click(screen.getByRole("button", { name: "200%" }));
-    expect(onSetTextScale).toHaveBeenCalledWith(2);
-  });
-
-  it("names the modifier the running platform actually has", async () => {
-    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
-    await renderOn("windows");
-    expect(screen.getByText(/Ctrl and the plus/)).toBeTruthy();
-    cleanup();
-    (launchAtLoginStatus as Mock).mockResolvedValue(lalStatus(false));
-    await renderOn("macos");
-    expect(screen.getByText(/Cmd and the plus/)).toBeTruthy();
   });
 });

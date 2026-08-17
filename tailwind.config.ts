@@ -129,6 +129,50 @@ export default {
           950: "oklch(0.258 0.092 26.042)",
         },
 
+        // ── New app UI (Figma "Gate Connect", file 9FrccCojXy0f8QD8Wm5Lln). ──
+        // Names mirror the Figma variables 1:1 (`--base/card` -> `base.card`)
+        // so a token can be traced back to the design without guessing. The
+        // design is shadcn-flavoured on the default Tailwind palette, so
+        // neutral/amber/green/gray come from Tailwind itself (this config uses
+        // `extend`, so those ramps are untouched and already exact matches:
+        // neutral-900 #171717, neutral-500 #737373, amber-600 #d97706,
+        // green-600 #16a34a, gray-100 #f3f4f6).
+        //
+        // This supersedes the `gc` group below and the ink-primary rule in the
+        // header note: the design makes blue-ribbon the primary. `gc` stays
+        // until the popover screens are migrated off it.
+        base: {
+          card: "#ffffff",
+          background: "#f9fafb",
+          border: "#e5e7eb",
+          input: "#d1d5db",
+          primary: "#203de2",
+          "muted-foreground": "#6b7280",
+        },
+
+        // Primary ramp. Only the stops the design actually specifies:
+        // 700 backs switches, active nav and links; 800 is the "Gate" wordmark
+        // and the update banner's gradient start; 900 is its gradient end.
+        // Fill in the rest from Figma rather than interpolating.
+        "blue-ribbon": {
+          700: "#203de2",
+          800: "#1d37b6",
+          900: "#172563",
+        },
+
+        // Messages chart series (Figma legend swatches, sampled individually).
+        // Named for the series rather than the hue for two reasons: the meaning
+        // is what call sites care about, and three of the four are Tailwind
+        // defaults while `blue` is REDEFINED as an OKLCH ramp further up this
+        // file - so `bg-blue-400` would silently render the wrong colour.
+        // Levels are the design's own and are not uniform: 400, 400, 400, 500.
+        chart: {
+          messages: "#60a5fa", // tailwind blue/400
+          blocked: "#f87171", // tailwind red/400
+          flagged: "#fbbf24", // tailwind amber/400
+          redacted: "#a855f7", // tailwind purple/500
+        },
+
         // ── Gate Connect popover palette (Claude Design handoff). ──
         // Indigo-forward; scoped to the Connect popover only. See header note.
         gc: {
@@ -194,6 +238,19 @@ export default {
           "0 0 0 1px color-mix(in oklch, oklch(0.165 0 0) 8%, transparent), 0 12px 32px -8px color-mix(in oklch, oklch(0.165 0 0) 22%, transparent), 0 4px 12px -2px color-mix(in oklch, oklch(0.165 0 0) 10%, transparent)",
         // Gate Connect popover card drop (prototype --shadow-md).
         "gc-md": "0 2px 4px rgba(10,10,10,0.04), 0 8px 24px rgba(10,10,10,0.06)",
+
+        // New app UI (Figma `shadow/2xs`, `shadow/xs`, `shadow/lg`). Namespaced
+        // rather than overriding Tailwind's `shadow-lg`, which the popover
+        // screens still use.
+        // The design names these on Tailwind v4's scale, where everything
+        // shifted one step down (v4 `shadow-xs` is v3 `shadow-sm`). This repo is
+        // on v3.4, so Figma `shadow/sm` is v3's DEFAULT `shadow`, not `shadow-sm`.
+        // Spelled out here so the mapping does not have to be re-derived.
+        "base-2xs": "0 1px 0 0 rgba(0,0,0,0.05)",
+        "base-xs": "0 1px 2px 0 rgba(0,0,0,0.05)",
+        "base-sm": "0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)",
+        "base-lg":
+          "0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.08)",
       },
       borderRadius: {
         // Map default to cg-sm (6px) since most surfaces want the cg
@@ -202,6 +259,17 @@ export default {
         // Gate Connect popover radii (prototype --r-lg / --r-pill).
         "gc-lg": "12px",
         "gc-pill": "48px",
+        // New app UI: 4px on inputs, nav items and icon tiles. 8px rows use
+        // Tailwind's `rounded-lg`, which is already 8px.
+        base: "4px",
+      },
+      letterSpacing: {
+        // New app UI `mono/eyebrow`: Geist Mono Medium 12/16 at 10% tracking.
+        eyebrow: "1.2px",
+        // `mono/label-12`: same face at 6% - the action pills (BLOCK/FLAG/REDACT).
+        label: "0.72px",
+        // `heading/20`: Geist Medium 20/24 at -1% - pane titles and captions.
+        heading: "-0.2px",
       },
       fontSize: {
         // The popover's type ramp, in rem against a 16px root.
@@ -238,6 +306,11 @@ export default {
         "gc-title": "0.90625rem", // 14.5px - panel titles, wordmark
         "gc-panel-title": "1.0625rem", // 17px   - takeover headings
         "gc-display": "1.6875rem", // 27px   - onboarding window only
+
+        // New app UI. In rem for the same reason as the ramp above: px would
+        // opt these out of `useTextScale` entirely.
+        "base-2xs": "0.625rem", // 10px - app row status line
+        "base-xs": "0.75rem", // 12px - label/12 and the mono eyebrow
       },
     },
   },

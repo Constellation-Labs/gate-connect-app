@@ -129,6 +129,12 @@ export const switchGateway = (baseUrl: string) =>
  *  Called once the user interacts with the startup window. */
 export const unpinPopover = () => invoke<void>("unpin_popover");
 
+/** Hold the popover open across a call that raises a system dialog: the dialog
+ *  takes focus, and without the pin the dismiss-on-blur handler would hide the
+ *  window along with the copy telling the user what to click. Always paired
+ *  with `unpinPopover` in a `finally`. */
+export const pinPopover = () => invoke<void>("pin_popover");
+
 /** Open (or refocus) the full-size onboarding window. `source` tags the
  *  analytics events with how the intro was reached. */
 export const openOnboardingWindow = (source: "firstrun" | "settings") =>
@@ -215,6 +221,12 @@ export interface ProviderState {
   /** Slugs of the proxy domains this provider covers. With `tool_slugs`,
    * a family's whole membership - what Home's ledger groups by. */
   domain_slugs: string[];
+  /** Slugs of this family's chat-protocol domains: listed under the family,
+   * excluded from its switch. Kept apart from `domain_slugs` rather than
+   * merged with a flag, because that field means "what the family switch
+   * flips" everywhere it is read, and these must never be flipped by it -
+   * they intercept a session-cookie surface, not a key-brokered one. */
+  chat_domain_slugs: string[];
 }
 
 export const listProviders = () => invoke<ProviderState[]>("list_providers");
@@ -273,6 +285,36 @@ export const runningAgentsCount = () => invoke<number>("running_agents_count");
  * healthy restored session (agents launched after routing) stays quiet. */
 export const staleAgentsCount = () => invoke<number>("stale_agents_count");
 
+/** One running AI tool. No command line by design: argv on these routinely
+ * holds prompts, paths and occasionally a key, and this list is built to be
+ * pasted into a support thread. */
+export interface RunningAgent {
+  /** Process name as the OS spells it, original case. "Claude" is the desktop
+   * app, "claude" the CLI. */
+  name: string;
+  pid: number;
+  /** Process start, Unix seconds. 0 when the platform wouldn't say. */
+  started_at_unix: number;
+  /** Started before routing last came up, so it resolved its connection
+   * pre-Gate and needs a restart to route. Same rule as
+   * {@link staleAgentsCount}. */
+  predates_routing: boolean;
+}
+
+export interface RunningAgents {
+  /** The process names this scan looks for. Reported so an empty list reads
+   * as "none of these were running" rather than "no AI tools are running" -
+   * the scan doesn't cover every integration. */
+  scanned_names: string[];
+  /** Oldest first, so two reports from the same machine stay diffable. */
+  agents: RunningAgent[];
+}
+
+/** The running agents themselves rather than a count: name, pid, start time,
+ * and whether each predates routing. Same process set and staleness rule as
+ * the two count probes above. */
+export const runningAgents = () => invoke<RunningAgents>("running_agents");
+
 /** Terminate running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up
  * the routing change. Resolves to how many processes were signalled; 0 means
@@ -309,3 +351,39 @@ export interface BackendError {
  * at mount to sweep failures that predate the webview, then again on each
  * `backend-error-pending` nudge. */
 export const drainBackendErrors = () => invoke<BackendError[]>("drain_backend_errors");
+
+// ---- Diagnostics ----
+
+/** The backend half of the copy-pasteable support report: facts about this
+ * install the webview cannot see any other way. The rest of the report is
+ * composed from state the popover already holds, so what gets pasted matches
+ * what is on screen. Carries no credential by construction - see
+ * `crates/core/src/diagnostics.rs`. */
+export interface Diagnostics {
+  /** OS marketing name and version ("Ubuntu 25.10", "macOS 15.3 (24D60)"). */
+  os_name: string;
+  /** Kernel release. Linux only; empty elsewhere. */
+  os_kernel: string;
+  arch: string;
+  data_dir: string | null;
+  ca_cert_path: string | null;
+  /** Whether the CA's public cert is actually on disk. Trusted-but-absent is
+   * a real state and otherwise invisible. */
+  ca_cert_present: boolean;
+  /** The persisted "routing should be on" intent, as opposed to whether it
+   * is on now. The two disagreeing is the commonest report we get. */
+  routing_intent: boolean;
+  persisted_engine_proxy_url: string | null;
+  relay_base_url: string | null;
+  /** The proxy URL currently in the user's environment, read back from the OS
+   * rather than from our own record. */
+  exported_proxy_url: string | null;
+  /** The OS proxy setting (PAC on macOS/Windows, the drop-in on Linux), read
+   * back live: the channel that routes GUI apps rather than CLI tools. */
+  system_proxy: string | null;
+}
+
+/** One snapshot for the diagnostics panel. Best-effort throughout: never
+ * rejects for a field it could not resolve. On macOS it shells out per
+ * network service, so call it on an explicit user action, never on a poll. */
+export const diagnostics = () => invoke<Diagnostics>("diagnostics");

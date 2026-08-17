@@ -107,7 +107,18 @@ enum ProxyCmd {
     Status,
     /// Turn the proxy on: trust the local CA and route the system proxy
     /// through the loopback engine. May prompt for elevation.
-    Enable,
+    Enable {
+        /// Stay in the foreground hosting the engine; Ctrl-C (or SIGTERM)
+        /// stops it and restores the prior system-proxy state.
+        ///
+        /// The engine runs inside this process, so without this the command
+        /// returns and routing goes with it - fine while the menubar app is
+        /// running, since it hosts its own, but it is why a machine with no
+        /// app cannot route through the engine from the CLI. Use this to host
+        /// it from launchd, systemd, or a CI job.
+        #[arg(long)]
+        foreground: bool,
+    },
     /// Turn the proxy off and restore the prior system-proxy state.
     Disable,
     /// Host ONLY the loopback reverse-proxy relay; blocks until killed.
@@ -129,9 +140,24 @@ enum ProxyCmd {
         state: Toggle,
     },
     /// Trust the local proxy CA without turning the proxy on.
-    TrustCa,
+    TrustCa {
+        /// Install the CA machine-wide instead of for this user, with no
+        /// dialog. For hosts where nobody can answer one: build agents,
+        /// containers, headless servers. Needs root (macOS/Linux) or an
+        /// elevated prompt (Windows), never prompts for it, and makes the CA a
+        /// trusted TLS root for EVERY user on this machine. The default,
+        /// per-user path and its confirmation dialog are what a desktop should
+        /// use.
+        #[arg(long)]
+        system_trust: bool,
+    },
     /// Remove the local proxy CA's trust. Requires the proxy to be off.
-    UntrustCa,
+    UntrustCa {
+        /// Remove a machine-wide install (the one `trust-ca --system-trust`
+        /// makes) with no dialog. Same privileges, same non-interactive rule.
+        #[arg(long)]
+        system_trust: bool,
+    },
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -152,7 +178,7 @@ fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
-    match cli.command {
+    let result = match cli.command {
         Command::Login {
             base_url,
             api_key,
@@ -174,7 +200,12 @@ fn main() -> Result<()> {
         Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
-    }
+    };
+    // Audit emits run on detached threads so they never stall a command; this
+    // process ends when the command does, so wait for any still in flight
+    // (bounded by the emit timeout) or they would be silently dropped.
+    gate_connect_core::audit::flush();
+    result
 }
 
 fn cmd_login(
@@ -537,7 +568,7 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     mgr.set_detached(true);
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
-        ProxyCmd::Enable => {
+        ProxyCmd::Enable { foreground } => {
             // Restore providers a prior master-off disabled, before enabling -
             // otherwise the all-off state trips `enable`'s "at least one
             // provider" precondition (mirrors the app's proxy_enable flow).
@@ -554,6 +585,18 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
             println!("Proxy enabled.");
             print_proxy_state(&state);
             print_proxy_hint();
+            if foreground {
+                println!();
+                println!("Hosting the proxy engine. Press Ctrl-C to stop routing and restore");
+                println!("the previous system-proxy settings.");
+                proxy::wait_for_shutdown()?;
+                // Restoring here is the point of blocking: a service manager
+                // sends SIGTERM, and an engine that vanished without reverting
+                // would leave the machine pointed at a dead loopback port.
+                println!();
+                mgr.disable()?;
+                println!("Proxy disabled; prior system-proxy state restored.");
+            }
         }
         ProxyCmd::Disable => {
             mgr.disable()?;
@@ -567,16 +610,41 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
         ProxyCmd::Domain { slug, state } => {
             let enabled = matches!(state, Toggle::On);
             let st = mgr.set_domain(&slug, enabled)?;
+            // Audited at the command layer, mirroring the app's
+            // `proxy_set_domain`: `provider::enable` / `disable` drive
+            // `set_domain` internally, so instrumenting the manager would turn
+            // one operator action into N+1 events. This arm is the operator
+            // toggling one domain by hand from the CLI.
+            if let Ok(Some(base_url)) = account::load_base_url() {
+                gate_connect_core::audit::domain_toggled(&base_url, None, &slug, enabled);
+            }
             println!("{} {slug}.", if enabled { "Enabled" } else { "Disabled" });
             print_proxy_domains(&st.domains);
         }
-        ProxyCmd::TrustCa => {
-            mgr.trust_ca()?;
-            println!("Proxy CA trusted.");
+        ProxyCmd::TrustCa { system_trust } => {
+            if system_trust {
+                // Said before it happens, not after. This is the one trust path
+                // with no OS dialog to describe what is about to change, so the
+                // description has to come from us.
+                println!(
+                    "Installing the proxy CA machine-wide. It becomes a trusted TLS root for every user on this host, and nothing will ask for confirmation."
+                );
+                mgr.trust_ca_system()?;
+                println!("Proxy CA trusted machine-wide.");
+                println!("Remove it with `gate-connect proxy untrust-ca --system-trust`.");
+            } else {
+                mgr.trust_ca()?;
+                println!("Proxy CA trusted.");
+            }
         }
-        ProxyCmd::UntrustCa => {
-            mgr.untrust_ca()?;
-            println!("Proxy CA trust removed.");
+        ProxyCmd::UntrustCa { system_trust } => {
+            if system_trust {
+                mgr.untrust_ca_system()?;
+                println!("Machine-wide proxy CA trust removed.");
+            } else {
+                mgr.untrust_ca()?;
+                println!("Proxy CA trust removed.");
+            }
         }
     }
     Ok(())

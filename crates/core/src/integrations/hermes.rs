@@ -10,7 +10,7 @@
 //! HERMES_CA_BUNDLE=<app-support>/proxy/ca-bundle.pem
 //! ```
 //!
-//! **`config.yaml` is never touched.** Hermes loads `$HERMES_HOME/.env` at CLI
+//! **`config.yaml` is never written.** Hermes loads `$HERMES_HOME/.env` at CLI
 //! startup (`hermes_cli/env_loader.py`, called from `cli.py`) before any client
 //! is constructed, and `agent/process_bootstrap.py` reads `HTTPS_PROXY` /
 //! `HTTP_PROXY` / `ALL_PROXY` (plus lower-case) from the environment, honouring
@@ -24,13 +24,26 @@
 //! which provider config won, which retires that whole class - H1 (the
 //! native-Anthropic wire) and H6 (`custom_providers` overriding `model.base_url`)
 //! both stop being reachable. It also means a fresh install with no `config.yaml`
-//! is no longer a special case: there is no model block to read.
+//! is no longer a special case: nothing below refuses for want of a model block.
 //! See `docs/harness-integration-validation.md`.
 //!
 //! `NO_PROXY` is set for loopback so a locally-hosted provider keeps talking to
 //! itself directly instead of being tunnelled through the engine - the same
 //! protection the old `is_local_url` guard gave, expressed where Hermes can
 //! actually act on it.
+//!
+//! **`config.yaml` is read once, to say what Gate will see - never to change
+//! it.** A correct `.env` is only half of being visible: the engine MITMs a host
+//! only while an enabled catalog domain claims it, and Hermes' documented default
+//! upstream (`openrouter.ai`) ships off, so the traffic can be routed through
+//! Gate and blind-tunnelled past it at the same time. Connecting Hermes must not
+//! quietly fix that by flipping the domain - that would widen what Gate
+//! intercepts for every other client on the machine, and for a domain some
+//! provider lists it would flip that provider's state too, which
+//! `provider::reconcile_enabled` reads as licence to configure that provider's
+//! tools. Whose traffic Gate inspects is the user's axis; whether Hermes points
+//! at the proxy is this one. So `connect` prints what it found ([`Coverage`]) and
+//! leaves the switch alone.
 //!
 //! Certificates: `HERMES_CA_BUNDLE` points at a bundle carrying the platform's
 //! trust roots *plus* Gate's CA ([`crate::proxy::ca_bundle`]). The OS trust
@@ -166,6 +179,10 @@ impl Integration for Hermes {
         // Built before the .env write so a failure here leaves nothing behind.
         let bundle = crate::proxy::ca_bundle::ensure()?;
 
+        // Read before the write: the refusal below has to tell our own earlier
+        // work apart from the user's.
+        let mut state = load_state()?.unwrap_or_default();
+
         let applied = dotenv::add_vars(
             &env_file_path()?,
             &[
@@ -176,7 +193,14 @@ impl Integration for Hermes {
             ],
         )?;
 
-        if applied.added.is_empty() {
+        // Nothing added AND nothing we ever added: the variables are the user's
+        // and `add_vars` left them alone, which is a refusal. The second half of
+        // that test is what keeps a re-connect working. On a re-connect every
+        // variable is already present because we wrote it, so testing `added`
+        // alone failed with a message about settings that were Gate's own - and
+        // re-connect is how a drifted Hermes is meant to be repaired, including
+        // by `provider::reconcile_unmapped_tools`, which does it unattended.
+        if applied.added.is_empty() && state.added_vars.is_empty() {
             anyhow::bail!(
                 "Hermes already has its own proxy settings in ~/.hermes/.env -- Gate left them \
                  alone. Remove them first if you want Hermes to route through Gate."
@@ -185,7 +209,6 @@ impl Integration for Hermes {
 
         // Preserve the ORIGINAL record across re-connects: a second connect
         // must not claim credit for variables the first one added.
-        let mut state = load_state()?.unwrap_or_default();
         if state.added_vars.is_empty() {
             state.version = 2;
             state.added_vars = applied.added;
@@ -194,6 +217,14 @@ impl Integration for Hermes {
         save_state(&state)?;
 
         eprintln!("note: Hermes reads ~/.hermes/.env at startup -- restart it to pick this up.");
+        // A correct `.env` is only half of being seen: the engine MITMs a host
+        // only while an enabled catalog domain claims it, and Hermes' own
+        // default upstream ships off. Which hosts Gate inspects is the user's
+        // axis, not this integration's (see [`Coverage`]), so say it rather
+        // than silently flip it.
+        for line in upstream_coverage().notes() {
+            eprintln!("{line}");
+        }
         Ok(())
     }
 
@@ -259,16 +290,176 @@ fn configured_proxy() -> Result<Option<String>> {
 /// Whether a proxy URL points at loopback - i.e. is one of ours rather than a
 /// corporate egress proxy the user configured themselves.
 fn is_loopback_url(url: &str) -> bool {
+    let host = url_host(url);
+    host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+/// The host part of a URL, lowercased so it compares against a catalog `hosts`
+/// entry directly: `openrouter.ai` for `https://openrouter.ai/api/v1`, `::1` for
+/// `http://[::1]:8080`. Deliberately not a URL parser - it also runs over values
+/// a user hand-wrote into a YAML file, where a missing scheme is likelier than a
+/// query string.
+fn url_host(url: &str) -> String {
     let lowered = url.trim().to_ascii_lowercase();
     let rest = lowered
         .split_once("://")
         .map_or(lowered.as_str(), |(_, r)| r);
     let authority = rest.split('/').next().unwrap_or("");
-    let host = authority
+    authority
         .strip_prefix('[')
         .and_then(|a| a.split(']').next())
-        .unwrap_or_else(|| authority.split(':').next().unwrap_or(""));
-    host == "localhost" || host == "::1" || host.starts_with("127.")
+        .unwrap_or_else(|| authority.split(':').next().unwrap_or(""))
+        .to_string()
+}
+
+/// What Gate will and won't see of this Hermes install, for the notes `connect`
+/// prints.
+///
+/// Read-only on purpose. Which hosts the engine intercepts is the user's axis -
+/// the provider rows and `proxy domain` - and this integration's axis is only
+/// whether Hermes points at the proxy. Enabling a domain from here would widen
+/// what Gate MITMs for every other client on the machine as a side effect of
+/// connecting one tool, and for a domain a provider claims it would flip that
+/// provider's state too, which `provider::reconcile_enabled` reads as licence to
+/// configure that provider's tools. So this reports, and nothing more.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Coverage {
+    /// Hosts a catalog entry covers, but whose switch is off: `(host, slug)`.
+    switched_off: Vec<(String, String)>,
+    /// Hosts no catalog entry claims, which Gate cannot route at all.
+    unknown: Vec<String>,
+}
+
+impl Coverage {
+    /// The lines `connect` prints, or nothing at all when every upstream is
+    /// already covered - a note that says "all good" on every connect is noise,
+    /// and the `proxy domains` listing is the place to confirm it.
+    fn notes(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.switched_off.is_empty() {
+            let list = self
+                .switched_off
+                .iter()
+                .map(|(host, slug)| format!("{host} (`gate-connect proxy domain {slug} on`)"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(format!(
+                "note: Hermes is routed through Gate, but Gate is not inspecting its provider \
+                 yet -- {list}."
+            ));
+        }
+        if !self.unknown.is_empty() {
+            out.push(format!(
+                "note: Gate has no proxy domain for {} -- Hermes' calls there keep working, \
+                 tunnelled through unseen.",
+                self.unknown.join(", ")
+            ));
+        }
+        out
+    }
+}
+
+fn upstream_coverage() -> Coverage {
+    // Fall back to the built-in catalog rather than an empty one: on an
+    // unreadable domains file the slugs are still right and only the enabled
+    // flags are guesses, which beats reporting every host as unroutable.
+    let catalog =
+        crate::proxy::config::load_domains().unwrap_or_else(|_| crate::proxy::default_domains());
+    coverage_of(&catalog, &config_base_urls())
+}
+
+/// The lookup behind [`upstream_coverage`], over an explicit catalog and URL
+/// list so it is testable without a `$HOME`.
+///
+/// Loopback hosts are absent from both lists: `NO_PROXY` exempts them, so a
+/// self-hosted provider is reached directly and never passes the engine at all.
+fn coverage_of(catalog: &[crate::proxy::ProxyDomain], urls: &[String]) -> Coverage {
+    let mut coverage = Coverage::default();
+    for url in urls {
+        if is_loopback_url(url) {
+            continue;
+        }
+        let host = url_host(url);
+        match crate::proxy::domain_claiming_host(catalog, &host) {
+            Some(d) if d.enabled => {}
+            Some(d) => {
+                let claim = (host, d.slug.clone());
+                if !coverage.switched_off.contains(&claim) {
+                    coverage.switched_off.push(claim);
+                }
+            }
+            None => {
+                if !coverage.unknown.contains(&host) {
+                    coverage.unknown.push(host);
+                }
+            }
+        }
+    }
+    coverage
+}
+
+/// Keys a Hermes endpoint can be written under. `base_url`, `api` and `url` are
+/// documented aliases of one another (see
+/// `docs/harness-integration-validation.md`, H6), so all three have to be read.
+const BASE_URL_KEYS: &[&str] = &["base_url", "api", "url"];
+
+/// `config.yaml` as YAML, or `None` if it is absent or does not parse. Never an
+/// error: nothing here is load-bearing enough to fail a connect over.
+fn parsed_config() -> Option<serde_yaml::Value> {
+    let path = crate::env::hermes_config_path().ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_yaml::from_str(&raw).ok()
+}
+
+/// Every upstream endpoint `config.yaml` names: `model`, plus each entry of the
+/// `providers:` mapping and the legacy `custom_providers:` sequence. All of them
+/// and not just the live one, because which entry wins is decided inside Hermes
+/// at request time - the same reason the `model.base_url` rewrite this
+/// integration used to do was retired.
+///
+/// Falls back to [`DEFAULT_UPSTREAM_URL`] when the file names nothing, is
+/// missing, or does not parse. That is Hermes' own documented default, so it is
+/// the best available guess at what an unconfigured install will call.
+fn config_base_urls() -> Vec<String> {
+    let mut urls = parsed_config()
+        .map(|root| base_urls_in(&root))
+        .unwrap_or_default();
+    if urls.is_empty() {
+        urls.push(DEFAULT_UPSTREAM_URL.to_string());
+    }
+    urls
+}
+
+/// The endpoint-collecting half of [`config_base_urls`], over an already-parsed
+/// document so the shapes Hermes accepts are testable without a `$HOME`.
+fn base_urls_in(root: &serde_yaml::Value) -> Vec<String> {
+    let mut urls = Vec::new();
+    urls.extend(endpoint_of(root.get("model")));
+    if let Some(map) = root
+        .get("providers")
+        .and_then(serde_yaml::Value::as_mapping)
+    {
+        urls.extend(map.iter().filter_map(|(_, v)| endpoint_of(Some(v))));
+    }
+    if let Some(seq) = root
+        .get("custom_providers")
+        .and_then(serde_yaml::Value::as_sequence)
+    {
+        urls.extend(seq.iter().filter_map(|v| endpoint_of(Some(v))));
+    }
+    urls
+}
+
+/// The endpoint an entry names, under whichever of [`BASE_URL_KEYS`] it used.
+/// `None` for anything that isn't a mapping carrying one - a fresh install's
+/// `model: ""`, or a `providers` value that is just a model name.
+fn endpoint_of(entry: Option<&serde_yaml::Value>) -> Option<String> {
+    let entry = entry?;
+    BASE_URL_KEYS
+        .iter()
+        .filter_map(|k| entry.get(*k).and_then(serde_yaml::Value::as_str))
+        .map(str::to_string)
+        .next()
 }
 
 fn env_file_path() -> Result<PathBuf> {
@@ -347,6 +538,145 @@ fn clear_state() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The catalog with one domain forced on, since only `anthropic` ships
+    /// enabled and the interesting case is a switch the user has already flipped.
+    fn catalog_with(enabled: &str) -> Vec<crate::proxy::ProxyDomain> {
+        let mut all = crate::proxy::default_domains();
+        for d in &mut all {
+            d.enabled = d.slug == enabled;
+        }
+        all
+    }
+
+    fn urls(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_covered_upstream_prints_nothing() {
+        let coverage = coverage_of(
+            &catalog_with("openrouter"),
+            &urls(&["https://openrouter.ai/api/v1"]),
+        );
+        assert_eq!(coverage, Coverage::default());
+        assert!(
+            coverage.notes().is_empty(),
+            "an all-good note on every connect is noise"
+        );
+    }
+
+    #[test]
+    fn an_upstream_behind_a_switched_off_domain_names_the_switch() {
+        let coverage = coverage_of(
+            &catalog_with("anthropic"),
+            &urls(&["https://openrouter.ai/api/v1"]),
+        );
+        assert_eq!(
+            coverage.switched_off,
+            vec![("openrouter.ai".to_string(), "openrouter".to_string())]
+        );
+
+        let notes = coverage.notes();
+        assert_eq!(notes.len(), 1, "one line, not one per axis: {notes:?}");
+        assert!(
+            notes[0].contains("gate-connect proxy domain openrouter on"),
+            "the note has to carry the command that fixes it: {}",
+            notes[0]
+        );
+        assert!(
+            notes[0].contains("routed through Gate"),
+            "and must not read as though Hermes failed to connect: {}",
+            notes[0]
+        );
+    }
+
+    #[test]
+    fn an_upstream_gate_cannot_route_says_so_instead() {
+        let coverage = coverage_of(
+            &catalog_with("anthropic"),
+            &urls(&["https://api.together.xyz/v1"]),
+        );
+        assert!(
+            coverage.switched_off.is_empty(),
+            "there is no switch to name"
+        );
+        assert_eq!(coverage.unknown, vec!["api.together.xyz".to_string()]);
+
+        let notes = coverage.notes();
+        assert!(
+            notes[0].contains("keep working"),
+            "the tool still works; only Gate's view is missing: {}",
+            notes[0]
+        );
+    }
+
+    #[test]
+    fn loopback_and_duplicate_hosts_are_left_out() {
+        let coverage = coverage_of(
+            &catalog_with("anthropic"),
+            &urls(&[
+                // Exempted by NO_PROXY - never reaches the engine.
+                "http://127.0.0.1:11434/v1",
+                "http://localhost:8080",
+                // The same host twice, and the same unknown host twice.
+                "https://openrouter.ai/api/v1",
+                "https://openrouter.ai/api",
+                "https://api.together.xyz/v1",
+                "https://api.together.xyz/v2",
+            ]),
+        );
+        assert_eq!(coverage.switched_off.len(), 1, "{coverage:?}");
+        assert_eq!(coverage.unknown.len(), 1, "{coverage:?}");
+    }
+
+    #[test]
+    fn every_endpoint_shape_in_config_yaml_is_found() {
+        let root: serde_yaml::Value = serde_yaml::from_str(
+            "model:\n  provider: custom\n  base_url: https://openrouter.ai/api/v1\n\
+             providers:\n  mine:\n    api: https://api.openai.com/v1\n  named: gpt-4o\n\
+             custom_providers:\n  - url: https://api.anthropic.com\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            base_urls_in(&root),
+            vec![
+                "https://openrouter.ai/api/v1",
+                "https://api.openai.com/v1",
+                "https://api.anthropic.com",
+            ],
+            "all three aliases, in all three places, and a bare model name skipped"
+        );
+    }
+
+    #[test]
+    fn an_unconfigured_model_block_yields_no_endpoint() {
+        // A fresh install ships `model: ""` (H5), and a provider entry may be a
+        // plain model name. Neither is a mapping, so neither names a host - the
+        // caller falls back to Hermes' documented default.
+        for body in ["model: \"\"\n", "model: gpt-4o\n", "providers:\n  a: b\n"] {
+            let root: serde_yaml::Value = serde_yaml::from_str(body).unwrap();
+            assert!(
+                base_urls_in(&root).is_empty(),
+                "expected no endpoints from {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_extraction_survives_the_shapes_a_user_hand_writes() {
+        for (url, host) in [
+            ("https://openrouter.ai/api/v1", "openrouter.ai"),
+            ("openrouter.ai/api/v1", "openrouter.ai"),
+            ("HTTPS://OpenRouter.AI/api", "openrouter.ai"),
+            ("http://192.168.1.9:8080/v1", "192.168.1.9"),
+            ("http://[::1]:8080/v1", "::1"),
+            ("  https://api.openai.com  ", "api.openai.com"),
+        ] {
+            assert_eq!(url_host(url), host, "for {url}");
+        }
+    }
 
     #[test]
     fn compute_status_covers_the_four_states() {

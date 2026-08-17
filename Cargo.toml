@@ -69,6 +69,9 @@ tokio = { version = "1", features = [
   "sync",
   "time",
   "macros",
+  # `proxy enable --foreground` parks on SIGINT/SIGTERM so a service manager can
+  # stop it and have the system proxy restored on the way down.
+  "signal",
 ] }
 # Surfaces hudsucker's internal TLS/HTTP2 errors to stderr when
 # GATE_PROXY_DEBUG is set, so MITM handshake failures are diagnosable.

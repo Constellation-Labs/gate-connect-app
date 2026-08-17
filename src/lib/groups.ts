@@ -58,6 +58,12 @@ export interface GroupMember {
   /** This tool routes every provider configured in it, so there is no one
    * upstream host to name for it. */
   coversAllProviders?: boolean;
+  /** A chat-protocol member: shown under its family, never flipped by the
+   * family switch. These intercept a session-cookie surface (claude.ai,
+   * chatgpt.com's conversation turn) instead of a key-brokered API, so
+   * switching one on stays a per-row act. Mirrors the backend's split between
+   * `chat_domain_slugs` and `proxy_domain_slugs`. */
+  chat?: boolean;
 }
 
 export interface Group {
@@ -85,6 +91,14 @@ export interface Group {
   /** How many are switched on. Drives the switch, for the same
    * intent-vs-flow reason as `GroupMember.desired`. */
   desired: number;
+  /** How many of the members the family switch actually governs are switched
+   * on - `desired` minus the chat members. It drives that switch, which
+   * `desired` cannot once chat rows exist: a chat member switched on alone
+   * would render the family switch "on" while everything it can flip is off,
+   * and clicking it would then ask to turn off a set that is already off,
+   * leaving the switch stuck on. Reality (`routed`) and the count still speak
+   * for every member, including the chat ones. */
+  cascadeDesired: number;
 }
 
 function memberFromTool(tool: Tool, { proxyOn }: { proxyOn: boolean }): GroupMember {
@@ -137,6 +151,18 @@ function memberFromDomain(
 /**
  * Build the Home ledger. Not-installed tools and unsupported domains are left
  * out: the ledger lists what could actually route today.
+ *
+ * Membership comes from two catalog fields, and the difference between them is
+ * the whole reason there are two. `provider.domain_slugs` is what the family
+ * switch cascades over; `provider.chat_domain_slugs` is the family's
+ * chat-protocol surfaces (`claude-web`, `chatgpt-apps`), which get a row and a
+ * switch of their own here but must stay out of that cascade - they intercept
+ * the user's session cookie rather than a brokered key, so enabling "Claude"
+ * must never start routing claude.ai as a side effect. Visibility used to ride
+ * on `domain_slugs` alone, which is why those two were invisible; giving
+ * visibility its own field is what lets them be shown without joining the
+ * cascade. `App.tsx`'s `setGroupRouted` and `FamilyPanel`'s switch both honour
+ * the split via `GroupMember.chat` / `Group.cascadeDesired`.
  */
 export function buildGroups(
   providers: ProviderState[],
@@ -161,6 +187,13 @@ export function buildGroups(
         members.push(memberFromDomain(domain, opts));
       }
     }
+    // After the cascaded domains, so a family reads "what the switch governs,
+    // then the surface it deliberately leaves alone".
+    for (const domain of routable) {
+      if (provider.chat_domain_slugs.includes(domain.slug)) {
+        members.push({ ...memberFromDomain(domain, opts), chat: true });
+      }
+    }
     return {
       id: provider.slug,
       name: provider.display_name,
@@ -168,6 +201,7 @@ export function buildGroups(
       members,
       routed: members.filter((m) => m.routed).length,
       desired: members.filter((m) => m.desired).length,
+      cascadeDesired: members.filter((m) => m.desired && !m.chat).length,
     };
   });
 
@@ -205,6 +239,8 @@ export function buildGroups(
       members: leftovers,
       routed: leftovers.filter((m) => m.routed).length,
       desired: leftovers.filter((m) => m.desired).length,
+      // Config tools only, so nothing here is ever outside the cascade.
+      cascadeDesired: leftovers.filter((m) => m.desired).length,
     });
   }
 

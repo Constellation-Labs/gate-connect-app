@@ -546,3 +546,32 @@ fn login_oauth_captures_redirect_selects_org_and_records_mode() {
         "account.json should record the selected org: {account_json}"
     );
 }
+
+/// The headless trust flag has to be *asked for*, on both halves of the pair.
+/// A bare `trust-ca` must keep meaning the per-user install with its dialog -
+/// this is the one command whose default going machine-wide would widen every
+/// desktop install without anyone typing anything.
+///
+/// Help text rather than behaviour: the install itself needs root and a real
+/// trust store, so what a hermetic test can hold is the surface. The
+/// command-building is unit-tested next to each platform's `ca` module.
+#[test]
+fn machine_wide_ca_trust_is_opt_in_on_both_trust_and_untrust() {
+    let h = Harness::new();
+
+    let trust = h.run_ok(&["proxy", "trust-ca", "--help"]);
+    assert!(
+        trust.contains("--system-trust"),
+        "trust-ca should offer the headless flag: {trust}"
+    );
+    assert!(
+        trust.contains("EVERY user on this machine"),
+        "the flag's help should say what it widens: {trust}"
+    );
+
+    let untrust = h.run_ok(&["proxy", "untrust-ca", "--help"]);
+    assert!(
+        untrust.contains("--system-trust"),
+        "untrust-ca should offer the matching flag, or a machine-wide install has no supported removal: {untrust}"
+    );
+}

@@ -41,6 +41,7 @@ export function FamilyPanel({
   onToggleTool,
   onSetDomain,
   onTrustCa,
+  trustPending,
   proxyOn,
   onEnableRouting,
   authMode,
@@ -54,6 +55,7 @@ export function FamilyPanel({
   onToggleTool: (slug: string, routed: boolean) => Promise<void>;
   onSetDomain: (slug: string, enabled: boolean) => Promise<void>;
   onTrustCa: () => Promise<void>;
+  trustPending: boolean;
   proxyOn: boolean;
   onEnableRouting: () => void;
   authMode?: AuthMode;
@@ -94,14 +96,19 @@ export function FamilyPanel({
               read "on" while the pill beside it says nothing is flowing, so it
               points at the pill's own words for anyone listening rather than
               announcing "on" and stopping there. */}
+          {/* `cascadeDesired`, not `desired`: this switch governs the family's
+              key-brokered members only. Its chat member (claude.ai, the ChatGPT
+              app's own turn) carries a session cookie and is flipped from its
+              own row alone, so counting it here would let one chat row render
+              the family switch "on" over a family that is entirely off. */}
           <Switch
-            on={group.desired > 0}
+            on={group.cascadeDesired > 0}
             label={group.switchLabel}
             describedBy={`group-desc-${group.id}`}
             busy={busy}
             onClick={() => {
               setFlipped(true);
-              onToggleGroup(group.id, group.desired === 0);
+              onToggleGroup(group.id, group.cascadeDesired === 0);
             }}
           />
           <span id={`group-desc-${group.id}`} className="sr-only">
@@ -135,6 +142,7 @@ export function FamilyPanel({
         onToggleTool={onToggleTool}
         onSetDomain={onSetDomain}
         onTrustCa={onTrustCa}
+        trustPending={trustPending}
         proxyOn={proxyOn}
         onEnableRouting={onEnableRouting}
         authMode={authMode}

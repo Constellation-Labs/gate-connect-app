@@ -28,6 +28,7 @@ use super::flock::FileLock;
 use super::helper_client::HelperClient;
 use super::{ca, config, system_proxy, ProxyDomain, ProxyState};
 use crate::account;
+use crate::audit;
 
 pub struct ProxyManager {
     /// Open control connection to the helper daemon. `Some` exactly while the
@@ -208,6 +209,15 @@ impl ProxyManager {
 
         *guard = Some(client);
         drop(guard);
+
+        // Best-effort audit, matching `manager.rs`. The account is already
+        // loaded here, so its key is the in-hand credential for ApiKey mode.
+        audit::proxy_enabled(
+            &account.gateway_base_url,
+            Some(&account.api_key),
+            Some(port),
+        );
+
         self.status()
     }
 
@@ -218,6 +228,15 @@ impl ProxyManager {
         // Cross-process lock: serialize against a concurrent app/CLI enable.
         let _op_lock = FileLock::acquire(&system_proxy::op_lock_path()?, true)?;
         self.disable_inner()?;
+
+        // Best-effort audit, deliberately here rather than in `disable_inner`:
+        // `disable_quiet` shares that body and runs at app exit, which is not an
+        // operator action. `load_base_url` rather than `load` - see the same
+        // block in `manager.rs`.
+        if let Ok(Some(base_url)) = account::load_base_url() {
+            audit::proxy_disabled(&base_url, None);
+        }
+
         self.status()
     }
 
@@ -230,6 +249,27 @@ impl ProxyManager {
         // Cross-process lock: serialize against a concurrent app/CLI enable.
         let _op_lock = FileLock::acquire(&system_proxy::op_lock_path()?, true)?;
         self.disable_inner()
+    }
+
+    /// Stop the engine outright and replace the daemon hosting it, rather than
+    /// dropping it to pass-through the way [`disable`](Self::disable) does.
+    ///
+    /// For a gateway switch. The engine takes `gateway_base_url` at start and
+    /// keeps it - unlike the key, token, org, and domains, there is no live
+    /// update for it, and `SetIntercept` against an already-running engine
+    /// ignores the one it carries. Since the daemon outlives the GUI, a
+    /// surviving engine would go on rewriting to the *old* environment's
+    /// gateway while the refresh loop pushes the *new* environment's token into
+    /// it, and that gateway rejects the bearer: a 401 on every proxied call,
+    /// with control-plane calls (which go direct) still working.
+    pub fn shutdown_engine(&self) -> Result<()> {
+        // Cross-process lock: serialize against a concurrent app/CLI enable.
+        let _op_lock = FileLock::acquire(&system_proxy::op_lock_path()?, true)?;
+        // Revert the drop-in before the daemon dies, so nothing newly launched
+        // resolves a proxy that's about to stop answering.
+        self.disable_inner()?;
+        super::helper_client::shutdown_daemon();
+        Ok(())
     }
 
     /// Shared body of [`disable`](Self::disable) /
@@ -439,10 +479,35 @@ impl ProxyManager {
         self.status()
     }
 
+    /// Trust the CA machine-wide with no prompt at all, for hosts where nobody
+    /// can answer one. CLI-only (`proxy trust-ca --system-trust`) and never
+    /// wired to a Tauri command: the prompt is deliberate product behaviour on a
+    /// desktop, and this widens the trust to every user on the machine.
+    pub fn trust_ca_system(&self) -> Result<ProxyState> {
+        ca::load_or_create()?; // ensure the cert file exists to trust
+        ca::ensure_trusted_system()?;
+        self.status()
+    }
+
     /// Untrust the CA. Refuses while the proxy is on, since the engine mints
     /// leaf certs the OS would then reject. This is the explicit way to remove
     /// the standing trusted root (disable alone leaves it trusted).
     pub fn untrust_ca(&self) -> Result<ProxyState> {
+        self.refuse_untrust_while_running()?;
+        ca::untrust()?;
+        self.status()
+    }
+
+    /// Remove a machine-wide trust install with no prompt. The counterpart of
+    /// [`ProxyManager::trust_ca_system`], and refuses while running for the same
+    /// reason [`ProxyManager::untrust_ca`] does.
+    pub fn untrust_ca_system(&self) -> Result<ProxyState> {
+        self.refuse_untrust_while_running()?;
+        ca::untrust_system()?;
+        self.status()
+    }
+
+    fn refuse_untrust_while_running(&self) -> Result<()> {
         if self
             .client
             .lock()
@@ -451,8 +516,7 @@ impl ProxyManager {
         {
             anyhow::bail!("turn the proxy off before untrusting the CA");
         }
-        ca::untrust()?;
-        self.status()
+        Ok(())
     }
 
     /// Called once at app startup. A leftover snapshot means the proxy was on

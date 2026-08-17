@@ -46,9 +46,10 @@ describe("classifyError", () => {
     });
 
     it("names the button the user actually pressed", () => {
-      expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain(
-        "Trust certificate",
-      );
+      // "Trust", the label both certificate buttons actually carry (Home's card
+      // and the family panel's banner). It used to say "Trust certificate",
+      // which was the label when this branch was written.
+      expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain("Trust");
       expect(classifyError("User canceled (-128)", "forget").hint).toContain("Reset");
     });
 
@@ -162,10 +163,39 @@ describe("cancelled prompt names the control the user actually touched", () => {
   });
 
   it("still says Click for the paths that really are buttons", () => {
-    expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain(
-      "Click Trust certificate",
-    );
+    expect(classifyError("User canceled (-128)", "trust_ca").hint).toContain("Click Trust");
     expect(classifyError("User canceled (-128)", "forget").hint).toContain("Click Reset");
+  });
+});
+
+describe("classifyError: the Windows certificate dialog was declined", () => {
+  // The exact sentence `ca_windows.rs` bails with when `certutil -addstore`
+  // exits non-zero. certutil says nothing about a user cancelling, so this used
+  // to miss the cancelled-prompt branch and land on the generic fallback -
+  // "Try again. If it keeps failing, the details below help when reporting it."
+  // on the one failure that is a deliberate No, not a bug.
+  const raw =
+    "couldn't trust the proxy CA — the certificate trust dialog was cancelled or denied";
+
+  it("does not blame the app for the user's own No", () => {
+    const { title, hint } = classifyError(raw, "trust_ca");
+    expect(title).toBe("The certificate wasn’t trusted");
+    expect(hint).not.toContain("reporting it");
+  });
+
+  it("names the dialog and the button that finishes it", () => {
+    const { hint } = classifyError(raw, "trust_ca");
+    expect(hint).toContain("Trust");
+    expect(hint).toContain("Yes");
+    expect(hint).toContain("Windows security warning");
+  });
+
+  it("says what stays broken until they do, so retrying is a real choice", () => {
+    expect(classifyError(raw, "trust_ca").hint).toContain("can’t route");
+  });
+
+  it("never calls it a password prompt, because that dialog has no password", () => {
+    expect(classifyError(raw, "trust_ca").hint).not.toContain("password");
   });
 });
 

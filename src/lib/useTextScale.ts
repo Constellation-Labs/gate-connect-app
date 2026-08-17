@@ -104,9 +104,8 @@ async function growWindow(scale: TextScale): Promise<void> {
  * The scale, its setter, and the keyboard accelerators.
  *
  * Cmd/Ctrl `+` / `-` / `0` because that is the gesture every user already has
- * for this, and a control buried in Settings is not a mechanism anyone finds
- * mid-task. Settings carries a visible copy of the same control so the feature
- * is discoverable without knowing the shortcut.
+ * for this, and it is the only mechanism: the popover carries no visible
+ * control, so the shortcut has to work on every surface.
  */
 export function useTextScale(): {
   scale: TextScale;

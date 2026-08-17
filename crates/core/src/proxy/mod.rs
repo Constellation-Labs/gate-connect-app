@@ -117,6 +117,37 @@ pub fn engine_likely_running() -> bool {
         .unwrap_or(false)
 }
 
+/// The engine port a *different* process is hosting right now, if there is one.
+///
+/// macOS and Windows keep the engine inside whichever process enabled it, with
+/// no daemon to ask, so a second process cannot tell "nobody is routing" from
+/// "the menubar app is routing" by looking at its own handle - it holds `None`
+/// either way. That blindness is what let a second `enable` start a competing
+/// engine and record Gate's own PAC as the state to restore, and what made
+/// `proxy status` report "stopped" while the machine was demonstrably routed.
+///
+/// [`engine_likely_running`] alone is not enough to decide either question: the
+/// snapshot survives a crash, so treating its presence as "an engine is live"
+/// would refuse the enable that is the user's way back. Probing the persisted
+/// port separates the two, exactly as `bind_preferred` separates a live
+/// listener from a TIME_WAIT remnant - a live listener accepts, a dead port
+/// refuses. Both conditions are required: the snapshot proves *Gate* turned
+/// routing on, the probe proves someone is still serving it.
+///
+/// Linux has no use for this - its engine is a daemon with a control socket, so
+/// a second process adopts it rather than guessing (see `manager_linux`).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub fn engine_hosted_elsewhere() -> Option<u16> {
+    if !engine_likely_running() {
+        return None;
+    }
+    let port = system_proxy::load_port().ok().flatten()?;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250))
+        .ok()
+        .map(|_| port)
+}
+
 /// The loopback base URL CLI tools point at to route through the reverse-proxy
 /// relay, or `None` if no relay port has ever been bound (so nothing to point
 /// at yet). Reads the persisted port, so it's stable across restarts and valid
@@ -134,6 +165,49 @@ pub fn relay_base_url() -> Option<String> {
 /// MITM engine, so the two are alternatives, not steps.
 pub fn serve_relay() -> anyhow::Result<()> {
     relay::serve()
+}
+
+/// Block until the process is asked to stop: SIGINT or SIGTERM on unix, Ctrl-C
+/// on Windows.
+///
+/// Backs `proxy enable --foreground`. The engine lives in the process-lifetime
+/// [`manager`] static, so on macOS - which hosts it in-process, with no daemon
+/// to outlive the caller - routing lasts exactly as long as the process that
+/// enabled it. `proxy enable` returns immediately, so from the CLI the engine
+/// has always died on the way out, leaving the system proxy pointed at a port
+/// nothing answers. Parking here is what lets a headless machine host it
+/// (launchd, systemd, a CI job) instead of only the menubar app.
+///
+/// SIGTERM as well as SIGINT because that is what a service manager sends to
+/// stop a unit; without it the caller could not restore the system proxy on the
+/// way down, which is the whole reason this is worth blocking for.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn wait_for_shutdown() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building the shutdown-wait runtime")?;
+    rt.block_on(async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut term =
+                signal(SignalKind::terminate()).context("installing the SIGTERM handler")?;
+            let mut int =
+                signal(SignalKind::interrupt()).context("installing the SIGINT handler")?;
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = int.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .context("waiting for Ctrl-C")?;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
 }
 
 /// Path to the local root CA's public cert on disk. Tools that ship their own
@@ -459,6 +533,26 @@ pub(crate) fn should_intercept_host(domains: &[ProxyDomain], host: &str) -> bool
     domains.iter().any(|d| d.enabled && d.matches_host(host))
 }
 
+/// The catalog entry that would MITM `host`, whether or not it is switched on.
+/// The question [`should_intercept_host`] cannot answer: a caller that wants to
+/// *report* on a host's coverage needs the entry precisely when it is off.
+///
+/// Catalog order decides, and deliberately so - it is the order [`decide`]
+/// resolves in, which returns on the first enabled host match. That is what
+/// makes `chatgpt.com` answer with the MITM `chatgpt-apps` entry rather than the
+/// relay-only `chatgpt` one behind it on the same host. Unsupported entries are
+/// skipped: Gate cannot upstream them, so there is no switch worth naming.
+///
+/// Host-level, not URL-level, unlike [`resolve_endpoint`]: the engine gates MITM
+/// on the CONNECT host alone, so a base URL's path has no bearing on whether its
+/// traffic is visible.
+pub(crate) fn domain_claiming_host<'a>(
+    domains: &'a [ProxyDomain],
+    host: &str,
+) -> Option<&'a ProxyDomain> {
+    domains.iter().find(|d| d.supported && d.matches_host(host))
+}
+
 /// The path component of a catalog `upstream_url` - `/api` for
 /// `https://openrouter.ai/api`, `""` for a bare host. Gate appends the
 /// forwarded path to the upstream URL verbatim, so this segment is the part of
@@ -495,22 +589,36 @@ pub(crate) fn strip_upstream_path<'a>(path: &'a str, upstream_path: &str) -> Opt
 }
 
 /// Decide what to do with a request given its host + path. Passthrough
-/// prefixes win over rewrite prefixes; a matched host with an unmatched
-/// path is left alone (passthrough) rather than rewritten.
+/// prefixes win over rewrite prefixes; an intercepted host whose path no entry
+/// claims is left alone (passthrough) rather than rewritten.
 ///
 /// Prefixes are matched against the path *as Gate will receive it* - i.e. after
 /// the domain's own [`upstream_path`] is removed, since that segment rides in
 /// the upstream header instead. For a bare-host upstream the two are identical.
+///
+/// **Every enabled entry claiming the host gets a look, not just the first.**
+/// Two entries can name one host with different URL splits - `chatgpt-apps`
+/// carries the app's real paths off a bare host, `chatgpt` carries Codex's
+/// Responses call with `/backend-api` in the upstream - and each deliberately
+/// ignores the other's paths. Stopping at the first host match made the earlier
+/// entry silently swallow the later one's traffic as an unclaimed passthrough,
+/// so enabling both switches routed less than enabling one. Since both are now
+/// rows the user can toggle independently (`provider::chat_domain_slugs`), that
+/// combination has to behave. A host-matching entry that claims neither the path
+/// nor its subtree simply abstains; only if nobody claims it does the request
+/// fall through to `Passthrough`.
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
+    let mut host_matched = false;
     for d in domains.iter().filter(|d| d.enabled) {
         if !d.matches_host(host) {
             continue;
         }
+        host_matched = true;
         // A path outside the upstream's own subtree is not this domain's
-        // traffic at all; leave it alone rather than forwarding a path Gate
-        // would reassemble into a URL the provider never served.
+        // traffic at all; abstain rather than forwarding a path Gate would
+        // reassemble into a URL the provider never served.
         let Some(path) = strip_upstream_path(path, upstream_path(&d.upstream_url)) else {
-            return Decision::Passthrough;
+            continue;
         };
         if d.passthrough_prefixes
             .iter()
@@ -526,6 +634,11 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
                 upstream_url: d.upstream_url.clone(),
             };
         }
+    }
+    // Intercepted (some enabled entry owns the host) but claimed by no entry's
+    // prefixes: forward to the real upstream untouched, which is what an
+    // unrecognised path on a routed host has always done.
+    if host_matched {
         return Decision::Passthrough;
     }
     Decision::Tunnel
@@ -627,9 +740,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // Deliberately NOT attached to the `anthropic` provider's
             // `proxy_domain_slugs` (see `provider.rs`): `provider::enable` turns
             // on every domain a provider lists, so attaching it would route the
-            // session surface the moment someone enabled "Claude" — defeating
-            // the opt-in above. It is reached only through the domain-level
-            // toggle (`proxy domain claude-web on`), like the google domains.
+            // session surface the moment someone enabled "Claude" - defeating
+            // the opt-in above. `chat_domain_slugs` is the field that will give
+            // it a ledger row without joining that cascade; it is not listed
+            // there yet, so for now this entry stays CLI-only (`proxy domain
+            // claude-web on`), pending the branch validating this surface.
             enabled: false,
             supported: true,
         },
@@ -714,22 +829,47 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // above, so it needs an explicit passthrough to stay unrouted —
             // passthrough prefixes are checked first in `decide`.
             passthrough_prefixes: vec!["/backend-api/f/conversation/prepare".into()],
-            // Opt-in, and ordered BEFORE the relay `chatgpt` entry on purpose:
-            // `decide` returns on the FIRST enabled host match, so with the relay
-            // entry first this one would be unreachable for MITM traffic.
+            // Opt-in, and no longer order-sensitive against the `chatgpt` entry
+            // below: `decide` consults every enabled entry claiming the host, so
+            // each of the two serves its own paths whether one, the other, or
+            // both are switched on. It used to stop at the first host match,
+            // which made this entry swallow the Responses call sitting in that
+            // one - a hazard that mattered the moment either became togglable
+            // without reading this file.
+            //
+            // Like `claude-web` above, this slug is in no provider's
+            // `proxy_domain_slugs`, and not in `chat_domain_slugs` yet either, so
+            // it stays CLI-only (`proxy domain chatgpt-apps on`) pending the
+            // branch validating this surface. Whatever exposes it must keep the
+            // cascade property: the chat half here
+            // (`/backend-api/f/conversation`) carries a session cookie, so no
+            // family switch may ever reach it.
             enabled: false,
             supported: true,
         },
         ProxyDomain {
             slug: "chatgpt".into(),
             display_name: "ChatGPT (Codex subscription)".into(),
-            // ChatGPT-subscription Codex talks to the Responses API at
-            // chatgpt.com/backend-api/codex/responses (bearer = the user's
-            // ChatGPT OAuth token, passed through). Codex reaches Gate via the
-            // manual integration (integrations/codex.rs), whose base_url points
-            // at the loopback relay; its own embedded agent ignores the system
-            // proxy, so the MITM engine never captures this traffic. This entry
-            // exists so the relay recognizes the tool-supplied upstream hint.
+            // The Responses API a ChatGPT-subscription login talks to:
+            // chatgpt.com/backend-api/codex/responses, bearer = the user's
+            // ChatGPT OAuth token, passed through. TWO clients arrive here by
+            // different routes, which is why the entry has to serve both:
+            //
+            // - Codex, via the relay. Its `base_url` points at the loopback
+            //   relay (integrations/codex.rs) because its embedded agent ignores
+            //   the system proxy; the relay matches this entry on `upstream_url`.
+            // - OpenClaw, via the MITM engine. Managed proxy mode honours the
+            //   proxy, so `decide` matches this entry on HOST and the engine
+            //   rewrites the call - provided this domain is on, which is the
+            //   user's own switch to flip (`provider::chat_domain_slugs` gives
+            //   it a row under OpenAI). `integrations/openclaw.rs` prints a note
+            //   naming this slug rather than enabling it.
+            //
+            // Both routes work off one split because `engine::apply_rewrite`
+            // strips the upstream's own path from the forwarded path exactly as
+            // the relay does, so a real `/backend-api/codex/responses` and
+            // Codex's rewritten `/codex/responses` both arrive at the gateway as
+            // `/codex/responses` under this upstream.
             hosts: vec!["chatgpt.com".into()],
             // Shape matches integrations/codex.rs exactly, because the relay
             // exact-matches the `X-Gate-Upstream-Url` header codex.rs writes:
@@ -737,10 +877,11 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // client-side path is the short `/codex/responses` (Codex's
             // base_url is `<relay>/codex`, wire_api appends `/responses`). The
             // gateway concatenates path onto upstream, yielding
-            // `https://chatgpt.com/backend-api/codex/responses`. This is a
-            // different split than the MITM convention (bare host + full
-            // `/backend-api/codex/responses` path) because the relay sees
-            // Codex's rewritten path, not the real upstream path.
+            // `https://chatgpt.com/backend-api/codex/responses`. That is the
+            // opposite split from the `chatgpt-apps` entry above, which carries
+            // the app's real paths off a bare host. The two coexist on one host
+            // because `decide` consults every enabled entry rather than
+            // stopping at the first - see its docs.
             upstream_url: "https://chatgpt.com/backend-api".into(),
             rewrite_prefixes: vec!["/codex/responses".into()],
             passthrough_prefixes: vec![],
@@ -1091,6 +1232,35 @@ mod tests {
         assert_eq!(
             decide(&d, "api.anthropic.com", "/v1/messages"),
             Decision::Tunnel
+        );
+    }
+
+    #[test]
+    fn the_entry_that_would_claim_a_host_is_found_while_it_is_off() {
+        // What an integration needs to *report* on its tool's upstream: which
+        // switch covers this host, given it is not on? Every catalog entry but
+        // `anthropic` ships disabled, so `should_intercept_host` cannot say.
+        let all = default_domains();
+        let d = domain_claiming_host(&all, "openrouter.ai").expect("openrouter.ai is claimed");
+        assert_eq!(d.slug, "openrouter");
+        assert!(!d.enabled, "and the caller can see it is off");
+
+        assert_eq!(
+            domain_claiming_host(&all, "OPENROUTER.AI").map(|d| d.slug.as_str()),
+            Some("openrouter"),
+            "host matching is case-insensitive"
+        );
+        assert!(domain_claiming_host(&all, "api.together.xyz").is_none());
+        assert!(
+            domain_claiming_host(&all, "api.openai.com.evil.test").is_none(),
+            "a suffix of a claimed host is not that host"
+        );
+
+        // Two entries name chatgpt.com. Catalog order has to answer with the
+        // MITM one, because that is the order `decide` resolves in.
+        assert_eq!(
+            domain_claiming_host(&all, "chatgpt.com").map(|d| d.slug.as_str()),
+            Some("chatgpt-apps")
         );
     }
 
@@ -1466,8 +1636,8 @@ mod tests {
     #[test]
     fn enabling_only_the_relay_entry_keeps_todays_passthrough_behaviour() {
         // A user who enabled Codex CLI but not the desktop tools must see no
-        // change: the relay entry matches the host first and passes everything
-        // except its own short path through.
+        // change: the relay entry claims only its own short path and everything
+        // else on the host is forwarded untouched.
         let mut relay_only: Vec<ProxyDomain> = default_domains()
             .into_iter()
             .filter(|d| d.slug == "chatgpt")
@@ -1478,6 +1648,49 @@ mod tests {
             Decision::Passthrough
         );
     }
+
+    #[test]
+    fn both_chatgpt_entries_on_route_each_others_paths_untouched() {
+        // The state a user can now reach from the ledger: two rows under OpenAI,
+        // both switched on, one host. Each entry has to serve its own paths.
+        // Stopping at the first host match sent the Responses call - the one
+        // OpenClaw's subscription traffic depends on - into the chat entry, which
+        // ignores that path on purpose, so it was forwarded unrouted while both
+        // switches read "on".
+        let both: Vec<ProxyDomain> = default_domains()
+            .into_iter()
+            .map(|mut d| {
+                d.enabled = d.slug == "chatgpt" || d.slug == "chatgpt-apps";
+                d
+            })
+            .collect();
+
+        assert_eq!(
+            decide(&both, "chatgpt.com", "/backend-api/codex/responses"),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com/backend-api".into()
+            },
+            "the Responses call belongs to the `chatgpt` entry's split"
+        );
+        assert_eq!(
+            decide(&both, "chatgpt.com", "/backend-api/f/conversation"),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com".into()
+            },
+            "and the app's chat turn still belongs to `chatgpt-apps`"
+        );
+        // An explicit passthrough in one entry is not overridden by the other
+        // abstaining, and a path neither claims still reaches the real host.
+        assert_eq!(
+            decide(&both, "chatgpt.com", "/backend-api/f/conversation/prepare"),
+            Decision::Passthrough
+        );
+        assert_eq!(
+            decide(&both, "chatgpt.com", "/api/auth/session"),
+            Decision::Passthrough
+        );
+    }
+
     #[test]
     fn chatgpt_apps_rewrites_the_chat_turn() {
         let d = chatgpt_apps();
@@ -1513,5 +1726,58 @@ mod tests {
             ),
             Decision::Passthrough
         );
+    }
+
+    /// The distinction `engine_hosted_elsewhere` exists to draw, and the one
+    /// that decides whether `enable` refuses: a snapshot on disk means Gate
+    /// turned routing on, not that anyone is still serving it. A crashed
+    /// session leaves the file behind, and refusing an enable on that basis
+    /// would lock the user out of the command that fixes their machine.
+    ///
+    /// macOS/Windows only, like the function - Linux adopts its daemon instead
+    /// of probing. Verified on Linux while writing by widening both cfgs, so
+    /// the assertion is not taken on trust until a mac or Windows runner sees it.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn a_snapshot_without_a_listener_is_not_a_hosted_engine() {
+        use std::net::TcpListener;
+
+        let home = std::env::temp_dir().join(format!(
+            "gate-hosted-elsewhere-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock before the epoch")
+                .as_nanos()
+        ));
+        crate::env::set_app_support_dir_for_tests(Some(home.clone()));
+
+        // Nothing on disk at all: nobody has ever routed.
+        assert_eq!(engine_hosted_elsewhere(), None, "no snapshot, no engine");
+
+        // A live listener, and a snapshot recording that routing is on. This is
+        // the menubar-app-is-running case, and the only one that must refuse.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("binding a probe listener");
+        let port = listener.local_addr().expect("listener address").port();
+        system_proxy::save_port(port).expect("persisting the port");
+        system_proxy::save_snapshot(&system_proxy::snapshot().expect("reading the system proxy"))
+            .expect("saving a snapshot");
+        assert_eq!(
+            engine_hosted_elsewhere(),
+            Some(port),
+            "a snapshot plus a live listener is another process hosting the engine"
+        );
+
+        // Same snapshot, listener gone: the crashed-session case. Enable has to
+        // go through, so this must read as "nobody is hosting".
+        drop(listener);
+        assert_eq!(
+            engine_hosted_elsewhere(),
+            None,
+            "a snapshot left by a crash must not look like a live engine"
+        );
+
+        crate::env::set_app_support_dir_for_tests(None);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

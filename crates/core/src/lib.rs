@@ -10,8 +10,11 @@
 //! `anthropic` domain instead (see [`proxy`]).
 
 pub mod account;
-/// Temporary: the AG-572 activity overview fetch, behind a dev-only viewer.
+/// The AG-572 activity overview fetch, behind the Overview pane.
 pub mod activity;
+pub mod audit;
+/// Read-only snapshot of this install, for the copy-pasteable support report.
+pub mod diagnostics;
 pub mod env;
 pub mod keychain;
 pub mod oauth;

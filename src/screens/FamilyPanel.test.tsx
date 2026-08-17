@@ -34,6 +34,19 @@ function makeDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
   };
 }
 
+/** The chat-protocol domain as the backend ships it: supported, off, and in the
+ * family's `chat_domain_slugs` rather than its `domain_slugs`. */
+function makeChatDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
+  return makeDomain({
+    slug: "claude-web",
+    display_name: "Claude Desktop chat",
+    hosts: ["claude.ai"],
+    upstream_url: "https://claude.ai/api",
+    enabled: false,
+    ...overrides,
+  });
+}
+
 /** Mirrors the real catalog: Claude Code and Codex are claimed; OpenCode and
  * OpenClaw deliberately are not, so they land in "Other tools". */
 const CATALOG: ProviderState[] = [
@@ -45,6 +58,7 @@ const CATALOG: ProviderState[] = [
     available: true,
     tool_slugs: ["claude-code"],
     domain_slugs: ["anthropic"],
+    chat_domain_slugs: ["claude-web"],
   },
   {
     slug: "openai",
@@ -54,6 +68,7 @@ const CATALOG: ProviderState[] = [
     available: true,
     tool_slugs: ["codex"],
     domain_slugs: ["openai"],
+    chat_domain_slugs: [],
   },
 ];
 
@@ -81,6 +96,7 @@ function renderPanel(
       onToggleTool={vi.fn()}
       onSetDomain={vi.fn()}
       onTrustCa={vi.fn()}
+      trustPending={false}
       proxyOn={proxyOn}
       onEnableRouting={vi.fn()}
       {...props}
@@ -171,6 +187,45 @@ describe("FamilyPanel is about one family", () => {
     );
     fireEvent.click(screen.getByRole("switch", { name: "Route Claude through Gate" }));
     expect(onToggleGroup).toHaveBeenCalledWith("anthropic", true);
+  });
+
+  it("gives the chat surface its own row and switch under the family", () => {
+    const onSetDomain = vi.fn().mockResolvedValue(undefined);
+    renderPanel({ domains: [makeDomain(), makeChatDomain()] }, { onSetDomain });
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Claude Desktop chat" }),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Route Claude Desktop chat through Gate" }),
+    );
+    expect(onSetDomain).toHaveBeenCalledWith("claude-web", true);
+  });
+
+  it("leaves the family switch off when only the chat surface is on", () => {
+    // The chat surface carries the user's session cookie, so the family switch
+    // must not reach it - and must not report itself on because of it. Reading
+    // this switch off `desired` put it in a state where it rendered on over a
+    // family routing nothing it could flip, and clicking it asked to turn off a
+    // set that was already off, so the switch never moved.
+    const onToggleGroup = vi.fn();
+    renderPanel(
+      { domains: [makeDomain({ enabled: false }), makeChatDomain({ enabled: true })] },
+      { onToggleGroup },
+    );
+    const family = screen.getByRole("switch", { name: "Route Claude through Gate" });
+    expect(family.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(family);
+    expect(onToggleGroup).toHaveBeenCalledWith("anthropic", true);
+  });
+
+  it("says what a credential-sensitive row routes, since it is not a brokered key", () => {
+    // Wording that has to hold for both rows of this kind: claude.ai's session
+    // cookie and the ChatGPT subscription behind Codex's Responses endpoint.
+    // "conversations" would be wrong about the second.
+    renderPanel({ domains: [makeDomain(), makeChatDomain()] });
+    fireEvent.click(screen.getByRole("button", { name: "Claude Desktop chat details" }));
+    expect(screen.getByText(/already signed in with, not an API key Gate brokers/)).toBeTruthy();
+    expect(screen.getByText(/family switch above leaves this row alone/)).toBeTruthy();
   });
 
   it("returns to Home from its own header", () => {
