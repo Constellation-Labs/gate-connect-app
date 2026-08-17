@@ -80,3 +80,11 @@ export const GATE_SAVINGS_URL = "https://app.constellationgate.ai/token-savings"
  *  documentation at all, and a Help section whose two items were "Replay tour"
  *  and "Dev mode". */
 export const GATE_DOCS_URL = "https://docs.constellationgate.ai/";
+
+/** Where "Contact support" in the topnav menu goes.
+ *
+ *  The only outbound link on `constellationnetwork.io` rather than
+ *  `constellationgate.ai`, so it needed its own entry in the opener ACL in
+ *  `src-tauri/capabilities/default.json`. Without it the menu item looks wired
+ *  and does nothing, which is the state it shipped in until now. */
+export const GATE_SUPPORT_URL = "https://constellationnetwork.io/support";

@@ -20,6 +20,7 @@ import {
   GATE_DOCS_URL,
   GATE_POLICIES_URL,
   GATE_SAVINGS_URL,
+  GATE_SUPPORT_URL,
 } from "./lib/config";
 import { AppShell } from "./components/gc/AppShell";
 import { FamiliesPane } from "./components/gc/FamiliesPane";
@@ -206,9 +207,7 @@ export function NewUiApp() {
     setMenuOpen(false);
     if (action === "dashboard") void openExternal(GATE_DASHBOARD_URL);
     else if (action === "docs") void openExternal(GATE_DOCS_URL);
-    // `support` has no destination yet. Left unhandled rather than pointed at a
-    // guessed URL: the opener ACL would silently drop a wrong one, so the item
-    // would look wired and do nothing.
+    else void openExternal(GATE_SUPPORT_URL);
   }, []);
 
   return (
