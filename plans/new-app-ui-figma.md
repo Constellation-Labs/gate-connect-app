@@ -397,7 +397,15 @@ consequence in `base-primary` rather than grey.
 `OrganizationSwitchedDialog`'s copy was read at low resolution and is the least
 certain of the seven.
 
-### Phase 9 - Shell swap
+### Phase 9 - Shell swap (PARTIALLY DONE)
+
+`src/components/gc/AppShell.tsx` composes chrome, banners, sidebar and a dialog
+slot. The open pane arrives as `children`: routing is a one-line switch on
+`view.kind` at the call site, and folding it in would force the shell to accept
+every pane's data. The dialog is a slot for the same reason - the shell owns
+*that* a dialog covers the window, the caller owns which one.
+
+Nothing below is done yet, and all of it changes what ships:
 
 - `tauri.conf.json`: 380x620 non-resizable -> 1024x720; drop `alwaysOnTop`
   and `skipTaskbar`; decide `resizable`. Turn `decorations` back on so the OS
@@ -433,9 +441,16 @@ the same PR.
    destination. **Not in the Figma**; expect it to be redrawn.
 4. **Where does Diagnostics go?** `Diagnostics.tsx` has no home in the new
    Settings, which stops at About / Danger zone.
-5. **What does `Minimize2` do?** Possibly collapse back to a menubar popover,
-   which would mean keeping both shells.
-6. **Onboarding / FirstRun / OrgPicker / Success** are undesigned in the new UI.
+5. **Minimize2: RESOLVED 2026-08-16 - removed.** With window controls coming
+   from the OS, a second minimise affordance was a duplicate. The topbar now
+   carries only the overflow menu, and the brand lockup is genuinely centred
+   rather than sitting at the design's 504px, an offset that existed only
+   because a second button balanced it.
+6. **Onboarding / FirstRun / OrgPicker / Success: RESOLVED 2026-08-16 - built
+   provisionally.** `setup.tsx` gives them `SetupLayout` (chrome plus one
+   centred card, no sidebar) and `WelcomePane`, `OrgPickerPane`,
+   `ConnectedPane`. Built from the design's own vocabulary rather than invented
+   wholesale, but **not in the Figma** and expected to be redrawn.
 7. **Does the chart's `total` series double-count?** The Figma legend calls the
    blue series "Total messages" but stacks it *underneath* blocked, flagged and
    redacted. Read literally the bar sums to more than the total. `MessagesBucket`

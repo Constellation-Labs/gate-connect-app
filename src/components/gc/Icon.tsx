@@ -35,7 +35,6 @@ export type IconName =
   | "shieldBan"
   | "triangleAlert"
   | "ellipsis"
-  | "minimize2"
   | "squareArrowOutUpRight"
   | "headset"
   | "bookOpenText"
@@ -214,14 +213,6 @@ const PATHS: Record<IconName, JSX.Element> = {
       <circle cx="12" cy="12" r="1" />
       <circle cx="19" cy="12" r="1" />
       <circle cx="5" cy="12" r="1" />
-    </>
-  ),
-  minimize2: (
-    <>
-      <path d="m14 10 7-7" />
-      <path d="M20 10h-6V4" />
-      <path d="m3 21 7-7" />
-      <path d="M4 14h6v6" />
     </>
   ),
   squareArrowOutUpRight: (

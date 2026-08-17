@@ -4,12 +4,13 @@ import type { IconName } from "./Icon";
 
 /**
  * Window chrome for the new app UI (Figma `nav/topbar` 113:16763 and
- * `topnav/menu` 116:17428). A 48px strip: window controls left, brand lockup
- * centred, overflow menu and collapse right.
+ * `topnav/menu` 116:17428). A 48px strip: brand lockup centred, overflow menu
+ * on the right.
  *
- * The lockup lands slightly left of true centre (504px of 1024) because the
- * design uses space-between across three groups of unequal width rather than
- * absolute centring - reproduced here by doing the same thing.
+ * Two things the design draws are deliberately absent. The traffic lights are
+ * the operating system's, so we only reserve the space. The Minimize2 button
+ * is gone: with system controls that job is already the OS's, and a second
+ * minimise would have been a duplicate affordance.
  *
  * Presentational: the shell supplies every handler.
  */
@@ -23,24 +24,22 @@ const MENU_ITEMS: { action: TopnavAction; icon: IconName; label: string }[] = [
 ];
 
 export function Topbar({
-  onCollapse,
   menuOpen,
   onMenuToggle,
   onMenuSelect,
 }: {
-  /** The Minimize2 button - shrinks the window back down. */
-  onCollapse: () => void;
   menuOpen: boolean;
   onMenuToggle: () => void;
   onMenuSelect: (action: TopnavAction) => void;
 }) {
   return (
     <header className="flex h-12 w-full items-center justify-between border-b border-base-border bg-base-card px-4">
-      {/* Reserves the 60px the design gives its own traffic lights, so the
-       * lockup keeps its drawn position (504px of 1024) and never slides under
-       * the window controls the OS draws there. The controls themselves are the
-       * system's - see the window config note in plans/new-app-ui-figma.md. */}
-      <span aria-hidden className="w-[60px] shrink-0" />
+      {/* Mirrors the width of the button cluster opposite so the lockup sits
+       * dead centre. The design places it at 504px of 1024 rather than 512,
+       * but only because it had a second button on the right; with that gone,
+       * centred is what the design was approximating. macOS paints its traffic
+       * lights over this empty span, which is why nothing else goes here. */}
+      <span aria-hidden className="w-8 shrink-0" />
 
       <span className="flex items-center gap-2">
         <ConstellationHexMark size={24} />
@@ -57,7 +56,6 @@ export function Topbar({
           onClick={onMenuToggle}
           expanded={menuOpen}
         />
-        <OutlineIconButton icon="minimize2" label="Collapse window" onClick={onCollapse} />
         {menuOpen && <TopnavMenu onSelect={onMenuSelect} />}
       </div>
     </header>
