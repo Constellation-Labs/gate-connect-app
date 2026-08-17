@@ -243,6 +243,43 @@ export function ChangeReadyDialog({
   );
 }
 
+/**
+ * The whole state of this install as text. Shown before it is copied, never
+ * copied blind - `screens/Diagnostics.tsx` argues the point and it still holds:
+ * this app installs a root certificate, runs a local proxy and holds a
+ * credential, so a button that silently loads the clipboard with an unseen
+ * description of that setup is the opposite of the reassurance it is meant to
+ * provide.
+ */
+export function DiagnosticsDialog({
+  report,
+  copied,
+  onCopy,
+  onClose,
+}: {
+  /** Pre-built by `lib/diagnosticsReport`. */
+  report: string;
+  /** Flips the primary button's label after a successful copy. */
+  copied?: boolean;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      icon="info"
+      title="Diagnostics"
+      subtitle="The state of this install, as text you can hand to someone else"
+      secondary={{ label: "Close", onClick: onClose }}
+      primary={{ label: copied ? "Copied" : "Copy report", onClick: onCopy }}
+      onDismiss={onClose}
+    >
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-base-border bg-gray-50 p-4 font-mono text-base-xs leading-4 text-neutral-700">
+        {report}
+      </pre>
+    </Modal>
+  );
+}
+
 export function UseGateModelDialog({
   app,
   vendor,

@@ -41,6 +41,181 @@ export interface SettingsSection {
   rows: SettingsRow[];
 }
 
+/**
+ * The design's own section list, as data. Kept here rather than in the shell so
+ * the copy stays next to the screen it describes, and so "which rows exist" is
+ * testable without mounting the app.
+ *
+ * Diagnostics is the one row the Figma does not draw. `screens/Diagnostics.tsx`
+ * exists and has nowhere else to live in the new IA, so it sits under About and
+ * opens the report dialog. Expect it to be redrawn.
+ */
+export function buildSettingsSections({
+  deviceName,
+  installId,
+  loginId,
+  plan,
+  gateway,
+  apiKeyMasked,
+  launchAtLogin,
+  notifications,
+  version,
+  onRenameDevice,
+  onCopyInstallId,
+  onUpgradePlan,
+  onReplaceKey,
+  onDisconnect,
+  onToggleLaunchAtLogin,
+  onToggleNotifications,
+  onReplayTutorial,
+  onCheckForUpdates,
+  onViewDiagnostics,
+  onReviewReset,
+}: {
+  deviceName: string;
+  installId: string;
+  loginId: string;
+  plan: string;
+  gateway: string;
+  /** Already masked upstream - this pane never sees the key. */
+  apiKeyMasked: string;
+  launchAtLogin: boolean;
+  notifications: boolean;
+  version: string;
+  onRenameDevice: () => void;
+  onCopyInstallId: () => void;
+  onUpgradePlan: () => void;
+  onReplaceKey: () => void;
+  onDisconnect: () => void;
+  onToggleLaunchAtLogin: () => void;
+  onToggleNotifications: () => void;
+  onReplayTutorial: () => void;
+  onCheckForUpdates: () => void;
+  onViewDiagnostics: () => void;
+  onReviewReset: () => void;
+}): SettingsSection[] {
+  return [
+    {
+      id: "device",
+      title: "Device",
+      rows: [
+        {
+          id: "device",
+          icon: "monitorSmartphone",
+          label: "Device",
+          value: deviceName,
+          action: { label: "Rename", onClick: onRenameDevice },
+        },
+        {
+          id: "install-id",
+          icon: "idCard",
+          label: "Install ID",
+          value: installId,
+          mono: true,
+          action: { label: "Copy", onClick: onCopyInstallId },
+        },
+      ],
+    },
+    {
+      id: "account",
+      title: "Account",
+      rows: [
+        { id: "login", icon: "user", label: "Login ID", value: loginId },
+        {
+          id: "plan",
+          icon: "receipt",
+          label: "Gate plan",
+          value: plan,
+          action: { label: "Upgrade plan", onClick: onUpgradePlan },
+        },
+      ],
+    },
+    {
+      id: "connection",
+      title: "Connection",
+      rows: [
+        { id: "gateway", icon: "globe", label: "Gateway", value: gateway },
+        {
+          id: "api-key",
+          icon: "key",
+          label: "API key",
+          value: apiKeyMasked,
+          mono: true,
+          action: { label: "Replace key", onClick: onReplaceKey },
+        },
+        {
+          id: "session",
+          icon: "link",
+          label: "Active session",
+          action: { label: "Disconnect", onClick: onDisconnect, destructive: true },
+        },
+      ],
+    },
+    {
+      id: "startup",
+      title: "Startup",
+      rows: [
+        {
+          id: "launch",
+          icon: "power",
+          label: "Launch at login",
+          description: "Keeps routing on after restart",
+          toggle: { on: launchAtLogin, onToggle: onToggleLaunchAtLogin },
+        },
+        {
+          id: "notifications",
+          icon: "bell",
+          label: "Notifications",
+          description: "Alert me when a request is blocked or flagged",
+          toggle: { on: notifications, onToggle: onToggleNotifications },
+        },
+      ],
+    },
+    {
+      id: "about",
+      title: "About",
+      rows: [
+        {
+          id: "tutorial",
+          icon: "bookOpenText",
+          label: "Tutorial",
+          action: { label: "Replay tutorial", onClick: onReplayTutorial },
+        },
+        {
+          id: "version",
+          icon: "codeXml",
+          label: "Version",
+          value: version,
+          mono: true,
+          action: { label: "Check for updates", onClick: onCheckForUpdates },
+        },
+        {
+          id: "diagnostics",
+          icon: "info",
+          label: "Diagnostics",
+          description: "Everything Gate knows about this install, as shareable text",
+          action: { label: "View report", onClick: onViewDiagnostics },
+        },
+      ],
+    },
+    {
+      id: "danger",
+      title: "Danger zone",
+      danger: true,
+      rows: [
+        {
+          id: "reset",
+          icon: "refresh",
+          label: "Reset Gate Connect",
+          description:
+            "Turn routing off, disconnect tools, remove this account or key, and start setup again.",
+          action: { label: "Review reset", onClick: onReviewReset, destructive: true },
+        },
+      ],
+    },
+  ];
+}
+
 export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
