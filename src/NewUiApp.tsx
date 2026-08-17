@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
+import type { Account, Org, ProxyState, ProviderState, Tool } from "./lib/api";
 import {
   getAccount,
   launchAtLoginStatus,
   listProviders,
   listTools,
+  openOnboardingWindow,
   proxyStatus,
 } from "./lib/api";
 import { useRouting } from "./lib/useRouting";
+import { useSettingsActions } from "./lib/useSettingsActions";
 import { classifyError } from "./lib/errors";
 import type { ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
@@ -22,7 +24,14 @@ import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
-import { DiagnosticsDialog, ReviewConfigDialog } from "./components/gc/dialogs";
+import type { DialogOrganization } from "./components/gc/dialogs";
+import {
+  DiagnosticsDialog,
+  OrganizationSwitchedDialog,
+  ReplaceApiKeyDialog,
+  ReviewConfigDialog,
+  SwitchOrganizationDialog,
+} from "./components/gc/dialogs";
 import { AlertBanner, ErrorBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type { AppStatus, SidebarApp, SidebarView } from "./components/gc/Sidebar";
@@ -41,9 +50,14 @@ import type { Platform } from "./lib/platform";
  * behind a prompt, then re-reads backend truth. Backend state pushes here too,
  * so a change made elsewhere repaints this window.
  *
- * Still inert: the family master switch (hidden rather than dead), every
- * Settings action except Diagnostics, and org switching. The Overview and
- * per-app metrics await the 24-hour endpoint.
+ * Settings and org switching go through `useSettingsActions`. Rows with no
+ * backend behind them are passed no handler, which omits the control rather than
+ * leaving a dead one on screen.
+ *
+ * Still inert: the family master switch (hidden for the same reason), the
+ * running-apps sequence, and the per-app model picker. Disconnect and reset wait
+ * on a first-run screen to return to. The Overview and per-app metrics await the
+ * 24-hour endpoint.
  */
 export function NewUiApp() {
   const [tools, setTools] = useState<Tool[]>([]);
@@ -54,7 +68,9 @@ export function NewUiApp() {
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [view, setView] = useState<SidebarView>({ kind: "overview" });
   const [menuOpen, setMenuOpen] = useState(false);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  // Held as text rather than a boolean: the report is a snapshot, and the copy
+  // button has to hand over exactly what the dialog showed.
+  const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
   const platform = usePlatform();
 
   const refresh = useCallback(async () => {
@@ -154,33 +170,74 @@ export function NewUiApp() {
 
   const noop = useCallback(() => {}, []);
 
+  const settings = useSettingsActions({
+    account,
+    launchAtLogin,
+    onLaunchAtLogin: ({ enabled }) => setLaunchAtLogin(enabled),
+    onAccount: setAccount,
+    onError: (e) => setActionError(classifyError(e, "generic")),
+  });
+
+  // The PostHog distinct id: a per-install random device id, and the one string
+  // that lines a pasted diagnostics report up against its event stream. The
+  // closest thing to the design's install ID that actually exists.
+  const installId = useMemo(() => {
+    const id = analyticsId();
+    return id.kind === "id" ? id.value : null;
+  }, []);
+
   const settingsSections = useMemo(
     () =>
       buildSettingsSections({
-        // Device name, install ID and plan have no backend yet, so they read as
-        // unknown rather than as invented values.
+        // Device name and plan have no backend, so they read as unknown rather
+        // than as invented values, and their actions are omitted entirely.
         deviceName: "-",
-        installId: "-",
+        installId: installId ?? "Unavailable",
         loginId: account?.org_name ?? "-",
         plan: "-",
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: account?.has_api_key ? `sk-gw${"*".repeat(20)}` : "Not set",
         launchAtLogin,
-        notifications: false,
         version: version ? `v${version}` : "-",
-        onRenameDevice: noop,
-        onCopyInstallId: noop,
-        onUpgradePlan: noop,
-        onReplaceKey: noop,
-        onDisconnect: noop,
-        onToggleLaunchAtLogin: noop,
-        onToggleNotifications: noop,
-        onReplayTutorial: noop,
-        onCheckForUpdates: noop,
-        onViewDiagnostics: () => setDiagnosticsOpen(true),
-        onReviewReset: noop,
+        onCopyInstallId: installId ? () => void settings.copyText(installId) : noop,
+        onReplaceKey: settings.openReplaceKey,
+        onToggleLaunchAtLogin: () => void settings.toggleLaunchAtLogin(),
+        // The tutorial is its own window, already built and wired.
+        onReplayTutorial: () => void openOnboardingWindow("settings"),
+        onViewDiagnostics: () =>
+          setDiagnosticsReport(
+            previewDiagnostics({
+              now: new Date(),
+              version,
+              platform,
+              account,
+              proxy,
+              providers,
+              tools,
+            }),
+          ),
+        // Deliberately absent, so the control is absent too: rename device,
+        // notifications and plan upgrade have no backend command at all, update
+        // checks belong with the update banner, and disconnect and reset both
+        // end with no account - which needs a first-run screen to return to
+        // that this shell does not have yet.
       }),
-    [account, launchAtLogin, version, noop],
+    // The individual callbacks rather than `settings`: the hook returns a fresh
+    // object each render, which would defeat the memo.
+    [
+      account,
+      launchAtLogin,
+      version,
+      installId,
+      settings.copyText,
+      settings.openReplaceKey,
+      settings.toggleLaunchAtLogin,
+      platform,
+      proxy,
+      providers,
+      tools,
+      noop,
+    ],
   );
 
   const protectedCount = apps.filter((a) => a.status.kind === "protected").length;
@@ -225,7 +282,10 @@ export function NewUiApp() {
       onMenuSelect={onMenuSelect}
       routing={{ protectedCount, totalCount: apps.length }}
       orgName={account?.org_name ?? "No organization"}
-      onSwitchOrg={noop}
+      onSwitchOrg={() => {
+        setActionError(null);
+        void settings.openSwitchOrg();
+      }}
       view={view}
       onNavigate={setView}
       apps={apps}
@@ -269,19 +329,35 @@ export function NewUiApp() {
               machine and is removed when you reset Gate Connect.
             </p>
           </Modal>
-        ) : diagnosticsOpen ? (
+        ) : diagnosticsReport !== null ? (
           <DiagnosticsDialog
-            report={previewDiagnostics({
-              now: new Date(),
-              version,
-              platform,
-              account,
-              proxy,
-              providers,
-              tools,
-            })}
-            onCopy={noop}
-            onClose={() => setDiagnosticsOpen(false)}
+            report={diagnosticsReport}
+            copied={settings.copied}
+            onCopy={() => void settings.copyText(diagnosticsReport)}
+            onClose={() => setDiagnosticsReport(null)}
+          />
+        ) : settings.prompt?.kind === "replace-key" ? (
+          <ReplaceApiKeyDialog
+            currentKeyMasked={
+              account?.has_api_key ? `sk-gw${"*".repeat(20)}` : "Not set"
+            }
+            newKey={settings.newKey}
+            onNewKeyChange={settings.setNewKey}
+            onCancel={settings.dismissPrompt}
+            onReplace={() => void settings.replaceKey()}
+          />
+        ) : settings.prompt?.kind === "switch-org" ? (
+          <SwitchOrganizationDialog
+            organizations={settings.prompt.orgs.map(toDialogOrg)}
+            selectedId={settings.prompt.selectedId}
+            onSelect={settings.selectOrg}
+            onCancel={settings.dismissPrompt}
+            onConfirm={() => void settings.confirmSwitchOrg()}
+          />
+        ) : settings.prompt?.kind === "org-switched" ? (
+          <OrganizationSwitchedDialog
+            organizationName={settings.prompt.name}
+            onDone={settings.dismissPrompt}
           />
         ) : undefined
       }
@@ -346,6 +422,27 @@ const EMPTY_STATS = {
 
 function appFor(apps: SidebarApp[], slug: string): SidebarApp | undefined {
   return apps.find((a) => a.slug === slug);
+}
+
+/**
+ * The design's org rows carry "12 members - Free plan", neither of which the
+ * orgs endpoint returns. Slug and role are what it does return, joined the same
+ * way `screens/OrgPicker.tsx` joins them so the two pickers read alike.
+ */
+function toDialogOrg(org: Org): DialogOrganization {
+  return {
+    id: org.orgId,
+    name: org.name,
+    initials: initialsOf(org.name),
+    meta: [org.slug, org.role].filter(Boolean).join(" · "),
+  };
+}
+
+function initialsOf(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const letters =
+    words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "?").slice(0, 2);
+  return letters.toUpperCase();
 }
 
 function toolStatus(tool: Tool): AppStatus {
