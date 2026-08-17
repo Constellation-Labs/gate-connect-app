@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Card } from "./base";
 
 /**
@@ -21,9 +22,12 @@ export interface UsageStats {
 /**
  * One column of the chart. The Figma legend labels the blue series "Total
  * messages" while stacking it under blocked/flagged/redacted, so the four are
- * treated as additive segments and `total` means "everything not otherwise
- * accounted for". Worth pinning down while the backend is still in flight - if
- * `total` really is the grand total, the stack double-counts.
+ * additive segments and `total` means "everything not otherwise accounted for".
+ *
+ * The chart tooltip settles this: its four rows read 8 / 2 / 2 / 0 against a
+ * bar whose heading is the bucket, and the heading carries the `mono/eyebrow`
+ * style the axis ticks use - an identifier, not a figure. So "Total messages"
+ * really is the remainder segment and the stack does not double-count.
  */
 export interface MessagesBucket {
   /** X-axis tick, e.g. an hour ("14"). */
@@ -120,6 +124,7 @@ function Stat({
  * markup holds whether the backend returns 24 buckets or fewer.
  */
 export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
+  const [hovered, setHovered] = useState<number | null>(null);
   const peak = Math.max(
     1,
     ...buckets.map((b) => b.total + b.blocked + b.flagged + b.redacted),
@@ -133,16 +138,29 @@ export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
           which meant a screen-reader user got period totals and could not reach
           any individual hour - AG-572 requires the hour, its total and its
           security count to be readable without hover. `aria-hidden` rather than
-          a per-bar label so the same figures are not announced twice. */}
+          a per-bar label so the same figures are not announced twice.
+
+          The tooltip lives inside this subtree and is hover-only for the same
+          reason: it repeats what the table already says, so exposing it twice
+          would be noise. Nothing here is keyboard-reachable, and nothing needs
+          to be - the table is the accessible path to the same figures. */}
       <div
         aria-hidden
-        className="mt-4 flex h-28 items-end justify-between gap-1"
+        className="relative mt-4 flex h-28 items-end justify-between gap-1"
+        onMouseLeave={() => setHovered(null)}
       >
-        {buckets.map((bucket) => (
+        {buckets.map((bucket, i) => (
           // `flex-col-reverse` so the first series renders at the *bottom* of
           // the stack: the design bases each bar on the blue total and piles
           // blocked, flagged and redacted on top of it.
-          <div key={bucket.label} className="flex h-full w-5 flex-col-reverse">
+          //
+          // `h-full` on the hit target, not just the bar: a quiet hour is a
+          // sliver two pixels tall, and hovering it should not require aim.
+          <div
+            key={bucket.label}
+            className="flex h-full w-5 flex-col-reverse"
+            onMouseEnter={() => setHovered(i)}
+          >
             {SERIES.map(({ key, className }) => {
               const value = bucket[key];
               if (!value) return null;
@@ -156,6 +174,16 @@ export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
             })}
           </div>
         ))}
+
+        {hovered !== null && buckets[hovered] && (
+          <ChartTooltip
+            bucket={buckets[hovered]}
+            // Flip to the left of the cursor over the last third, so the card
+            // stays inside the chart instead of hanging off the card's edge.
+            side={hovered > (buckets.length - 1) * (2 / 3) ? "left" : "right"}
+            offset={buckets.length > 1 ? hovered / (buckets.length - 1) : 0}
+          />
+        )}
       </div>
 
       <div className="mt-1 flex justify-between gap-1">
@@ -172,7 +200,12 @@ export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
       {/* Visually hidden, not display:none - a table is the honest structure for
           24 rows of four figures, and it gives AT users row/column navigation
           instead of one long sentence. Keyboard users reach it in reading order
-          with no hover, which is the requirement. */}
+          with no hover, which is the requirement.
+
+          Column names track the tooltip, so "Total messages" is the remainder
+          series and the sum gets its own column. Naming the sum "Total messages"
+          while the visible legend used the same words for the blue segment gave
+          two different figures the same name. */}
       <table className="sr-only">
         <caption>Messages per hour over the period</caption>
         <thead>
@@ -182,16 +215,18 @@ export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
             <th scope="col">Blocked</th>
             <th scope="col">Flagged</th>
             <th scope="col">Redacted</th>
+            <th scope="col">All messages</th>
           </tr>
         </thead>
         <tbody>
           {buckets.map((b) => (
             <tr key={b.label}>
               <th scope="row">{b.label}:00</th>
-              <td>{b.total + b.blocked + b.flagged + b.redacted}</td>
+              <td>{b.total}</td>
               <td>{b.blocked}</td>
               <td>{b.flagged}</td>
               <td>{b.redacted}</td>
+              <td>{b.total + b.blocked + b.flagged + b.redacted}</td>
             </tr>
           ))}
         </tbody>
@@ -206,5 +241,56 @@ export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
         ))}
       </ul>
     </Card>
+  );
+}
+
+/**
+ * The hovered bucket's four figures (Figma `chart/tooltip`).
+ *
+ * The heading is the bucket label in `mono/eyebrow`, the same style the axis
+ * ticks carry - it names the column, it is not a fifth number. Rows repeat the
+ * legend in order so the eye maps swatch to segment without re-reading.
+ *
+ * Positioned by percentage across the plot area rather than by measuring the
+ * bar: the bars already distribute themselves, so a ratio lands on the right
+ * column at any bucket count and needs no layout read.
+ */
+function ChartTooltip({
+  bucket,
+  side,
+  offset,
+}: {
+  bucket: MessagesBucket;
+  /** Which side of the hovered column the card opens towards. */
+  side: "left" | "right";
+  /** 0 at the first bucket, 1 at the last. */
+  offset: number;
+}) {
+  return (
+    <div
+      className="pointer-events-none absolute top-1/2 z-10 w-[12.5rem] -translate-y-1/2 rounded-lg border border-base-border bg-base-card p-2 shadow-base-md"
+      style={
+        side === "right"
+          ? { left: `calc(${offset * 100}% + 0.75rem)` }
+          : { right: `calc(${(1 - offset) * 100}% + 0.75rem)` }
+      }
+    >
+      <p className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-neutral-900">
+        {bucket.label}
+      </p>
+      <div className="mt-2 flex flex-col gap-1">
+        {SERIES.map(({ key, label, className }) => (
+          <div key={key} className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <span className={`size-3 rounded-sm ${className}`} />
+              <span className="text-base-xs leading-4 text-neutral-900">{label}</span>
+            </span>
+            <span className="text-base-xs font-medium leading-4 text-neutral-900">
+              {bucket[key].toLocaleString()}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

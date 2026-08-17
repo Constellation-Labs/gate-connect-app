@@ -249,6 +249,10 @@ export default {
         "base-2xs": "0 1px 0 0 rgba(0,0,0,0.05)",
         "base-xs": "0 1px 2px 0 rgba(0,0,0,0.05)",
         "base-sm": "0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)",
+        // Figma `shadow/md`, on the chart tooltip. Same one-step shift as the
+        // rest of this group: v4 `shadow-md` is v3's `shadow-md` offsets at the
+        // design's 8% alpha.
+        "base-md": "0 4px 6px -1px rgba(0,0,0,0.08), 0 2px 4px -2px rgba(0,0,0,0.08)",
         "base-lg":
           "0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.08)",
       },
@@ -266,6 +270,10 @@ export default {
       letterSpacing: {
         // New app UI `mono/eyebrow`: Geist Mono Medium 12/16 at 10% tracking.
         eyebrow: "1.2px",
+        // The same 10% at 14px, which is the size `mono/eyebrow` takes on the
+        // chart tooltip's bucket heading. Tracking is absolute in Figma, so the
+        // 12px value would read as 8.6% here.
+        "eyebrow-14": "1.4px",
         // `mono/label-12`: same face at 6% - the action pills (BLOCK/FLAG/REDACT).
         label: "0.72px",
         // `heading/20`: Geist Medium 20/24 at -1% - pane titles and captions.

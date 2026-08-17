@@ -275,6 +275,15 @@ Chart is hand-rolled from stacked divs, no chart library: the mark is four
 rectangles, and hand-rolling keeps the series on design tokens. Bars are the
 design's 20px and distribute across the card, so 24 buckets or 6 both work.
 
+Hover shows `chart/tooltip` (`191:79768`): a 200px-wide white card, 1px
+`base/border`, r8, `shadow/md`, p8, heading in `mono/eyebrow` at 14px (10%
+tracking, hence the `tracking-eyebrow-14` token alongside the 12px one), then
+the four legend rows with right-aligned values. Anchored by percentage across
+the plot area rather than by measuring a bar, and flipped to the left of the
+cursor over the last third so it stays inside the card. Hover-only and inside
+the `aria-hidden` subtree on purpose: the sr-only table already carries the same
+figures, so exposing both would announce every hour twice.
+
 Verified against Figma: pane `gray/100`, card Fill 726 / r8 / `#E5E7EB` /
 `shadow/sm`, bars 20px, legend swatches 12x12 r2.
 
@@ -459,13 +468,17 @@ the same PR.
    centred card, no sidebar) and `WelcomePane`, `OrgPickerPane`,
    `ConnectedPane`. Built from the design's own vocabulary rather than invented
    wholesale, but **not in the Figma** and expected to be redrawn.
-7. **Does the chart's `total` series double-count?** The Figma legend calls the
-   blue series "Total messages" but stacks it *underneath* blocked, flagged and
-   redacted. Read literally the bar sums to more than the total. `MessagesBucket`
-   currently treats the four as additive, so `total` means "everything not
-   otherwise accounted for". Worth settling in the 24-hour backend's response
-   shape rather than in the component: if the API really returns a grand total,
-   the chart should subtract rather than stack.
+7. **Does the chart's `total` series double-count? RESOLVED 2026-08-17 - no,
+   the four are additive.** Settled by the Figma's own `chart/tooltip`
+   (`191:79768`), added to the file after this question was written. It lists
+   `Total messages 8 / Blocked 2 / Flagged 2 / Redacted 0` under a heading
+   reading `12`, and that heading carries `mono/eyebrow` - the style the axis
+   ticks use, i.e. an identifier naming the column, not a fifth figure. So
+   "Total messages" is the remainder series, `MessagesBucket` was already right,
+   and the endpoint keeps sending `requests` plus the three security counts with
+   the client subtracting. The sr-only table now names the sum "All messages" so
+   two different figures no longer share one column name.
+
 8. **Sidebar app states: RESOLVED 2026-08-16.** `SidebarApp` now carries an
    `AppStatus` union (`protected` / `not-protected` / `drifted` /
    `not-routed`), and separately an `on` boolean. The split is deliberate and

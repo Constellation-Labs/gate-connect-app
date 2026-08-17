@@ -54,15 +54,17 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
         action: { kind: "trust-certificate" },
       };
     case "drifted":
-      // Carefully worded: drift is often the user's own doing (a hand-written
-      // Gate setup, or another tool rewriting the file), so this does not claim
-      // something broke. Adopting it overwrites their config, which is why it
-      // stays an explicit action rather than something reconciled silently.
+      // Copy is the design's own (Figma `banner/alert/single-app`), minus its
+      // "It's config" typo. Carefully worded there for the same reason it is
+      // here: drift is often the user's own doing - a hand-written Gate setup,
+      // or another tool rewriting the file - so it does not claim something
+      // broke. Adopting it overwrites their config, which is why it stays an
+      // explicit action rather than something reconciled silently.
       return member.tool
         ? {
             id: `drifted:${member.key}`,
-            title: `${name} is set up outside Gate Connect`,
-            body: "Its config points somewhere Gate Connect did not write, so this app is not on the ledger. Let Gate Connect manage it to route it again.",
+            title: `${name} isn't protected`,
+            body: "Its config changed outside Gate, so its traffic isn't routed. Reconnect to restore protection.",
             switchLabel: `Let Gate Connect manage ${name}`,
             action: {
               kind: "reconnect",
