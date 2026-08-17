@@ -17,13 +17,17 @@ import { Icon } from "./Icon";
 export function Card({
   children,
   className = "",
+  id,
 }: {
   children: ReactNode;
   /** Layout only, for callers that need to change the internal padding. */
   className?: string;
+  /** Anchor, for callers that are a scroll target. */
+  id?: string;
 }) {
   return (
     <section
+      id={id}
       className={`rounded-lg border border-base-border bg-base-card shadow-base-sm ${className}`}
     >
       {children}

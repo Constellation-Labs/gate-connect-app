@@ -11,12 +11,14 @@ import {
 import { buildGroups } from "./lib/groups";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
-import { GATE_DASHBOARD_URL } from "./lib/config";
+import { GATE_DASHBOARD_URL, GATE_POLICIES_URL, GATE_SAVINGS_URL } from "./lib/config";
 import { AppShell } from "./components/gc/AppShell";
 import { FamiliesPane } from "./components/gc/FamiliesPane";
 import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
+import { useActivity } from "./lib/activity";
+import type { ActivityView } from "./lib/activity";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
 import { DiagnosticsDialog } from "./components/gc/dialogs";
 import type { AppStatus, SidebarApp, SidebarView } from "./components/gc/Sidebar";
@@ -51,6 +53,9 @@ export function NewUiApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const platform = usePlatform();
+  // One fetch per mount, plus the pane's own refresh. Not polled: the endpoint
+  // shares the gateway's per-minute throttle bucket with the user's own traffic.
+  const activity = useActivity(true);
 
   useEffect(() => {
     void (async () => {
@@ -152,7 +157,9 @@ export function NewUiApp() {
       onMenuToggle={() => setMenuOpen((v) => !v)}
       onMenuSelect={onMenuSelect}
       routing={{ protectedCount, totalCount: apps.length }}
-      orgName={account?.org_name ?? "No organization"}
+      // An API-key account holds no org locally, so the gateway's answer is the
+      // only name it can show. Account first: it is what the user picked.
+      orgName={account?.org_name ?? activity.view?.orgName ?? "No organization"}
       onSwitchOrg={noop}
       view={view}
       onNavigate={setView}
@@ -198,22 +205,27 @@ export function NewUiApp() {
         />
       ) : (
         <Overview
-          stats={EMPTY_STATS}
-          buckets={[]}
-          policies={[]}
-          savings={[]}
-          onManagePolicies={noop}
-          onManageSavings={noop}
-          period="Awaiting the 24-hour backend"
+          stats={activity.view?.stats ?? EMPTY_STATS}
+          buckets={activity.view?.buckets ?? []}
+          policies={activity.view?.policies ?? []}
+          savings={activity.view?.savings ?? []}
+          onManagePolicies={() => void openExternal(GATE_POLICIES_URL)}
+          onManageSavings={() => void openExternal(GATE_SAVINGS_URL)}
+          // Dashes rather than zeros until the first load lands: a zero is a
+          // real reading and would claim the user had no traffic.
+          pending={activity.view === null && activity.error === null}
+          period={activity.view?.period ?? "Last 24 hours"}
+          alert={<ActivityGaps view={activity.view} error={activity.error} />}
         />
       )}
     </AppShell>
   );
 }
 
-/** The 24-hour endpoint is still being built. Zeros rather than plausible
- *  numbers: a preview that invents traffic is one somebody screenshots as
- *  real. */
+/** Shown before the first load lands, and for any counter the endpoint declined.
+ *  Zeros rather than plausible numbers: a preview that invents traffic is one
+ *  somebody screenshots as real. `ActivityGaps` says which numbers are missing,
+ *  so a zero here is never silently mistaken for a real reading. */
 const EMPTY_STATS = {
   messages: 0,
   blockedFlagged: 0,
@@ -277,4 +289,51 @@ function previewDiagnostics(args: {
     clientsStale: false,
     agents: null,
   });
+}
+
+/** What each `unavailable` cause means, and what the user can do about it.
+ *
+ * AG-576 asks an unavailable metric to name its cause and offer a matching
+ * action rather than blanking the surface. The endpoint sends the cause; this is
+ * the copy for it.
+ *
+ * Deliberately plain text in the pane's alert slot rather than a designed
+ * component: the visual treatment for this state is AG-575's job and does not
+ * exist yet, and inventing one would be the "dressing scaffolding up as product"
+ * mistake. What matters now is that a zero is never mistaken for a real reading. */
+const GAP_COPY: Record<string, string> = {
+  connectivity: "could not be reached - try again",
+  access: "is not visible to your role",
+  attribution: "needs a signed-in user; this credential has none",
+  not_configured: "has nothing set up yet",
+  definition_pending: "is not defined yet",
+};
+
+function ActivityGaps({
+  view,
+  error,
+}: {
+  view: ActivityView | null;
+  error: string | null;
+}) {
+  // A failed fetch outranks per-section gaps: if nothing loaded there is nothing
+  // to itemise, and the last good view (if any) is still on screen behind this.
+  if (error) {
+    return (
+      <p className="text-base-xs text-base-muted-foreground">
+        Activity could not be refreshed. Showing the last reading.
+      </p>
+    );
+  }
+  if (!view || view.gaps.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-1">
+      {view.gaps.map((g) => (
+        <li key={g.section} className="text-base-xs text-base-muted-foreground">
+          <span className="font-medium">{g.section}</span>{" "}
+          {GAP_COPY[g.reason] ?? "is unavailable"}
+        </li>
+      ))}
+    </ul>
+  );
 }

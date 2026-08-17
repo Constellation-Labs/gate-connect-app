@@ -1,0 +1,233 @@
+import { useCallback, useEffect, useState } from "react";
+import { activityOverview } from "./api";
+import type { MessagesBucket, UsageStats } from "../components/gc/metrics";
+import type { Policy, Saving } from "../components/gc/Overview";
+import type { IconName } from "../components/gc/Icon";
+
+/**
+ * Adapter between `GET /v1/me/activity` and the Overview pane's props.
+ *
+ * The endpoint speaks in facts (counts, fractions, an amount and a currency);
+ * the pane speaks in rendered strings. Everything locale- or copy-shaped is
+ * decided here rather than upstream, because a gateway has no business choosing
+ * a desktop client's number formatting.
+ *
+ * The payload arrives as raw JSON text while the contract is still moving. This
+ * module is the only place that knows its shape, so tightening it to a generated
+ * type later is a change to one file.
+ */
+
+/** Per-section health, mirroring the endpoint. */
+type SectionState = "ok" | "unavailable";
+
+/**
+ * Why a section is missing, from AG-576's taxonomy. Drives the copy and the
+ * offered action, which is the whole reason the endpoint sends a cause rather
+ * than a bare "unavailable".
+ */
+export type UnavailableReason =
+  | "connectivity"
+  | "access"
+  | "attribution"
+  | "not_configured"
+  | "definition_pending";
+
+interface Counter {
+  state: SectionState;
+  value?: number;
+  reason?: UnavailableReason;
+}
+
+interface RawBucket {
+  hour: string;
+  requests: number;
+  blocked: number | null;
+  flagged: number | null;
+  redacted: number | null;
+}
+
+interface RawOverview {
+  generatedAt: string;
+  window: { from: string; to: string };
+  org: { orgId: string; name: string | null };
+  counters: {
+    blockedOrFlagged: Counter;
+    needsReview: Counter;
+    requestsRouted: Counter;
+    tokensSaved: {
+      state: SectionState;
+      fraction?: number;
+      amount?: number;
+      currency?: string;
+      reason?: UnavailableReason;
+    };
+  };
+  requestsByHour: { state: SectionState; buckets?: RawBucket[]; reason?: UnavailableReason };
+  policies: { state: SectionState; rows?: RawRow[]; reason?: UnavailableReason };
+  tokenSavings: { state: SectionState; rows?: RawRow[]; reason?: UnavailableReason };
+}
+
+interface RawRow {
+  id: string;
+  label: string;
+  action?: "block" | "flag" | "redact";
+  enabled: boolean;
+}
+
+export interface ActivityView {
+  /** The org the gateway resolved from the credential. The only way an API-key
+   *  account learns its own org name: those accounts store no org locally. */
+  orgName: string | null;
+  stats: UsageStats;
+  buckets: MessagesBucket[];
+  policies: Policy[];
+  savings: Saving[];
+  /** Rendered as the pane's period label, e.g. "Last 24 hours · 14:03". */
+  period: string;
+  /** Sections that could not be answered, for the pane's alert slot. */
+  gaps: { section: string; reason: UnavailableReason }[];
+}
+
+/** Icons the design puts on each policy row, keyed by the endpoint's row id. */
+const POLICY_ICONS: Record<string, IconName> = {
+  "prompt-injection": "shieldBan",
+  "pii-phi": "idCard",
+  credentials: "key",
+};
+
+const SAVINGS_ICONS: Record<string, IconName> = {
+  compression: "layers",
+  caching: "cube",
+};
+
+/**
+ * Turn one hour of the endpoint's counts into a chart column.
+ *
+ * The design stacks four additive segments and labels the blue one "Total
+ * messages", which cannot be the grand total or the stack double-counts - the
+ * branch that introduced the chart flagged exactly this. So `total` here is
+ * "everything not otherwise accounted for": requests minus the three security
+ * series, floored at zero because the three count distinct requests per action
+ * and one request can draw two actions.
+ *
+ * Null security counts mean the caller may not see them (see the endpoint's
+ * `access` reason). They render as zero-height segments rather than being
+ * invented, and the gap is reported separately so the UI can say why.
+ */
+function toBucket(b: RawBucket): MessagesBucket {
+  const blocked = b.blocked ?? 0;
+  const flagged = b.flagged ?? 0;
+  const redacted = b.redacted ?? 0;
+  return {
+    // Hour-of-day tick, matching the design's "14". Local time, because the
+    // user reads their own clock, not UTC.
+    label: String(new Date(b.hour).getHours()),
+    total: Math.max(0, b.requests - (blocked + flagged + redacted)),
+    blocked,
+    flagged,
+    redacted,
+  };
+}
+
+function toRows<T extends { id: string; name: string; icon: IconName; enabled: boolean }>(
+  rows: RawRow[] | undefined,
+  icons: Record<string, IconName>,
+  fallback: IconName,
+  extra: (r: RawRow) => Omit<T, "id" | "name" | "icon" | "enabled">,
+): T[] {
+  return (rows ?? []).map(
+    (r) =>
+      ({
+        id: r.id,
+        name: r.label,
+        icon: icons[r.id] ?? fallback,
+        enabled: r.enabled,
+        ...extra(r),
+      }) as T,
+  );
+}
+
+export function adapt(raw: RawOverview): ActivityView {
+  const c = raw.counters;
+  const gaps: ActivityView["gaps"] = [];
+  const note = (section: string, s: { state: SectionState; reason?: UnavailableReason }) => {
+    if (s.state !== "ok") gaps.push({ section, reason: s.reason ?? "connectivity" });
+  };
+  note("Blocked and flagged", c.blockedOrFlagged);
+  note("Tokens saved", c.tokensSaved);
+  note("Messages", c.requestsRouted);
+  note("Hourly chart", raw.requestsByHour);
+  note("Policies", raw.policies);
+  note("Savings", raw.tokenSavings);
+
+  const saved = c.tokensSaved;
+  const amount = saved.amount ?? 0;
+  return {
+    orgName: raw.org.name,
+    stats: {
+      messages: c.requestsRouted.value ?? 0,
+      blockedFlagged: c.blockedOrFlagged.value ?? 0,
+      // The endpoint sends a fraction; the tile wants whole percent.
+      tokensSavedPercent: Math.round((saved.fraction ?? 0) * 100),
+      // Formatted here, not upstream. `Intl` owns the currency symbol and
+      // placement; the leading "+" is the design's own convention for a saving.
+      tokensSavedAmount:
+        saved.state === "ok"
+          ? `+${new Intl.NumberFormat(undefined, {
+              style: "currency",
+              currency: saved.currency ?? "USD",
+            }).format(amount)}`
+          : "-",
+    },
+    buckets: (raw.requestsByHour.buckets ?? []).map(toBucket),
+    policies: toRows<Policy>(raw.policies.rows, POLICY_ICONS, "shieldCheck", (r) => ({
+      action: r.action ?? "flag",
+    })),
+    savings: toRows<Saving>(raw.tokenSavings.rows, SAVINGS_ICONS, "layers", () => ({})),
+    period: `Last 24 hours · updated ${new Date(raw.generatedAt).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`,
+    gaps,
+  };
+}
+
+/**
+ * Load the overview once, and on demand.
+ *
+ * Deliberately not polling. The endpoint shares the gateway's 100-requests-per-
+ * minute throttle bucket with every other call from this machine, so a timer
+ * here competes with the user's own traffic; and `Cache-Control: no-store` plus
+ * a rendered `generatedAt` means a stale view is legible rather than silent.
+ */
+export function useActivity(enabled: boolean): {
+  view: ActivityView | null;
+  error: string | null;
+  loading: boolean;
+  reload: () => void;
+} {
+  const [view, setView] = useState<ActivityView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const reload = useCallback(() => {
+    if (!enabled) return;
+    setLoading(true);
+    setError(null);
+    activityOverview()
+      .then((text) => {
+        setView(adapt(JSON.parse(text) as RawOverview));
+        setError(null);
+      })
+      .catch((e) => {
+        // Keep the last good view: AG-576 wants a stale reading held with its
+        // timestamp rather than replaced by an empty screen.
+        setError(String(e));
+      })
+      .finally(() => setLoading(false));
+  }, [enabled]);
+
+  useEffect(reload, [reload]);
+
+  return { view, error, loading, reload };
+}

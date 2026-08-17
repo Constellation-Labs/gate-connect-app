@@ -58,6 +58,19 @@ export const GATEWAY_SERVERS: GatewayServer[] = [
  * how two of them ended up with the unslashed form. */
 export const GATE_DASHBOARD_URL = "https://app.constellationgate.ai/";
 export const GATE_API_KEYS_URL = "https://app.constellationgate.ai/api-keys";
+
+/** Where Overview's two "Manage" links go (AG-572).
+ *
+ * Same trailing-slash discipline as above: these carry a path segment, so the
+ * ACL's literal separator is satisfied and `glob::Pattern` matches.
+ *
+ * Not org-scoped in the URL. AG-572 asks these to open settings "for the
+ * selected organization", but the dashboard resolves the active org from its own
+ * session, and a client-supplied org id in the path would either be ignored or
+ * disagree with what the user is signed into there. If the dashboard ever grows
+ * an explicit `?org=` selector these become builders. */
+export const GATE_POLICIES_URL = "https://app.constellationgate.ai/policies";
+export const GATE_SAVINGS_URL = "https://app.constellationgate.ai/token-savings";
 /** Product documentation. Trailing slash for the same opener-allowlist reason
  *  as the dashboard link above; `docs.constellationgate.ai` matches the
  *  `https://*.constellationgate.ai/*` capability pattern, so the plumbing works.

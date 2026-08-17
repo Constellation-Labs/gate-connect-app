@@ -16,6 +16,9 @@ import type { MessagesBucket, UsageStats } from "./metrics";
 
 export type PolicyAction = "block" | "flag" | "redact";
 
+/** Anchor for the Tokens saved counter's jump target (AG-572). */
+const SAVINGS_SECTION_ID = "token-savings";
+
 export interface Policy {
   id: string;
   name: string;
@@ -50,6 +53,7 @@ export function Overview({
   onManageSavings,
   alert,
   period = "Last 24 hours",
+  pending,
 }: {
   stats: UsageStats;
   buckets: MessagesBucket[];
@@ -57,6 +61,9 @@ export function Overview({
   savings: Saving[];
   onManagePolicies: () => void;
   onManageSavings: () => void;
+  /** First load has not landed. Passed to the tiles so they show dashes rather
+   *  than zeros; see `StatTiles`. */
+  pending?: boolean;
   /** Slot for an `AlertBanner`, which the design places above the stat tiles. */
   alert?: ReactNode;
   period?: string;
@@ -72,7 +79,19 @@ export function Overview({
 
       {alert}
 
-      <StatTiles stats={stats} />
+      <StatTiles
+        stats={stats}
+        pending={pending}
+        // AG-572: selecting the counter moves to the Token savings section.
+        // `scrollIntoView` on the section rather than a hash link, which would
+        // put a fragment in the webview's URL for a window that has no address.
+        onSelectTokensSaved={() =>
+          document.getElementById(SAVINGS_SECTION_ID)?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          })
+        }
+      />
       <MessagesChart buckets={buckets} />
 
       <PolicyTable
@@ -146,7 +165,10 @@ function SavingsTable({
   onManage: () => void;
 }) {
   return (
-    <Card className="p-4">
+    // `scroll-mt-6` so the smooth scroll from the Tokens saved counter leaves
+    // the same gutter the pane's padding gives every other card, rather than
+    // butting the heading against the top edge.
+    <Card id={SAVINGS_SECTION_ID} className="scroll-mt-6 p-4">
       <h2 className="text-sm font-medium leading-5 text-neutral-900">Token savings</h2>
 
       <table className="mt-4 w-full">

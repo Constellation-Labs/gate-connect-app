@@ -41,20 +41,34 @@ const SERIES = [
   { key: "redacted", label: "Redacted", className: "bg-chart-redacted" },
 ] as const;
 
-export function StatTiles({ stats }: { stats: UsageStats }) {
+export function StatTiles({
+  stats,
+  pending,
+  onSelectTokensSaved,
+}: {
+  stats: UsageStats;
+  /** First load has not landed yet. Renders em dashes rather than zeros: a
+   *  zero is a real reading, and showing one while still loading tells the user
+   *  their traffic was nil when we simply do not know yet. */
+  pending?: boolean;
+  /** Moves to the Token savings section, per AG-572. */
+  onSelectTokensSaved?: () => void;
+}) {
+  const dash = "\u2014";
   return (
     <Card className="flex">
-      <Stat label="Messages" value={stats.messages.toLocaleString()} />
+      <Stat label="Messages" value={pending ? dash : stats.messages.toLocaleString()} />
       <Stat
         label="Blocked/Flagged"
-        value={stats.blockedFlagged.toLocaleString()}
+        value={pending ? dash : stats.blockedFlagged.toLocaleString()}
         divided
       />
       <Stat
         label="Tokens saved"
-        value={`${stats.tokensSavedPercent}%`}
-        delta={stats.tokensSavedAmount}
+        value={pending ? dash : `${stats.tokensSavedPercent}%`}
+        delta={pending ? undefined : stats.tokensSavedAmount}
         divided
+        onSelect={onSelectTokensSaved}
       />
     </Card>
   );
@@ -65,14 +79,25 @@ function Stat({
   value,
   delta,
   divided,
+  onSelect,
 }: {
   label: string;
   value: string;
   delta?: string;
   divided?: boolean;
+  onSelect?: () => void;
 }) {
+  // A real button when it navigates, so it is focusable and announced as one.
+  // `text-left` because a button centres its text by default and these tiles are
+  // left-aligned.
+  const Tag = onSelect ? "button" : "div";
   return (
-    <div className={`flex-1 p-4 ${divided ? "border-l border-base-border" : ""}`}>
+    <Tag
+      {...(onSelect ? { type: "button" as const, onClick: onSelect } : {})}
+      className={`flex-1 p-4 text-left ${divided ? "border-l border-base-border" : ""}${
+        onSelect ? " transition hover:bg-gray-50" : ""
+      }`}
+    >
       <p className="font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
         {label}
       </p>
@@ -82,7 +107,7 @@ function Stat({
           <span className="text-base-xs font-medium text-green-600">{delta}</span>
         )}
       </p>
-    </div>
+    </Tag>
   );
 }
 
@@ -99,27 +124,18 @@ export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
     1,
     ...buckets.map((b) => b.total + b.blocked + b.flagged + b.redacted),
   );
-  const totals = buckets.reduce(
-    (acc, b) => ({
-      total: acc.total + b.total,
-      blocked: acc.blocked + b.blocked,
-      flagged: acc.flagged + b.flagged,
-      redacted: acc.redacted + b.redacted,
-    }),
-    { total: 0, blocked: 0, flagged: 0, redacted: 0 },
-  );
-
   return (
     <Card className="p-4">
       <h2 className="text-sm font-medium leading-5 text-neutral-900">Messages</h2>
 
+      {/* The bars are decoration for assistive tech; the table below carries the
+          numbers. `role="img"` with a summary label used to be the whole story,
+          which meant a screen-reader user got period totals and could not reach
+          any individual hour - AG-572 requires the hour, its total and its
+          security count to be readable without hover. `aria-hidden` rather than
+          a per-bar label so the same figures are not announced twice. */}
       <div
-        role="img"
-        aria-label={
-          `Messages over the period: ${totals.total} total, ` +
-          `${totals.blocked} blocked, ${totals.flagged} flagged, ` +
-          `${totals.redacted} redacted.`
-        }
+        aria-hidden
         className="mt-4 flex h-28 items-end justify-between gap-1"
       >
         {buckets.map((bucket) => (
@@ -152,6 +168,34 @@ export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
           </span>
         ))}
       </div>
+
+      {/* Visually hidden, not display:none - a table is the honest structure for
+          24 rows of four figures, and it gives AT users row/column navigation
+          instead of one long sentence. Keyboard users reach it in reading order
+          with no hover, which is the requirement. */}
+      <table className="sr-only">
+        <caption>Messages per hour over the period</caption>
+        <thead>
+          <tr>
+            <th scope="col">Hour</th>
+            <th scope="col">Total messages</th>
+            <th scope="col">Blocked</th>
+            <th scope="col">Flagged</th>
+            <th scope="col">Redacted</th>
+          </tr>
+        </thead>
+        <tbody>
+          {buckets.map((b) => (
+            <tr key={b.label}>
+              <th scope="row">{b.label}:00</th>
+              <td>{b.total + b.blocked + b.flagged + b.redacted}</td>
+              <td>{b.blocked}</td>
+              <td>{b.flagged}</td>
+              <td>{b.redacted}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
       <ul className="mt-4 flex items-center justify-center gap-4">
         {SERIES.map(({ key, label, className }) => (
