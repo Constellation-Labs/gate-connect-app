@@ -113,6 +113,31 @@ Still unbuilt: the App page's **choose model** dialog. It is only known from a
 frame caption; nothing about its contents has been read, so building it would be
 invention.
 
+## Branching model
+
+`feat/new-app-ui` is the **integration base** for the design work, not a branch
+heading for `main`. PR #151 stays open as work in progress; every PR that
+implements a piece of the design targets this branch rather than `main`.
+
+    git fetch origin
+    git switch -c feat/wire-routing-actions origin/feat/new-app-ui
+
+Consequences worth keeping in mind:
+
+- **Keep it green.** Downstream branches inherit whatever is broken here, so a
+  red base costs everyone. CI covers macOS, Windows and Linux Rust plus the
+  frontend; all eight checks were green as of 2026-08-17.
+- **Merge `main` in periodically.** The longer this diverges, the worse the
+  eventual reconciliation, and every downstream branch inherits the drift.
+- **The popover stays until routing works.** It is the only surface that can
+  change what is routed, so it is load-bearing, not dead weight. The e2e suite
+  is pinned to it (`VITE_NEW_UI=0` in `playwright.config.ts`).
+- **This plan is the shared roadmap.** "Still to do" below is the queue that
+  downstream PRs draw from; keep it current rather than tracking work elsewhere.
+- **Green CI here means less than it looks.** The new UI's routing actions are
+  inert and the e2e suite tests the popover, so the new shell has no end-to-end
+  coverage at all - 5 unit tests against roughly 4,000 lines.
+
 ## How the designer marks readiness (from Chad, 2026-08-14)
 
 - **A white check mark in a section title above a flow means that flow is
