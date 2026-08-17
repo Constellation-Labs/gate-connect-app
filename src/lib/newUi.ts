@@ -1,17 +1,15 @@
 /**
- * Dev switch between the shipping menu-bar popover and the new 1024x720 window
- * UI, so both can exist in one build while the new one is finished.
+ * Switch between the new 1024x720 window UI and the legacy menu-bar popover.
  *
- * Runtime rather than build-time, because the point is to click through the new
- * shell against real data without rebuilding, and to get back out of it when
- * something is unfinished. The Vite variable only supplies the default.
+ * **The new UI is the default.** The popover is the escape hatch now, not the
+ * other way round, so set `VITE_NEW_UI=0` at build time or run
+ * `gcNewUi(false)` in devtools to get back to it. That matters while the new
+ * shell's routing actions are still inert: the popover is the only surface that
+ * can actually change what is routed.
  *
- * From devtools:
+ * Runtime rather than build-time so the fallback does not need a rebuild.
  *
- *     gcNewUi(true)    // switch to the new shell and reload
- *     gcNewUi(false)   // back to the popover
- *
- * This whole module goes away with the popover in Phase 9.
+ * This whole module goes away once the popover screens are deleted.
  */
 
 const KEY = "gc.newUi";
@@ -25,7 +23,7 @@ export function newUiEnabled(): boolean {
     // through to the build-time default rather than taking the app down over a
     // dev flag.
   }
-  return import.meta.env.VITE_NEW_UI === "1";
+  return import.meta.env.VITE_NEW_UI !== "0";
 }
 
 export function setNewUiEnabled(on: boolean): void {
@@ -36,9 +34,10 @@ export function setNewUiEnabled(on: boolean): void {
   }
 }
 
-if (import.meta.env.DEV) {
-  (window as unknown as Record<string, unknown>).gcNewUi = (on = true) => {
-    setNewUiEnabled(on);
-    location.reload();
-  };
-}
+// Deliberately not dev-only. The popover is the fallback for a shell whose
+// routing actions are still inert, so getting back to it must not require a
+// rebuild.
+(window as unknown as Record<string, unknown>).gcNewUi = (on = true) => {
+  setNewUiEnabled(on);
+  location.reload();
+};

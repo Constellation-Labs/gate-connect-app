@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LogicalSize } from "@tauri-apps/api/dpi";
 import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
 import {
   getAccount,
@@ -29,16 +27,18 @@ import { usePlatform } from "./lib/platform";
 import type { Platform } from "./lib/platform";
 
 /**
- * The new shell against real data, behind the `gc.newUi` dev flag.
+ * The new window UI, and the default surface as of 2026-08-17. `App.tsx` and the
+ * popover are still reachable via `gcNewUi(false)`.
  *
- * **Read-only.** Every switch and action here is inert. The real toggles run
- * through drift review, certificate trust and the OAuth offer - the paths that
- * make routing safe to change - and none of that is wired yet. A preview that
- * silently rewrote a tool's config without the review dialog the design puts in
- * front of it would be worse than one that does nothing.
+ * **Routing actions are still inert.** Every switch here is a no-op, because the
+ * real toggles run through drift review, certificate trust and the OAuth offer,
+ * and none of that is wired. Rewriting a tool's config without the review
+ * dialog the design puts in front of it would be worse than doing nothing, so
+ * they do nothing.
  *
- * Which means: this is for seeing the new UI at the right size with the right
- * data, not for driving the app. `App.tsx` still owns the shipping path.
+ * That makes the popover the only surface that can currently change what is
+ * routed, which is why it is kept rather than deleted. This branch must not
+ * merge until the switches work.
  */
 export function NewUiApp() {
   const [tools, setTools] = useState<Tool[]>([]);
@@ -51,28 +51,6 @@ export function NewUiApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const platform = usePlatform();
-
-  // The popover ships at 380x620 with no decorations. Resize here rather than
-  // in tauri.conf.json so the shipping default stays the popover for anyone
-  // without the flag set.
-  useEffect(() => {
-    void (async () => {
-      try {
-        // Inside the try: `getCurrentWindow` throws outside Tauri, which is
-        // exactly the plain-browser case this preview is most useful in.
-        const win = getCurrentWindow();
-        await win.setResizable(true);
-        await win.setSize(new LogicalSize(1024, 720));
-        await win.setDecorations(true);
-        await win.setAlwaysOnTop(false);
-        await win.setSkipTaskbar(false);
-        await win.center();
-      } catch {
-        // A webview that refuses to resize still renders; the layout just gets
-        // clipped. Not worth blocking the preview over.
-      }
-    })();
-  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -220,9 +198,6 @@ export function NewUiApp() {
         />
       ) : (
         <Overview
-          // The 24-hour endpoint is still being built. These are zeros rather
-          // than plausible-looking numbers: a preview that invents traffic is
-          // one somebody eventually screenshots as real.
           stats={EMPTY_STATS}
           buckets={[]}
           policies={[]}

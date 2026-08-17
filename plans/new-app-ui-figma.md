@@ -407,10 +407,16 @@ every pane's data. The dialog is a slot for the same reason - the shell owns
 
 Nothing below is done yet, and all of it changes what ships:
 
-- `tauri.conf.json`: 380x620 non-resizable -> 1024x720; drop `alwaysOnTop`
-  and `skipTaskbar`; decide `resizable`. Turn `decorations` back on so the OS
-  draws the window controls (see Phase 4 for the per-platform detail) - without
-  this the app has no close/minimise affordance at all.
+- `tauri.conf.json`: **DONE 2026-08-17.** 1024x720, `resizable: true`,
+  `decorations: true`, `alwaysOnTop` and `skipTaskbar` off. `visible: false`
+  is unchanged: the tray still owns the first show.
+- **The new UI is now the default** (`newUi.ts`); the popover is the fallback,
+  reachable with `gcNewUi(false)` or a `VITE_NEW_UI=0` build.
+- **Still popover-shaped on the Rust side.** `show_popover` calls
+  `anchor_under_tray`, so the window is positioned under the tray icon rather
+  than where the user left it, and `set_activation_policy(Accessory)` keeps it
+  out of the dock. Both are wrong for a 1024x720 window and neither is changed
+  yet - unverified Rust edits were not worth guessing at.
 - `src-tauri/src/lib.rs`: the transparent-window + CALayer `cornerRadius` work
   is popover-specific.
 - `App.tsx`: replace the depth-ranked push/pop `Screen` stack with
