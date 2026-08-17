@@ -1,8 +1,13 @@
 //! Tauri shell. The Rust surface here is small on purpose: every command
 //! delegates to `gate-connect-core` so the CLI and the GUI exercise the
-//! same code path. Beyond commands, this file sets up the menu-bar / tray
-//! presentation: no dock icon, hidden window on launch, click the tray
-//! to toggle a popover-style window anchored under the icon.
+//! same code path. Beyond commands, this file sets up the tray presentation:
+//! no dock icon, hidden window on launch, click the tray to toggle a normal
+//! 1024x720 window.
+//!
+//! The tray no longer places that window. It used to anchor it under the icon,
+//! at the cursor, or under the menu bar depending on platform, which is right
+//! for a popover and wrong for a window the user can move and resize. Placement
+//! is now the window's own: centred on first launch, and left alone after.
 
 use gate_connect_core::{account, registry, ConnectInput, Status, ToolId};
 
@@ -14,10 +19,8 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, PhysicalPosition, WindowEvent,
+    Manager, WindowEvent,
 };
-#[cfg(not(target_os = "linux"))]
-use tauri::{Position, Size};
 // Used by the startup auto-enable to nudge the popover to re-read state, and
 // by `report_backend_error` to nudge a drain.
 use tauri::Emitter;
@@ -1297,18 +1300,17 @@ async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result
     Ok(())
 }
 
-/// Bring the tray popover back on screen, anchored under the tray icon where
-/// the platform can report one. The onboarding flow calls this from its
-/// "locate Gate Connect" button and on close, so the handoff always ends at
-/// the popover.
+/// Bring the main window back on screen, wherever the user left it. The
+/// onboarding flow calls this from its "locate Gate Connect" button and on
+/// close, so the handoff always ends at the app.
+///
+/// Deliberately does not reposition. This is a 1024x720 window, not a tray
+/// popover: moving it out from under the user's cursor on every reveal is
+/// exactly what a window must not do.
 fn reveal_popover_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    #[cfg(not(target_os = "linux"))]
-    if let Some(rect) = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten()) {
-        anchor_under_tray(&window, rect.position, rect.size);
-    }
     #[cfg(target_os = "linux")]
     let _ = window.unminimize();
     let _ = window.show();
@@ -2022,14 +2024,11 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
-                            // On Linux the SNI/AppIndicator tray doesn't hand us
-                            // a click rect, and on GNOME the left-click path
-                            // often never fires - users reach this code path via
-                            // the right-click menu. Anchor at the current cursor.
-                            #[cfg(target_os = "linux")]
-                            if let Ok(cursor) = app.cursor_position() {
-                                anchor_at_cursor(&window, cursor);
-                            }
+                            // On Linux the SNI/AppIndicator tray hands us no
+                            // click rect and GNOME often never fires the
+                            // left-click path, so the right-click menu is how
+                            // users reach this. Either way it only reveals the
+                            // window; it does not place it.
                             #[cfg(target_os = "linux")]
                             let _ = window.unminimize();
                             let _ = window.show();
@@ -2043,7 +2042,6 @@ pub fn run() {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
-                        rect,
                         ..
                     } = event
                     {
@@ -2062,18 +2060,12 @@ pub fn run() {
                                 let _ = window.hide();
                                 POPOVER_VISIBLE.store(false, Ordering::Release);
                             } else {
-                                // Linux trays don't report a usable rect; fall
-                                // back to the cursor position so the popover lands
-                                // near the user's click.
-                                #[cfg(target_os = "linux")]
-                                {
-                                    let _ = &rect;
-                                    if let Ok(cursor) = app.cursor_position() {
-                                        anchor_at_cursor(&window, cursor);
-                                    }
-                                }
-                                #[cfg(not(target_os = "linux"))]
-                                anchor_under_tray(&window, rect.position, rect.size);
+                                // No repositioning: the tray toggles
+                                // visibility now, it does not own placement. A
+                                // window that jumped under the menu bar on every
+                                // tray click would lose wherever the user had
+                                // put it - which is why the click rect is no
+                                // longer even read.
                                 #[cfg(target_os = "linux")]
                                 let _ = window.unminimize();
                                 let _ = window.show();
@@ -2111,20 +2103,12 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main").filter(|_| !silent_launch) {
                 POPOVER_PINNED.store(true, Ordering::Release);
 
-                // macOS: the tray icon has no laid-out rect yet at setup, and the
-                // stale value it reports lands the popover in the wrong corner -
-                // so place it deterministically under the menu bar instead.
-                #[cfg(target_os = "macos")]
-                position_startup(&window);
-                // Windows: the tray rect is reliable here; anchor under it when
-                // present, otherwise keep the configured default position.
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = app
-                        .tray_by_id("main")
-                        .and_then(|t| t.rect().ok().flatten())
-                        .map(|rect| anchor_under_tray(&window, rect.position, rect.size));
-                }
+                // Centre on the primary display. Window position is not
+                // persisted across launches, so every launch is a first launch
+                // as far as placement goes; centring is the sane default for a
+                // 1024x720 window. Within a session, hide/show keeps whatever
+                // position the user chose.
+                let _ = window.center();
                 let _ = window.show();
                 let _ = window.set_focus();
             }
@@ -2193,66 +2177,6 @@ pub fn run() {
             let _ = &event;
             let _ = &app_handle;
         });
-}
-
-/// Position the popover window centered horizontally on the tray icon
-/// and just above or below it, whichever side has room on the current
-/// monitor. macOS's menu bar lives at the top so the popover anchors
-/// below the icon; Windows' taskbar is typically at the bottom and
-/// anchoring below would push the popover off-screen - so we flip it
-/// above the icon. X is clamped to the monitor bounds so a tray icon
-/// near a screen edge doesn't push the popover past it.
-/// Pick the monitor whose physical bounds contain point (x, y) - used to
-/// place the popover on the same display as the tray icon that was clicked,
-/// not whichever monitor the window happened to be on last. Falls back to the
-/// window's current monitor, then the primary, so we always have somewhere to
-/// show. Coordinates are physical pixels in the virtual-desktop space, matching
-/// `Monitor::position()`/`size()`.
-#[cfg(not(target_os = "linux"))]
-fn monitor_at(window: &tauri::WebviewWindow, x: f64, y: f64) -> Option<tauri::Monitor> {
-    let contains = |m: &tauri::Monitor| {
-        let p = m.position();
-        let s = m.size();
-        x >= p.x as f64
-            && x < p.x as f64 + s.width as f64
-            && y >= p.y as f64
-            && y < p.y as f64 + s.height as f64
-    };
-    window
-        .available_monitors()
-        .ok()
-        .and_then(|ms| ms.into_iter().find(contains))
-        .or_else(|| window.current_monitor().ok().flatten())
-        .or_else(|| window.primary_monitor().ok().flatten())
-}
-
-/// On launch, place the popover at the top-right of the main display - just
-/// under the macOS menu bar, where the tray icon lives - so first-time users
-/// who double-click the app from Applications actually see the UI instead of a
-/// seemingly-dead menu-bar icon. Subsequent opens reposition under the clicked
-/// tray icon via `anchor_under_tray`.
-#[cfg(target_os = "macos")]
-fn position_startup(window: &tauri::WebviewWindow) {
-    let Some(m) = window
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| window.current_monitor().ok().flatten())
-    else {
-        return;
-    };
-    let scale = m.scale_factor();
-    let mp = m.position();
-    let ms = m.size();
-    let win_w = window
-        .outer_size()
-        .map(|s| s.width as f64)
-        .unwrap_or(380.0 * scale);
-    let margin = 8.0 * scale;
-    let menubar = 28.0 * scale; // clear the macOS menu bar
-    let x = (mp.x as f64 + ms.width as f64 - win_w - margin).round() as i32;
-    let y = (mp.y as f64 + menubar).round() as i32;
-    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
 /// Build the tray image, recoloring the hex mark to a high-contrast tone for
@@ -2380,105 +2304,6 @@ fn update_tray_tooltip(app: &tauri::AppHandle, proxy_on: bool) {
         };
         let _ = tray.set_tooltip(Some(text.to_string()));
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn anchor_under_tray(window: &tauri::WebviewWindow, tray_pos: Position, tray_size: Size) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let pos = tray_pos.to_physical::<f64>(scale);
-    let size = tray_size.to_physical::<f64>(scale);
-
-    let window_w_px = window
-        .outer_size()
-        .map(|s| s.width as f64)
-        .unwrap_or(380.0 * scale);
-    let window_h_px = window
-        .outer_size()
-        .map(|s| s.height as f64)
-        .unwrap_or(720.0 * scale);
-
-    let tray_center_x = pos.x + size.width / 2.0;
-    let tray_top_y = pos.y;
-    let tray_bottom_y = pos.y + size.height;
-    let gap = 6.0 * scale;
-
-    // Fall back to the unbounded below-icon placement if we can't read
-    // the monitor - better than refusing to show the window.
-    let (mon_x, mon_y, mon_w, mon_h) = match monitor_at(window, tray_center_x, tray_top_y) {
-        Some(m) => {
-            let p = m.position();
-            let s = m.size();
-            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
-        }
-        None => {
-            let x = (tray_center_x - window_w_px / 2.0).round() as i32;
-            let y = (tray_bottom_y + gap).round() as i32;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-            return;
-        }
-    };
-
-    let space_below = (mon_y + mon_h) - tray_bottom_y;
-    let y = if space_below >= window_h_px + gap {
-        tray_bottom_y + gap
-    } else {
-        tray_top_y - window_h_px - gap
-    };
-
-    let x = (tray_center_x - window_w_px / 2.0)
-        .max(mon_x + 4.0)
-        .min(mon_x + mon_w - window_w_px - 4.0);
-
-    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
-}
-
-/// Position the popover above or below the cursor on Linux, where
-/// the tray protocol (SNI/AppIndicator) doesn't expose a usable icon
-/// rect - and on GNOME, where the left-click event often never fires
-/// at all. The cursor is the only positioning hint we can trust. On
-/// Wayland the compositor may ignore `set_position` outright; on X11
-/// this lands the popover near where the user clicked.
-#[cfg(target_os = "linux")]
-fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-
-    let window_w_px = window
-        .outer_size()
-        .map(|s| s.width as f64)
-        .unwrap_or(380.0 * scale);
-    let window_h_px = window
-        .outer_size()
-        .map(|s| s.height as f64)
-        .unwrap_or(720.0 * scale);
-
-    let gap = 6.0 * scale;
-
-    let (mon_x, mon_y, mon_w, mon_h) = match window.current_monitor().ok().flatten() {
-        Some(m) => {
-            let p = m.position();
-            let s = m.size();
-            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
-        }
-        None => {
-            let x = (cursor.x - window_w_px / 2.0).round() as i32;
-            let y = (cursor.y + gap).round() as i32;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-            return;
-        }
-    };
-
-    let space_below = (mon_y + mon_h) - cursor.y;
-    let y = if space_below >= window_h_px + gap {
-        cursor.y + gap
-    } else {
-        cursor.y - window_h_px - gap
-    };
-
-    let x = (cursor.x - window_w_px / 2.0)
-        .max(mon_x + 4.0)
-        .min(mon_x + mon_w - window_w_px - 4.0);
-
-    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
 
 /// Let the popover render over the active Space, including a full-screen app's.
