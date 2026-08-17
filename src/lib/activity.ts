@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { activityOverview } from "./api";
+import { activityInstallations, activityOverview } from "./api";
 import type { MessagesBucket, UsageStats } from "../components/gc/metrics";
 import type { Policy, Saving } from "../components/gc/Overview";
 import type { IconName } from "../components/gc/Icon";
@@ -65,6 +65,9 @@ interface RawOverview {
   requestsByHour: { state: SectionState; buckets?: RawBucket[]; reason?: UnavailableReason };
   policies: { state: SectionState; rows?: RawRow[]; reason?: UnavailableReason };
   tokenSavings: { state: SectionState; rows?: RawRow[]; reason?: UnavailableReason };
+  /** The installation scope the gateway *applied*, echoed back. Optional
+   *  because a gateway older than the attribution migration will not send it. */
+  installation?: { installId: string | null };
 }
 
 interface RawRow {
@@ -93,6 +96,13 @@ export interface ActivityView {
   takenAt: string;
   /** Sections that could not be answered, for the pane's alert slot. */
   gaps: { section: string; reason: UnavailableReason }[];
+  /** Which installation this reading covers, as the gateway echoed it, or
+   *  `null` for the whole org.
+   *
+   *  Read from the response rather than from what we asked for: if the two ever
+   *  disagree the numbers belong to the gateway's answer, and a label taken from
+   *  the request would mislabel them. */
+  installId: string | null;
 }
 
 /**
@@ -255,18 +265,26 @@ export function adapt(raw: RawOverview): ActivityView {
     period: `Last 24 hours · updated ${takenAt}`,
     takenAt,
     gaps,
+    installId: raw.installation?.installId ?? null,
   };
 }
 
 /**
  * Load the overview once, and on demand.
  *
+ * `installId` scopes the reading to one installation; `null` is the whole org.
+ * Changing it refetches, because the gateway narrows every section server-side -
+ * there is no client-side slice of a payload that only covered one machine.
+ *
  * Deliberately not polling. The endpoint shares the gateway's 100-requests-per-
  * minute throttle bucket with every other call from this machine, so a timer
  * here competes with the user's own traffic; and `Cache-Control: no-store` plus
  * a rendered `generatedAt` means a stale view is legible rather than silent.
  */
-export function useActivity(enabled: boolean): {
+export function useActivity(
+  enabled: boolean,
+  installId: string | null = null,
+): {
   view: ActivityView | null;
   failure: ActivityFailure | null;
   loading: boolean;
@@ -280,7 +298,7 @@ export function useActivity(enabled: boolean): {
     if (!enabled) return;
     setLoading(true);
     setFailure(null);
-    activityOverview()
+    activityOverview(installId ?? undefined)
       .then((text) => {
         setView(adapt(JSON.parse(text) as RawOverview));
         setFailure(null);
@@ -291,9 +309,66 @@ export function useActivity(enabled: boolean): {
         setFailure(toFailure(e));
       })
       .finally(() => setLoading(false));
-  }, [enabled]);
+  }, [enabled, installId]);
 
   useEffect(reload, [reload]);
 
   return { view, failure, loading, reload };
+}
+
+/** One installation, as the discovery endpoint reports it. */
+export interface Installation {
+  installId: string;
+  /** What to show. The gateway sends the raw id today: a hostname is often a
+   *  person's real name, so naming installations is a privacy call nobody has
+   *  taken yet. */
+  label: string;
+  /** Whether this is the machine the app is running on, decided by the gateway
+   *  from the id we sent with the request - not by comparing ids here. */
+  current: boolean;
+  lastSeenAt: string;
+  requests: number;
+}
+
+interface RawInstallations {
+  installations?: Installation[];
+  /** The caller's own id, or `null` when it did not identify itself. */
+  current?: string | null;
+}
+
+/**
+ * Load the installations this account has sent traffic from.
+ *
+ * A failure is not surfaced as a code the way the overview's is. This list only
+ * populates a picker, and the pane it sits on has its own reading to show; an
+ * empty picker degrades to the org-wide view, which is the default anyway.
+ */
+export function useInstallations(enabled: boolean): {
+  installations: Installation[];
+  /** This machine's own id, from the gateway, or `null` if it is unattributed. */
+  current: string | null;
+} {
+  const [installations, setInstallations] = useState<Installation[]>([]);
+  const [current, setCurrent] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    activityInstallations()
+      .then((text) => {
+        if (!live) return;
+        const raw = JSON.parse(text) as RawInstallations;
+        setInstallations(raw.installations ?? []);
+        setCurrent(raw.current ?? null);
+      })
+      .catch(() => {
+        // Nothing to say: no list means no picker, and the org-wide reading the
+        // pane already shows is still correct.
+      });
+    return () => {
+      live = false;
+    };
+  }, [enabled]);
+
+  return { installations, current };
 }

@@ -27,7 +27,8 @@ import { FamiliesPane } from "./components/gc/FamiliesPane";
 import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
-import { useActivity } from "./lib/activity";
+import { InstallationPicker } from "./components/gc/InstallationPicker";
+import { useActivity, useInstallations } from "./lib/activity";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import { AlertBanner } from "./components/gc/banners";
@@ -68,9 +69,15 @@ export function NewUiApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const platform = usePlatform();
+  // Which installation the Overview covers; `null` is the whole org, and stays
+  // the default because traffic sent before attribution existed has no
+  // installation at all. Selecting one refetches - the gateway narrows every
+  // section server-side, so there is nothing to slice here.
+  const [installId, setInstallId] = useState<string | null>(null);
   // One fetch per mount, plus the pane's own refresh. Not polled: the endpoint
   // shares the gateway's per-minute throttle bucket with the user's own traffic.
-  const activity = useActivity(true);
+  const activity = useActivity(true, installId);
+  const { installations, current: currentInstallId } = useInstallations(true);
 
   useEffect(() => {
     void (async () => {
@@ -175,10 +182,13 @@ export function NewUiApp() {
   const settingsSections = useMemo(
     () =>
       buildSettingsSections({
-        // Device name, install ID and plan have no backend yet, so they read as
-        // unknown rather than as invented values.
+        // Device name and plan have no backend yet, so they read as unknown
+        // rather than as invented values. The install id now has one: it is the
+        // id this app stamps on every routed request, reported back by the
+        // gateway, so the row shows the identity the user's traffic actually
+        // carries rather than a local guess at it.
         deviceName: "-",
-        installId: "-",
+        installId: currentInstallId ?? "-",
         loginId: account?.org_name ?? "-",
         plan: "-",
         gateway: account?.gateway_base_url ?? "-",
@@ -198,7 +208,7 @@ export function NewUiApp() {
         onViewDiagnostics: () => setDiagnosticsOpen(true),
         onReviewReset: noop,
       }),
-    [account, launchAtLogin, version, noop],
+    [account, currentInstallId, launchAtLogin, version, noop],
   );
 
   const protectedCount = apps.filter((a) => a.status.kind === "protected").length;
@@ -274,6 +284,16 @@ export function NewUiApp() {
           // real reading and would claim the user had no traffic.
           pending={activity.view === null && activity.failure === null}
           period={activity.view?.period ?? "Last 24 hours"}
+          scope={
+            <InstallationPicker
+              installations={installations}
+              // The scope the gateway echoed, not the one we asked for: while a
+              // refetch is in flight the numbers on screen are still the
+              // previous scope's, and the label has to agree with them.
+              value={activity.view?.installId ?? null}
+              onChange={setInstallId}
+            />
+          }
           alert={
             <>
               {notices.length > 0 && (

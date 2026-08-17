@@ -529,6 +529,11 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
 
 /// Fetch the 24-hour activity overview for the Overview pane (AG-572).
 ///
+/// `install_id` scopes the reading to one installation (AC 1); omitted, it is
+/// org-wide, which stays the default because attribution only starts with the
+/// gateway migration that added it - scoping by default would hide every
+/// earlier request from a total the user could already see.
+///
 /// The payload stays raw JSON while the gateway contract moves; `lib/activity.ts`
 /// is the only place that models it.
 ///
@@ -537,18 +542,32 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
 /// the front end cannot pick between Retry and Sign in by reading an English
 /// sentence. See `gate_connect_core::activity::FailureCode`.
 #[tauri::command]
-async fn activity_overview() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::activity::overview_json().map_err(|f| {
-            serde_json::to_string(&f)
-                // Serializing two owned strings and a unit enum cannot fail, but
-                // swallowing the cause if it somehow did would be worse than a
-                // fallback the UI still classifies as `unknown`.
-                .unwrap_or_else(|_| format!(r#"{{"code":"unknown","message":"{}"}}"#, f.message))
-        })
+async fn activity_overview(install_id: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::overview_json(install_id.as_deref()).map_err(envelope)
     })
     .await
     .map_err(|e| format!("activity overview join error: {e}"))?
+}
+
+/// List the installations this account has sent traffic from, for the Overview's
+/// installation picker. Same envelope and the same failure taxonomy as
+/// [`activity_overview`].
+#[tauri::command]
+async fn activity_installations() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::activity::installations_json)
+        .await
+        .map_err(|e| format!("activity installations join error: {e}"))?
+        .map_err(envelope)
+}
+
+/// Serialize an activity failure for the IPC boundary.
+fn envelope(f: gate_connect_core::activity::Failure) -> String {
+    serde_json::to_string(&f)
+        // Serializing two owned strings and a unit enum cannot fail, but
+        // swallowing the cause if it somehow did would be worse than a
+        // fallback the UI still classifies as `unknown`.
+        .unwrap_or_else(|_| format!(r#"{{"code":"unknown","message":"{}"}}"#, f.message))
 }
 
 /// List the orgs the signed-in user may act on (for the org picker). Reads the
@@ -1531,6 +1550,7 @@ pub fn run() {
                     set_auth_mode,
                     oauth_list_orgs,
                     activity_overview,
+                    activity_installations,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -1584,6 +1604,7 @@ pub fn run() {
                     set_auth_mode,
                     oauth_list_orgs,
                     activity_overview,
+                    activity_installations,
                     set_org,
                     app_platform,
                     diagnostics,

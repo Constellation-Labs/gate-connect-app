@@ -112,8 +112,17 @@ export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
  * Raw rather than typed on purpose. The gateway contract is still moving, so
  * the dev-only viewer renders whatever comes back and the two cannot drift
  * while fields are still being agreed. Replace with a typed DTO once the
- * response shape is signed off. */
-export const activityOverview = () => invoke<string>("activity_overview");
+ * response shape is signed off.
+ *
+ * `installId` scopes the reading to one installation (AC 1). Omitted, it is
+ * org-wide: attribution only starts with the gateway migration that added it,
+ * so scoping by default would hide every earlier request. */
+export const activityOverview = (installId?: string) =>
+  invoke<string>("activity_overview", { installId });
+
+/** The installations this account has sent traffic from, as raw JSON text.
+ * Derived from traffic, so it is empty until something has been attributed. */
+export const activityInstallations = () => invoke<string>("activity_installations");
 
 /** Persist the selected org and push X-Gate-Org-Id into a running engine/relay
  * live (no restart). */
