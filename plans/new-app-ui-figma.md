@@ -439,8 +439,10 @@ the same PR.
    through the local proxy - the latter being the chat domains, which the drawn
    UI does not show at all. `FamiliesPane` gives them a third sidebar
    destination. **Not in the Figma**; expect it to be redrawn.
-4. **Where does Diagnostics go?** `Diagnostics.tsx` has no home in the new
-   Settings, which stops at About / Danger zone.
+4. **Diagnostics: RESOLVED 2026-08-16.** A row under About opens
+   `DiagnosticsDialog`, which shows the report before offering to copy it.
+   `buildSettingsSections` owns the row, and a test pins it so it cannot be
+   dropped silently.
 5. **Minimize2: RESOLVED 2026-08-16 - removed.** With window controls coming
    from the OS, a second minimise affordance was a duplicate. The topbar now
    carries only the overflow menu, and the brand lockup is genuinely centred
@@ -458,14 +460,14 @@ the same PR.
    otherwise accounted for". Worth settling in the 24-hour backend's response
    shape rather than in the component: if the API really returns a grand total,
    the chart should subtract rather than stack.
-9. **Sidebar app states: RESOLVED 2026-08-16.** `SidebarApp` now carries an
+8. **Sidebar app states: RESOLVED 2026-08-16.** `SidebarApp` now carries an
    `AppStatus` union (`protected` / `not-protected` / `drifted` /
    `not-routed`), and separately an `on` boolean. The split is deliberate and
    `lib/groups.ts` explains why: observed routing drives the status line, user
    intent drives the switch. Conflating them made the switch destructive, since
    an enabled-but-unrouted member rendered off and clicking it turned the
    setting off rather than on.
-10. **Tailwind version skew.** The design names shadows on Tailwind v4's scale
+9. **Tailwind version skew.** The design names shadows on Tailwind v4's scale
    (v4 `shadow-xs` == v3 `shadow-sm`); the repo is on v3.4.17. The `base-*`
    shadow tokens absorb the mapping, but any new value read off Figma needs
    shifting one step before use.
