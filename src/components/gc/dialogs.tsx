@@ -1,11 +1,25 @@
+import { useRef } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
-import { Modal, ModalNote, ModalOption, ModalSubject } from "./Modal";
+import {
+  Modal,
+  ModalCheckbox,
+  ModalField,
+  ModalNote,
+  ModalOption,
+  ModalSteps,
+  ModalSubject,
+} from "./Modal";
 
 /**
- * The seven concrete dialogs, each a thin composition of `Modal`. Copy lives
- * here rather than in the shell so it stays next to the design it came from and
- * the shell only supplies names and handlers.
+ * The concrete dialogs, each a thin composition of `Modal`. Copy lives here
+ * rather than in the shell so it stays next to the design it came from and the
+ * shell only supplies names and handlers.
+ *
+ * Routing flows: switch organization, organization switched, review config,
+ * apply changes, close affected apps, change ready, use a Gate model.
+ * Settings flows: rename device, replace API key, disconnect Gate, reset, and
+ * the diagnostics report.
  *
  * Presentational throughout: nothing here talks to `lib/api`.
  */
@@ -334,6 +348,177 @@ export function UseGateModelDialog({
         {app.name}'s own model preference is not changed. You can return to App default at
         any time.
       </ModalNote>
+    </Modal>
+  );
+}
+
+/**
+ * Rename the device. Shows the current name read-only above the new one so the
+ * user can see what they are replacing rather than trusting the label. Focus
+ * opens on the editable field, not the read-only one above it.
+ */
+export function RenameDeviceDialog({
+  currentName,
+  newName,
+  onNewNameChange,
+  onCancel,
+  onRename,
+}: {
+  currentName: string;
+  newName: string;
+  onNewNameChange: (next: string) => void;
+  onCancel: () => void;
+  onRename: () => void;
+}) {
+  const field = useRef<HTMLInputElement>(null);
+  return (
+    <Modal
+      icon="monitorSmartphone"
+      title="Rename your device"
+      secondary={{ label: "Cancel", onClick: onCancel }}
+      primary={{ label: "Rename device", onClick: onRename, disabled: !newName.trim() }}
+      onDismiss={onCancel}
+      initialFocus={field}
+    >
+      <ModalField label="Current device name" value={currentName} readOnly />
+      <ModalField
+        label="New device name"
+        value={newName}
+        onChange={onNewNameChange}
+        inputRef={field}
+      />
+    </Modal>
+  );
+}
+
+/**
+ * Replace the API key.
+ *
+ * The design labels the second field "New device name", copy-pasted from the
+ * rename dialog. Implemented as "New API key" deliberately: shipping the drawn
+ * label would put a wrong word on the one screen where the user is handling a
+ * credential. Raised with the designer.
+ */
+export function ReplaceApiKeyDialog({
+  currentKeyMasked,
+  newKey,
+  onNewKeyChange,
+  onCancel,
+  onReplace,
+}: {
+  currentKeyMasked: string;
+  newKey: string;
+  onNewKeyChange: (next: string) => void;
+  onCancel: () => void;
+  onReplace: () => void;
+}) {
+  const field = useRef<HTMLInputElement>(null);
+  return (
+    <Modal
+      icon="key"
+      title="Replace API key"
+      secondary={{ label: "Cancel", onClick: onCancel }}
+      primary={{ label: "Replace key", onClick: onReplace, disabled: !newKey.trim() }}
+      onDismiss={onCancel}
+      initialFocus={field}
+    >
+      <ModalField label="Current API key" value={currentKeyMasked} readOnly mono />
+      <ModalField
+        label="New API key"
+        value={newKey}
+        onChange={onNewKeyChange}
+        mono
+        placeholder="sk-gw..."
+        inputRef={field}
+      />
+    </Modal>
+  );
+}
+
+/** Disconnecting is not "are you sure", it undoes the setup - hence the red
+ *  tone and a primary that names what it does. */
+export function DisconnectGateDialog({
+  onCancel,
+  onDisconnect,
+}: {
+  onCancel: () => void;
+  onDisconnect: () => void;
+}) {
+  return (
+    <Modal
+      tone="danger"
+      icon="triangleAlert"
+      title="Disconnect Gate?"
+      secondary={{ label: "Cancel", onClick: onCancel }}
+      primary={{
+        label: "Yes, disconnect Gate",
+        onClick: onDisconnect,
+        destructive: true,
+      }}
+      onDismiss={onCancel}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        Protection turns off, your apps stop routing through Gate, and your API key is
+        removed from the keychain.
+      </p>
+    </Modal>
+  );
+}
+
+/**
+ * The most destructive action in the app, and the only one gated by an
+ * acknowledgement. It spells out its three consequences rather than asserting
+ * they exist, and the primary stays refused until the checkbox is ticked.
+ */
+export function ResetGateConnectDialog({
+  acknowledged,
+  onAcknowledgedChange,
+  onCancel,
+  onReset,
+}: {
+  acknowledged: boolean;
+  onAcknowledgedChange: (next: boolean) => void;
+  onCancel: () => void;
+  onReset: () => void;
+}) {
+  return (
+    <Modal
+      tone="danger"
+      icon="triangleAlert"
+      title="Reset Gate Connect"
+      subtitle="This removes Gate Connect setup from this device."
+      secondary={{ label: "Cancel", onClick: onCancel }}
+      primary={{
+        label: "Reset Gate Connect",
+        onClick: onReset,
+        destructive: true,
+        disabled: !acknowledged,
+      }}
+      onDismiss={onCancel}
+    >
+      <ModalSteps
+        label="What happens next:"
+        steps={[
+          {
+            title: "Routing turns off",
+            description: "Managed tools return to their saved pre_gate configurations.",
+          },
+          {
+            title: "Tools disconnect",
+            description: "No app on this device remains protected by Gate.",
+          },
+          {
+            title: "Account and keys are removed",
+            description:
+              "Your local sign-in, organization, and keychain credentials are cleared.",
+          },
+        ]}
+      />
+      <ModalCheckbox
+        checked={acknowledged}
+        onChange={onAcknowledgedChange}
+        label="I understand that setup will restart on this device"
+      />
     </Modal>
   );
 }

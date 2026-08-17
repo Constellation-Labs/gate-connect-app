@@ -94,17 +94,24 @@ not the pane's, and it is a decision about how much of a key to reveal.
 - App: a new **choose model modal**, distinct from the model-switch
   confirmation. `Change model` currently goes nowhere.
 
-### What this means for `Modal.tsx`
+### Built 2026-08-17
 
-The template needs four things it does not have:
+`Modal.tsx` gained the four things it lacked: a `danger` tone
+(`red-100` tile, `red-600` icon), `ModalField`, `ModalSteps`, `ModalCheckbox`.
+`ModalButton` gained `disabled` so the checkbox can actually refuse the primary,
+and `Modal` gained `initialFocus` so form dialogs open on the field being
+edited rather than the read-only one above it. Glyph added: `circleX`.
 
-1. a **danger (red) tone** - it has warning, success and neutral only
-2. **form fields** - labelled inputs with a clear button
-3. a **numbered step list**
-4. a **checkbox** that gates the primary action
+`dialogs.tsx` gained `RenameDeviceDialog`, `ReplaceApiKeyDialog`,
+`DisconnectGateDialog`, `ResetGateConnectDialog`.
 
-Body copy also appears as a plain paragraph in the new dialogs, not only as the
-tinted `ModalNote` block.
+Deliberate deviation: `ReplaceApiKeyDialog` labels its second field
+**"New API key"**, not the drawn "New device name". Shipping the design's label
+would put a wrong word on the one screen where the user handles a credential.
+
+Still unbuilt: the App page's **choose model** dialog. It is only known from a
+frame caption; nothing about its contents has been read, so building it would be
+invention.
 
 ## How the designer marks readiness (from Chad, 2026-08-14)
 
