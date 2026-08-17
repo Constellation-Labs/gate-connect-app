@@ -595,10 +595,16 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    `AppShell` already had a slot for; the popover keeps its takeover-then-banner
    escalation. Settings' "Check for updates" reports its result in the version
    row, since silence on a pressed button reads as broken.
-3. **The running-apps sequence.** `ApplyChangesDialog` to `CloseAppsDialog` to
-   `ChangeReadyDialog` are built and unreachable. `runningAgents()` and
-   `closeRunningAgents()` both exist; what is missing is the decision of when
-   the sequence interrupts a connect.
+3. **The running-apps sequence: DONE.** `lib/useRunningApps.ts` runs it after a
+   config write that actually happened - `setAppRouted` now reports that, so a
+   declined review or a failed write never reaches it. Deliberately not part of
+   `useRouting`: that hook's prompt is a *gate* that blocks a write until
+   answered, and this is the opposite, a sequence that follows a write and can be
+   walked away from without changing what was saved. Nothing is signalled without
+   two answers, and a failed scan stays silent rather than defaulting to showing
+   (the popover defaults the other way, but it is choosing whether to show
+   advice; this offers to kill processes). The e2e fixture gained
+   `runningAgentNames`, since it stubbed only the count probes.
 4. **The family master cascade.** `FamiliesPane` hides its master switch rather
    than showing a dead one. Cascading has to skip members with a hand-written
    config, which means reusing the drift gate per member rather than looping

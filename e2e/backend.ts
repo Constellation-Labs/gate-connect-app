@@ -107,6 +107,10 @@ export interface BackendState {
   launchAtLogin: { enabled: boolean; pending_disable: boolean };
   routedClientsStale: boolean;
   runningAgents: number;
+  /** Process names the agent scan reports as running. `runningAgents` is the
+      count the older probes return; this is what `running_agents` lists, and a
+      spec that cares about the close-apps sequence sets it. */
+  runningAgentNames: string[];
   staleAgents: number;
   pendingQuitTools: string[] | null;
   /** Commands that should reject, keyed by command name. The value is the
@@ -262,6 +266,7 @@ export function defaultState(): BackendState {
     launchAtLogin: { enabled: false, pending_disable: false },
     routedClientsStale: false,
     runningAgents: 0,
+    runningAgentNames: [],
     staleAgents: 0,
     pendingQuitTools: null,
     failures: {},

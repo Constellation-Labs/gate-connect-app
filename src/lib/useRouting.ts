@@ -115,11 +115,15 @@ export function useRouting({
   /**
    * Route or unroute one config-file tool. `force` skips the drift gate, which
    * is how the review dialog's "Replace config and protect" comes back in.
+   *
+   * Resolves to whether a config was actually written, so a caller can follow up
+   * on a real change and stay quiet after a declined gate or a failure.
    */
   const setAppRouted = useCallback(
-    async (slug: string, routed: boolean, force = false) => {
-      if (busy) return;
+    async (slug: string, routed: boolean, force = false): Promise<boolean> => {
+      if (busy) return false;
       setBusy(true);
+      let changed = false;
       try {
         const tool = tools.find((t) => t.slug === slug);
         if (routed) {
@@ -137,14 +141,19 @@ export function useRouting({
           await disconnectTool(slug);
         }
         track("tool_toggled", { tool: slug, routed });
+        changed = true;
       } catch (e) {
-        if (e instanceof Declined) return;
-        trackError(e, "connect", { tool: slug, routed });
-        onError?.(e, routed ? "connect" : "disconnect");
+        // Declining a gate is an answer, not a failure: nothing was written and
+        // there is nothing to report.
+        if (!(e instanceof Declined)) {
+          trackError(e, "connect", { tool: slug, routed });
+          onError?.(e, routed ? "connect" : "disconnect");
+        }
       } finally {
         await resync();
         setBusy(false);
       }
+      return changed;
     },
     [busy, tools, ask, ensureCaTrusted, resync, onError],
   );
