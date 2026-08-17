@@ -50,6 +50,30 @@ impl Captured {
     }
 }
 
+/// Join every emit already in flight, so none of them can still be looking up
+/// the endpoint seam when this test moves it.
+///
+/// The wrappers are fire-and-forget: `emit_best_effort` spawns a thread, and
+/// `audit_endpoint()` reads `GATE_CONNECT_TEST_AUDIT_ENDPOINT` *inside* it. So a
+/// setup call like `account::save` leaves a thread that has not read the seam
+/// yet, and a test that then points the seam at its own mock has handed that
+/// thread the mock's address. The mock serves exactly one request, so the setup
+/// event is captured as though it were the event under test, and the real emit
+/// arrives to find nobody listening.
+///
+/// This is what CI hit on macOS, where the thread is scheduled late enough for
+/// the window to open: `gateway_switch_emits_to_the_old_gateway_naming_the_new_one`
+/// read back `api_key_saved`, and `unknown_port_is_null_rather_than_zero` read
+/// back a body with no `proxy` object at all. Reproducible anywhere by sleeping
+/// 50ms at the top of that spawned thread.
+///
+/// Call after any setup that emits, before naming a mock. Instant in practice:
+/// under the test-home seam and with no endpoint set, those emits skip without
+/// touching the network.
+fn settle_setup() {
+    audit::flush();
+}
+
 /// Serve exactly one HTTP response on a fresh loopback port, forwarding the
 /// parsed request over the channel. Returns the base URL.
 fn spawn_mock(status_line: &'static str, body: &'static str) -> (String, mpsc::Receiver<Captured>) {
@@ -154,6 +178,11 @@ impl TempDataDir {
 
 impl Drop for TempDataDir {
     fn drop(&mut self) {
+        // Before clearing the seams, and while this test still holds `LOCK`: an
+        // emit thread outliving its test would read the *next* test's endpoint
+        // and land on the next test's mock. `LOCK` cannot prevent that - the
+        // thread never takes it. See `settle_setup`.
+        settle_setup();
         std::env::remove_var("GATE_CONNECT_TEST_HOME");
         std::env::remove_var("GATE_CONNECT_TEST_AUDIT_ENDPOINT");
         let _ = fs::remove_dir_all(&self.dir);
@@ -427,6 +456,8 @@ fn unknown_port_is_null_rather_than_zero() {
     keychain::use_in_memory_backend();
     account::save("https://gw.example.test", Some("sk-gw-stored")).unwrap();
     account::set_org("org-uuid-1", "Example Org").unwrap();
+    // Settle the setup's own emits before naming a mock. See `settle_setup`.
+    settle_setup();
 
     let (base, rx) = spawn_mock("200 OK", "{}");
     std::env::set_var(
@@ -478,6 +509,8 @@ fn gateway_switch_emits_to_the_old_gateway_naming_the_new_one() {
     let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
     account::save("https://old.example.test", Some("sk-gw-stored")).unwrap();
+    // Settle the setup's own emits before naming a mock. See `settle_setup`.
+    settle_setup();
 
     let (base, rx) = spawn_mock("201 Created", "{}");
     std::env::set_var(
