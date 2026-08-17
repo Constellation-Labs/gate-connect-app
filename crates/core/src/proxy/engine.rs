@@ -29,8 +29,7 @@ use tokio::sync::{oneshot, watch};
 
 use crate::proxy::cert_authority::GateCa;
 use crate::proxy::{
-    classify_client, decide, rules_for_client, should_intercept_host, ClientClass, Decision,
-    ProxyDomain,
+    classify_client, decide, rules_for_client, should_intercept_host, Decision, ProxyDomain,
 };
 
 /// Everything the engine needs to run one session. The account + CA are
@@ -463,7 +462,27 @@ impl HttpHandler for GateHandler {
         // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
         let mut action = "passthrough";
-        if let Some(host) = host.as_deref() {
+        // A protocol upgrade must never be rewritten to the gateway. Gate has no
+        // WebSocket transport, and `buildForwardHeaders` strips `upgrade` and
+        // `connection` outright (gate: utils/proxy-helpers.ts), so the handshake
+        // it forwards can only come back as a plain response and the client's
+        // 101 never arrives.
+        //
+        // This is not hypothetical: ChatGPT's Cowork / work mode runs its whole
+        // turn over `GET /backend-api/codex/responses` upgraded to a WebSocket,
+        // and that path is claimed by the `chatgpt` entry's rewrite prefix. So
+        // enabling that row without this guard trades a working feature for a
+        // broken one. Passing upgrades through costs only visibility, which we
+        // did not have anyway.
+        //
+        // Remove this when Gate can terminate the socket, or when Connect grows
+        // the Copilot-style treatment (own the socket here, re-send each turn to
+        // Gate as HTTP).
+        if is_upgrade_request(&req) {
+            if debug_log() {
+                eprintln!("[gate-proxy] {path} is a protocol upgrade -> passthrough (gate has no websocket transport)");
+            }
+        } else if let Some(host) = host.as_deref() {
             // Rewrite matched inference paths to the gateway, forwarding to
             // the domain's configured upstream - for Anthropic that's the same
             // api.anthropic.com the request came from , validated
@@ -575,6 +594,27 @@ impl HttpHandler for GateHandler {
 /// so moving `/api` from the request line into the upstream URL reassembles to
 /// the same provider URL while sending Gate a path its ALB won't divert. See
 /// the `openrouter` catalog entry in [`super::default_domains`].
+/// True when the request is asking to leave HTTP for another protocol.
+///
+/// Reads `Connection: upgrade` AND an `Upgrade` header, which is what RFC 9110
+/// requires a real upgrade to carry, rather than keying on the WebSocket-specific
+/// `Sec-WebSocket-*` set: the reason we bail applies to any upgrade, not just
+/// WebSocket. `Connection` is a comma-separated list and its tokens are
+/// case-insensitive.
+pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
+    let headers = req.headers();
+    if !headers.contains_key(hudsucker::hyper::header::UPGRADE) {
+        return false;
+    }
+    headers
+        .get(hudsucker::hyper::header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.split(',')
+                .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
+        })
+}
+
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
@@ -979,6 +1019,77 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests name this type; the handler infers it from `classify_client`.
+    use crate::proxy::ClientClass;
+
+    /// Cowork's turn, as captured: a GET on a path the `chatgpt` entry claims,
+    /// upgraded to a WebSocket.
+    fn cowork_upgrade() -> Request<()> {
+        Request::builder()
+            .method("GET")
+            .uri("https://chatgpt.com/backend-api/codex/responses")
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .body(())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_websocket_upgrade_is_recognised_whatever_the_casing() {
+        assert!(is_upgrade_request(&cowork_upgrade()));
+        // Real clients send `Connection: keep-alive, Upgrade`; the tokens are a
+        // comma-separated, case-insensitive list.
+        let multi = Request::builder()
+            .uri("https://chatgpt.com/backend-api/codex/responses")
+            .header("connection", "keep-alive, UPGRADE")
+            .header("upgrade", "WebSocket")
+            .body(())
+            .unwrap();
+        assert!(is_upgrade_request(&multi));
+    }
+
+    #[test]
+    fn an_ordinary_request_is_not_an_upgrade() {
+        let plain = Request::builder()
+            .method("POST")
+            .uri("https://chatgpt.com/backend-api/codex/responses")
+            .header("connection", "keep-alive")
+            .body(())
+            .unwrap();
+        assert!(!is_upgrade_request(&plain));
+        // `Upgrade` alone, without the `Connection` token, is not a real upgrade
+        // per RFC 9110 and must not cost the request its route.
+        let dangling = Request::builder()
+            .uri("https://chatgpt.com/backend-api/codex/responses")
+            .header("upgrade", "websocket")
+            .body(())
+            .unwrap();
+        assert!(!is_upgrade_request(&dangling));
+    }
+
+    #[test]
+    fn the_path_that_carries_the_upgrade_is_one_we_would_otherwise_rewrite() {
+        // The guard only earns its place if the router would have claimed this
+        // path. If this assertion ever fails the upgrade was passing through
+        // anyway and the guard is dead code.
+        let mut relay: Vec<ProxyDomain> = crate::proxy::default_domains()
+            .into_iter()
+            .filter(|d| d.slug == "chatgpt")
+            .collect();
+        relay[0].enabled = true;
+        let req = cowork_upgrade();
+        assert_eq!(
+            decide(
+                &rules_for_client(&relay, ClientClass::App),
+                req.uri().host().unwrap(),
+                req.uri().path()
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com/backend-api".into()
+            },
+        );
+    }
 
     #[test]
     fn rewrite_swaps_authority_keeps_path_and_injects_headers() {
