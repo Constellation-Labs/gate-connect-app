@@ -57,6 +57,7 @@ import {
   type ClassifiedError,
 } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
+import { isSignedIn, needsOrg } from "./lib/session";
 import { useTextScale } from "./lib/useTextScale";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
@@ -197,20 +198,6 @@ function noticeFor(
 /** Whether the account is fully usable right now: a stored key in legacy mode,
  *  or a live OAuth session *with an org selected* in OAuth mode (the gateway
  *  rejects OAuth requests that carry no org). Drives home-vs-sign-in/picker. */
-function isSignedIn(account: Account | null, oauth: OAuthStatus | null): boolean {
-  if (!account) return false;
-  if (account.auth_mode === "oauth") return (oauth?.signed_in ?? false) && !!account.org_id;
-  return account.has_api_key;
-}
-
-/** An OAuth session that's authenticated but hasn't picked an org yet - the
- *  one state that routes to the org picker rather than sign-in or home. */
-function needsOrg(account: Account | null, oauth: OAuthStatus | null): boolean {
-  return (
-    account?.auth_mode === "oauth" && (oauth?.signed_in ?? false) && !account.org_id
-  );
-}
-
 export function App() {
   const platform = usePlatform();
   // Text scaling owns the rem root and the Cmd/Ctrl +/-/0 accelerators. Mounted

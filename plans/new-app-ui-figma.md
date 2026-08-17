@@ -59,6 +59,101 @@ Only component/state frames.
 | 121:33421 | `nav/sidebar/settings` (row hover) | 250x573 |
 | 116:17428 | `topnav/menu` | 224x114 |
 
+## Re-verification of the Flows pages, 2026-08-17
+
+`Components` is unchanged. The three Flows pages have moved.
+
+### Settings screen: four labels and one affordance changed
+
+| Row | Was built as | Now reads |
+| --- | --- | --- |
+| Device | `Rename` | `Rename device` |
+| Install ID | `Copy` | `Copy ID` |
+| Gate plan | `Upgrade plan` | `Upgrade plan` + external-link glyph |
+| Active session | `Disconnect` | `Disconnect Gate` |
+
+Applied. The API key value also now shows a prefix rather than a full mask -
+`sk-gw-661b17***…` instead of `sk-gw***…`. That is the shell's string to build,
+not the pane's, and it is a decision about how much of a key to reveal.
+
+### Four new Settings dialogs, all marked ready
+
+- **Rename your device** - form: `Current device name` (readonly) over
+  `New device name` (focused, with a clear button). No subtitle.
+- **Replace API key** - same form shape. Its second field is labelled
+  **"New device name"**, copy-pasted from the rename dialog. Design bug.
+- **Disconnect Gate?** - red tone, body as a plain paragraph rather than a
+  tinted note, primary `Yes, disconnect Gate`.
+- **Reset Gate Connect** - red tone, subtitle, a `What happens next:` list of
+  three numbered steps, and a **checkbox** gating the destructive primary.
+
+### Elsewhere
+
+- Overview: the org-switch frames are now properly named (`overview-switch org`
+  x3, where only two generically-named ones existed before).
+- App: a new **choose model modal**, distinct from the model-switch
+  confirmation. `Change model` currently goes nowhere.
+
+### Built 2026-08-17
+
+`Modal.tsx` gained the four things it lacked: a `danger` tone
+(`red-100` tile, `red-600` icon), `ModalField`, `ModalSteps`, `ModalCheckbox`.
+`ModalButton` gained `disabled` so the checkbox can actually refuse the primary,
+and `Modal` gained `initialFocus` so form dialogs open on the field being
+edited rather than the read-only one above it. Glyph added: `circleX`.
+
+`dialogs.tsx` gained `RenameDeviceDialog`, `ReplaceApiKeyDialog`,
+`DisconnectGateDialog`, `ResetGateConnectDialog`.
+
+Deliberate deviation: `ReplaceApiKeyDialog` labels its second field
+**"New API key"**, not the drawn "New device name". Shipping the design's label
+would put a wrong word on the one screen where the user handles a credential.
+
+Still unbuilt: the App page's **choose model** dialog. It is only known from a
+frame caption; nothing about its contents has been read, so building it would be
+invention.
+
+## Branching model
+
+`feat/new-app-ui` is the **integration base** for the design work, not a branch
+heading for `main`. PR #151 stays open as work in progress; every PR that
+implements a piece of the design targets this branch rather than `main`.
+
+    git fetch origin
+    git switch -c feat/wire-routing-actions origin/feat/new-app-ui
+
+Consequences worth keeping in mind:
+
+- **Keep it green.** Downstream branches inherit whatever is broken here, so a
+  red base costs everyone. CI covers macOS, Windows and Linux Rust plus the
+  frontend; all eight checks were green as of 2026-08-17.
+- **Merge `main` in periodically.** The longer this diverges, the worse the
+  eventual reconciliation, and every downstream branch inherits the drift.
+- **The popover stays until routing works.** It is the only surface that can
+  change what is routed, so it is load-bearing, not dead weight. The e2e suite
+  is pinned to it (`VITE_NEW_UI=0` in `playwright.config.ts`).
+- **This plan is the shared roadmap.** "Still to do" below is the queue that
+  downstream PRs draw from; keep it current rather than tracking work elsewhere.
+- **Green CI here means less than it looks**, though less so than it did.
+  Routing and Settings are wired and carry their own e2e specs
+  (`new-ui-routing.spec.ts`, `new-ui-settings.spec.ts`), which opt into the new
+  shell per-test through localStorage. Everything listed under "Still to do" is
+  still covered by nothing.
+
+## How the designer marks readiness (from Chad, 2026-08-14)
+
+- **A white check mark in a section title above a flow means that flow is
+  ready.** Sections without one are still moving.
+- **Every main frame is named for the step it represents**, deliberately so MCP
+  reads and this work can tell which state a frame is. Trust the names.
+- **Hidden layers were stripped and 2,000+ layers renamed** with Figma's own
+  agent, because MCP struggles with hidden layers. Reads after 2026-08-14 are
+  against the cleaned file.
+- **The designs are frozen as of 2026-08-14**, with one exception: dialog
+  states are still being worked on. Do not chase dialog changes until the
+  designer says they are done - `Modal.tsx` and `dialogs.tsx` are the parts most
+  likely to move.
+
 ## Reading the file without MCP quota
 
 The Figma MCP server allows only **6 read calls per month** on a View seat.
@@ -491,3 +586,61 @@ the same PR.
    shadow tokens absorb the mapping, but any new value read off Figma needs
    shifting one step before use.
 
+## Still to do
+
+The queue downstream PRs draw from, in the order that unblocks the most.
+
+1. **First run, disconnect and reset: DONE.** `lib/useSetup.ts` derives the
+   stage from account and OAuth state rather than storing it, which is what makes
+   reset work - clearing the account is the whole handoff, with no separate "show
+   first run" flag to disagree with what is on disk. Two things cannot be derived
+   and are flagged in the hook: whether the confirmation pane has been seen (a
+   returning user must not be greeted by it) and the org-picker dead end's escape
+   to the key form. `isSignedIn` / `needsOrg` moved to `lib/session.ts` so both
+   shells cannot drift on what counts as signed in.
+2. **Updates.** `banners.tsx` has `UpdateBanner` and nothing drives it.
+   `components/UpdatePanel.tsx` holds the real flow - `check()` from
+   `plugin-updater`, then download/install bracketed by
+   `setUpdaterRelaunching`, plus a re-check on each window reopen. The new shell
+   wants the banner rather than the popover's startup takeover, and the same
+   slice supplies Settings' "Check for updates" row.
+3. **The running-apps sequence.** `ApplyChangesDialog` to `CloseAppsDialog` to
+   `ChangeReadyDialog` are built and unreachable. `runningAgents()` and
+   `closeRunningAgents()` both exist; what is missing is the decision of when
+   the sequence interrupts a connect.
+4. **The family master cascade.** `FamiliesPane` hides its master switch rather
+   than showing a dead one. Cascading has to skip members with a hand-written
+   config, which means reusing the drift gate per member rather than looping
+   `connectTool`.
+5. **The per-app model picker.** `UseGateModelDialog` exists;
+   `App / Select a model` was never read from the Figma, so its contents are
+   known only from a frame caption.
+6. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
+   pending the 24-hour endpoint. Open question 7 (whether `total` double-counts)
+   should be settled in that response shape, not in the chart.
+7. **Retire the popover.** `App.tsx`, `screens/`, `gc/ui.tsx`, the `gc.*`
+   palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together.
+   Item 1 was the blocker and is done, so what remains is repointing the e2e
+   suite at the new shell and deleting; the popover's own specs go with it.
+
+Rows the design draws that have no backend command at all: device rename,
+notifications, plan upgrade. They render their value and omit their control.
+
+Two rows are gated on the account's auth mode rather than hidden outright:
+**Replace key** appears only for an API-key account (on an OAuth account
+`saveAccount` with a key would flip `auth_mode`, quietly converting the account
+behind a button that says "replace"), and **Disconnect Gate** only for an OAuth
+account, which is the only one with a session to end.
+
+## Copy corrections to raise with the designer
+
+Two dialogs say something the action does not do. Both are implemented correctly
+and the reason is recorded at the component:
+
+- **Replace API key** labels its second field "New device name", copy-pasted from
+  the rename dialog. Shipped as "New API key": the drawn label would put a wrong
+  word on the one screen where the user handles a credential.
+- **Disconnect Gate** says protection turns off, apps stop routing and the key is
+  removed from the keychain. That describes Reset, a separate row on the same
+  screen. Implemented as ending the session, and the body copy corrected, rather
+  than shipping two destructive actions that claim the same consequences.

@@ -58,6 +58,44 @@ describe("buildSettingsSections", () => {
   });
 });
 
+describe("buildSettingsSections: rows with nothing behind them", () => {
+  // The alternative is a control that visibly does nothing, which the user
+  // cannot tell from broken. Regressing this looks like "add a noop handler".
+  it("omits an action whose handler is absent", () => {
+    const device = sections({ onRenameDevice: undefined }).find((s) => s.id === "device");
+    expect(device?.rows.find((r) => r.id === "device")?.action).toBeUndefined();
+    // The row itself survives: the device name is still worth reading.
+    expect(device?.rows.map((r) => r.id)).toContain("device");
+  });
+
+  it("omits a row left with nothing to do at all", () => {
+    // Active session is only ever a button, and Notifications only ever a
+    // switch, so an absent handler leaves an inert label.
+    const ids = sections({ onDisconnect: undefined, onToggleNotifications: undefined })
+      .flatMap((s) => s.rows)
+      .map((r) => r.id);
+    expect(ids).not.toContain("session");
+    expect(ids).not.toContain("notifications");
+  });
+
+  it("omits the whole Danger zone when reset is not wired", () => {
+    // A card drawn to alarm that does nothing teaches the user to ignore it.
+    expect(sections({ onReviewReset: undefined }).map((s) => s.id)).not.toContain("danger");
+  });
+
+  it("keeps every other section when the unwired ones drop out", () => {
+    const ids = sections({
+      onRenameDevice: undefined,
+      onUpgradePlan: undefined,
+      onDisconnect: undefined,
+      onToggleNotifications: undefined,
+      onCheckForUpdates: undefined,
+      onReviewReset: undefined,
+    }).map((s) => s.id);
+    expect(ids).toEqual(["device", "account", "connection", "startup", "about"]);
+  });
+});
+
 describe("SettingsPane", () => {
   it("renders every section heading and row label", () => {
     render(<SettingsPane sections={sections()} />);
