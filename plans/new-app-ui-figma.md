@@ -585,12 +585,16 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    returning user must not be greeted by it) and the org-picker dead end's escape
    to the key form. `isSignedIn` / `needsOrg` moved to `lib/session.ts` so both
    shells cannot drift on what counts as signed in.
-2. **Updates.** `banners.tsx` has `UpdateBanner` and nothing drives it.
-   `components/UpdatePanel.tsx` holds the real flow - `check()` from
-   `plugin-updater`, then download/install bracketed by
-   `setUpdaterRelaunching`, plus a re-check on each window reopen. The new shell
-   wants the banner rather than the popover's startup takeover, and the same
-   slice supplies Settings' "Check for updates" row.
+2. **Updates: DONE.** The mechanism moved to `lib/useUpdate.ts` and both shells
+   use it - the opposite call from `useRouting` and `useSettingsActions`, because
+   nothing here was tangled with the popover's shape and what it holds is a
+   sequence whose ordering is load-bearing: the relaunch mark lands after the
+   download (quitting mid-download is a genuine exit that must keep its cleanup)
+   and before `install()` (on Windows the installer exits from inside that call).
+   A second copy could drift into a botched update. The window uses the banner
+   `AppShell` already had a slot for; the popover keeps its takeover-then-banner
+   escalation. Settings' "Check for updates" reports its result in the version
+   row, since silence on a pressed button reads as broken.
 3. **The running-apps sequence.** `ApplyChangesDialog` to `CloseAppsDialog` to
    `ChangeReadyDialog` are built and unreachable. `runningAgents()` and
    `closeRunningAgents()` both exist; what is missing is the decision of when
@@ -610,8 +614,9 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    Item 1 was the blocker and is done, so what remains is repointing the e2e
    suite at the new shell and deleting; the popover's own specs go with it.
 
-Rows the design draws that have no backend command at all: device rename,
-notifications, plan upgrade. They render their value and omit their control.
+Rows the design draws that have no backend command at all: device rename and
+notifications, plus plan upgrade, which has no billing URL to open. They render
+their value and omit their control.
 
 Two rows are gated on the account's auth mode rather than hidden outright:
 **Replace key** appears only for an API-key account (on an OAuth account

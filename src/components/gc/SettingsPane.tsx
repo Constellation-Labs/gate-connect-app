@@ -70,6 +70,7 @@ export function buildSettingsSections({
   launchAtLogin,
   notifications,
   version,
+  updateNote,
   onRenameDevice,
   onCopyInstallId,
   onUpgradePlan,
@@ -92,6 +93,8 @@ export function buildSettingsSections({
   launchAtLogin: boolean;
   notifications?: boolean;
   version: string;
+  /** Feedback under the version row after an explicit update check. */
+  updateNote?: string;
   onRenameDevice?: () => void;
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
@@ -211,6 +214,7 @@ export function buildSettingsSections({
           id: "version",
           icon: "codeXml",
           label: "Version",
+          description: updateNote,
           value: version,
           mono: true,
           action: onCheckForUpdates
