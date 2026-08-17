@@ -84,8 +84,72 @@ export interface ActivityView {
   savings: Saving[];
   /** Rendered as the pane's period label, e.g. "Last 24 hours · 14:03". */
   period: string;
+  /** When the gateway computed this reading, rendered as a local clock time.
+   *
+   *  A clock time and not an age: an age has to be recomputed to stay true, and
+   *  a "2 minutes ago" that was written twenty minutes ago is a worse lie than
+   *  the staleness it was added to disclose. AG-576 wants the held reading
+   *  labelled with when it was taken, which this does without a timer. */
+  takenAt: string;
   /** Sections that could not be answered, for the pane's alert slot. */
   gaps: { section: string; reason: UnavailableReason }[];
+}
+
+/**
+ * Why a whole fetch failed, mirroring `activity::FailureCode` in the core crate.
+ *
+ * Separate from `UnavailableReason`, which is the *gateway's* account of a
+ * section it answered but could not fill. These are the client's account of
+ * never having got an answer at all.
+ */
+export type FailureCode =
+  | "offline"
+  | "signed_out"
+  | "no_org"
+  | "rejected"
+  | "gateway"
+  | "unknown";
+
+export interface ActivityFailure {
+  code: FailureCode;
+  /** The underlying detail, for the diagnostics report rather than the pane. */
+  message: string;
+}
+
+const FAILURE_CODES: FailureCode[] = [
+  "offline",
+  "signed_out",
+  "no_org",
+  "rejected",
+  "gateway",
+  "unknown",
+];
+
+/**
+ * Read the command's rejection.
+ *
+ * `activity_overview` rejects with a JSON envelope so the cause survives the IPC
+ * boundary as a code rather than as prose. Anything that is not that envelope -
+ * a Tauri plugin error, an unregistered command on an old binary - is genuinely
+ * unknown, and its text is kept for diagnostics rather than guessed at.
+ *
+ * Exported for its tests: it is the seam between a Rust error and a UI decision,
+ * and getting it wrong turns every failure into a generic one.
+ */
+export function toFailure(e: unknown): ActivityFailure {
+  const text = typeof e === "string" ? e : String(e);
+  try {
+    const parsed = JSON.parse(text) as { code?: unknown; message?: unknown };
+    if (FAILURE_CODES.includes(parsed.code as FailureCode)) {
+      return {
+        code: parsed.code as FailureCode,
+        message: typeof parsed.message === "string" ? parsed.message : text,
+      };
+    }
+  } catch {
+    // Not the envelope. Fall through.
+  }
+  return { code: "unknown", message: text };
 }
 
 /** Icons the design puts on each policy row, keyed by the endpoint's row id. */
@@ -162,6 +226,10 @@ export function adapt(raw: RawOverview): ActivityView {
 
   const saved = c.tokensSaved;
   const amount = saved.amount ?? 0;
+  const takenAt = new Date(raw.generatedAt).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
   return {
     orgName: raw.org.name,
     stats: {
@@ -184,10 +252,8 @@ export function adapt(raw: RawOverview): ActivityView {
       action: r.action ?? "flag",
     })),
     savings: toRows<Saving>(raw.tokenSavings.rows, SAVINGS_ICONS, "layers", () => ({})),
-    period: `Last 24 hours · updated ${new Date(raw.generatedAt).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    })}`,
+    period: `Last 24 hours · updated ${takenAt}`,
+    takenAt,
     gaps,
   };
 }
@@ -202,32 +268,32 @@ export function adapt(raw: RawOverview): ActivityView {
  */
 export function useActivity(enabled: boolean): {
   view: ActivityView | null;
-  error: string | null;
+  failure: ActivityFailure | null;
   loading: boolean;
   reload: () => void;
 } {
   const [view, setView] = useState<ActivityView | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ActivityFailure | null>(null);
   const [loading, setLoading] = useState(false);
 
   const reload = useCallback(() => {
     if (!enabled) return;
     setLoading(true);
-    setError(null);
+    setFailure(null);
     activityOverview()
       .then((text) => {
         setView(adapt(JSON.parse(text) as RawOverview));
-        setError(null);
+        setFailure(null);
       })
       .catch((e) => {
         // Keep the last good view: AG-576 wants a stale reading held with its
         // timestamp rather than replaced by an empty screen.
-        setError(String(e));
+        setFailure(toFailure(e));
       })
       .finally(() => setLoading(false));
   }, [enabled]);
 
   useEffect(reload, [reload]);
 
-  return { view, error, loading, reload };
+  return { view, failure, loading, reload };
 }

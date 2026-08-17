@@ -18,14 +18,63 @@
 //!    either into one org.
 //!
 //! The response is returned as a raw JSON string rather than a typed DTO. This
-//! is a deliberate choice while the contract is still moving: the popover's
-//! temporary viewer renders whatever the gateway sends, so the two cannot drift
-//! and no field has to be modelled twice before it is agreed.
+//! is a deliberate choice while the contract is still moving: `src/lib/activity.ts`
+//! is the single place that knows the shape, so it cannot drift from a second
+//! model here and no field has to be agreed twice. Failures, by contrast, *are*
+//! typed - see [`FailureCode`].
 
-use anyhow::{bail, Context, Result};
+use anyhow::Context;
+use serde::Serialize;
 
 use crate::account::{self, AuthMode};
 use crate::oauth;
+
+/// Why a fetch failed, in the terms AG-576 needs in order to offer an action.
+///
+/// Deliberately a code rather than a message: the app has to *branch* on this to
+/// choose between Retry, Sign in, Switch organization and Contact support, and
+/// branching on English prose is how a copy edit becomes a bug.
+///
+/// Note what is absent. None of these has anything to do with whether routing is
+/// switched on. AG-576 calls that conflation out by name: "the gateway is
+/// unreachable" and "the user turned routing off" are different facts with
+/// different remedies, and reporting one as the other sends the user to fix
+/// something that was never broken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureCode {
+    /// This machine could not reach the gateway at all: DNS, TCP, TLS, timeout.
+    Offline,
+    /// There is no live credential to send, so the user has to sign in again.
+    SignedOut,
+    /// OAuth session is live but no org is selected, so there is nothing to
+    /// scope the reading to.
+    NoOrg,
+    /// A credential was sent and the gateway refused it (401 or 403).
+    Rejected,
+    /// The gateway answered, unhappily. Any other non-2xx.
+    Gateway,
+    /// Anything else, including a response body we could not read.
+    Unknown,
+}
+
+/// A failed fetch: the code the UI branches on, plus the detail a support report
+/// needs. Both travel to the front end, which shows the code's copy and keeps
+/// the message for diagnostics.
+#[derive(Debug, Clone, Serialize)]
+pub struct Failure {
+    pub code: FailureCode,
+    pub message: String,
+}
+
+impl Failure {
+    fn new(code: FailureCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
 
 /// Endpoint URL. Test seam mirroring [`crate::org`]'s
 /// `GATE_CONNECT_TEST_ORGS_ENDPOINT`, so the fetch can be pointed at a loopback
@@ -35,58 +84,106 @@ fn activity_endpoint(gateway_base_url: &str) -> String {
     if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_ACTIVITY_ENDPOINT") {
         return o.to_string_lossy().into_owned();
     }
-    format!(
-        "{}/v1/me/activity",
-        gateway_base_url.trim_end_matches('/')
-    )
+    format!("{}/v1/me/activity", gateway_base_url.trim_end_matches('/'))
 }
 
 /// Fetch the overview for the current account, as raw JSON.
 ///
-/// Errors when no account is configured, when no usable credential exists, or
-/// when the gateway answers with a non-success status (the body is included so
-/// the viewer can show the gateway's own error envelope rather than a generic
-/// failure).
-pub fn overview_json() -> Result<String> {
-    let account = account::load()?.context("no gateway account is configured")?;
+/// Every failure carries a [`FailureCode`]; see that type for why. The gateway's
+/// own error body is kept in the message rather than replaced by a generic
+/// failure, because it is the only place a 4xx explains itself.
+pub fn overview_json() -> Result<String, Failure> {
+    let account = match account::load() {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return Err(Failure::new(
+                FailureCode::SignedOut,
+                "no gateway account is configured",
+            ))
+        }
+        Err(e) => return Err(Failure::new(FailureCode::Unknown, format!("{e:#}"))),
+    };
 
-    let client = reqwest::blocking::Client::builder()
+    let client = match reqwest::blocking::Client::builder()
         .no_proxy()
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .context("building the activity HTTP client")?;
+        .context("building the activity HTTP client")
+    {
+        Ok(c) => c,
+        Err(e) => return Err(Failure::new(FailureCode::Unknown, format!("{e:#}"))),
+    };
 
     let mut req = client.get(activity_endpoint(&account.gateway_base_url));
 
     // Mirror the credential the engine and relay would send for this account,
-    // so the popover cannot show numbers for an identity the user's traffic is
+    // so the pane cannot show numbers for an identity the user's traffic is
     // not actually using.
     if account.auth_mode == AuthMode::OAuth {
         let token = oauth::access_token_for_injection();
         if token.is_empty() {
-            bail!("signed out: no live OAuth session for this account");
+            return Err(Failure::new(
+                FailureCode::SignedOut,
+                "no live OAuth session for this account",
+            ));
         }
         let org = account::org_id_for_injection();
         if org.is_empty() {
-            bail!("no organization selected");
+            return Err(Failure::new(FailureCode::NoOrg, "no organization selected"));
         }
         req = req
             .header("x-gate-authorization", format!("Bearer {token}"))
             .header("x-gate-org-id", org);
     } else {
         if account.api_key.is_empty() {
-            bail!("no API key stored for this account");
+            return Err(Failure::new(
+                FailureCode::SignedOut,
+                "no API key stored for this account",
+            ));
         }
         req = req.header("x-gate-api-key", account.api_key);
     }
 
-    let resp = req.send().context("calling the gateway /v1/me/activity endpoint")?;
+    let resp = match req.send() {
+        Ok(r) => r,
+        Err(e) => {
+            // `is_connect` covers DNS and TCP, `is_timeout` the 15s ceiling
+            // above. Both mean the same thing to the user - the gateway is not
+            // answering this machine - and neither implicates their credential.
+            let code = if e.is_connect() || e.is_timeout() {
+                FailureCode::Offline
+            } else {
+                FailureCode::Unknown
+            };
+            return Err(Failure::new(
+                code,
+                format!("calling the gateway /v1/me/activity endpoint: {e}"),
+            ));
+        }
+    };
+
     let status = resp.status();
-    let body = resp
-        .text()
-        .context("reading /v1/me/activity response body")?;
+    let body = match resp.text() {
+        Ok(b) => b,
+        Err(e) => {
+            return Err(Failure::new(
+                FailureCode::Unknown,
+                format!("reading /v1/me/activity response body: {e}"),
+            ))
+        }
+    };
     if !status.is_success() {
-        bail!("gateway /v1/me/activity returned {status}: {body}");
+        let code = if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
+            FailureCode::Rejected
+        } else {
+            FailureCode::Gateway
+        };
+        return Err(Failure::new(
+            code,
+            format!("gateway /v1/me/activity returned {status}: {body}"),
+        ));
     }
     Ok(body)
 }

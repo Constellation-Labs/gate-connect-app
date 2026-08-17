@@ -527,13 +527,25 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
     .map_err(|e| format!("set auth mode join error: {e}"))?
 }
 
-/// TEMPORARY (AG-572): fetch the 24-hour activity overview as raw JSON so the
-/// dev-only viewer can render it. Raw rather than typed while the gateway
-/// contract is still moving; see `gate_connect_core::activity`.
+/// Fetch the 24-hour activity overview for the Overview pane (AG-572).
+///
+/// The payload stays raw JSON while the gateway contract moves; `lib/activity.ts`
+/// is the only place that models it.
+///
+/// Failures cross as a JSON envelope, `{"code":…,"message":…}`, not as prose.
+/// AG-576 requires the pane to name the cause and offer a matching action, and
+/// the front end cannot pick between Retry and Sign in by reading an English
+/// sentence. See `gate_connect_core::activity::FailureCode`.
 #[tauri::command]
 async fn activity_overview() -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::activity::overview_json().map_err(|e| format!("{e:#}"))
+        gate_connect_core::activity::overview_json().map_err(|f| {
+            serde_json::to_string(&f)
+                // Serializing two owned strings and a unit enum cannot fail, but
+                // swallowing the cause if it somehow did would be worse than a
+                // fallback the UI still classifies as `unknown`.
+                .unwrap_or_else(|_| format!(r#"{{"code":"unknown","message":"{}"}}"#, f.message))
+        })
     })
     .await
     .map_err(|e| format!("activity overview join error: {e}"))?

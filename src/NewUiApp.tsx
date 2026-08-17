@@ -14,7 +14,13 @@ import {
 import { buildGroups } from "./lib/groups";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
-import { GATE_DASHBOARD_URL, GATE_POLICIES_URL, GATE_SAVINGS_URL } from "./lib/config";
+import {
+  GATE_API_KEYS_URL,
+  GATE_DASHBOARD_URL,
+  GATE_DOCS_URL,
+  GATE_POLICIES_URL,
+  GATE_SAVINGS_URL,
+} from "./lib/config";
 import { AppShell } from "./components/gc/AppShell";
 import { FamiliesPane } from "./components/gc/FamiliesPane";
 import type { Family } from "./components/gc/FamiliesPane";
@@ -24,7 +30,9 @@ import { useActivity } from "./lib/activity";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import { AlertBanner } from "./components/gc/banners";
-import type { ActivityView } from "./lib/activity";
+import type { ActivityFailure, ActivityView } from "./lib/activity";
+import { failureNotice, sectionNotice } from "./lib/activityGaps";
+import type { GapActionKind } from "./lib/activityGaps";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
 import { DiagnosticsDialog } from "./components/gc/dialogs";
 import type { AppStatus, SidebarApp, SidebarView } from "./components/gc/Sidebar";
@@ -197,6 +205,10 @@ export function NewUiApp() {
   const onMenuSelect = useCallback((action: TopnavAction) => {
     setMenuOpen(false);
     if (action === "dashboard") void openExternal(GATE_DASHBOARD_URL);
+    else if (action === "docs") void openExternal(GATE_DOCS_URL);
+    // `support` has no destination yet. Left unhandled rather than pointed at a
+    // guessed URL: the opener ACL would silently drop a wrong one, so the item
+    // would look wired and do nothing.
   }, []);
 
   return (
@@ -261,7 +273,7 @@ export function NewUiApp() {
           onManageSavings={() => void openExternal(GATE_SAVINGS_URL)}
           // Dashes rather than zeros until the first load lands: a zero is a
           // real reading and would claim the user had no traffic.
-          pending={activity.view === null && activity.error === null}
+          pending={activity.view === null && activity.failure === null}
           period={activity.view?.period ?? "Last 24 hours"}
           alert={
             <>
@@ -298,7 +310,13 @@ export function NewUiApp() {
                   }
                 />
               )}
-              <ActivityGaps view={activity.view} error={activity.error} />
+              <ActivityGaps
+                view={activity.view}
+                failure={activity.failure}
+                loading={activity.loading}
+                onRetry={activity.reload}
+                onDiagnostics={() => setDiagnosticsOpen(true)}
+              />
             </>
           }
         />
@@ -379,46 +397,73 @@ function previewDiagnostics(args: {
 /** What each `unavailable` cause means, and what the user can do about it.
  *
  * AG-576 asks an unavailable metric to name its cause and offer a matching
- * action rather than blanking the surface. The endpoint sends the cause; this is
- * the copy for it.
+ * action rather than blanking the surface. The taxonomy and copy live in
+ * `lib/activityGaps.ts`; this renders it and dispatches the actions.
  *
- * Deliberately plain text in the pane's alert slot rather than a designed
- * component: the visual treatment for this state is AG-575's job and does not
- * exist yet, and inventing one would be the "dressing scaffolding up as product"
- * mistake. What matters now is that a zero is never mistaken for a real reading. */
-const GAP_COPY: Record<string, string> = {
-  connectivity: "could not be reached - try again",
-  access: "is not visible to your role",
-  attribution: "needs a signed-in user; this credential has none",
-  not_configured: "has nothing set up yet",
-  definition_pending: "is not defined yet",
-};
-
+ * Deliberately plain text and text buttons in the pane's alert slot rather than a
+ * designed component: the visual treatment for this state is AG-575's job and
+ * still does not exist in the Figma (checked 2026-08-17 - neither the Overview
+ * page nor the Components page has an unavailable, stale, empty or loading
+ * state). Inventing one would be the "dressing scaffolding up as product"
+ * mistake. What matters now is that a zero is never mistaken for a real reading,
+ * and that every named cause comes with something the user can actually do. */
 function ActivityGaps({
   view,
-  error,
+  failure,
+  loading,
+  onRetry,
+  onDiagnostics,
 }: {
   view: ActivityView | null;
-  error: string | null;
+  failure: ActivityFailure | null;
+  loading: boolean;
+  onRetry: () => void;
+  onDiagnostics: () => void;
 }) {
-  // A failed fetch outranks per-section gaps: if nothing loaded there is nothing
-  // to itemise, and the last good view (if any) is still on screen behind this.
-  if (error) {
-    return (
-      <p className="text-base-xs text-base-muted-foreground">
-        Activity could not be refreshed. Showing the last reading.
-      </p>
-    );
-  }
-  if (!view || view.gaps.length === 0) return null;
+  const run = (kind: GapActionKind) => {
+    if (kind === "retry") onRetry();
+    else if (kind === "diagnostics") onDiagnostics();
+    else if (kind === "dashboard") void openExternal(GATE_DASHBOARD_URL);
+    else if (kind === "api-keys") void openExternal(GATE_API_KEYS_URL);
+    else void openExternal(GATE_DOCS_URL);
+  };
+
+  // A failed fetch outranks per-section gaps: if nothing landed there is nothing
+  // to itemise, and the sections listed in the held view describe the *previous*
+  // reading, not this one.
+  const notices = failure
+    ? [failureNotice(failure)]
+    : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason));
+  if (notices.length === 0) return null;
+
   return (
-    <ul className="flex flex-col gap-1">
-      {view.gaps.map((g) => (
-        <li key={g.section} className="text-base-xs text-base-muted-foreground">
-          <span className="font-medium">{g.section}</span>{" "}
-          {GAP_COPY[g.reason] ?? "is unavailable"}
-        </li>
+    <div className="flex flex-col gap-2">
+      {/* Said before the cause, because "what you are looking at is old" is the
+          more urgent fact: the numbers on screen are still readable and a user
+          who misses this will read them as current. A clock time rather than an
+          age, for the reason `ActivityView.takenAt` gives. */}
+      {failure && view && (
+        <p className="text-base-xs text-base-muted-foreground">
+          <span className="font-medium">Stale reading.</span> These numbers are from{" "}
+          {view.takenAt} and have not been refreshed since.
+        </p>
+      )}
+      {notices.map((n) => (
+        <p key={n.subject} className="text-base-xs text-base-muted-foreground">
+          <span className="font-medium">{n.subject}:</span> {n.cause}
+          {n.actions.map((a) => (
+            <button
+              key={a.kind}
+              type="button"
+              onClick={() => run(a.kind)}
+              disabled={a.kind === "retry" && loading}
+              className="ml-2 rounded-base font-medium text-base-primary underline decoration-transparent underline-offset-2 transition hover:decoration-inherit focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:text-base-muted-foreground"
+            >
+              {a.kind === "retry" && loading ? "Trying…" : a.label}
+            </button>
+          ))}
+        </p>
       ))}
-    </ul>
+    </div>
   );
 }
