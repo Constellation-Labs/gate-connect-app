@@ -462,22 +462,26 @@ impl HttpHandler for GateHandler {
         // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
         let mut action = "passthrough";
-        // A protocol upgrade must never be rewritten to the gateway. Gate has no
-        // WebSocket transport, and `buildForwardHeaders` strips `upgrade` and
-        // `connection` outright (gate: utils/proxy-helpers.ts), so the handshake
-        // it forwards can only come back as a plain response and the client's
-        // 101 never arrives.
+        // A protocol upgrade is never rewritten to the gateway. This is the end
+        // state, not a holding position: Gate does not carry upgraded protocols,
+        // by decision. It has no WebSocket transport, and `buildForwardHeaders`
+        // strips `upgrade` and `connection` outright
+        // (gate: utils/proxy-helpers.ts), so a handshake forwarded there can only
+        // come back as a plain response and the client's 101 never arrives.
         //
-        // This is not hypothetical: ChatGPT's Cowork / work mode runs its whole
-        // turn over `GET /backend-api/codex/responses` upgraded to a WebSocket,
-        // and that path is claimed by the `chatgpt` entry's rewrite prefix. So
-        // enabling that row without this guard trades a working feature for a
-        // broken one. Passing upgrades through costs only visibility, which we
-        // did not have anyway.
+        // The combination is reachable rather than theoretical. ChatGPT's app
+        // work mode NEGOTIATES its transport on `/backend-api/codex/responses`:
+        // it offers `openai-beta: responses_websockets=<date>` and, when the
+        // server accepts, runs the entire turn over a WebSocket. That path is
+        // claimed by the `chatgpt` entry's rewrite prefix, so without this guard
+        // enabling that row would break the upgraded half outright.
         //
-        // Remove this when Gate can terminate the socket, or when Connect grows
-        // the Copilot-style treatment (own the socket here, re-send each turn to
-        // Gate as HTTP).
+        // What passing them through costs is therefore narrower than "all
+        // visibility". The HTTP half of that same negotiation IS captured
+        // normally, which means a session that upgrades is a session that
+        // silently left coverage - no error, nothing to notice. `originator:
+        // codex_work_desktop` on an upgrade is the signature of one, and is what
+        // to grep for if work-mode turns stop appearing in Gate.
         if is_upgrade_request(&req) {
             if debug_log() {
                 eprintln!("[gate-proxy] {path} is a protocol upgrade -> passthrough (gate has no websocket transport)");
