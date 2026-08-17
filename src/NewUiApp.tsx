@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import type { Account, ProxyState, ProviderState, Tool } from "./lib/api";
 import {
   getAccount,
@@ -8,6 +9,9 @@ import {
   listTools,
   proxyStatus,
 } from "./lib/api";
+import { useRouting } from "./lib/useRouting";
+import { classifyError } from "./lib/errors";
+import type { ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
@@ -18,7 +22,9 @@ import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
-import { DiagnosticsDialog } from "./components/gc/dialogs";
+import { DiagnosticsDialog, ReviewConfigDialog } from "./components/gc/dialogs";
+import { AlertBanner, ErrorBanner } from "./components/gc/banners";
+import { Modal } from "./components/gc/Modal";
 import type { AppStatus, SidebarApp, SidebarView } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
@@ -30,15 +36,14 @@ import type { Platform } from "./lib/platform";
  * The new window UI, and the default surface as of 2026-08-17. `App.tsx` and the
  * popover are still reachable via `gcNewUi(false)`.
  *
- * **Routing actions are still inert.** Every switch here is a no-op, because the
- * real toggles run through drift review, certificate trust and the OAuth offer,
- * and none of that is wired. Rewriting a tool's config without the review
- * dialog the design puts in front of it would be worse than doing nothing, so
- * they do nothing.
+ * Routing is wired: app and family-member switches go through `useRouting`,
+ * which gates a drifted config behind the review dialog and the certificate
+ * behind a prompt, then re-reads backend truth. Backend state pushes here too,
+ * so a change made elsewhere repaints this window.
  *
- * That makes the popover the only surface that can currently change what is
- * routed, which is why it is kept rather than deleted. This branch must not
- * merge until the switches work.
+ * Still inert: the family master switch (hidden rather than dead), every
+ * Settings action except Diagnostics, and org switching. The Overview and
+ * per-app metrics await the 24-hour endpoint.
  */
 export function NewUiApp() {
   const [tools, setTools] = useState<Tool[]>([]);
@@ -51,6 +56,27 @@ export function NewUiApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const platform = usePlatform();
+
+  const refresh = useCallback(async () => {
+    const [t, px] = await Promise.all([
+      listTools().catch(() => null),
+      proxyStatus().catch(() => null),
+    ]);
+    if (t) setTools(t);
+    if (px) setProxy(px);
+  }, []);
+
+  // The engine changes state without us asking: a CLI toggle, the startup
+  // auto-enable, another window. Repaint from the event rather than leaving a
+  // stale switch on screen until the next click.
+  useEffect(() => {
+    const unlisten = listen("proxy-state-changed", () => {
+      void refresh();
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [refresh]);
 
   useEffect(() => {
     void (async () => {
@@ -70,6 +96,23 @@ export function NewUiApp() {
       setLaunchAtLogin(launch?.enabled ?? false);
     })();
   }, []);
+
+  const [actionError, setActionError] = useState<ClassifiedError | null>(null);
+
+  const routing = useRouting({
+    tools,
+    proxy,
+    onSnapshot: ({ tools: t, proxy: px }) => {
+      setTools(t);
+      setProxy(px);
+    },
+    onError: (e) => {
+      // `connect` covers both directions: the remedy copy is the same either way
+      // for a failed tool write.
+      setActionError(classifyError(e, "connect"));
+    },
+  });
+  const routingBusy = routing.busy;
 
   const groups = useMemo<Group[]>(
     () =>
@@ -93,8 +136,9 @@ export function NewUiApp() {
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
           on: t.status.kind === "connected" || t.status.kind === "drifted",
+          busy: routingBusy,
         })),
-    [tools],
+    [tools, routingBusy],
   );
 
   const families = useMemo<Family[]>(
@@ -141,6 +185,34 @@ export function NewUiApp() {
 
   const protectedCount = apps.filter((a) => a.status.kind === "protected").length;
 
+  // A drifted app's sidebar switch reads on - intent, and drift means the config
+  // changed behind Gate rather than the user turning it off. So the sidebar can
+  // only turn it off, and re-adopting is this card's job. Its switch reads off
+  // because the app is not protected, and flipping it on is what reaches the
+  // review gate.
+  const drifted = useMemo(() => tools.filter((t) => t.status.kind === "drifted"), [tools]);
+  const driftAlert = drifted.length ? (
+    <AlertBanner
+      title={`${drifted[0].name} isn't protected`}
+      body="Its config changed outside Gate, so its traffic isn't routed. Reconnect to restore protection."
+      on={false}
+      switchLabel={drifted[0].name}
+      onToggle={() => {
+        setActionError(null);
+        void routing.setAppRouted(drifted[0].slug, true);
+      }}
+      onDismiss={noop}
+      paging={
+        drifted.length > 1
+          ? // Paging is drawn for the multiple-apps variant. Selecting which app
+            // the card shows is not wired yet, so the controls stay inert rather
+            // than pretending to page.
+            { onPrev: noop, onNext: noop }
+          : undefined
+      }
+    />
+  ) : undefined;
+
   const onMenuSelect = useCallback((action: TopnavAction) => {
     setMenuOpen(false);
     if (action === "dashboard") void openExternal(GATE_DASHBOARD_URL);
@@ -158,9 +230,46 @@ export function NewUiApp() {
       onNavigate={setView}
       apps={apps}
       onSelectApp={(slug) => setView({ kind: "app", slug })}
-      onToggleApp={noop}
+      notice={
+        actionError ? (
+          <ErrorBanner
+            title={actionError.title}
+            hint={actionError.hint}
+            onDismiss={() => setActionError(null)}
+          />
+        ) : undefined
+      }
+      onToggleApp={(slug, next) => {
+        setActionError(null);
+        void routing.setAppRouted(slug, next);
+      }}
       dialog={
-        diagnosticsOpen ? (
+        routing.prompt?.kind === "drift" ? (
+          <ReviewConfigDialog
+            app={{ name: routing.prompt.name }}
+            existingConfig={routing.prompt.existingConfig}
+            onKeep={() => routing.resolvePrompt(false)}
+            onReplace={() => routing.resolvePrompt(true)}
+          />
+        ) : routing.prompt?.kind === "trust" ? (
+          // Not in the Figma: the new design has no certificate surface, and
+          // connecting cannot proceed without one. Asking first matters because
+          // the OS keychain prompt that follows reads as malware unprompted.
+          <Modal
+            tone="warning"
+            icon="shieldCheck"
+            title="Trust the Gate certificate?"
+            subtitle="Gate inspects your AI traffic locally, which needs a certificate your system trusts."
+            secondary={{ label: "Not now", onClick: () => routing.resolvePrompt(false) }}
+            primary={{ label: "Trust certificate", onClick: () => routing.resolvePrompt(true) }}
+            onDismiss={() => routing.resolvePrompt(false)}
+          >
+            <p className="text-sm leading-5 text-neutral-600">
+              Your operating system will ask for permission. The certificate stays on this
+              machine and is removed when you reset Gate Connect.
+            </p>
+          </Modal>
+        ) : diagnosticsOpen ? (
           <DiagnosticsDialog
             report={previewDiagnostics({
               now: new Date(),
@@ -180,7 +289,19 @@ export function NewUiApp() {
       {view.kind === "settings" ? (
         <SettingsPane sections={settingsSections} />
       ) : view.kind === "families" ? (
-        <FamiliesPane families={families} onToggleFamily={noop} onToggleMember={noop} />
+        <FamiliesPane
+          families={families}
+          onToggleMember={(familyId, key, next) => {
+            setActionError(null);
+            const member = families
+              .find((f) => f.id === familyId)
+              ?.members.find((m) => m.key === key);
+            if (!member) return;
+            void (member.kind === "proxy"
+              ? routing.setDomainRouted(key, next)
+              : routing.setAppRouted(key, next));
+          }}
+        />
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(apps, view.slug)?.name ?? view.slug}
@@ -195,6 +316,7 @@ export function NewUiApp() {
           credits="-"
           onAddCredits={noop}
           activity={[]}
+          alert={driftAlert}
         />
       ) : (
         <Overview
@@ -205,6 +327,7 @@ export function NewUiApp() {
           onManagePolicies={noop}
           onManageSavings={noop}
           period="Awaiting the 24-hour backend"
+          alert={driftAlert}
         />
       )}
     </AppShell>

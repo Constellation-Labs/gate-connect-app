@@ -60,7 +60,12 @@ export function FamiliesPane({
   onToggleMember,
 }: {
   families: Family[];
-  onToggleFamily: (id: string, next: boolean) => void;
+  /**
+   * Omit to hide the family-level switches. A master switch has to cascade over
+   * members, skipping the ones with a hand-written config, and until that is
+   * wired a switch that does nothing is worse than no switch at all.
+   */
+  onToggleFamily?: (id: string, next: boolean) => void;
   onToggleMember: (familyId: string, key: string, next: boolean) => void;
 }) {
   return (
@@ -88,12 +93,14 @@ export function FamiliesPane({
                   {routed} of {family.members.length} routing
                 </p>
               </div>
-              <BaseSwitch
-                on={family.on}
-                label={`Route ${family.name}`}
-                busy={family.busy}
-                onClick={() => onToggleFamily(family.id, !family.on)}
-              />
+              {onToggleFamily && (
+                <BaseSwitch
+                  on={family.on}
+                  label={`Route ${family.name}`}
+                  busy={family.busy}
+                  onClick={() => onToggleFamily(family.id, !family.on)}
+                />
+              )}
             </div>
 
             <ul>

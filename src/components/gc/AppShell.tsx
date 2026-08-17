@@ -29,6 +29,7 @@ export function AppShell({
   apps,
   onSelectApp,
   onToggleApp,
+  notice,
   dialog,
   children,
 }: {
@@ -45,6 +46,12 @@ export function AppShell({
   apps: SidebarApp[];
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
+  /**
+   * A failure worth interrupting for, shown under the banners. Sits here rather
+   * than inside a pane so it survives navigation and reads the same whichever
+   * pane is open - a failed toggle is about the window, not about one view.
+   */
+  notice?: ReactNode;
   /** A dialog covering the window, or nothing. */
   dialog?: ReactNode;
   /** The open pane. */
@@ -71,6 +78,8 @@ export function AppShell({
         protectedCount={routing.protectedCount}
         totalCount={routing.totalCount}
       />
+
+      {notice}
 
       <div className="flex min-h-0 flex-1">
         <Sidebar

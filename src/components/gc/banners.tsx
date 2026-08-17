@@ -177,3 +177,39 @@ function PageButton({ side, onClick }: { side: "prev" | "next"; onClick: () => v
     </button>
   );
 }
+
+/**
+ * A failed action, stated where the user acted. Deliberately not `AlertBanner`:
+ * that one carries a switch because a drifted app can be re-routed from it, and
+ * a failure has nothing to toggle.
+ */
+export function ErrorBanner({
+  title,
+  hint,
+  onDismiss,
+}: {
+  title: string;
+  hint: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="flex w-full items-start gap-3 border-b border-red-200 bg-red-50 px-4 py-3"
+    >
+      <StatusTile tone="red" icon="triangleAlert" />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium leading-5 text-red-900">{title}</p>
+        <p className="text-base-xs leading-4 text-red-900/80">{hint}</p>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss error"
+        className="shrink-0 text-red-900/70 transition-colors hover:text-red-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
+      >
+        <Icon name="x" size={16} />
+      </button>
+    </div>
+  );
+}
