@@ -42,6 +42,9 @@ export function Card({
 const TILE_TONES = {
   green: "from-green-50 to-green-200 border-green-300 text-green-700",
   amber: "from-amber-50 to-amber-200 border-amber-300 text-amber-700",
+  // Not in the Figma, which draws no failure state. Follows the same 50 -> 200
+  // gradient, 300 border, 700 icon pattern as the two that are.
+  red: "from-red-50 to-red-200 border-red-300 text-red-700",
 } as const;
 
 export function StatusTile({
