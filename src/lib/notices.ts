@@ -21,8 +21,15 @@ import type { Group, GroupMember } from "./groups";
 export type NoticeAction =
   | { kind: "enable-routing" }
   | { kind: "trust-certificate" }
-  /** Re-apply Gate's config to a tool that drifted, or retry one that errored. */
-  | { kind: "reconnect"; slug: string; upstreamUrl: string };
+  /**
+   * Re-apply Gate's config to a tool that drifted, or retry one that errored.
+   *
+   * Names the tool and nothing else: this goes through `useRouting`, which
+   * resolves the upstream URL and, for a drifted tool, puts the review dialog in
+   * front of the write. Carrying the URL here would invite a caller to connect
+   * directly and skip that gate.
+   */
+  | { kind: "reconnect"; slug: string };
 
 export interface RoutingNotice {
   /** Stable across refreshes so a dismissal sticks to the right notice. */
@@ -66,11 +73,7 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
             title: `${name} isn't protected`,
             body: "Its config changed outside Gate, so its traffic isn't routed. Reconnect to restore protection.",
             switchLabel: `Let Gate Connect manage ${name}`,
-            action: {
-              kind: "reconnect",
-              slug: member.key,
-              upstreamUrl: member.tool.default_upstream_url,
-            },
+            action: { kind: "reconnect", slug: member.key },
           }
         : null;
     case "error":
@@ -83,11 +86,7 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
                 ? member.tool.status.message
                 : "Gate Connect could not read this tool's configuration.",
             switchLabel: `Try ${name} again`,
-            action: {
-              kind: "reconnect",
-              slug: member.key,
-              upstreamUrl: member.tool.default_upstream_url,
-            },
+            action: { kind: "reconnect", slug: member.key },
           }
         : null;
     default:
