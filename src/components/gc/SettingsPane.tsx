@@ -51,6 +51,14 @@ export interface SettingsSection {
  * Diagnostics is the one row the Figma does not draw. `screens/Diagnostics.tsx`
  * exists and has nowhere else to live in the new IA, so it sits under About and
  * opens the report dialog. Expect it to be redrawn.
+ *
+ * **An omitted handler omits its control**, and a row left with nothing to do
+ * omits itself. Several rows the design draws have no backend behind them yet
+ * (device rename, notifications, plan upgrade, update checks) and two more wait
+ * on a first-run screen to return to (disconnect, reset). A switch or button
+ * that visibly does nothing is worse than an absent one: the user cannot tell
+ * "not built" from "broken", and on the Danger zone card they cannot tell it
+ * from "already done". Same argument as `FamiliesPane`'s master switch.
  */
 export function buildSettingsSections({
   deviceName,
@@ -82,19 +90,19 @@ export function buildSettingsSections({
   /** Already masked upstream - this pane never sees the key. */
   apiKeyMasked: string;
   launchAtLogin: boolean;
-  notifications: boolean;
+  notifications?: boolean;
   version: string;
-  onRenameDevice: () => void;
+  onRenameDevice?: () => void;
   onCopyInstallId: () => void;
-  onUpgradePlan: () => void;
+  onUpgradePlan?: () => void;
   onReplaceKey: () => void;
-  onDisconnect: () => void;
+  onDisconnect?: () => void;
   onToggleLaunchAtLogin: () => void;
-  onToggleNotifications: () => void;
+  onToggleNotifications?: () => void;
   onReplayTutorial: () => void;
-  onCheckForUpdates: () => void;
+  onCheckForUpdates?: () => void;
   onViewDiagnostics: () => void;
-  onReviewReset: () => void;
+  onReviewReset?: () => void;
 }): SettingsSection[] {
   return [
     {
@@ -106,7 +114,9 @@ export function buildSettingsSections({
           icon: "monitorSmartphone",
           label: "Device",
           value: deviceName,
-          action: { label: "Rename device", onClick: onRenameDevice },
+          action: onRenameDevice
+            ? { label: "Rename device", onClick: onRenameDevice }
+            : undefined,
         },
         {
           id: "install-id",
@@ -128,7 +138,9 @@ export function buildSettingsSections({
           icon: "receipt",
           label: "Gate plan",
           value: plan,
-          action: { label: "Upgrade plan", onClick: onUpgradePlan, external: true },
+          action: onUpgradePlan
+            ? { label: "Upgrade plan", onClick: onUpgradePlan, external: true }
+            : undefined,
         },
       ],
     },
@@ -145,12 +157,20 @@ export function buildSettingsSections({
           mono: true,
           action: { label: "Replace key", onClick: onReplaceKey },
         },
-        {
-          id: "session",
-          icon: "link",
-          label: "Active session",
-          action: { label: "Disconnect Gate", onClick: onDisconnect, destructive: true },
-        },
+        ...(onDisconnect
+          ? [
+              {
+                id: "session",
+                icon: "link" as IconName,
+                label: "Active session",
+                action: {
+                  label: "Disconnect Gate",
+                  onClick: onDisconnect,
+                  destructive: true,
+                },
+              },
+            ]
+          : []),
       ],
     },
     {
@@ -164,13 +184,17 @@ export function buildSettingsSections({
           description: "Keeps routing on after restart",
           toggle: { on: launchAtLogin, onToggle: onToggleLaunchAtLogin },
         },
-        {
-          id: "notifications",
-          icon: "bell",
-          label: "Notifications",
-          description: "Alert me when a request is blocked or flagged",
-          toggle: { on: notifications, onToggle: onToggleNotifications },
-        },
+        ...(onToggleNotifications
+          ? [
+              {
+                id: "notifications",
+                icon: "bell" as IconName,
+                label: "Notifications",
+                description: "Alert me when a request is blocked or flagged",
+                toggle: { on: notifications ?? false, onToggle: onToggleNotifications },
+              },
+            ]
+          : []),
       ],
     },
     {
@@ -189,7 +213,9 @@ export function buildSettingsSections({
           label: "Version",
           value: version,
           mono: true,
-          action: { label: "Check for updates", onClick: onCheckForUpdates },
+          action: onCheckForUpdates
+            ? { label: "Check for updates", onClick: onCheckForUpdates }
+            : undefined,
         },
         {
           id: "diagnostics",
@@ -200,21 +226,32 @@ export function buildSettingsSections({
         },
       ],
     },
-    {
-      id: "danger",
-      title: "Danger zone",
-      danger: true,
-      rows: [
-        {
-          id: "reset",
-          icon: "refresh",
-          label: "Reset Gate Connect",
-          description:
-            "Turn routing off, disconnect tools, remove this account or key, and start setup again.",
-          action: { label: "Review reset", onClick: onReviewReset, destructive: true },
-        },
-      ],
-    },
+    // A Danger zone whose one action is inert is worse than no Danger zone: the
+    // card is drawn to be alarming, and an alarming card that does nothing
+    // teaches the user to ignore it.
+    ...(onReviewReset
+      ? [
+          {
+            id: "danger",
+            title: "Danger zone",
+            danger: true,
+            rows: [
+              {
+                id: "reset",
+                icon: "refresh" as IconName,
+                label: "Reset Gate Connect",
+                description:
+                  "Turn routing off, disconnect tools, remove this account or key, and start setup again.",
+                action: {
+                  label: "Review reset",
+                  onClick: onReviewReset,
+                  destructive: true,
+                },
+              },
+            ],
+          },
+        ]
+      : []),
   ];
 }
 

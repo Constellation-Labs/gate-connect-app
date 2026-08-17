@@ -134,9 +134,11 @@ Consequences worth keeping in mind:
   is pinned to it (`VITE_NEW_UI=0` in `playwright.config.ts`).
 - **This plan is the shared roadmap.** "Still to do" below is the queue that
   downstream PRs draw from; keep it current rather than tracking work elsewhere.
-- **Green CI here means less than it looks.** The new UI's routing actions are
-  inert and the e2e suite tests the popover, so the new shell has no end-to-end
-  coverage at all - 5 unit tests against roughly 4,000 lines.
+- **Green CI here means less than it looks**, though less so than it did.
+  Routing and Settings are wired and carry their own e2e specs
+  (`new-ui-routing.spec.ts`, `new-ui-settings.spec.ts`), which opt into the new
+  shell per-test through localStorage. Everything listed under "Still to do" is
+  still covered by nothing.
 
 ## How the designer marks readiness (from Chad, 2026-08-14)
 
@@ -571,3 +573,41 @@ the same PR.
    shadow tokens absorb the mapping, but any new value read off Figma needs
    shifting one step before use.
 
+## Still to do
+
+The queue downstream PRs draw from, in the order that unblocks the most.
+
+1. **First run, then disconnect and reset.** `setup.tsx` has `WelcomePane`,
+   `OrgPickerPane` and `ConnectedPane`, all presentational, and no API-key form
+   at all. Until the shell can show them, `clear_account` and `oauth_sign_out`
+   have nowhere to return the user: they would leave a window still listing apps
+   it can no longer route. Both Settings rows are therefore passed no handler,
+   which omits them (see `buildSettingsSections`). Wiring first run is what
+   unblocks them, and it is the last thing standing between the new shell and
+   retiring the popover.
+2. **Updates.** `banners.tsx` has `UpdateBanner` and nothing drives it.
+   `components/UpdatePanel.tsx` holds the real flow - `check()` from
+   `plugin-updater`, then download/install bracketed by
+   `setUpdaterRelaunching`, plus a re-check on each window reopen. The new shell
+   wants the banner rather than the popover's startup takeover, and the same
+   slice supplies Settings' "Check for updates" row.
+3. **The running-apps sequence.** `ApplyChangesDialog` to `CloseAppsDialog` to
+   `ChangeReadyDialog` are built and unreachable. `runningAgents()` and
+   `closeRunningAgents()` both exist; what is missing is the decision of when
+   the sequence interrupts a connect.
+4. **The family master cascade.** `FamiliesPane` hides its master switch rather
+   than showing a dead one. Cascading has to skip members with a hand-written
+   config, which means reusing the drift gate per member rather than looping
+   `connectTool`.
+5. **The per-app model picker.** `UseGateModelDialog` exists;
+   `App / Select a model` was never read from the Figma, so its contents are
+   known only from a frame caption.
+6. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
+   pending the 24-hour endpoint. Open question 7 (whether `total` double-counts)
+   should be settled in that response shape, not in the chart.
+7. **Retire the popover.** `App.tsx`, `screens/`, `gc/ui.tsx`, the `gc.*`
+   palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together,
+   once 1 lands and the e2e suite can be repointed at the new shell.
+
+Rows the design draws that have no backend command at all: device rename,
+notifications, plan upgrade. They render their value and omit their control.
