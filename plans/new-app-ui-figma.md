@@ -59,6 +59,53 @@ Only component/state frames.
 | 121:33421 | `nav/sidebar/settings` (row hover) | 250x573 |
 | 116:17428 | `topnav/menu` | 224x114 |
 
+## Re-verification of the Flows pages, 2026-08-17
+
+`Components` is unchanged. The three Flows pages have moved.
+
+### Settings screen: four labels and one affordance changed
+
+| Row | Was built as | Now reads |
+| --- | --- | --- |
+| Device | `Rename` | `Rename device` |
+| Install ID | `Copy` | `Copy ID` |
+| Gate plan | `Upgrade plan` | `Upgrade plan` + external-link glyph |
+| Active session | `Disconnect` | `Disconnect Gate` |
+
+Applied. The API key value also now shows a prefix rather than a full mask -
+`sk-gw-661b17***…` instead of `sk-gw***…`. That is the shell's string to build,
+not the pane's, and it is a decision about how much of a key to reveal.
+
+### Four new Settings dialogs, all marked ready
+
+- **Rename your device** - form: `Current device name` (readonly) over
+  `New device name` (focused, with a clear button). No subtitle.
+- **Replace API key** - same form shape. Its second field is labelled
+  **"New device name"**, copy-pasted from the rename dialog. Design bug.
+- **Disconnect Gate?** - red tone, body as a plain paragraph rather than a
+  tinted note, primary `Yes, disconnect Gate`.
+- **Reset Gate Connect** - red tone, subtitle, a `What happens next:` list of
+  three numbered steps, and a **checkbox** gating the destructive primary.
+
+### Elsewhere
+
+- Overview: the org-switch frames are now properly named (`overview-switch org`
+  x3, where only two generically-named ones existed before).
+- App: a new **choose model modal**, distinct from the model-switch
+  confirmation. `Change model` currently goes nowhere.
+
+### What this means for `Modal.tsx`
+
+The template needs four things it does not have:
+
+1. a **danger (red) tone** - it has warning, success and neutral only
+2. **form fields** - labelled inputs with a clear button
+3. a **numbered step list**
+4. a **checkbox** that gates the primary action
+
+Body copy also appears as a plain paragraph in the new dialogs, not only as the
+tinted `ModalNote` block.
+
 ## How the designer marks readiness (from Chad, 2026-08-14)
 
 - **A white check mark in a section title above a flow means that flow is

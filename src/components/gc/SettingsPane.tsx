@@ -15,8 +15,10 @@ import type { IconName } from "./Icon";
 export interface SettingsAction {
   label: string;
   onClick: () => void;
-  /** Filled red rather than outline: Disconnect, Review reset. */
+  /** Filled red rather than outline: Disconnect Gate, Review reset. */
   destructive?: boolean;
+  /** Opens the web dashboard, so the label carries the external-link glyph. */
+  external?: boolean;
 }
 
 export interface SettingsRow {
@@ -104,7 +106,7 @@ export function buildSettingsSections({
           icon: "monitorSmartphone",
           label: "Device",
           value: deviceName,
-          action: { label: "Rename", onClick: onRenameDevice },
+          action: { label: "Rename device", onClick: onRenameDevice },
         },
         {
           id: "install-id",
@@ -112,7 +114,7 @@ export function buildSettingsSections({
           label: "Install ID",
           value: installId,
           mono: true,
-          action: { label: "Copy", onClick: onCopyInstallId },
+          action: { label: "Copy ID", onClick: onCopyInstallId },
         },
       ],
     },
@@ -126,7 +128,7 @@ export function buildSettingsSections({
           icon: "receipt",
           label: "Gate plan",
           value: plan,
-          action: { label: "Upgrade plan", onClick: onUpgradePlan },
+          action: { label: "Upgrade plan", onClick: onUpgradePlan, external: true },
         },
       ],
     },
@@ -147,7 +149,7 @@ export function buildSettingsSections({
           id: "session",
           icon: "link",
           label: "Active session",
-          action: { label: "Disconnect", onClick: onDisconnect, destructive: true },
+          action: { label: "Disconnect Gate", onClick: onDisconnect, destructive: true },
         },
       ],
     },
@@ -308,13 +310,14 @@ function ActionButton({ action }: { action: SettingsAction }) {
     <button
       type="button"
       onClick={action.onClick}
-      className={`shrink-0 rounded-base px-2 py-1 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+      className={`flex shrink-0 items-center gap-1.5 rounded-base px-2 py-1 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
         action.destructive
           ? "bg-red-600 text-white hover:bg-red-700 focus-visible:outline-red-600"
           : "border border-base-border bg-base-card text-base-primary shadow-base-2xs hover:bg-gray-50 focus-visible:outline-base-primary"
       }`}
     >
       {action.label}
+      {action.external && <Icon name="squareArrowOutUpRight" size={12} />}
     </button>
   );
 }
