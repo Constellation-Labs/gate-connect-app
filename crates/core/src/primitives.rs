@@ -2,7 +2,8 @@
 //!
 //! `write_file` is cross-platform. Below it are the privileged-execution
 //! and shell-quoting helpers the proxy subsystem uses for its elevated
-//! steps (macOS/Linux), plus the cached install-id for telemetry.
+//! steps (macOS/Linux), plus the cached install-id for attribution (all
+//! platforms: every OS the app ships on has an activity view to feed).
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -267,7 +268,10 @@ pub(crate) fn sh_quote(s: &str) -> String {
 
 /// Stable UUID we send to the gateway audit trail for telemetry attribution.
 /// Generated once and cached at `<app_support_dir>/install-id`.
-#[cfg(target_os = "macos")]
+///
+/// This is the machine's *self-asserted* identity: it groups requests in the
+/// activity view and authorizes nothing. Anyone can forge it, and the gateway
+/// treats it accordingly.
 pub fn install_id() -> Result<String> {
     let path = crate::env::app_support_dir()?.join("install-id");
     if let Ok(s) = fs::read_to_string(&path) {
@@ -276,7 +280,7 @@ pub fn install_id() -> Result<String> {
             return Ok(s);
         }
     }
-    let id = simple_uuid_v4()?;
+    let id = simple_uuid_v4();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok();
     }
@@ -284,23 +288,40 @@ pub fn install_id() -> Result<String> {
     Ok(id)
 }
 
-#[cfg(target_os = "macos")]
-fn simple_uuid_v4() -> Result<String> {
-    // Tiny inline v4 generator so we don't pull `uuid` for one call.
-    let mut bytes = [0u8; 16];
-    let mut f = fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
-    use std::io::Read;
-    f.read_exact(&mut bytes).context("reading /dev/urandom")?;
+/// The install id, resolved once per process, or `None` if it could not be.
+///
+/// Every caller is on the request path, so this must never be the reason a
+/// request fails: an unreadable or unwritable data dir degrades to unattributed
+/// traffic, which is exactly what the gateway saw before attribution existed.
+/// Caching also keeps the file read off the hot path - the id cannot change
+/// while the process runs.
+pub fn install_id_cached() -> Option<&'static str> {
+    static ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    ID.get_or_init(|| match install_id() {
+        Ok(id) => Some(id),
+        Err(e) => {
+            eprintln!("[gate] install id unavailable, requests will be unattributed: {e:#}");
+            None
+        }
+    })
+    .as_deref()
+}
+
+fn simple_uuid_v4() -> String {
+    // Tiny inline v4 generator so we don't pull `uuid` for one call. `rand` is
+    // already a dependency (PKCE), and unlike a `/dev/urandom` read it works on
+    // Windows too.
+    let mut bytes: [u8; 16] = rand::random();
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(format!(
+    format!(
   "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
   bytes[0], bytes[1], bytes[2], bytes[3],
   bytes[4], bytes[5],
   bytes[6], bytes[7],
   bytes[8], bytes[9],
   bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-  ))
+  )
 }
 
 #[cfg(test)]
