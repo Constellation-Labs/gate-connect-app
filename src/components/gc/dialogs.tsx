@@ -644,7 +644,31 @@ export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
     >
-      <ModalNote>
+      <CollectedDataLists Wrapper={ModalNote} />
+    </Modal>
+  );
+}
+
+/**
+ * The sent / never-sent lists, shared by the Settings dialog above and the
+ * onboarding step in `setup.tsx`.
+ *
+ * One copy on purpose. Two would drift, and these are the claims the product's
+ * reassurance rests on - the moment the onboarding promise and the Settings
+ * disclosure disagree, neither can be trusted.
+ *
+ * `Wrapper` because the two callers frame it differently: the dialog uses
+ * `ModalNote`, the setup pane its own card. The content is what is shared, not the
+ * chrome.
+ */
+export function CollectedDataLists({
+  Wrapper,
+}: {
+  Wrapper: (props: { children: ReactNode }) => ReactNode;
+}) {
+  return (
+    <>
+      <Wrapper>
         <p className="font-medium text-neutral-900">Sent</p>
         <ul className="mt-1 list-disc pl-4">
           <li>
@@ -665,8 +689,8 @@ export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
             denied&rdquo;. The underlying message stays on this machine.
           </li>
         </ul>
-      </ModalNote>
-      <ModalNote>
+      </Wrapper>
+      <Wrapper>
         <p className="font-medium text-neutral-900">Never sent</p>
         <ul className="mt-1 list-disc pl-4">
           <li>Prompts or model responses.</li>
@@ -674,7 +698,7 @@ export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
           <li>File paths, hostnames, or the contents of any config file.</li>
           <li>The text of an error, as opposed to its classification.</li>
         </ul>
-      </ModalNote>
-    </Modal>
+      </Wrapper>
+    </>
   );
 }

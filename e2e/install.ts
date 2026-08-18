@@ -255,13 +255,21 @@ export function installFakeTauri(state: BackendState): void {
     set_updater_relaunching: () => null,
 
     // ---- preferences
-    get_preferences: () => state.preferences,
+    // A copy, not the live object. Real IPC serialises every response, so the
+    // frontend always gets a fresh value; handing out the reference this stub
+    // mutates in place meant `setPrefs` received an identical object, React
+    // skipped the re-render, and a preference change was invisible to anything
+    // derived from it.
+    get_preferences: () => ({ ...state.preferences }),
     set_routing_health_notifications: ({ enabled }) => {
       state.preferences.routing_health_notifications = enabled as boolean;
       return null;
     },
     set_share_diagnostics: ({ enabled }) => {
       state.preferences.share_diagnostics = enabled as boolean;
+      // Answering is what the real command records too, and it is what dismisses
+      // the onboarding step.
+      state.preferences.share_diagnostics_recorded = true;
       return null;
     },
 

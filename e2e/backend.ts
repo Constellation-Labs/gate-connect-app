@@ -107,7 +107,14 @@ export interface BackendState {
   launchAtLogin: { enabled: boolean; pending_disable: boolean };
   /** Settings preferences, as `preferences.json` holds them. Both default on,
       which is what lets a switch read On before anything has been written. */
-  preferences: { routing_health_notifications: boolean; share_diagnostics: boolean };
+  preferences: {
+    routing_health_notifications: boolean;
+    share_diagnostics: boolean;
+    /** Whether the diagnostic-data question has been ANSWERED, as opposed to
+        defaulted. False sends first run through the diagnostics step; the
+        default here is true so the existing specs reach the app shell. */
+    share_diagnostics_recorded: boolean;
+  };
   routedClientsStale: boolean;
   runningAgents: number;
   /** Process names the agent scan reports as running. `runningAgents` is the
@@ -267,7 +274,11 @@ export function defaultState(): BackendState {
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
-    preferences: { routing_health_notifications: true, share_diagnostics: true },
+    preferences: {
+      routing_health_notifications: true,
+      share_diagnostics: true,
+      share_diagnostics_recorded: true,
+    },
     routedClientsStale: false,
     runningAgents: 0,
     runningAgentNames: [],

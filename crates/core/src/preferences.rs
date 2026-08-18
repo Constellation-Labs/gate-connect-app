@@ -46,6 +46,17 @@ pub struct Preferences {
     /// the documented default rather than as "unset".
     #[serde(default = "default_true")]
     pub share_diagnostics: bool,
+    /// Whether the person has ever *answered* the diagnostic-data question, as
+    /// opposed to having the default applied for them.
+    ///
+    /// Defaults to false, including for installs that predate this field, which is
+    /// deliberate: consent nobody was asked for is not consent, so those installs
+    /// see the onboarding step once. It is the whole reason this is a separate
+    /// field rather than inferring an answer from `share_diagnostics` - the
+    /// default and a deliberate "yes" are the same value and must not be the same
+    /// fact.
+    #[serde(default)]
+    pub share_diagnostics_recorded: bool,
 }
 
 impl Default for Preferences {
@@ -53,6 +64,7 @@ impl Default for Preferences {
         Self {
             routing_health_notifications: true,
             share_diagnostics: true,
+            share_diagnostics_recorded: false,
         }
     }
 }
@@ -95,10 +107,17 @@ pub fn set_routing_health_notifications(enabled: bool) -> Result<()> {
     save(&prefs)
 }
 
-/// Record the diagnostic-data choice. Same read-modify-write reasoning.
+/// Record the diagnostic-data choice, and that it *was* a choice.
+///
+/// Both callers - the onboarding step's Continue and the Settings switch - are the
+/// person answering, so both mark it answered. That is what dismisses the
+/// onboarding step, and it is why Continue records the displayed value even when
+/// the person changed nothing: leaving the default in place is still an answer,
+/// and treating it as unanswered would ask again on the next launch.
 pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
     let mut prefs = load();
     prefs.share_diagnostics = enabled;
+    prefs.share_diagnostics_recorded = true;
     save(&prefs)
 }
 
@@ -111,6 +130,35 @@ mod tests {
         let prefs = Preferences::default();
         assert!(prefs.routing_health_notifications);
         assert!(prefs.share_diagnostics);
+    }
+
+    /// The distinction the onboarding step turns on: sharing is on by default, and
+    /// that default is *not* an answer. An install that predates the field must
+    /// read as unanswered so the person is actually asked.
+    #[test]
+    fn the_default_is_not_an_answer() {
+        assert!(!Preferences::default().share_diagnostics_recorded);
+        let old_file: Preferences =
+            serde_json::from_str(r#"{"share_diagnostics":true}"#).expect("parses");
+        assert!(old_file.share_diagnostics);
+        assert!(
+            !old_file.share_diagnostics_recorded,
+            "a file written before this field existed was never an answer"
+        );
+    }
+
+    /// Leaving the default in place is still an answer - otherwise Continue would
+    /// dismiss the step and the next launch would ask again.
+    #[test]
+    fn an_unchanged_choice_still_counts_as_answered() {
+        let raw = serde_json::to_string(&Preferences {
+            share_diagnostics: true,
+            share_diagnostics_recorded: true,
+            routing_health_notifications: true,
+        })
+        .expect("serialize");
+        let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
+        assert!(back.share_diagnostics_recorded);
     }
 
     /// The property Settings depends on: a file from a build that predates a
@@ -134,6 +182,7 @@ mod tests {
         let prefs = Preferences {
             routing_health_notifications: false,
             share_diagnostics: true,
+            share_diagnostics_recorded: true,
         };
         let raw = serde_json::to_string(&prefs).expect("serialize");
         let back: Preferences = serde_json::from_str(&raw).expect("deserialize");

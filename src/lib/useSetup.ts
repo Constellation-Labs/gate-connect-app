@@ -36,6 +36,10 @@ export type SetupStage =
   | { kind: "org-picker" }
   /** Signed in, and the confirmation has not been dismissed yet. */
   | { kind: "connected" }
+  /** Signed in and confirmed, but the diagnostic-data question has never been
+   * answered. Derived from the stored preference, so it survives a restart
+   * mid-setup and cannot be skipped by reloading. */
+  | { kind: "diagnostics" }
   /** Signed in and done: the shell shows the app. */
   | { kind: "ready" };
 
@@ -69,6 +73,7 @@ export function useSetup({
   oauth,
   onSession,
   onProxy,
+  diagnosticsAnswered,
 }: {
   /** Whether the first read of account and OAuth state has come back. Without
    *  it, a null account on launch is indistinguishable from no account, and the
@@ -79,6 +84,10 @@ export function useSetup({
   /** A fresh read of both, after anything that could change either. */
   onSession: (next: { account: Account | null; oauth: OAuthStatus | null }) => void;
   onProxy: (next: ProxyState) => void;
+  /** Whether the diagnostic-data question has been answered. `undefined` while the
+   * preference read is in flight - not "unanswered", which would flash the step at
+   * someone who answered it months ago. */
+  diagnosticsAnswered?: boolean;
 }): Setup {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -128,9 +137,14 @@ export function useSetup({
       return { kind: "welcome", reauth: account?.auth_mode === "oauth" };
     }
     // Confirm a sign-in that happened here; never greet a returning user.
-    return sawSignedOut.current && !confirmationSeen
-      ? { kind: "connected" }
-      : { kind: "ready" };
+    if (sawSignedOut.current && !confirmationSeen) return { kind: "connected" };
+    // Consent before Overview, and before collection: `lib/analytics.ts` starts at
+    // launch, so the first thing this buys is a person who has been asked. Only
+    // once the answer is known to be missing - `undefined` is the read still being
+    // in flight, and treating that as unanswered would flash the step at someone
+    // who answered months ago.
+    if (diagnosticsAnswered === false) return { kind: "diagnostics" };
+    return { kind: "ready" };
   })();
 
   const reread = useCallback(async () => {

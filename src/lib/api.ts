@@ -383,6 +383,11 @@ export interface Preferences {
   /** Whether Gate Connect may send diagnostic data. Onboarding records the first
    * answer; Settings changes it after. Nothing is uploaded by setting it. */
   share_diagnostics: boolean;
+  /** Whether the person has ever *answered* the question, rather than having the
+   * default applied for them. False on installs that predate the field, which is
+   * why they see the onboarding step once - consent nobody was asked for is not
+   * consent. `setShareDiagnostics` sets it from either caller. */
+  share_diagnostics_recorded: boolean;
 }
 
 export const getPreferences = () => invoke<Preferences>("get_preferences");
