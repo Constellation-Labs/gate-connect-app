@@ -39,6 +39,7 @@ const proxyState = (over: Partial<ProxyState> = {}): ProxyState => ({
   port: 8080,
   pac_port: null,
   ca_trusted: true,
+  relay_base_url: "http://127.0.0.1:45981",
   env_export_opted_in: false,
   env_export_separable: true,
   domains: [],
@@ -411,5 +412,78 @@ describe("useRouting: the family cascade", () => {
 
     expect(proxySetDomain).toHaveBeenCalledWith("anthropic-api", true);
     expect(connectTool).not.toHaveBeenCalled();
+  });
+});
+
+describe("useRouting: remembering a failed write", () => {
+  /**
+   * A failed write leaves nothing on disk, so no sweep can find it. Without this
+   * the row went on asserting whatever it said before the click, and the only
+   * report was a transient banner.
+   */
+  it("marks the slug whose write failed", async () => {
+    const { api } = harness([tool("codex", { kind: "detected" })], proxyState());
+    (connectTool as Mock).mockRejectedValue("config file locked");
+
+    await act(async () => {
+      await api.current!.setAppRouted("codex", true);
+    });
+
+    expect(api.current!.writeFailures.has("codex")).toBe(true);
+  });
+
+  it("clears the mark once a write for that slug succeeds", async () => {
+    const { api } = harness([tool("codex", { kind: "detected" })], proxyState());
+    (connectTool as Mock).mockRejectedValue("config file locked");
+    await act(async () => {
+      await api.current!.setAppRouted("codex", true);
+    });
+    expect(api.current!.writeFailures.has("codex")).toBe(true);
+
+    (connectTool as Mock).mockResolvedValue({ kind: "connected" });
+    await act(async () => {
+      await api.current!.setAppRouted("codex", true);
+    });
+
+    expect(api.current!.writeFailures.has("codex")).toBe(false);
+  });
+
+  /** Declining a gate is an answer, not a failure. Marking the row would tell
+   * the user their own choice went wrong. */
+  it("does not mark a slug when the user declined the review", async () => {
+    const { api } = harness(
+      [tool("codex", { kind: "drifted", reason: "API base URL: https://api.openai.com/v1" })],
+      proxyState(),
+    );
+
+    let pending: Promise<boolean>;
+    await act(async () => {
+      pending = api.current!.setAppRouted("codex", true);
+    });
+    await act(async () => {
+      api.current!.resolvePrompt(false);
+      await pending!;
+    });
+
+    expect(api.current!.writeFailures.has("codex")).toBe(false);
+    expect(connectTool).not.toHaveBeenCalled();
+  });
+
+  it("keeps one slug's failure off another slug's row", async () => {
+    const { api } = harness(
+      [tool("codex", { kind: "detected" }), tool("claude-code", { kind: "detected" })],
+      proxyState(),
+    );
+    (connectTool as Mock).mockRejectedValueOnce("config file locked");
+    await act(async () => {
+      await api.current!.setAppRouted("codex", true);
+    });
+    (connectTool as Mock).mockResolvedValue({ kind: "connected" });
+    await act(async () => {
+      await api.current!.setAppRouted("claude-code", true);
+    });
+
+    expect(api.current!.writeFailures.has("codex")).toBe(true);
+    expect(api.current!.writeFailures.has("claude-code")).toBe(false);
   });
 });

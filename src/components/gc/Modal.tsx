@@ -47,6 +47,7 @@ export function Modal({
   subtitleTone = "muted",
   children,
   secondary,
+  middle,
   primary,
   onDismiss,
   initialFocus,
@@ -60,6 +61,13 @@ export function Modal({
   subtitleTone?: "muted" | "primary";
   children?: ReactNode;
   secondary?: ModalButton;
+  /** A third action, between the safe one and the primary, for the rare dialog
+   * with three genuinely different outcomes rather than yes/no. The quit dialog
+   * is the only one: disconnect-and-quit, quit-anyway and cancel are three
+   * different things to do, and collapsing any two of them would hide a
+   * consequence. Styled as an outline button so the row still reads
+   * safe → middle → primary left to right. */
+  middle?: ModalButton;
   primary?: ModalButton;
   /** Escape and scrim clicks. Omit to make the dialog unskippable. */
   onDismiss?: () => void;
@@ -119,7 +127,7 @@ export function Modal({
 
         {children && <div className="mt-4 flex flex-col gap-3">{children}</div>}
 
-        {(secondary || primary) && (
+        {(secondary || middle || primary) && (
           <div className="mt-6 flex justify-end gap-3">
             {secondary && (
               <button
@@ -129,6 +137,22 @@ export function Modal({
                 className="flex h-9 items-center rounded-base border border-base-border bg-base-card px-4 text-sm font-medium text-neutral-900 shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
                 {secondary.label}
+              </button>
+            )}
+            {middle && (
+              <button
+                type="button"
+                onClick={middle.disabled ? undefined : middle.onClick}
+                aria-disabled={middle.disabled || undefined}
+                className={`flex h-9 items-center rounded-base border border-base-input bg-base-card px-4 text-sm font-medium shadow-base-2xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                  middle.disabled ? "cursor-not-allowed opacity-45" : "hover:bg-gray-50"
+                } ${
+                  middle.destructive
+                    ? "text-red-600 focus-visible:outline-red-600"
+                    : "text-neutral-900 focus-visible:outline-base-primary"
+                }`}
+              >
+                {middle.label}
               </button>
             )}
             {primary && (

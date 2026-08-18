@@ -187,3 +187,82 @@ test.describe("new UI: the two ways back to first run", () => {
     await expect(app.page.getByRole("button", { name: "Disconnect Gate" })).toBeVisible();
   });
 });
+
+/**
+ * AG-554 / AG-603: the diagnostic-data step, between the sign-in confirmation and
+ * Overview.
+ *
+ * Consent belongs before collection, and `lib/analytics.ts` starts PostHog at
+ * launch - so what this step buys is a person who has actually been asked. The
+ * stage is derived from the stored answer rather than remembered in UI state,
+ * which is why a reload cannot skip it.
+ */
+test.describe("new UI: the diagnostic-data step", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  const unanswered = {
+    account: {
+      gateway_base_url: "https://gw.example",
+      has_api_key: true,
+      auth_mode: "api_key" as const,
+    },
+    preferences: {
+      routing_health_notifications: true,
+      share_diagnostics: true,
+      share_diagnostics_recorded: false,
+    },
+  };
+
+  test("an unanswered install is asked before it reaches the app", async ({ boot }) => {
+    const app = await boot(unanswered);
+
+    await expect(app.page.getByRole("heading", { name: "Help fix problems" })).toBeVisible();
+    // The switch defaults on, and the primary is Continue rather than Accept:
+    // leaving it alone is a real answer.
+    await expect(
+      app.page.getByRole("switch", { name: "Share diagnostic data" }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(app.page.getByRole("button", { name: "Continue" })).toBeVisible();
+  });
+
+  test("it lists what is and is not collected", async ({ boot }) => {
+    const app = await boot(unanswered);
+
+    await expect(app.page.getByText("Sent", { exact: true })).toBeVisible();
+    await expect(app.page.getByText("Never sent")).toBeVisible();
+    await expect(app.page.getByText(/Prompts or model responses/)).toBeVisible();
+  });
+
+  /** Leaving the default in place is an answer, so Continue must record it - or the
+   * next launch would ask again. */
+  test("Continue records an unchanged choice and opens the app", async ({ boot }) => {
+    const app = await boot(unanswered);
+
+    await app.page.getByRole("button", { name: "Continue" }).click();
+
+    await expect.poll(() => app.lastCall("set_share_diagnostics")).toEqual({ enabled: true });
+    await expect(app.page.getByRole("button", { name: "Settings" })).toBeVisible();
+  });
+
+  test("switching it off records the refusal, and still opens the app", async ({ boot }) => {
+    const app = await boot(unanswered);
+
+    await app.page.getByRole("switch", { name: "Share diagnostic data" }).click();
+    await app.page.getByRole("button", { name: "Continue" }).click();
+
+    await expect.poll(() => app.lastCall("set_share_diagnostics")).toEqual({ enabled: false });
+    await expect(app.page.getByRole("button", { name: "Settings" })).toBeVisible();
+  });
+
+  test("an install that already answered is not asked again", async ({ boot }) => {
+    const app = await boot({
+      ...unanswered,
+      preferences: { ...unanswered.preferences, share_diagnostics_recorded: true },
+    });
+
+    await expect(app.page.getByRole("heading", { name: "Help fix problems" })).toHaveCount(0);
+    await expect(app.page.getByRole("button", { name: "Settings" })).toBeVisible();
+  });
+});
