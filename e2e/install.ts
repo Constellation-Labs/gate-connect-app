@@ -327,10 +327,14 @@ export function installFakeTauri(state: BackendState): void {
       return pending;
     },
     disconnect_tools_for_quit: () => {
+      // A tool the teardown could not put back stays connected, which is what
+      // leaves it pointing at a relay about to die.
       for (const t of state.tools) {
-        if (t.status.kind === "connected") t.status = { kind: "detected" };
+        if (t.status.kind === "connected" && !state.quitLeftBehind.includes(t.name)) {
+          t.status = { kind: "detected" };
+        }
       }
-      return null;
+      return state.quitLeftBehind;
     },
 
     // ---- analytics seam

@@ -713,20 +713,35 @@ fn snapshot_and_disable_all_locked() -> Result<()> {
 /// user's tools are concerned - the relay stops either way - and using the
 /// narrower [`snapshot_and_disable_all`] for the switch left the harnesses
 /// pointed at a dead port while the UI reported "not routing".
-pub fn snapshot_and_disable_everything() -> Result<()> {
+///
+/// Returns the **display names of the tools it could not return to their own
+/// settings**, empty when everything came back. Best-effort still means the call
+/// succeeds when one tool fails, because the sweep must not abandon the remaining
+/// tools; the difference is that the failure is now the caller's to report rather
+/// than a line on stderr. A quit that leaves a config pointing at a relay about
+/// to die is exactly what the user needs told, and the old signature could not
+/// say it.
+pub fn snapshot_and_disable_everything() -> Result<Vec<String>> {
     let _guard = master_flow_guard();
     snapshot_and_disable_all_locked()?;
     let mut disconnected = Vec::new();
+    let mut failed = Vec::new();
     for integ in registry::registry() {
         if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
             continue;
         }
         match integ.disconnect() {
             Ok(()) => disconnected.push(integ.id().slug().to_string()),
-            Err(e) => eprintln!(
-                "[gate] disconnecting {} during quit failed: {e}",
-                integ.display_name()
-            ),
+            Err(e) => {
+                // Kept on stderr for the log, *and* returned. It used to be only
+                // the former, which meant a tool left pointing at a dead relay
+                // was invisible to the caller and the quit reported success.
+                eprintln!(
+                    "[gate] disconnecting {} during quit failed: {e}",
+                    integ.display_name()
+                );
+                failed.push(integ.display_name().to_string());
+            }
         }
     }
     // Union for the same reason as the provider snapshot.
@@ -736,7 +751,8 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
             snapshot.push(slug);
         }
     }
-    save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)
+    save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)?;
+    Ok(failed)
 }
 
 /// One thing a restore has recorded and not finished.

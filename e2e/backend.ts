@@ -127,6 +127,10 @@ export interface BackendState {
   runningAgentNames: string[];
   staleAgents: number;
   pendingQuitTools: string[] | null;
+  /** Display names `disconnect_tools_for_quit` reports it could NOT put back.
+      Empty = a clean teardown. A spec that cares about the partial-teardown
+      result sets it; the teardown itself still succeeds, which is the point. */
+  quitLeftBehind: string[];
   /** Failures the Rust side has buffered for the frontend to drain. Emptied by
       `drain_backend_errors`, like the real buffer. A spec sets this to check that
       a failure predating the webview - the startup auto-enable runs before either
@@ -322,6 +326,7 @@ export function defaultState(): BackendState {
     runningAgentNames: [],
     staleAgents: 0,
     pendingQuitTools: null,
+    quitLeftBehind: [],
     backendErrors: [],
     pendingRestore: { providers: [], tools: [] },
     pendingResumeKeeps: [],

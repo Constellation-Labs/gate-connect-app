@@ -22,6 +22,9 @@ import {
   openOnboardingWindow,
   proxyStatus,
   routingVerdicts,
+  pendingQuitTools,
+  disconnectToolsForQuit,
+  quitApp,
   pendingRestore,
   resumeRestore,
   restoreJournal,
@@ -57,6 +60,8 @@ import {
   ChangeReadyDialog,
   CloseAppsDialog,
   ModelPickerDialog,
+  QuitDialog,
+  QuitLeftBehindDialog,
   UseGateModelDialog,
 } from "./components/gc/dialogs";
 import type { GateModelOption } from "./components/gc/dialogs";
@@ -178,6 +183,20 @@ export function NewUiApp() {
    */
   const [modelChoice, setModelChoice] = useState<Record<string, ModelChoice>>({});
   const [modelOverlay, setModelOverlay] = useState<"picker" | "confirm-gate" | null>(null);
+  /**
+   * A quit the tray deferred to this window, and its aftermath.
+   *
+   * `quitTools` holds the config-routed tools still pointed at Gate; non-null
+   * raises the dialog. `quitLeftBehind` holds the ones a teardown could not put
+   * back, which AG-596 requires be named rather than quietly exited past.
+   *
+   * The names are swept from a backend buffer (at mount, then on each nudge)
+   * rather than carried on the event, so a Quit clicked before this listener
+   * registered is not lost - the same reasoning as `App.tsx`.
+   */
+  const [quitTools, setQuitTools] = useState<string[] | null>(null);
+  const [quitLeftBehind, setQuitLeftBehind] = useState<string[] | null>(null);
+  const [quitBusy, setQuitBusy] = useState(false);
   const platform = usePlatform();
 
   const loadLaunchAtLogin = useCallback(async () => {
@@ -243,6 +262,21 @@ export function NewUiApp() {
       setRefreshing(false);
     }
   }, [refresh]);
+
+  useEffect(() => {
+    const sweep = () => {
+      pendingQuitTools()
+        .then((tools) => {
+          if (tools && tools.length > 0) setQuitTools(tools);
+        })
+        .catch(() => {});
+    };
+    sweep();
+    const unlisten = listen("quit-requested", sweep);
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
 
   // The engine changes state without us asking: a CLI toggle, the startup
   // auto-enable, another window. Repaint from the event rather than leaving a
@@ -333,6 +367,39 @@ export function NewUiApp() {
     return () => {
       void unlisten.then((f) => f()).catch(() => {});
     };
+  }, []);
+
+
+  /** Put the tools back, then quit - unless something stayed on Gate, in which
+   * case name it and stay open. Quitting there would strand a config pointing at
+   * a relay that dies with this process. */
+  const disconnectAndQuit = useCallback(async () => {
+    setQuitBusy(true);
+    setActionError(null);
+    try {
+      const failed = await disconnectToolsForQuit();
+      if (failed.length > 0) {
+        setQuitLeftBehind(failed);
+        setQuitTools(null);
+        setQuitBusy(false);
+        return;
+      }
+      await quitApp();
+    } catch (e) {
+      setActionError(classifyError(e, "quit_disable"));
+      setQuitBusy(false);
+    }
+  }, []);
+
+  const quitAnyway = useCallback(async () => {
+    setQuitBusy(true);
+    await quitApp().catch(() => {});
+  }, []);
+
+  const cancelQuit = useCallback(() => {
+    setQuitTools(null);
+    setQuitLeftBehind(null);
+    setQuitBusy(false);
   }, []);
 
 
@@ -786,7 +853,26 @@ export function NewUiApp() {
       }
       onToggleApp={(slug, next) => void routeApp(slug, next)}
       dialog={
-        routing.prompt?.kind === "drift" ? (
+        // A pending quit decision outranks every other overlay: the user asked
+        // to leave, and an update prompt or routing notice must not sit on top
+        // of the question. Same precedence the popover gives it (TAKEOVER_Z.quit).
+        quitLeftBehind !== null ? (
+          <QuitLeftBehindDialog
+            tools={quitLeftBehind}
+            busy={quitBusy}
+            onRetry={() => void disconnectAndQuit()}
+            onQuitAnyway={() => void quitAnyway()}
+            onCancel={cancelQuit}
+          />
+        ) : quitTools !== null ? (
+          <QuitDialog
+            tools={quitTools}
+            busy={quitBusy}
+            onDisconnectAndQuit={() => void disconnectAndQuit()}
+            onQuitAnyway={() => void quitAnyway()}
+            onCancel={cancelQuit}
+          />
+        ) : routing.prompt?.kind === "drift" ? (
           <ReviewConfigDialog
             app={{ name: routing.prompt.name }}
             existingConfig={routing.prompt.existingConfig}
