@@ -31,7 +31,7 @@ export interface GatewayServer {
 export const GATEWAY_SERVERS: GatewayServer[] = [
   { label: "Production", url: "https://gateway.constellationgate.ai" },
   { label: "Staging", url: "https://gateway-staging.constellationgate.ai" },
-  // TEMPORARY (AG-572): a gateway running on this machine
+  // A gateway running on this machine, for development only (AG-572)
   // (`pnpm --filter @gate/gateway-proxy dev` serves plain HTTP on :3000).
   //
   // `import.meta.env.DEV` is false in every `vite build`, so this entry cannot
