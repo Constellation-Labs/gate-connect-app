@@ -232,6 +232,10 @@ impl Integration for OpenCode {
         false
     }
 
+    fn config_location(&self) -> Option<String> {
+        settings_path().ok().map(|p| p.display().to_string())
+    }
+
     fn detect(&self) -> Result<bool> {
         if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);

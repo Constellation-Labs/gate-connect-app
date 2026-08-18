@@ -122,12 +122,20 @@ export function ReviewConfigDialog({
    * would be pointed at. Absent when no relay port has been bound yet, in which
    * case the row is omitted rather than guessed at. */
   gateRoute,
+  /** The file that gets rewritten, e.g. "/Users/x/.codex/config.toml".
+   *
+   * AG-564 asks the warning to name the tool *and* the configuration location.
+   * Naming the file is also the transparency this product trades on: the user can
+   * go and read it, which is a stronger reassurance than any sentence about what
+   * Gate does or does not touch. Omitted when no single file names it. */
+  configLocation,
   onKeep,
   onReplace,
 }: {
   app: DialogApp;
   existingConfig: string;
   gateRoute?: string | null;
+  configLocation?: string | null;
   onKeep: () => void;
   onReplace: () => void;
 }) {
@@ -157,6 +165,14 @@ export function ReviewConfigDialog({
           description={gateRoute}
           pill={{ label: "Gate route", tone: "green" }}
         />
+      )}
+      {configLocation && (
+        <ModalNote>
+          <p className="font-medium text-neutral-900">The file that changes:</p>
+          {/* Mono, like every other identifier in this UI. `break-all` because a
+              home-directory path overflows the 600px dialog on any real machine. */}
+          <p className="mt-1 break-all font-mono text-base-xs">{configLocation}</p>
+        </ModalNote>
       )}
       <ModalNote>
         <p className="font-medium text-neutral-900">If Gate takes over:</p>

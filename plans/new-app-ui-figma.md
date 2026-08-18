@@ -1009,3 +1009,47 @@ just got, applied to the reset path.
 The restore-vs-AC conflict recorded against AG-564/566/570/596 is unchanged by
 this work: `claude_code.rs` does restore prior values, so no copy here claims
 otherwise.
+## Naming the file Gate rewrites (AG-564)
+
+`Integration::config_location()` is new: the file each integration edits, as a
+display string, implemented for Claude Code, Codex, OpenCode, OpenClaw and Hermes
+and defaulting to `None` for the environment channel, which writes machine-wide
+settings rather than a file of its own. It reaches the UI on `ToolDto` and the
+drift review now names the file before asking the user to approve a rewrite.
+
+Two things this is deliberately *not*:
+
+- **Not a probe.** Reading the location creates nothing. A test pins that,
+  because a call that materialised a config directory would make `status()`
+  report a tool as present because the UI had looked at it.
+- **Not a secret.** It is a path in the user's own home directory, and the point
+  of showing it is that they can go and read it - which is the reassurance
+  CLAUDE.md's first design principle asks for, and stronger than any sentence
+  about what Gate does or does not touch.
+
+### The confirmation this ticket asks for, and why it is not here
+
+AG-564 asks for a confirmation before *every* turn-on: "Before routing is turned
+on, Gate Connect states that it will replace the tool's routing configuration
+with Gate values", with **Use Gate routing** and **Cancel**. It was built, and
+then removed before shipping, for reasons worth recording:
+
+1. **The design draws a bare switch.** The Figma has no confirmation on this flow,
+   and AG-563 - this ticket's design counterpart - is still In review, so the
+   designer has an opinion in flight that this work cannot see. CLAUDE.md makes the
+   Figma the source of truth for exactly this kind of question.
+2. **It stacks two modals on a first turn-on.** The gate lands before
+   `ensureCaTrusted`, so the first tool a user routes would raise "Route X through
+   Gate?" and then "Trust the Gate certificate?" back to back.
+3. **The criteria are written per tool and say nothing about the cascade.**
+   `setFamilyRouted` calls `connectTool` directly rather than through
+   `setAppRouted`, so a family switch would have escaped the gate anyway - which is
+   just as well, since a modal per member would make that switch unusable. But
+   that means the ticket's model and the product's shape disagree.
+
+The warning does exist for the case where something of the user's is actually at
+risk of being overwritten: a drifted config, which has had the review dialog all
+along. What a general confirmation would add is coverage of the *clean* case,
+where `integrations/codex.rs` still replaces the user's own `model_provider` (and
+stashes it for disconnect). That is a real gap, and a real design decision -
+raised on AG-564 and AG-563 rather than settled here.

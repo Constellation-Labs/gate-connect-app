@@ -103,6 +103,7 @@ const tools: Tool[] = [
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
     requires_upstream_credential: false,
+  config_location: null,
     status: { kind: "connected" },
   },
   {
@@ -111,6 +112,7 @@ const tools: Tool[] = [
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://api.openai.com",
     requires_upstream_credential: false,
+  config_location: null,
     status: { kind: "drifted", reason: "base_url points elsewhere" },
   },
 ];

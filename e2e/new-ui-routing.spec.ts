@@ -626,3 +626,60 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await expect(app.page.getByRole("button", { name: "Review details" })).toHaveCount(0);
   });
 });
+
+/**
+ * AG-564's one unambiguous line: "The warning names the tool and configuration
+ * location without displaying credentials or secret values."
+ *
+ * The location is the file Gate is about to rewrite. Showing it is also the
+ * transparency the product trades on - the user can go and read it, which beats
+ * any sentence about what Gate does and does not touch.
+ */
+test.describe("new UI: the review names the file it will change", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  const driftedWithPath = {
+    proxy: { running: true, ca_trusted: true },
+    tools: [
+      {
+        slug: "codex",
+        name: "Codex",
+        upstream_provider_name: "OpenAI",
+        default_upstream_url: "https://gw.example/codex",
+        requires_upstream_credential: false,
+        config_location: "/Users/someone/.codex/config.toml",
+        status: {
+          kind: "drifted" as const,
+          reason: "API base URL: https://api.openai.com/v1",
+        },
+      },
+    ],
+  };
+
+  test("the review names the config file", async ({ boot }) => {
+    const app = await boot(driftedWithPath);
+
+    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("/Users/someone/.codex/config.toml")).toBeVisible();
+  });
+
+  test("no file is named when the tool owns none", async ({ boot }) => {
+    // The environment channel writes machine-wide settings, not a file of its
+    // own, so the line goes rather than naming something invented.
+    const app = await boot({
+      ...driftedWithPath,
+      tools: [{ ...driftedWithPath.tools[0], config_location: null }],
+    });
+
+    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("The file that changes:")).toHaveCount(0);
+  });
+});

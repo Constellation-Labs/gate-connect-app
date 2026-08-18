@@ -880,6 +880,7 @@ export function NewUiApp() {
             // before a port has been bound, and the dialog omits the row rather
             // than inventing an address.
             gateRoute={proxy?.relay_base_url}
+            configLocation={configLocationFor(tools, routing.prompt.slug)}
             onKeep={() => routing.resolvePrompt(false)}
             onReplace={() => routing.resolvePrompt(true)}
           />
@@ -1061,6 +1062,11 @@ const EMPTY_STATS = {
   tokensSavedPercent: 0,
   tokensSavedAmount: "+$0.00",
 };
+
+/** The file Gate rewrites for one tool, for the drift review's copy. */
+function configLocationFor(tools: Tool[], slug: string): string | null {
+  return tools.find((t) => t.slug === slug)?.config_location ?? null;
+}
 
 function appFor(apps: SidebarApp[], slug: string): SidebarApp | undefined {
   return apps.find((a) => a.slug === slug);

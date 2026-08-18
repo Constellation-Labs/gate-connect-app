@@ -92,7 +92,11 @@ export function installFakeTauri(state: BackendState): void {
     "plugin:app|version": () => state.version,
 
     // ---- tools
-    list_tools: () => state.tools,
+    // Fill the field the real backend always sends, so a fixture that omits it
+    // still produces a well-formed Tool rather than an undefined the UI has to
+    // guess about.
+    list_tools: () =>
+      state.tools.map((t) => ({ config_location: null, ...t })),
     connect_tool: ({ slug }) => {
       const t = tool(slug);
       t.status = { kind: "connected" };

@@ -13,6 +13,11 @@ export interface Tool {
   upstream_provider_name: string;
   default_upstream_url: string;
   requires_upstream_credential: boolean;
+  /** The file Gate rewrites for this tool, so the confirmation can say what is
+   * about to change. Null where no single file names it (the environment
+   * channel). Not a secret - it is a path in the user's own home directory, and
+   * showing it is the point. */
+  config_location: string | null;
   status: Status;
 }
 

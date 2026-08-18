@@ -33,6 +33,11 @@ export interface ToolFixture {
   upstream_provider_name: string;
   default_upstream_url: string;
   requires_upstream_credential: boolean;
+  /** The file Gate rewrites for this tool. Optional: absent and null both mean
+      "no single file names it", which is what the real backend reports for the
+      environment channel. A spec that cares about the drift review's copy sets
+      it; `list_tools` fills the default so nothing else has to. */
+  config_location?: string | null;
   status: ToolStatus;
 }
 
@@ -181,6 +186,7 @@ const CLAUDE_CODE: ToolFixture = {
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",
   requires_upstream_credential: false,
+    config_location: null,
   status: { kind: "detected" },
 };
 
@@ -190,6 +196,7 @@ const CODEX: ToolFixture = {
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://api.openai.com/v1",
   requires_upstream_credential: false,
+    config_location: null,
   status: { kind: "detected" },
 };
 
@@ -199,6 +206,7 @@ const OPENCODE: ToolFixture = {
   upstream_provider_name: "your existing providers",
   default_upstream_url: "https://api.anthropic.com",
   requires_upstream_credential: false,
+    config_location: null,
   status: { kind: "detected" },
 };
 
