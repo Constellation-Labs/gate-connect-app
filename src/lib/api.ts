@@ -161,6 +161,11 @@ export interface ProxyState {
    * environment variables *are* the system proxy and cannot be declined
    * without turning routing off - so the switch must not render there. */
   env_export_separable: boolean;
+  /** Loopback base URL config-routed tools are pointed at; null before a relay
+   * port has ever been bound. Non-secret - it is already written verbatim into
+   * each tool's own config file. The drift review shows it, because approving an
+   * overwrite means seeing what it writes. */
+  relay_base_url: string | null;
   domains: ProxyDomain[];
 }
 

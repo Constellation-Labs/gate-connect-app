@@ -59,6 +59,30 @@ describe("verdictStatus", () => {
   it("never reports Protected before a verdict arrives", () => {
     expect(verdictStatus(undefined).kind).not.toBe("protected");
   });
+
+  /**
+   * A failed write leaves nothing on disk, so the sweep keeps describing the
+   * state from before the click - true, and not what the user needs to know.
+   */
+  it("a failed write outranks the sweep, which still describes the old state", () => {
+    expect(verdictStatus(verdict({ state: "off" }), { writeFailed: true })).toEqual({
+      kind: "not-protected",
+      detail: "Configuration update failed",
+    });
+  });
+
+  it("a failed write outranks even a verified On", () => {
+    expect(verdictStatus(verdict({ state: "on" }), { writeFailed: true })).toEqual({
+      kind: "not-protected",
+      detail: "Configuration update failed",
+    });
+  });
+
+  it("says nothing about a write that did not fail", () => {
+    expect(verdictStatus(verdict({ state: "on" }), { writeFailed: false })).toEqual({
+      kind: "protected",
+    });
+  });
 });
 
 describe("verdictsBySlug", () => {
