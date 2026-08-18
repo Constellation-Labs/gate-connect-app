@@ -73,7 +73,8 @@ interface RawOverview {
 interface RawRow {
   id: string;
   label: string;
-  action?: "block" | "flag" | "redact";
+  /** Absent when the policy states no single mode. See `PolicyAction`. */
+  action?: "block" | "flag" | "redact" | "allow";
   enabled: boolean;
 }
 
@@ -259,7 +260,10 @@ export function adapt(raw: RawOverview): ActivityView {
     },
     buckets: (raw.requestsByHour.buckets ?? []).map(toBucket),
     policies: toRows<Policy>(raw.policies.rows, POLICY_ICONS, "shieldCheck", (r) => ({
-      action: r.action ?? "flag",
+      // Never defaulted. The gateway omits this when the policy states no mode,
+      // and the pipeline then acts per entity or per confidence tier - filling in
+      // "flag" would print a verb for enforcement nobody configured.
+      action: r.action ?? null,
     })),
     savings: toRows<Saving>(raw.tokenSavings.rows, SAVINGS_ICONS, "layers", () => ({})),
     period: `Last 24 hours · updated ${takenAt}`,

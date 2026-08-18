@@ -14,7 +14,15 @@ import type { MessagesBucket, UsageStats } from "./metrics";
  * arrives as a prop and nothing here talks to `lib/api`.
  */
 
-export type PolicyAction = "block" | "flag" | "redact";
+/**
+ * What the policy does when a criterion trips, as the gateway stores it.
+ *
+ * `allow` is one of them: the criterion runs and records what it finds, it just
+ * does not act. It reads oddly next to the other three and is deliberately not
+ * folded into "off", because a guardrail that is watching is not the same as one
+ * that is not there.
+ */
+export type PolicyAction = "block" | "flag" | "redact" | "allow";
 
 /** Anchor for the Tokens saved counter's jump target (AG-572). */
 const SAVINGS_SECTION_ID = "token-savings";
@@ -23,7 +31,10 @@ export interface Policy {
   id: string;
   name: string;
   icon: IconName;
-  action: PolicyAction;
+  /** Null when the policy states no single action for this guardrail, which is
+   *  the common case: the gateway then acts per entity or per confidence tier,
+   *  and no one verb describes it. Rendered as no pill rather than a guess. */
+  action: PolicyAction | null;
   enabled: boolean;
 }
 
@@ -42,6 +53,10 @@ const ACTION_STYLES: Record<PolicyAction, string> = {
   block: "bg-red-100 text-red-900",
   flag: "bg-amber-100 text-amber-900",
   redact: "bg-purple-100 text-purple-900",
+  // Not in the Figma, which draws only the three enforcing actions. Neutral
+  // rather than a fourth colour: `allow` is the one that does nothing, and
+  // giving it a hue would read as a severity it does not have.
+  allow: "bg-neutral-100 text-neutral-900",
 };
 
 export function Overview({
@@ -145,11 +160,20 @@ function PolicyTable({
                 </span>
               </td>
               <td className="py-3 text-right">
-                <span
-                  className={`inline-block rounded-base px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
-                >
-                  {policy.action}
-                </span>
+                {policy.action ? (
+                  <span
+                    className={`inline-block rounded-base px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
+                  >
+                    {policy.action}
+                  </span>
+                ) : (
+                  // The policy names no single action, so neither does this. The
+                  // Status column still says whether the guardrail is running,
+                  // which is the part that would be a lie to leave blank.
+                  <span className="text-base-xs text-base-muted-foreground" title="This policy sets no single action">
+                    Not set
+                  </span>
+                )}
               </td>
               <td className="py-3 text-right">
                 <StatusPill on={policy.enabled} />
