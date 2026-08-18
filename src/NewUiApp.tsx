@@ -72,7 +72,12 @@ import {
 } from "./components/gc/dialogs";
 import { AlertBanner, ErrorBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
-import type { AppStatus, SidebarApp, SidebarView } from "./components/gc/Sidebar";
+import type {
+  AppStatus,
+  InventoryState,
+  SidebarApp,
+  SidebarView,
+} from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
 import { analyticsId } from "./lib/analytics";
@@ -139,6 +144,12 @@ export function NewUiApp() {
    * write: refusing to re-read while a toggle is mid-flight would be the wrong
    * coupling, and a scan changes nothing on disk. */
   const [refreshing, setRefreshing] = useState(false);
+  /**
+   * What the last detection scan established, as opposed to how many rows it
+   * produced. `null` before the first one lands - which is not "nothing found",
+   * and must not render as it.
+   */
+  const [scan, setScan] = useState<{ kind: "ok"; at: Date } | { kind: "failed" } | null>(null);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
@@ -182,6 +193,10 @@ export function NewUiApp() {
       listTools().catch(() => null),
       proxyStatus().catch(() => null),
     ]);
+    // A failed scan is not an empty machine. `catch(() => [])` used to collapse
+    // the two, so a device Gate could not read rendered as a device with no AI
+    // apps on it - the exact confusion AG-560 exists to remove.
+    setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
     if (t) setTools(t);
     if (px) setProxy(px);
     // The engine coming up or going down changes every verdict, since the relay
@@ -216,7 +231,7 @@ export function NewUiApp() {
   useEffect(() => {
     void (async () => {
       const [t, p, px, acct, oauthState, v] = await Promise.all([
-        listTools().catch(() => [] as Tool[]),
+        listTools().catch(() => null),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
         getAccount().catch(() => null),
@@ -225,7 +240,8 @@ export function NewUiApp() {
       ]);
       void loadLaunchAtLogin();
       void loadPreferences();
-      setTools(t);
+      setTools(t ?? []);
+      setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
       void refreshVerdicts();
       setProviders(p);
       setProxy(px);
@@ -335,6 +351,19 @@ export function NewUiApp() {
         })),
     [tools, verdicts, routing.writeFailures, routingBusy],
   );
+
+  /**
+   * What the sidebar should say when the app list is empty. `ok` while there are
+   * rows, because the rows speak for themselves; before the first scan lands the
+   * state is unknown, and rendering "no apps detected" then would be a claim
+   * nothing has checked.
+   */
+  const inventory = useMemo<InventoryState>(() => {
+    if (apps.length > 0) return { kind: "ok" };
+    if (scan === null) return { kind: "ok" };
+    if (scan.kind === "failed") return { kind: "failed" };
+    return { kind: "none", scannedAt: scan.at.toLocaleTimeString() };
+  }, [apps.length, scan]);
 
   const families = useMemo<Family[]>(
     () =>
@@ -614,6 +643,7 @@ export function NewUiApp() {
       onSelectApp={(slug) => setView({ kind: "app", slug })}
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
+      inventory={inventory}
       notice={
         actionError ? (
           <ErrorBanner
