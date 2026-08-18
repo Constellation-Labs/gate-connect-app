@@ -56,6 +56,9 @@ struct ToolDto {
     upstream_provider_name: String,
     default_upstream_url: String,
     requires_upstream_credential: bool,
+    /// The file Gate rewrites for this tool, for the copy that says what is
+    /// about to change. `None` where no single file names it.
+    config_location: Option<String>,
     status: StatusDto,
 }
 
@@ -105,6 +108,7 @@ fn list_tools() -> Vec<ToolDto> {
             upstream_provider_name: integ.upstream_provider_name().to_string(),
             default_upstream_url: integ.default_upstream_url().to_string(),
             requires_upstream_credential: integ.requires_upstream_credential(),
+            config_location: integ.config_location(),
             status: status_for(integ.as_ref()),
         })
         .collect()

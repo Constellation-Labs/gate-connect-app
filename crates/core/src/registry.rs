@@ -122,6 +122,22 @@ pub trait Integration: Send + Sync {
         Ok(false)
     }
 
+    /// The file this integration rewrites, for the copy that tells the user what
+    /// is about to change - "Gate will update ~/.codex/config.toml".
+    ///
+    /// A display string rather than a `PathBuf`: the only caller is UI copy, and
+    /// resolving it can fail (no home directory), which is not worth propagating
+    /// into a sentence. `None` when the integration edits nothing a single path
+    /// names - the environment channel writes machine-wide settings, not a file
+    /// of its own - and callers then name the tool without a location rather than
+    /// inventing one.
+    ///
+    /// Not a secret: it is a path in the user's own home directory, and the point
+    /// of showing it is that they can go and read it.
+    fn config_location(&self) -> Option<String> {
+        None
+    }
+
     /// Is the underlying tool installed on this machine?
     fn detect(&self) -> Result<bool>;
 

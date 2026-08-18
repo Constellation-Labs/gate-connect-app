@@ -10,6 +10,7 @@ function tool(slug: string, name: string, status: Tool["status"], upstream = "An
     upstream_provider_name: upstream,
     default_upstream_url: "https://api.anthropic.com",
     requires_upstream_credential: false,
+  config_location: null,
     status,
   };
 }

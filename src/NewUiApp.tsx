@@ -546,6 +546,7 @@ export function NewUiApp() {
           <ReviewConfigDialog
             app={{ name: routing.prompt.name }}
             existingConfig={routing.prompt.existingConfig}
+            configLocation={configLocationFor(tools, routing.prompt.slug)}
             onKeep={() => routing.resolvePrompt(false)}
             onReplace={() => routing.resolvePrompt(true)}
           />
@@ -723,6 +724,11 @@ const EMPTY_STATS = {
   tokensSavedPercent: 0,
   tokensSavedAmount: "+$0.00",
 };
+
+/** The file Gate rewrites for one tool, for the drift review's copy. */
+function configLocationFor(tools: Tool[], slug: string): string | null {
+  return tools.find((t) => t.slug === slug)?.config_location ?? null;
+}
 
 function appFor(apps: SidebarApp[], slug: string): SidebarApp | undefined {
   return apps.find((a) => a.slug === slug);
