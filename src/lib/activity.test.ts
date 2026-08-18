@@ -10,7 +10,10 @@ import { adapt } from "./activity";
  * or per confidence tier. Filling in a default here would print a verb for
  * enforcement nobody configured, on the pane whose job is honest system state.
  */
-function overview(rows: Array<{ id: string; label: string; action?: string; enabled: boolean }>) {
+function overview(
+  rows: Array<{ id: string; label: string; action?: string; enabled: boolean }>,
+  counters?: Record<string, unknown>,
+) {
   return {
     generatedAt: "2026-08-17T12:00:00.000Z",
     window: { from: "2026-08-16T13:00:00.000Z", to: "2026-08-17T12:00:00.000Z" },
@@ -20,6 +23,7 @@ function overview(rows: Array<{ id: string; label: string; action?: string; enab
       needsReview: { state: "ok" as const, value: 0 },
       requestsRouted: { state: "ok" as const, value: 0 },
       tokensSaved: { state: "ok" as const, fraction: 0, amount: 0, currency: "USD" },
+      ...counters,
     },
     requestsByHour: { state: "ok" as const, buckets: [] },
     policies: { state: "ok" as const, rows },
@@ -45,5 +49,41 @@ describe("adapt", () => {
     );
 
     expect(view.policies.map((p) => p.action)).toEqual(["redact", "allow"]);
+  });
+
+  /**
+   * The rule AG-576 states and the tiles enforce: a counter the gateway declined
+   * has no value, and null is what the tiles turn into a dash. A zero here would
+   * be a claim about the user's traffic made out of a section that failed - and a
+   * counter that genuinely answered `0` has to stay a zero, or the honest reading
+   * "nothing happened in this window" becomes indistinguishable from a gap.
+   */
+  it("nulls a declined counter and keeps a real zero", () => {
+    const view = adapt(
+      overview([], {
+        blockedOrFlagged: { state: "unavailable", reason: "attribution" },
+        tokensSaved: { state: "unavailable", reason: "attribution" },
+      }),
+    );
+
+    expect(view.stats.blockedFlagged).toBeNull();
+    expect(view.stats.tokensSavedPercent).toBeNull();
+    expect(view.stats.tokensSavedAmount).toBeNull();
+    // Answered, and the answer was nothing.
+    expect(view.stats.messages).toBe(0);
+  });
+
+  /**
+   * The taxonomy ships with the gateway, not with this build, so a newer gateway
+   * can name a cause this app has never heard of. `activityGaps` switches
+   * exhaustively over the union with no default branch, so an unrecognised value
+   * reaching it would render a banner with no text instead of naming the gap.
+   */
+  it("narrows an unrecognised reason to connectivity", () => {
+    const view = adapt(
+      overview([], { requestsRouted: { state: "unavailable", reason: "quota_exhausted" } }),
+    );
+
+    expect(view.gaps).toEqual([{ section: "Messages", reason: "connectivity" }]);
   });
 });

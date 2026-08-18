@@ -1,4 +1,4 @@
-//! Activity overview for the Gate Connect popover (AG-572).
+//! Activity overview for Gate Connect's Overview pane (AG-572).
 //!
 //! Reads `GET /v1/me/activity` on the gateway: counters, an hourly request
 //! series, and policy / token-savings state for the signed-in org. The gateway

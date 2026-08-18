@@ -58,7 +58,7 @@ Three options were considered. **Recommendation: option A.**
 **Condition on option A:** lift the aggregation queries into a shared package
 under `packages/` so `gateway-proxy` and `dashboard-api` compute identical
 numbers. Two independent implementations of "blocked or redacted in the last
-24h" is how the popover and the dashboard end up disagreeing, which defeats the
+24h" is how Gate Connect and the dashboard end up disagreeing, which defeats the
 purpose of the screen.
 
 ## 4. Endpoint definition
@@ -297,8 +297,8 @@ matched secrets, or raw security evidence.
 - Three sections hit different stores. Compute them **concurrently and
   independently**, so one slow or failing source degrades to
   `state: "unavailable"` rather than timing out the whole response.
-- Set a short server-side timeout per section. The client calls this from a
-  menubar popover on open; a slow response is a blank screen.
+- Set a short server-side timeout per section. The client calls this when the
+  Overview pane opens; a slow response is a blank screen.
 - Boundary consistency: `getStats` uses `>= since` and `<= until` deliberately,
   after an incident where mixing `<` and `<=` made KPI cards disagree with row
   lists. Match that convention exactly.
@@ -344,13 +344,13 @@ Answered items are marked RESOLVED with the source. Updated 2026-08-11.
    a new form. If it lists only this machine, "selected" is the wrong word and
    there is no picker to build.
 9. **NEW: what is an installation's label, and who sets it?** A raw UUID is not
-   something a person recognises in a 380px popover. Machine hostname, a
+   something a person recognises in a picker. Machine hostname, a
    user-chosen name, or something derived at first run are all plausible, and
    they differ in privacy: a hostname is often a person's real name.
 10. **NEW: what happens to unattributed traffic?** Rows written before the
     column exists, and any `sk-gw-*` traffic that never passed through Gate
     Connect, have no installation. Excluded, or grouped under a synthetic
-    "unknown"? This decides whether the popover's totals can ever reconcile with
+    "unknown"? This decides whether Gate Connect's totals can ever reconcile with
     the dashboard's.
 
 ## 10. Suggested phasing
@@ -381,7 +381,7 @@ security-action bucketing variant, not a new metrics pipeline.
 
 ## 11. Consumer notes for `gate-connect-app`
 
-- The fetch must live in Rust, not the webview. The popover CSP
+- The fetch must live in Rust, not the webview. The app's CSP
   (`src-tauri/tauri.conf.json`) does not allow gateway origins in `connect-src`,
   and widening it would be the wrong fix since the webview also holds no token.
 - Model the new client on `crates/core/src/org.rs`: `reqwest::blocking` with
@@ -490,7 +490,7 @@ detail:
 
 - AG-572's own privacy AC forbids prompt and response text on the overview. Tool
   detail is a different screen, so this is not a literal contradiction, but
-  `PRODUCT.md` states the gateway is what inspects traffic and that the popover
+  `PRODUCT.md` states the gateway is what inspects traffic and that Gate Connect
   does not evidence it yet.
 - Open questions it would need answered: body retention per org; whether the
   stored body is pre- or post-redaction (`request_body_pre_compression` suggests

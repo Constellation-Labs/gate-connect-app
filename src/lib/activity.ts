@@ -32,6 +32,29 @@ export type UnavailableReason =
   | "not_configured"
   | "definition_pending";
 
+const REASONS: UnavailableReason[] = [
+  "connectivity",
+  "access",
+  "attribution",
+  "not_configured",
+  "definition_pending",
+];
+
+/**
+ * Read a section's cause, narrowing anything unrecognised to `connectivity`.
+ *
+ * The taxonomy is versioned with the gateway, not with this build, so a newer
+ * gateway may name a cause this app has never heard of. Passing it through would
+ * reach `activityGaps`, which switches exhaustively over the union and has no
+ * branch to fall into: the pane would then render a banner with no text rather
+ * than say a section is missing. `connectivity` is the safe narrowing - it offers
+ * a retry, which is the one action that cannot be wrong about a cause we cannot
+ * name.
+ */
+function reasonOf(raw: unknown): UnavailableReason {
+  return REASONS.includes(raw as UnavailableReason) ? (raw as UnavailableReason) : "connectivity";
+}
+
 interface Counter {
   state: SectionState;
   value?: number;
@@ -226,7 +249,7 @@ export function adapt(raw: RawOverview): ActivityView {
   const c = raw.counters;
   const gaps: ActivityView["gaps"] = [];
   const note = (section: string, s: { state: SectionState; reason?: UnavailableReason }) => {
-    if (s.state !== "ok") gaps.push({ section, reason: s.reason ?? "connectivity" });
+    if (s.state !== "ok") gaps.push({ section, reason: reasonOf(s.reason) });
   };
   note("Blocked and flagged", c.blockedOrFlagged);
   note("Tokens saved", c.tokensSaved);
@@ -244,10 +267,12 @@ export function adapt(raw: RawOverview): ActivityView {
   return {
     orgName: raw.org.name,
     stats: {
-      messages: c.requestsRouted.value ?? 0,
-      blockedFlagged: c.blockedOrFlagged.value ?? 0,
+      // Null, not zero, for a counter the gateway declined: `UsageStats` says
+      // why. A counter that answered `0` is a real reading and stays a zero.
+      messages: c.requestsRouted.state === "ok" ? (c.requestsRouted.value ?? 0) : null,
+      blockedFlagged: c.blockedOrFlagged.state === "ok" ? (c.blockedOrFlagged.value ?? 0) : null,
       // The endpoint sends a fraction; the tile wants whole percent.
-      tokensSavedPercent: Math.round((saved.fraction ?? 0) * 100),
+      tokensSavedPercent: saved.state === "ok" ? Math.round((saved.fraction ?? 0) * 100) : null,
       // Formatted here, not upstream. `Intl` owns the currency symbol and
       // placement; the leading "+" is the design's own convention for a saving.
       tokensSavedAmount:
@@ -256,7 +281,7 @@ export function adapt(raw: RawOverview): ActivityView {
               style: "currency",
               currency: saved.currency ?? "USD",
             }).format(amount)}`
-          : "-",
+          : null,
     },
     buckets: (raw.requestsByHour.buckets ?? []).map(toBucket),
     policies: toRows<Policy>(raw.policies.rows, POLICY_ICONS, "shieldCheck", (r) => ({

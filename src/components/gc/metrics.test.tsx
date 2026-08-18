@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { MessagesChart, type MessagesBucket } from "./metrics";
+import { MessagesChart, StatTiles, type MessagesBucket, type UsageStats } from "./metrics";
 
 afterEach(cleanup);
 
@@ -59,5 +59,36 @@ describe("MessagesChart accessible table", () => {
     const cells = within(row).getAllByRole("cell").map((c) => c.textContent);
     // total, blocked, flagged, redacted, then the sum.
     expect(cells).toEqual(["8", "2", "2", "0", "12"]);
+  });
+});
+
+/**
+ * A declined counter must not print a figure. AG-576's rule, and the reason
+ * `UsageStats` is nullable: "0 blocked" is a claim about the user's traffic, and
+ * the tile is the one place they would look to check it.
+ */
+describe("StatTiles", () => {
+  const dash = "\u2014";
+  const stats: UsageStats = {
+    messages: 0,
+    blockedFlagged: null,
+    tokensSavedPercent: null,
+    tokensSavedAmount: null,
+  };
+
+  it("dashes a declined counter while keeping a real zero", () => {
+    render(<StatTiles stats={stats} />);
+
+    // Messages answered zero, so it reads zero. The other two never answered.
+    expect(screen.getByText("Messages").parentElement?.textContent).toContain("0");
+    expect(screen.getByText("Blocked/Flagged").parentElement?.textContent).toContain(dash);
+    expect(screen.getByText("Tokens saved").parentElement?.textContent).toContain(dash);
+    expect(screen.queryByText("0%")).toBeNull();
+  });
+
+  it("dashes every counter while the first load is in flight", () => {
+    render(<StatTiles stats={{ ...stats, messages: 12 }} pending />);
+
+    expect(screen.queryByText("12")).toBeNull();
   });
 });

@@ -6,17 +6,26 @@ import { Card } from "./base";
  * card of three columns, and the stacked Messages chart beneath it. Identical in
  * both places in the design, so they live here rather than in either pane.
  *
- * Presentational. The 24-hour backend is still being built, so these types
- * double as the shape that endpoint needs to satisfy.
+ * Presentational. `lib/activity.ts` adapts `GET /v1/me/activity` into these
+ * types, so they double as the shape that endpoint has to satisfy.
  */
 
+/**
+ * The three counters on the stat card.
+ *
+ * **Every field is nullable, and null is not zero.** A counter the gateway
+ * declined has no value at all, and AG-576 is explicit that a missing reading
+ * must never render as a figure: "0 blocked" is a claim about the user's traffic,
+ * and the one place they would look to check it is the tile that just made it up.
+ * Null renders as a dash, with `ActivityGaps` saying why underneath.
+ */
 export interface UsageStats {
-  messages: number;
-  blockedFlagged: number;
+  messages: number | null;
+  blockedFlagged: number | null;
   /** Whole percent, e.g. 38 renders as "38%". */
-  tokensSavedPercent: number;
+  tokensSavedPercent: number | null;
   /** Pre-formatted and currency-aware upstream, e.g. "+$3.10". */
-  tokensSavedAmount: string;
+  tokensSavedAmount: string | null;
 }
 
 /**
@@ -59,18 +68,20 @@ export function StatTiles({
   onSelectTokensSaved?: () => void;
 }) {
   const dash = "\u2014";
+  // One rule for both causes of "no figure": nothing has landed yet, or the
+  // gateway declined this counter. Neither may print a number.
+  const count = (value: number | null) =>
+    pending || value === null ? dash : value.toLocaleString();
   return (
     <Card className="flex">
-      <Stat label="Messages" value={pending ? dash : stats.messages.toLocaleString()} />
-      <Stat
-        label="Blocked/Flagged"
-        value={pending ? dash : stats.blockedFlagged.toLocaleString()}
-        divided
-      />
+      <Stat label="Messages" value={count(stats.messages)} />
+      <Stat label="Blocked/Flagged" value={count(stats.blockedFlagged)} divided />
       <Stat
         label="Tokens saved"
-        value={pending ? dash : `${stats.tokensSavedPercent}%`}
-        delta={pending ? undefined : stats.tokensSavedAmount}
+        value={
+          pending || stats.tokensSavedPercent === null ? dash : `${stats.tokensSavedPercent}%`
+        }
+        delta={pending ? undefined : (stats.tokensSavedAmount ?? undefined)}
         divided
         onSelect={onSelectTokensSaved}
       />

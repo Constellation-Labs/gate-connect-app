@@ -39,6 +39,7 @@ import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
+import type { UsageStats } from "./components/gc/metrics";
 import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
 import { buildNotices } from "./lib/notices";
@@ -284,6 +285,10 @@ export function NewUiApp() {
     () => buildNotices(groups).filter((n) => !dismissedNotices.includes(n.id)),
     [groups, dismissedNotices],
   );
+  // Clamped rather than reset when the list shrinks: fixing the tool on the last
+  // page removes its notice, and a page index left pointing past the end would
+  // blank the banner while notices remain.
+  const notice = notices.length > 0 ? notices[Math.min(noticePage, notices.length - 1)] : null;
 
   /** Perform a notice's action, then re-read state so it clears itself. */
   const runNoticeAction = useCallback(
@@ -756,28 +761,19 @@ export function NewUiApp() {
           }
           alert={
             <>
-              {notices.length > 0 && (
+              {notice && (
                 <AlertBanner
                   // Keyed so switching pages remounts rather than animating one
                   // card's text into another's.
-                  key={notices[Math.min(noticePage, notices.length - 1)].id}
-                  title={notices[Math.min(noticePage, notices.length - 1)].title}
-                  body={notices[Math.min(noticePage, notices.length - 1)].body}
-                  switchLabel={notices[Math.min(noticePage, notices.length - 1)].switchLabel}
+                  key={notice.id}
+                  title={notice.title}
+                  body={notice.body}
+                  switchLabel={notice.switchLabel}
                   // The switch reflects the state being fixed, which is always
                   // "not routing". Toggling it performs the action.
                   on={false}
-                  onToggle={() =>
-                    void runNoticeAction(
-                      notices[Math.min(noticePage, notices.length - 1)].action,
-                    )
-                  }
-                  onDismiss={() =>
-                    setDismissedNotices((d) => [
-                      ...d,
-                      notices[Math.min(noticePage, notices.length - 1)].id,
-                    ])
-                  }
+                  onToggle={() => void runNoticeAction(notice.action)}
+                  onDismiss={() => setDismissedNotices((d) => [...d, notice.id])}
                   paging={
                     notices.length > 1
                       ? {
@@ -807,15 +803,15 @@ export function NewUiApp() {
 /** No gateway endpoint reports the models on offer yet. See the picker. */
 const GATE_MODELS: GateModelOption[] = [];
 
-/** Shown before the first load lands, and for any counter the endpoint declined.
- *  Zeros rather than plausible numbers: a preview that invents traffic is one
- *  somebody screenshots as real. `ActivityGaps` says which numbers are missing,
- *  so a zero here is never silently mistaken for a real reading. */
-const EMPTY_STATS = {
-  messages: 0,
-  blockedFlagged: 0,
-  tokensSavedPercent: 0,
-  tokensSavedAmount: "+$0.00",
+/** Shown before the first load lands, and on the per-app pane whose own reading
+ *  is AG-574's work. All null rather than zeros: the tiles render a dash for
+ *  null, and a zero here would be a claim about traffic nobody has measured yet.
+ *  See `UsageStats`. */
+const EMPTY_STATS: UsageStats = {
+  messages: null,
+  blockedFlagged: null,
+  tokensSavedPercent: null,
+  tokensSavedAmount: null,
 };
 
 function appFor(apps: SidebarApp[], slug: string): SidebarApp | undefined {
