@@ -112,16 +112,27 @@ export function sectionNotice(section: string, reason: UnavailableReason): GapNo
     case "access":
       // No action on purpose. A role is granted by somebody else, so every
       // button here would be a dead end dressed up as a remedy.
+      //
+      // Nothing raises this today: the gateway declines a section for a role it
+      // cannot resolve *at all*, which is `attribution` below, and every caller
+      // it can resolve gets at least their own slice. Kept because the reason is
+      // part of AG-576's published taxonomy and the first section that is
+      // genuinely role-gated will send it; unhandled, it would fall through to a
+      // cause that blames the wrong thing.
       return {
         subject: section,
         cause: "Your role in this organization cannot see this. An owner or admin can.",
         actions: [],
       };
     case "attribution":
+      // Not phrased as a permission problem, because it is not one and an admin
+      // cannot grant anything that would fix it. The remedy is a credential that
+      // belongs to a person: signing in, or a key issued to this account rather
+      // than to a machine.
       return {
         subject: section,
-        cause: "This counts per-user activity, and the credential in use has no user attached.",
-        actions: [DOCS],
+        cause: "The credential in use has no user attached, so Gate cannot tell whose activity this is.",
+        actions: [API_KEYS, DOCS],
       };
     case "not_configured":
       return {
