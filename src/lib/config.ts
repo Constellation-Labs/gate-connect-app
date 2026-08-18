@@ -86,5 +86,9 @@ export const GATE_DOCS_URL = "https://docs.constellationgate.ai/";
  *  The only outbound link on `constellationnetwork.io` rather than
  *  `constellationgate.ai`, so it needed its own entry in the opener ACL in
  *  `src-tauri/capabilities/default.json`. Without it the menu item looks wired
- *  and does nothing, which is the state it shipped in until now. */
+ *  and does nothing, which is the state it shipped in until now.
+ *
+ *  That entry lists this exact URL, not the site: the ACL is what a compromised
+ *  renderer is held to, and nothing here needs to open the rest of the domain.
+ *  Changing this constant means changing the ACL too. */
 export const GATE_SUPPORT_URL = "https://constellationnetwork.io/support";

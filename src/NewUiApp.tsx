@@ -137,11 +137,28 @@ export function NewUiApp() {
   // installation at all. Selecting one refetches - the gateway narrows every
   // section server-side, so there is nothing to slice here.
   const [installId, setInstallId] = useState<string | null>(null);
-  // One fetch per mount, plus the pane's own refresh. Not polled: the endpoint's
+  // Which account the reading belongs to. Changing it refetches: numbers read for
+  // one org must not sit on screen under another org's name, and an OAuth account
+  // can switch org without the window remounting.
+  const credential = account
+    ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}`
+    : "";
+  // One fetch per account, plus the pane's own refresh. Not polled: the endpoint's
   // throttle bucket is keyed on the source address, so a timer here would spend
   // a budget shared with every other Gate Connect user on the same network.
-  const activity = useActivity(true, installId);
-  const { installations, current: currentInstallId } = useInstallations(true);
+  //
+  // Held until the first account read lands and finds a credential. Before that
+  // there is nothing to authenticate with, so a fetch could only fail, and the
+  // pane would open on a "signed out" banner that is about to be wrong.
+  const canRead = loaded && account !== null;
+  const activity = useActivity(canRead, installId, credential);
+  const { installations, current: currentInstallId } = useInstallations(canRead, credential);
+
+  // A machine id belongs to the org it sent traffic to, so a scope selected
+  // before an org switch cannot be honoured after it.
+  useEffect(() => {
+    setInstallId(null);
+  }, [credential]);
 
   const refresh = useCallback(async () => {
     const [t, px] = await Promise.all([
@@ -300,13 +317,10 @@ export function NewUiApp() {
       // rewrote may be open on the old route. `useRouting` owns the first two
       // gates and `routeApp` adds the third, so a notice and a sidebar switch
       // leave the machine in the same state.
-      if (action.kind === "reconnect") {
-        await routeApp(action.slug, true);
-        return;
-      }
       setNoticeBusy(true);
       try {
-        if (action.kind === "enable-routing") await proxyEnable();
+        if (action.kind === "reconnect") await routeApp(action.slug, true);
+        else if (action.kind === "enable-routing") await proxyEnable();
         else await proxyTrustCa();
       } catch {
         // Swallowed on purpose for now: the shell has nowhere to render a
@@ -772,6 +786,10 @@ export function NewUiApp() {
                   // The switch reflects the state being fixed, which is always
                   // "not routing". Toggling it performs the action.
                   on={false}
+                  // Both flags, because either path writes: `routingBusy` covers
+                  // the reconnect that goes through `useRouting`, `noticeBusy`
+                  // the two whole-machine actions that do not.
+                  busy={noticeBusy || routingBusy}
                   onToggle={() => void runNoticeAction(notice.action)}
                   onDismiss={() => setDismissedNotices((d) => [...d, notice.id])}
                   paging={

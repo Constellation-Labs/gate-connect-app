@@ -305,6 +305,12 @@ export function adapt(raw: RawOverview): ActivityView {
  * Changing it refetches, because the gateway narrows every section server-side -
  * there is no client-side slice of a payload that only covered one machine.
  *
+ * `credential` identifies whose reading this is - the gateway, the org and the
+ * credential type. It is not sent anywhere; changing it refetches. Numbers belong
+ * to the account that was asked for them, so switching org or gateway has to
+ * re-read rather than leave the previous org's traffic on screen under the new
+ * org's name.
+ *
  * Deliberately not polling. The endpoint sits in the gateway's 100-requests-per-
  * minute throttle bucket, which is keyed on the source address rather than on
  * the credential: inference is exempt from it, but every other Gate Connect user
@@ -316,6 +322,7 @@ export function adapt(raw: RawOverview): ActivityView {
 export function useActivity(
   enabled: boolean,
   installId: string | null = null,
+  credential = "",
 ): {
   view: ActivityView | null;
   failure: ActivityFailure | null;
@@ -341,7 +348,7 @@ export function useActivity(
         setFailure(toFailure(e));
       })
       .finally(() => setLoading(false));
-  }, [enabled, installId]);
+  }, [enabled, installId, credential]);
 
   useEffect(reload, [reload]);
 
@@ -381,7 +388,11 @@ interface RawInstallations {
  * sections with a reason on screen, so a picker with nothing to scope would be
  * the second half of a message it has already been given.
  */
-export function useInstallations(enabled: boolean): {
+export function useInstallations(
+  enabled: boolean,
+  /** The account this list belongs to; see `useActivity`. */
+  credential = "",
+): {
   installations: Installation[];
   /** This machine's own id, from the gateway, or `null` if it is unattributed. */
   current: string | null;
@@ -392,6 +403,11 @@ export function useInstallations(enabled: boolean): {
   useEffect(() => {
     if (!enabled) return;
     let live = true;
+    // Cleared before the new read, not after it lands: these are one org's
+    // machines, and an installation from the org the user just left is a choice
+    // the new reading cannot honour.
+    setInstallations([]);
+    setCurrent(null);
     activityInstallations()
       .then((text) => {
         if (!live) return;
@@ -406,7 +422,7 @@ export function useInstallations(enabled: boolean): {
     return () => {
       live = false;
     };
-  }, [enabled]);
+  }, [enabled, credential]);
 
   return { installations, current };
 }

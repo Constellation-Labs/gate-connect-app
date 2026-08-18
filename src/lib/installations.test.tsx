@@ -1,8 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 
 import { InstallationPicker } from "../components/gc/InstallationPicker";
-import type { Installation } from "./activity";
+import { useInstallations, type Installation } from "./activity";
+import { activityInstallations as activityInstallationsRaw } from "./api";
+
+vi.mock("./api", () => ({
+  activityInstallations: vi.fn(),
+  activityOverview: vi.fn(),
+}));
+
+const activityInstallations = vi.mocked(activityInstallationsRaw);
 
 /**
  * The installation dimension on the client (AG-572 AC 1).
@@ -135,5 +143,46 @@ describe("InstallationPicker", () => {
       />,
     );
     expect(select().value).toBe(INSTALL);
+  });
+});
+
+/**
+ * The hook behind the picker.
+ *
+ * Two properties matter and neither is about rendering. The list is one org's
+ * machines, so it may not outlive the credential that produced it; and nothing
+ * may be fetched before there is a credential to fetch with, or the pane opens
+ * on a failure banner that is about to be wrong.
+ */
+describe("useInstallations", () => {
+  beforeEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("does not read until it is enabled", () => {
+    renderHook(() => useInstallations(false, "oauth|https://gw|org-1"));
+
+    expect(activityInstallations).not.toHaveBeenCalled();
+  });
+
+  it("re-reads and drops the old list when the credential changes", async () => {
+    activityInstallations.mockResolvedValue(
+      JSON.stringify({ installations: [installation({}), installation({ installId: OTHER })] }),
+    );
+    const { result, rerender } = renderHook(
+      ({ credential }: { credential: string }) => useInstallations(true, credential),
+      { initialProps: { credential: "oauth|https://gw|org-1" } },
+    );
+    await waitFor(() => expect(result.current.installations).toHaveLength(2));
+
+    // The second org's read is still in flight here. The first org's machines
+    // are already gone, because offering them would be offering a scope the new
+    // reading cannot honour.
+    activityInstallations.mockReturnValue(new Promise(() => {}));
+    rerender({ credential: "oauth|https://gw|org-2" });
+
+    expect(result.current.installations).toEqual([]);
+    expect(activityInstallations).toHaveBeenCalledTimes(2);
   });
 });
