@@ -56,6 +56,7 @@ import {
 import type { GateModelOption } from "./components/gc/dialogs";
 import {
   ConnectedPane,
+  DiagnosticsPane,
   OrgPickerPane,
   SetupLayout,
   WelcomePane,
@@ -402,6 +403,9 @@ export function NewUiApp() {
     oauth,
     onSession,
     onProxy: setProxy,
+    // `undefined` while the preference read is in flight, which is not the same as
+    // unanswered - see the note on the hook's argument.
+    diagnosticsAnswered: prefs?.share_diagnostics_recorded,
   });
 
   const settings = useSettingsActions({
@@ -613,6 +617,27 @@ export function NewUiApp() {
             onUseApiKey={setup.useApiKeyInstead}
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
+          />
+        ) : stage.kind === "diagnostics" ? (
+          <DiagnosticsPane
+            share={prefs?.share_diagnostics ?? true}
+            onToggleShare={() =>
+              setPrefs((p) =>
+                p ? { ...p, share_diagnostics: !p.share_diagnostics } : p,
+              )
+            }
+            busy={setup.busy}
+            onContinue={() => {
+              // Records the *displayed* value, changed or not: leaving the default
+              // in place is an answer, and treating it as unanswered would ask
+              // again on the next launch. This is also what dismisses the step,
+              // since the stage is derived from the stored flag.
+              const share = prefs?.share_diagnostics ?? true;
+              setAnalyticsConsent(share);
+              void setShareDiagnostics(share)
+                .catch((e) => setActionError(classifyError(e, "generic")))
+                .finally(() => void loadPreferences());
+            }}
           />
         ) : (
           <ConnectedPane

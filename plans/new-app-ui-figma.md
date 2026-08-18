@@ -744,6 +744,7 @@ but a documentation or diagnostics link per failure needs the per-app pane, and
 Contact support needs a URL that does not exist. Also open: "last completed check
 or routed request" in the summary, which needs the activity endpoint.
 
+
 ## Settings sections and preferences (AG-594)
 
 There was **no preferences store anywhere**. `account.rs` was the only config, and
@@ -839,6 +840,7 @@ visible" needs detection of tools Gate has no integration for; "a known but abse
 tool may provide an installation action" is optional in the criteria and would put
 uninstalled tools in a rail the Figma draws as installed apps only; and the
 model-control gating would remove the picker shipped in #159.
+
 ## The diagnostics switch now gates something (AG-603)
 
 The "Share diagnostic data" switch added for AG-594 recorded a preference that
@@ -876,3 +878,50 @@ truth about what leaves the machine.
 Still open on the ticket: the onboarding Diagnostic data step (shared with AG-554),
 "Send diagnostics now" and the diagnostic reference (no upload path exists), and
 scoping the choice to the selected organization.
+
+
+## The diagnostic-data onboarding step (AG-554 / AG-603)
+
+Consent before collection: `lib/analytics.ts` starts PostHog at launch, so what
+this step buys is a person who has actually been asked. It sits between the
+sign-in confirmation and Overview.
+
+**Derived, not remembered.** `preferences.json` gained
+`share_diagnostics_recorded`, and `useSetup` returns the `diagnostics` stage while
+it is false. That keeps the guarantee the hook already had - stage comes from what
+is on disk - so a reload mid-setup cannot skip the step, and answering it is what
+dismisses it. `undefined` (the read still in flight) is deliberately *not*
+unanswered, or the step would flash at someone who answered months ago.
+
+`share_diagnostics_recorded` defaults to **false**, including on installs written
+before the field existed. Those see the step once, which is the point: sharing
+defaults to on, and a default nobody was asked about is not consent. It is also why
+this is a separate field rather than inferring an answer from `share_diagnostics` -
+the default and a deliberate "yes" are the same value and must not be the same
+fact.
+
+Continue records the **displayed** value whether or not it changed, because leaving
+the default in place is still an answer; treating it as unanswered would ask again
+next launch. The same command backs the Settings switch, so changing it there also
+counts as answering.
+
+The sent / never-sent lists are shared with the Settings disclosure
+(`CollectedDataLists`, one copy, framed by whatever `Wrapper` each caller passes).
+Two copies would drift, and these are the claims the product's reassurance rests
+on - the moment the onboarding promise and the Settings disclosure disagree,
+neither can be trusted.
+
+Layout is provisional; the Figma draws no diagnostics step.
+
+### A harness bug this turned up
+
+`e2e/install.ts`'s `get_preferences` returned the *live* `state.preferences`
+object, which the write stubs mutate in place. So `setPrefs` received an identical
+reference, React skipped the re-render, and a preference change was invisible to
+anything derived from it. Real IPC serialises every response; the stub now returns
+a copy. Worth remembering for the other handlers that still return `state.x`
+directly.
+
+Still open on AG-554: the device-derived installation-name suggestion (device
+rename has no backend command), and distinguishing cancellation from expiration
+from failure in the browser sign-in.
