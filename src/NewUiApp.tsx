@@ -9,6 +9,7 @@ import type {
   ProxyState,
   ProviderState,
   Tool,
+  Verdict,
 } from "./lib/api";
 import {
   getAccount,
@@ -18,6 +19,7 @@ import {
   oauthStatus,
   openOnboardingWindow,
   proxyStatus,
+  routingVerdicts,
   getPreferences,
   setRoutingHealthNotifications,
   setShareDiagnostics,
@@ -32,6 +34,7 @@ import { useWindowReopen } from "./lib/useWindowReopen";
 import { classifyError } from "./lib/errors";
 import type { ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
+import { verdictStatus, verdictsBySlug } from "./lib/verdict";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import { GATE_DASHBOARD_URL, GATE_DOCS_URL } from "./lib/config";
@@ -85,17 +88,30 @@ import type { Platform } from "./lib/platform";
  * behind a prompt, then re-reads backend truth. Backend state pushes here too,
  * so a change made elsewhere repaints this window.
  *
+ * Status lines come from `routing_verdicts`, not from `Tool.status`: a config
+ * file Gate wrote is not evidence that anything is using it, so the sidebar asks
+ * whether the relay answers and whether the tool's process predates the last
+ * write. Switches still read intent off `Tool.status`, which is the split
+ * `lib/groups.ts` documents. A row with no verdict yet says it is checking
+ * rather than borrowing the config's answer.
+ *
  * Settings and org switching go through `useSettingsActions`. Rows with no
  * backend behind them are passed no handler, which omits the control rather than
  * leaving a dead one on screen.
  *
- * Still inert: the family master switch (hidden for the same reason), the
- * running-apps sequence, and the per-app model picker. Disconnect and reset wait
- * on a first-run screen to return to. The Overview and per-app metrics await the
- * 24-hour endpoint.
+ * Still awaiting a backend: the per-app model picker (session state only) and
+ * the Overview and per-app metrics (the 24-hour endpoint). The verdict sweep
+ * establishes that a route is live, not that the tool sent traffic through it -
+ * nothing attributes requests to a tool yet.
  */
 export function NewUiApp() {
   const [tools, setTools] = useState<Tool[]>([]);
+  /** Observed routing, by slug. Separate from `tools` because it answers a
+   * different question: `tools` is what the config says, this is what the
+   * config is actually doing. An absent entry means the sweep has not
+   * answered yet, which `verdictStatus` renders as "checking" rather than
+   * guessing from the config. */
+  const [verdicts, setVerdicts] = useState<Map<string, Verdict>>(new Map());
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
@@ -149,6 +165,14 @@ export function NewUiApp() {
     if (p) setPrefs(p);
   }, []);
 
+  /** The routing sweep, kept separate from {@link refresh} because it is the one
+   * probe that costs network I/O and a process walk. Callers that changed a
+   * tool's config re-run it; callers that only repainted do not have to. */
+  const refreshVerdicts = useCallback(async () => {
+    const v = await routingVerdicts().catch(() => null);
+    if (v) setVerdicts(verdictsBySlug(v));
+  }, []);
+
   const refresh = useCallback(async () => {
     const [t, px] = await Promise.all([
       listTools().catch(() => null),
@@ -156,7 +180,11 @@ export function NewUiApp() {
     ]);
     if (t) setTools(t);
     if (px) setProxy(px);
-  }, []);
+    // The engine coming up or going down changes every verdict, since the relay
+    // health check is shared - so this follows the snapshot rather than waiting
+    // for the next poll.
+    void refreshVerdicts();
+  }, [refreshVerdicts]);
 
   // The engine changes state without us asking: a CLI toggle, the startup
   // auto-enable, another window. Repaint from the event rather than leaving a
@@ -183,6 +211,7 @@ export function NewUiApp() {
       void loadLaunchAtLogin();
       void loadPreferences();
       setTools(t);
+      void refreshVerdicts();
       setProviders(p);
       setProxy(px);
       setAccount(acct);
@@ -215,6 +244,9 @@ export function NewUiApp() {
     onSnapshot: ({ tools: t, proxy: px }) => {
       setTools(t);
       setProxy(px);
+      // A write landed, so the verdicts are stale: the tool may now need a
+      // reopen, and the relay may have been auto-enabled by the connect.
+      void refreshVerdicts();
     },
     onError: (e) => {
       // `connect` covers both directions: the remedy copy is the same either way
@@ -278,13 +310,13 @@ export function NewUiApp() {
         .map((t) => ({
           slug: t.slug,
           name: t.name,
-          status: toolStatus(t),
+          status: verdictStatus(verdicts.get(t.slug)),
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
           on: t.status.kind === "connected" || t.status.kind === "drifted",
           busy: routingBusy,
         })),
-    [tools, routingBusy],
+    [tools, verdicts, routingBusy],
   );
 
   const families = useMemo<Family[]>(
@@ -297,9 +329,9 @@ export function NewUiApp() {
         // the family switch on while everything it governs is off, and clicking
         // it would ask to turn off a set already off - leaving it stuck on.
         on: g.cascadeDesired > 0,
-        members: g.members.map(memberToFamilyMember),
+        members: g.members.map((m) => memberToFamilyMember(m, verdicts)),
       })),
-    [groups],
+    [groups, verdicts],
   );
 
   const noop = useCallback(() => {}, []);
@@ -828,26 +860,26 @@ function initialsOf(name: string): string {
   return letters.toUpperCase();
 }
 
-function toolStatus(tool: Tool): AppStatus {
-  switch (tool.status.kind) {
-    case "connected":
-      return { kind: "protected" };
-    case "drifted":
-      return { kind: "drifted" };
-    default:
-      // `detected` and `error` both mean "installed, not carrying traffic".
-      // The error message has nowhere to go in the sidebar row; the per-app
-      // pane is where it belongs once that is wired.
-      return { kind: "not-protected" };
-  }
-}
-
-function memberToFamilyMember(m: GroupMember): Family["members"][number] {
-  const status: AppStatus = m.routed
-    ? { kind: "protected" }
-    : m.attention === "drifted"
-      ? { kind: "drifted" }
-      : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
+/**
+ * AG-562 requires every surface to show the same status, so a config member here
+ * reads the same verdict the sidebar row does rather than deriving its own line.
+ *
+ * Proxy members keep the `routed` derivation, and that is not a shortcut left
+ * undone: `routing_verdicts` covers registry integrations, and a catalog domain
+ * routes through the engine rather than the relay, so its observation is
+ * certificate trust plus the master switch - which is exactly what `routed`
+ * already folds in.
+ */
+function memberToFamilyMember(
+  m: GroupMember,
+  verdicts: Map<string, Verdict>,
+): Family["members"][number] {
+  const status: AppStatus =
+    m.kind === "config"
+      ? verdictStatus(verdicts.get(m.key))
+      : m.routed
+        ? { kind: "protected" }
+        : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
   return { key: m.key, name: m.name, kind: m.kind, status, on: m.desired };
 }
 

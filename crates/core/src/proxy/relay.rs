@@ -438,6 +438,17 @@ async fn proxy(
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| "/".to_string());
 
+    // Answered by the relay itself, ahead of catalog resolution: this is the
+    // liveness check `routing_health` probes, so it must not need a catalog
+    // entry, must not reach the gateway, and must not spend a token. Under the
+    // reserved `/__gate/` prefix, which no catalog domain can claim, so it can
+    // never shadow a real upstream path. GET only - a stray POST to this path
+    // is a tool misconfigured, not a health check, and should fall through to
+    // the resolver and get the usual error.
+    if method == hyper::Method::GET && path_and_query == HEALTH_PATH {
+        return Ok(health_response());
+    }
+
     // Which upstream this request belongs to comes from the leading path
     // segment the tool's base URL carries, so no tool config has to hold a
     // header. Inference paths rewrite to the gateway under the Gate credential;
@@ -719,6 +730,24 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     for name in names {
         headers.remove(&name);
     }
+}
+
+/// Liveness path, served by the relay itself. Under a reserved prefix that the
+/// domain catalog cannot name, so adding a real upstream can never collide with
+/// it. Public so the prober and its tests spell it once.
+pub const HEALTH_PATH: &str = "/__gate/health";
+
+/// 204, no body. The prober only cares that something Gate-shaped answered on
+/// the port; a body would invite callers to parse it into a richer contract than
+/// this endpoint is willing to keep.
+fn health_response() -> Response<BoxBody<Bytes, std::io::Error>> {
+    let body = Full::new(Bytes::new())
+        .map_err(|never| match never {})
+        .boxed();
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(body)
+        .expect("building relay health response")
 }
 
 fn error_response(status: StatusCode, message: String) -> Response<BoxBody<Bytes, std::io::Error>> {

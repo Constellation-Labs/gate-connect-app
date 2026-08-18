@@ -26,7 +26,10 @@ export type SidebarView =
  */
 export type AppStatus =
   | { kind: "protected"; since?: string }
-  | { kind: "not-protected" }
+  /** `detail` carries the routing verdict's reason ("Reopen required",
+   * "Connection problem"), which is what turns an amber phrase into something
+   * the user can act on. See `lib/verdict.ts`. */
+  | { kind: "not-protected"; detail?: string }
   | { kind: "drifted" }
   | { kind: "not-routed"; detail?: string };
 
@@ -65,6 +68,7 @@ const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: string 
 function statusSuffix(status: AppStatus): string | undefined {
   if (status.kind === "protected") return status.since;
   if (status.kind === "not-routed") return status.detail;
+  if (status.kind === "not-protected") return status.detail;
   return undefined;
 }
 

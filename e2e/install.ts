@@ -278,6 +278,33 @@ export function installFakeTauri(state: BackendState): void {
       })),
     }),
     stale_agents_count: () => state.staleAgents,
+    // Mirrors `routing_health::verdict_for`'s precedence over the state a spec
+    // can actually set. The relay is hosted by the engine, so `proxy.running`
+    // stands in for relay reachability, and `staleAgents` for a process that
+    // predates the last routing change. Derived rather than stubbed per-slug so
+    // a spec cannot set up a verdict that the real backend could never produce.
+    routing_verdicts: () =>
+      state.tools.map((t) => {
+        const attention = (reason: string, next_action: string) => ({
+          slug: t.slug,
+          state: "needs_attention",
+          reason,
+          next_action,
+        });
+        if (t.status.kind === "not_installed")
+          return { slug: t.slug, state: "not_installed", reason: null, next_action: null };
+        if (t.status.kind === "error")
+          return attention("verification_failed", "retry_check");
+        if (t.status.kind === "drifted")
+          return attention("configuration_changed", "apply_gate_configuration");
+        if (t.status.kind === "detected")
+          return state.staleAgents > 0
+            ? attention("reopen_required", "reopen_tool")
+            : { slug: t.slug, state: "off", reason: null, next_action: null };
+        if (!state.proxy.running) return attention("connection_problem", "reconnect");
+        if (state.staleAgents > 0) return attention("reopen_required", "reopen_tool");
+        return { slug: t.slug, state: "on", reason: null, next_action: null };
+      }),
     close_running_agents: () => {
       const n = state.runningAgents || state.runningAgentNames.length;
       state.runningAgents = 0;

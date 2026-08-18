@@ -277,6 +277,44 @@ export const runningAgentsCount = () => invoke<number>("running_agents_count");
  * healthy restored session (agents launched after routing) stays quiet. */
 export const staleAgentsCount = () => invoke<number>("stale_agents_count");
 
+/** Why a tool is not verifiably routing. Closed set, mirroring
+ * `routing_health::Reason` - a sixth value would need a next action and a
+ * recovery path to go with it. */
+export type VerdictReason =
+  | "configuration_changed"
+  | "reopen_required"
+  | "connection_problem"
+  | "access_problem"
+  | "verification_failed";
+
+/** The one action offered for a reason. One-to-one with {@link VerdictReason};
+ * the backend derives it so the pair cannot drift apart. */
+export type VerdictNextAction =
+  | "apply_gate_configuration"
+  | "reopen_tool"
+  | "reconnect"
+  | "sign_in"
+  | "retry_check";
+
+/** What one tool is *doing*, as opposed to what its config says
+ * ({@link Tool.status}) or what the user asked for. `reason` and `next_action`
+ * are set only when `state` is `needs_attention`. */
+export interface Verdict {
+  slug: string;
+  state: "not_installed" | "on" | "off" | "needs_attention";
+  reason: VerdictReason | null;
+  next_action: VerdictNextAction | null;
+}
+
+/** What every config-routed tool is actually doing: config state, plus a
+ * loopback check that the relay answers, plus whether the tool's process
+ * predates the last routing change.
+ *
+ * Separate from {@link listTools} because this does network I/O and walks the
+ * process table, so it must not sit on a render path. It does **not** prove the
+ * tool sent traffic - nothing attributes requests to a tool today. */
+export const routingVerdicts = () => invoke<Verdict[]>("routing_verdicts");
+
 /** One running AI tool. No command line by design: argv on these routinely
  * holds prompts, paths and occasionally a key, and this list is built to be
  * pasted into a support thread. */
