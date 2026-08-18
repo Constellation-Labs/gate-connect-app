@@ -294,6 +294,93 @@ export function DiagnosticsDialog({
   );
 }
 
+/** One selectable Gate model. */
+export interface GateModelOption {
+  /** Fully qualified id, e.g. "gate/opus 5". Rendered mono - it is an identifier. */
+  id: string;
+  /** Who makes the model, for the glyph and for grouping in the caller's head. */
+  vendor: string;
+  /** 16px vendor mark. Falls back to a cube while the marks are unexported. */
+  logo?: ReactNode;
+}
+
+/**
+ * Choosing which Gate model an app runs on (Figma `App / Select a model`, the
+ * "App w/ choose model modal open" frame).
+ *
+ * The design draws this as a **dropdown anchored to the Change model button**,
+ * not a centred dialog: a white rounded panel, one row per model, the current
+ * one first and outlined. Rendered here as a modal-positioned popover so it
+ * keeps the focus trap and escape handling every other overlay has - anchoring
+ * it to the button would need the pane to own the trigger's geometry, and the
+ * design's own placement is only legible at one zoom level.
+ *
+ * Model ids are mono. They are identifiers, and CLAUDE.md names them
+ * explicitly; the frame renders them in the UI face, which reads as a slip
+ * rather than a decision, since every other identifier in the design is mono.
+ *
+ * The top edge of the drawn panel was cut off in the only readable capture, so
+ * whether it carries a search field is unknown. Omitted here: eleven rows do not
+ * need one, and inventing a control the designer may not have drawn is worse
+ * than leaving room for it.
+ */
+export function ModelPickerDialog({
+  models,
+  selectedId,
+  onSelect,
+  onDismiss,
+}: {
+  models: GateModelOption[];
+  selectedId?: string;
+  onSelect: (id: string) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <Modal
+      icon="layers"
+      title="Choose a Gate model"
+      subtitle="Requests routed through Gate will use this model"
+      secondary={{ label: "Cancel", onClick: onDismiss }}
+      onDismiss={onDismiss}
+    >
+      {models.length === 0 ? (
+        <ModalNote>
+          <p className="font-medium text-neutral-900">No models to choose from yet</p>
+          <p className="mt-1">
+            Gate will list the models your gateway offers here. Until then, apps keep
+            using the model they are configured with.
+          </p>
+        </ModalNote>
+      ) : (
+        <div role="radiogroup" aria-label="Gate model" className="flex flex-col gap-1">
+          {models.map((model) => {
+            const selected = model.id === selectedId;
+            return (
+              <button
+                key={model.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                onClick={() => onSelect(model.id)}
+                className={`flex items-center gap-3 rounded-base border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+                  selected
+                    ? "border-base-primary bg-base-card"
+                    : "border-transparent hover:bg-gray-50"
+                }`}
+              >
+                <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
+                  {model.logo ?? <Icon name="cube" size={16} />}
+                </span>
+                <span className="font-mono text-sm leading-5 text-neutral-900">{model.id}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 export function UseGateModelDialog({
   app,
   vendor,

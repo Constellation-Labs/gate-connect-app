@@ -621,9 +621,25 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    member is outside the family switch in both directions**; the row and the
    alert card are the ways back. That is pre-existing shared behaviour, so it is
    pinned by a test rather than changed here.
-5. **The per-app model picker.** `UseGateModelDialog` exists;
-   `App / Select a model` was never read from the Figma, so its contents are
-   known only from a frame caption.
+5. **The per-app model picker: UI DONE, no backend exists.** `App / Select a
+   model` was finally read (browser, "App w/ choose model modal open"): the
+   design draws a **dropdown anchored to Change model**, one row per model, the
+   current one first and outlined, listing eleven `gate/...` ids across
+   Anthropic, DeepSeek, Qwen, Kimi and OpenAI. Built as `ModelPickerDialog`; the
+   choice is confirmed through `UseGateModelDialog` because switching to a Gate
+   model spends PAYG credits.
+
+   **There is no model backend at all** - no Tauri command, no Rust, nothing to
+   persist to. The choice is session state and says so at the call site, and the
+   picker ships with an empty list rather than the drawn ids: shipping those
+   would put a fabricated model catalogue in front of the user, which is the same
+   argument the zeroed metrics make. What it needs is an endpoint reporting the
+   gateway's models and somewhere to record the per-app selection.
+
+   Two details of the frame could not be read: the top edge was cut off, so
+   whether the panel carries a search field is unknown (omitted), and the drawn
+   ids render in the UI face rather than mono. Mono was used, since CLAUDE.md
+   names model ids explicitly and every other identifier in the design is mono.
 6. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
    pending the 24-hour endpoint. Open question 7 (whether `total` double-counts)
    should be settled in that response shape, not in the chart.
