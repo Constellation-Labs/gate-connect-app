@@ -107,12 +107,13 @@ export const setAuthMode = (oauth: boolean) => invoke<void>("set_auth_mode", { o
 /** List the orgs the signed-in user may act on, for the picker. */
 export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
 
-/** TEMPORARY (AG-572): the 24-hour activity overview, as raw JSON text.
+/** The 24-hour activity overview, as raw JSON text.
  *
- * Raw rather than typed on purpose. The gateway contract is still moving, so
- * the dev-only viewer renders whatever comes back and the two cannot drift
- * while fields are still being agreed. Replace with a typed DTO once the
- * response shape is signed off.
+ * Raw rather than typed on purpose, and not scaffolding: the gateway contract is
+ * still moving, and a DTO written before the fields are agreed drifts silently
+ * from the endpoint. `lib/activity.ts` is the only place that knows the shape, so
+ * tightening this to a generated type once it is signed off is a change to one
+ * file.
  *
  * `installId` scopes the reading to one installation (AC 1). Omitted, it is
  * org-wide: attribution only starts with the gateway migration that added it,
