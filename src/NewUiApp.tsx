@@ -14,6 +14,9 @@ import {
 import { useRouting } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
+import { useUpdate } from "./lib/useUpdate";
+import type { UpdateState } from "./lib/useUpdate";
+import { useWindowReopen } from "./lib/useWindowReopen";
 import { classifyError } from "./lib/errors";
 import type { ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
@@ -86,6 +89,9 @@ export function NewUiApp() {
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
+  // Dismissal is per-session and per-surface: the banner going away should not
+  // stop the next launch offering the same update.
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   const platform = usePlatform();
 
   const refresh = useCallback(async () => {
@@ -130,6 +136,21 @@ export function NewUiApp() {
       setLoaded(true);
     })();
   }, []);
+
+  const update = useUpdate();
+  const checkForUpdates = update.checkNow;
+
+  // Silent at startup: offline, or an unreachable endpoint, is not worth
+  // interrupting anyone about.
+  useEffect(() => {
+    void checkForUpdates();
+  }, [checkForUpdates]);
+
+  // A window left open for days would otherwise never see a release. Re-checking
+  // when it is focused again costs one request and keeps the banner honest.
+  useWindowReopen(() => {
+    void checkForUpdates();
+  });
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
 
@@ -236,6 +257,7 @@ export function NewUiApp() {
         apiKeyMasked: account?.has_api_key ? `sk-gw${"*".repeat(20)}` : "Not set",
         launchAtLogin,
         version: version ? `v${version}` : "-",
+        updateNote: updateNoteFor(update),
         onCopyInstallId: installId ? () => void settings.copyText(installId) : noop,
         // Only where there is a key to replace. On an OAuth account `saveAccount`
         // with a key would flip auth_mode to api_key, quietly converting the
@@ -248,6 +270,9 @@ export function NewUiApp() {
         onToggleLaunchAtLogin: () => void settings.toggleLaunchAtLogin(),
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
+        // Explicit, so this one reports back: silence on a button the user just
+        // pressed reads as broken.
+        onCheckForUpdates: () => void update.checkNow(true),
         onViewDiagnostics: () =>
           setDiagnosticsReport(
             previewDiagnostics({
@@ -278,6 +303,7 @@ export function NewUiApp() {
       settings.openDisconnect,
       settings.openReset,
       settings.toggleLaunchAtLogin,
+      update,
       platform,
       proxy,
       providers,
@@ -390,6 +416,15 @@ export function NewUiApp() {
       menuOpen={menuOpen}
       onMenuToggle={() => setMenuOpen((v) => !v)}
       onMenuSelect={onMenuSelect}
+      update={
+        update.available && !updateDismissed
+          ? {
+              version: `v${update.available.version}`,
+              onUpdate: () => void update.install(),
+              onDismiss: () => setUpdateDismissed(true),
+            }
+          : undefined
+      }
       routing={{ protectedCount, totalCount: apps.length }}
       orgName={account?.org_name ?? "No organization"}
       onSwitchOrg={() => {
@@ -558,6 +593,24 @@ function toDialogOrg(org: Org): DialogOrganization {
     initials: initialsOf(org.name),
     meta: [org.slug, org.role].filter(Boolean).join(" · "),
   };
+}
+
+/**
+ * What the version row says after the user presses Check for updates. Nothing
+ * until they do: a standing "you're up to date" is noise, and the banner already
+ * speaks for a found update.
+ */
+function updateNoteFor(update: UpdateState): string | undefined {
+  if (update.checking) return "Checking for updates...";
+  if (update.failed) return "That update could not be installed. Try again.";
+  switch (update.outcome) {
+    case "up-to-date":
+      return "You're on the latest version.";
+    case "failed":
+      return "Could not reach the update server.";
+    default:
+      return undefined;
+  }
 }
 
 /** The setup panes take the same shape as the dialog's org rows. */

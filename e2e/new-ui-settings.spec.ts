@@ -133,11 +133,24 @@ test.describe("new UI settings", () => {
     await app.page.getByRole("button", { name: "Settings" }).click();
     await expect(app.page.getByRole("heading", { name: "Device" })).toBeVisible();
 
-    for (const gone of ["Rename device", "Upgrade plan", "Check for updates"]) {
+    for (const gone of ["Rename device", "Upgrade plan"]) {
       await expect(app.page.getByRole("button", { name: gone })).toHaveCount(0);
     }
     await expect(app.page.getByRole("switch", { name: "Notifications" })).toHaveCount(0);
     await expect(app.page.getByRole("heading", { name: "Danger zone" })).toBeVisible();
+  });
+
+  test("checking for updates reports back", async ({ boot }) => {
+    // The fixture's updater says there is nothing to install. Silence on a
+    // button the user just pressed reads as broken, so the row has to say so.
+    const app = await boot({});
+
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "Check for updates" }).click();
+
+    await expect(app.page.getByText("You're on the latest version.")).toBeVisible();
+    // And no banner, because there is no update.
+    await expect(app.page.getByText(/Update available/)).toHaveCount(0);
   });
 
   test("the diagnostics report can be copied", async ({ boot, context }) => {
