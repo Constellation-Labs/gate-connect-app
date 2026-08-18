@@ -618,3 +618,63 @@ export function ResetGateConnectDialog({
     </Modal>
   );
 }
+
+/**
+ * What the diagnostic channel actually sends, and what it never sends.
+ *
+ * AG-603 asks for a "What is collected" list that opens without changing the
+ * setting - so this is read-only and its only action closes it.
+ *
+ * The lists are written from `lib/analytics.ts` rather than from the ticket. The
+ * ticket enumerates fields for an upload that does not exist yet (installation
+ * name, verification state, event-delivery state, notification permission); the
+ * channel that *does* exist is PostHog, sending a closed set of event names, a
+ * filtered prop allowlist, classified error titles, and two coarse
+ * super-properties. Describing the ticket's list would be describing something
+ * Gate does not do, on the one screen whose whole job is telling the truth about
+ * what leaves the machine.
+ */
+export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal
+      tone="neutral"
+      icon="info"
+      title="What Gate Connect collects"
+      subtitle="Only while Share diagnostic data is on. Nothing here identifies you."
+      primary={{ label: "Close", onClick: onClose }}
+      onDismiss={onClose}
+    >
+      <ModalNote>
+        <p className="font-medium text-neutral-900">Sent</p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>
+            An anonymous device id, generated locally. No name, email, or account
+            identifier.
+          </li>
+          <li>App version and operating system.</li>
+          <li>
+            Which action happened, from a fixed list - routing turned on or off, an
+            update installed, a dialog shown. Never free text.
+          </li>
+          <li>
+            A short label for each action: which app or provider it concerned, and
+            whether it was on or off.
+          </li>
+          <li>
+            A classified title when something fails, e.g. &ldquo;keychain
+            denied&rdquo;. The underlying message stays on this machine.
+          </li>
+        </ul>
+      </ModalNote>
+      <ModalNote>
+        <p className="font-medium text-neutral-900">Never sent</p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>Prompts or model responses.</li>
+          <li>API keys, credentials, or anything from your keychain.</li>
+          <li>File paths, hostnames, or the contents of any config file.</li>
+          <li>The text of an error, as opposed to its classification.</li>
+        </ul>
+      </ModalNote>
+    </Modal>
+  );
+}
