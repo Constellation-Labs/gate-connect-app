@@ -728,3 +728,28 @@ Gate has no integration for; "incomplete installation" needs per-integration
 probes; and the per-entry request counts need per-*tool* attribution, which the
 in-flight `feat/activity-overview-client` does not provide (it is per-installation
 - `activity.ts` has no tool or slug in it).
+
+## An empty inventory is not a failed one (AG-560)
+
+`listTools().catch(() => [])` turned a failed read into an empty array, so a device
+Gate could not scan rendered exactly like a device with no AI apps on it - blank
+list, "0/0" count, no explanation. `InventoryState` in `Sidebar.tsx` now tells the
+two apart:
+
+- **`none`** - the scan completed and found nothing. Carries the scan time, which
+  is what makes it an answer rather than a shrug, plus Refresh.
+- **`failed`** - the scan could not complete. Amber, says Gate does not know what
+  is installed and that nothing was changed, and offers Try again.
+- **`ok`** - there are rows, and the rows speak for themselves.
+
+Before the first scan lands the state is `ok`, deliberately: "no apps detected" is
+a claim, and nothing has checked yet.
+
+The eyebrow's refresh control (AG-558) hides while the card is up, since the card
+carries its own and two controls for one action in a 250px rail is one too many.
+
+Not built, and recorded on the ticket: "a detected but unsupported tool remains
+visible" needs detection of tools Gate has no integration for; "a known but absent
+tool may provide an installation action" is optional in the criteria and would put
+uninstalled tools in a rail the Figma draws as installed apps only; and the
+model-control gating would remove the picker shipped in #159.
