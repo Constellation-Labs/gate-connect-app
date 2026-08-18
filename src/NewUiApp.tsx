@@ -5,6 +5,7 @@ import type {
   Account,
   OAuthStatus,
   Org,
+  Preferences,
   ProxyState,
   ProviderState,
   Tool,
@@ -19,6 +20,9 @@ import {
   openOnboardingWindow,
   proxyStatus,
   routingVerdicts,
+  getPreferences,
+  setRoutingHealthNotifications,
+  setShareDiagnostics,
 } from "./lib/api";
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
@@ -33,7 +37,7 @@ import { buildGroups } from "./lib/groups";
 import { verdictStatus, verdictsBySlug } from "./lib/verdict";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
-import { GATE_DASHBOARD_URL } from "./lib/config";
+import { GATE_DASHBOARD_URL, GATE_DOCS_URL } from "./lib/config";
 import { AppShell } from "./components/gc/AppShell";
 import { FamiliesPane } from "./components/gc/FamiliesPane";
 import type { Family } from "./components/gc/FamiliesPane";
@@ -122,6 +126,18 @@ export function NewUiApp() {
   const [loaded, setLoaded] = useState(false);
   const [version, setVersion] = useState("");
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  /**
+   * Whether each read *failed*, kept apart from the value it failed to produce.
+   *
+   * `launch?.enabled ?? false` used to collapse "off" and "could not be read"
+   * into one Off switch, which is a claim about the user's setting they cannot
+   * distinguish from one they made. Settings now renders Unavailable + Retry for
+   * these instead. Same rule as the routing verdict and the zeroed metrics: an
+   * unknown is never rendered as a value.
+   */
+  const [launchAtLoginUnavailable, setLaunchAtLoginUnavailable] = useState(false);
+  const [prefs, setPrefs] = useState<Preferences | null>(null);
+  const [prefsUnavailable, setPrefsUnavailable] = useState(false);
   const [view, setView] = useState<SidebarView>({ kind: "overview" });
   const [menuOpen, setMenuOpen] = useState(false);
   /** A manual scan is in flight. Separate from `routingBusy`, which is about a
@@ -151,6 +167,18 @@ export function NewUiApp() {
   const [modelChoice, setModelChoice] = useState<Record<string, ModelChoice>>({});
   const [modelOverlay, setModelOverlay] = useState<"picker" | "confirm-gate" | null>(null);
   const platform = usePlatform();
+
+  const loadLaunchAtLogin = useCallback(async () => {
+    const launch = await launchAtLoginStatus().catch(() => null);
+    setLaunchAtLoginUnavailable(launch === null);
+    if (launch) setLaunchAtLogin(launch.enabled);
+  }, []);
+
+  const loadPreferences = useCallback(async () => {
+    const p = await getPreferences().catch(() => null);
+    setPrefsUnavailable(p === null);
+    if (p) setPrefs(p);
+  }, []);
 
   /** The routing sweep, kept separate from {@link refresh} because it is the one
    * probe that costs network I/O and a process walk. Callers that changed a
@@ -202,15 +230,16 @@ export function NewUiApp() {
 
   useEffect(() => {
     void (async () => {
-      const [t, p, px, acct, oauthState, v, launch] = await Promise.all([
+      const [t, p, px, acct, oauthState, v] = await Promise.all([
         listTools().catch(() => null),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
         getAccount().catch(() => null),
         oauthStatus().catch(() => null),
         getVersion().catch(() => ""),
-        launchAtLoginStatus().catch(() => null),
       ]);
+      void loadLaunchAtLogin();
+      void loadPreferences();
       setTools(t ?? []);
       setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
       void refreshVerdicts();
@@ -219,7 +248,6 @@ export function NewUiApp() {
       setAccount(acct);
       setOAuth(oauthState);
       setVersion(v);
-      setLaunchAtLogin(launch?.enabled ?? false);
       setLoaded(true);
     })();
   }, []);
@@ -313,13 +341,15 @@ export function NewUiApp() {
         .map((t) => ({
           slug: t.slug,
           name: t.name,
-          status: verdictStatus(verdicts.get(t.slug)),
+          status: verdictStatus(verdicts.get(t.slug), {
+            writeFailed: routing.writeFailures.has(t.slug),
+          }),
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
           on: t.status.kind === "connected" || t.status.kind === "drifted",
           busy: routingBusy,
         })),
-    [tools, verdicts, routingBusy],
+    [tools, verdicts, routing.writeFailures, routingBusy],
   );
 
   /**
@@ -345,9 +375,11 @@ export function NewUiApp() {
         // the family switch on while everything it governs is off, and clicking
         // it would ask to turn off a set already off - leaving it stuck on.
         on: g.cascadeDesired > 0,
-        members: g.members.map((m) => memberToFamilyMember(m, verdicts)),
+        members: g.members.map((m) =>
+          memberToFamilyMember(m, verdicts, routing.writeFailures),
+        ),
       })),
-    [groups, verdicts],
+    [groups, verdicts, routing.writeFailures],
   );
 
   const noop = useCallback(() => {}, []);
@@ -399,6 +431,10 @@ export function NewUiApp() {
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: account?.has_api_key ? `sk-gw${"*".repeat(20)}` : "Not set",
         launchAtLogin,
+        launchAtLoginUnavailable,
+        routingHealthNotifications: prefs?.routing_health_notifications,
+        shareDiagnostics: prefs?.share_diagnostics,
+        preferencesUnavailable: prefsUnavailable,
         version: version ? `v${version}` : "-",
         updateNote: updateNoteFor(update),
         onCopyInstallId: installId ? () => void settings.copyText(installId) : noop,
@@ -411,6 +447,31 @@ export function NewUiApp() {
         onDisconnect: account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
         onReviewReset: settings.openReset,
         onToggleLaunchAtLogin: () => void settings.toggleLaunchAtLogin(),
+        onRetryLaunchAtLogin: () => void loadLaunchAtLogin(),
+        // Optimistic then re-read: the switch has to move on click, and the
+        // re-read is what makes a failed write show up rather than leaving the
+        // UI asserting a value the file does not hold.
+        onToggleRoutingHealthNotifications: () => {
+          const next = !(prefs?.routing_health_notifications ?? true);
+          setPrefs((p) => (p ? { ...p, routing_health_notifications: next } : p));
+          void setRoutingHealthNotifications(next)
+            .catch((e) => setActionError(classifyError(e, "generic")))
+            .finally(() => void loadPreferences());
+        },
+        onToggleShareDiagnostics: () => {
+          const next = !(prefs?.share_diagnostics ?? true);
+          setPrefs((p) => (p ? { ...p, share_diagnostics: next } : p));
+          void setShareDiagnostics(next)
+            .catch((e) => setActionError(classifyError(e, "generic")))
+            .finally(() => void loadPreferences());
+        },
+        onRetryPreferences: () => void loadPreferences(),
+        onOpenDocs: () => void openExternal(GATE_DOCS_URL),
+        // No `onContactSupport`, so the row is omitted: there is no support URL
+        // anywhere in the app to open, and a button that opens an invented
+        // address is worse than an absent one. The topnav's Contact support
+        // entry is dead for the same reason.
+
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
         // Explicit, so this one reports back: silence on a button the user just
@@ -439,6 +500,11 @@ export function NewUiApp() {
     [
       account,
       launchAtLogin,
+      launchAtLoginUnavailable,
+      prefs,
+      prefsUnavailable,
+      loadLaunchAtLogin,
+      loadPreferences,
       version,
       installId,
       settings.copyText,
@@ -593,6 +659,10 @@ export function NewUiApp() {
           <ReviewConfigDialog
             app={{ name: routing.prompt.name }}
             existingConfig={routing.prompt.existingConfig}
+            // The relay is what a config-routed tool gets pointed at. Null
+            // before a port has been bound, and the dialog omits the row rather
+            // than inventing an address.
+            gateRoute={proxy?.relay_base_url}
             onKeep={() => routing.resolvePrompt(false)}
             onReplace={() => routing.resolvePrompt(true)}
           />
@@ -858,10 +928,11 @@ function initialsOf(name: string): string {
 function memberToFamilyMember(
   m: GroupMember,
   verdicts: Map<string, Verdict>,
+  writeFailures: ReadonlySet<string>,
 ): Family["members"][number] {
   const status: AppStatus =
     m.kind === "config"
-      ? verdictStatus(verdicts.get(m.key))
+      ? verdictStatus(verdicts.get(m.key), { writeFailed: writeFailures.has(m.key) })
       : m.routed
         ? { kind: "protected" }
         : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
