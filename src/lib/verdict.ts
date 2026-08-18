@@ -1,0 +1,78 @@
+import type { Verdict, VerdictNextAction, VerdictReason } from "./api";
+import type { AppStatus } from "../components/gc/Sidebar";
+
+/**
+ * Turning a backend routing verdict into the status line the design draws.
+ *
+ * Two vocabularies meet here and neither one was free to change:
+ *
+ * - **The design draws four phrases** - "Protected", "Not protected", "Config
+ *   drifted", "Not routed" - and the Figma is the source of truth for copy.
+ * - **AG-562 specifies three states** (On / Off / Needs attention) each carrying
+ *   one reason from a closed set of five.
+ *
+ * Rather than pick a winner, the state maps onto the design's phrase and the
+ * reason rides in the grey suffix the design already has a slot for ("Protected
+ * - 2m ago", "Not routed - Off"). The reason strings are the ticket's own words,
+ * so nothing here is invented. The remaining conflict - whether the coloured
+ * phrase should read "On" or "Protected" - is a copy decision for the designer,
+ * raised on AG-561/562 rather than settled in this file.
+ */
+
+/** The grey suffix for a reason: the ticket's own name for it, verbatim.
+ *
+ * `configuration_changed` is absent on purpose - it maps to the design's own
+ * "Config drifted" phrase, so repeating it as a suffix would print the same
+ * fact twice. */
+const REASON_SUFFIX: Record<Exclude<VerdictReason, "configuration_changed">, string> = {
+  reopen_required: "Reopen required",
+  connection_problem: "Connection problem",
+  access_problem: "Access problem",
+  verification_failed: "Verification failed",
+};
+
+/** Button label for the one action a reason offers. Straight from AG-562's list
+ * ("Reopen tool, Apply Gate configuration, Retry check, Sign in, Reconnect"), so
+ * the control and the ticket say the same thing. */
+export const NEXT_ACTION_LABEL: Record<VerdictNextAction, string> = {
+  apply_gate_configuration: "Apply Gate configuration",
+  reopen_tool: "Reopen tool",
+  reconnect: "Reconnect",
+  sign_in: "Sign in",
+  retry_check: "Retry check",
+};
+
+/**
+ * The status line for one app.
+ *
+ * `undefined` means the sweep has not answered yet, and it deliberately does
+ * **not** fall back to the config-derived line. Reading "Protected" off a config
+ * file is the exact claim AG-562 rules out ("a switch or saved configuration
+ * does not produce On"), so an unanswered row says it is still checking instead.
+ * That costs a moment of amber on load, which is the honest trade.
+ */
+export function verdictStatus(verdict: Verdict | undefined): AppStatus {
+  if (!verdict) return { kind: "not-protected", detail: "Checking" };
+  switch (verdict.state) {
+    case "on":
+      return { kind: "protected" };
+    case "off":
+      // The design draws this one with its suffix already: "Not routed - Off".
+      return { kind: "not-routed", detail: "Off" };
+    case "needs_attention":
+      if (verdict.reason === "configuration_changed") return { kind: "drifted" };
+      return {
+        kind: "not-protected",
+        detail: verdict.reason ? REASON_SUFFIX[verdict.reason] : undefined,
+      };
+    case "not_installed":
+      // Not shown in the sidebar at all - the ledger lists what could route
+      // today - but a verdict for one must map to something rather than throw.
+      return { kind: "not-protected" };
+  }
+}
+
+/** Index a sweep by slug, so a row can look itself up. */
+export function verdictsBySlug(verdicts: Verdict[]): Map<string, Verdict> {
+  return new Map(verdicts.map((v) => [v.slug, v]));
+}

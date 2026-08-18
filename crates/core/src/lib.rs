@@ -21,6 +21,9 @@ pub mod primitives;
 pub mod provider;
 pub mod proxy;
 pub mod registry;
+/// What a tool is *doing*, as opposed to what its config says. Kept separate
+/// from [`registry::Status`] on purpose - see the module docs.
+pub mod routing_health;
 
 pub mod integrations {
     pub mod claude_code;
