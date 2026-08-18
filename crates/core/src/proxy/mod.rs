@@ -556,6 +556,16 @@ pub struct ProxyState {
     /// cannot be separated and the UI must not present a switch for it.
     #[serde(default)]
     pub env_export_separable: bool,
+    /// Loopback base URL config-routed tools are pointed at, from the persisted
+    /// relay port - `None` before any port has been bound.
+    ///
+    /// Non-secret, and already written verbatim into every config-routed tool's
+    /// own file, so surfacing it reveals nothing the user cannot read on disk.
+    /// The drift-review dialog needs it: telling someone Gate will overwrite
+    /// their routing values without showing what it will write in their place
+    /// asks them to approve a value they cannot see.
+    #[serde(default)]
+    pub relay_base_url: Option<String>,
     /// The full domain catalog with current enabled flags.
     pub domains: Vec<ProxyDomain>,
 }

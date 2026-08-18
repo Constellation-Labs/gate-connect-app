@@ -88,6 +88,21 @@ export function useRouting({
   onError?: (error: unknown, context: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  /**
+   * Slugs whose last config write failed.
+   *
+   * Without this, a failed write left the row asserting whatever it said before:
+   * the error went to a transient banner, and the status line - which is the
+   * thing the user reads next to the switch they just clicked - carried on
+   * claiming the old state. A write that failed is not an observation the sweep
+   * can make, because nothing was written and there is no trace on disk to
+   * probe, so it has to be remembered here.
+   *
+   * Session-only and per-slug, cleared the moment a write for that slug
+   * succeeds. Not persisted: a failure that survived a restart would outlive
+   * whatever caused it.
+   */
+  const [writeFailures, setWriteFailures] = useState<ReadonlySet<string>>(new Set());
   const [prompt, setPrompt] = useState<RoutingPrompt | null>(null);
   // The pending gate's resolver. A promise the dialog completes, so the action
   // reads as a straight sequence rather than a callback chain.
@@ -161,12 +176,20 @@ export function useRouting({
         }
         track("tool_toggled", { tool: slug, routed });
         changed = true;
+        setWriteFailures((prev) => {
+          if (!prev.has(slug)) return prev;
+          const next = new Set(prev);
+          next.delete(slug);
+          return next;
+        });
       } catch (e) {
         // Declining a gate is an answer, not a failure: nothing was written and
-        // there is nothing to report.
+        // there is nothing to report - and in particular the row must not be
+        // marked failed, because the user chose this.
         if (!(e instanceof Declined)) {
           trackError(e, "connect", { tool: slug, routed });
           onError?.(e, routed ? "connect" : "disconnect");
+          setWriteFailures((prev) => new Set(prev).add(slug));
         }
       } finally {
         await resync();
@@ -262,5 +285,13 @@ export function useRouting({
     [busy, ensureCaTrusted, resync, onError],
   );
 
-  return { busy, prompt, resolvePrompt, setAppRouted, setFamilyRouted, setDomainRouted };
+  return {
+    busy,
+    prompt,
+    resolvePrompt,
+    setAppRouted,
+    setFamilyRouted,
+    setDomainRouted,
+    writeFailures,
+  };
 }

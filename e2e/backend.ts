@@ -66,6 +66,10 @@ export interface ProxyFixture {
   port: number | null;
   pac_port: number | null;
   ca_trusted: boolean;
+  /** Loopback base URL config-routed tools point at. Null before a relay port
+      has been bound, which is what the drift dialog omits its Gate-route row
+      for. */
+  relay_base_url: string | null;
   env_export_opted_in: boolean;
   env_export_separable: boolean;
   domains: DomainFixture[];
@@ -231,6 +235,7 @@ export function defaultState(): BackendState {
       port: null,
       pac_port: null,
       ca_trusted: false,
+      relay_base_url: "http://127.0.0.1:45981",
       env_export_opted_in: false,
       env_export_separable: true,
       domains: [
