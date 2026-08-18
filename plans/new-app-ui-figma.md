@@ -670,3 +670,41 @@ and the reason is recorded at the component:
   removed from the keychain. That describes Reset, a separate row on the same
   screen. Implemented as ending the session, and the body copy corrected, rather
   than shipping two destructive actions that claim the same consequences.
+
+## Quit and teardown in the window shell (AG-596)
+
+The popover has carried the three-way quit since it shipped
+(`components/QuitConfirm.tsx`: disconnect-and-quit / quit-without-disconnecting /
+cancel, with focus on cancel). The window shell had **nothing**: no
+`quit-requested` listener and no dialog, so a tray Quit raised in the new UI went
+unanswered. Fixed by porting the flow, not reinventing it - `QuitDialog` in
+`dialogs.tsx` shares the popover's copy so a user who has seen one is not asked
+to work out whether the other means something different.
+
+`Modal` gained an optional **`middle` action**. Three buttons because the
+outcomes genuinely differ: collapsing "quit without disconnecting" into the
+primary would hide the consequence that makes it a separate choice, and
+collapsing cancel would leave no way out. It is the only dialog that needs it.
+
+The larger change is behavioural, and it applies to **both** shells.
+`provider::snapshot_and_disable_everything` swallowed per-tool disconnect
+failures into `eprintln!` and returned `Ok(())`, so a quit that left a tool
+pointing at a relay about to die reported success and fired a notification
+saying "your tools are back on their own settings". It now returns the display
+names of what it could not put back:
+
+- `disconnect_tools_for_quit` returns `Vec<String>` rather than `()`.
+- The quit notification only claims a clean teardown when there was one.
+- Both shells stop, name the tools, and offer retry / quit-anyway rather than
+  exiting quietly. AG-596 is explicit: Gate Connect "does not claim cleanup
+  completed".
+
+Not covered here, and still open on the ticket: the reset result's equivalent
+listing ("if reset leaves a credential, configuration, or routed tool, Gate
+Connect lists it"). Reset's checkbox gate and confirmation are built; enumerating
+*residue* after the fact needs the same treatment `snapshot_and_disable_everything`
+just got, applied to the reset path.
+
+The restore-vs-AC conflict recorded against AG-564/566/570/596 is unchanged by
+this work: `claude_code.rs` does restore prior values, so no copy here claims
+otherwise.

@@ -113,6 +113,10 @@ export interface BackendState {
   runningAgentNames: string[];
   staleAgents: number;
   pendingQuitTools: string[] | null;
+  /** Display names `disconnect_tools_for_quit` reports it could NOT put back.
+      Empty = a clean teardown. A spec that cares about the partial-teardown
+      result sets it; the teardown itself still succeeds, which is the point. */
+  quitLeftBehind: string[];
   /** Commands that should reject, keyed by command name. The value is the
    *  error string the backend "returns" - App classifies it exactly as it
    *  would a real Tauri rejection. */
@@ -269,6 +273,7 @@ export function defaultState(): BackendState {
     runningAgentNames: [],
     staleAgents: 0,
     pendingQuitTools: null,
+    quitLeftBehind: [],
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
   };

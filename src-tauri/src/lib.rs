@@ -1398,32 +1398,53 @@ fn quit_app(app: tauri::AppHandle) {
 /// app runs with routing intended on. Fires a system notification (the
 /// popover dies with the process) telling the user to restart running CLI
 /// agents, which keep the relay address they resolved at their own launch.
+///
+/// Returns the display names of any tools it could **not** return to their own
+/// settings. Empty means the teardown was clean. A non-empty list is not an
+/// error - the rest of the sweep still ran - but the caller must not report the
+/// quit as tidy, and must not quit without saying so.
 #[tauri::command]
-async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> {
+async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     // Off the main thread: disconnect does config-file I/O.
-    tauri::async_runtime::spawn_blocking(|| {
+    let failed: Vec<String> = tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::provider::snapshot_and_disable_everything().map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("disconnect join error: {e}"))??;
     {
         use tauri_plugin_notification::NotificationExt;
+        // The clean-teardown wording is only true when the teardown was clean.
+        // With a tool left on Gate's settings, telling the user everything is
+        // back is worse than saying nothing: their next request goes to a relay
+        // that died with this process, and the notification told them it would
+        // not.
+        let body = if failed.is_empty() {
+            // "Your tools", not "Integrations": that word reaches the user
+            // nowhere else in the product, and this notification arrives
+            // seconds after a panel that called them tools. The rest of the
+            // wording is shared with QuitConfirm on purpose.
+            "Your tools are back on their own settings while Gate Connect is \
+             closed. Restart any running CLI agents; everything reconnects \
+             when Gate Connect starts again."
+                .to_string()
+        } else {
+            format!(
+                "Gate Connect closed, but {} could not be put back on {} own \
+                 settings. {} still point at Gate and will not reach a model until \
+                 Gate Connect runs again.",
+                failed.join(", "),
+                if failed.len() == 1 { "its" } else { "their" },
+                if failed.len() == 1 { "It" } else { "They" },
+            )
+        };
         let _ = app
             .notification()
             .builder()
             .title("Gate Connect")
-            .body(
-                // "Your tools", not "Integrations": that word reaches the user
-                // nowhere else in the product, and this notification arrives
-                // seconds after a panel that called them tools. The rest of the
-                // wording is shared with QuitConfirm on purpose.
-                "Your tools are back on their own settings while Gate Connect is \
-                 closed. Restart any running CLI agents; everything reconnects \
-                 when Gate Connect starts again.",
-            )
+            .body(body)
             .show();
     }
-    Ok(())
+    Ok(failed)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

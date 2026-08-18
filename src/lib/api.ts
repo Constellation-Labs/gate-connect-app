@@ -327,8 +327,13 @@ export const pendingQuitTools = () => invoke<string[] | null>("pending_quit_tool
 /** Quit-time teardown: snapshot + disconnect every enabled integration so the
  * CLI tools fall back to their original settings, leaving the routing intent
  * untouched so the next startup restore reapplies them. Fires the "restart
- * your CLI agents" system notification. */
-export const disconnectToolsForQuit = () => invoke<void>("disconnect_tools_for_quit");
+ * your CLI agents" system notification.
+ *
+ * Returns the display names of any tools it could **not** return to their own
+ * settings; empty means the teardown was clean. A non-empty list is not a
+ * rejection - the rest of the sweep ran - but the caller must not quit while
+ * claiming the cleanup finished. */
+export const disconnectToolsForQuit = () => invoke<string[]>("disconnect_tools_for_quit");
 
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);

@@ -618,3 +618,126 @@ export function ResetGateConnectDialog({
     </Modal>
   );
 }
+
+/** "Claude Code", "Claude Code and Codex", "Claude Code, Codex, and OpenCode". */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+/**
+ * Quit, with the three outcomes AG-596 names: disconnect the tools first, quit
+ * and leave them pointing at Gate, or don't quit.
+ *
+ * **Provisional layout.** The Figma draws no quit dialog for the window shell
+ * (AG-595 is still To Do), so the structure here comes from the acceptance
+ * criteria and the popover's `QuitConfirm`, which already implements the same
+ * three choices. The copy is deliberately shared with that panel: a user who has
+ * seen one should not have to work out whether the other means something else.
+ *
+ * Three buttons rather than two because the outcomes genuinely differ. Collapsing
+ * "quit without disconnecting" into the primary would hide the consequence that
+ * makes it different, and collapsing Cancel would leave no way out.
+ *
+ * Cancel takes focus, not the primary: the user asked to quit, but Enter on a
+ * panel they have not read should not decide *how*.
+ */
+export function QuitDialog({
+  tools,
+  busy,
+  onDisconnectAndQuit,
+  onQuitAnyway,
+  onCancel,
+}: {
+  /** Config-routed tools still pointed at Gate. Never empty - the shell only
+   * raises this dialog when the backend reports at least one. */
+  tools: string[];
+  busy?: boolean;
+  onDisconnectAndQuit: () => void;
+  onQuitAnyway: () => void;
+  onCancel: () => void;
+}) {
+  const names = joinNames(tools);
+  const plural = tools.length > 1;
+  return (
+    <Modal
+      tone="warning"
+      icon="logOut"
+      title="Quit Gate Connect?"
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
+      middle={{
+        label: "Quit without disconnecting",
+        onClick: onQuitAnyway,
+        disabled: busy,
+      }}
+      primary={{
+        label: busy ? "Working…" : "Disconnect tools and quit",
+        onClick: onDisconnectAndQuit,
+        disabled: busy,
+      }}
+      onDismiss={busy ? undefined : onCancel}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        {names} still {plural ? "route" : "routes"} through Gate. Quitting stops the
+        local relay {plural ? "they" : "it"} points at, so {plural ? "they" : "it"}{" "}
+        {plural ? "cannot" : "cannot"} reach a model until Gate Connect runs again.
+      </p>
+      <p className="text-sm leading-5 text-neutral-600">
+        {/* "when Gate Connect starts again", not "at the next start": the next
+            start of *what* was the ambiguity, and the tool's own launch is the
+            wrong answer. Same phrasing as the notification this fires. */}
+        Disconnecting puts {plural ? "their" : "its"} own settings back for the
+        meantime, then reconnects {plural ? "them" : "it"} when Gate Connect starts
+        again. Routing stays switched on either way.
+      </p>
+    </Modal>
+  );
+}
+
+/**
+ * What the quit teardown could not finish.
+ *
+ * AG-596 is explicit that Gate Connect "does not claim cleanup completed", so a
+ * partial teardown gets its own dialog rather than a silent exit: the named tools
+ * are still pointed at a relay that dies with this process. Retrying is the
+ * primary; quitting anyway stays available, because refusing to let someone quit
+ * their own app is worse than letting them quit informed.
+ */
+export function QuitLeftBehindDialog({
+  tools,
+  busy,
+  onRetry,
+  onQuitAnyway,
+  onCancel,
+}: {
+  tools: string[];
+  busy?: boolean;
+  onRetry: () => void;
+  onQuitAnyway: () => void;
+  onCancel: () => void;
+}) {
+  const plural = tools.length > 1;
+  return (
+    <Modal
+      tone="warning"
+      icon="triangleAlert"
+      title={plural ? "Some tools stayed on Gate" : "One tool stayed on Gate"}
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
+      middle={{ label: "Quit anyway", onClick: onQuitAnyway, disabled: busy }}
+      primary={{ label: busy ? "Working…" : "Try again", onClick: onRetry, disabled: busy }}
+      onDismiss={busy ? undefined : onCancel}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        Couldn’t put {joinNames(tools)} back on{" "}
+        {plural ? "their own settings" : "its own settings"}.{" "}
+        {plural ? "They still point" : "It still points"} at Gate, and won’t reach a
+        model until Gate Connect runs again.
+      </p>
+      <ModalNote>
+        Everything else was put back. Trying again only retouches the{" "}
+        {plural ? "tools" : "tool"} above.
+      </ModalNote>
+    </Modal>
+  );
+}
