@@ -109,6 +109,9 @@ export interface BackendState {
   tools: ToolFixture[];
   providers: ProviderFixture[];
   launchAtLogin: { enabled: boolean; pending_disable: boolean };
+  /** Settings preferences, as `preferences.json` holds them. Both default on,
+      which is what lets a switch read On before anything has been written. */
+  preferences: { routing_health_notifications: boolean; share_diagnostics: boolean };
   routedClientsStale: boolean;
   runningAgents: number;
   /** Process names the agent scan reports as running. `runningAgents` is the
@@ -269,6 +272,7 @@ export function defaultState(): BackendState {
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
+    preferences: { routing_health_notifications: true, share_diagnostics: true },
     routedClientsStale: false,
     runningAgents: 0,
     runningAgentNames: [],

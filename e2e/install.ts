@@ -254,6 +254,17 @@ export function installFakeTauri(state: BackendState): void {
     },
     set_updater_relaunching: () => null,
 
+    // ---- preferences
+    get_preferences: () => state.preferences,
+    set_routing_health_notifications: ({ enabled }) => {
+      state.preferences.routing_health_notifications = enabled as boolean;
+      return null;
+    },
+    set_share_diagnostics: ({ enabled }) => {
+      state.preferences.share_diagnostics = enabled as boolean;
+      return null;
+    },
+
     // ---- agents / quit
     routed_clients_stale: () => state.routedClientsStale,
     running_agents_count: () => state.runningAgents,

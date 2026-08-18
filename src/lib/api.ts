@@ -373,6 +373,31 @@ export const pendingQuitTools = () => invoke<string[] | null>("pending_quit_tool
  * your CLI agents" system notification. */
 export const disconnectToolsForQuit = () => invoke<void>("disconnect_tools_for_quit");
 
+/** Non-secret Settings choices. Every field defaults to `true`, and an absent
+ * field in the stored file loads as `true` - so a switch reads On before anything
+ * has ever been written, which is what lets Settings show a truthful default.
+ *
+ * Only the preferences that currently gate something are here. Per-category
+ * security-event notifications and a sound toggle belong with the live event feed,
+ * which does not exist yet; a switch that gates nothing would tell the user they
+ * had turned something off. */
+export interface Preferences {
+  /** Native notifications about routing itself - an expired session, a quit that
+   * could not put a tool back. The two the app actually fires. */
+  routing_health_notifications: boolean;
+  /** Whether Gate Connect may send diagnostic data. Onboarding records the first
+   * answer; Settings changes it after. Nothing is uploaded by setting it. */
+  share_diagnostics: boolean;
+}
+
+export const getPreferences = () => invoke<Preferences>("get_preferences");
+
+export const setRoutingHealthNotifications = (enabled: boolean) =>
+  invoke<void>("set_routing_health_notifications", { enabled });
+
+export const setShareDiagnostics = (enabled: boolean) =>
+  invoke<void>("set_share_diagnostics", { enabled });
+
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);
  * `message` is the raw error chain - it stays on this machine, only the
