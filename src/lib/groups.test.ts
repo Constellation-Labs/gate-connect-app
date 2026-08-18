@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderState, ProxyDomain, Tool } from "./api";
-import { buildGroups, groupSummary, MULTI_PROVIDER_ID } from "./groups";
+import type { Group, GroupMember } from "./groups";
+import { buildGroups, groupSummary, MULTI_PROVIDER_ID, cascadeTargets } from "./groups";
 
 function tool(slug: string, name: string, status: Tool["status"], upstream = "Anthropic"): Tool {
   return {
@@ -358,5 +359,65 @@ describe("intent versus flow", () => {
     );
     expect(group.members[0].routed).toBe(true);
     expect(group.members[0].attention).toBeNull();
+  });
+});
+
+describe("cascadeTargets", () => {
+  const member = (over: Partial<GroupMember> = {}): GroupMember => ({
+    key: "codex",
+    kind: "config",
+    name: "Codex",
+    routed: false,
+    desired: false,
+    attention: null,
+    ...over,
+  });
+  const group = (members: GroupMember[]): Group => ({
+    id: "openai",
+    name: "OpenAI",
+    switchLabel: "Route OpenAI through Gate",
+    members,
+    routed: members.filter((m) => m.routed).length,
+    desired: members.filter((m) => m.desired).length,
+    cascadeDesired: members.filter((m) => m.desired && !m.chat).length,
+  });
+
+  it("never rides a chat member on a family switch", () => {
+    // They intercept a session-cookie surface, so routing one is a deliberate
+    // per-row act. The backend keeps those slugs out of proxy_domain_slugs for
+    // the same reason.
+    const g = group([member(), member({ key: "chatgpt", name: "ChatGPT", kind: "proxy", chat: true })]);
+    expect(cascadeTargets(g, true).map((m) => m.key)).toEqual(["codex"]);
+    expect(cascadeTargets(g, false).map((m) => m.key)).toEqual([]);
+  });
+
+  it("never adopts a drifted config from a family switch", () => {
+    // That decision belongs to the review dialog, not to a switch two levels up.
+    const g = group([member({ attention: "drifted" })]);
+    expect(cascadeTargets(g, true)).toEqual([]);
+  });
+
+  it("still turns a drifted member off", () => {
+    // Disconnecting restores what was there, so there is nothing to review.
+    const g = group([member({ attention: "drifted", desired: true })]);
+    expect(cascadeTargets(g, false).map((m) => m.key)).toEqual(["codex"]);
+  });
+
+  it("leaves members that already say the right thing alone", () => {
+    // So a family switch does not rewrite a config that is already correct.
+    const on = group([member({ desired: true })]);
+    expect(cascadeTargets(on, true)).toEqual([]);
+    const off = group([member({ desired: false })]);
+    expect(cascadeTargets(off, false)).toEqual([]);
+  });
+
+  it("takes proxy members by their enabled flag, not by what is flowing", () => {
+    // An enabled domain behind an untrusted certificate is not routed, and a
+    // family switch turning it "on" again would be a no-op the user cannot see.
+    const g = group([
+      member({ key: "anthropic-api", kind: "proxy", name: "Anthropic API", desired: true, routed: false }),
+    ]);
+    expect(cascadeTargets(g, true)).toEqual([]);
+    expect(cascadeTargets(g, false).map((m) => m.key)).toEqual(["anthropic-api"]);
   });
 });

@@ -1,11 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { getVersion } from "@tauri-apps/api/app";
-import { setUpdaterRelaunching } from "../lib/api";
+import { useUpdate } from "../lib/useUpdate";
 import { useWindowReopen } from "../lib/useWindowReopen";
 import { Takeover, TAKEOVER_Z } from "./Takeover";
-import { track, trackError } from "../lib/analytics";
+import { track } from "../lib/analytics";
 import { Button, IconButton } from "./gc/ui";
 import { Icon } from "./gc/Icon";
 
@@ -27,10 +24,10 @@ export function UpdatePanel({
    * takeover is mounted. */
   onTakeoverVisibleChange?: (visible: boolean) => void;
 }) {
-  const [update, setUpdate] = useState<Update | null>(null);
-  const [current, setCurrent] = useState("");
-  const [installing, setInstalling] = useState(false);
-  const [failed, setFailed] = useState(false);
+  // The check/download/install sequence is shared with the window UI; this
+  // component owns only how it is surfaced. See `lib/useUpdate`.
+  const { available: update, current, installing, failed, checkNow, install, loadCurrentVersion } =
+    useUpdate();
   // The startup takeover, dismissed with "Later".
   const [panelDismissed, setPanelDismissed] = useState(false);
   // The reopen banner, dismissed with its close button.
@@ -48,19 +45,10 @@ export function UpdatePanel({
     track("update_shown", { source: reopened ? "banner" : "panel" });
   }, [update, reopened]);
 
-  const runCheck = () =>
-    check()
-      .then((u) => {
-        if (u) setUpdate(u);
-      })
-      .catch(() => undefined);
-
   useEffect(() => {
-    void runCheck();
-    getVersion()
-      .then(setCurrent)
-      .catch(() => undefined);
-  }, []);
+    void checkNow();
+    void loadCurrentVersion();
+  }, [checkNow, loadCurrentVersion]);
 
   // Re-check on each tray reopen, so an update released while the app sat in
   // the tray still surfaces. From then on an available update surfaces as the
@@ -68,44 +56,8 @@ export function UpdatePanel({
   // a takeover.
   useWindowReopen(() => {
     setReopened(true);
-    void runCheck();
+    void checkNow();
   });
-
-  async function install() {
-    if (!update) return;
-    setFailed(false);
-    setInstalling(true);
-    // Download and install as separate phases so the updater-relaunch mark
-    // brackets only the install: quitting the app while the (long) download
-    // is still running is a genuine user exit, and a set mark there would
-    // make the exit handler skip its routing-intent clear and deferred
-    // launch-at-login opt-out completion with no relaunch coming.
-    try {
-      await update.download();
-    } catch (err) {
-      trackError(err, "update");
-      setInstalling(false);
-      setFailed(true);
-      return;
-    }
-    try {
-      // Mark the coming exit as an updater relaunch so the backend keeps the
-      // routing intent and restores routing after the restart. Before the
-      // install, not after: on Windows the installer exits the app from
-      // inside install().
-      await setUpdaterRelaunching(true);
-      await update.install();
-      // Best-effort: on Windows the installer exits the app from inside
-      // install(), so this event may never send there.
-      track("update_installed");
-      await relaunch();
-    } catch (err) {
-      trackError(err, "update");
-      await setUpdaterRelaunching(false).catch(() => undefined);
-      setInstalling(false);
-      setFailed(true);
-    }
-  }
 
   // The startup takeover is visible when an update exists, no reopen has
   // demoted it to the banner, it hasn't been dismissed, and no higher
