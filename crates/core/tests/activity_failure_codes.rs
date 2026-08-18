@@ -121,7 +121,7 @@ fn success_returns_the_body_verbatim() {
     // Verbatim, not reshaped: `lib/activity.ts` is the only model of this shape,
     // so a second one here could drift from it.
     assert_eq!(
-        overview_json().unwrap(),
+        overview_json(None).unwrap(),
         r#"{"generatedAt":"2026-08-17T12:00:00Z"}"#
     );
 }
@@ -133,7 +133,7 @@ fn refused_credential_is_rejected_not_offline() {
     with_key_account();
     mock_endpoint("401 Unauthorized", r#"{"message":"invalid api key"}"#);
 
-    let f = overview_json().expect_err("401 must fail");
+    let f = overview_json(None).expect_err("401 must fail");
     assert_eq!(f.code, FailureCode::Rejected);
     // The gateway's own envelope survives, because a 4xx is the only place the
     // reason is written down.
@@ -148,7 +148,7 @@ fn forbidden_is_also_rejected() {
     mock_endpoint("403 Forbidden", r#"{"message":"not a member"}"#);
 
     assert_eq!(
-        overview_json().expect_err("403 must fail").code,
+        overview_json(None).expect_err("403 must fail").code,
         FailureCode::Rejected
     );
 }
@@ -163,7 +163,7 @@ fn server_error_is_a_gateway_fault_not_a_credential_fault() {
     // Distinct from Rejected on purpose: nothing about the user's key is wrong,
     // so telling them to manage their API keys would be a wild goose chase.
     assert_eq!(
-        overview_json().expect_err("500 must fail").code,
+        overview_json(None).expect_err("500 must fail").code,
         FailureCode::Gateway
     );
 }
@@ -176,7 +176,9 @@ fn nothing_listening_is_offline() {
     dead_endpoint();
 
     assert_eq!(
-        overview_json().expect_err("a closed port must fail").code,
+        overview_json(None)
+            .expect_err("a closed port must fail")
+            .code,
         FailureCode::Offline
     );
 }
@@ -189,7 +191,7 @@ fn no_account_is_signed_out() {
     // No `account::save`, and no endpoint: this must fail before any request.
 
     assert_eq!(
-        overview_json().expect_err("no account must fail").code,
+        overview_json(None).expect_err("no account must fail").code,
         FailureCode::SignedOut
     );
 }
@@ -203,7 +205,7 @@ fn account_without_a_key_is_signed_out() {
     account::save("https://gw.example.com", None).unwrap();
 
     assert_eq!(
-        overview_json()
+        overview_json(None)
             .expect_err("a key-less account must fail")
             .code,
         FailureCode::SignedOut

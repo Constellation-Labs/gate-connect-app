@@ -203,40 +203,71 @@ This is the largest piece of work in the ticket, and it is new end to end. His
 own caveat is correct: it limits how much of the existing gate services can be
 reused, because nothing in them carries an installation dimension.
 
-**Current state, verified 2026-08-11:**
+**Built 2026-08-17.** The state recorded below as "current" is now history; it
+is kept because the decisions only make sense against it. What shipped:
+
+- `install_id()` (`crates/core/src/primitives.rs`) is cross-platform, minted with
+  `rand` rather than a `/dev/urandom` read, and wrapped in `install_id_cached()`
+  which resolves once per process and returns `None` rather than failing.
+- `x-gate-install-id` and `x-gate-client` are injected in
+  `proxy::inject_gate_credential`, the chokepoint the MITM engine and the relay
+  already share. Fail-open throughout: anything we cannot determine is left off
+  and the request is recorded unattributed.
+- Gateway migration 158 adds `machine_id` and `client_tool` to
+  `gateway_requests`, nullable, no backfill, with a partial index on
+  `(org_id, machine_id, created_at DESC)`.
+- `GET /v1/me/activity?installId=` narrows every section or none and echoes the
+  scope it applied; `GET /v1/me/installations` lists installations seen in the
+  last 30 days and marks which one is the caller.
+- The Overview carries an installation picker, hidden until there is more than
+  one to choose between, defaulting to org-wide.
+
+**One deviation from the plan below.** Discovery *reads* distinct `machine_id`
+from `gateway_requests` (left-joined to `gateway_org_machines` for
+`trust_status`) instead of the data plane writing to `gateway_org_machines`. A
+per-request write to that table is exactly the data-plane risk §7 warns about,
+and the join still surfaces trust where the audit path registered the machine.
+
+**Prior state, verified 2026-08-11:**
 
 - `crates/core/src/primitives.rs:210` already defines `install_id()`, a stable
   UUID cached at `<app_support_dir>/install-id`. Its doc comment says it is the
   "stable UUID we send to the gateway audit trail for telemetry attribution."
-- That comment is stale. **Nothing calls it.** The only other reference in the
-  repo is a doc comment in `proxy/control.rs:84` distinguishing itself from it.
-- It is `#[cfg(target_os = "macos")]`, so Windows and Linux have no install id
+- That comment was stale. **Nothing called it.** The only other reference in the
+  repo was a doc comment in `proxy/control.rs:84` distinguishing itself from it.
+- It was `#[cfg(target_os = "macos")]`, so Windows and Linux had no install id
   at all.
-- The gateway has **no installation concept**: no column on `gateway_requests`,
+- The gateway had **no installation concept**: no column on `gateway_requests`,
   no header, nothing in the entity definitions.
 
-**What making this real requires:**
+**What making this real required:**
 
 - **Connect app, identity:** lift `install_id()` out of the macOS cfg so all
   three platforms have one, and add a user-facing label. The AC says
   "installation", which implies something a human recognises, not a raw UUID.
-  Decide whether the label is user-editable and where it is persisted.
+  Decide whether the label is user-editable and where it is persisted. *Done bar
+  the label: the picker shows the raw id, per the §11a decision, and says which
+  entry is this machine so the id is not the only thing the user has to go on.*
 - **Connect app, data plane:** inject an installation header on **every** request
   the app routes, in both mechanisms. The seam exists: the proxy engine and the
   relay already share header injection in `crates/core/src/proxy/mod.rs` around
   the `x-gate-*` constants. Without this, no request is attributable and the
-  counters cannot be scoped at all.
+  counters cannot be scoped at all. *Done.*
 - **Gateway, ingest:** accept the header and persist it on `gateway_requests`,
   which needs a new nullable column plus an index that actually serves the query.
   The existing `idx_requests_org_created` on `(org_id, created_at)` will not
   cover an installation filter; this likely wants
-  `(org_id, installation_id, created_at)`.
+  `(org_id, installation_id, created_at)`. *Done, as
+  `(org_id, machine_id, created_at DESC)` partial on `machine_id IS NOT NULL`.*
 - **Gateway, discovery:** something must list an org's installations, or the app
-  cannot offer the "selected installation" the AC describes.
+  cannot offer the "selected installation" the AC describes. *Done, as
+  `GET /v1/me/installations`.*
 - **Migration reality:** every historical row has no installation. Decide what
   the overview shows for an org whose traffic predates the column, and whether
   unattributed traffic appears under a synthetic "unknown" installation or is
-  excluded outright.
+  excluded outright. *Decided in §11a and implemented: org-wide is the default,
+  so unattributed traffic is never dropped from a total the user could already
+  see.*
 
 **Scope boundary worth stating plainly:** only traffic that passes through Gate
 Connect can carry an installation id. An `sk-gw-*` key used directly from curl or
@@ -375,7 +406,10 @@ Settled 2026-08-17. These close open decisions 7-10 in section 9.
   carries a worked-out threat model from the audit-ingest path (first sight
   registers unverified; a scoped key forging a machine id is recorded as SEC-H8).
   What changes is that inference requests start writing to it too, not just
-  `POST /v1/audit`.
+  `POST /v1/audit`. *Amended in implementation: the data plane writes nothing to
+  that table. Discovery reads distinct `machine_id` from `gateway_requests` and
+  left-joins `gateway_org_machines` for `trust_status`, because a per-request
+  write to it is the data-plane risk §7 warns about.*
 - **Label is the raw UUID for now.** Hostname would be friendlier and is often a
   person's real name, so it is a privacy decision nobody needs to take yet. A
   display name can land later without moving the identifier.
@@ -395,7 +429,8 @@ change to the *data plane* of the desktop app: the header rides on every proxied
 request, in both the relay and the MITM engine. It has to fail open. A missing,
 malformed, or unwritable installation id must degrade to today's behaviour -
 unattributed traffic - and never break the request carrying the user's actual
-work.
+work. *Honoured: `install_id_cached()` returns `None` on any failure and
+`inject_attribution` is infallible, so nothing on this path can fail a request.*
 
 ## 12. Deferred follow-ups (not AG-572)
 
@@ -424,7 +459,27 @@ by mechanism:
   `api.anthropic.com`.
 - **Sequencing note:** tool id and installation id are both new dimensions on the
   same table. If a migration happens for one, doing both together is much cheaper
-  than sequentially.
+  than sequentially. *Taken: migration 158 adds both columns at once.*
+
+**Update 2026-08-17.** `client_tool` now exists on `gateway_requests` and the app
+sends `x-gate-client`, so the column is real - but the assessment above stands
+almost unchanged, and it is worth being blunt about what shipped:
+
+- The relay is keyed by *provider* slug, not by tool, and the engine still sees
+  only a CONNECT to a host. Neither knows which tool sent a request from routing
+  alone.
+- So the slug is derived from the caller's own `User-Agent`, with a small
+  allowlist (`claude-cli` -> `claude-code`, plus `codex`, `opencode`, `openclaw`,
+  `hermes`). An agent that is not on it is `NULL`, never a guess: filing one
+  tool's traffic under another's name in the view the user reads to find out
+  what their machine is doing would be worse than saying nothing.
+- That is exactly the heuristic called "too fragile to be the design" above. It
+  is fragile in the tolerable direction - a UA change loses attribution, it does
+  not invent it - and it costs nothing beyond a header, but a per-tool UI must
+  still treat `NULL` as ordinary rather than exceptional.
+- Not done: changing what each integration writes so a tool identifies itself
+  explicitly. That is the durable fix, and it is still available on top of this
+  without touching the column.
 
 **Latest messages per tool detail.** Same comment: "we need that detail to show
 the user latest messages in each tool detail on gate connect." Technically

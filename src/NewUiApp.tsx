@@ -39,7 +39,8 @@ import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
-import { useActivity } from "./lib/activity";
+import { InstallationPicker } from "./components/gc/InstallationPicker";
+import { useActivity, useInstallations } from "./lib/activity";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
@@ -130,10 +131,16 @@ export function NewUiApp() {
   const [modelChoice, setModelChoice] = useState<Record<string, ModelChoice>>({});
   const [modelOverlay, setModelOverlay] = useState<"picker" | "confirm-gate" | null>(null);
   const platform = usePlatform();
+  // Which installation the Overview covers; `null` is the whole org, and stays
+  // the default because traffic sent before attribution existed has no
+  // installation at all. Selecting one refetches - the gateway narrows every
+  // section server-side, so there is nothing to slice here.
+  const [installId, setInstallId] = useState<string | null>(null);
   // One fetch per mount, plus the pane's own refresh. Not polled: the endpoint's
   // throttle bucket is keyed on the source address, so a timer here would spend
   // a budget shared with every other Gate Connect user on the same network.
-  const activity = useActivity(true);
+  const activity = useActivity(true, installId);
+  const { installations, current: currentInstallId } = useInstallations(true);
 
   const refresh = useCallback(async () => {
     const [t, px] = await Promise.all([
@@ -368,14 +375,6 @@ export function NewUiApp() {
     onError: (e) => setActionError(classifyError(e, "generic")),
   });
 
-  // The PostHog distinct id: a per-install random device id, and the one string
-  // that lines a pasted diagnostics report up against its event stream. The
-  // closest thing to the design's install ID that actually exists.
-  const installId = useMemo(() => {
-    const id = analyticsId();
-    return id.kind === "id" ? id.value : null;
-  }, []);
-
   // Diagnostics has two entrances - Settings, and the "something is missing"
   // banner on Overview - and both open the same rendered report rather than a
   // dialog that fetches its own, so the two can never disagree.
@@ -388,10 +387,13 @@ export function NewUiApp() {
   const settingsSections = useMemo(
     () =>
       buildSettingsSections({
-        // Device name and plan have no backend, so they read as unknown rather
-        // than as invented values, and their actions are omitted entirely.
+        // Device name and plan have no backend yet, so they read as unknown
+        // rather than as invented values. The install id now has one: it is the
+        // id this app stamps on every routed request, reported back by the
+        // gateway, so the row shows the identity the user's traffic actually
+        // carries rather than a local guess at it.
         deviceName: "-",
-        installId: installId ?? "Unavailable",
+        installId: currentInstallId ?? "-",
         loginId: account?.org_name ?? "-",
         plan: "-",
         gateway: account?.gateway_base_url ?? "-",
@@ -399,7 +401,7 @@ export function NewUiApp() {
         launchAtLogin,
         version: version ? `v${version}` : "-",
         updateNote: updateNoteFor(update),
-        onCopyInstallId: installId ? () => void settings.copyText(installId) : noop,
+        onCopyInstallId: currentInstallId ? () => void settings.copyText(currentInstallId) : noop,
         // Only where there is a key to replace. On an OAuth account `saveAccount`
         // with a key would flip auth_mode to api_key, quietly converting the
         // account behind a button that says "replace".
@@ -430,17 +432,14 @@ export function NewUiApp() {
       account,
       launchAtLogin,
       version,
-      installId,
+      currentInstallId,
+      showDiagnostics,
       settings.copyText,
       settings.openReplaceKey,
       settings.openDisconnect,
       settings.openReset,
       settings.toggleLaunchAtLogin,
       update,
-      platform,
-      proxy,
-      providers,
-      tools,
       noop,
     ],
   );
@@ -745,6 +744,16 @@ export function NewUiApp() {
           // real reading and would claim the user had no traffic.
           pending={activity.view === null && activity.failure === null}
           period={activity.view?.period ?? "Last 24 hours"}
+          scope={
+            <InstallationPicker
+              installations={installations}
+              // The scope the gateway echoed, not the one we asked for: while a
+              // refetch is in flight the numbers on screen are still the
+              // previous scope's, and the label has to agree with them.
+              value={activity.view?.installId ?? null}
+              onChange={setInstallId}
+            />
+          }
           alert={
             <>
               {notices.length > 0 && (

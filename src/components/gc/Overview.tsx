@@ -68,6 +68,7 @@ export function Overview({
   onManageSavings,
   alert,
   period = "Last 24 hours",
+  scope,
   pending,
 }: {
   stats: UsageStats;
@@ -82,6 +83,9 @@ export function Overview({
   /** Slot for an `AlertBanner`, which the design places above the stat tiles. */
   alert?: ReactNode;
   period?: string;
+  /** Slot for the installation picker, beside the period label: both say what
+   *  the numbers below cover, so they belong on the same line. */
+  scope?: ReactNode;
 }) {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
@@ -89,7 +93,10 @@ export function Overview({
         <h1 className="text-xl font-medium leading-6 tracking-heading text-neutral-900">
           Overview
         </h1>
-        <span className="text-base-xs text-base-muted-foreground">{period}</span>
+        <div className="flex items-center gap-3">
+          {scope}
+          <span className="text-base-xs text-base-muted-foreground">{period}</span>
+        </div>
       </header>
 
       {alert}

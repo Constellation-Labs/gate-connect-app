@@ -87,12 +87,54 @@ fn activity_endpoint(gateway_base_url: &str) -> String {
     format!("{}/v1/me/activity", gateway_base_url.trim_end_matches('/'))
 }
 
+/// Discovery endpoint for the installation picker, with its own test seam.
+/// `<gateway_base_url>/v1/me/installations` in real builds.
+fn installations_endpoint(gateway_base_url: &str) -> String {
+    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_INSTALLATIONS_ENDPOINT") {
+        return o.to_string_lossy().into_owned();
+    }
+    format!(
+        "{}/v1/me/installations",
+        gateway_base_url.trim_end_matches('/')
+    )
+}
+
 /// Fetch the overview for the current account, as raw JSON.
+///
+/// `install_id` scopes the whole reading to one installation (AG-572 AC 1);
+/// `None` is the org-wide default. The gateway narrows every section or none, so
+/// the client never has to reason about a half-scoped payload.
 ///
 /// Every failure carries a [`FailureCode`]; see that type for why. The gateway's
 /// own error body is kept in the message rather than replaced by a generic
 /// failure, because it is the only place a 4xx explains itself.
-pub fn overview_json() -> Result<String, Failure> {
+pub fn overview_json(install_id: Option<&str>) -> Result<String, Failure> {
+    let query: Vec<(&str, &str)> = install_id
+        .filter(|s| !s.is_empty())
+        .map(|id| vec![("installId", id)])
+        .unwrap_or_default();
+    get_json(Endpoint::Activity, &query)
+}
+
+/// Fetch the installations this account has sent traffic from, as raw JSON.
+///
+/// The list is derived from traffic, so it is empty until something has been
+/// attributed - which is the honest answer, and what the picker renders as
+/// "unattributed" rather than as a broken screen.
+pub fn installations_json() -> Result<String, Failure> {
+    get_json(Endpoint::Installations, &[])
+}
+
+/// Which of the two activity reads is being made. They differ only in URL: the
+/// credential rules, the timeout and the failure taxonomy are identical, and
+/// keeping them in one function is what stops the two drifting.
+enum Endpoint {
+    Activity,
+    Installations,
+}
+
+/// One authenticated control-plane GET, shared by both reads above.
+fn get_json(which: Endpoint, query: &[(&str, &str)]) -> Result<String, Failure> {
     let account = match account::load() {
         Ok(Some(a)) => a,
         Ok(None) => {
@@ -100,6 +142,22 @@ pub fn overview_json() -> Result<String, Failure> {
                 FailureCode::SignedOut,
                 "no gateway account is configured",
             ))
+        }
+        Err(e) => return Err(Failure::new(FailureCode::Unknown, format!("{e:#}"))),
+    };
+    let url = match which {
+        Endpoint::Activity => activity_endpoint(&account.gateway_base_url),
+        Endpoint::Installations => installations_endpoint(&account.gateway_base_url),
+    };
+    // Built through `Url` rather than by string concatenation so a value the user
+    // never typed - an install id read back from the gateway's own list - cannot
+    // smuggle a second parameter into the request.
+    let url = match reqwest::Url::parse(&url).context("parsing the activity endpoint URL") {
+        Ok(mut u) => {
+            for (k, v) in query {
+                u.query_pairs_mut().append_pair(k, v);
+            }
+            u
         }
         Err(e) => return Err(Failure::new(FailureCode::Unknown, format!("{e:#}"))),
     };
@@ -114,7 +172,15 @@ pub fn overview_json() -> Result<String, Failure> {
         Err(e) => return Err(Failure::new(FailureCode::Unknown, format!("{e:#}"))),
     };
 
-    let mut req = client.get(activity_endpoint(&account.gateway_base_url));
+    let mut req = client.get(url.clone());
+
+    // Name this installation on the control plane too, so the gateway can mark
+    // which entry in the list is the machine asking. Absent when the id could
+    // not be resolved: the reading is still correct, it just cannot say "this
+    // one is you".
+    if let Some(id) = crate::primitives::install_id_cached() {
+        req = req.header("x-gate-install-id", id);
+    }
 
     // Mirror the credential the engine and relay would send for this account,
     // so the pane cannot show numbers for an identity the user's traffic is
@@ -157,7 +223,7 @@ pub fn overview_json() -> Result<String, Failure> {
             };
             return Err(Failure::new(
                 code,
-                format!("calling the gateway /v1/me/activity endpoint: {e}"),
+                format!("calling the gateway endpoint {url}: {e}"),
             ));
         }
     };
@@ -168,7 +234,7 @@ pub fn overview_json() -> Result<String, Failure> {
         Err(e) => {
             return Err(Failure::new(
                 FailureCode::Unknown,
-                format!("reading /v1/me/activity response body: {e}"),
+                format!("reading the {url} response body: {e}"),
             ))
         }
     };
@@ -182,7 +248,7 @@ pub fn overview_json() -> Result<String, Failure> {
         };
         return Err(Failure::new(
             code,
-            format!("gateway /v1/me/activity returned {status}: {body}"),
+            format!("gateway {url} returned {status}: {body}"),
         ));
     }
     Ok(body)

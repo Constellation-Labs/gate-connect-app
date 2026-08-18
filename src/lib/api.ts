@@ -113,8 +113,17 @@ export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
  * still moving, and a DTO written before the fields are agreed drifts silently
  * from the endpoint. `lib/activity.ts` is the only place that knows the shape, so
  * tightening this to a generated type once it is signed off is a change to one
- * file. */
-export const activityOverview = () => invoke<string>("activity_overview");
+ * file.
+ *
+ * `installId` scopes the reading to one installation (AC 1). Omitted, it is
+ * org-wide: attribution only starts with the gateway migration that added it,
+ * so scoping by default would hide every earlier request. */
+export const activityOverview = (installId?: string) =>
+  invoke<string>("activity_overview", { installId });
+
+/** The installations this account has sent traffic from, as raw JSON text.
+ * Derived from traffic, so it is empty until something has been attributed. */
+export const activityInstallations = () => invoke<string>("activity_installations");
 
 /** Persist the selected org and push X-Gate-Org-Id into a running engine/relay
  * live (no restart). */
