@@ -708,6 +708,270 @@ and the reason is recorded at the component:
   screen. Implemented as ending the session, and the body copy corrected, rather
   than shipping two destructive actions that claim the same consequences.
 
+## Drift repair (AG-568)
+
+The review dialog and the drift *gate* were already built (`ReviewConfigDialog`,
+`useRouting.ts` refusing to adopt a drifted config silently). Two things were
+missing, and one of them was a correctness bug.
+
+**A failed write left the row lying.** `connect_tool` failing sent the error to a
+transient banner, and the status line - the thing next to the switch the user
+just clicked - carried on describing the state from before the click. It was
+*true*, since nothing was written, and useless. `useRouting` now remembers which
+slugs failed (`writeFailures`), and the row reads "Configuration update failed".
+
+That state is deliberately **not** a sixth `routing_health::Reason`. The Rust
+reasons are derived from evidence - a config on disk, a relay that answers, a
+process older than the last change - and a failed write leaves none of that to
+probe. It is session state, cleared the moment a write for that slug succeeds, and
+it arrives at `verdictStatus` as a separate argument for exactly that reason.
+
+Worth noting: **AG-562's list of five reasons is incomplete.** AG-564 and AG-568
+both name "Configuration update failed" as a status. Raised on those tickets
+rather than smuggled into the enum.
+
+**The dialog showed what Gate found but not what it would write.** Approving an
+overwrite without seeing the replacement is approving a value you cannot see, on
+the one screen where the user hands their tool's routing to us. `ProxyState`
+gained `relay_base_url` (non-secret - it is already written verbatim into every
+config-routed tool's own file), and the dialog shows it. With no relay port bound
+the row is omitted rather than guessed at.
+
+Still open on the ticket: the per-failure action set ("Retry, Use tool defaults,
+Documentation, Diagnostics, or Contact support based on the failure"). The sidebar
+row has a switch and no room for a second control, and the switch *is* the retry -
+but a documentation or diagnostics link per failure needs the per-app pane, and
+Contact support needs a URL that does not exist. Also open: "last completed check
+or routed request" in the summary, which needs the activity endpoint.
+
+
+## Settings sections and preferences (AG-594)
+
+There was **no preferences store anywhere**. `account.rs` was the only config, and
+it holds a credential and an identity, so the notification and diagnostics
+choices had nowhere to live - which is why `SettingsPane` had a `notifications`
+prop that the shell never passed. New `crates/core/src/preferences.rs`: a small
+JSON file next to `account.json`, deliberately separate so a preference change
+does not rewrite the file holding the key prefix, and so clearing the account on
+reset does not take the preferences with it.
+
+**Every preference defaults to on, and a missing field loads as on.** That is
+what lets a switch read On before anything has been written, rather than showing
+Off and inviting the user to "fix" a setting that was never off.
+
+Sections went from 6 to the 8 the criteria name that can be built: Device,
+Account, Connection, Startup, Notifications, Diagnostics, About, Help, plus the
+Danger zone. Notifications and Diagnostics moved out of Startup and About
+respectively.
+
+### Rows deliberately not built, and why
+
+- **Blocked-event, flagged-event and sound switches.** The criteria list four
+  notification switches. The app fires exactly two notifications, both about
+  routing (an expired session; a quit that could not put a tool back), and both
+  now ride the one `Routing health` switch. Blocked and flagged notifications
+  need the live security-event feed (AG-578), which does not exist. A switch for
+  an event that cannot arrive tells the user they turned something off.
+- **The permission row.** `tauri-plugin-notification` hardcodes
+  `PermissionState::Granted` on desktop - `desktop.rs` returns it unconditionally,
+  the state is only real on mobile. A permission row built on that would report
+  "granted" on a Mac with notifications denied. Real detection needs per-platform
+  native work (UNUserNotificationCenter on macOS).
+- **Contact support.** There is no support URL anywhere in the app. `GATE_DOCS_URL`
+  exists, so Documentation is wired; support is omitted rather than pointed at an
+  invented address. The topnav's Contact support entry is dead for the same reason
+  (AG-598).
+- **Send diagnostics now, and the diagnostic reference.** No upload path exists;
+  that is AG-603.
+
+### Unavailable rows
+
+`SettingsRow` gained `unavailable: { onRetry }`. The shell now tracks *whether a
+read failed* separately from the value it failed to produce:
+`launch?.enabled ?? false` collapsed "off" and "could not be read" into one Off
+switch, which is a claim about the user's setting they cannot distinguish from one
+they made. Wired for launch-at-login and for the preferences pair, which share one
+read and so fail together - a failed preferences read leaves launch-at-login's
+switch alone, and a test pins that.
+
+## Refreshing the inventory (AG-558)
+
+Detection ran on backend events only, so a tool installed while the window was
+open stayed invisible until something unrelated repainted the sidebar. The
+"Protected apps" eyebrow gained a small refresh control that re-reads tools and
+proxy state and re-runs the routing sweep.
+
+Provisional: the Figma draws no refresh control. It is 20px in a 12px eyebrow with
+an `aria-label` rather than visible text, and no spinner - the scan is fast enough
+that one would only flash, so `aria-busy` plus the disabled state is the signal.
+`refreshing` is deliberately separate from `routingBusy`: that one guards a
+*write*, and refusing to re-read during a toggle would be the wrong coupling.
+
+The rest of AG-558 is not buildable and is documented on the ticket: every
+integration returns `requires_upstream_credential() == false`, so "installed but
+unavailable" cannot occur; "installed but unsupported" needs detection of tools
+Gate has no integration for; "incomplete installation" needs per-integration
+probes; and the per-entry request counts need per-*tool* attribution, which the
+in-flight `feat/activity-overview-client` does not provide (it is per-installation
+- `activity.ts` has no tool or slug in it).
+
+
+## An empty inventory is not a failed one (AG-560)
+
+`listTools().catch(() => [])` turned a failed read into an empty array, so a device
+Gate could not scan rendered exactly like a device with no AI apps on it - blank
+list, "0/0" count, no explanation. `InventoryState` in `Sidebar.tsx` now tells the
+two apart:
+
+- **`none`** - the scan completed and found nothing. Carries the scan time, which
+  is what makes it an answer rather than a shrug, plus Refresh.
+- **`failed`** - the scan could not complete. Amber, says Gate does not know what
+  is installed and that nothing was changed, and offers Try again.
+- **`ok`** - there are rows, and the rows speak for themselves.
+
+Before the first scan lands the state is `ok`, deliberately: "no apps detected" is
+a claim, and nothing has checked yet.
+
+The eyebrow's refresh control (AG-558) hides while the card is up, since the card
+carries its own and two controls for one action in a 250px rail is one too many.
+
+Not built, and recorded on the ticket: "a detected but unsupported tool remains
+visible" needs detection of tools Gate has no integration for; "a known but absent
+tool may provide an installation action" is optional in the criteria and would put
+uninstalled tools in a rail the Figma draws as installed apps only; and the
+model-control gating would remove the picker shipped in #159.
+
+## The diagnostics switch now gates something (AG-603)
+
+The "Share diagnostic data" switch added for AG-594 recorded a preference that
+**nothing read**, while PostHog collected regardless. `lib/analytics.ts` is a real
+channel - initialised at boot in `main.tsx`, capturing a closed set of event names,
+a filtered prop allowlist, classified error titles and two coarse super-properties
+- and it had no user opt-out at all. A switch that implies control it does not have
+is worse than no switch.
+
+Now:
+
+- **`initAnalytics` reads consent before constructing the client.** An install that
+  opted out never creates it. Consent is checked *before* `posthog.init`, not
+  after, because opting out afterwards would still have put the device on the wire
+  first.
+- **A failed consent read means do not collect.** `preferences::load()` is
+  infallible in Rust, so the only path here is the IPC failing - and consent that
+  cannot be confirmed is not consent.
+- **`setAnalyticsConsent` applies a change immediately.** Off opts the live client
+  out; on starts it if this session never did (the opted-out install) and opts back
+  in otherwise. Called from the Settings switch *before* the write, so a failed
+  write cannot leave the client sending after the user said no.
+- **`initAnalytics` is now async and not awaited** in `main.tsx`: blocking first
+  paint on an IPC round trip would trade a visible delay for a few milliseconds of
+  telemetry.
+
+A read-only "What is collected" list opens from Settings without touching the
+setting, as the criteria require. Its contents are written from what
+`analytics.ts` actually sends, **not** from the ticket's field list - that list
+describes an upload that does not exist (installation name, verification state,
+event-delivery state, notification permission), and describing it would be
+describing something Gate does not do, on the one screen whose job is telling the
+truth about what leaves the machine.
+
+Still open on the ticket: the onboarding Diagnostic data step (shared with AG-554),
+"Send diagnostics now" and the diagnostic reference (no upload path exists), and
+scoping the choice to the selected organization.
+
+
+## The diagnostic-data onboarding step (AG-554 / AG-603)
+
+Consent before collection: `lib/analytics.ts` starts PostHog at launch, so what
+this step buys is a person who has actually been asked. It sits between the
+sign-in confirmation and Overview.
+
+**Derived, not remembered.** `preferences.json` gained
+`share_diagnostics_recorded`, and `useSetup` returns the `diagnostics` stage while
+it is false. That keeps the guarantee the hook already had - stage comes from what
+is on disk - so a reload mid-setup cannot skip the step, and answering it is what
+dismisses it. `undefined` (the read still in flight) is deliberately *not*
+unanswered, or the step would flash at someone who answered months ago.
+
+`share_diagnostics_recorded` defaults to **false**, including on installs written
+before the field existed. Those see the step once, which is the point: sharing
+defaults to on, and a default nobody was asked about is not consent. It is also why
+this is a separate field rather than inferring an answer from `share_diagnostics` -
+the default and a deliberate "yes" are the same value and must not be the same
+fact.
+
+Continue records the **displayed** value whether or not it changed, because leaving
+the default in place is still an answer; treating it as unanswered would ask again
+next launch. The same command backs the Settings switch, so changing it there also
+counts as answering.
+
+The sent / never-sent lists are shared with the Settings disclosure
+(`CollectedDataLists`, one copy, framed by whatever `Wrapper` each caller passes).
+Two copies would drift, and these are the claims the product's reassurance rests
+on - the moment the onboarding promise and the Settings disclosure disagree,
+neither can be trusted.
+
+Layout is provisional; the Figma draws no diagnostics step.
+
+### A harness bug this turned up
+
+`e2e/install.ts`'s `get_preferences` returned the *live* `state.preferences`
+object, which the write stubs mutate in place. So `setPrefs` received an identical
+reference, React skipped the re-render, and a preference change was invisible to
+anything derived from it. Real IPC serialises every response; the stub now returns
+a copy. Worth remembering for the other handlers that still return `state.x`
+directly.
+
+Still open on AG-554: the device-derived installation-name suggestion (device
+rename has no backend command), and distinguishing cancellation from expiration
+from failure in the browser sign-in.
+## Interrupted routing, explained and resumable (AG-570)
+
+Three changes, in three PRs.
+
+**1. The window shell had no backend-error drain.** `drainBackendErrors` existed only
+in `App.tsx`, so a failure buffered Rust-side went to telemetry and nowhere else -
+including `report_backend_error("provider_restore", ...)`, which fires on both
+restore passes in `proxy_enable`. Routing could fail to come back and the window
+said nothing. `forwardBackendErrors` moved to `lib/backendErrors.ts` and both shells
+import it; the popover's behaviour is unchanged.
+
+**2. The snapshots were already a record of unfinished work.** `restore_all`
+re-attempts each recorded entry, keeps failures in the file, and clears it only once
+everything is back. Nothing read them for display. `provider::pending_restore()`
+reports what they owe, `resume_restore` calls `restore_all` and returns **what is
+still outstanding** rather than unit, and `RecoveryBanner` names it with Resume now
+and Finish later. Amber, not red: nothing is lost, and resuming retries exactly what
+failed.
+
+**3. A per-entry journal** (`crates/core/src/recovery.rs`) records what the restore
+*did*, as opposed to what is left. Written as it goes and seeded before the first
+attempt, because an interrupted operation is the one worth describing and a journal
+written on completion would be missing for every case it serves. `RestoreDetailsDialog`
+shows it read-only - AG-570 requires that reviewing changes no state.
+
+Details worth keeping:
+
+- **One journal for the whole restore.** Both passes seed it up front; two writers
+  would clobber each other's file, which they briefly did.
+- **Outcomes come from the control flow, never from an error message.** The restore
+  already branches on not-installed, unknown-slug and signed-out, so classifying
+  those costs nothing and cannot drift.
+- **Dropped entries owe nothing.** `NotInstalled` and `Unknown` are settled, not
+  outstanding; reporting them would ask for action nobody can take.
+- **A journal is an explanation, never a blocker.** A missing or corrupt one reads
+  as absent and the restore still runs. Its fields are `#[serde(default)]`-backed
+  for the same reason - a unit test caught that they were not, which would have
+  silently dropped the explanation on any older file.
+- **Known shortcoming:** only the tool pass can report `DeferredSignedOut`.
+  `enable_skipping` has no signed-out branch, so a provider that cannot re-enable
+  for want of an account lands on `WriteFailed`. Pinned by a test so it stays
+  visible.
+
+Still open: the recovery action lives in the shell banner, not the tray; per-tool
+"last verified route" and "check result" in the summary would need the verdict sweep
+to persist its results; and item 8's default-writing result list exists for the quit
+path only (#162), not yet for sign-out and reset.
 ## Quit and teardown in the window shell (AG-596)
 
 The popover has carried the three-way quit since it shipped

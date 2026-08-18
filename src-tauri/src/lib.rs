@@ -1144,6 +1144,31 @@ fn stale_agents_count() -> u32 {
     count
 }
 
+/// The user's Settings choices. Never fails: a missing or mangled file loads as
+/// the documented defaults, because refusing to render Settings over a
+/// preferences file is a worse failure than showing "everything on".
+#[tauri::command]
+fn get_preferences() -> gate_connect_core::preferences::Preferences {
+    gate_connect_core::preferences::load()
+}
+
+/// Turn routing-health notifications on or off. Gates the two notifications the
+/// app actually fires: an expired session, and a quit that could not put a tool
+/// back on its own settings.
+#[tauri::command]
+fn set_routing_health_notifications(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_routing_health_notifications(enabled)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Record whether Gate Connect may send diagnostic data. Onboarding records the
+/// first answer; this is Settings changing it. Nothing is uploaded here - the
+/// send path is its own story.
+#[tauri::command]
+fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))
+}
+
 /// The process name to look for on behalf of one tool.
 ///
 /// `None` for the tools Gate has no way to recognise in the process table:
@@ -1292,6 +1317,50 @@ fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
         // problem".
         SessionProbe::Unavailable => SessionHealth::Unknown,
     }
+}
+
+/// What a routing restore still owes, from the snapshots on disk.
+///
+/// Read-only and cheap: it opens no tool config and starts nothing, so the UI can
+/// call it on a status refresh. Empty in the normal case.
+#[tauri::command]
+fn pending_restore() -> Result<gate_connect_core::provider::PendingRestore, String> {
+    gate_connect_core::provider::pending_restore().map_err(|e| format!("{e:#}"))
+}
+
+/// Finish an interrupted restore, and report what is still outstanding.
+///
+/// `restore_all` already has the retry semantics this needs: it re-attempts each
+/// recorded entry, keeps failures in the snapshot, and clears the file only once
+/// everything is back. So resuming repeats no completed write and reopens no
+/// verified tool without any new bookkeeping.
+///
+/// Returns the remaining pending state rather than unit, so a caller does not have
+/// to guess whether the resume finished the job - a partial success is the
+/// interesting case and the one that must not read as done.
+#[tauri::command]
+async fn resume_restore() -> Result<gate_connect_core::provider::PendingRestore, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        // Best-effort, like every other caller of this: a failure leaves its
+        // entries in the snapshot, which is exactly what the return value reports.
+        if let Err(e) = gate_connect_core::provider::restore_all() {
+            eprintln!("[gate] resuming an interrupted restore failed: {e}");
+            report_backend_error("provider_restore", format!("{e:#}"));
+        }
+        gate_connect_core::provider::pending_restore().map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("resume restore join error: {e}"))?
+}
+
+/// What the last routing restore did, entry by entry.
+///
+/// Read-only, and `None` when there is nothing to explain - a restore that
+/// completed clears its journal. Never fails: a journal that cannot be read is an
+/// explanation lost, not a recovery blocked, so an unreadable one reads as absent.
+#[tauri::command]
+fn restore_journal() -> Option<gate_connect_core::recovery::RestoreJournal> {
+    gate_connect_core::recovery::load()
 }
 
 /// One running AI tool, as the diagnostics report lists it.
@@ -1569,7 +1638,11 @@ async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<Vec<String>,
     })
     .await
     .map_err(|e| format!("disconnect join error: {e}"))??;
-    {
+    // Gated on the routing-health preference: this is a notification about
+    // routing, and a switch the user turned off has to actually stop something or
+    // it was never a switch. The list is still returned either way - suppressing
+    // the notification must not suppress the *result*.
+    if gate_connect_core::preferences::load().routing_health_notifications {
         use tauri_plugin_notification::NotificationExt;
         // The clean-teardown wording is only true when the teardown was clean.
         // With a tool left on Gate's settings, telling the user everything is
@@ -1684,9 +1757,15 @@ pub fn run() {
                     proxy_untrust_ca,
                     launch_at_login_status,
                     set_launch_at_login,
+                    get_preferences,
+                    set_routing_health_notifications,
+                    set_share_diagnostics,
                     set_updater_relaunching,
                     routed_clients_stale,
                     routing_verdicts,
+                    pending_restore,
+                    resume_restore,
+                    restore_journal,
                     running_agents_count,
                     stale_agents_count,
                     running_agents,
@@ -1728,6 +1807,9 @@ pub fn run() {
                     provider_enable,
                     provider_disable,
                     set_updater_relaunching,
+                    get_preferences,
+                    set_routing_health_notifications,
+                    set_share_diagnostics,
                     drain_backend_errors,
                 ]
             }
@@ -2121,7 +2203,10 @@ pub fn run() {
                         // and the menu-bar/tray dot is out of the user's eyeline.
                         // Fired once per death by the edge guard above.
                         #[cfg(any(target_os = "macos", target_os = "linux"))]
-                        if dead {
+                        if dead
+                            && gate_connect_core::preferences::load()
+                                .routing_health_notifications
+                        {
                             use tauri_plugin_notification::NotificationExt;
                             let _ = refresh_handle
                                 .notification()

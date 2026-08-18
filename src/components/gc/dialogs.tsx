@@ -1,6 +1,8 @@
 import { useRef } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
+import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
+import type { PillTone } from "./Modal";
 import {
   Modal,
   ModalCheckbox,
@@ -116,11 +118,16 @@ export function ReviewConfigDialog({
   app,
   /** What Gate found, e.g. "API base URL: https://api.openai.com/v1". */
   existingConfig,
+  /** What Gate would write in its place - the loopback relay this tool's config
+   * would be pointed at. Absent when no relay port has been bound yet, in which
+   * case the row is omitted rather than guessed at. */
+  gateRoute,
   onKeep,
   onReplace,
 }: {
   app: DialogApp;
   existingConfig: string;
+  gateRoute?: string | null;
   onKeep: () => void;
   onReplace: () => void;
 }) {
@@ -140,6 +147,17 @@ export function ReviewConfigDialog({
         description={existingConfig}
         pill={{ label: "Detected", tone: "amber" }}
       />
+      {/* What replaces it. Approving an overwrite without being shown the
+          replacement is approving a value you cannot see - and this is the one
+          screen where the user is asked to hand their tool's routing to us. */}
+      {gateRoute && (
+        <ModalSubject
+          icon={appIcon(app)}
+          title="What Gate would write instead"
+          description={gateRoute}
+          pill={{ label: "Gate route", tone: "green" }}
+        />
+      )}
       <ModalNote>
         <p className="font-medium text-neutral-900">If Gate takes over:</p>
         <p className="mt-1">
@@ -615,6 +633,181 @@ export function ResetGateConnectDialog({
         onChange={onAcknowledgedChange}
         label="I understand that setup will restart on this device"
       />
+    </Modal>
+  );
+}
+
+/**
+ * What the diagnostic channel actually sends, and what it never sends.
+ *
+ * AG-603 asks for a "What is collected" list that opens without changing the
+ * setting - so this is read-only and its only action closes it.
+ *
+ * The lists are written from `lib/analytics.ts` rather than from the ticket. The
+ * ticket enumerates fields for an upload that does not exist yet (installation
+ * name, verification state, event-delivery state, notification permission); the
+ * channel that *does* exist is PostHog, sending a closed set of event names, a
+ * filtered prop allowlist, classified error titles, and two coarse
+ * super-properties. Describing the ticket's list would be describing something
+ * Gate does not do, on the one screen whose whole job is telling the truth about
+ * what leaves the machine.
+ */
+export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal
+      tone="neutral"
+      icon="info"
+      title="What Gate Connect collects"
+      subtitle="Only while Share diagnostic data is on. Nothing here identifies you."
+      primary={{ label: "Close", onClick: onClose }}
+      onDismiss={onClose}
+    >
+      <CollectedDataLists Wrapper={ModalNote} />
+    </Modal>
+  );
+}
+
+/**
+ * The sent / never-sent lists, shared by the Settings dialog above and the
+ * onboarding step in `setup.tsx`.
+ *
+ * One copy on purpose. Two would drift, and these are the claims the product's
+ * reassurance rests on - the moment the onboarding promise and the Settings
+ * disclosure disagree, neither can be trusted.
+ *
+ * `Wrapper` because the two callers frame it differently: the dialog uses
+ * `ModalNote`, the setup pane its own card. The content is what is shared, not the
+ * chrome.
+ */
+export function CollectedDataLists({
+  Wrapper,
+}: {
+  Wrapper: (props: { children: ReactNode }) => ReactNode;
+}) {
+  return (
+    <>
+      <Wrapper>
+        <p className="font-medium text-neutral-900">Sent</p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>
+            An anonymous device id, generated locally. No name, email, or account
+            identifier.
+          </li>
+          <li>App version and operating system.</li>
+          <li>
+            Which action happened, from a fixed list - routing turned on or off, an
+            update installed, a dialog shown. Never free text.
+          </li>
+          <li>
+            A short label for each action: which app or provider it concerned, and
+            whether it was on or off.
+          </li>
+          <li>
+            A classified title when something fails, e.g. &ldquo;keychain
+            denied&rdquo;. The underlying message stays on this machine.
+          </li>
+        </ul>
+      </Wrapper>
+      <Wrapper>
+        <p className="font-medium text-neutral-900">Never sent</p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>Prompts or model responses.</li>
+          <li>API keys, credentials, or anything from your keychain.</li>
+          <li>File paths, hostnames, or the contents of any config file.</li>
+          <li>The text of an error, as opposed to its classification.</li>
+        </ul>
+      </Wrapper>
+    </>
+  );
+}
+
+/** What each outcome means, in the user's words rather than the enum's. */
+const RESTORE_OUTCOME_TEXT: Record<
+  RestoreOutcome,
+  { label: string; detail: string; tone: PillTone }
+> = {
+  pending: {
+    label: "Not reached",
+    detail: "Gate stopped before getting to this one.",
+    tone: "amber",
+  },
+  restored: {
+    label: "Done",
+    detail: "Configuration written. Whether it is routing is shown on its row.",
+    tone: "green",
+  },
+  write_failed: {
+    label: "Failed",
+    detail: "Gate could not write the configuration. Resuming tries this one again.",
+    tone: "amber",
+  },
+  not_installed: {
+    label: "Skipped",
+    detail: "No longer installed, so there was nothing to restore.",
+    tone: "neutral",
+  },
+  unknown: {
+    label: "Skipped",
+    detail: "Gate does not recognise this one any more.",
+    tone: "neutral",
+  },
+  deferred_signed_out: {
+    label: "Waiting",
+    detail: "Nothing was attempted: there is no account to point it at yet.",
+    tone: "amber",
+  },
+};
+
+/**
+ * What the last restore did, entry by entry.
+ *
+ * **Read-only, and deliberately so.** AG-570 requires that reviewing details "does
+ * not change state" - so the only action closes it, and nothing here can be
+ * clicked into a retry. Resuming is the banner's job.
+ *
+ * There are no credentials, paths or request content in a journal entry: it holds
+ * slugs, display names, an outcome from a closed set, and a timestamp. That is what
+ * makes it safe to show in full.
+ *
+ * **Provisional layout.** The Figma draws no details view (AG-569 is To Do).
+ */
+export function RestoreDetailsDialog({
+  journal,
+  onClose,
+}: {
+  journal: RestoreJournal;
+  onClose: () => void;
+}) {
+  const done = journal.entries.filter((e) => e.outcome === "restored").length;
+  return (
+    <Modal
+      tone="neutral"
+      icon="info"
+      title="What happened to routing"
+      subtitle={
+        journal.requested_routing_on
+          ? `Gate was turning routing back on. ${done} of ${journal.entries.length} finished.`
+          : `Gate was turning routing off. ${done} of ${journal.entries.length} finished.`
+      }
+      primary={{ label: "Close", onClick: onClose }}
+      onDismiss={onClose}
+    >
+      {journal.entries.length === 0 ? (
+        <ModalNote>Nothing was recorded for this attempt.</ModalNote>
+      ) : (
+        journal.entries.map((entry) => {
+          const text = RESTORE_OUTCOME_TEXT[entry.outcome];
+          return (
+            <ModalSubject
+              key={`${entry.kind}:${entry.slug}`}
+              icon="cube"
+              title={entry.name}
+              description={text.detail}
+              pill={{ label: text.label, tone: text.tone }}
+            />
+          );
+        })
+      )}
     </Modal>
   );
 }

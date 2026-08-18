@@ -5,8 +5,11 @@ import type {
   Account,
   OAuthStatus,
   Org,
+  Preferences,
   ProxyState,
   ProviderState,
+  PendingRestore,
+  RestoreJournal,
   Tool,
   Verdict,
 } from "./lib/api";
@@ -22,6 +25,12 @@ import {
   pendingQuitTools,
   disconnectToolsForQuit,
   quitApp,
+  pendingRestore,
+  resumeRestore,
+  restoreJournal,
+  getPreferences,
+  setRoutingHealthNotifications,
+  setShareDiagnostics,
 } from "./lib/api";
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
@@ -31,12 +40,13 @@ import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
 import { classifyError } from "./lib/errors";
+import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
 import { verdictStatus, verdictsBySlug } from "./lib/verdict";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
-import { GATE_DASHBOARD_URL } from "./lib/config";
+import { GATE_DASHBOARD_URL, GATE_DOCS_URL } from "./lib/config";
 import { AppShell } from "./components/gc/AppShell";
 import { FamiliesPane } from "./components/gc/FamiliesPane";
 import type { Family } from "./components/gc/FamiliesPane";
@@ -57,13 +67,16 @@ import {
 import type { GateModelOption } from "./components/gc/dialogs";
 import {
   ConnectedPane,
+  DiagnosticsPane,
   OrgPickerPane,
   SetupLayout,
   WelcomePane,
 } from "./components/gc/setup";
 import type { SetupOrganization } from "./components/gc/setup";
 import {
+  CollectedDataDialog,
   DiagnosticsDialog,
+  RestoreDetailsDialog,
   DisconnectGateDialog,
   OrganizationSwitchedDialog,
   ReplaceApiKeyDialog,
@@ -71,12 +84,17 @@ import {
   ReviewConfigDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
-import { AlertBanner, ErrorBanner } from "./components/gc/banners";
+import { AlertBanner, ErrorBanner, RecoveryBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
-import type { AppStatus, SidebarApp, SidebarView } from "./components/gc/Sidebar";
+import type {
+  AppStatus,
+  InventoryState,
+  SidebarApp,
+  SidebarView,
+} from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
-import { analyticsId } from "./lib/analytics";
+import { analyticsId, setAnalyticsConsent } from "./lib/analytics";
 import { usePlatform } from "./lib/platform";
 import type { Platform } from "./lib/platform";
 
@@ -122,11 +140,36 @@ export function NewUiApp() {
   const [loaded, setLoaded] = useState(false);
   const [version, setVersion] = useState("");
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  /**
+   * Whether each read *failed*, kept apart from the value it failed to produce.
+   *
+   * `launch?.enabled ?? false` used to collapse "off" and "could not be read"
+   * into one Off switch, which is a claim about the user's setting they cannot
+   * distinguish from one they made. Settings now renders Unavailable + Retry for
+   * these instead. Same rule as the routing verdict and the zeroed metrics: an
+   * unknown is never rendered as a value.
+   */
+  const [launchAtLoginUnavailable, setLaunchAtLoginUnavailable] = useState(false);
+  const [prefs, setPrefs] = useState<Preferences | null>(null);
+  const [prefsUnavailable, setPrefsUnavailable] = useState(false);
   const [view, setView] = useState<SidebarView>({ kind: "overview" });
   const [menuOpen, setMenuOpen] = useState(false);
+  /** A manual scan is in flight. Separate from `routingBusy`, which is about a
+   * write: refusing to re-read while a toggle is mid-flight would be the wrong
+   * coupling, and a scan changes nothing on disk. */
+  const [refreshing, setRefreshing] = useState(false);
+  /**
+   * What the last detection scan established, as opposed to how many rows it
+   * produced. `null` before the first one lands - which is not "nothing found",
+   * and must not render as it.
+   */
+  const [scan, setScan] = useState<{ kind: "ok"; at: Date } | { kind: "failed" } | null>(null);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
+  /** The read-only "what is collected" list. Separate from the report dialog:
+   * that one shows this install's values, this one shows what leaves the device. */
+  const [collectedDataOpen, setCollectedDataOpen] = useState(false);
   // Dismissal is per-session and per-surface: the banner going away should not
   // stop the next launch offering the same update.
   const [updateDismissed, setUpdateDismissed] = useState(false);
@@ -156,6 +199,18 @@ export function NewUiApp() {
   const [quitBusy, setQuitBusy] = useState(false);
   const platform = usePlatform();
 
+  const loadLaunchAtLogin = useCallback(async () => {
+    const launch = await launchAtLoginStatus().catch(() => null);
+    setLaunchAtLoginUnavailable(launch === null);
+    if (launch) setLaunchAtLogin(launch.enabled);
+  }, []);
+
+  const loadPreferences = useCallback(async () => {
+    const p = await getPreferences().catch(() => null);
+    setPrefsUnavailable(p === null);
+    if (p) setPrefs(p);
+  }, []);
+
   /** The routing sweep, kept separate from {@link refresh} because it is the one
    * probe that costs network I/O and a process walk. Callers that changed a
    * tool's config re-run it; callers that only repainted do not have to. */
@@ -164,18 +219,49 @@ export function NewUiApp() {
     if (v) setVerdicts(verdictsBySlug(v));
   }, []);
 
+  const loadPending = useCallback(async () => {
+    const [p, j] = await Promise.all([
+      pendingRestore().catch(() => null),
+      restoreJournal().catch(() => null),
+    ]);
+    if (p) setPending(p);
+    // Read alongside the pending state, not lazily on click: the banner decides
+    // whether to offer Review details at all, and it can only do that if it knows
+    // whether a journal exists.
+    setJournal(j);
+  }, []);
+
   const refresh = useCallback(async () => {
     const [t, px] = await Promise.all([
       listTools().catch(() => null),
       proxyStatus().catch(() => null),
     ]);
+    // A failed scan is not an empty machine. `catch(() => [])` used to collapse
+    // the two, so a device Gate could not read rendered as a device with no AI
+    // apps on it - the exact confusion AG-560 exists to remove.
+    setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
     if (t) setTools(t);
     if (px) setProxy(px);
     // The engine coming up or going down changes every verdict, since the relay
     // health check is shared - so this follows the snapshot rather than waiting
     // for the next poll.
     void refreshVerdicts();
-  }, [refreshVerdicts]);
+    // A master-on runs `restore_all`, which is what clears or shortens the
+    // snapshots - so the notice has to be re-read on the same event that
+    // repaints the switches, or it lingers after the work finished.
+    void loadPending();
+  }, [refreshVerdicts, loadPending]);
+
+  /** Re-run detection because the user asked. Same reads as the event-driven
+   * `refresh`, plus a flag so the control can refuse a second click. */
+  const refreshNow = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
 
   useEffect(() => {
     const sweep = () => {
@@ -206,23 +292,25 @@ export function NewUiApp() {
 
   useEffect(() => {
     void (async () => {
-      const [t, p, px, acct, oauthState, v, launch] = await Promise.all([
-        listTools().catch(() => [] as Tool[]),
+      const [t, p, px, acct, oauthState, v] = await Promise.all([
+        listTools().catch(() => null),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
         getAccount().catch(() => null),
         oauthStatus().catch(() => null),
         getVersion().catch(() => ""),
-        launchAtLoginStatus().catch(() => null),
       ]);
-      setTools(t);
+      void loadLaunchAtLogin();
+      void loadPreferences();
+      setTools(t ?? []);
+      setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
       void refreshVerdicts();
+      void loadPending();
       setProviders(p);
       setProxy(px);
       setAccount(acct);
       setOAuth(oauthState);
       setVersion(v);
-      setLaunchAtLogin(launch?.enabled ?? false);
       setLoaded(true);
     })();
   }, []);
@@ -243,6 +331,44 @@ export function NewUiApp() {
   });
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
+  /**
+   * Routing work that was recorded and did not finish, read from the provider
+   * snapshots. Null until the first read; empty lists mean nothing outstanding,
+   * which is the normal case.
+   */
+  const [pending, setPending] = useState<PendingRestore | null>(null);
+  const [resuming, setResuming] = useState(false);
+  /** Dismissed for this session only. The pending state lives on disk, so the
+   * notice returns on the next launch until the work actually finishes - which is
+   * the persistence the recovery action is supposed to have. */
+  const [recoveryHidden, setRecoveryHidden] = useState(false);
+  /** The read-only account of the last restore. Null when there is nothing to
+   * explain; a restore that completed clears it. */
+  const [journal, setJournal] = useState<RestoreJournal | null>(null);
+  const [journalOpen, setJournalOpen] = useState(false);
+
+  /**
+   * Backend failures buffer Rust-side because they can predate this webview - the
+   * startup auto-enable runs before either shell mounts. Sweep once at mount, then
+   * on each nudge.
+   *
+   * The window shell had no drain at all, so a failed restore went to telemetry
+   * and nowhere else: `report_backend_error("provider_restore", ...)` fires on both
+   * restore passes in `proxy_enable`, and this window showed nothing. That is the
+   * bug the popover's version was written to fix, reintroduced here.
+   */
+  useEffect(() => {
+    const sweep = () =>
+      void forwardBackendErrors().then((e) => {
+        if (e) setActionError(e);
+      });
+    sweep();
+    const unlisten = listen("backend-error-pending", sweep);
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
+
 
   /** Put the tools back, then quit - unless something stayed on Gate, in which
    * case name it and stay open. Quitting there would strand a config pointing at
@@ -349,14 +475,29 @@ export function NewUiApp() {
         .map((t) => ({
           slug: t.slug,
           name: t.name,
-          status: verdictStatus(verdicts.get(t.slug)),
+          status: verdictStatus(verdicts.get(t.slug), {
+            writeFailed: routing.writeFailures.has(t.slug),
+          }),
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
           on: t.status.kind === "connected" || t.status.kind === "drifted",
           busy: routingBusy,
         })),
-    [tools, verdicts, routingBusy],
+    [tools, verdicts, routing.writeFailures, routingBusy],
   );
+
+  /**
+   * What the sidebar should say when the app list is empty. `ok` while there are
+   * rows, because the rows speak for themselves; before the first scan lands the
+   * state is unknown, and rendering "no apps detected" then would be a claim
+   * nothing has checked.
+   */
+  const inventory = useMemo<InventoryState>(() => {
+    if (apps.length > 0) return { kind: "ok" };
+    if (scan === null) return { kind: "ok" };
+    if (scan.kind === "failed") return { kind: "failed" };
+    return { kind: "none", scannedAt: scan.at.toLocaleTimeString() };
+  }, [apps.length, scan]);
 
   const families = useMemo<Family[]>(
     () =>
@@ -368,9 +509,35 @@ export function NewUiApp() {
         // the family switch on while everything it governs is off, and clicking
         // it would ask to turn off a set already off - leaving it stuck on.
         on: g.cascadeDesired > 0,
-        members: g.members.map((m) => memberToFamilyMember(m, verdicts)),
+        members: g.members.map((m) =>
+          memberToFamilyMember(m, verdicts, routing.writeFailures),
+        ),
       })),
-    [groups, verdicts],
+    [groups, verdicts, routing.writeFailures],
+  );
+
+  /** Finish what the interrupted restore left. `restore_all` retries only the
+   * recorded entries, so this repeats no completed write; the command hands back
+   * what is still outstanding rather than a bare success. */
+  const resumeNow = useCallback(async () => {
+    setResuming(true);
+    setActionError(null);
+    try {
+      setPending(await resumeRestore());
+      // The retry may have changed what is routing, so re-read the rest too.
+      await refresh();
+    } catch (e) {
+      setActionError(classifyError(e, "provider_restore"));
+    } finally {
+      setResuming(false);
+    }
+  }, [refresh]);
+
+  /** What is still outstanding, providers and tools together: the user does not
+   * care which snapshot an entry came from. */
+  const recoveryNames = useMemo(
+    () => [...(pending?.providers ?? []), ...(pending?.tools ?? [])].map((e) => e.name),
+    [pending],
   );
 
   const noop = useCallback(() => {}, []);
@@ -389,6 +556,9 @@ export function NewUiApp() {
     oauth,
     onSession,
     onProxy: setProxy,
+    // `undefined` while the preference read is in flight, which is not the same as
+    // unanswered - see the note on the hook's argument.
+    diagnosticsAnswered: prefs?.share_diagnostics_recorded,
   });
 
   const settings = useSettingsActions({
@@ -422,6 +592,10 @@ export function NewUiApp() {
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: account?.has_api_key ? `sk-gw${"*".repeat(20)}` : "Not set",
         launchAtLogin,
+        launchAtLoginUnavailable,
+        routingHealthNotifications: prefs?.routing_health_notifications,
+        shareDiagnostics: prefs?.share_diagnostics,
+        preferencesUnavailable: prefsUnavailable,
         version: version ? `v${version}` : "-",
         updateNote: updateNoteFor(update),
         onCopyInstallId: installId ? () => void settings.copyText(installId) : noop,
@@ -434,11 +608,42 @@ export function NewUiApp() {
         onDisconnect: account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
         onReviewReset: settings.openReset,
         onToggleLaunchAtLogin: () => void settings.toggleLaunchAtLogin(),
+        onRetryLaunchAtLogin: () => void loadLaunchAtLogin(),
+        // Optimistic then re-read: the switch has to move on click, and the
+        // re-read is what makes a failed write show up rather than leaving the
+        // UI asserting a value the file does not hold.
+        onToggleRoutingHealthNotifications: () => {
+          const next = !(prefs?.routing_health_notifications ?? true);
+          setPrefs((p) => (p ? { ...p, routing_health_notifications: next } : p));
+          void setRoutingHealthNotifications(next)
+            .catch((e) => setActionError(classifyError(e, "generic")))
+            .finally(() => void loadPreferences());
+        },
+        onToggleShareDiagnostics: () => {
+          const next = !(prefs?.share_diagnostics ?? true);
+          setPrefs((p) => (p ? { ...p, share_diagnostics: next } : p));
+          // Stop (or resume) collection immediately, not on the next launch. An
+          // opt-out that only takes effect after a restart is not an opt-out, and
+          // this happens before the write so a failed write cannot leave the
+          // client sending after the user said no.
+          setAnalyticsConsent(next);
+          void setShareDiagnostics(next)
+            .catch((e) => setActionError(classifyError(e, "generic")))
+            .finally(() => void loadPreferences());
+        },
+        onRetryPreferences: () => void loadPreferences(),
+        onOpenDocs: () => void openExternal(GATE_DOCS_URL),
+        // No `onContactSupport`, so the row is omitted: there is no support URL
+        // anywhere in the app to open, and a button that opens an invented
+        // address is worse than an absent one. The topnav's Contact support
+        // entry is dead for the same reason.
+
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
         // Explicit, so this one reports back: silence on a button the user just
         // pressed reads as broken.
         onCheckForUpdates: () => void update.checkNow(true),
+        onViewCollectedData: () => setCollectedDataOpen(true),
         onViewDiagnostics: () =>
           setDiagnosticsReport(
             previewDiagnostics({
@@ -462,6 +667,11 @@ export function NewUiApp() {
     [
       account,
       launchAtLogin,
+      launchAtLoginUnavailable,
+      prefs,
+      prefsUnavailable,
+      loadLaunchAtLogin,
+      loadPreferences,
       version,
       installId,
       settings.copyText,
@@ -561,6 +771,27 @@ export function NewUiApp() {
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
           />
+        ) : stage.kind === "diagnostics" ? (
+          <DiagnosticsPane
+            share={prefs?.share_diagnostics ?? true}
+            onToggleShare={() =>
+              setPrefs((p) =>
+                p ? { ...p, share_diagnostics: !p.share_diagnostics } : p,
+              )
+            }
+            busy={setup.busy}
+            onContinue={() => {
+              // Records the *displayed* value, changed or not: leaving the default
+              // in place is an answer, and treating it as unanswered would ask
+              // again on the next launch. This is also what dismisses the step,
+              // since the stage is derived from the stored flag.
+              const share = prefs?.share_diagnostics ?? true;
+              setAnalyticsConsent(share);
+              void setShareDiagnostics(share)
+                .catch((e) => setActionError(classifyError(e, "generic")))
+                .finally(() => void loadPreferences());
+            }}
+          />
         ) : (
           <ConnectedPane
             workspace={account?.org_name ?? account?.gateway_base_url ?? "Gate"}
@@ -598,12 +829,25 @@ export function NewUiApp() {
       onNavigate={setView}
       apps={apps}
       onSelectApp={(slug) => setView({ kind: "app", slug })}
+      onRefreshApps={() => void refreshNow()}
+      refreshingApps={refreshing}
+      inventory={inventory}
       notice={
         actionError ? (
           <ErrorBanner
             title={actionError.title}
             hint={actionError.hint}
             onDismiss={() => setActionError(null)}
+          />
+        ) : recoveryNames.length > 0 && !recoveryHidden ? (
+          // Below the error banner: a failure that just happened outranks a
+          // recorded one that can still be resumed.
+          <RecoveryBanner
+            names={recoveryNames}
+            busy={resuming}
+            onResume={() => void resumeNow()}
+            onReviewDetails={journal ? () => setJournalOpen(true) : undefined}
+            onFinishLater={() => setRecoveryHidden(true)}
           />
         ) : undefined
       }
@@ -632,6 +876,10 @@ export function NewUiApp() {
           <ReviewConfigDialog
             app={{ name: routing.prompt.name }}
             existingConfig={routing.prompt.existingConfig}
+            // The relay is what a config-routed tool gets pointed at. Null
+            // before a port has been bound, and the dialog omits the row rather
+            // than inventing an address.
+            gateRoute={proxy?.relay_base_url}
             onKeep={() => routing.resolvePrompt(false)}
             onReplace={() => routing.resolvePrompt(true)}
           />
@@ -695,6 +943,10 @@ export function NewUiApp() {
               setModelOverlay(null);
             }}
           />
+        ) : journalOpen && journal ? (
+          <RestoreDetailsDialog journal={journal} onClose={() => setJournalOpen(false)} />
+        ) : collectedDataOpen ? (
+          <CollectedDataDialog onClose={() => setCollectedDataOpen(false)} />
         ) : diagnosticsReport !== null ? (
           <DiagnosticsDialog
             report={diagnosticsReport}
@@ -897,10 +1149,11 @@ function initialsOf(name: string): string {
 function memberToFamilyMember(
   m: GroupMember,
   verdicts: Map<string, Verdict>,
+  writeFailures: ReadonlySet<string>,
 ): Family["members"][number] {
   const status: AppStatus =
     m.kind === "config"
-      ? verdictStatus(verdicts.get(m.key))
+      ? verdictStatus(verdicts.get(m.key), { writeFailed: writeFailures.has(m.key) })
       : m.routed
         ? { kind: "protected" }
         : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };

@@ -19,6 +19,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::account;
 use crate::audit;
+use crate::recovery;
 use crate::registry::{self, ConnectInput, Status, ToolId};
 
 /// A user-facing provider: the union of the config integrations and proxy
@@ -754,6 +755,67 @@ pub fn snapshot_and_disable_everything() -> Result<Vec<String>> {
     Ok(failed)
 }
 
+/// One thing a restore has recorded and not finished.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PendingEntry {
+    pub slug: String,
+    /// What to call it on screen. Falls back to the slug for an entry whose
+    /// provider or tool is no longer in the registry - an uninstall between the
+    /// snapshot and now - because naming it is still better than dropping it from
+    /// a list the user is being asked to act on.
+    pub name: String,
+}
+
+/// Routing work that was written down and has not completed.
+///
+/// The snapshots have always been a record of unfinished work - [`restore_all`]
+/// keeps failures in the file and only clears it once everything is back - but
+/// nothing ever read them for display. So a restore that half-succeeded left the
+/// user with some tools routing, some not, and no statement anywhere that Gate
+/// knew about it.
+///
+/// Empty means there is nothing outstanding, which is the normal case.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub struct PendingRestore {
+    /// Providers still waiting to be re-enabled.
+    pub providers: Vec<PendingEntry>,
+    /// Standalone tools (OpenCode and friends) still waiting to be reconnected.
+    pub tools: Vec<PendingEntry>,
+}
+
+impl PendingRestore {
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty() && self.tools.is_empty()
+    }
+}
+
+/// What a restore still owes, read from the snapshots.
+///
+/// Read-only: it opens no config, starts nothing, and writes nothing. Safe to call
+/// on a status refresh.
+pub fn pending_restore() -> Result<PendingRestore> {
+    let providers = load_snapshot(PROVIDER_SNAPSHOT)?
+        .into_iter()
+        .map(|slug| {
+            let name = find(&slug)
+                .map(|p| p.display_name.to_string())
+                .unwrap_or_else(|| slug.clone());
+            PendingEntry { slug, name }
+        })
+        .collect();
+    let tools = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?
+        .into_iter()
+        .map(|slug| {
+            let name = ToolId::from_slug(&slug)
+                .and_then(registry::find)
+                .map(|integ| integ.display_name().to_string())
+                .unwrap_or_else(|| slug.clone());
+            PendingEntry { slug, name }
+        })
+        .collect();
+    Ok(PendingRestore { providers, tools })
+}
+
 /// Master ON: re-enable every provider that was on when routing was last
 /// turned off, then reconnect any standalone tools the master-off sweep
 /// disconnected. Entries that fail to restore stay in their snapshot so a
@@ -768,10 +830,43 @@ pub fn restore_all() -> Result<()> {
     // them comes back. See [`RESTORE_SKIP_MEMBERS`].
     let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
     let mut failed = Vec::new();
-    for slug in load_snapshot(PROVIDER_SNAPSHOT)? {
+    let queued = load_snapshot(PROVIDER_SNAPSHOT)?;
+    // One journal for the whole restore, seeded with BOTH passes before the first
+    // attempt. Both, because a restore is one operation from the user's side and
+    // two writers would each clobber the other's file. Seeded up front, because an
+    // interruption has to leave the entries it never reached visibly Pending rather
+    // than absent.
+    //
+    // Explanation only: the snapshots remain the state a resume actually works from.
+    let mut journal = recovery::JournalWriter::begin(
+        queued
+            .iter()
+            .map(|slug| {
+                let name = find(slug)
+                    .map(|p| p.display_name.to_string())
+                    .unwrap_or_else(|| slug.clone());
+                (slug.clone(), name, recovery::EntryKind::Provider)
+            })
+            .chain(
+                load_snapshot(SWEPT_TOOLS_SNAPSHOT)?
+                    .into_iter()
+                    .map(|slug| {
+                        let name = ToolId::from_slug(&slug)
+                            .and_then(registry::find)
+                            .map(|integ| integ.display_name().to_string())
+                            .unwrap_or_else(|| slug.clone());
+                        (slug, name, recovery::EntryKind::Tool)
+                    }),
+            )
+            .collect(),
+    );
+    for slug in queued {
         if let Err(e) = enable_skipping(&slug, &skip) {
             eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
+            journal.record(&slug, recovery::Outcome::WriteFailed);
             failed.push(slug);
+        } else {
+            journal.record(&slug, recovery::Outcome::Restored);
         }
     }
     if failed.is_empty() {
@@ -783,7 +878,12 @@ pub fn restore_all() -> Result<()> {
     } else {
         save_snapshot(PROVIDER_SNAPSHOT, &failed)?;
     }
-    restore_swept_tools()
+    // The same journal continues into the tool pass. Finished here rather than
+    // there, and finished even when that pass errors: the journal is the record of
+    // what happened, so a failure is exactly when it must survive.
+    let swept = restore_swept_tools(&mut journal);
+    journal.finish();
+    swept
 }
 
 /// Reconnect the standalone tools the master-off sweep disconnected (see
@@ -792,21 +892,35 @@ pub fn restore_all() -> Result<()> {
 /// is back. Tools uninstalled (or slugs unknown) since the quit are dropped.
 /// Signed out since the quit: leave the snapshot for a later signed-in
 /// restore - there's no gateway to point the tools at.
-fn restore_swept_tools() -> Result<()> {
+fn restore_swept_tools(journal: &mut recovery::JournalWriter) -> Result<()> {
     let slugs = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
     if slugs.is_empty() {
         return Ok(());
     }
     let Some(account) = account::load()? else {
+        // Signed out: nothing is attempted and the snapshot is left for a later
+        // signed-in restore. Recorded as deferred rather than failed - there is
+        // nothing wrong with these tools, and calling it a failure would send the
+        // user looking for a problem that is really a missing account.
+        for slug in &slugs {
+            journal.record(slug, recovery::Outcome::DeferredSignedOut);
+        }
         return Ok(());
     };
     let relay_base_url = crate::proxy::relay_base_url();
     let mut failed = Vec::new();
     for slug in slugs {
         let Some(integ) = ToolId::from_slug(&slug).and_then(registry::find) else {
+            // Written by an older build, or a tool since removed from the registry.
+            // Dropped from the snapshot deliberately, so it is recorded as settled
+            // rather than left looking like unfinished work.
+            journal.record(&slug, recovery::Outcome::Unknown);
             continue;
         };
         if !integ.detect().unwrap_or(false) {
+            // Uninstalled since the snapshot. Also dropped: there is nothing to
+            // restore, and retrying forever would be wrong.
+            journal.record(&slug, recovery::Outcome::NotInstalled);
             continue;
         }
         let input = ConnectInput {
@@ -817,7 +931,10 @@ fn restore_swept_tools() -> Result<()> {
         };
         if let Err(e) = integ.connect(&input) {
             eprintln!("[gate] restoring tool {slug:?} on master-on failed: {e:#}");
+            journal.record(&slug, recovery::Outcome::WriteFailed);
             failed.push(slug);
+        } else {
+            journal.record(&slug, recovery::Outcome::Restored);
         }
     }
     if failed.is_empty() {
@@ -830,6 +947,45 @@ fn restore_swept_tools() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A slug the registry no longer knows - a provider or tool uninstalled between
+    /// the snapshot and now - still gets named, because dropping it silently would
+    /// shorten a list the user is being asked to act on.
+    #[test]
+    fn an_unknown_slug_still_names_itself() {
+        let entry = PendingEntry {
+            slug: "retired-provider".into(),
+            name: "retired-provider".into(),
+        };
+        assert_eq!(entry.name, entry.slug);
+    }
+
+    #[test]
+    fn nothing_outstanding_reads_as_empty() {
+        assert!(PendingRestore::default().is_empty());
+        assert!(!PendingRestore {
+            providers: vec![PendingEntry {
+                slug: "openai".into(),
+                name: "OpenAI".into(),
+            }],
+            tools: Vec::new(),
+        }
+        .is_empty());
+    }
+
+    /// Tools alone count. The two snapshots are separate files and a restore can
+    /// finish the providers and still owe the standalone tools.
+    #[test]
+    fn tools_alone_are_still_outstanding() {
+        assert!(!PendingRestore {
+            providers: Vec::new(),
+            tools: vec![PendingEntry {
+                slug: "opencode".into(),
+                name: "OpenCode".into(),
+            }],
+        }
+        .is_empty());
+    }
 
     #[test]
     fn openai_provider_maps_to_codex_and_openai_domain() {
