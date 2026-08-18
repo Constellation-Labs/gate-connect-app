@@ -113,6 +113,11 @@ export interface BackendState {
   runningAgentNames: string[];
   staleAgents: number;
   pendingQuitTools: string[] | null;
+  /** Failures the Rust side has buffered for the frontend to drain. Emptied by
+      `drain_backend_errors`, like the real buffer. A spec sets this to check that
+      a failure predating the webview - the startup auto-enable runs before either
+      shell mounts - reaches the screen. */
+  backendErrors: { context: string; message: string }[];
   /** Commands that should reject, keyed by command name. The value is the
    *  error string the backend "returns" - App classifies it exactly as it
    *  would a real Tauri rejection. */
@@ -269,6 +274,7 @@ export function defaultState(): BackendState {
     runningAgentNames: [],
     staleAgents: 0,
     pendingQuitTools: null,
+    backendErrors: [],
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
   };

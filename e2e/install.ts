@@ -315,7 +315,8 @@ export function installFakeTauri(state: BackendState): void {
     },
 
     // ---- analytics seam
-    drain_backend_errors: () => [],
+    // Drains, like the real buffer: a second call returns nothing.
+    drain_backend_errors: () => state.backendErrors.splice(0),
 
     // ---- event plugin
     "plugin:event|listen": ({ event, handler }) => {
