@@ -32,6 +32,7 @@ import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
 import { classifyError } from "./lib/errors";
+import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
 import { verdictStatus, verdictsBySlug } from "./lib/verdict";
@@ -273,6 +274,29 @@ export function NewUiApp() {
   });
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
+
+  /**
+   * Backend failures buffer Rust-side because they can predate this webview - the
+   * startup auto-enable runs before either shell mounts. Sweep once at mount, then
+   * on each nudge.
+   *
+   * The window shell had no drain at all, so a failed restore went to telemetry
+   * and nowhere else: `report_backend_error("provider_restore", ...)` fires on both
+   * restore passes in `proxy_enable`, and this window showed nothing. That is the
+   * bug the popover's version was written to fix, reintroduced here.
+   */
+  useEffect(() => {
+    const sweep = () =>
+      void forwardBackendErrors().then((e) => {
+        if (e) setActionError(e);
+      });
+    sweep();
+    const unlisten = listen("backend-error-pending", sweep);
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
+
 
   const routing = useRouting({
     tools,

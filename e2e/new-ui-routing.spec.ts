@@ -393,3 +393,65 @@ test.describe("new UI: an empty inventory", () => {
     await expect(app.page.getByText("Couldn’t check for apps")).toHaveCount(0);
   });
 });
+
+/**
+ * The window shell had no backend-error drain at all, so a failure that happened
+ * before this webview existed - the startup auto-enable runs before either shell
+ * mounts - went to telemetry and nowhere else.
+ *
+ * `report_backend_error("provider_restore", ...)` fires on both restore passes in
+ * `proxy_enable`, which is AG-570's central scenario: routing did not fully come
+ * back, and the window said nothing.
+ */
+test.describe("new UI: buffered backend failures", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("a failed restore that predates the window is shown, not just logged", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      backendErrors: [
+        { context: "provider_restore", message: "failed to restore provider openai" },
+      ],
+    });
+
+    await expect.poll(() => app.lastCall("drain_backend_errors")).not.toBeNull();
+    // The banner, not the console: this is the one error class the user cannot
+    // discover any other way.
+    await expect(app.page.getByRole("button", { name: "Dismiss" })).toBeVisible();
+  });
+
+  test("it drains again on the nudge, so a later failure is not stranded", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+    const before = (await app.calls()).filter((c) => c.cmd === "drain_backend_errors").length;
+
+    await app.patch({
+      backendErrors: [
+        { context: "provider_restore", message: "failed to restore provider openai" },
+      ],
+    });
+    await app.emit("backend-error-pending");
+
+    await expect
+      .poll(async () => (await app.calls()).filter((c) => c.cmd === "drain_backend_errors").length)
+      .toBeGreaterThan(before);
+    await expect(app.page.getByRole("button", { name: "Dismiss" })).toBeVisible();
+  });
+
+  test("a failure that does not mean routing is down stays out of the user's way", async ({
+    boot,
+  }) => {
+    // Drained and sent to analytics, but not interrupting: only the routing-down
+    // contexts earn a banner.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      backendErrors: [{ context: "account_reconcile", message: "keychain busy" }],
+    });
+
+    await expect.poll(() => app.lastCall("drain_backend_errors")).not.toBeNull();
+    await expect(app.page.getByRole("button", { name: "Dismiss" })).toHaveCount(0);
+  });
+});
