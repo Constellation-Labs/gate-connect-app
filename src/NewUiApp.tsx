@@ -282,13 +282,15 @@ export function NewUiApp() {
         .map((t) => ({
           slug: t.slug,
           name: t.name,
-          status: verdictStatus(verdicts.get(t.slug)),
+          status: verdictStatus(verdicts.get(t.slug), {
+            writeFailed: routing.writeFailures.has(t.slug),
+          }),
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
           on: t.status.kind === "connected" || t.status.kind === "drifted",
           busy: routingBusy,
         })),
-    [tools, verdicts, routingBusy],
+    [tools, verdicts, routing.writeFailures, routingBusy],
   );
 
   const families = useMemo<Family[]>(
@@ -301,9 +303,11 @@ export function NewUiApp() {
         // the family switch on while everything it governs is off, and clicking
         // it would ask to turn off a set already off - leaving it stuck on.
         on: g.cascadeDesired > 0,
-        members: g.members.map((m) => memberToFamilyMember(m, verdicts)),
+        members: g.members.map((m) =>
+          memberToFamilyMember(m, verdicts, routing.writeFailures),
+        ),
       })),
-    [groups, verdicts],
+    [groups, verdicts, routing.writeFailures],
   );
 
   const noop = useCallback(() => {}, []);
@@ -546,6 +550,10 @@ export function NewUiApp() {
           <ReviewConfigDialog
             app={{ name: routing.prompt.name }}
             existingConfig={routing.prompt.existingConfig}
+            // The relay is what a config-routed tool gets pointed at. Null
+            // before a port has been bound, and the dialog omits the row rather
+            // than inventing an address.
+            gateRoute={proxy?.relay_base_url}
             onKeep={() => routing.resolvePrompt(false)}
             onReplace={() => routing.resolvePrompt(true)}
           />
@@ -811,10 +819,11 @@ function initialsOf(name: string): string {
 function memberToFamilyMember(
   m: GroupMember,
   verdicts: Map<string, Verdict>,
+  writeFailures: ReadonlySet<string>,
 ): Family["members"][number] {
   const status: AppStatus =
     m.kind === "config"
-      ? verdictStatus(verdicts.get(m.key))
+      ? verdictStatus(verdicts.get(m.key), { writeFailed: writeFailures.has(m.key) })
       : m.routed
         ? { kind: "protected" }
         : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
