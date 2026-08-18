@@ -19,6 +19,21 @@ import type { AppStatus } from "../components/gc/Sidebar";
  * raised on AG-561/562 rather than settled in this file.
  */
 
+/**
+ * The status line for a tool whose last config write failed.
+ *
+ * Deliberately *not* one of `VerdictReason`'s five. Those are derived from
+ * evidence - a config on disk, a relay that answers, a process older than the
+ * last change - and a failed write leaves none: nothing was written, so there is
+ * nothing for the sweep to find. The frontend remembers it for the session
+ * instead (`useRouting`'s `writeFailures`), which is why it arrives as a separate
+ * argument rather than as a sixth reason.
+ *
+ * AG-564 and AG-568 both name this state; AG-562's list of five does not include
+ * it. Raised on those tickets rather than smuggled into the enum.
+ */
+const WRITE_FAILED_DETAIL = "Configuration update failed";
+
 /** The grey suffix for a reason: the ticket's own name for it, verbatim.
  *
  * `configuration_changed` is absent on purpose - it maps to the design's own
@@ -51,7 +66,15 @@ export const NEXT_ACTION_LABEL: Record<VerdictNextAction, string> = {
  * does not produce On"), so an unanswered row says it is still checking instead.
  * That costs a moment of amber on load, which is the honest trade.
  */
-export function verdictStatus(verdict: Verdict | undefined): AppStatus {
+export function verdictStatus(
+  verdict: Verdict | undefined,
+  opts: { writeFailed?: boolean } = {},
+): AppStatus {
+  // Outranks the sweep. The sweep describes the state on disk, which after a
+  // failed write is the state from *before* the user acted - true, and not the
+  // thing they need to know. What they need to know is that their click did not
+  // land.
+  if (opts.writeFailed) return { kind: "not-protected", detail: WRITE_FAILED_DETAIL };
   if (!verdict) return { kind: "not-protected", detail: "Checking" };
   switch (verdict.state) {
     case "on":

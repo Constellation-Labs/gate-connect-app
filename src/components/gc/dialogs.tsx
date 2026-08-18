@@ -116,11 +116,16 @@ export function ReviewConfigDialog({
   app,
   /** What Gate found, e.g. "API base URL: https://api.openai.com/v1". */
   existingConfig,
+  /** What Gate would write in its place - the loopback relay this tool's config
+   * would be pointed at. Absent when no relay port has been bound yet, in which
+   * case the row is omitted rather than guessed at. */
+  gateRoute,
   onKeep,
   onReplace,
 }: {
   app: DialogApp;
   existingConfig: string;
+  gateRoute?: string | null;
   onKeep: () => void;
   onReplace: () => void;
 }) {
@@ -140,6 +145,17 @@ export function ReviewConfigDialog({
         description={existingConfig}
         pill={{ label: "Detected", tone: "amber" }}
       />
+      {/* What replaces it. Approving an overwrite without being shown the
+          replacement is approving a value you cannot see - and this is the one
+          screen where the user is asked to hand their tool's routing to us. */}
+      {gateRoute && (
+        <ModalSubject
+          icon={appIcon(app)}
+          title="What Gate would write instead"
+          description={gateRoute}
+          pill={{ label: "Gate route", tone: "green" }}
+        />
+      )}
       <ModalNote>
         <p className="font-medium text-neutral-900">If Gate takes over:</p>
         <p className="mt-1">

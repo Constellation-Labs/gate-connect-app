@@ -708,6 +708,43 @@ and the reason is recorded at the component:
   screen. Implemented as ending the session, and the body copy corrected, rather
   than shipping two destructive actions that claim the same consequences.
 
+## Drift repair (AG-568)
+
+The review dialog and the drift *gate* were already built (`ReviewConfigDialog`,
+`useRouting.ts` refusing to adopt a drifted config silently). Two things were
+missing, and one of them was a correctness bug.
+
+**A failed write left the row lying.** `connect_tool` failing sent the error to a
+transient banner, and the status line - the thing next to the switch the user
+just clicked - carried on describing the state from before the click. It was
+*true*, since nothing was written, and useless. `useRouting` now remembers which
+slugs failed (`writeFailures`), and the row reads "Configuration update failed".
+
+That state is deliberately **not** a sixth `routing_health::Reason`. The Rust
+reasons are derived from evidence - a config on disk, a relay that answers, a
+process older than the last change - and a failed write leaves none of that to
+probe. It is session state, cleared the moment a write for that slug succeeds, and
+it arrives at `verdictStatus` as a separate argument for exactly that reason.
+
+Worth noting: **AG-562's list of five reasons is incomplete.** AG-564 and AG-568
+both name "Configuration update failed" as a status. Raised on those tickets
+rather than smuggled into the enum.
+
+**The dialog showed what Gate found but not what it would write.** Approving an
+overwrite without seeing the replacement is approving a value you cannot see, on
+the one screen where the user hands their tool's routing to us. `ProxyState`
+gained `relay_base_url` (non-secret - it is already written verbatim into every
+config-routed tool's own file), and the dialog shows it. With no relay port bound
+the row is omitted rather than guessed at.
+
+Still open on the ticket: the per-failure action set ("Retry, Use tool defaults,
+Documentation, Diagnostics, or Contact support based on the failure"). The sidebar
+row has a switch and no room for a second control, and the switch *is* the retry -
+but a documentation or diagnostics link per failure needs the per-app pane, and
+Contact support needs a URL that does not exist. Also open: "last completed check
+or routed request" in the summary, which needs the activity endpoint.
+
+
 ## Settings sections and preferences (AG-594)
 
 There was **no preferences store anywhere**. `account.rs` was the only config, and
@@ -757,6 +794,53 @@ they made. Wired for launch-at-login and for the preferences pair, which share o
 read and so fail together - a failed preferences read leaves launch-at-login's
 switch alone, and a test pins that.
 
+## Refreshing the inventory (AG-558)
+
+Detection ran on backend events only, so a tool installed while the window was
+open stayed invisible until something unrelated repainted the sidebar. The
+"Protected apps" eyebrow gained a small refresh control that re-reads tools and
+proxy state and re-runs the routing sweep.
+
+Provisional: the Figma draws no refresh control. It is 20px in a 12px eyebrow with
+an `aria-label` rather than visible text, and no spinner - the scan is fast enough
+that one would only flash, so `aria-busy` plus the disabled state is the signal.
+`refreshing` is deliberately separate from `routingBusy`: that one guards a
+*write*, and refusing to re-read during a toggle would be the wrong coupling.
+
+The rest of AG-558 is not buildable and is documented on the ticket: every
+integration returns `requires_upstream_credential() == false`, so "installed but
+unavailable" cannot occur; "installed but unsupported" needs detection of tools
+Gate has no integration for; "incomplete installation" needs per-integration
+probes; and the per-entry request counts need per-*tool* attribution, which the
+in-flight `feat/activity-overview-client` does not provide (it is per-installation
+- `activity.ts` has no tool or slug in it).
+
+
+## An empty inventory is not a failed one (AG-560)
+
+`listTools().catch(() => [])` turned a failed read into an empty array, so a device
+Gate could not scan rendered exactly like a device with no AI apps on it - blank
+list, "0/0" count, no explanation. `InventoryState` in `Sidebar.tsx` now tells the
+two apart:
+
+- **`none`** - the scan completed and found nothing. Carries the scan time, which
+  is what makes it an answer rather than a shrug, plus Refresh.
+- **`failed`** - the scan could not complete. Amber, says Gate does not know what
+  is installed and that nothing was changed, and offers Try again.
+- **`ok`** - there are rows, and the rows speak for themselves.
+
+Before the first scan lands the state is `ok`, deliberately: "no apps detected" is
+a claim, and nothing has checked yet.
+
+The eyebrow's refresh control (AG-558) hides while the card is up, since the card
+carries its own and two controls for one action in a 250px rail is one too many.
+
+Not built, and recorded on the ticket: "a detected but unsupported tool remains
+visible" needs detection of tools Gate has no integration for; "a known but absent
+tool may provide an installation action" is optional in the criteria and would put
+uninstalled tools in a rail the Figma draws as installed apps only; and the
+model-control gating would remove the picker shipped in #159.
+
 ## The diagnostics switch now gates something (AG-603)
 
 The "Share diagnostic data" switch added for AG-594 recorded a preference that
@@ -794,6 +878,7 @@ truth about what leaves the machine.
 Still open on the ticket: the onboarding Diagnostic data step (shared with AG-554),
 "Send diagnostics now" and the diagnostic reference (no upload path exists), and
 scoping the choice to the selected organization.
+
 
 ## The diagnostic-data onboarding step (AG-554 / AG-603)
 
