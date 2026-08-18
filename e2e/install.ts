@@ -337,6 +337,26 @@ export function installFakeTauri(state: BackendState): void {
     // Drains, like the real buffer: a second call returns nothing.
     drain_backend_errors: () => state.backendErrors.splice(0),
 
+    // ---- interrupted restore
+    // Copies, for the reason `get_preferences` does: real IPC serialises every
+    // response, and handing out the live object hides mutations from React.
+    pending_restore: () => ({
+      providers: [...state.pendingRestore.providers],
+      tools: [...state.pendingRestore.tools],
+    }),
+    resume_restore: () => {
+      // Mirrors restore_all: entries that fail stay recorded, the rest clear.
+      const keep = (e: { slug: string }) => state.pendingResumeKeeps.includes(e.slug);
+      state.pendingRestore = {
+        providers: state.pendingRestore.providers.filter(keep),
+        tools: state.pendingRestore.tools.filter(keep),
+      };
+      return {
+        providers: [...state.pendingRestore.providers],
+        tools: [...state.pendingRestore.tools],
+      };
+    },
+
     // ---- event plugin
     "plugin:event|listen": ({ event, handler }) => {
       let ids = listeners.get(event);

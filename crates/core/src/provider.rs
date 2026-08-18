@@ -738,6 +738,67 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
     save_snapshot(SWEPT_TOOLS_SNAPSHOT, &snapshot)
 }
 
+/// One thing a restore has recorded and not finished.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PendingEntry {
+    pub slug: String,
+    /// What to call it on screen. Falls back to the slug for an entry whose
+    /// provider or tool is no longer in the registry - an uninstall between the
+    /// snapshot and now - because naming it is still better than dropping it from
+    /// a list the user is being asked to act on.
+    pub name: String,
+}
+
+/// Routing work that was written down and has not completed.
+///
+/// The snapshots have always been a record of unfinished work - [`restore_all`]
+/// keeps failures in the file and only clears it once everything is back - but
+/// nothing ever read them for display. So a restore that half-succeeded left the
+/// user with some tools routing, some not, and no statement anywhere that Gate
+/// knew about it.
+///
+/// Empty means there is nothing outstanding, which is the normal case.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub struct PendingRestore {
+    /// Providers still waiting to be re-enabled.
+    pub providers: Vec<PendingEntry>,
+    /// Standalone tools (OpenCode and friends) still waiting to be reconnected.
+    pub tools: Vec<PendingEntry>,
+}
+
+impl PendingRestore {
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty() && self.tools.is_empty()
+    }
+}
+
+/// What a restore still owes, read from the snapshots.
+///
+/// Read-only: it opens no config, starts nothing, and writes nothing. Safe to call
+/// on a status refresh.
+pub fn pending_restore() -> Result<PendingRestore> {
+    let providers = load_snapshot(PROVIDER_SNAPSHOT)?
+        .into_iter()
+        .map(|slug| {
+            let name = find(&slug)
+                .map(|p| p.display_name.to_string())
+                .unwrap_or_else(|| slug.clone());
+            PendingEntry { slug, name }
+        })
+        .collect();
+    let tools = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?
+        .into_iter()
+        .map(|slug| {
+            let name = ToolId::from_slug(&slug)
+                .and_then(registry::find)
+                .map(|integ| integ.display_name().to_string())
+                .unwrap_or_else(|| slug.clone());
+            PendingEntry { slug, name }
+        })
+        .collect();
+    Ok(PendingRestore { providers, tools })
+}
+
 /// Master ON: re-enable every provider that was on when routing was last
 /// turned off, then reconnect any standalone tools the master-off sweep
 /// disconnected. Entries that fail to restore stay in their snapshot so a
@@ -814,6 +875,45 @@ fn restore_swept_tools() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A slug the registry no longer knows - a provider or tool uninstalled between
+    /// the snapshot and now - still gets named, because dropping it silently would
+    /// shorten a list the user is being asked to act on.
+    #[test]
+    fn an_unknown_slug_still_names_itself() {
+        let entry = PendingEntry {
+            slug: "retired-provider".into(),
+            name: "retired-provider".into(),
+        };
+        assert_eq!(entry.name, entry.slug);
+    }
+
+    #[test]
+    fn nothing_outstanding_reads_as_empty() {
+        assert!(PendingRestore::default().is_empty());
+        assert!(!PendingRestore {
+            providers: vec![PendingEntry {
+                slug: "openai".into(),
+                name: "OpenAI".into(),
+            }],
+            tools: Vec::new(),
+        }
+        .is_empty());
+    }
+
+    /// Tools alone count. The two snapshots are separate files and a restore can
+    /// finish the providers and still owe the standalone tools.
+    #[test]
+    fn tools_alone_are_still_outstanding() {
+        assert!(!PendingRestore {
+            providers: Vec::new(),
+            tools: vec![PendingEntry {
+                slug: "opencode".into(),
+                name: "OpenCode".into(),
+            }],
+        }
+        .is_empty());
+    }
 
     #[test]
     fn openai_provider_maps_to_codex_and_openai_domain() {

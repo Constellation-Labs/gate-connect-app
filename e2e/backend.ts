@@ -132,6 +132,15 @@ export interface BackendState {
       a failure predating the webview - the startup auto-enable runs before either
       shell mounts - reaches the screen. */
   backendErrors: { context: string; message: string }[];
+  /** Routing work a restore recorded and did not finish, as the provider snapshots
+      hold it. A spec sets this to produce the recovery notice; `resume_restore`
+      empties it, or leaves `pendingResumeKeeps` behind to model a partial retry. */
+  pendingRestore: {
+    providers: { slug: string; name: string }[];
+    tools: { slug: string; name: string }[];
+  };
+  /** Slugs `resume_restore` should FAIL to finish, so they stay outstanding. */
+  pendingResumeKeeps: string[];
   /** Commands that should reject, keyed by command name. The value is the
    *  error string the backend "returns" - App classifies it exactly as it
    *  would a real Tauri rejection. */
@@ -295,6 +304,8 @@ export function defaultState(): BackendState {
     staleAgents: 0,
     pendingQuitTools: null,
     backendErrors: [],
+    pendingRestore: { providers: [], tools: [] },
+    pendingResumeKeeps: [],
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
   };
