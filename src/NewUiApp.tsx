@@ -119,6 +119,10 @@ export function NewUiApp() {
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [view, setView] = useState<SidebarView>({ kind: "overview" });
   const [menuOpen, setMenuOpen] = useState(false);
+  /** A manual scan is in flight. Separate from `routingBusy`, which is about a
+   * write: refusing to re-read while a toggle is mid-flight would be the wrong
+   * coupling, and a scan changes nothing on disk. */
+  const [refreshing, setRefreshing] = useState(false);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
@@ -157,6 +161,17 @@ export function NewUiApp() {
     // for the next poll.
     void refreshVerdicts();
   }, [refreshVerdicts]);
+
+  /** Re-run detection because the user asked. Same reads as the event-driven
+   * `refresh`, plus a flag so the control can refuse a second click. */
+  const refreshNow = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
 
   // The engine changes state without us asking: a CLI toggle, the startup
   // auto-enable, another window. Repaint from the event rather than leaving a
@@ -531,6 +546,8 @@ export function NewUiApp() {
       onNavigate={setView}
       apps={apps}
       onSelectApp={(slug) => setView({ kind: "app", slug })}
+      onRefreshApps={() => void refreshNow()}
+      refreshingApps={refreshing}
       notice={
         actionError ? (
           <ErrorBanner

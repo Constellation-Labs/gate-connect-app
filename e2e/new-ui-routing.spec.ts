@@ -173,3 +173,55 @@ async function callsFor(page: import("@playwright/test").Page, cmd: string) {
     cmd,
   );
 }
+
+/**
+ * AG-558's one buildable line: "Gate Connect checks for each supported tool
+ * during setup, MANUAL REFRESH, and application changes that can affect
+ * detection."
+ *
+ * Detection only ran on backend events, so installing a tool while this window
+ * was open showed nothing until something unrelated repainted it.
+ */
+test.describe("new UI: refreshing the inventory", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("the refresh control re-reads tools and re-runs the routing sweep", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    const before = (await app.calls()).filter((c) => c.cmd === "list_tools").length;
+    await app.page.getByRole("button", { name: "Refresh apps" }).click();
+
+    await expect
+      .poll(async () => (await app.calls()).filter((c) => c.cmd === "list_tools").length)
+      .toBeGreaterThan(before);
+    // The sweep rides along: a tool that just appeared has no verdict yet, and
+    // leaving the old ones on screen would describe a different set of tools.
+    await expect
+      .poll(async () => (await app.calls()).filter((c) => c.cmd === "routing_verdicts").length)
+      .toBeGreaterThan(1);
+  });
+
+  test("a tool installed while the window was open appears on refresh", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
+
+    await expect(app.page.getByRole("switch", { name: "Codex" })).toHaveCount(0);
+
+    await app.patch({
+      tools: [
+        {
+          slug: "codex",
+          name: "Codex",
+          upstream_provider_name: "OpenAI",
+          default_upstream_url: "https://gw.example/codex",
+          requires_upstream_credential: false,
+          status: { kind: "detected" },
+        },
+      ],
+    });
+    await app.page.getByRole("button", { name: "Refresh apps" }).click();
+
+    await expect(app.page.getByRole("switch", { name: "Codex" }).first()).toBeVisible();
+  });
+});

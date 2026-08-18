@@ -80,6 +80,8 @@ export function Sidebar({
   apps,
   onSelectApp,
   onToggleApp,
+  onRefresh,
+  refreshing,
 }: {
   orgName: string;
   onSwitchOrg: () => void;
@@ -89,6 +91,13 @@ export function Sidebar({
   /** Opens the per-app pane. */
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
+  /** Re-run detection now. Omitted leaves the control out entirely, on the same
+   * rule the Settings rows follow: a button that does nothing is worse than no
+   * button. */
+  onRefresh?: () => void;
+  /** A scan is in flight; the control refuses clicks and says so to assistive
+   * technology. */
+  refreshing?: boolean;
 }) {
   const protectedCount = apps.filter((a) => a.status.kind === "protected").length;
 
@@ -135,6 +144,25 @@ export function Sidebar({
               <span>
                 {protectedCount}/{apps.length}
               </span>
+              {/* Provisional: the Figma draws no refresh control. Detection only
+                  ran on backend events, so installing a tool while this window
+                  was open showed nothing until something unrelated changed it.
+                  Small and unlabelled because it sits in a 12px eyebrow - the
+                  glyph carries an aria-label rather than visible text. */}
+              {onRefresh && (
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  aria-label="Refresh apps"
+                  aria-busy={refreshing || undefined}
+                  disabled={refreshing}
+                  className="flex size-5 items-center justify-center rounded-base text-base-muted-foreground transition-colors hover:bg-gray-100 hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {/* No spinner: the scan is fast enough that one would flash.
+                      `aria-busy` plus the disabled state is the whole signal. */}
+                  <Icon name="refresh" size={12} />
+                </button>
+              )}
             </h2>
 
             <ul className="flex flex-col gap-1">
