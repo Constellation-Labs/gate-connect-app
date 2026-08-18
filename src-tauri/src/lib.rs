@@ -1050,12 +1050,20 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
         if Some(*pid) == own_pid {
             continue;
         }
-        let name = process.name().to_string_lossy().to_lowercase();
-        let name = name.strip_suffix(".exe").unwrap_or(&name);
-        if AGENT_PROCESS_NAMES.contains(&name) {
+        if AGENT_PROCESS_NAMES.contains(&agent_name_of(process).as_str()) {
             f(process);
         }
     }
+}
+
+/// A process's name as [`AGENT_PROCESS_NAMES`] spells it: lowercased, with any
+/// `.exe` stripped, so one list serves all three desktop OSes. Extracted so the
+/// per-tool staleness check below matches on exactly the same normalisation the
+/// walk itself filtered by, rather than a second copy that could drift from it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_name_of(process: &sysinfo::Process) -> String {
+    let name = process.name().to_string_lossy().to_lowercase();
+    name.strip_suffix(".exe").unwrap_or(&name).to_string()
 }
 
 /// Count running agent processes without touching them. Lets the frontend
@@ -1134,6 +1142,156 @@ fn stale_agents_count() -> u32 {
         }
     });
     count
+}
+
+/// The process name to look for on behalf of one tool.
+///
+/// `None` for the tools Gate has no way to recognise in the process table:
+/// OpenClaw and Hermes ship no fixed process name, and `env-proxy` is not a
+/// process at all. For those, staleness is *unobservable* rather than false -
+/// see [`reopen_pending_for`], which says what that costs.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_process_name(slug: &str) -> Option<&'static str> {
+    match slug {
+        "claude-code" => Some("claude"),
+        "codex" => Some("codex"),
+        "opencode" => Some("opencode"),
+        _ => None,
+    }
+}
+
+/// Is a process for this one tool running that predates the last routing change,
+/// and is therefore still using whatever settings it loaded then?
+///
+/// This is `stale_agents_count` narrowed to one tool, which is what a per-tool
+/// verdict needs: the count answers "does anything need restarting", and cannot
+/// say *which* row to mark.
+///
+/// Two honest limits, both deliberate:
+///
+/// - **A tool with no known process name returns `false`**, so it can still read
+///   `On`. The alternative - reporting every such tool unverifiable forever -
+///   would bury a real signal (the route probe) under a permanent warning. The
+///   cost is that OpenClaw and Hermes will not be told to reopen.
+/// - **No usable bound degrades to "running means stale"**, matching
+///   `stale_agents_count` rather than claiming freshness we cannot support.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn reopen_pending_for(slug: &str) -> bool {
+    let Some(wanted) = agent_process_name(slug) else {
+        return false;
+    };
+    let bound = routing_bound_unix();
+    let mut pending = false;
+    for_each_agent_process(|process| {
+        if agent_name_of(process) != wanted {
+            return;
+        }
+        match bound {
+            Some(bound) => {
+                if process.start_time() < bound {
+                    pending = true;
+                }
+            }
+            None => pending = true,
+        }
+    });
+    pending
+}
+
+/// One tool's routing verdict, flattened for the frontend.
+///
+/// `state` / `reason` / `next_action` are strings rather than a tagged union
+/// because the pairing is fixed in
+/// [`gate_connect_core::routing_health::Reason::next_action`] and the UI only
+/// ever renders them. `reason` and `next_action` are both `None` unless `state`
+/// is `needs_attention`.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct VerdictDto {
+    slug: String,
+    state: &'static str,
+    reason: Option<&'static str>,
+    next_action: Option<&'static str>,
+}
+
+/// What every config-routed tool is actually doing.
+///
+/// Deliberately a separate command from `list_tools`: this one does network I/O
+/// (a loopback health check, and one gateway call when the account is OAuth) and
+/// walks the process table, none of which belongs on the path the popover calls
+/// on every render.
+///
+/// The two probes run **once** for the whole sweep, not once per tool. They ask
+/// about shared infrastructure - the relay port and the account's session - so
+/// per-tool calls would be the same answer at N times the cost, and would let
+/// two rows in one refresh disagree about whether the session is alive.
+///
+/// `(async)` for the reason on [`running_agents_count`]: the process walk on
+/// Linux would otherwise run on the GTK loop.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command(async)]
+fn routing_verdicts() -> Vec<VerdictDto> {
+    use gate_connect_core::routing_health::{self, ConfigState, Evidence};
+
+    let route = gate_connect_core::proxy::probe_relay_route();
+    let session = probe_session_health();
+
+    registry::registry()
+        .iter()
+        .filter(|integ| !integ.hidden_in_ui())
+        .map(|integ| {
+            let status = integ.status();
+            let installed = !matches!(status, Ok(gate_connect_core::Status::NotInstalled));
+            let slug = integ.id().to_string();
+            let verdict = routing_health::verdict_for(&Evidence {
+                installed,
+                config: ConfigState::from_status(&status),
+                route,
+                session,
+                reopen_pending: reopen_pending_for(&slug),
+            });
+            let reason = verdict.reason();
+            VerdictDto {
+                slug,
+                state: verdict.as_str(),
+                reason: reason.map(|r| r.as_str()),
+                next_action: reason.map(|r| r.next_action().as_str()),
+            }
+        })
+        .collect()
+}
+
+/// Ask the gateway whether the stored session still works, mapped onto the
+/// verdict layer's vocabulary.
+///
+/// An API-key account reports `Valid`: there is no session to probe, and the key
+/// is validated when it is saved. Reporting `Unknown` instead would park every
+/// key-based install on "Verification failed" permanently.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
+    use gate_connect_core::org::SessionProbe;
+    use gate_connect_core::routing_health::SessionHealth;
+
+    if account::auth_mode().unwrap_or_default() != account::AuthMode::OAuth {
+        return SessionHealth::Valid;
+    }
+    let Some(tokens) = gate_connect_core::oauth::live_session() else {
+        // No live session in OAuth mode is a definite negative: the refresh loop
+        // either has no tokens or the gateway already rejected them.
+        return SessionHealth::Rejected;
+    };
+    let Ok(Some(gateway)) = account::load_base_url() else {
+        return SessionHealth::Unknown;
+    };
+    match gate_connect_core::org::probe_session(&gateway, &tokens.access_token) {
+        SessionProbe::Accepted(_) => SessionHealth::Valid,
+        SessionProbe::Rejected => SessionHealth::Rejected,
+        // Offline or a non-auth error. Never evidence against the credential -
+        // `SessionProbe::Unavailable`'s own docs are explicit about this, and
+        // the verdict layer turns it into "Verification failed", not "Access
+        // problem".
+        SessionProbe::Unavailable => SessionHealth::Unknown,
+    }
 }
 
 /// One running AI tool, as the diagnostics report lists it.
@@ -1528,6 +1686,7 @@ pub fn run() {
                     set_launch_at_login,
                     set_updater_relaunching,
                     routed_clients_stale,
+                    routing_verdicts,
                     running_agents_count,
                     stale_agents_count,
                     running_agents,
