@@ -33,6 +33,18 @@ export interface SettingsRow {
   mono?: boolean;
   action?: SettingsAction;
   toggle?: { on: boolean; onToggle: () => void };
+  /**
+   * This row's value could not be read. Renders "Unavailable" and a Retry in
+   * place of the value and control, rather than showing a default dressed as
+   * fact.
+   *
+   * The distinction matters most on a switch: a failed read that falls back to
+   * `false` draws an Off switch, which is a claim about the user's setting, and
+   * the user cannot tell it from a setting they turned off themselves. Same
+   * argument as `Overview`'s zeroed metrics and `lib/verdict.ts`'s refusal to
+   * infer routing from a config file.
+   */
+  unavailable?: { onRetry: () => void };
 }
 
 export interface SettingsSection {
@@ -68,7 +80,10 @@ export function buildSettingsSections({
   gateway,
   apiKeyMasked,
   launchAtLogin,
-  notifications,
+  launchAtLoginUnavailable,
+  routingHealthNotifications,
+  shareDiagnostics,
+  preferencesUnavailable,
   version,
   updateNote,
   onRenameDevice,
@@ -77,10 +92,16 @@ export function buildSettingsSections({
   onReplaceKey,
   onDisconnect,
   onToggleLaunchAtLogin,
-  onToggleNotifications,
+  onRetryLaunchAtLogin,
+  onToggleRoutingHealthNotifications,
+  onToggleShareDiagnostics,
+  onRetryPreferences,
   onReplayTutorial,
   onCheckForUpdates,
   onViewDiagnostics,
+  onViewCollectedData,
+  onOpenDocs,
+  onContactSupport,
   onReviewReset,
 }: {
   deviceName: string;
@@ -91,7 +112,14 @@ export function buildSettingsSections({
   /** Already masked upstream - this pane never sees the key. */
   apiKeyMasked: string;
   launchAtLogin: boolean;
-  notifications?: boolean;
+  /** The launch-at-login read failed. Drives the Unavailable row; the boolean
+   * above is then meaningless and must not reach a switch. */
+  launchAtLoginUnavailable?: boolean;
+  routingHealthNotifications?: boolean;
+  shareDiagnostics?: boolean;
+  /** The preferences read failed - same reasoning as `launchAtLoginUnavailable`,
+   * for the two switches that come from `preferences.json`. */
+  preferencesUnavailable?: boolean;
   version: string;
   /** Feedback under the version row after an explicit update check. */
   updateNote?: string;
@@ -101,10 +129,20 @@ export function buildSettingsSections({
   onReplaceKey?: () => void;
   onDisconnect?: () => void;
   onToggleLaunchAtLogin: () => void;
-  onToggleNotifications?: () => void;
+  /** Present only when the launch-at-login read failed, so the row can offer a
+   * retry instead of drawing a switch from a value it does not have. */
+  onRetryLaunchAtLogin?: () => void;
+  onToggleRoutingHealthNotifications?: () => void;
+  onToggleShareDiagnostics?: () => void;
+  onRetryPreferences?: () => void;
   onReplayTutorial: () => void;
   onCheckForUpdates?: () => void;
   onViewDiagnostics: () => void;
+  /** Opens the collected-data list. Read-only: AG-603 requires it to open
+   * "without changing the setting". */
+  onViewCollectedData?: () => void;
+  onOpenDocs?: () => void;
+  onContactSupport?: () => void;
   onReviewReset?: () => void;
 }): SettingsSection[] {
   return [
@@ -185,19 +223,90 @@ export function buildSettingsSections({
           icon: "power",
           label: "Launch at login",
           description: "Keeps routing on after restart",
-          toggle: { on: launchAtLogin, onToggle: onToggleLaunchAtLogin },
+          ...(launchAtLoginUnavailable && onRetryLaunchAtLogin
+            ? { unavailable: { onRetry: onRetryLaunchAtLogin } }
+            : { toggle: { on: launchAtLogin, onToggle: onToggleLaunchAtLogin } }),
         },
-        ...(onToggleNotifications
+      ],
+    },
+    // Its own section rather than a row under Startup: these are choices about
+    // what interrupts the user, not about what happens at boot.
+    //
+    // One switch, not the four the criteria list. Blocked-event, flagged-event
+    // and sound notifications are specified alongside the live security-event
+    // feed, and there is no feed - the only notifications this app fires are
+    // about routing itself. A switch for an event that cannot arrive would tell
+    // the user they had turned something off.
+    ...(onToggleRoutingHealthNotifications
+      ? [
+          {
+            id: "notifications",
+            title: "Notifications",
+            rows: [
+              {
+                id: "routing-health",
+                icon: "bell" as IconName,
+                label: "Routing health",
+                description:
+                  "Tell me when a session expires or a tool cannot be put back",
+                ...(preferencesUnavailable && onRetryPreferences
+                  ? { unavailable: { onRetry: onRetryPreferences } }
+                  : {
+                      toggle: {
+                        on: routingHealthNotifications ?? true,
+                        onToggle: onToggleRoutingHealthNotifications,
+                      },
+                    }),
+              },
+            ],
+          },
+        ]
+      : []),
+    // Diagnostics gets its own section, out of About: sharing data is a privacy
+    // choice, and the report is the evidence of what would be shared. Sending a
+    // report on demand, and the reference it returns, belong with the collection
+    // work and are not here.
+    {
+      id: "diagnostics",
+      title: "Diagnostics",
+      rows: [
+        ...(onToggleShareDiagnostics
           ? [
               {
-                id: "notifications",
-                icon: "bell" as IconName,
-                label: "Notifications",
-                description: "Alert me when a request is blocked or flagged",
-                toggle: { on: notifications ?? false, onToggle: onToggleNotifications },
-              },
+                id: "share-diagnostics",
+                icon: "shieldCheck" as IconName,
+                label: "Share diagnostic data",
+                description:
+                  "Send Gate errors and routing state to help fix problems. Never prompts, responses, or credentials.",
+                ...(preferencesUnavailable && onRetryPreferences
+                  ? { unavailable: { onRetry: onRetryPreferences } }
+                  : {
+                      toggle: {
+                        on: shareDiagnostics ?? true,
+                        onToggle: onToggleShareDiagnostics,
+                      },
+                    }),
+              } as SettingsRow,
             ]
           : []),
+        ...(onViewCollectedData
+          ? [
+              {
+                id: "collected-data",
+                icon: "eye" as IconName,
+                label: "What is collected",
+                description: "The exact fields that leave this device, and the ones that never do",
+                action: { label: "View list", onClick: onViewCollectedData },
+              } as SettingsRow,
+            ]
+          : []),
+        {
+          id: "diagnostics-report",
+          icon: "info",
+          label: "Diagnostics report",
+          description: "Everything Gate knows about this install, as shareable text",
+          action: { label: "View report", onClick: onViewDiagnostics },
+        },
       ],
     },
     {
@@ -221,15 +330,45 @@ export function buildSettingsSections({
             ? { label: "Check for updates", onClick: onCheckForUpdates }
             : undefined,
         },
-        {
-          id: "diagnostics",
-          icon: "info",
-          label: "Diagnostics",
-          description: "Everything Gate knows about this install, as shareable text",
-          action: { label: "View report", onClick: onViewDiagnostics },
-        },
       ],
     },
+    // Help is its own section because the criteria ask for it by name, and
+    // because a documentation link buried under About reads as release notes.
+    ...(onOpenDocs || onContactSupport
+      ? [
+          {
+            id: "help",
+            title: "Help",
+            rows: [
+              ...(onOpenDocs
+                ? [
+                    {
+                      id: "docs",
+                      icon: "bookOpenText" as IconName,
+                      label: "Documentation",
+                      description: "Setup, routing, and troubleshooting",
+                      action: { label: "Read docs", onClick: onOpenDocs, external: true },
+                    } as SettingsRow,
+                  ]
+                : []),
+              ...(onContactSupport
+                ? [
+                    {
+                      id: "support",
+                      icon: "headset" as IconName,
+                      label: "Support",
+                      action: {
+                        label: "Contact support",
+                        onClick: onContactSupport,
+                        external: true,
+                      },
+                    } as SettingsRow,
+                  ]
+                : []),
+            ],
+          },
+        ]
+      : []),
     // A Danger zone whose one action is inert is worse than no Danger zone: the
     // card is drawn to be alarming, and an alarming card that does nothing
     // teaches the user to ignore it.
@@ -308,7 +447,9 @@ function Row({
       <Icon name={row.icon} size={16} className="shrink-0 text-neutral-500" />
 
       <div
-        className={`min-w-0 ${row.value === undefined ? "flex-1" : "w-[184px] shrink-0"}`}
+        className={`min-w-0 ${
+          row.value === undefined && !row.unavailable ? "flex-1" : "w-[184px] shrink-0"
+        }`}
       >
         <p className="truncate text-sm font-medium leading-5 text-neutral-900">
           {row.label}
@@ -318,30 +459,41 @@ function Row({
         )}
       </div>
 
-      {row.value !== undefined && (
-        <p
-          className={`min-w-0 flex-1 truncate text-sm leading-5 text-neutral-900 ${
-            row.mono ? "font-mono" : ""
-          }`}
-        >
-          {row.value}
-        </p>
-      )}
+      {row.unavailable ? (
+        <>
+          <p className="min-w-0 flex-1 truncate text-sm leading-5 text-neutral-600">
+            Unavailable
+          </p>
+          <ActionButton action={{ label: "Retry", onClick: row.unavailable.onRetry }} />
+        </>
+      ) : (
+        <>
+          {row.value !== undefined && (
+            <p
+              className={`min-w-0 flex-1 truncate text-sm leading-5 text-neutral-900 ${
+                row.mono ? "font-mono" : ""
+              }`}
+            >
+              {row.value}
+            </p>
+          )}
 
-      {row.toggle && (
-        <span className="flex shrink-0 items-center gap-2">
-          <span className="text-base-xs font-medium text-neutral-600">
-            {row.toggle.on ? "On" : "Off"}
-          </span>
-          <BaseSwitch
-            on={row.toggle.on}
-            label={row.label}
-            onClick={row.toggle.onToggle}
-          />
-        </span>
-      )}
+              {row.toggle && (
+            <span className="flex shrink-0 items-center gap-2">
+              <span className="text-base-xs font-medium text-neutral-600">
+                {row.toggle.on ? "On" : "Off"}
+              </span>
+              <BaseSwitch
+                on={row.toggle.on}
+                label={row.label}
+                onClick={row.toggle.onToggle}
+              />
+            </span>
+          )}
 
-      {row.action && <ActionButton action={row.action} />}
+          {row.action && <ActionButton action={row.action} />}
+        </>
+      )}
     </div>
   );
 }
