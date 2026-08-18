@@ -9,6 +9,7 @@ import type {
   ProxyState,
   ProviderState,
   PendingRestore,
+  RestoreJournal,
   Tool,
   Verdict,
 } from "./lib/api";
@@ -23,6 +24,7 @@ import {
   routingVerdicts,
   pendingRestore,
   resumeRestore,
+  restoreJournal,
   getPreferences,
   setRoutingHealthNotifications,
   setShareDiagnostics,
@@ -69,6 +71,7 @@ import type { SetupOrganization } from "./components/gc/setup";
 import {
   CollectedDataDialog,
   DiagnosticsDialog,
+  RestoreDetailsDialog,
   DisconnectGateDialog,
   OrganizationSwitchedDialog,
   ReplaceApiKeyDialog,
@@ -198,8 +201,15 @@ export function NewUiApp() {
   }, []);
 
   const loadPending = useCallback(async () => {
-    const p = await pendingRestore().catch(() => null);
+    const [p, j] = await Promise.all([
+      pendingRestore().catch(() => null),
+      restoreJournal().catch(() => null),
+    ]);
     if (p) setPending(p);
+    // Read alongside the pending state, not lazily on click: the banner decides
+    // whether to offer Review details at all, and it can only do that if it knows
+    // whether a journal exists.
+    setJournal(j);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -298,6 +308,10 @@ export function NewUiApp() {
    * notice returns on the next launch until the work actually finishes - which is
    * the persistence the recovery action is supposed to have. */
   const [recoveryHidden, setRecoveryHidden] = useState(false);
+  /** The read-only account of the last restore. Null when there is nothing to
+   * explain; a restore that completed clears it. */
+  const [journal, setJournal] = useState<RestoreJournal | null>(null);
+  const [journalOpen, setJournalOpen] = useState(false);
 
   /**
    * Backend failures buffer Rust-side because they can predate this webview - the
@@ -765,6 +779,7 @@ export function NewUiApp() {
             names={recoveryNames}
             busy={resuming}
             onResume={() => void resumeNow()}
+            onReviewDetails={journal ? () => setJournalOpen(true) : undefined}
             onFinishLater={() => setRecoveryHidden(true)}
           />
         ) : undefined
@@ -842,6 +857,8 @@ export function NewUiApp() {
               setModelOverlay(null);
             }}
           />
+        ) : journalOpen && journal ? (
+          <RestoreDetailsDialog journal={journal} onClose={() => setJournalOpen(false)} />
         ) : collectedDataOpen ? (
           <CollectedDataDialog onClose={() => setCollectedDataOpen(false)} />
         ) : diagnosticsReport !== null ? (

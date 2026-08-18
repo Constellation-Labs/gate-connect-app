@@ -237,6 +237,7 @@ export function RecoveryBanner({
   names,
   busy,
   onResume,
+  onReviewDetails,
   onFinishLater,
 }: {
   /** What is still outstanding, providers and tools together - the user does not
@@ -245,6 +246,11 @@ export function RecoveryBanner({
   names: string[];
   busy?: boolean;
   onResume: () => void;
+  /** Opens the read-only account of what the restore did. Omitted when there is no
+   * journal to show - a restore interrupted before it wrote one leaves the
+   * snapshots but no explanation, and a button onto an empty dialog is worse than
+   * no button. */
+  onReviewDetails?: () => void;
   onFinishLater: () => void;
 }) {
   const many = names.length > 1;
@@ -263,6 +269,15 @@ export function RecoveryBanner({
           was left, so resuming picks up where it stopped.
         </p>
       </div>
+      {onReviewDetails && (
+        <button
+          type="button"
+          onClick={onReviewDetails}
+          className="shrink-0 rounded-base px-2 py-1 text-base-xs font-medium text-amber-900 underline decoration-amber-300 transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+        >
+          Review details
+        </button>
+      )}
       <button
         type="button"
         onClick={onResume}

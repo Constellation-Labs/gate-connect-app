@@ -22,6 +22,9 @@ pub mod preferences;
 pub mod primitives;
 pub mod provider;
 pub mod proxy;
+/// Per-entry record of what the last routing restore did, so an interrupted one
+/// can be explained and not merely retried.
+pub mod recovery;
 pub mod registry;
 /// What a tool is *doing*, as opposed to what its config says. Kept separate
 /// from [`registry::Status`] on purpose - see the module docs.

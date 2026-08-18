@@ -1,6 +1,8 @@
 import { useRef } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
+import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
+import type { PillTone } from "./Modal";
 import {
   Modal,
   ModalCheckbox,
@@ -716,5 +718,96 @@ export function CollectedDataLists({
         </ul>
       </Wrapper>
     </>
+  );
+}
+
+/** What each outcome means, in the user's words rather than the enum's. */
+const RESTORE_OUTCOME_TEXT: Record<
+  RestoreOutcome,
+  { label: string; detail: string; tone: PillTone }
+> = {
+  pending: {
+    label: "Not reached",
+    detail: "Gate stopped before getting to this one.",
+    tone: "amber",
+  },
+  restored: {
+    label: "Done",
+    detail: "Configuration written. Whether it is routing is shown on its row.",
+    tone: "green",
+  },
+  write_failed: {
+    label: "Failed",
+    detail: "Gate could not write the configuration. Resuming tries this one again.",
+    tone: "amber",
+  },
+  not_installed: {
+    label: "Skipped",
+    detail: "No longer installed, so there was nothing to restore.",
+    tone: "neutral",
+  },
+  unknown: {
+    label: "Skipped",
+    detail: "Gate does not recognise this one any more.",
+    tone: "neutral",
+  },
+  deferred_signed_out: {
+    label: "Waiting",
+    detail: "Nothing was attempted: there is no account to point it at yet.",
+    tone: "amber",
+  },
+};
+
+/**
+ * What the last restore did, entry by entry.
+ *
+ * **Read-only, and deliberately so.** AG-570 requires that reviewing details "does
+ * not change state" - so the only action closes it, and nothing here can be
+ * clicked into a retry. Resuming is the banner's job.
+ *
+ * There are no credentials, paths or request content in a journal entry: it holds
+ * slugs, display names, an outcome from a closed set, and a timestamp. That is what
+ * makes it safe to show in full.
+ *
+ * **Provisional layout.** The Figma draws no details view (AG-569 is To Do).
+ */
+export function RestoreDetailsDialog({
+  journal,
+  onClose,
+}: {
+  journal: RestoreJournal;
+  onClose: () => void;
+}) {
+  const done = journal.entries.filter((e) => e.outcome === "restored").length;
+  return (
+    <Modal
+      tone="neutral"
+      icon="info"
+      title="What happened to routing"
+      subtitle={
+        journal.requested_routing_on
+          ? `Gate was turning routing back on. ${done} of ${journal.entries.length} finished.`
+          : `Gate was turning routing off. ${done} of ${journal.entries.length} finished.`
+      }
+      primary={{ label: "Close", onClick: onClose }}
+      onDismiss={onClose}
+    >
+      {journal.entries.length === 0 ? (
+        <ModalNote>Nothing was recorded for this attempt.</ModalNote>
+      ) : (
+        journal.entries.map((entry) => {
+          const text = RESTORE_OUTCOME_TEXT[entry.outcome];
+          return (
+            <ModalSubject
+              key={`${entry.kind}:${entry.slug}`}
+              icon="cube"
+              title={entry.name}
+              description={text.detail}
+              pill={{ label: text.label, tone: text.tone }}
+            />
+          );
+        })
+      )}
+    </Modal>
   );
 }
