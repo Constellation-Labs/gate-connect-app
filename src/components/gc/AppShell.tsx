@@ -29,6 +29,8 @@ export function AppShell({
   apps,
   onSelectApp,
   onToggleApp,
+  onRefreshApps,
+  refreshingApps,
   notice,
   dialog,
   children,
@@ -46,6 +48,10 @@ export function AppShell({
   apps: SidebarApp[];
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
+  /** Re-run tool detection. Passed straight through to the sidebar, which owns
+   * the control. */
+  onRefreshApps?: () => void;
+  refreshingApps?: boolean;
   /**
    * A failure worth interrupting for, shown under the banners. Sits here rather
    * than inside a pane so it survives navigation and reads the same whichever
@@ -90,6 +96,8 @@ export function AppShell({
           apps={apps}
           onSelectApp={onSelectApp}
           onToggleApp={onToggleApp}
+          onRefresh={onRefreshApps}
+          refreshing={refreshingApps}
         />
         {children}
       </div>

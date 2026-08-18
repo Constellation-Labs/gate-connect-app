@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import type { Account, OAuthStatus, Org, ProxyState, ProviderState, Tool } from "./lib/api";
+import type {
+  Account,
+  OAuthStatus,
+  Org,
+  Preferences,
+  ProxyState,
+  ProviderState,
+  Tool,
+  Verdict,
+} from "./lib/api";
 import {
   getAccount,
   launchAtLoginStatus,
@@ -12,6 +21,10 @@ import {
   proxyEnable,
   proxyStatus,
   proxyTrustCa,
+  routingVerdicts,
+  getPreferences,
+  setRoutingHealthNotifications,
+  setShareDiagnostics,
 } from "./lib/api";
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
@@ -23,6 +36,7 @@ import { useWindowReopen } from "./lib/useWindowReopen";
 import { classifyError } from "./lib/errors";
 import type { ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
+import { verdictStatus, verdictsBySlug } from "./lib/verdict";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import {
@@ -91,19 +105,34 @@ import type { Platform } from "./lib/platform";
  * behind a prompt, then re-reads backend truth. Backend state pushes here too,
  * so a change made elsewhere repaints this window.
  *
+ * Status lines come from `routing_verdicts`, not from `Tool.status`: a config
+ * file Gate wrote is not evidence that anything is using it, so the sidebar asks
+ * whether the relay answers and whether the tool's process predates the last
+ * write. Switches still read intent off `Tool.status`, which is the split
+ * `lib/groups.ts` documents. A row with no verdict yet says it is checking
+ * rather than borrowing the config's answer.
+ *
  * Settings and org switching go through `useSettingsActions`. Rows with no
  * backend behind them are passed no handler, which omits the control rather than
  * leaving a dead one on screen.
  *
  * The Overview reads `GET /v1/me/activity` through `useActivity`. Sections the
- * gateway declines are named by `ActivityGaps` rather than drawn as zeros.
+ * gateway declines are named by `ActivityGaps` rather than drawn as zeros. It
+ * answers a different question from the verdict sweep: the sweep establishes
+ * that a route is live, the endpoint reports what was sent through it.
  *
- * Still inert: per-app metrics, which have no endpoint, and the Gate model
- * catalogue, which the picker draws empty. Disconnect and reset wait on a
- * first-run screen to return to.
+ * Still inert: per-app metrics, whose own endpoint is AG-574's work, and the
+ * Gate model catalogue, which the picker draws empty. Disconnect and reset wait
+ * on a first-run screen to return to.
  */
 export function NewUiApp() {
   const [tools, setTools] = useState<Tool[]>([]);
+  /** Observed routing, by slug. Separate from `tools` because it answers a
+   * different question: `tools` is what the config says, this is what the
+   * config is actually doing. An absent entry means the sweep has not
+   * answered yet, which `verdictStatus` renders as "checking" rather than
+   * guessing from the config. */
+  const [verdicts, setVerdicts] = useState<Map<string, Verdict>>(new Map());
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
@@ -113,8 +142,24 @@ export function NewUiApp() {
   const [loaded, setLoaded] = useState(false);
   const [version, setVersion] = useState("");
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  /**
+   * Whether each read *failed*, kept apart from the value it failed to produce.
+   *
+   * `launch?.enabled ?? false` used to collapse "off" and "could not be read"
+   * into one Off switch, which is a claim about the user's setting they cannot
+   * distinguish from one they made. Settings now renders Unavailable + Retry for
+   * these instead. Same rule as the routing verdict and the zeroed metrics: an
+   * unknown is never rendered as a value.
+   */
+  const [launchAtLoginUnavailable, setLaunchAtLoginUnavailable] = useState(false);
+  const [prefs, setPrefs] = useState<Preferences | null>(null);
+  const [prefsUnavailable, setPrefsUnavailable] = useState(false);
   const [view, setView] = useState<SidebarView>({ kind: "overview" });
   const [menuOpen, setMenuOpen] = useState(false);
+  /** A manual scan is in flight. Separate from `routingBusy`, which is about a
+   * write: refusing to re-read while a toggle is mid-flight would be the wrong
+   * coupling, and a scan changes nothing on disk. */
+  const [refreshing, setRefreshing] = useState(false);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
@@ -160,6 +205,26 @@ export function NewUiApp() {
     setInstallId(null);
   }, [credential]);
 
+  const loadLaunchAtLogin = useCallback(async () => {
+    const launch = await launchAtLoginStatus().catch(() => null);
+    setLaunchAtLoginUnavailable(launch === null);
+    if (launch) setLaunchAtLogin(launch.enabled);
+  }, []);
+
+  const loadPreferences = useCallback(async () => {
+    const p = await getPreferences().catch(() => null);
+    setPrefsUnavailable(p === null);
+    if (p) setPrefs(p);
+  }, []);
+
+  /** The routing sweep, kept separate from {@link refresh} because it is the one
+   * probe that costs network I/O and a process walk. Callers that changed a
+   * tool's config re-run it; callers that only repainted do not have to. */
+  const refreshVerdicts = useCallback(async () => {
+    const v = await routingVerdicts().catch(() => null);
+    if (v) setVerdicts(verdictsBySlug(v));
+  }, []);
+
   const refresh = useCallback(async () => {
     const [t, px] = await Promise.all([
       listTools().catch(() => null),
@@ -167,7 +232,22 @@ export function NewUiApp() {
     ]);
     if (t) setTools(t);
     if (px) setProxy(px);
-  }, []);
+    // The engine coming up or going down changes every verdict, since the relay
+    // health check is shared - so this follows the snapshot rather than waiting
+    // for the next poll.
+    void refreshVerdicts();
+  }, [refreshVerdicts]);
+
+  /** Re-run detection because the user asked. Same reads as the event-driven
+   * `refresh`, plus a flag so the control can refuse a second click. */
+  const refreshNow = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
 
   // The engine changes state without us asking: a CLI toggle, the startup
   // auto-enable, another window. Repaint from the event rather than leaving a
@@ -183,22 +263,23 @@ export function NewUiApp() {
 
   useEffect(() => {
     void (async () => {
-      const [t, p, px, acct, oauthState, v, launch] = await Promise.all([
+      const [t, p, px, acct, oauthState, v] = await Promise.all([
         listTools().catch(() => [] as Tool[]),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
         getAccount().catch(() => null),
         oauthStatus().catch(() => null),
         getVersion().catch(() => ""),
-        launchAtLoginStatus().catch(() => null),
       ]);
+      void loadLaunchAtLogin();
+      void loadPreferences();
       setTools(t);
+      void refreshVerdicts();
       setProviders(p);
       setProxy(px);
       setAccount(acct);
       setOAuth(oauthState);
       setVersion(v);
-      setLaunchAtLogin(launch?.enabled ?? false);
       setLoaded(true);
     })();
   }, []);
@@ -226,6 +307,9 @@ export function NewUiApp() {
     onSnapshot: ({ tools: t, proxy: px }) => {
       setTools(t);
       setProxy(px);
+      // A write landed, so the verdicts are stale: the tool may now need a
+      // reopen, and the relay may have been auto-enabled by the connect.
+      void refreshVerdicts();
     },
     onError: (e) => {
       // `connect` covers both directions: the remedy copy is the same either way
@@ -341,13 +425,15 @@ export function NewUiApp() {
         .map((t) => ({
           slug: t.slug,
           name: t.name,
-          status: toolStatus(t),
+          status: verdictStatus(verdicts.get(t.slug), {
+            writeFailed: routing.writeFailures.has(t.slug),
+          }),
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
           on: t.status.kind === "connected" || t.status.kind === "drifted",
           busy: routingBusy,
         })),
-    [tools, routingBusy],
+    [tools, verdicts, routing.writeFailures, routingBusy],
   );
 
   const families = useMemo<Family[]>(
@@ -360,9 +446,11 @@ export function NewUiApp() {
         // the family switch on while everything it governs is off, and clicking
         // it would ask to turn off a set already off - leaving it stuck on.
         on: g.cascadeDesired > 0,
-        members: g.members.map(memberToFamilyMember),
+        members: g.members.map((m) =>
+          memberToFamilyMember(m, verdicts, routing.writeFailures),
+        ),
       })),
-    [groups],
+    [groups, verdicts, routing.writeFailures],
   );
 
   const noop = useCallback(() => {}, []);
@@ -418,6 +506,10 @@ export function NewUiApp() {
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: account?.has_api_key ? `sk-gw${"*".repeat(20)}` : "Not set",
         launchAtLogin,
+        launchAtLoginUnavailable,
+        routingHealthNotifications: prefs?.routing_health_notifications,
+        shareDiagnostics: prefs?.share_diagnostics,
+        preferencesUnavailable: prefsUnavailable,
         version: version ? `v${version}` : "-",
         updateNote: updateNoteFor(update),
         onCopyInstallId: currentInstallId ? () => void settings.copyText(currentInstallId) : noop,
@@ -430,6 +522,31 @@ export function NewUiApp() {
         onDisconnect: account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
         onReviewReset: settings.openReset,
         onToggleLaunchAtLogin: () => void settings.toggleLaunchAtLogin(),
+        onRetryLaunchAtLogin: () => void loadLaunchAtLogin(),
+        // Optimistic then re-read: the switch has to move on click, and the
+        // re-read is what makes a failed write show up rather than leaving the
+        // UI asserting a value the file does not hold.
+        onToggleRoutingHealthNotifications: () => {
+          const next = !(prefs?.routing_health_notifications ?? true);
+          setPrefs((p) => (p ? { ...p, routing_health_notifications: next } : p));
+          void setRoutingHealthNotifications(next)
+            .catch((e) => setActionError(classifyError(e, "generic")))
+            .finally(() => void loadPreferences());
+        },
+        onToggleShareDiagnostics: () => {
+          const next = !(prefs?.share_diagnostics ?? true);
+          setPrefs((p) => (p ? { ...p, share_diagnostics: next } : p));
+          void setShareDiagnostics(next)
+            .catch((e) => setActionError(classifyError(e, "generic")))
+            .finally(() => void loadPreferences());
+        },
+        onRetryPreferences: () => void loadPreferences(),
+        onOpenDocs: () => void openExternal(GATE_DOCS_URL),
+        // No `onContactSupport`, so the row is omitted: there is no support URL
+        // anywhere in the app to open, and a button that opens an invented
+        // address is worse than an absent one. The topnav's Contact support
+        // entry is dead for the same reason.
+
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
         // Explicit, so this one reports back: silence on a button the user just
@@ -450,6 +567,11 @@ export function NewUiApp() {
     [
       account,
       launchAtLogin,
+      launchAtLoginUnavailable,
+      prefs,
+      prefsUnavailable,
+      loadLaunchAtLogin,
+      loadPreferences,
       version,
       currentInstallId,
       showDiagnostics,
@@ -587,6 +709,8 @@ export function NewUiApp() {
       onNavigate={setView}
       apps={apps}
       onSelectApp={(slug) => setView({ kind: "app", slug })}
+      onRefreshApps={() => void refreshNow()}
+      refreshingApps={refreshing}
       notice={
         actionError ? (
           <ErrorBanner
@@ -602,6 +726,10 @@ export function NewUiApp() {
           <ReviewConfigDialog
             app={{ name: routing.prompt.name }}
             existingConfig={routing.prompt.existingConfig}
+            // The relay is what a config-routed tool gets pointed at. Null
+            // before a port has been bound, and the dialog omits the row rather
+            // than inventing an address.
+            gateRoute={proxy?.relay_base_url}
             onKeep={() => routing.resolvePrompt(false)}
             onReplace={() => routing.resolvePrompt(true)}
           />
@@ -906,26 +1034,27 @@ function initialsOf(name: string): string {
   return letters.toUpperCase();
 }
 
-function toolStatus(tool: Tool): AppStatus {
-  switch (tool.status.kind) {
-    case "connected":
-      return { kind: "protected" };
-    case "drifted":
-      return { kind: "drifted" };
-    default:
-      // `detected` and `error` both mean "installed, not carrying traffic".
-      // The error message has nowhere to go in the sidebar row; the per-app
-      // pane is where it belongs once that is wired.
-      return { kind: "not-protected" };
-  }
-}
-
-function memberToFamilyMember(m: GroupMember): Family["members"][number] {
-  const status: AppStatus = m.routed
-    ? { kind: "protected" }
-    : m.attention === "drifted"
-      ? { kind: "drifted" }
-      : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
+/**
+ * AG-562 requires every surface to show the same status, so a config member here
+ * reads the same verdict the sidebar row does rather than deriving its own line.
+ *
+ * Proxy members keep the `routed` derivation, and that is not a shortcut left
+ * undone: `routing_verdicts` covers registry integrations, and a catalog domain
+ * routes through the engine rather than the relay, so its observation is
+ * certificate trust plus the master switch - which is exactly what `routed`
+ * already folds in.
+ */
+function memberToFamilyMember(
+  m: GroupMember,
+  verdicts: Map<string, Verdict>,
+  writeFailures: ReadonlySet<string>,
+): Family["members"][number] {
+  const status: AppStatus =
+    m.kind === "config"
+      ? verdictStatus(verdicts.get(m.key), { writeFailed: writeFailures.has(m.key) })
+      : m.routed
+        ? { kind: "protected" }
+        : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
   return { key: m.key, name: m.name, kind: m.kind, status, on: m.desired };
 }
 

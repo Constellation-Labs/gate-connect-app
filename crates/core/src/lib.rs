@@ -19,10 +19,15 @@ pub mod env;
 pub mod keychain;
 pub mod oauth;
 pub mod org;
+/// Non-secret user choices from Settings, defaulting to on.
+pub mod preferences;
 pub mod primitives;
 pub mod provider;
 pub mod proxy;
 pub mod registry;
+/// What a tool is *doing*, as opposed to what its config says. Kept separate
+/// from [`registry::Status`] on purpose - see the module docs.
+pub mod routing_health;
 
 pub mod integrations {
     pub mod claude_code;

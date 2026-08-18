@@ -135,9 +135,10 @@ Consequences worth keeping in mind:
 - **This plan is the shared roadmap.** "Still to do" below is the queue that
   downstream PRs draw from; keep it current rather than tracking work elsewhere.
 - **Green CI here means less than it looks**, though less so than it did.
-  Routing and Settings are wired and carry their own e2e specs
-  (`new-ui-routing.spec.ts`, `new-ui-settings.spec.ts`), which opt into the new
-  shell per-test through localStorage. Everything listed under "Still to do" is
+  Routing, Settings and the routing verdict are wired and carry their own e2e
+  specs (`new-ui-routing.spec.ts`, `new-ui-settings.spec.ts`,
+  `new-ui-verdict.spec.ts`), which opt into the new shell per-test through
+  localStorage. Everything listed under "Still to do" is
   still covered by nothing.
 
 ## How the designer marks readiness (from Chad, 2026-08-14)
@@ -653,10 +654,46 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    whether the panel carries a search field is unknown (omitted), and the drawn
    ids render in the UI face rather than mono. Mono was used, since CLAUDE.md
    names model ids explicitly and every other identifier in the design is mono.
-6. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
+6. **Truthful routing status (AG-562): DONE.** Status lines no longer come from
+   `Tool.status`. `crates/core/src/routing_health.rs` computes a verdict from
+   three inputs - the integration's config state, a new loopback health check
+   that the relay answers itself (`/__gate/health`, 204, never forwarded), and
+   whether the tool's process predates the last routing change - and
+   `routing_verdicts` reports it per tool. `lib/verdict.ts` maps that onto the
+   four phrases the design draws, carrying the ticket's reason in the grey suffix
+   the design already has a slot for.
+
+   `Status` was deliberately **not** rewritten. It describes config on disk and is
+   threaded through every integration, `provider.rs` and their tests; the verdict
+   is a layer on top, which is also what keeps intent and observation separate one
+   level below where `groups.ts` documents the same rule.
+
+   Three things this turned up. The probes run **once per sweep**, not per tool -
+   they ask about shared infrastructure (the relay port, the account's session), so
+   per-tool calls would let two rows in one refresh disagree. `SessionProbe::Unavailable`
+   must map to `Verification failed` rather than `Access problem`, or an offline
+   machine accuses a perfectly good credential. And a tool with no known process
+   name (OpenClaw, Hermes) has *unobservable* staleness rather than none, so it can
+   still read Protected but will never be told to reopen.
+
+   **Two conflicts raised rather than resolved in code.** AG-562 specifies the
+   words On / Off / Needs attention; the Figma draws Protected / Not protected /
+   Config drifted / Not routed. The design won the coloured phrase and the ticket
+   won the reason, because the Figma is the source of truth for copy - the
+   remaining question is for the designer on AG-561. Separately, AG-564/566/570/596
+   all assert Gate "does not restore user-authored values", but
+   `integrations/claude_code.rs` saves `previousEnv` and restores it on disconnect,
+   and `groups.ts:312` documents that behaviour too. The code is right; the copy
+   was not written.
+
+   What this does **not** do: prove a tool sent traffic. Nothing attributes
+   requests to a tool. That needs a per-tool segment in the relay path
+   (`/<tool>/<domain-slug>` instead of `/<domain-slug>`), which would also give
+   AG-574 its per-tool counts.
+7. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
    pending the 24-hour endpoint. Open question 7 (whether `total` double-counts)
    should be settled in that response shape, not in the chart.
-7. **Retire the popover.** `App.tsx`, `screens/`, `gc/ui.tsx`, the `gc.*`
+8. **Retire the popover.** `App.tsx`, `screens/`, `gc/ui.tsx`, the `gc.*`
    palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together.
    Item 1 was the blocker and is done, so what remains is repointing the e2e
    suite at the new shell and deleting; the popover's own specs go with it.
@@ -683,3 +720,107 @@ and the reason is recorded at the component:
   removed from the keychain. That describes Reset, a separate row on the same
   screen. Implemented as ending the session, and the body copy corrected, rather
   than shipping two destructive actions that claim the same consequences.
+
+## Drift repair (AG-568)
+
+The review dialog and the drift *gate* were already built (`ReviewConfigDialog`,
+`useRouting.ts` refusing to adopt a drifted config silently). Two things were
+missing, and one of them was a correctness bug.
+
+**A failed write left the row lying.** `connect_tool` failing sent the error to a
+transient banner, and the status line - the thing next to the switch the user
+just clicked - carried on describing the state from before the click. It was
+*true*, since nothing was written, and useless. `useRouting` now remembers which
+slugs failed (`writeFailures`), and the row reads "Configuration update failed".
+
+That state is deliberately **not** a sixth `routing_health::Reason`. The Rust
+reasons are derived from evidence - a config on disk, a relay that answers, a
+process older than the last change - and a failed write leaves none of that to
+probe. It is session state, cleared the moment a write for that slug succeeds, and
+it arrives at `verdictStatus` as a separate argument for exactly that reason.
+
+Worth noting: **AG-562's list of five reasons is incomplete.** AG-564 and AG-568
+both name "Configuration update failed" as a status. Raised on those tickets
+rather than smuggled into the enum.
+
+**The dialog showed what Gate found but not what it would write.** Approving an
+overwrite without seeing the replacement is approving a value you cannot see, on
+the one screen where the user hands their tool's routing to us. `ProxyState`
+gained `relay_base_url` (non-secret - it is already written verbatim into every
+config-routed tool's own file), and the dialog shows it. With no relay port bound
+the row is omitted rather than guessed at.
+
+Still open on the ticket: the per-failure action set ("Retry, Use tool defaults,
+Documentation, Diagnostics, or Contact support based on the failure"). The sidebar
+row has a switch and no room for a second control, and the switch *is* the retry -
+but a documentation or diagnostics link per failure needs the per-app pane, and
+Contact support needs a URL that does not exist. Also open: "last completed check
+or routed request" in the summary, which needs the activity endpoint.
+## Settings sections and preferences (AG-594)
+
+There was **no preferences store anywhere**. `account.rs` was the only config, and
+it holds a credential and an identity, so the notification and diagnostics
+choices had nowhere to live - which is why `SettingsPane` had a `notifications`
+prop that the shell never passed. New `crates/core/src/preferences.rs`: a small
+JSON file next to `account.json`, deliberately separate so a preference change
+does not rewrite the file holding the key prefix, and so clearing the account on
+reset does not take the preferences with it.
+
+**Every preference defaults to on, and a missing field loads as on.** That is
+what lets a switch read On before anything has been written, rather than showing
+Off and inviting the user to "fix" a setting that was never off.
+
+Sections went from 6 to the 8 the criteria name that can be built: Device,
+Account, Connection, Startup, Notifications, Diagnostics, About, Help, plus the
+Danger zone. Notifications and Diagnostics moved out of Startup and About
+respectively.
+
+### Rows deliberately not built, and why
+
+- **Blocked-event, flagged-event and sound switches.** The criteria list four
+  notification switches. The app fires exactly two notifications, both about
+  routing (an expired session; a quit that could not put a tool back), and both
+  now ride the one `Routing health` switch. Blocked and flagged notifications
+  need the live security-event feed (AG-578), which does not exist. A switch for
+  an event that cannot arrive tells the user they turned something off.
+- **The permission row.** `tauri-plugin-notification` hardcodes
+  `PermissionState::Granted` on desktop - `desktop.rs` returns it unconditionally,
+  the state is only real on mobile. A permission row built on that would report
+  "granted" on a Mac with notifications denied. Real detection needs per-platform
+  native work (UNUserNotificationCenter on macOS).
+- **Contact support.** There is no support URL anywhere in the app. `GATE_DOCS_URL`
+  exists, so Documentation is wired; support is omitted rather than pointed at an
+  invented address. The topnav's Contact support entry is dead for the same reason
+  (AG-598).
+- **Send diagnostics now, and the diagnostic reference.** No upload path exists;
+  that is AG-603.
+
+### Unavailable rows
+
+`SettingsRow` gained `unavailable: { onRetry }`. The shell now tracks *whether a
+read failed* separately from the value it failed to produce:
+`launch?.enabled ?? false` collapsed "off" and "could not be read" into one Off
+switch, which is a claim about the user's setting they cannot distinguish from one
+they made. Wired for launch-at-login and for the preferences pair, which share one
+read and so fail together - a failed preferences read leaves launch-at-login's
+switch alone, and a test pins that.
+## Refreshing the inventory (AG-558)
+
+Detection ran on backend events only, so a tool installed while the window was
+open stayed invisible until something unrelated repainted the sidebar. The
+"Protected apps" eyebrow gained a small refresh control that re-reads tools and
+proxy state and re-runs the routing sweep.
+
+Provisional: the Figma draws no refresh control. It is 20px in a 12px eyebrow with
+an `aria-label` rather than visible text, and no spinner - the scan is fast enough
+that one would only flash, so `aria-busy` plus the disabled state is the signal.
+`refreshing` is deliberately separate from `routingBusy`: that one guards a
+*write*, and refusing to re-read during a toggle would be the wrong coupling.
+
+The rest of AG-558 is not buildable and is documented on the ticket: every
+integration returns `requires_upstream_credential() == false`, so "installed but
+unavailable" cannot occur; "installed but unsupported" needs detection of tools
+Gate has no integration for; "incomplete installation" needs per-integration
+probes; and the per-entry request counts need per-*tool* attribution, which the
+in-flight `feat/activity-overview-client` does not provide (it is per-installation
+- `activity.ts` has no tool or slug in it).

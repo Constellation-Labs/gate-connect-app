@@ -179,6 +179,11 @@ export interface ProxyState {
    * environment variables *are* the system proxy and cannot be declined
    * without turning routing off - so the switch must not render there. */
   env_export_separable: boolean;
+  /** Loopback base URL config-routed tools are pointed at; null before a relay
+   * port has ever been bound. Non-secret - it is already written verbatim into
+   * each tool's own config file. The drift review shows it, because approving an
+   * overwrite means seeing what it writes. */
+  relay_base_url: string | null;
   domains: ProxyDomain[];
 }
 
@@ -295,6 +300,44 @@ export const runningAgentsCount = () => invoke<number>("running_agents_count");
  * healthy restored session (agents launched after routing) stays quiet. */
 export const staleAgentsCount = () => invoke<number>("stale_agents_count");
 
+/** Why a tool is not verifiably routing. Closed set, mirroring
+ * `routing_health::Reason` - a sixth value would need a next action and a
+ * recovery path to go with it. */
+export type VerdictReason =
+  | "configuration_changed"
+  | "reopen_required"
+  | "connection_problem"
+  | "access_problem"
+  | "verification_failed";
+
+/** The one action offered for a reason. One-to-one with {@link VerdictReason};
+ * the backend derives it so the pair cannot drift apart. */
+export type VerdictNextAction =
+  | "apply_gate_configuration"
+  | "reopen_tool"
+  | "reconnect"
+  | "sign_in"
+  | "retry_check";
+
+/** What one tool is *doing*, as opposed to what its config says
+ * ({@link Tool.status}) or what the user asked for. `reason` and `next_action`
+ * are set only when `state` is `needs_attention`. */
+export interface Verdict {
+  slug: string;
+  state: "not_installed" | "on" | "off" | "needs_attention";
+  reason: VerdictReason | null;
+  next_action: VerdictNextAction | null;
+}
+
+/** What every config-routed tool is actually doing: config state, plus a
+ * loopback check that the relay answers, plus whether the tool's process
+ * predates the last routing change.
+ *
+ * Separate from {@link listTools} because this does network I/O and walks the
+ * process table, so it must not sit on a render path. It does **not** prove the
+ * tool sent traffic - nothing attributes requests to a tool today. */
+export const routingVerdicts = () => invoke<Verdict[]>("routing_verdicts");
+
 /** One running AI tool. No command line by design: argv on these routinely
  * holds prompts, paths and occasionally a key, and this list is built to be
  * pasted into a support thread. */
@@ -347,6 +390,31 @@ export const pendingQuitTools = () => invoke<string[] | null>("pending_quit_tool
  * untouched so the next startup restore reapplies them. Fires the "restart
  * your CLI agents" system notification. */
 export const disconnectToolsForQuit = () => invoke<void>("disconnect_tools_for_quit");
+
+/** Non-secret Settings choices. Every field defaults to `true`, and an absent
+ * field in the stored file loads as `true` - so a switch reads On before anything
+ * has ever been written, which is what lets Settings show a truthful default.
+ *
+ * Only the preferences that currently gate something are here. Per-category
+ * security-event notifications and a sound toggle belong with the live event feed,
+ * which does not exist yet; a switch that gates nothing would tell the user they
+ * had turned something off. */
+export interface Preferences {
+  /** Native notifications about routing itself - an expired session, a quit that
+   * could not put a tool back. The two the app actually fires. */
+  routing_health_notifications: boolean;
+  /** Whether Gate Connect may send diagnostic data. Onboarding records the first
+   * answer; Settings changes it after. Nothing is uploaded by setting it. */
+  share_diagnostics: boolean;
+}
+
+export const getPreferences = () => invoke<Preferences>("get_preferences");
+
+export const setRoutingHealthNotifications = (enabled: boolean) =>
+  invoke<void>("set_routing_health_notifications", { enabled });
+
+export const setShareDiagnostics = (enabled: boolean) =>
+  invoke<void>("set_share_diagnostics", { enabled });
 
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);
