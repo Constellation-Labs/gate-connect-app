@@ -1328,6 +1328,16 @@ async fn resume_restore() -> Result<gate_connect_core::provider::PendingRestore,
     .map_err(|e| format!("resume restore join error: {e}"))?
 }
 
+/// What the last routing restore did, entry by entry.
+///
+/// Read-only, and `None` when there is nothing to explain - a restore that
+/// completed clears its journal. Never fails: a journal that cannot be read is an
+/// explanation lost, not a recovery blocked, so an unreadable one reads as absent.
+#[tauri::command]
+fn restore_journal() -> Option<gate_connect_core::recovery::RestoreJournal> {
+    gate_connect_core::recovery::load()
+}
+
 /// One running AI tool, as the diagnostics report lists it.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[derive(Serialize)]
@@ -1702,6 +1712,7 @@ pub fn run() {
                     routing_verdicts,
                     pending_restore,
                     resume_restore,
+                    restore_journal,
                     running_agents_count,
                     stale_agents_count,
                     running_agents,

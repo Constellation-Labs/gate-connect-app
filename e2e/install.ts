@@ -325,6 +325,11 @@ export function installFakeTauri(state: BackendState): void {
       providers: [...state.pendingRestore.providers],
       tools: [...state.pendingRestore.tools],
     }),
+    restore_journal: () =>
+      state.restoreJournal && {
+        ...state.restoreJournal,
+        entries: state.restoreJournal.entries.map((e) => ({ ...e })),
+      },
     resume_restore: () => {
       // Mirrors restore_all: entries that fail stay recorded, the rest clear.
       const keep = (e: { slug: string }) => state.pendingResumeKeeps.includes(e.slug);

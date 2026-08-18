@@ -396,6 +396,39 @@ export const pendingRestore = () => invoke<PendingRestore>("pending_restore");
  * interesting case and must not read as done. */
 export const resumeRestore = () => invoke<PendingRestore>("resume_restore");
 
+/** What a restore did to one entry on its last attempt. Closed set, mirroring
+ * `recovery::Outcome`, and every member comes from the restore's own control flow
+ * rather than from matching an error message. */
+export type RestoreOutcome =
+  | "pending"
+  | "restored"
+  | "write_failed"
+  | "not_installed"
+  | "unknown"
+  | "deferred_signed_out";
+
+export interface RestoreRecord {
+  slug: string;
+  name: string;
+  kind: "provider" | "tool";
+  outcome: RestoreOutcome;
+  /** Unix seconds; 0 when the clock could not be read, which the UI shows as
+   * unknown rather than as 1970. */
+  at_unix: number;
+}
+
+/** The last restore, entry by entry. Explanation only - the snapshots behind
+ * {@link pendingRestore} are what a resume actually works from. */
+export interface RestoreJournal {
+  updated_unix: number;
+  requested_routing_on: boolean;
+  entries: RestoreRecord[];
+}
+
+/** What the last restore did, or null when there is nothing to explain: a restore
+ * that completed clears its journal. */
+export const restoreJournal = () => invoke<RestoreJournal | null>("restore_journal");
+
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);
  * `message` is the raw error chain - it stays on this machine, only the

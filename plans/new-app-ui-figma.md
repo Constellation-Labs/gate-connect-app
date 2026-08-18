@@ -707,3 +707,51 @@ and the reason is recorded at the component:
   removed from the keychain. That describes Reset, a separate row on the same
   screen. Implemented as ending the session, and the body copy corrected, rather
   than shipping two destructive actions that claim the same consequences.
+
+## Interrupted routing, explained and resumable (AG-570)
+
+Three changes, in three PRs.
+
+**1. The window shell had no backend-error drain.** `drainBackendErrors` existed only
+in `App.tsx`, so a failure buffered Rust-side went to telemetry and nowhere else -
+including `report_backend_error("provider_restore", ...)`, which fires on both
+restore passes in `proxy_enable`. Routing could fail to come back and the window
+said nothing. `forwardBackendErrors` moved to `lib/backendErrors.ts` and both shells
+import it; the popover's behaviour is unchanged.
+
+**2. The snapshots were already a record of unfinished work.** `restore_all`
+re-attempts each recorded entry, keeps failures in the file, and clears it only once
+everything is back. Nothing read them for display. `provider::pending_restore()`
+reports what they owe, `resume_restore` calls `restore_all` and returns **what is
+still outstanding** rather than unit, and `RecoveryBanner` names it with Resume now
+and Finish later. Amber, not red: nothing is lost, and resuming retries exactly what
+failed.
+
+**3. A per-entry journal** (`crates/core/src/recovery.rs`) records what the restore
+*did*, as opposed to what is left. Written as it goes and seeded before the first
+attempt, because an interrupted operation is the one worth describing and a journal
+written on completion would be missing for every case it serves. `RestoreDetailsDialog`
+shows it read-only - AG-570 requires that reviewing changes no state.
+
+Details worth keeping:
+
+- **One journal for the whole restore.** Both passes seed it up front; two writers
+  would clobber each other's file, which they briefly did.
+- **Outcomes come from the control flow, never from an error message.** The restore
+  already branches on not-installed, unknown-slug and signed-out, so classifying
+  those costs nothing and cannot drift.
+- **Dropped entries owe nothing.** `NotInstalled` and `Unknown` are settled, not
+  outstanding; reporting them would ask for action nobody can take.
+- **A journal is an explanation, never a blocker.** A missing or corrupt one reads
+  as absent and the restore still runs. Its fields are `#[serde(default)]`-backed
+  for the same reason - a unit test caught that they were not, which would have
+  silently dropped the explanation on any older file.
+- **Known shortcoming:** only the tool pass can report `DeferredSignedOut`.
+  `enable_skipping` has no signed-out branch, so a provider that cannot re-enable
+  for want of an account lands on `WriteFailed`. Pinned by a test so it stays
+  visible.
+
+Still open: the recovery action lives in the shell banner, not the tray; per-tool
+"last verified route" and "check result" in the summary would need the verdict sweep
+to persist its results; and item 8's default-writing result list exists for the quit
+path only (#162), not yet for sign-out and reset.

@@ -321,3 +321,88 @@ test.describe("new UI: an interrupted restore", () => {
     await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
   });
 });
+
+/**
+ * AG-570's "Review details": what the restore did, entry by entry, read-only.
+ *
+ * The criterion is explicit that reviewing "does not change state", so the only
+ * action closes it - and the journal holds slugs, display names, outcomes and
+ * timestamps, with no credentials or request content, which is what makes showing
+ * it in full safe.
+ */
+test.describe("new UI: reviewing an interrupted restore", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  const withJournal = {
+    proxy: { running: true, ca_trusted: true },
+    pendingRestore: {
+      providers: [] as { slug: string; name: string }[],
+      tools: [{ slug: "opencode", name: "OpenCode" }],
+    },
+    restoreJournal: {
+      updated_unix: 1_760_000_000,
+      requested_routing_on: true,
+      entries: [
+        {
+          slug: "codex",
+          name: "Codex",
+          kind: "tool" as const,
+          outcome: "restored" as const,
+          at_unix: 1_760_000_000,
+        },
+        {
+          slug: "opencode",
+          name: "OpenCode",
+          kind: "tool" as const,
+          outcome: "write_failed" as const,
+          at_unix: 1_760_000_001,
+        },
+        {
+          slug: "hermes",
+          name: "Hermes",
+          kind: "tool" as const,
+          outcome: "pending" as const,
+          at_unix: 1_760_000_002,
+        },
+      ],
+    },
+  };
+
+  test("it accounts for every entry, including the ones never reached", async ({ boot }) => {
+    const app = await boot(withJournal);
+
+    await app.page.getByRole("button", { name: "Review details" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("Codex")).toBeVisible();
+    await expect(dialog.getByText("Done")).toBeVisible();
+    await expect(dialog.getByText("Failed")).toBeVisible();
+    // The interruption is the case this exists for: an entry never attempted must
+    // read as not reached, not as fine and not as failed.
+    await expect(dialog.getByText("Not reached")).toBeVisible();
+  });
+
+  test("reviewing changes nothing", async ({ boot }) => {
+    const app = await boot(withJournal);
+
+    await app.page.getByRole("button", { name: "Review details" }).click();
+    await app.page.getByRole("button", { name: "Close" }).click();
+
+    expect(await app.lastCall("resume_restore")).toBeNull();
+    expect(await app.lastCall("connect_tool")).toBeNull();
+    // Still outstanding, so the notice is still there.
+    await expect(app.page.getByText("Routing didn’t finish coming back")).toBeVisible();
+  });
+
+  test("no journal, no Review details button", async ({ boot }) => {
+    // An interruption before the journal was written leaves the snapshots but no
+    // explanation. A button onto an empty dialog is worse than no button.
+    const app = await boot({ ...withJournal, restoreJournal: null });
+
+    await expect(app.page.getByText("Routing didn’t finish coming back")).toBeVisible();
+    await expect(app.page.getByRole("button", { name: "Review details" })).toHaveCount(0);
+  });
+});

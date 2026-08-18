@@ -127,6 +127,25 @@ export interface BackendState {
   };
   /** Slugs `resume_restore` should FAIL to finish, so they stay outstanding. */
   pendingResumeKeeps: string[];
+  /** The read-only account of the last restore, or null when there is nothing to
+      explain. Drives whether the recovery notice offers Review details. */
+  restoreJournal: {
+    updated_unix: number;
+    requested_routing_on: boolean;
+    entries: {
+      slug: string;
+      name: string;
+      kind: "provider" | "tool";
+      outcome:
+        | "pending"
+        | "restored"
+        | "write_failed"
+        | "not_installed"
+        | "unknown"
+        | "deferred_signed_out";
+      at_unix: number;
+    }[];
+  } | null;
   /** Commands that should reject, keyed by command name. The value is the
    *  error string the backend "returns" - App classifies it exactly as it
    *  would a real Tauri rejection. */
@@ -286,6 +305,7 @@ export function defaultState(): BackendState {
     backendErrors: [],
     pendingRestore: { providers: [], tools: [] },
     pendingResumeKeeps: [],
+    restoreJournal: null,
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
   };
