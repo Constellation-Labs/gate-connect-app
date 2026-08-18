@@ -28,6 +28,7 @@ import { AppShell } from "./components/gc/AppShell";
 import { FamiliesPane } from "./components/gc/FamiliesPane";
 import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
+import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
@@ -35,7 +36,10 @@ import {
   ApplyChangesDialog,
   ChangeReadyDialog,
   CloseAppsDialog,
+  ModelPickerDialog,
+  UseGateModelDialog,
 } from "./components/gc/dialogs";
+import type { GateModelOption } from "./components/gc/dialogs";
 import {
   ConnectedPane,
   OrgPickerPane,
@@ -98,6 +102,16 @@ export function NewUiApp() {
   // Dismissal is per-session and per-surface: the banner going away should not
   // stop the next launch offering the same update.
   const [updateDismissed, setUpdateDismissed] = useState(false);
+  /**
+   * Which model an app runs on, and the two overlays that change it.
+   *
+   * Session-only, and deliberately so: there is no backend for model selection
+   * at all - no command, no Rust - so nothing here survives a reload. The design
+   * is built and the wiring is in place; what is missing is somewhere to put the
+   * answer. See plans/new-app-ui-figma.md.
+   */
+  const [modelChoice, setModelChoice] = useState<Record<string, ModelChoice>>({});
+  const [modelOverlay, setModelOverlay] = useState<"picker" | "confirm-gate" | null>(null);
   const platform = usePlatform();
 
   const refresh = useCallback(async () => {
@@ -531,6 +545,31 @@ export function NewUiApp() {
             app={{ name: closedLabel(runningApps.stage.apps) }}
             onDone={runningApps.dismiss}
           />
+        ) : modelOverlay === "picker" ? (
+          <ModelPickerDialog
+            // Empty until a gateway endpoint reports what it offers. The design
+            // draws eleven `gate/...` ids; shipping those as though they were
+            // real would put a fabricated model catalogue in front of the user,
+            // which is the same argument the zeroed metrics make.
+            models={GATE_MODELS}
+            selectedId={undefined}
+            onSelect={() => setModelOverlay(null)}
+            onDismiss={() => setModelOverlay(null)}
+          />
+        ) : modelOverlay === "confirm-gate" ? (
+          <UseGateModelDialog
+            app={{ name: appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "this app" }}
+            vendor="-"
+            modelId="-"
+            credits="-"
+            onKeepAppDefault={() => setModelOverlay(null)}
+            onUseGateCredits={() => {
+              if (view.kind === "app") {
+                setModelChoice((m) => ({ ...m, [view.slug]: "gate" }));
+              }
+              setModelOverlay(null);
+            }}
+          />
         ) : diagnosticsReport !== null ? (
           <DiagnosticsDialog
             report={diagnosticsReport}
@@ -603,10 +642,15 @@ export function NewUiApp() {
           onToggleProtected={noop}
           stats={EMPTY_STATS}
           buckets={[]}
-          modelChoice="app"
-          onChooseModel={noop}
+          modelChoice={modelChoice[view.slug] ?? "app"}
+          // Switching to a Gate model spends PAYG credits, so it is confirmed
+          // rather than taken on a radio click. Switching back is not.
+          onChooseModel={(choice) => {
+            if (choice === "gate") setModelOverlay("confirm-gate");
+            else setModelChoice((m) => ({ ...m, [view.slug]: "app" }));
+          }}
           gateModel={{ vendor: "-", id: "-" }}
-          onChangeModel={noop}
+          onChangeModel={() => setModelOverlay("picker")}
           credits="-"
           onAddCredits={noop}
           activity={[]}
@@ -631,6 +675,9 @@ export function NewUiApp() {
 /** The 24-hour endpoint is still being built. Zeros rather than plausible
  *  numbers: a preview that invents traffic is one somebody screenshots as
  *  real. */
+/** No gateway endpoint reports the models on offer yet. See the picker. */
+const GATE_MODELS: GateModelOption[] = [];
+
 const EMPTY_STATS = {
   messages: 0,
   blockedFlagged: 0,
