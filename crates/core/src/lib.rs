@@ -17,6 +17,8 @@ pub mod env;
 pub mod keychain;
 pub mod oauth;
 pub mod org;
+/// Non-secret user choices from Settings, defaulting to on.
+pub mod preferences;
 pub mod primitives;
 pub mod provider;
 pub mod proxy;

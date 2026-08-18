@@ -13,7 +13,8 @@ function sections(overrides: Partial<Parameters<typeof buildSettingsSections>[0]
     gateway: "Managed by Gate",
     apiKeyMasked: "sk-gw***********",
     launchAtLogin: true,
-    notifications: true,
+    routingHealthNotifications: true,
+    shareDiagnostics: true,
     version: "v0.1.4",
     onRenameDevice: noop,
     onCopyInstallId: noop,
@@ -21,8 +22,13 @@ function sections(overrides: Partial<Parameters<typeof buildSettingsSections>[0]
     onReplaceKey: noop,
     onDisconnect: noop,
     onToggleLaunchAtLogin: noop,
-    onToggleNotifications: noop,
+    onRetryLaunchAtLogin: noop,
+    onToggleRoutingHealthNotifications: noop,
+    onToggleShareDiagnostics: noop,
+    onRetryPreferences: noop,
     onReplayTutorial: noop,
+    onOpenDocs: noop,
+    onContactSupport: noop,
     onCheckForUpdates: noop,
     onViewDiagnostics: noop,
     onReviewReset: noop,
@@ -35,9 +41,10 @@ afterEach(cleanup);
 describe("buildSettingsSections", () => {
   it("keeps Diagnostics reachable from Settings", () => {
     // The Figma does not draw this row. `screens/Diagnostics.tsx` has nowhere
-    // else to live in the new IA, so losing it here loses the feature.
-    const about = sections().find((s) => s.id === "about");
-    expect(about?.rows.map((r) => r.id)).toContain("diagnostics");
+    // else to live in the new IA, so losing it here loses the feature. It now
+    // lives in its own section rather than under About.
+    const diagnostics = sections().find((s) => s.id === "diagnostics");
+    expect(diagnostics?.rows.map((r) => r.id)).toContain("diagnostics-report");
   });
 
   it("marks only the two destructive actions destructive", () => {
@@ -71,11 +78,42 @@ describe("buildSettingsSections: rows with nothing behind them", () => {
   it("omits a row left with nothing to do at all", () => {
     // Active session is only ever a button, and Notifications only ever a
     // switch, so an absent handler leaves an inert label.
-    const ids = sections({ onDisconnect: undefined, onToggleNotifications: undefined })
+    const ids = sections({
+      onDisconnect: undefined,
+      onToggleRoutingHealthNotifications: undefined,
+    })
       .flatMap((s) => s.rows)
       .map((r) => r.id);
     expect(ids).not.toContain("session");
-    expect(ids).not.toContain("notifications");
+    expect(ids).not.toContain("routing-health");
+  });
+
+  /**
+   * A failed read must not draw a switch. `false` and "could not be read" look
+   * identical on a toggle, and the user cannot tell one from a setting they
+   * turned off themselves.
+   */
+  it("replaces a switch with Unavailable and Retry when its value never loaded", () => {
+    const startup = sections({ launchAtLoginUnavailable: true }).find(
+      (s) => s.id === "startup",
+    );
+    const launch = startup?.rows.find((r) => r.id === "launch");
+    expect(launch?.toggle).toBeUndefined();
+    expect(launch?.unavailable).toBeDefined();
+  });
+
+  it("marks both preference switches unavailable together, since they share one read", () => {
+    const built = sections({ preferencesUnavailable: true });
+    const rows = built.flatMap((s) => s.rows);
+    expect(rows.find((r) => r.id === "routing-health")?.unavailable).toBeDefined();
+    expect(rows.find((r) => r.id === "share-diagnostics")?.unavailable).toBeDefined();
+  });
+
+  /** Only the preference switches; a failed preferences read says nothing about
+   * launch-at-login, which is a separate command. */
+  it("does not spread one failed read onto an unrelated row", () => {
+    const startup = sections({ preferencesUnavailable: true }).find((s) => s.id === "startup");
+    expect(startup?.rows.find((r) => r.id === "launch")?.toggle).toBeDefined();
   });
 
   it("omits the whole Danger zone when reset is not wired", () => {
@@ -88,11 +126,14 @@ describe("buildSettingsSections: rows with nothing behind them", () => {
       onRenameDevice: undefined,
       onUpgradePlan: undefined,
       onDisconnect: undefined,
-      onToggleNotifications: undefined,
+      onToggleRoutingHealthNotifications: undefined,
+      onToggleShareDiagnostics: undefined,
       onCheckForUpdates: undefined,
+      onOpenDocs: undefined,
+      onContactSupport: undefined,
       onReviewReset: undefined,
     }).map((s) => s.id);
-    expect(ids).toEqual(["device", "account", "connection", "startup", "about"]);
+    expect(ids).toEqual(["device", "account", "connection", "startup", "diagnostics", "about"]);
   });
 });
 
@@ -105,7 +146,10 @@ describe("SettingsPane", () => {
       "Account",
       "Connection",
       "Startup",
+      "Notifications",
+      "Diagnostics",
       "About",
+      "Help",
       "Danger zone",
     ]) {
       expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
@@ -114,13 +158,26 @@ describe("SettingsPane", () => {
     expect(screen.getByRole("button", { name: "View report" })).toBeTruthy();
   });
 
-  it("drives the Startup switches from intent, not from the row label", () => {
-    render(<SettingsPane sections={sections({ launchAtLogin: false })} />);
+  it("drives each switch from its own value, not from the row label", () => {
+    render(
+      <SettingsPane
+        sections={sections({ launchAtLogin: false, routingHealthNotifications: true })}
+      />,
+    );
 
-    const launch = screen.getByRole("switch", { name: "Launch at login" });
-    expect(launch.getAttribute("aria-checked")).toBe("false");
     expect(
-      screen.getByRole("switch", { name: "Notifications" }).getAttribute("aria-checked"),
+      screen.getByRole("switch", { name: "Launch at login" }).getAttribute("aria-checked"),
+    ).toBe("false");
+    expect(
+      screen.getByRole("switch", { name: "Routing health" }).getAttribute("aria-checked"),
     ).toBe("true");
+  });
+
+  it("renders Unavailable and a Retry in place of a switch that could not load", () => {
+    render(<SettingsPane sections={sections({ launchAtLoginUnavailable: true })} />);
+
+    expect(screen.queryByRole("switch", { name: "Launch at login" })).toBeNull();
+    expect(screen.getByText("Unavailable")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 });

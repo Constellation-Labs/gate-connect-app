@@ -670,3 +670,52 @@ and the reason is recorded at the component:
   removed from the keychain. That describes Reset, a separate row on the same
   screen. Implemented as ending the session, and the body copy corrected, rather
   than shipping two destructive actions that claim the same consequences.
+
+## Settings sections and preferences (AG-594)
+
+There was **no preferences store anywhere**. `account.rs` was the only config, and
+it holds a credential and an identity, so the notification and diagnostics
+choices had nowhere to live - which is why `SettingsPane` had a `notifications`
+prop that the shell never passed. New `crates/core/src/preferences.rs`: a small
+JSON file next to `account.json`, deliberately separate so a preference change
+does not rewrite the file holding the key prefix, and so clearing the account on
+reset does not take the preferences with it.
+
+**Every preference defaults to on, and a missing field loads as on.** That is
+what lets a switch read On before anything has been written, rather than showing
+Off and inviting the user to "fix" a setting that was never off.
+
+Sections went from 6 to the 8 the criteria name that can be built: Device,
+Account, Connection, Startup, Notifications, Diagnostics, About, Help, plus the
+Danger zone. Notifications and Diagnostics moved out of Startup and About
+respectively.
+
+### Rows deliberately not built, and why
+
+- **Blocked-event, flagged-event and sound switches.** The criteria list four
+  notification switches. The app fires exactly two notifications, both about
+  routing (an expired session; a quit that could not put a tool back), and both
+  now ride the one `Routing health` switch. Blocked and flagged notifications
+  need the live security-event feed (AG-578), which does not exist. A switch for
+  an event that cannot arrive tells the user they turned something off.
+- **The permission row.** `tauri-plugin-notification` hardcodes
+  `PermissionState::Granted` on desktop - `desktop.rs` returns it unconditionally,
+  the state is only real on mobile. A permission row built on that would report
+  "granted" on a Mac with notifications denied. Real detection needs per-platform
+  native work (UNUserNotificationCenter on macOS).
+- **Contact support.** There is no support URL anywhere in the app. `GATE_DOCS_URL`
+  exists, so Documentation is wired; support is omitted rather than pointed at an
+  invented address. The topnav's Contact support entry is dead for the same reason
+  (AG-598).
+- **Send diagnostics now, and the diagnostic reference.** No upload path exists;
+  that is AG-603.
+
+### Unavailable rows
+
+`SettingsRow` gained `unavailable: { onRetry }`. The shell now tracks *whether a
+read failed* separately from the value it failed to produce:
+`launch?.enabled ?? false` collapsed "off" and "could not be read" into one Off
+switch, which is a claim about the user's setting they cannot distinguish from one
+they made. Wired for launch-at-login and for the preferences pair, which share one
+read and so fail together - a failed preferences read leaves launch-at-login's
+switch alone, and a test pins that.

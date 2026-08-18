@@ -1136,6 +1136,31 @@ fn stale_agents_count() -> u32 {
     count
 }
 
+/// The user's Settings choices. Never fails: a missing or mangled file loads as
+/// the documented defaults, because refusing to render Settings over a
+/// preferences file is a worse failure than showing "everything on".
+#[tauri::command]
+fn get_preferences() -> gate_connect_core::preferences::Preferences {
+    gate_connect_core::preferences::load()
+}
+
+/// Turn routing-health notifications on or off. Gates the two notifications the
+/// app actually fires: an expired session, and a quit that could not put a tool
+/// back on its own settings.
+#[tauri::command]
+fn set_routing_health_notifications(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_routing_health_notifications(enabled)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Record whether Gate Connect may send diagnostic data. Onboarding records the
+/// first answer; this is Settings changing it. Nothing is uploaded here - the
+/// send path is its own story.
+#[tauri::command]
+fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_share_diagnostics(enabled).map_err(|e| format!("{e:#}"))
+}
+
 /// One running AI tool, as the diagnostics report lists it.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[derive(Serialize)]
@@ -1406,7 +1431,11 @@ async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> 
     })
     .await
     .map_err(|e| format!("disconnect join error: {e}"))??;
-    {
+    // Gated on the routing-health preference: this is a notification about
+    // routing, and a switch the user turned off has to actually stop something or
+    // it was never a switch. The list is still returned either way - suppressing
+    // the notification must not suppress the *result*.
+    if gate_connect_core::preferences::load().routing_health_notifications {
         use tauri_plugin_notification::NotificationExt;
         let _ = app
             .notification()
@@ -1505,6 +1534,9 @@ pub fn run() {
                     proxy_untrust_ca,
                     launch_at_login_status,
                     set_launch_at_login,
+                    get_preferences,
+                    set_routing_health_notifications,
+                    set_share_diagnostics,
                     set_updater_relaunching,
                     routed_clients_stale,
                     running_agents_count,
@@ -1548,6 +1580,9 @@ pub fn run() {
                     provider_enable,
                     provider_disable,
                     set_updater_relaunching,
+                    get_preferences,
+                    set_routing_health_notifications,
+                    set_share_diagnostics,
                     drain_backend_errors,
                 ]
             }
@@ -1941,7 +1976,10 @@ pub fn run() {
                         // and the menu-bar/tray dot is out of the user's eyeline.
                         // Fired once per death by the edge guard above.
                         #[cfg(any(target_os = "macos", target_os = "linux"))]
-                        if dead {
+                        if dead
+                            && gate_connect_core::preferences::load()
+                                .routing_health_notifications
+                        {
                             use tauri_plugin_notification::NotificationExt;
                             let _ = refresh_handle
                                 .notification()
