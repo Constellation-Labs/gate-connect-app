@@ -15,9 +15,14 @@ import "./index.css";
 // change after it; this is only the head start.
 applyTextScale(readStoredScale());
 
-// Start analytics before render (no-op without a build-time key) and forward
-// uncaught frontend crashes to PostHog error tracking.
-initAnalytics();
+// Start analytics before render (no-op without a build-time key, and no-op when
+// the user has opted out of diagnostic data) and forward uncaught frontend
+// crashes to PostHog error tracking.
+//
+// Not awaited: consent has to be read over IPC, and blocking first paint on it
+// would trade a visible delay for a few milliseconds of telemetry. The handlers
+// below no-op until the client exists, which is the safe direction.
+void initAnalytics();
 window.addEventListener("error", (e) => captureException(e.error ?? e.message));
 window.addEventListener("unhandledrejection", (e) => captureException(e.reason));
 

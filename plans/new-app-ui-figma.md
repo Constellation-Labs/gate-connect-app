@@ -743,6 +743,7 @@ row has a switch and no room for a second control, and the switch *is* the retry
 but a documentation or diagnostics link per failure needs the per-app pane, and
 Contact support needs a URL that does not exist. Also open: "last completed check
 or routed request" in the summary, which needs the activity endpoint.
+
 ## Settings sections and preferences (AG-594)
 
 There was **no preferences store anywhere**. `account.rs` was the only config, and
@@ -838,3 +839,40 @@ visible" needs detection of tools Gate has no integration for; "a known but abse
 tool may provide an installation action" is optional in the criteria and would put
 uninstalled tools in a rail the Figma draws as installed apps only; and the
 model-control gating would remove the picker shipped in #159.
+## The diagnostics switch now gates something (AG-603)
+
+The "Share diagnostic data" switch added for AG-594 recorded a preference that
+**nothing read**, while PostHog collected regardless. `lib/analytics.ts` is a real
+channel - initialised at boot in `main.tsx`, capturing a closed set of event names,
+a filtered prop allowlist, classified error titles and two coarse super-properties
+- and it had no user opt-out at all. A switch that implies control it does not have
+is worse than no switch.
+
+Now:
+
+- **`initAnalytics` reads consent before constructing the client.** An install that
+  opted out never creates it. Consent is checked *before* `posthog.init`, not
+  after, because opting out afterwards would still have put the device on the wire
+  first.
+- **A failed consent read means do not collect.** `preferences::load()` is
+  infallible in Rust, so the only path here is the IPC failing - and consent that
+  cannot be confirmed is not consent.
+- **`setAnalyticsConsent` applies a change immediately.** Off opts the live client
+  out; on starts it if this session never did (the opted-out install) and opts back
+  in otherwise. Called from the Settings switch *before* the write, so a failed
+  write cannot leave the client sending after the user said no.
+- **`initAnalytics` is now async and not awaited** in `main.tsx`: blocking first
+  paint on an IPC round trip would trade a visible delay for a few milliseconds of
+  telemetry.
+
+A read-only "What is collected" list opens from Settings without touching the
+setting, as the criteria require. Its contents are written from what
+`analytics.ts` actually sends, **not** from the ticket's field list - that list
+describes an upload that does not exist (installation name, verification state,
+event-delivery state, notification permission), and describing it would be
+describing something Gate does not do, on the one screen whose job is telling the
+truth about what leaves the machine.
+
+Still open on the ticket: the onboarding Diagnostic data step (shared with AG-554),
+"Send diagnostics now" and the diagnostic reference (no upload path exists), and
+scoping the choice to the selected organization.

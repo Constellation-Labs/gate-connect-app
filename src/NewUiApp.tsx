@@ -62,6 +62,7 @@ import {
 } from "./components/gc/setup";
 import type { SetupOrganization } from "./components/gc/setup";
 import {
+  CollectedDataDialog,
   DiagnosticsDialog,
   DisconnectGateDialog,
   OrganizationSwitchedDialog,
@@ -80,7 +81,7 @@ import type {
 } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
-import { analyticsId } from "./lib/analytics";
+import { analyticsId, setAnalyticsConsent } from "./lib/analytics";
 import { usePlatform } from "./lib/platform";
 import type { Platform } from "./lib/platform";
 
@@ -153,6 +154,9 @@ export function NewUiApp() {
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
+  /** The read-only "what is collected" list. Separate from the report dialog:
+   * that one shows this install's values, this one shows what leaves the device. */
+  const [collectedDataOpen, setCollectedDataOpen] = useState(false);
   // Dismissal is per-session and per-surface: the banner going away should not
   // stop the next launch offering the same update.
   const [updateDismissed, setUpdateDismissed] = useState(false);
@@ -461,6 +465,11 @@ export function NewUiApp() {
         onToggleShareDiagnostics: () => {
           const next = !(prefs?.share_diagnostics ?? true);
           setPrefs((p) => (p ? { ...p, share_diagnostics: next } : p));
+          // Stop (or resume) collection immediately, not on the next launch. An
+          // opt-out that only takes effect after a restart is not an opt-out, and
+          // this happens before the write so a failed write cannot leave the
+          // client sending after the user said no.
+          setAnalyticsConsent(next);
           void setShareDiagnostics(next)
             .catch((e) => setActionError(classifyError(e, "generic")))
             .finally(() => void loadPreferences());
@@ -477,6 +486,7 @@ export function NewUiApp() {
         // Explicit, so this one reports back: silence on a button the user just
         // pressed reads as broken.
         onCheckForUpdates: () => void update.checkNow(true),
+        onViewCollectedData: () => setCollectedDataOpen(true),
         onViewDiagnostics: () =>
           setDiagnosticsReport(
             previewDiagnostics({
@@ -726,6 +736,8 @@ export function NewUiApp() {
               setModelOverlay(null);
             }}
           />
+        ) : collectedDataOpen ? (
+          <CollectedDataDialog onClose={() => setCollectedDataOpen(false)} />
         ) : diagnosticsReport !== null ? (
           <DiagnosticsDialog
             report={diagnosticsReport}

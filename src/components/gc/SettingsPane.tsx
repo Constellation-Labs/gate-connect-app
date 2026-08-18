@@ -99,6 +99,7 @@ export function buildSettingsSections({
   onReplayTutorial,
   onCheckForUpdates,
   onViewDiagnostics,
+  onViewCollectedData,
   onOpenDocs,
   onContactSupport,
   onReviewReset,
@@ -137,6 +138,9 @@ export function buildSettingsSections({
   onReplayTutorial: () => void;
   onCheckForUpdates?: () => void;
   onViewDiagnostics: () => void;
+  /** Opens the collected-data list. Read-only: AG-603 requires it to open
+   * "without changing the setting". */
+  onViewCollectedData?: () => void;
   onOpenDocs?: () => void;
   onContactSupport?: () => void;
   onReviewReset?: () => void;
@@ -282,6 +286,17 @@ export function buildSettingsSections({
                         onToggle: onToggleShareDiagnostics,
                       },
                     }),
+              } as SettingsRow,
+            ]
+          : []),
+        ...(onViewCollectedData
+          ? [
+              {
+                id: "collected-data",
+                icon: "eye" as IconName,
+                label: "What is collected",
+                description: "The exact fields that leave this device, and the ones that never do",
+                action: { label: "View list", onClick: onViewCollectedData },
               } as SettingsRow,
             ]
           : []),
