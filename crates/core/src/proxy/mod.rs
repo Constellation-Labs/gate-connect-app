@@ -820,6 +820,46 @@ pub fn rules_for_client(domains: &[ProxyDomain], client: ClientClass) -> Vec<Pro
 /// combination has to behave. A host-matching entry that claims neither the path
 /// nor its subtree simply abstains; only if nobody claims it does the request
 /// fall through to `Passthrough`.
+/// The Responses endpoint's final segment. Matched as a SUFFIX so this does not
+/// hard-code one of the two URL splits that reach the endpoint (the app's real
+/// `/backend-api/codex/responses` and Codex's relayed `/codex/responses`);
+/// which of them is actually routed is `decide`'s business, not this
+/// constant's.
+const RESPONSES_PATH_SUFFIX: &str = "/responses";
+
+/// True when an upgrade on this host+path should be DECLINED rather than passed
+/// through, so the client falls back to HTTP and the turn becomes visible.
+///
+/// ChatGPT desktop work mode sends its entire turn as WebSocket frame 0 on the
+/// Responses endpoint, so passing the upgrade through means Gate sees none of
+/// it. The app carries an HTTP fallback for exactly this situation - its bundled
+/// Codex binary logs "falling back to HTTP" and diagnoses
+/// `network.websocket_reachability` with "Check proxy, VPN, firewall, DNS,
+/// custom CA, and WebSocket policy support" - so declining uses a path the
+/// vendor built for proxies rather than a trick. See
+/// `docs/responses-websocket-downgrade.md`.
+///
+/// Two conditions, both required:
+///
+/// - [`decide`] would REWRITE this path. That is the point: declining only helps
+///   where the fallback request would then be routed to Gate, and it also means
+///   a disabled row - or a client narrowed away from the path by
+///   [`rules_for_client`] - is never touched. Reusing `decide` rather than
+///   re-deriving the match keeps the two from drifting apart.
+/// - the path is a Responses endpoint. The fallback evidence is specific to that
+///   endpoint, so an upgrade on any other routed path is passed through as
+///   before rather than broken on the assumption it recovers the same way.
+///
+/// Deliberately NOT keyed on `openai-beta: responses_websockets=<date>`. The
+/// same binary also carries `responses_websockets_v2`, so the negotiation string
+/// is still moving, and a matcher pinned to it would silently stop firing on a
+/// version bump - a failure that reads as "work mode went dark again" rather
+/// than as a stale constant.
+pub(crate) fn should_decline_upgrade(domains: &[ProxyDomain], host: &str, path: &str) -> bool {
+    path.ends_with(RESPONSES_PATH_SUFFIX)
+        && matches!(decide(domains, host, path), Decision::Rewrite { .. })
+}
+
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
     let mut host_matched = false;
     for d in domains.iter().filter(|d| d.enabled) {
@@ -2136,6 +2176,102 @@ mod tests {
             decide(&relay_only, "chatgpt.com", "/backend-api/ps/mcp"),
             Decision::Passthrough
         );
+    }
+
+    fn chatgpt_relay_entry() -> Vec<ProxyDomain> {
+        let mut d: ProxyDomain = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "chatgpt")
+            .expect("chatgpt is in the catalog");
+        d.enabled = true;
+        vec![d]
+    }
+
+    #[test]
+    fn declines_the_upgrade_on_the_responses_path_it_would_route() {
+        // The whole point: work mode sends its turn as WS frame 0 here, so
+        // passing the upgrade through means Gate sees none of it.
+        let d = chatgpt_relay_entry();
+        assert!(should_decline_upgrade(
+            &d,
+            "chatgpt.com",
+            "/backend-api/codex/responses"
+        ));
+    }
+
+    #[test]
+    fn leaves_the_relay_url_split_alone() {
+        // Codex's short `/codex/responses` is NOT routed by `decide`: this
+        // entry's upstream carries `/backend-api`, so `strip_upstream_path`
+        // finds the path outside its subtree and abstains. That entry serves
+        // the relay, which matches it on `upstream_url` and never consults
+        // `decide` at all. So the MITM engine declines only the app's real wire
+        // path, which is the only one observed upgrading anyway.
+        let d = chatgpt_relay_entry();
+        assert!(!should_decline_upgrade(
+            &d,
+            "chatgpt.com",
+            "/codex/responses"
+        ));
+    }
+
+    #[test]
+    fn leaves_an_upgrade_alone_when_the_row_is_off() {
+        // Declining is only useful where the fallback would then be routed. A
+        // disabled row routes nothing, so breaking its upgrade buys nothing and
+        // costs the user a working feature.
+        let mut d = chatgpt_relay_entry();
+        d[0].enabled = false;
+        assert!(!should_decline_upgrade(
+            &d,
+            "chatgpt.com",
+            "/backend-api/codex/responses"
+        ));
+    }
+
+    #[test]
+    fn leaves_upgrades_on_other_routed_paths_alone() {
+        // The fallback evidence is specific to Responses. Any other path that
+        // happens to upgrade is passed through as before rather than broken on
+        // the assumption it recovers the same way.
+        let d = chatgpt_apps();
+        for path in [
+            "/backend-api/f/conversation",
+            "/backend-api/wham/tasks/list",
+            "/backend-api/ps/mcp",
+        ] {
+            assert!(!should_decline_upgrade(&d, "chatgpt.com", path), "{path}");
+        }
+    }
+
+    #[test]
+    fn leaves_a_responses_lookalike_on_an_unrouted_host_alone() {
+        // The suffix alone must not decide: `decide` has to agree the path is
+        // one Gate would route, or an unrelated host exposing `/responses` would
+        // have its upgrades broken for nothing.
+        let d = chatgpt_relay_entry();
+        assert!(!should_decline_upgrade(
+            &d,
+            "example.com",
+            "/backend-api/codex/responses"
+        ));
+    }
+
+    #[test]
+    fn declining_stops_wherever_routing_stops() {
+        // Declining rides entirely on `decide`, so anything that stops the path
+        // being routed also stops it being declined - narrowing a client's
+        // prefixes included. Pinned directly rather than through
+        // `rules_for_client`, which today narrows only the `BROWSER_ROUTED`
+        // slugs and leaves this entry untouched (the website never requests this
+        // path). If that ever changes, this coupling still has to hold.
+        let mut narrowed = chatgpt_relay_entry();
+        narrowed[0].rewrite_prefixes.clear();
+        assert!(!should_decline_upgrade(
+            &narrowed,
+            "chatgpt.com",
+            "/backend-api/codex/responses"
+        ));
     }
 
     #[test]

@@ -29,7 +29,8 @@ use tokio::sync::{oneshot, watch};
 
 use crate::proxy::cert_authority::GateCa;
 use crate::proxy::{
-    classify_client, decide, rules_for_client, should_intercept_host, Decision, ProxyDomain,
+    classify_client, decide, rules_for_client, should_decline_upgrade, should_intercept_host,
+    Decision, ProxyDomain,
 };
 
 /// Everything the engine needs to run one session. The account + CA are
@@ -278,6 +279,26 @@ pub(crate) fn debug_log() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_DEBUG").is_some())
 }
 
+/// Whether to decline a Responses WebSocket upgrade so the client falls back to
+/// HTTP and its turn becomes visible. Off unless `GATE_PROXY_WS_DOWNGRADE` is
+/// set; see [`should_decline_upgrade`] for what it then applies to.
+///
+/// Default-OFF is the important half. The failure mode if the fallback does not
+/// fire is not "work mode stays uncaptured", which is the status quo, but "work
+/// mode does not work at all" - strictly worse than doing nothing. So this stays
+/// opt-in until measured on a real client.
+///
+/// An env var, matching [`debug_log`], because that is the right shape for the
+/// measurement stages this is for: a single machine, deliberately switched on.
+/// Before any broader rollout it wants promoting to a real setting, since
+/// `OnceLock` fixes the value for the process and a user cannot turn it off
+/// without relaunching the app - too slow for a kill switch if a vendor update
+/// ever removes the fallback.
+pub(crate) fn responses_ws_downgrade() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_WS_DOWNGRADE").is_some())
+}
+
 /// Wire hudsucker's internal `tracing` events (TLS handshake / HTTP2 errors)
 /// to stderr once, when debug logging is on. Without this, MITM failures
 /// inside hudsucker are silent. Overridable via `RUST_LOG`. Idempotent.
@@ -483,6 +504,27 @@ impl HttpHandler for GateHandler {
         // codex_work_desktop` on an upgrade is the signature of one, and is what
         // to grep for if work-mode turns stop appearing in Gate.
         if is_upgrade_request(&req) {
+            // ...unless declining it is what makes the turn visible. The client
+            // that negotiates this transport carries its own HTTP fallback, so a
+            // refusal costs one extra round trip and buys the whole turn; see
+            // `should_decline_upgrade`. Gated on `peer_allowed` like the rewrite
+            // below, so a non-owner peer's traffic is never interfered with.
+            if responses_ws_downgrade()
+                && self.peer_allowed(ctx)
+                && host
+                    .as_deref()
+                    .is_some_and(|h| should_decline_upgrade(&rules, h, &path))
+            {
+                if debug_log() {
+                    eprintln!("[gate-proxy] {path} is a protocol upgrade -> declined (client should retry over HTTP)");
+                }
+                // 400, never a drop or a stall. The client distinguishes a failed
+                // handshake from a timed-out one and only the first falls back
+                // immediately; a black-holed connection would add the full
+                // handshake timeout to EVERY turn and be indistinguishable, from
+                // the user's side, from Gate being broken.
+                return RequestOrResponse::Response(decline_upgrade_response());
+            }
             if debug_log() {
                 eprintln!("[gate-proxy] {path} is a protocol upgrade -> passthrough (gate has no websocket transport)");
             }
@@ -605,6 +647,25 @@ impl HttpHandler for GateHandler {
 /// `Sec-WebSocket-*` set: the reason we bail applies to any upgrade, not just
 /// WebSocket. `Connection` is a comma-separated list and its tokens are
 /// case-insensitive.
+/// The response sent in place of a declined upgrade.
+///
+/// Shaped like the provider's own error envelope so a client that surfaces the
+/// body shows something coherent, and typed distinctly (`gate_ws_downgrade`) so
+/// this is greppable in a client log and cannot be mistaken for an upstream 400.
+fn decline_upgrade_response() -> hudsucker::hyper::Response<Body> {
+    hudsucker::hyper::Response::builder()
+        .status(hudsucker::hyper::StatusCode::BAD_REQUEST)
+        .header(
+            hudsucker::hyper::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )
+        .body(Body::from(
+            r#"{"error":{"message":"websocket transport unavailable through this proxy; retry over HTTP","type":"gate_ws_downgrade"}}"#,
+        ))
+        // Infallible: every part is a static, pre-validated value.
+        .expect("static decline response builds")
+}
+
 pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
     let headers = req.headers();
     if !headers.contains_key(hudsucker::hyper::header::UPGRADE) {
