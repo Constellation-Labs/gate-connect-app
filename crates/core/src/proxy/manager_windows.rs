@@ -157,6 +157,7 @@ impl ProxyManager {
             ca_trusted: ca::is_trusted()?,
             env_export_opted_in: crate::proxy::env_export_opted_in(),
             env_export_separable: crate::proxy::env_export_is_separable(),
+            relay_base_url: crate::proxy::relay_base_url(),
             domains: config::load_domains()?,
         })
     }

@@ -14,6 +14,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { POSTHOG_KEY_VALUE, POSTHOG_HOST } from "./config";
 import { fetchPlatform } from "./platform";
 import { classifyError, type ErrorContext } from "./errors";
+import { getPreferences } from "./api";
 
 /** The only event names we ever emit. */
 export type AnalyticsEvent =
@@ -75,6 +76,10 @@ const ALLOWED_PROP_KEYS = new Set<string>([
 ]);
 
 let enabled = false;
+/** Whether `posthog.init` has run. Distinct from `enabled`, which is whether we
+ * are currently allowed to send: a user who opts out and back in must not
+ * re-initialise a live client. */
+let started = false;
 
 function sanitize(props?: Props): Props | undefined {
   if (!props) return undefined;
@@ -86,13 +91,34 @@ function sanitize(props?: Props): Props | undefined {
 }
 
 /**
- * Initialize PostHog. No-op (analytics stays disabled) when no build-time key
- * is present, so dev builds and unconfigured releases send nothing. App version
- * and platform ride along as super-properties - both coarse and non-identifying
- * - so events are attributable to a build.
+ * Start PostHog, if there is a key **and** the user has not opted out.
+ *
+ * Consent is read before the client is constructed, not after: opting out and
+ * then initialising would put the user's device on the wire before the opt-out
+ * took effect, however briefly. An install that has opted out never creates the
+ * client at all.
+ *
+ * A failed read means **do not collect**. `preferences::load()` is infallible on
+ * the Rust side, so the only way here is the IPC itself failing - and consent that
+ * cannot be confirmed is not consent. The cost is a session of missing telemetry
+ * on an app that is already misbehaving.
+ *
+ * No-op without a build-time key either way, so dev builds and unconfigured
+ * releases send nothing. App version and platform ride along as super-properties
+ * - both coarse and non-identifying - so events are attributable to a build.
  */
-export function initAnalytics(): void {
+export async function initAnalytics(): Promise<void> {
   if (!POSTHOG_KEY_VALUE) return;
+  const consented = await getPreferences()
+    .then((p) => p.share_diagnostics)
+    .catch(() => false);
+  if (!consented) return;
+  startPosthog();
+}
+
+function startPosthog(): void {
+  if (!POSTHOG_KEY_VALUE || started) return;
+  started = true;
   posthog.init(POSTHOG_KEY_VALUE, {
     api_host: POSTHOG_HOST,
     autocapture: false,
@@ -108,6 +134,32 @@ export function initAnalytics(): void {
       posthog.register({ app_version, platform });
     },
   );
+}
+
+/**
+ * Apply a consent change made in Settings, so the switch controls something
+ * rather than only recording an intention.
+ *
+ * Turning it **off** opts the live client out and stops every entry point below;
+ * `opt_out_capturing` also persists PostHog's own flag, so a queued event does
+ * not leak out after the user said no. Turning it **on** starts the client if
+ * this session never did (the opted-out install case) and opts back in otherwise.
+ *
+ * Called by the Settings switch. Safe to call with the value it already has.
+ */
+export function setAnalyticsConsent(consented: boolean): void {
+  if (!POSTHOG_KEY_VALUE) return;
+  if (!consented) {
+    if (started) safely("opt_out_capturing", () => posthog.opt_out_capturing());
+    enabled = false;
+    return;
+  }
+  if (!started) {
+    startPosthog();
+    return;
+  }
+  safely("opt_in_capturing", () => posthog.opt_in_capturing());
+  enabled = true;
 }
 
 /**

@@ -161,6 +161,11 @@ export interface ProxyState {
    * environment variables *are* the system proxy and cannot be declined
    * without turning routing off - so the switch must not render there. */
   env_export_separable: boolean;
+  /** Loopback base URL config-routed tools are pointed at; null before a relay
+   * port has ever been bound. Non-secret - it is already written verbatim into
+   * each tool's own config file. The drift review shows it, because approving an
+   * overwrite means seeing what it writes. */
+  relay_base_url: string | null;
   domains: ProxyDomain[];
 }
 
@@ -395,6 +400,35 @@ export const pendingRestore = () => invoke<PendingRestore>("pending_restore");
  * Returns the remaining state rather than void, because a partial success is the
  * interesting case and must not read as done. */
 export const resumeRestore = () => invoke<PendingRestore>("resume_restore");
+/** Non-secret Settings choices. Every field defaults to `true`, and an absent
+ * field in the stored file loads as `true` - so a switch reads On before anything
+ * has ever been written, which is what lets Settings show a truthful default.
+ *
+ * Only the preferences that currently gate something are here. Per-category
+ * security-event notifications and a sound toggle belong with the live event feed,
+ * which does not exist yet; a switch that gates nothing would tell the user they
+ * had turned something off. */
+export interface Preferences {
+  /** Native notifications about routing itself - an expired session, a quit that
+   * could not put a tool back. The two the app actually fires. */
+  routing_health_notifications: boolean;
+  /** Whether Gate Connect may send diagnostic data. Onboarding records the first
+   * answer; Settings changes it after. Nothing is uploaded by setting it. */
+  share_diagnostics: boolean;
+  /** Whether the person has ever *answered* the question, rather than having the
+   * default applied for them. False on installs that predate the field, which is
+   * why they see the onboarding step once - consent nobody was asked for is not
+   * consent. `setShareDiagnostics` sets it from either caller. */
+  share_diagnostics_recorded: boolean;
+}
+
+export const getPreferences = () => invoke<Preferences>("get_preferences");
+
+export const setRoutingHealthNotifications = (enabled: boolean) =>
+  invoke<void>("set_routing_health_notifications", { enabled });
+
+export const setShareDiagnostics = (enabled: boolean) =>
+  invoke<void>("set_share_diagnostics", { enabled });
 
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);
