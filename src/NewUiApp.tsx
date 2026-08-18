@@ -7,6 +7,7 @@ import type {
   Org,
   ProxyState,
   ProviderState,
+  PendingRestore,
   Tool,
   Verdict,
 } from "./lib/api";
@@ -19,6 +20,8 @@ import {
   openOnboardingWindow,
   proxyStatus,
   routingVerdicts,
+  pendingRestore,
+  resumeRestore,
 } from "./lib/api";
 import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
@@ -67,7 +70,7 @@ import {
   ReviewConfigDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
-import { AlertBanner, ErrorBanner } from "./components/gc/banners";
+import { AlertBanner, ErrorBanner, RecoveryBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type { AppStatus, SidebarApp, SidebarView } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
@@ -146,6 +149,11 @@ export function NewUiApp() {
     if (v) setVerdicts(verdictsBySlug(v));
   }, []);
 
+  const loadPending = useCallback(async () => {
+    const p = await pendingRestore().catch(() => null);
+    if (p) setPending(p);
+  }, []);
+
   const refresh = useCallback(async () => {
     const [t, px] = await Promise.all([
       listTools().catch(() => null),
@@ -157,7 +165,11 @@ export function NewUiApp() {
     // health check is shared - so this follows the snapshot rather than waiting
     // for the next poll.
     void refreshVerdicts();
-  }, [refreshVerdicts]);
+    // A master-on runs `restore_all`, which is what clears or shortens the
+    // snapshots - so the notice has to be re-read on the same event that
+    // repaints the switches, or it lingers after the work finished.
+    void loadPending();
+  }, [refreshVerdicts, loadPending]);
 
   // The engine changes state without us asking: a CLI toggle, the startup
   // auto-enable, another window. Repaint from the event rather than leaving a
@@ -184,6 +196,7 @@ export function NewUiApp() {
       ]);
       setTools(t);
       void refreshVerdicts();
+      void loadPending();
       setProviders(p);
       setProxy(px);
       setAccount(acct);
@@ -210,6 +223,17 @@ export function NewUiApp() {
   });
 
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
+  /**
+   * Routing work that was recorded and did not finish, read from the provider
+   * snapshots. Null until the first read; empty lists mean nothing outstanding,
+   * which is the normal case.
+   */
+  const [pending, setPending] = useState<PendingRestore | null>(null);
+  const [resuming, setResuming] = useState(false);
+  /** Dismissed for this session only. The pending state lives on disk, so the
+   * notice returns on the next launch until the work actually finishes - which is
+   * the persistence the recovery action is supposed to have. */
+  const [recoveryHidden, setRecoveryHidden] = useState(false);
 
   /**
    * Backend failures buffer Rust-side because they can predate this webview - the
@@ -328,6 +352,30 @@ export function NewUiApp() {
         members: g.members.map((m) => memberToFamilyMember(m, verdicts)),
       })),
     [groups, verdicts],
+  );
+
+  /** Finish what the interrupted restore left. `restore_all` retries only the
+   * recorded entries, so this repeats no completed write; the command hands back
+   * what is still outstanding rather than a bare success. */
+  const resumeNow = useCallback(async () => {
+    setResuming(true);
+    setActionError(null);
+    try {
+      setPending(await resumeRestore());
+      // The retry may have changed what is routing, so re-read the rest too.
+      await refresh();
+    } catch (e) {
+      setActionError(classifyError(e, "provider_restore"));
+    } finally {
+      setResuming(false);
+    }
+  }, [refresh]);
+
+  /** What is still outstanding, providers and tools together: the user does not
+   * care which snapshot an entry came from. */
+  const recoveryNames = useMemo(
+    () => [...(pending?.providers ?? []), ...(pending?.tools ?? [])].map((e) => e.name),
+    [pending],
   );
 
   const noop = useCallback(() => {}, []);
@@ -561,6 +609,15 @@ export function NewUiApp() {
             title={actionError.title}
             hint={actionError.hint}
             onDismiss={() => setActionError(null)}
+          />
+        ) : recoveryNames.length > 0 && !recoveryHidden ? (
+          // Below the error banner: a failure that just happened outranks a
+          // recorded one that can still be resumed.
+          <RecoveryBanner
+            names={recoveryNames}
+            busy={resuming}
+            onResume={() => void resumeNow()}
+            onFinishLater={() => setRecoveryHidden(true)}
           />
         ) : undefined
       }

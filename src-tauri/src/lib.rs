@@ -1294,6 +1294,40 @@ fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
     }
 }
 
+/// What a routing restore still owes, from the snapshots on disk.
+///
+/// Read-only and cheap: it opens no tool config and starts nothing, so the UI can
+/// call it on a status refresh. Empty in the normal case.
+#[tauri::command]
+fn pending_restore() -> Result<gate_connect_core::provider::PendingRestore, String> {
+    gate_connect_core::provider::pending_restore().map_err(|e| format!("{e:#}"))
+}
+
+/// Finish an interrupted restore, and report what is still outstanding.
+///
+/// `restore_all` already has the retry semantics this needs: it re-attempts each
+/// recorded entry, keeps failures in the snapshot, and clears the file only once
+/// everything is back. So resuming repeats no completed write and reopens no
+/// verified tool without any new bookkeeping.
+///
+/// Returns the remaining pending state rather than unit, so a caller does not have
+/// to guess whether the resume finished the job - a partial success is the
+/// interesting case and the one that must not read as done.
+#[tauri::command]
+async fn resume_restore() -> Result<gate_connect_core::provider::PendingRestore, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        // Best-effort, like every other caller of this: a failure leaves its
+        // entries in the snapshot, which is exactly what the return value reports.
+        if let Err(e) = gate_connect_core::provider::restore_all() {
+            eprintln!("[gate] resuming an interrupted restore failed: {e}");
+            report_backend_error("provider_restore", format!("{e:#}"));
+        }
+        gate_connect_core::provider::pending_restore().map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("resume restore join error: {e}"))?
+}
+
 /// One running AI tool, as the diagnostics report lists it.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[derive(Serialize)]
@@ -1666,6 +1700,8 @@ pub fn run() {
                     set_updater_relaunching,
                     routed_clients_stale,
                     routing_verdicts,
+                    pending_restore,
+                    resume_restore,
                     running_agents_count,
                     stale_agents_count,
                     running_agents,

@@ -235,3 +235,89 @@ test.describe("new UI: buffered backend failures", () => {
     await expect(app.page.getByRole("button", { name: "Dismiss" })).toHaveCount(0);
   });
 });
+
+/**
+ * AG-570: an interrupted restore, surfaced and resumable.
+ *
+ * The provider snapshots have always recorded unfinished work - `restore_all`
+ * keeps failures in the file and clears it only once everything is back - but
+ * nothing read them for display. A half-finished restore therefore left some tools
+ * routing and some not, with no statement anywhere that Gate knew about it.
+ */
+test.describe("new UI: an interrupted restore", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  const interrupted = {
+    proxy: { running: true, ca_trusted: true },
+    pendingRestore: {
+      providers: [{ slug: "openai", name: "OpenAI" }],
+      tools: [{ slug: "opencode", name: "OpenCode" }],
+    },
+  };
+
+  test("what did not finish is named", async ({ boot }) => {
+    const app = await boot(interrupted);
+
+    await expect(app.page.getByText("Routing didn’t finish coming back")).toBeVisible();
+    // Providers and tools together: the user does not care which file an entry
+    // came from.
+    await expect(app.page.getByText(/OpenAI, OpenCode/)).toBeVisible();
+  });
+
+  test("nothing outstanding shows no notice", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
+  });
+
+  test("Resume finishes the job and the notice goes", async ({ boot }) => {
+    const app = await boot(interrupted);
+
+    await app.page.getByRole("button", { name: "Resume now" }).click();
+
+    await expect.poll(() => app.lastCall("resume_restore")).not.toBeNull();
+    await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
+  });
+
+  /**
+   * The case that must not read as done: resuming fixed one entry and not the
+   * other, so the notice stays and names only what is left.
+   */
+  test("a partial resume keeps the notice, naming only what is left", async ({ boot }) => {
+    const app = await boot({ ...interrupted, pendingResumeKeeps: ["opencode"] });
+
+    await app.page.getByRole("button", { name: "Resume now" }).click();
+
+    // Scoped to the banner: the sidebar lists these apps by name too.
+    const banner = app.page.getByRole("status");
+    await expect(banner.getByText("Routing didn’t finish coming back")).toBeVisible();
+    await expect(banner.getByText(/OpenCode is still waiting/)).toBeVisible();
+    await expect(banner.getByText(/OpenAI/)).toHaveCount(0);
+  });
+
+  test("Finish later hides it for this session without resuming anything", async ({ boot }) => {
+    const app = await boot(interrupted);
+
+    await app.page.getByRole("button", { name: "Finish later" }).click();
+
+    await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
+    expect(await app.lastCall("resume_restore")).toBeNull();
+    // Still recorded on disk, which is what makes the notice come back later.
+    expect((await app.state()).pendingRestore.providers).toHaveLength(1);
+  });
+
+  test("a live failure outranks a recorded one", async ({ boot }) => {
+    const app = await boot({
+      ...interrupted,
+      backendErrors: [
+        { context: "provider_restore", message: "failed to restore provider openai" },
+      ],
+    });
+
+    // The error banner, not the recovery notice: something just went wrong.
+    await expect(app.page.getByRole("button", { name: "Dismiss error" })).toBeVisible();
+    await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
+  });
+});

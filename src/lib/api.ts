@@ -368,6 +368,34 @@ export const pendingQuitTools = () => invoke<string[] | null>("pending_quit_tool
  * your CLI agents" system notification. */
 export const disconnectToolsForQuit = () => invoke<void>("disconnect_tools_for_quit");
 
+/** One thing a routing restore recorded and has not finished. `name` falls back to
+ * the slug when the provider or tool has left the registry since - naming it beats
+ * dropping it from a list the user is being asked to act on. */
+export interface PendingEntry {
+  slug: string;
+  name: string;
+}
+
+/** Routing work that was written down and did not complete. Empty in the normal
+ * case. The snapshots have always recorded unfinished work - `restore_all` keeps
+ * failures in the file and clears it only once everything is back - but nothing
+ * read them for display, so a half-finished restore left some tools routing, some
+ * not, and no statement anywhere that Gate knew. */
+export interface PendingRestore {
+  providers: PendingEntry[];
+  tools: PendingEntry[];
+}
+
+/** What a restore still owes. Read-only and cheap: opens no config, starts
+ * nothing, safe on a status refresh. */
+export const pendingRestore = () => invoke<PendingRestore>("pending_restore");
+
+/** Finish an interrupted restore, and report what is still outstanding.
+ * `restore_all`'s existing retry semantics mean this repeats no completed write.
+ * Returns the remaining state rather than void, because a partial success is the
+ * interesting case and must not read as done. */
+export const resumeRestore = () => invoke<PendingRestore>("resume_restore");
+
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);
  * `message` is the raw error chain - it stays on this machine, only the

@@ -213,3 +213,73 @@ export function ErrorBanner({
     </div>
   );
 }
+
+/**
+ * Routing did not fully come back, and Gate knows which parts.
+ *
+ * The provider snapshots have always recorded unfinished work - `restore_all`
+ * keeps failures in the file and clears it only once everything is back - but
+ * nothing read them for display. So a half-finished restore left some tools
+ * routing and some not, with no statement anywhere that Gate was aware of it.
+ * That is the state this names.
+ *
+ * **Amber, not red.** Nothing is broken beyond repair and nothing was lost: the
+ * work is recorded and resuming retries exactly what failed. Red would be
+ * claiming worse than is true.
+ *
+ * Dismissing is session-only on purpose. The pending state lives on disk, so the
+ * notice returns on the next launch or refresh until the work actually finishes -
+ * which is what AG-570 asks for when it says the recovery action persists.
+ *
+ * Provisional layout: the Figma draws no recovery notice (AG-569 is To Do).
+ */
+export function RecoveryBanner({
+  names,
+  busy,
+  onResume,
+  onFinishLater,
+}: {
+  /** What is still outstanding, providers and tools together - the user does not
+   * care which snapshot an entry came from. Never empty; the shell omits the
+   * banner instead. */
+  names: string[];
+  busy?: boolean;
+  onResume: () => void;
+  onFinishLater: () => void;
+}) {
+  const many = names.length > 1;
+  return (
+    <div
+      role="status"
+      className="flex w-full items-start gap-3 border-b border-amber-200 bg-amber-50 px-4 py-3"
+    >
+      <StatusTile tone="amber" icon="refresh" />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium leading-5 text-amber-900">
+          Routing didn’t finish coming back
+        </p>
+        <p className="text-base-xs leading-4 text-amber-900/80">
+          {names.join(", ")} {many ? "are" : "is"} still waiting. Gate recorded what
+          was left, so resuming picks up where it stopped.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onResume}
+        disabled={busy}
+        className="shrink-0 rounded-base border border-amber-300 bg-base-card px-2 py-1 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {busy ? "Resuming…" : "Resume now"}
+      </button>
+      <button
+        type="button"
+        onClick={onFinishLater}
+        disabled={busy}
+        aria-label="Finish later"
+        className="shrink-0 text-amber-900/70 transition-colors hover:text-amber-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:opacity-50"
+      >
+        <Icon name="x" size={16} />
+      </button>
+    </div>
+  );
+}
