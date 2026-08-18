@@ -135,9 +135,10 @@ Consequences worth keeping in mind:
 - **This plan is the shared roadmap.** "Still to do" below is the queue that
   downstream PRs draw from; keep it current rather than tracking work elsewhere.
 - **Green CI here means less than it looks**, though less so than it did.
-  Routing and Settings are wired and carry their own e2e specs
-  (`new-ui-routing.spec.ts`, `new-ui-settings.spec.ts`), which opt into the new
-  shell per-test through localStorage. Everything listed under "Still to do" is
+  Routing, Settings and the routing verdict are wired and carry their own e2e
+  specs (`new-ui-routing.spec.ts`, `new-ui-settings.spec.ts`,
+  `new-ui-verdict.spec.ts`), which opt into the new shell per-test through
+  localStorage. Everything listed under "Still to do" is
   still covered by nothing.
 
 ## How the designer marks readiness (from Chad, 2026-08-14)
@@ -640,10 +641,46 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    whether the panel carries a search field is unknown (omitted), and the drawn
    ids render in the UI face rather than mono. Mono was used, since CLAUDE.md
    names model ids explicitly and every other identifier in the design is mono.
-6. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
+6. **Truthful routing status (AG-562): DONE.** Status lines no longer come from
+   `Tool.status`. `crates/core/src/routing_health.rs` computes a verdict from
+   three inputs - the integration's config state, a new loopback health check
+   that the relay answers itself (`/__gate/health`, 204, never forwarded), and
+   whether the tool's process predates the last routing change - and
+   `routing_verdicts` reports it per tool. `lib/verdict.ts` maps that onto the
+   four phrases the design draws, carrying the ticket's reason in the grey suffix
+   the design already has a slot for.
+
+   `Status` was deliberately **not** rewritten. It describes config on disk and is
+   threaded through every integration, `provider.rs` and their tests; the verdict
+   is a layer on top, which is also what keeps intent and observation separate one
+   level below where `groups.ts` documents the same rule.
+
+   Three things this turned up. The probes run **once per sweep**, not per tool -
+   they ask about shared infrastructure (the relay port, the account's session), so
+   per-tool calls would let two rows in one refresh disagree. `SessionProbe::Unavailable`
+   must map to `Verification failed` rather than `Access problem`, or an offline
+   machine accuses a perfectly good credential. And a tool with no known process
+   name (OpenClaw, Hermes) has *unobservable* staleness rather than none, so it can
+   still read Protected but will never be told to reopen.
+
+   **Two conflicts raised rather than resolved in code.** AG-562 specifies the
+   words On / Off / Needs attention; the Figma draws Protected / Not protected /
+   Config drifted / Not routed. The design won the coloured phrase and the ticket
+   won the reason, because the Figma is the source of truth for copy - the
+   remaining question is for the designer on AG-561. Separately, AG-564/566/570/596
+   all assert Gate "does not restore user-authored values", but
+   `integrations/claude_code.rs` saves `previousEnv` and restores it on disconnect,
+   and `groups.ts:312` documents that behaviour too. The code is right; the copy
+   was not written.
+
+   What this does **not** do: prove a tool sent traffic. Nothing attributes
+   requests to a tool. That needs a per-tool segment in the relay path
+   (`/<tool>/<domain-slug>` instead of `/<domain-slug>`), which would also give
+   AG-574 its per-tool counts.
+7. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
    pending the 24-hour endpoint. Open question 7 (whether `total` double-counts)
    should be settled in that response shape, not in the chart.
-7. **Retire the popover.** `App.tsx`, `screens/`, `gc/ui.tsx`, the `gc.*`
+8. **Retire the popover.** `App.tsx`, `screens/`, `gc/ui.tsx`, the `gc.*`
    palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together.
    Item 1 was the blocker and is done, so what remains is repointing the e2e
    suite at the new shell and deleting; the popover's own specs go with it.

@@ -482,3 +482,80 @@ async fn relay_forwards_direct_when_not_intercepting() {
         "the second request must not go direct"
     );
 }
+
+/// The liveness path the routing verdict probes: answered by the relay itself,
+/// with a 204 and no body, without the request ever reaching the gateway.
+///
+/// This is what separates "the relay is up" from "something is listening on that
+/// port", which is the whole reason `probe_relay_route` asks for a specific path
+/// rather than opening a socket.
+#[tokio::test]
+async fn relay_answers_its_own_health_path_without_calling_the_gateway() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .get(format!(
+            "http://127.0.0.1:{}{}",
+            engine.relay_port(),
+            gate_connect_core::proxy::RELAY_HEALTH_PATH
+        ))
+        .send()
+        .await
+        .expect("health request should succeed");
+
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "the health path must answer 204"
+    );
+    assert_eq!(
+        resp.bytes().await.unwrap().len(),
+        0,
+        "the health path must carry no body"
+    );
+
+    engine.stop();
+
+    assert!(
+        gateway.captured.lock().unwrap().is_empty(),
+        "a health check must never reach the gateway, let alone spend a token"
+    );
+}
+
+/// A POST to the health path is a misconfigured tool, not a health check, so it
+/// falls through to the catalog resolver and is refused there rather than being
+/// answered 204.
+#[tokio::test]
+async fn relay_health_path_is_get_only() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}{}",
+            engine.relay_port(),
+            gate_connect_core::proxy::RELAY_HEALTH_PATH
+        ))
+        .send()
+        .await
+        .expect("request should complete");
+
+    assert_ne!(
+        resp.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "only GET is the health check"
+    );
+
+    engine.stop();
+}
