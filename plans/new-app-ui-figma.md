@@ -791,3 +791,23 @@ switch, which is a claim about the user's setting they cannot distinguish from o
 they made. Wired for launch-at-login and for the preferences pair, which share one
 read and so fail together - a failed preferences read leaves launch-at-login's
 switch alone, and a test pins that.
+## Refreshing the inventory (AG-558)
+
+Detection ran on backend events only, so a tool installed while the window was
+open stayed invisible until something unrelated repainted the sidebar. The
+"Protected apps" eyebrow gained a small refresh control that re-reads tools and
+proxy state and re-runs the routing sweep.
+
+Provisional: the Figma draws no refresh control. It is 20px in a 12px eyebrow with
+an `aria-label` rather than visible text, and no spinner - the scan is fast enough
+that one would only flash, so `aria-busy` plus the disabled state is the signal.
+`refreshing` is deliberately separate from `routingBusy`: that one guards a
+*write*, and refusing to re-read during a toggle would be the wrong coupling.
+
+The rest of AG-558 is not buildable and is documented on the ticket: every
+integration returns `requires_upstream_credential() == false`, so "installed but
+unavailable" cannot occur; "installed but unsupported" needs detection of tools
+Gate has no integration for; "incomplete installation" needs per-integration
+probes; and the per-entry request counts need per-*tool* attribution, which the
+in-flight `feat/activity-overview-client` does not provide (it is per-installation
+- `activity.ts` has no tool or slug in it).
