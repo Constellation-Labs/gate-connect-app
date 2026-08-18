@@ -102,8 +102,9 @@ export function NewUiApp() {
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
   const platform = usePlatform();
-  // One fetch per mount, plus the pane's own refresh. Not polled: the endpoint
-  // shares the gateway's per-minute throttle bucket with the user's own traffic.
+  // One fetch per mount, plus the pane's own refresh. Not polled: the endpoint's
+  // throttle bucket is keyed on the source address, so a timer here would spend
+  // a budget shared with every other Gate Connect user on the same network.
   const activity = useActivity(true);
 
   const refresh = useCallback(async () => {

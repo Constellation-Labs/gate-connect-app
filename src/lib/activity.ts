@@ -265,10 +265,13 @@ export function adapt(raw: RawOverview): ActivityView {
 /**
  * Load the overview once, and on demand.
  *
- * Deliberately not polling. The endpoint shares the gateway's 100-requests-per-
- * minute throttle bucket with every other call from this machine, so a timer
- * here competes with the user's own traffic; and `Cache-Control: no-store` plus
- * a rendered `generatedAt` means a stale view is legible rather than silent.
+ * Deliberately not polling. The endpoint sits in the gateway's 100-requests-per-
+ * minute throttle bucket, which is keyed on the source address rather than on
+ * the credential: inference is exempt from it, but every other Gate Connect user
+ * on the same office network or VPN egress is not, so a timer here spends a
+ * budget shared with people this window cannot see. `Cache-Control: no-store`
+ * plus a rendered `generatedAt` means the held view is legible rather than
+ * silently stale, which is what a timer would have bought.
  */
 export function useActivity(enabled: boolean): {
   view: ActivityView | null;
