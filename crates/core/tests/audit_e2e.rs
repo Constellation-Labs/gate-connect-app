@@ -428,6 +428,15 @@ fn unknown_port_is_null_rather_than_zero() {
     account::save("https://gw.example.test", Some("sk-gw-stored")).unwrap();
     account::set_org("org-uuid-1", "Example Org").unwrap();
 
+    // Drain the arrange emits before the mock exists. `emit_best_effort` spawns
+    // a detached thread that resolves the endpoint seam when it *runs*, not when
+    // it is spawned, so an emit still in flight here would read the endpoint set
+    // below and POST to this test's own mock: that consumes the mock's single
+    // connection and hands `rx.recv()` the wrong event, while the event under
+    // test gets a connection reset. Flushing while the seam is still unset is
+    // what makes the skip documented on `TempDataDir` actually hold.
+    audit::flush();
+
     let (base, rx) = spawn_mock("200 OK", "{}");
     std::env::set_var(
         "GATE_CONNECT_TEST_AUDIT_ENDPOINT",
@@ -478,6 +487,10 @@ fn gateway_switch_emits_to_the_old_gateway_naming_the_new_one() {
     let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
     account::save("https://old.example.test", Some("sk-gw-stored")).unwrap();
+
+    // Same reason as above: drain the `save` emit while the endpoint seam is
+    // still unset, so it cannot land on the mock spawned just below.
+    audit::flush();
 
     let (base, rx) = spawn_mock("201 Created", "{}");
     std::env::set_var(
