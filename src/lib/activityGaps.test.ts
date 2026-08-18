@@ -101,6 +101,15 @@ describe("sectionNotice", () => {
     expect(sectionNotice("Needs review", "definition_pending").actions).toEqual([]);
   });
 
+  it("does not send a machine credential to ask an admin for permission", () => {
+    // The gateway raises `attribution` for a credential with no user on it,
+    // which is what an org-scoped key is. No role change fixes that, so the copy
+    // must not imply one, and the offer is a credential that belongs to a person.
+    const n = sectionNotice("Messages", "attribution");
+    expect(n.cause).not.toMatch(/role|permission|owner|admin/i);
+    expect(n.actions.map((a) => a.kind)).toEqual(["api-keys", "docs"]);
+  });
+
   it("points a role problem at the person who can fix it", () => {
     expect(sectionNotice("Blocked and flagged", "access").cause).toMatch(
       /owner or admin/i,
