@@ -108,8 +108,9 @@ export function NewUiApp() {
   // installation at all. Selecting one refetches - the gateway narrows every
   // section server-side, so there is nothing to slice here.
   const [installId, setInstallId] = useState<string | null>(null);
-  // One fetch per mount, plus the pane's own refresh. Not polled: the endpoint
-  // shares the gateway's per-minute throttle bucket with the user's own traffic.
+  // One fetch per mount, plus the pane's own refresh. Not polled: the endpoint's
+  // throttle bucket is keyed on the source address, so a timer here would spend
+  // a budget shared with every other Gate Connect user on the same network.
   const activity = useActivity(true, installId);
   const { installations, current: currentInstallId } = useInstallations(true);
 
