@@ -346,6 +346,12 @@ interface RawInstallations {
  * A failure is not surfaced as a code the way the overview's is. This list only
  * populates a picker, and the pane it sits on has its own reading to show; an
  * empty picker degrades to the org-wide view, which is the default anyway.
+ *
+ * One failure is expected rather than exceptional: the gateway refuses this route
+ * outright for a credential with no user on it, because the list names every
+ * machine the org runs. That caller's overview is already declining its traffic
+ * sections with a reason on screen, so a picker with nothing to scope would be
+ * the second half of a message it has already been given.
  */
 export function useInstallations(enabled: boolean): {
   installations: Installation[];
