@@ -23,9 +23,16 @@ import type { ActivityFailure, UnavailableReason } from "./activity";
  * **Only actions that do real work appear here.** `lib/notices.ts` argues the
  * same point for routing notices: an offered action the user cannot complete is
  * worse than none, because it converts "I cannot see this" into "I tried to fix
- * this and it did nothing". So there is no "Sign in" (this shell has no
- * sign-in flow yet) and no "Switch organization" (the sidebar's switcher is
- * still inert) - those causes point at the dashboard, which does work.
+ * this and it did nothing". So there is no "Sign in": `useSetup` owns that flow
+ * and the shell only routes to it when there is no usable credential at all,
+ * which is not a state this banner is ever drawn in. Those causes point at the
+ * dashboard, which does work.
+ *
+ * "Switch organization" is the near miss. The sidebar's switcher is wired now,
+ * so the action would work - but no reason maps to it cleanly: `no_org` is the
+ * candidate, and an account with no organization has nothing to switch between.
+ * Offering it belongs with the rest of AG-576's action vocabulary rather than
+ * being smuggled in here.
  */
 
 export type GapActionKind =
