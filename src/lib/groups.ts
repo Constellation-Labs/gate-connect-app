@@ -295,3 +295,33 @@ export function groupSummary(group: Group): {
   }
   return { count, exception: null, kind: null };
 }
+
+/**
+ * The members a family switch may act on, already filtered to the ones the
+ * change would actually move.
+ *
+ * Three rules, each of which cost something to learn:
+ *
+ * - **Chat members never ride a family switch.** They intercept a session-cookie
+ *   surface (claude.ai, the ChatGPT app's own turn) rather than a key-brokered
+ *   API, so routing one is a deliberate per-row act. This mirrors the backend,
+ *   which keeps those slugs out of `proxy_domain_slugs` for the same reason.
+ * - **A drifted member is never switched on by a family.** Its config was written
+ *   by hand, and adopting it is a decision that belongs to the review dialog, not
+ *   to a switch two levels up. Turning *off* is unaffected: disconnecting
+ *   restores what was there.
+ * - **Members already in the target state are left alone**, so a family switch
+ *   does not rewrite a config that already says the right thing.
+ *
+ * Returned rather than applied, so both shells share the rules and each keeps
+ * its own error handling. The caller still has to trust the CA before the first
+ * command: a config member's connect auto-enables the engine, and the system
+ * dialog belongs ahead of the loop rather than sprung from member three.
+ */
+export function cascadeTargets(group: Group, on: boolean): GroupMember[] {
+  return group.members.filter((m) => {
+    if (m.chat) return false;
+    if (on) return !m.desired && m.attention !== "drifted";
+    return m.desired;
+  });
+}

@@ -11,7 +11,7 @@ import {
   openOnboardingWindow,
   proxyStatus,
 } from "./lib/api";
-import { useRouting } from "./lib/useRouting";
+import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
 import { useRunningApps } from "./lib/useRunningApps";
@@ -169,8 +169,14 @@ export function NewUiApp() {
     },
     onError: (e) => {
       // `connect` covers both directions: the remedy copy is the same either way
-      // for a failed tool write.
-      setActionError(classifyError(e, "connect"));
+      // for a failed tool write. A partial family failure keeps the remedy but
+      // replaces the title, because naming who failed is the whole point.
+      const classified = classifyError(e, "connect");
+      setActionError(
+        e instanceof FamilyCascadeError
+          ? { ...classified, title: cascadeTitle(e) }
+          : classified,
+      );
     },
   });
   const routingBusy = routing.busy;
@@ -178,6 +184,17 @@ export function NewUiApp() {
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),
   });
+
+  /** Same follow-up as a single app: a family cascade rewrites configs too. */
+  const routeFamily = useCallback(
+    async (group: Group, next: boolean) => {
+      setActionError(null);
+      if (await routing.setFamilyRouted(group, next)) {
+        await runningApps.offerAfterChange();
+      }
+    },
+    [routing, runningApps],
+  );
 
   /**
    * A tool's config was rewritten. If that app is open it is still on its old
@@ -226,7 +243,11 @@ export function NewUiApp() {
       groups.map((g) => ({
         id: g.id,
         name: g.name,
-        on: g.desired > 0,
+        // `cascadeDesired`, not `desired`: this switch governs only the members
+        // it can flip. A chat member switched on alone would otherwise render
+        // the family switch on while everything it governs is off, and clicking
+        // it would ask to turn off a set already off - leaving it stuck on.
+        on: g.cascadeDesired > 0,
         members: g.members.map(memberToFamilyMember),
       })),
     [groups],
@@ -560,6 +581,10 @@ export function NewUiApp() {
       ) : view.kind === "families" ? (
         <FamiliesPane
           families={families}
+          onToggleFamily={(id, next) => {
+            const group = groups.find((g) => g.id === id);
+            if (group) void routeFamily(group, next);
+          }}
           onToggleMember={(familyId, key, next) => {
             setActionError(null);
             const member = families
@@ -636,6 +661,14 @@ function toDialogOrg(org: Org): DialogOrganization {
  * a single app when that is what was closed, and staying vague when it was
  * several, beats asserting something that was not true.
  */
+/** "Couldn't connect Codex", or "Couldn't connect 2 of 4: Codex, OpenCode". */
+function cascadeTitle(e: FamilyCascadeError): string {
+  const verb = e.routed ? "connect" : "disconnect";
+  return e.names.length === 1
+    ? `Couldn't ${verb} ${e.names[0]}`
+    : `Couldn't ${verb} ${e.names.length} of ${e.attempted}: ${e.names.join(", ")}`;
+}
+
 function closedLabel(apps: string[]): string {
   return apps.length === 1 ? apps[0] : "The affected apps";
 }

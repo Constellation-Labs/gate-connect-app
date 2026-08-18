@@ -605,10 +605,22 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    (the popover defaults the other way, but it is choosing whether to show
    advice; this offers to kill processes). The e2e fixture gained
    `runningAgentNames`, since it stubbed only the count probes.
-4. **The family master cascade.** `FamiliesPane` hides its master switch rather
-   than showing a dead one. Cascading has to skip members with a hand-written
-   config, which means reusing the drift gate per member rather than looping
-   `connectTool`.
+4. **The family master cascade: DONE.** The rules moved to `cascadeTargets` in
+   `lib/groups.ts` and both shells use them: chat members never ride a family
+   switch, a drifted config is never adopted by one, and members already in the
+   target state are left alone. The action is `setFamilyRouted` in `useRouting`,
+   which trusts the certificate ahead of the loop (a member's connect
+   auto-enables the engine, so the system dialog must not be sprung from member
+   three) and names the members that failed rather than reporting "couldn't
+   connect this tool".
+
+   Two things this turned up. The new UI was driving the family switch from
+   `Group.desired` instead of `cascadeDesired` - the exact bug `groups.ts`
+   documents, where a chat member switched on alone leaves the master stuck on.
+   And a config member's `desired` is derived from `connected`, so a **drifted
+   member is outside the family switch in both directions**; the row and the
+   alert card are the ways back. That is pre-existing shared behaviour, so it is
+   pinned by a test rather than changed here.
 5. **The per-app model picker.** `UseGateModelDialog` exists;
    `App / Select a model` was never read from the Figma, so its contents are
    known only from a frame caption.

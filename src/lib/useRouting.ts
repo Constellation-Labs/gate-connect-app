@@ -9,6 +9,8 @@ import {
   proxyTrustCa,
 } from "./api";
 import { track, trackError } from "./analytics";
+import { cascadeTargets } from "./groups";
+import type { Group } from "./groups";
 
 /**
  * Routing actions for the new window UI: the gates that have to happen before a
@@ -54,6 +56,23 @@ export interface RoutingSnapshot {
 /** Thrown internally when the user declines a gate. Never surfaces: declining
  *  is an answer, not a failure, so it resolves quietly. */
 class Declined extends Error {}
+
+/**
+ * Some members of a family switch failed. Carries their names, because the
+ * useful sentence is "couldn't connect Codex and OpenCode", not "couldn't
+ * connect this tool" - which names nobody, reports no partial success, and
+ * leaves the user to work out which rows moved.
+ */
+export class FamilyCascadeError extends Error {
+  constructor(
+    readonly names: string[],
+    readonly attempted: number,
+    readonly routed: boolean,
+    readonly cause: unknown,
+  ) {
+    super(`${names.length} of ${attempted} members failed`);
+  }
+}
 
 export function useRouting({
   tools,
@@ -159,6 +178,67 @@ export function useRouting({
   );
 
   /**
+   * Route or unroute a whole family.
+   *
+   * Which members are touched is `cascadeTargets`, shared with the popover: chat
+   * members never ride a family switch, a drifted config is never adopted by
+   * one, and members already in the target state are left alone.
+   *
+   * The certificate is trusted **ahead of the loop**, not inside it. A config
+   * member's connect auto-enables the engine, which trusts the CA, so the system
+   * dialog belongs before the first command rather than sprung from member
+   * three. Declining aborts the whole family, which is what the implicit trust
+   * did to that member's connect anyway.
+   *
+   * Every member is attempted even after one fails, and the failures are named.
+   */
+  const setFamilyRouted = useCallback(
+    async (group: Group, routed: boolean): Promise<boolean> => {
+      if (busy) return false;
+      const targets = cascadeTargets(group, routed);
+      if (targets.length === 0) return false;
+      setBusy(true);
+      let changed = false;
+      const failed: string[] = [];
+      let last: unknown = null;
+      try {
+        if (routed) await ensureCaTrusted();
+        for (const member of targets) {
+          try {
+            if (member.kind === "config" && member.tool) {
+              await (routed
+                ? connectTool(member.key, member.tool.default_upstream_url)
+                : disconnectTool(member.key));
+            } else if (member.domain) {
+              await proxySetDomain(member.key, routed);
+            }
+            changed = true;
+          } catch (e) {
+            failed.push(member.name);
+            last = e;
+            trackError(e, "connect", { provider: group.id, tool: member.key, routed });
+          }
+        }
+        track("group_toggled", { provider: group.id, enabled: routed });
+        if (last !== null) {
+          onError?.(new FamilyCascadeError(failed, targets.length, routed, last), "connect");
+        }
+      } catch (e) {
+        // Only the pre-flight lands here; a member failure is caught per member.
+        if (!(e instanceof Declined)) {
+          trackError(e, "connect", { provider: group.id, routed });
+          onError?.(e, "connect");
+        }
+      } finally {
+        await resync();
+        setBusy(false);
+      }
+      return changed;
+    },
+    [busy, ensureCaTrusted, resync, onError],
+  );
+
+  /**
    * Route or unroute one proxy domain. No drift gate: a domain has no
    * hand-written config to preserve, only an enabled flag.
    */
@@ -182,5 +262,5 @@ export function useRouting({
     [busy, ensureCaTrusted, resync, onError],
   );
 
-  return { busy, prompt, resolvePrompt, setAppRouted, setDomainRouted };
+  return { busy, prompt, resolvePrompt, setAppRouted, setFamilyRouted, setDomainRouted };
 }
