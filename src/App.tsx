@@ -56,7 +56,7 @@ import {
   TrustDeclined,
   type ClassifiedError,
 } from "./lib/errors";
-import { buildGroups } from "./lib/groups";
+import { buildGroups, cascadeTargets } from "./lib/groups";
 import { isSignedIn, needsOrg } from "./lib/session";
 import { useTextScale } from "./lib/useTextScale";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
@@ -920,23 +920,19 @@ export function App() {
       // and the failures are named.
       const failed: string[] = [];
       let lastError: unknown = null;
-      // Chat members are excluded, not skipped inside the loop: they intercept
-      // a session-cookie surface (claude.ai, the ChatGPT app's own turn), so
-      // routing one is a deliberate per-row act and must not ride a family
-      // switch. This mirrors the backend, where those slugs are kept out of
-      // `proxy_domain_slugs` for the same reason - see `provider.rs`.
-      const cascade = group.members.filter((m) => !m.chat);
+      // Which members a family switch may touch is `cascadeTargets` in
+      // lib/groups.ts, shared with the window UI: chat members never ride a
+      // family switch, a drifted config is never adopted by one, and members
+      // already in the target state are left alone.
+      const cascade = cascadeTargets(group, on);
       for (const member of cascade) {
         try {
           if (member.kind === "config" && member.tool) {
-            if (on && !member.desired && member.attention !== "drifted") {
-              await connectTool(member.key, member.tool.default_upstream_url);
-            } else if (!on && member.desired) {
-              await disconnectTool(member.key);
-            }
+            await (on
+              ? connectTool(member.key, member.tool.default_upstream_url)
+              : disconnectTool(member.key));
           } else if (member.domain) {
-            if (on && !member.domain.enabled) await proxySetDomain(member.key, true);
-            else if (!on && member.domain.enabled) await proxySetDomain(member.key, false);
+            await proxySetDomain(member.key, on);
           }
         } catch (e) {
           failed.push(member.name);

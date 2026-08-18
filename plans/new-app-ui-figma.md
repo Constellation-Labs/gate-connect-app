@@ -598,23 +598,61 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    returning user must not be greeted by it) and the org-picker dead end's escape
    to the key form. `isSignedIn` / `needsOrg` moved to `lib/session.ts` so both
    shells cannot drift on what counts as signed in.
-2. **Updates.** `banners.tsx` has `UpdateBanner` and nothing drives it.
-   `components/UpdatePanel.tsx` holds the real flow - `check()` from
-   `plugin-updater`, then download/install bracketed by
-   `setUpdaterRelaunching`, plus a re-check on each window reopen. The new shell
-   wants the banner rather than the popover's startup takeover, and the same
-   slice supplies Settings' "Check for updates" row.
-3. **The running-apps sequence.** `ApplyChangesDialog` to `CloseAppsDialog` to
-   `ChangeReadyDialog` are built and unreachable. `runningAgents()` and
-   `closeRunningAgents()` both exist; what is missing is the decision of when
-   the sequence interrupts a connect.
-4. **The family master cascade.** `FamiliesPane` hides its master switch rather
-   than showing a dead one. Cascading has to skip members with a hand-written
-   config, which means reusing the drift gate per member rather than looping
-   `connectTool`.
-5. **The per-app model picker.** `UseGateModelDialog` exists;
-   `App / Select a model` was never read from the Figma, so its contents are
-   known only from a frame caption.
+2. **Updates: DONE.** The mechanism moved to `lib/useUpdate.ts` and both shells
+   use it - the opposite call from `useRouting` and `useSettingsActions`, because
+   nothing here was tangled with the popover's shape and what it holds is a
+   sequence whose ordering is load-bearing: the relaunch mark lands after the
+   download (quitting mid-download is a genuine exit that must keep its cleanup)
+   and before `install()` (on Windows the installer exits from inside that call).
+   A second copy could drift into a botched update. The window uses the banner
+   `AppShell` already had a slot for; the popover keeps its takeover-then-banner
+   escalation. Settings' "Check for updates" reports its result in the version
+   row, since silence on a pressed button reads as broken.
+3. **The running-apps sequence: DONE.** `lib/useRunningApps.ts` runs it after a
+   config write that actually happened - `setAppRouted` now reports that, so a
+   declined review or a failed write never reaches it. Deliberately not part of
+   `useRouting`: that hook's prompt is a *gate* that blocks a write until
+   answered, and this is the opposite, a sequence that follows a write and can be
+   walked away from without changing what was saved. Nothing is signalled without
+   two answers, and a failed scan stays silent rather than defaulting to showing
+   (the popover defaults the other way, but it is choosing whether to show
+   advice; this offers to kill processes). The e2e fixture gained
+   `runningAgentNames`, since it stubbed only the count probes.
+4. **The family master cascade: DONE.** The rules moved to `cascadeTargets` in
+   `lib/groups.ts` and both shells use them: chat members never ride a family
+   switch, a drifted config is never adopted by one, and members already in the
+   target state are left alone. The action is `setFamilyRouted` in `useRouting`,
+   which trusts the certificate ahead of the loop (a member's connect
+   auto-enables the engine, so the system dialog must not be sprung from member
+   three) and names the members that failed rather than reporting "couldn't
+   connect this tool".
+
+   Two things this turned up. The new UI was driving the family switch from
+   `Group.desired` instead of `cascadeDesired` - the exact bug `groups.ts`
+   documents, where a chat member switched on alone leaves the master stuck on.
+   And a config member's `desired` is derived from `connected`, so a **drifted
+   member is outside the family switch in both directions**; the row and the
+   alert card are the ways back. That is pre-existing shared behaviour, so it is
+   pinned by a test rather than changed here.
+5. **The per-app model picker: UI DONE, no backend exists.** `App / Select a
+   model` was finally read (browser, "App w/ choose model modal open"): the
+   design draws a **dropdown anchored to Change model**, one row per model, the
+   current one first and outlined, listing eleven `gate/...` ids across
+   Anthropic, DeepSeek, Qwen, Kimi and OpenAI. Built as `ModelPickerDialog`; the
+   choice is confirmed through `UseGateModelDialog` because switching to a Gate
+   model spends PAYG credits.
+
+   **There is no model backend at all** - no Tauri command, no Rust, nothing to
+   persist to. The choice is session state and says so at the call site, and the
+   picker ships with an empty list rather than the drawn ids: shipping those
+   would put a fabricated model catalogue in front of the user, which is the same
+   argument the zeroed metrics make. What it needs is an endpoint reporting the
+   gateway's models and somewhere to record the per-app selection.
+
+   Two details of the frame could not be read: the top edge was cut off, so
+   whether the panel carries a search field is unknown (omitted), and the drawn
+   ids render in the UI face rather than mono. Mono was used, since CLAUDE.md
+   names model ids explicitly and every other identifier in the design is mono.
 6. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
    pending the 24-hour endpoint. Open question 7 (whether `total` double-counts)
    should be settled in that response shape, not in the chart.
@@ -623,8 +661,9 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    Item 1 was the blocker and is done, so what remains is repointing the e2e
    suite at the new shell and deleting; the popover's own specs go with it.
 
-Rows the design draws that have no backend command at all: device rename,
-notifications, plan upgrade. They render their value and omit their control.
+Rows the design draws that have no backend command at all: device rename and
+notifications, plus plan upgrade, which has no billing URL to open. They render
+their value and omit their control.
 
 Two rows are gated on the account's auth mode rather than hidden outright:
 **Replace key** appears only for an API-key account (on an OAuth account

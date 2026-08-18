@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
 import type { ProxyState, Status, Tool } from "./api";
-import { useRouting } from "./useRouting";
+import { useRouting, FamilyCascadeError } from "./useRouting";
+import type { Group, GroupMember } from "./groups";
 
 vi.mock("./api", () => ({
   connectTool: vi.fn(),
@@ -59,6 +60,12 @@ function harness(tools: Tool[], proxy: ProxyState | null) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // `clearAllMocks` clears calls but keeps implementations, and one test below
+  // parks `connectTool` on a promise it never resolves. Without an explicit
+  // reset that implementation leaks into every later test, which then hangs on
+  // its first member and reports a call count nobody can explain.
+  (connectTool as Mock).mockReset();
+  (disconnectTool as Mock).mockReset();
   (listTools as Mock).mockResolvedValue([]);
   (proxyStatus as Mock).mockResolvedValue(proxyState());
   (proxyTrustCa as Mock).mockResolvedValue(proxyState());
@@ -254,5 +261,154 @@ describe("useRouting: domains", () => {
 
     expect(api.current!.prompt).toBeNull();
     expect(proxySetDomain).toHaveBeenCalledWith("claude-web", false);
+  });
+});
+
+const group = (members: GroupMember[]): Group => ({
+  id: "anthropic",
+  name: "Anthropic",
+  switchLabel: "Route Anthropic through Gate",
+  members,
+  routed: members.filter((m) => m.routed).length,
+  desired: members.filter((m) => m.desired).length,
+  cascadeDesired: members.filter((m) => m.desired && !m.chat).length,
+});
+
+const configMember = (over: Partial<GroupMember> = {}): GroupMember => ({
+  key: "claude-code",
+  kind: "config",
+  name: "Claude Code",
+  routed: false,
+  desired: false,
+  attention: null,
+  tool: tool("claude-code", { kind: "detected" }),
+  ...over,
+});
+
+describe("useRouting: the family cascade", () => {
+  it("trusts the certificate once, before the first member", async () => {
+    // A config member's connect auto-enables the engine, which trusts the CA.
+    // Sprung from member three, that system dialog reads as malware.
+    const { api } = harness([], proxyState({ ca_trusted: false }));
+    const g = group([configMember(), configMember({ key: "codex", name: "Codex" })]);
+
+    await act(async () => {
+      void api.current!.setFamilyRouted(g, true);
+    });
+    expect(api.current!.prompt).toEqual({ kind: "trust" });
+    expect(connectTool).not.toHaveBeenCalled();
+
+    await act(async () => {
+      api.current!.resolvePrompt(true);
+    });
+
+    expect((proxyTrustCa as Mock).mock.calls).toHaveLength(1);
+    expect(connectTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts the whole family when the certificate is refused", async () => {
+    const { api, onError } = harness([], proxyState({ ca_trusted: false }));
+    const g = group([configMember()]);
+
+    await act(async () => {
+      void api.current!.setFamilyRouted(g, true);
+    });
+    await act(async () => {
+      api.current!.resolvePrompt(false);
+    });
+
+    expect(connectTool).not.toHaveBeenCalled();
+    // The user chose this on our own screen; it is an answer, not a failure.
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("keeps going after one member fails, and names the ones that did", async () => {
+    // One failure used to abort the loop and report "couldn't connect this
+    // tool", naming nobody and hiding the partial success.
+    (connectTool as Mock).mockImplementation(async (slug: string) => {
+      if (slug === "codex") throw new Error("nope");
+    });
+    const { api, onError } = harness([], proxyState());
+    const g = group([
+      configMember(),
+      configMember({ key: "codex", name: "Codex", tool: tool("codex", { kind: "detected" }) }),
+      configMember({ key: "opencode", name: "OpenCode", tool: tool("opencode", { kind: "detected" }) }),
+    ]);
+
+    await act(async () => {
+      await api.current!.setFamilyRouted(g, true);
+    });
+
+    expect(connectTool).toHaveBeenCalledTimes(3);
+    const reported = onError.mock.calls[0][0] as FamilyCascadeError;
+    expect(reported).toBeInstanceOf(FamilyCascadeError);
+    expect(reported.names).toEqual(["Codex"]);
+    expect(reported.attempted).toBe(3);
+  });
+
+  it("reports a change when some members succeeded", async () => {
+    // The follow-up sequence keys off this: configs were written, so a running
+    // app is now stale even though one member failed.
+    (connectTool as Mock).mockImplementationOnce(async () => {
+      throw new Error("nope");
+    });
+    const { api } = harness([], proxyState());
+    const g = group([
+      configMember(),
+      configMember({ key: "codex", name: "Codex", tool: tool("codex", { kind: "detected" }) }),
+    ]);
+
+    let changed: boolean | undefined;
+    await act(async () => {
+      changed = await api.current!.setFamilyRouted(g, true);
+    });
+
+    expect(changed).toBe(true);
+  });
+
+  it("does nothing, and says so, when every member is already there", async () => {
+    const { api } = harness([], proxyState());
+    const g = group([configMember({ desired: true })]);
+
+    let changed: boolean | undefined;
+    await act(async () => {
+      changed = await api.current!.setFamilyRouted(g, true);
+    });
+
+    expect(changed).toBe(false);
+    expect(connectTool).not.toHaveBeenCalled();
+    // Not even a certificate prompt: there is nothing to route.
+    expect(api.current!.prompt).toBeNull();
+  });
+
+  it("routes domain members through the proxy, not through connect", async () => {
+    const { api } = harness([], proxyState());
+    const g = group([
+      {
+        key: "anthropic-api",
+        kind: "proxy",
+        name: "Anthropic API",
+        routed: false,
+        desired: false,
+        attention: null,
+        domain: {
+          slug: "anthropic-api",
+          display_name: "Anthropic API",
+          hosts: ["api.anthropic.com"],
+          upstream_url: "https://gw.example/anthropic",
+          rewrite_prefixes: [],
+          passthrough_prefixes: [],
+          enabled: false,
+          supported: true,
+        },
+      },
+    ]);
+
+    await act(async () => {
+      await api.current!.setFamilyRouted(g, true);
+    });
+
+    expect(proxySetDomain).toHaveBeenCalledWith("anthropic-api", true);
+    expect(connectTool).not.toHaveBeenCalled();
   });
 });
