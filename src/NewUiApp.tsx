@@ -73,7 +73,12 @@ import {
 } from "./components/gc/dialogs";
 import { AlertBanner, ErrorBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
-import type { AppStatus, SidebarApp, SidebarView } from "./components/gc/Sidebar";
+import type {
+  AppStatus,
+  InventoryState,
+  SidebarApp,
+  SidebarView,
+} from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
 import { analyticsId, setAnalyticsConsent } from "./lib/analytics";
@@ -136,6 +141,16 @@ export function NewUiApp() {
   const [prefsUnavailable, setPrefsUnavailable] = useState(false);
   const [view, setView] = useState<SidebarView>({ kind: "overview" });
   const [menuOpen, setMenuOpen] = useState(false);
+  /** A manual scan is in flight. Separate from `routingBusy`, which is about a
+   * write: refusing to re-read while a toggle is mid-flight would be the wrong
+   * coupling, and a scan changes nothing on disk. */
+  const [refreshing, setRefreshing] = useState(false);
+  /**
+   * What the last detection scan established, as opposed to how many rows it
+   * produced. `null` before the first one lands - which is not "nothing found",
+   * and must not render as it.
+   */
+  const [scan, setScan] = useState<{ kind: "ok"; at: Date } | { kind: "failed" } | null>(null);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
@@ -182,6 +197,10 @@ export function NewUiApp() {
       listTools().catch(() => null),
       proxyStatus().catch(() => null),
     ]);
+    // A failed scan is not an empty machine. `catch(() => [])` used to collapse
+    // the two, so a device Gate could not read rendered as a device with no AI
+    // apps on it - the exact confusion AG-560 exists to remove.
+    setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
     if (t) setTools(t);
     if (px) setProxy(px);
     // The engine coming up or going down changes every verdict, since the relay
@@ -189,6 +208,17 @@ export function NewUiApp() {
     // for the next poll.
     void refreshVerdicts();
   }, [refreshVerdicts]);
+
+  /** Re-run detection because the user asked. Same reads as the event-driven
+   * `refresh`, plus a flag so the control can refuse a second click. */
+  const refreshNow = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh]);
 
   // The engine changes state without us asking: a CLI toggle, the startup
   // auto-enable, another window. Repaint from the event rather than leaving a
@@ -205,7 +235,7 @@ export function NewUiApp() {
   useEffect(() => {
     void (async () => {
       const [t, p, px, acct, oauthState, v] = await Promise.all([
-        listTools().catch(() => [] as Tool[]),
+        listTools().catch(() => null),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
         getAccount().catch(() => null),
@@ -214,7 +244,8 @@ export function NewUiApp() {
       ]);
       void loadLaunchAtLogin();
       void loadPreferences();
-      setTools(t);
+      setTools(t ?? []);
+      setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
       void refreshVerdicts();
       setProviders(p);
       setProxy(px);
@@ -314,14 +345,29 @@ export function NewUiApp() {
         .map((t) => ({
           slug: t.slug,
           name: t.name,
-          status: verdictStatus(verdicts.get(t.slug)),
+          status: verdictStatus(verdicts.get(t.slug), {
+            writeFailed: routing.writeFailures.has(t.slug),
+          }),
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
           on: t.status.kind === "connected" || t.status.kind === "drifted",
           busy: routingBusy,
         })),
-    [tools, verdicts, routingBusy],
+    [tools, verdicts, routing.writeFailures, routingBusy],
   );
+
+  /**
+   * What the sidebar should say when the app list is empty. `ok` while there are
+   * rows, because the rows speak for themselves; before the first scan lands the
+   * state is unknown, and rendering "no apps detected" then would be a claim
+   * nothing has checked.
+   */
+  const inventory = useMemo<InventoryState>(() => {
+    if (apps.length > 0) return { kind: "ok" };
+    if (scan === null) return { kind: "ok" };
+    if (scan.kind === "failed") return { kind: "failed" };
+    return { kind: "none", scannedAt: scan.at.toLocaleTimeString() };
+  }, [apps.length, scan]);
 
   const families = useMemo<Family[]>(
     () =>
@@ -333,9 +379,11 @@ export function NewUiApp() {
         // the family switch on while everything it governs is off, and clicking
         // it would ask to turn off a set already off - leaving it stuck on.
         on: g.cascadeDesired > 0,
-        members: g.members.map((m) => memberToFamilyMember(m, verdicts)),
+        members: g.members.map((m) =>
+          memberToFamilyMember(m, verdicts, routing.writeFailures),
+        ),
       })),
-    [groups, verdicts],
+    [groups, verdicts, routing.writeFailures],
   );
 
   const noop = useCallback(() => {}, []);
@@ -603,6 +651,9 @@ export function NewUiApp() {
       onNavigate={setView}
       apps={apps}
       onSelectApp={(slug) => setView({ kind: "app", slug })}
+      onRefreshApps={() => void refreshNow()}
+      refreshingApps={refreshing}
+      inventory={inventory}
       notice={
         actionError ? (
           <ErrorBanner
@@ -618,6 +669,10 @@ export function NewUiApp() {
           <ReviewConfigDialog
             app={{ name: routing.prompt.name }}
             existingConfig={routing.prompt.existingConfig}
+            // The relay is what a config-routed tool gets pointed at. Null
+            // before a port has been bound, and the dialog omits the row rather
+            // than inventing an address.
+            gateRoute={proxy?.relay_base_url}
             onKeep={() => routing.resolvePrompt(false)}
             onReplace={() => routing.resolvePrompt(true)}
           />
@@ -885,10 +940,11 @@ function initialsOf(name: string): string {
 function memberToFamilyMember(
   m: GroupMember,
   verdicts: Map<string, Verdict>,
+  writeFailures: ReadonlySet<string>,
 ): Family["members"][number] {
   const status: AppStatus =
     m.kind === "config"
-      ? verdictStatus(verdicts.get(m.key))
+      ? verdictStatus(verdicts.get(m.key), { writeFailed: writeFailures.has(m.key) })
       : m.routed
         ? { kind: "protected" }
         : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };

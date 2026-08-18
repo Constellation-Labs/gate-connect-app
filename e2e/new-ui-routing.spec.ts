@@ -173,3 +173,223 @@ async function callsFor(page: import("@playwright/test").Page, cmd: string) {
     cmd,
   );
 }
+
+/**
+ * AG-568's failure branch, and the Gate route the review dialog now shows.
+ *
+ * What these cover that the unit tests cannot: that the failed write reaches the
+ * row the user is looking at, rather than only the banner, and that the dialog
+ * shows what it would write before asking for approval.
+ */
+test.describe("new UI drift repair", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  const codex = {
+    slug: "codex",
+    name: "Codex",
+    upstream_provider_name: "OpenAI",
+    default_upstream_url: "https://gw.example/codex",
+    requires_upstream_credential: false,
+  };
+  const drifted = {
+    proxy: { running: true, ca_trusted: true },
+    tools: [
+      {
+        ...codex,
+        status: {
+          kind: "drifted" as const,
+          reason: "API base URL: https://api.openai.com/v1",
+        },
+      },
+    ],
+  };
+
+  /**
+   * The alert card's switch is the one path that re-adopts a drifted config and
+   * so the only one that reaches the review (the sidebar switch reads *on* for a
+   * drifted tool and turns it off). This is where showing the Gate route matters:
+   * the user is being asked to approve an overwrite.
+   */
+  test("the review dialog shows what Gate would write, not just what it found", async ({
+    boot,
+  }) => {
+    const app = await boot(drifted);
+
+    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    // What Gate found...
+    await expect(dialog.getByText("API base URL: https://api.openai.com/v1")).toBeVisible();
+    // ...and what it would write in its place.
+    await expect(dialog.getByText("What Gate would write instead")).toBeVisible();
+    await expect(dialog.getByText("http://127.0.0.1:45981")).toBeVisible();
+  });
+
+  test("the Gate-route row is omitted when no relay port has been bound", async ({ boot }) => {
+    // Not "unknown" dressed as an address: with no port there is nothing true to
+    // show, so the row goes rather than guessing.
+    const app = await boot({ ...drifted, proxy: { running: true, ca_trusted: true, relay_base_url: null } });
+
+    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("What Gate would write instead")).toHaveCount(0);
+  });
+
+  test("a failed write says so on the row, not only in a banner", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...codex, status: { kind: "detected" as const } }],
+      failures: { connect_tool: "failed to write ~/.codex/config.toml" },
+    });
+
+    const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
+    await sidebarSwitch.click();
+
+    await expect(app.page.getByText("Configuration update failed")).toBeVisible();
+  });
+
+  test("a retry that succeeds clears the failure from the row", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...codex, status: { kind: "detected" as const } }],
+      failures: { connect_tool: "failed to write ~/.codex/config.toml" },
+    });
+
+    const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
+    await sidebarSwitch.click();
+    await expect(app.page.getByText("Configuration update failed")).toBeVisible();
+
+    // Clear the injected failure, then click again - the switch is the retry.
+    // `app.patch` merges objects one level deep, so it cannot *remove* a key;
+    // this reaches for the harness state directly to empty the map.
+    await app.page.evaluate(() => {
+      window.__GATE_E2E__.state.failures = {};
+    });
+    await sidebarSwitch.click();
+
+    await expect(app.page.getByText("Configuration update failed")).toHaveCount(0);
+  });
+});
+
+/**
+ * AG-558's one buildable line: "Gate Connect checks for each supported tool
+ * during setup, MANUAL REFRESH, and application changes that can affect
+ * detection."
+ *
+ * Detection only ran on backend events, so installing a tool while this window
+ * was open showed nothing until something unrelated repainted it.
+ */
+test.describe("new UI: refreshing the inventory", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("the refresh control re-reads tools and re-runs the routing sweep", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    const before = (await app.calls()).filter((c) => c.cmd === "list_tools").length;
+    await app.page.getByRole("button", { name: "Refresh apps" }).click();
+
+    await expect
+      .poll(async () => (await app.calls()).filter((c) => c.cmd === "list_tools").length)
+      .toBeGreaterThan(before);
+    // The sweep rides along: a tool that just appeared has no verdict yet, and
+    // leaving the old ones on screen would describe a different set of tools.
+    await expect
+      .poll(async () => (await app.calls()).filter((c) => c.cmd === "routing_verdicts").length)
+      .toBeGreaterThan(1);
+  });
+
+  test("a tool installed while the window was open appears on refresh", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
+
+    await expect(app.page.getByRole("switch", { name: "Codex" })).toHaveCount(0);
+
+    await app.patch({
+      tools: [
+        {
+          slug: "codex",
+          name: "Codex",
+          upstream_provider_name: "OpenAI",
+          default_upstream_url: "https://gw.example/codex",
+          requires_upstream_credential: false,
+          status: { kind: "detected" },
+        },
+      ],
+    });
+    // Starting from an empty list, so the control on screen is the inventory
+    // card's Refresh - the eyebrow one is hidden while that card shows.
+    await app.page.getByRole("button", { name: "Refresh", exact: true }).click();
+
+    await expect(app.page.getByRole("switch", { name: "Codex" }).first()).toBeVisible();
+    await expect(app.page.getByText("No apps detected")).toHaveCount(0);
+  });
+});
+
+/**
+ * AG-560's first two criteria: a completed scan that found nothing and a scan
+ * that could not complete are different results, and must not look alike.
+ *
+ * The bug this closes: `listTools().catch(() => [])` turned a failed read into an
+ * empty array, so a device Gate could not scan rendered as a device with no AI
+ * apps on it - with a "0/0" count that reads like a clean answer.
+ */
+test.describe("new UI: an empty inventory", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("a completed scan with nothing on the device says so, with a time", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
+
+    await expect(app.page.getByText("No apps detected")).toBeVisible();
+    await expect(app.page.getByText(/^Checked /)).toBeVisible();
+    // The card's own control. The eyebrow one is hidden while this card shows,
+    // so there is exactly one Refresh on screen.
+    await expect(app.page.getByRole("button", { name: "Refresh", exact: true })).toBeVisible();
+    await expect(app.page.getByRole("button", { name: "Refresh apps" })).toHaveCount(0);
+  });
+
+  test("a failed scan says it could not look, not that there is nothing", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [],
+      failures: { list_tools: "permission denied reading the app list" },
+    });
+
+    await expect(app.page.getByText("Couldn’t check for apps")).toBeVisible();
+    // The distinction that matters: it must not claim the device is clean.
+    await expect(app.page.getByText("No apps detected")).toHaveCount(0);
+    await expect(app.page.getByRole("button", { name: "Try again" })).toBeVisible();
+  });
+
+  test("neither state appears once apps are found", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await expect(app.page.getByText("No apps detected")).toHaveCount(0);
+    await expect(app.page.getByText("Couldn’t check for apps")).toHaveCount(0);
+  });
+
+  test("a failed scan recovers when the retry succeeds", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [],
+      failures: { list_tools: "permission denied reading the app list" },
+    });
+    await expect(app.page.getByText("Couldn’t check for apps")).toBeVisible();
+
+    await app.page.evaluate(() => {
+      window.__GATE_E2E__.state.failures = {};
+    });
+    await app.page.getByRole("button", { name: "Try again" }).click();
+
+    // Now a real answer: the device genuinely has no tools in this fixture.
+    await expect(app.page.getByText("No apps detected")).toBeVisible();
+    await expect(app.page.getByText("Couldn’t check for apps")).toHaveCount(0);
+  });
+});
