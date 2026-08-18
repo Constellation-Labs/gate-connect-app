@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 import { ConstellationHexMark } from "./ConstellationHexMark";
 import { Icon } from "./Icon";
 import { ModalOption } from "./Modal";
+import { BaseSwitch } from "./base";
+import { CollectedDataLists } from "./dialogs";
 import { Topbar } from "./Topbar";
 import type { TopnavAction } from "./Topbar";
 
@@ -343,5 +345,81 @@ export function ConnectedPane({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The last step before Overview: the diagnostic-data choice.
+ *
+ * Placed here rather than in Settings-only because consent belongs before
+ * collection, not after it. `lib/analytics.ts` starts PostHog at launch, so the
+ * first thing this step buys is a person who has actually been asked.
+ *
+ * **Provisional layout.** The Figma draws no diagnostics step (AG-551 and AG-553
+ * are still moving). Structure comes from AG-603 and AG-554: the switch defaults
+ * On, the list of what is and is not collected sits under it, and Continue records
+ * the displayed value.
+ *
+ * The switch is **on by default and the primary is Continue, not Accept** -
+ * leaving it alone is a real answer, and the copy says so rather than implying the
+ * person has to agree to proceed.
+ */
+export function DiagnosticsPane({
+  share,
+  onToggleShare,
+  busy,
+  onContinue,
+}: {
+  share: boolean;
+  onToggleShare: () => void;
+  busy?: boolean;
+  onContinue: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-6">
+      <SetupHeader
+        title="Help fix problems"
+        subtitle="Gate Connect can send diagnostic data about itself. You can change this any time in Settings."
+        mark={
+          <span className="flex size-12 items-center justify-center rounded-lg bg-gray-100 text-neutral-700">
+            <Icon name="info" size={24} />
+          </span>
+        }
+      />
+
+      <div className="flex items-center gap-3 rounded-lg border border-base-border bg-base-card p-4">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium leading-5 text-neutral-900">
+            Share diagnostic data
+          </p>
+          <p className="text-base-xs leading-4 text-neutral-600">
+            {share
+              ? "Gate will send the data listed below."
+              : "Gate will not send diagnostic data."}
+          </p>
+        </div>
+        <span className="flex shrink-0 items-center gap-2">
+          <span className="text-base-xs font-medium text-neutral-600">
+            {share ? "On" : "Off"}
+          </span>
+          <BaseSwitch on={share} label="Share diagnostic data" onClick={onToggleShare} />
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-3 text-base-xs leading-4 text-neutral-600">
+        <CollectedDataLists Wrapper={SetupNote} />
+      </div>
+
+      <PrimaryButton onClick={onContinue} busy={busy}>
+        Continue
+      </PrimaryButton>
+    </div>
+  );
+}
+
+/** The card the setup pane frames each list in - `ModalNote`'s counterpart here. */
+function SetupNote({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-base-border bg-gray-50 p-3">{children}</div>
   );
 }

@@ -66,6 +66,10 @@ export interface ProxyFixture {
   port: number | null;
   pac_port: number | null;
   ca_trusted: boolean;
+  /** Loopback base URL config-routed tools point at. Null before a relay port
+      has been bound, which is what the drift dialog omits its Gate-route row
+      for. */
+  relay_base_url: string | null;
   env_export_opted_in: boolean;
   env_export_separable: boolean;
   domains: DomainFixture[];
@@ -105,6 +109,16 @@ export interface BackendState {
   tools: ToolFixture[];
   providers: ProviderFixture[];
   launchAtLogin: { enabled: boolean; pending_disable: boolean };
+  /** Settings preferences, as `preferences.json` holds them. Both default on,
+      which is what lets a switch read On before anything has been written. */
+  preferences: {
+    routing_health_notifications: boolean;
+    share_diagnostics: boolean;
+    /** Whether the diagnostic-data question has been ANSWERED, as opposed to
+        defaulted. False sends first run through the diagnostics step; the
+        default here is true so the existing specs reach the app shell. */
+    share_diagnostics_recorded: boolean;
+  };
   routedClientsStale: boolean;
   runningAgents: number;
   /** Process names the agent scan reports as running. `runningAgents` is the
@@ -264,6 +278,7 @@ export function defaultState(): BackendState {
       port: null,
       pac_port: null,
       ca_trusted: false,
+      relay_base_url: "http://127.0.0.1:45981",
       env_export_opted_in: false,
       env_export_separable: true,
       domains: [
@@ -297,6 +312,11 @@ export function defaultState(): BackendState {
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
+    preferences: {
+      routing_health_notifications: true,
+      share_diagnostics: true,
+      share_diagnostics_recorded: true,
+    },
     routedClientsStale: false,
     runningAgents: 0,
     runningAgentNames: [],

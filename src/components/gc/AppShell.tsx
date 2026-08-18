@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { RoutingBanner, UpdateBanner } from "./banners";
 import { Sidebar } from "./Sidebar";
-import type { SidebarApp, SidebarView } from "./Sidebar";
+import type { InventoryState, SidebarApp, SidebarView } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import type { TopnavAction } from "./Topbar";
 
@@ -29,6 +29,9 @@ export function AppShell({
   apps,
   onSelectApp,
   onToggleApp,
+  onRefreshApps,
+  refreshingApps,
+  inventory,
   notice,
   dialog,
   children,
@@ -46,6 +49,13 @@ export function AppShell({
   apps: SidebarApp[];
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
+  /** Re-run tool detection. Passed straight through to the sidebar, which owns
+   * the control. */
+  onRefreshApps?: () => void;
+  refreshingApps?: boolean;
+  /** What the last detection scan established. Passed through to the sidebar,
+   * which owns the inventory. */
+  inventory?: InventoryState;
   /**
    * A failure worth interrupting for, shown under the banners. Sits here rather
    * than inside a pane so it survives navigation and reads the same whichever
@@ -90,6 +100,9 @@ export function AppShell({
           apps={apps}
           onSelectApp={onSelectApp}
           onToggleApp={onToggleApp}
+          onRefresh={onRefreshApps}
+          refreshing={refreshingApps}
+          inventory={inventory}
         />
         {children}
       </div>

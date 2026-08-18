@@ -166,3 +166,144 @@ test.describe("new UI settings", () => {
     expect(copied).toContain("Gate Connect");
   });
 });
+
+/**
+ * The Settings sections AG-594 asks for, and the two preference switches behind
+ * them.
+ *
+ * What these cover that `SettingsPane.test.tsx` cannot: that the switches reach
+ * the backend, and that a failed read renders Unavailable instead of an Off
+ * switch - which is the difference between "you turned this off" and "we could
+ * not tell", and the reason the failure flag is tracked separately from the
+ * value.
+ */
+test.describe("new UI settings preferences", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("both preference switches read On before anything has been written", async ({
+    boot,
+  }) => {
+    const app = await boot({});
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    await expect(app.page.getByRole("switch", { name: "Routing health" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    await expect(
+      app.page.getByRole("switch", { name: "Share diagnostic data" }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  test("turning routing-health notifications off reaches the backend", async ({ boot }) => {
+    const app = await boot({});
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    const sw = app.page.getByRole("switch", { name: "Routing health" });
+    await sw.click();
+
+    await expect
+      .poll(() => app.lastCall("set_routing_health_notifications"))
+      .toEqual({ enabled: false });
+    await expect(sw).toHaveAttribute("aria-checked", "false");
+  });
+
+  test("the diagnostics switch reaches the backend", async ({ boot }) => {
+    const app = await boot({});
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    await app.page.getByRole("switch", { name: "Share diagnostic data" }).click();
+
+    await expect.poll(() => app.lastCall("set_share_diagnostics")).toEqual({ enabled: false });
+  });
+
+  /**
+   * The rule this section exists to hold: an unreadable preference must not draw
+   * an Off switch. Off is a claim about the user's setting.
+   */
+  test("a failed preferences read shows Unavailable, not an Off switch", async ({ boot }) => {
+    const app = await boot({ failures: { get_preferences: "config directory unreadable" } });
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    await expect(app.page.getByRole("switch", { name: "Routing health" })).toHaveCount(0);
+    await expect(
+      app.page.getByRole("switch", { name: "Share diagnostic data" }),
+    ).toHaveCount(0);
+    await expect(app.page.getByRole("button", { name: "Retry" }).first()).toBeVisible();
+  });
+
+  test("a failed launch-at-login read does not spread to the preference switches", async ({
+    boot,
+  }) => {
+    const app = await boot({ failures: { launch_at_login_status: "unsupported" } });
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    await expect(app.page.getByRole("switch", { name: "Launch at login" })).toHaveCount(0);
+    // Different command, so it keeps its switch.
+    await expect(app.page.getByRole("switch", { name: "Routing health" })).toBeVisible();
+  });
+
+  test("Settings carries the sections the criteria name", async ({ boot }) => {
+    const app = await boot({});
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    for (const heading of [
+      "Device",
+      "Account",
+      "Connection",
+      "Startup",
+      "Notifications",
+      "Diagnostics",
+      "About",
+      "Help",
+    ]) {
+      await expect(app.page.getByRole("heading", { name: heading })).toBeVisible();
+    }
+  });
+});
+
+/**
+ * AG-603: "What is collected opens the field list WITHOUT changing the setting."
+ *
+ * The read-only half is the testable half here: whether the opt-out actually
+ * stops PostHog is pinned in `lib/analytics.test.ts`, since the e2e build has no
+ * analytics key and the channel no-ops entirely.
+ */
+test.describe("new UI: what diagnostics collects", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("the list opens and changes no setting", async ({ boot }) => {
+    const app = await boot({});
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    await app.page.getByRole("button", { name: "View list" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("Sent", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Never sent")).toBeVisible();
+    // The whole point: opening the disclosure must not touch the preference.
+    expect(await app.lastCall("set_share_diagnostics")).toBeNull();
+    // ...and the switch is where it was.
+    await app.page.getByRole("button", { name: "Close" }).click();
+    await expect(
+      app.page.getByRole("switch", { name: "Share diagnostic data" }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  test("it names prompts and credentials as never sent", async ({ boot }) => {
+    // The claims this product's reassurance rests on, so they are asserted
+    // rather than left to the copy drifting.
+    const app = await boot({});
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "View list" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText(/Prompts or model responses/)).toBeVisible();
+    await expect(dialog.getByText(/API keys, credentials/)).toBeVisible();
+  });
+});
