@@ -46,7 +46,17 @@ export interface UsageStats {
  * really is the remainder segment and the stack does not double-count.
  */
 export interface MessagesBucket {
-  /** X-axis tick, e.g. an hour ("14"). */
+  /**
+   * Stable identity for this bucket, used as the React key in all three lists
+   * that render it. The endpoint's own UTC hour, not the label.
+   *
+   * `label` is a *local* hour-of-day, and on a DST fall-back two UTC buckets map
+   * to the same local hour - which would mean duplicate keys in the bars, the axis
+   * ticks and the sr-only table at once, twice a year, in one timezone class. The
+   * contract's 24 distinct UTC hours are the thing that is actually unique.
+   */
+  id: string;
+  /** X-axis tick, e.g. an hour ("14"). Display only; see `id`. */
   label: string;
   total: number;
   blocked: number;
@@ -123,6 +133,10 @@ function Stat({
   // `text-left` because a button centres its text by default and these tiles are
   // left-aligned.
   const Tag = onSelect ? "button" : "div";
+  // `span.block`, not `<p>`. When `Tag` is a button these are inside it, and `<p>`
+  // is not valid phrasing content there - the parser is then free to restructure
+  // the tile, which is the sort of thing that renders correctly until it does not.
+  // Renders identically.
   return (
     <Tag
       {...(onSelect ? { type: "button" as const, onClick: onSelect } : {})}
@@ -130,10 +144,10 @@ function Stat({
         onSelect ? " transition hover:bg-gray-50" : ""
       }`}
     >
-      <p className="font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
+      <span className="block font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
         {label}
-      </p>
-      <p className="mt-2 flex items-baseline gap-2">
+      </span>
+      <span className="mt-2 flex items-baseline gap-2">
         {value === null ? (
           // The height of the figure it stands in for, so the card does not
           // resize under the user when the reading lands.
@@ -144,7 +158,7 @@ function Stat({
         {delta && (
           <span className="text-base-xs font-medium text-green-600">{delta}</span>
         )}
-      </p>
+      </span>
     </Tag>
   );
 }
@@ -224,7 +238,7 @@ export function MessagesChart({
           // `h-full` on the hit target, not just the bar: a quiet hour is a
           // sliver two pixels tall, and hovering it should not require aim.
           <div
-            key={bucket.label}
+            key={bucket.id}
             className="flex h-full w-5 flex-col-reverse"
             onMouseEnter={() => setHovered(i)}
           >
@@ -256,7 +270,7 @@ export function MessagesChart({
       <div className="mt-1 flex justify-between gap-1">
         {buckets.map((bucket) => (
           <span
-            key={bucket.label}
+            key={bucket.id}
             className="w-5 text-center font-mono text-base-2xs text-base-muted-foreground"
           >
             {bucket.label}
@@ -287,7 +301,7 @@ export function MessagesChart({
         </thead>
         <tbody>
           {buckets.map((b) => (
-            <tr key={b.label}>
+            <tr key={b.id}>
               <th scope="row">{b.label}:00</th>
               <td>{b.total}</td>
               <td>{b.blocked}</td>

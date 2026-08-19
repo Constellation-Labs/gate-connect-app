@@ -283,8 +283,17 @@ export function NewUiApp() {
   // Which account the reading belongs to. Changing it refetches: numbers read for
   // one org must not sit on screen under another org's name, and an OAuth account
   // can switch org without the window remounting.
+  //
+  // The key prefix is in here for the api-key case, where `org_id` is always
+  // absent: the org is whatever the gateway resolves the key to, so replacing a
+  // key with one for a different org changed nothing in this string and nothing
+  // refetched. Org A's figures and org name stayed on screen under org B's
+  // credential until the window was reopened - and reopening painted them again
+  // off disk, because the cache scope had the same gap. `keyPrefix` is read back
+  // from the account file after every save, so it changes exactly when the key
+  // does. Mirrors the scope in `activity_cache.rs`; the two must agree.
   const credential = account
-    ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}`
+    ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}|${keyPrefix ?? ""}`
     : "";
   // One fetch per account, plus the pane's own refresh. Not polled: the endpoint's
   // throttle bucket is keyed on the source address, so a timer here would spend
@@ -713,9 +722,25 @@ export function NewUiApp() {
       // leave the machine in the same state.
       setNoticeBusy(true);
       try {
-        if (action.kind === "reconnect") await routeApp(action.slug, true);
-        else if (action.kind === "enable-routing") await proxyEnable();
-        else await proxyTrustCa();
+        // A switch with an exhaustiveness check, not an `else` fallthrough. The
+        // notice vocabulary is expected to grow with AG-576, and a fourth kind
+        // arriving on the old shape would silently have trusted the certificate
+        // instead of doing its own work. Now it is a build failure.
+        switch (action.kind) {
+          case "reconnect":
+            await routeApp(action.slug, true);
+            break;
+          case "enable-routing":
+            await proxyEnable();
+            break;
+          case "trust-certificate":
+            await proxyTrustCa();
+            break;
+          default: {
+            const unhandled: never = action;
+            throw new Error(`unhandled notice action ${JSON.stringify(unhandled)}`);
+          }
+        }
       } catch {
         // Swallowed on purpose for now: the shell has nowhere to render a
         // failure yet, and the notice staying put is itself the signal that
@@ -1574,10 +1599,20 @@ export function NewUiApp() {
           scope={
             <InstallationPicker
               installations={installations}
-              // The scope the gateway echoed, not the one we asked for: while a
-              // refetch is in flight the numbers on screen are still the
-              // previous scope's, and the label has to agree with them.
-              value={activity.view?.installId ?? null}
+              // What the user asked for, not what the gateway echoed. This is a
+              // control, and driving a control from observed state is the bug
+              // CLAUDE.md's second principle documents: selecting an installation
+              // clears the view, so the echo was `null` for the whole round trip
+              // and the picker snapped back to "All installations" - contradicting
+              // the click that caused it, for three seconds under
+              // `gcSlowActivity(3000)`.
+              //
+              // The old comment argued the label had to agree with numbers that
+              // were "still the previous scope's". They are not: the effect below
+              // clears them, so it agreed with nothing. The figures are skeletons
+              // while this is pending, which is what says the numbers are not the
+              // new scope's yet.
+              value={installFilter}
               onChange={setInstallFilter}
             />
           }

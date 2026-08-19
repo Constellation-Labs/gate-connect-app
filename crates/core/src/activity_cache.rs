@@ -66,20 +66,31 @@ fn scope(install_id: Option<&str>, tool: Option<ToolId>) -> Option<String> {
         AuthMode::OAuth => "oauth",
         AuthMode::ApiKey => "api_key",
     };
-    // The org only exists in OAuth mode; a key account's org is whatever the
-    // gateway resolves the key to, which the base URL and the key mode already
-    // stand in for.
+    // The org id only exists in OAuth mode. In api-key mode the org is whatever
+    // the gateway resolves the *key* to, so the key has to be in the scope or two
+    // different orgs share one string: `org_id_for_injection()` returns "" for
+    // every key account, and `save()` rotates a key without clearing this cache.
+    // Settings -> "Replace key" with a key for a different org on the same gateway
+    // would then leave the scope byte-identical and `load()` would hand back the
+    // previous org's body - the exact replay this module exists to prevent.
+    //
+    // The *prefix*, not the key: it is already on disk unhashed for the Settings
+    // reveal, it changes whenever the key does, and putting a live credential in a
+    // filename-adjacent string that also gets compared and logged would be a worse
+    // trade for the same guarantee.
     let org = account::org_id_for_injection();
+    let key = account::api_key_prefix().ok().flatten().unwrap_or_default();
     // The tool filter is part of the scope for the same reason the installation
     // filter is, and the consequence of forgetting it is the sharper of the two:
     // installations sit behind a picker, but a tool is one click in the sidebar,
     // so Codex opened right after Claude Code would draw Claude Code's numbers
     // under Codex's name until the network answered.
     Some(format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}",
         account.gateway_base_url,
         mode,
         org,
+        key,
         install_id.unwrap_or(""),
         tool.map(ToolId::slug).unwrap_or("")
     ))
@@ -182,6 +193,39 @@ mod tests {
         let other_tool = "https://gw.example|oauth|org-a|install-7|codex";
         assert_ne!(every_tool, one_tool);
         assert_ne!(one_tool, other_tool);
+    }
+
+    /// The api-key replay, exercised through `scope()` and the real filesystem
+    /// rather than against hand-written strings.
+    ///
+    /// The hand-written tests above cannot catch this class: they assert that two
+    /// strings differ, which says nothing about whether `scope()` puts the key in
+    /// one. In api-key mode `org_id_for_injection()` is empty for every account, so
+    /// before the prefix was included, two keys belonging to two different orgs on
+    /// one gateway produced byte-identical scopes and `load()` replayed the first
+    /// org's body under the second's name.
+    #[test]
+    fn replacing_an_api_key_changes_the_scope() {
+        let home = std::env::temp_dir().join(format!("gate-cache-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        // Both seams: the account file lives under app support, and `save()` writes
+        // the key itself through the keychain, which must not touch the real one.
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        account::save("https://gw.example", Some("sk-gw-aaaaaaaaaaaa1111")).unwrap();
+        let first = scope(None, None).expect("an account exists");
+        account::save("https://gw.example", Some("sk-gw-bbbbbbbbbbbb2222")).unwrap();
+        let second = scope(None, None).expect("an account exists");
+
+        std::env::remove_var("GATE_CONNECT_TEST_HOME");
+        std::env::remove_var("GATE_CONNECT_TEST_SECRETS");
+        let _ = std::fs::remove_dir_all(&home);
+
+        assert_ne!(
+            first, second,
+            "a different key can mean a different org, so its reading is not the same reading"
+        );
     }
 
     #[test]

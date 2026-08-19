@@ -75,6 +75,9 @@ interface RawOverview {
   org: { orgId: string; name: string | null };
   counters: {
     blockedOrFlagged: Counter;
+    /** Served, and deliberately unread: the design has no Needs review tile. Kept
+     *  declared because the payload really does carry it, so the next person to
+     *  add that tile finds the field rather than the absence of one. */
     needsReview: Counter;
     requestsRouted: Counter;
     tokensSaved: {
@@ -236,6 +239,9 @@ function toBucket(b: RawBucket): MessagesBucket {
   const flagged = b.flagged ?? 0;
   const redacted = b.redacted ?? 0;
   return {
+    // The endpoint's own UTC hour, kept as the row's identity. The label below is
+    // a local hour and is not unique across a DST fall-back; see `MessagesBucket`.
+    id: b.hour,
     // Hour-of-day tick, matching the design's "14". Local time, because the
     // user reads their own clock, not UTC.
     label: String(new Date(b.hour).getHours()),
@@ -505,15 +511,21 @@ export function useInstallations(
   const [resolved, setResolved] = useState(false);
 
   useEffect(() => {
-    if (!enabled) return;
-    let live = true;
     // Cleared before the new read, not after it lands: these are one org's
     // machines, and an installation from the org the user just left is a choice
     // the new reading cannot honour. `resolved` goes with them - until this read
     // answers, nobody may claim to know which machine is this one.
+    //
+    // Ahead of the `enabled` guard, not behind it. Behind it, a hook going from
+    // enabled to disabled kept the previous org's list, which is the opposite of
+    // what this clearing is for - and the ordering looks deliberate precisely
+    // because of that promise. Harmless while `canRead` only drops on disconnect,
+    // and the kind of thing that stops being harmless quietly.
     setInstallations([]);
     setCurrent(null);
     setResolved(false);
+    if (!enabled) return;
+    let live = true;
     activityInstallations()
       .then((text) => {
         if (!live) return;

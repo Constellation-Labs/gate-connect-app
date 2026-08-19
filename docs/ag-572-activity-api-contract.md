@@ -1,8 +1,28 @@
 # AG-572: activity overview API contract
 
 Proposal for the gateway endpoint behind the Gate Connect 24-hour activity
-overview. Written 2026-08-11 for stakeholder review. Not yet approved and not
-yet implemented.
+overview. Written 2026-08-11 for stakeholder review.
+
+> **Status, 2026-08-19: this is the proposal as written, not the endpoint as
+> shipped.** `GET /v1/me/activity` landed in gate#831 and the schema moved in
+> three places while it was being built. The differences are listed below rather
+> than edited into the JSON above, because this document is the record of what was
+> proposed and `RawOverview` in `src/lib/activity.ts` is the record of what is
+> served - and a reader who cannot tell which is which trusts the wrong one.
+>
+> | Proposed here | Shipped |
+> |---|---|
+> | `counters.blockedOrRedacted` | `counters.blockedOrFlagged` - redaction became its own chart series, so the tile counts blocks and flags |
+> | bucket `{ hour, requests, securityActions, reviewItems }` | `{ hour, requests, blocked, flagged, redacted }` - the chart stacks the three actions separately |
+> | `tokensSaved { percent, costUsd }` | `tokensSaved { fraction, amount, currency }` - the client formats the percentage and the currency, so the gateway stops choosing a locale |
+>
+> `counters.needsReview` is served as proposed and is not read by any surface yet:
+> the design has no Needs review tile. It stays declared in `RawOverview` because
+> the payload really does carry it.
+>
+> Two later endpoints are not described here at all: `GET /v1/me/installations`
+> (AG-572's installation picker) and `GET /v1/me/tools` plus
+> `GET /v1/me/tool-events` (AG-574).
 
 Companion to AG-572 (implementation) and AG-571 (design). Cross-repo: the
 endpoint lands in `gate`, the consumer is `gate-connect-app`.

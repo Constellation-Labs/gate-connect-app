@@ -159,6 +159,15 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         anyhow::bail!("gateway base URL is unexpectedly long (>2048 bytes)");
     }
     if !is_acceptable_gateway_url(gateway_base_url) {
+        // Two messages, because the two builds enforce different rules and the
+        // debug one is where this is most likely to be read: a developer who
+        // typos `http://localhos:3000`, or points at a LAN address, is otherwise
+        // told https is required and goes off to change the wrong thing.
+        #[cfg(debug_assertions)]
+        anyhow::bail!(
+            "gateway base URL must be https://, or http:// on localhost or 127.0.0.1 exactly"
+        );
+        #[cfg(not(debug_assertions))]
         anyhow::bail!("gateway base URL must be https://");
     }
     // Recompute the prefix from a new key; otherwise preserve the one already
@@ -192,6 +201,16 @@ pub fn save(gateway_base_url: &str, api_key: Option<&str>) -> Result<()> {
         // gateway wants the Cognito token, and `audit::credential` picks by mode.
         let new_prefix = key.chars().take(12).collect::<String>();
         audit::api_key_saved(gateway_base_url, Some(key), old_prefix, &new_prefix);
+
+        // A new key can mean a new org, and the held activity reading belongs to
+        // whichever org the *previous* key resolved to. The cache scope carries the
+        // key prefix now, so a stale entry would simply never match - but leaving
+        // one org's figures on disk under a credential that can no longer read them
+        // is not something to rely on a scope check for. Best-effort, and last: a
+        // cache that will not clear must not fail a key replace.
+        if old_prefix != Some(new_prefix.as_str()) {
+            let _ = crate::activity_cache::clear();
+        }
     }
     Ok(())
 }

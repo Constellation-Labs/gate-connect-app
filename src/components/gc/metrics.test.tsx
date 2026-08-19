@@ -5,8 +5,8 @@ import { MessagesChart, StatTiles, type MessagesBucket, type UsageStats } from "
 afterEach(cleanup);
 
 const buckets: MessagesBucket[] = [
-  { label: "11", total: 4, blocked: 1, flagged: 0, redacted: 0 },
-  { label: "12", total: 8, blocked: 2, flagged: 2, redacted: 0 },
+  { id: "2026-08-19T11:00:00.000Z", label: "11", total: 4, blocked: 1, flagged: 0, redacted: 0 },
+  { id: "2026-08-19T12:00:00.000Z", label: "12", total: 8, blocked: 2, flagged: 2, redacted: 0 },
 ];
 
 /** The bars, which are `aria-hidden`, so they are not reachable by role. */
@@ -128,8 +128,8 @@ describe("StatTiles", () => {
  */
 describe("MessagesChart empty and pending states", () => {
   const quiet: MessagesBucket[] = [
-    { label: "11", total: 0, blocked: 0, flagged: 0, redacted: 0 },
-    { label: "12", total: 0, blocked: 0, flagged: 0, redacted: 0 },
+    { id: "2026-08-19T11:00:00.000Z", label: "11", total: 0, blocked: 0, flagged: 0, redacted: 0 },
+    { id: "2026-08-19T12:00:00.000Z", label: "12", total: 0, blocked: 0, flagged: 0, redacted: 0 },
   ];
   const EMPTY = "No messages sent in the last 24hrs";
 
