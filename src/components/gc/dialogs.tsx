@@ -795,7 +795,9 @@ export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
       tone="neutral"
       icon="info"
       title="What Gate Connect collects"
-      subtitle="Only while Share diagnostic data is on. Nothing here identifies you."
+      // The first list is gated on the diagnostics toggle; the second is not, and
+      // saying "only while it is on" over both would understate it.
+      subtitle="Nothing here identifies you. Most of it is sent only while Share diagnostic data is on."
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
     >
@@ -842,6 +844,26 @@ export function CollectedDataLists({
           <li>
             A classified title when something fails, e.g. &ldquo;keychain
             denied&rdquo;. The underlying message stays on this machine.
+          </li>
+        </ul>
+      </Wrapper>
+      {/* A third list, and deliberately not folded into the first. Everything
+          above is gated on the diagnostics toggle; these two headers ride every
+          routed request whatever that toggle says, because they are routing
+          metadata rather than telemetry. Leaving them out of this dialog while
+          the app started sending them would make the page that exists to be
+          trusted the one place that understated what leaves the machine. */}
+      <Wrapper>
+        <p className="font-medium text-neutral-900">Sent with your traffic, whatever this setting says</p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>
+            The same anonymous device id, so your activity view can group requests
+            by machine. It identifies nothing else and authorizes nothing.
+          </li>
+          <li>
+            Which app made the request, when Gate can tell from the request itself
+            - Claude Code, Codex, and so on. Unrecognised apps are sent unlabelled
+            rather than guessed at.
           </li>
         </ul>
       </Wrapper>

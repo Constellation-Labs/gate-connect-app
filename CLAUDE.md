@@ -109,6 +109,19 @@ deliberate reversal of an earlier "no dashboard" rule.
    initial focus goes to the *secondary* button - `useFocusTrap` takes an
    `initialFocus` ref for exactly this.
 
+6. **A figure is a measurement, or the card says it isn't.** A number on
+   screen is something Gate actually measured. A counter with no reading
+   behind it reads `N/A`; a section that was never read says so in words
+   ("Policies couldn't be read"); a value still in flight draws a
+   `Skeleton`. Never a `0` for an answer nobody gave - it is a claim about
+   the user's traffic, made on the one screen they would check it on, and
+   a number outranks any sentence beside it. The Figma draws only the
+   no-traffic case (`228:89333`: `0` / `0` / `N/A` for an org that sent
+   nothing); the failure and loading states are inferred from this rule
+   rather than from a frame. `lib/activity.ts` keeps the distinction in
+   the model - `null` is no reading, `0` is a reading - so a surface that
+   flattens the two is doing it on purpose and had better be right.
+
 ## Implementation notes that bite
 
 - **Never use `bg-blue-*` or `text-blue-*`.** `tailwind.config.ts`

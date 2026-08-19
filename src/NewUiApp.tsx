@@ -24,7 +24,9 @@ import {
   listTools,
   oauthStatus,
   openOnboardingWindow,
+  proxyEnable,
   proxyStatus,
+  proxyTrustCa,
   routedClientsStale,
   routingVerdicts,
   runningAgents as fetchRunningAgents,
@@ -53,7 +55,14 @@ import { buildGroups } from "./lib/groups";
 import { verdictStatus, verdictsBySlug } from "./lib/verdict";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
-import { GATEWAY_SERVERS, GATE_DASHBOARD_URL, GATE_DOCS_URL } from "./lib/config";
+import {
+  GATEWAY_SERVERS,
+  GATE_API_KEYS_URL,
+  GATE_DASHBOARD_URL,
+  GATE_DOCS_URL,
+  GATE_POLICIES_URL,
+  GATE_SAVINGS_URL,
+} from "./lib/config";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
@@ -63,6 +72,15 @@ import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
+import type { UsageStats } from "./components/gc/metrics";
+import { InstallationPicker } from "./components/gc/InstallationPicker";
+import { useActivity, useInstallations } from "./lib/activity";
+import { useToolEvents } from "./lib/toolEvents";
+import { buildNotices } from "./lib/notices";
+import type { NoticeAction } from "./lib/notices";
+import type { ActivityFailure, ActivityView } from "./lib/activity";
+import { failureNotice, sectionNotice } from "./lib/activityGaps";
+import type { GapActionKind } from "./lib/activityGaps";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
 import {
@@ -131,10 +149,17 @@ import { secretStoreName, usePlatform } from "./lib/platform";
  * backend behind them are passed no handler, which omits the control rather than
  * leaving a dead one on screen.
  *
- * Still awaiting a backend: the per-app model picker (session state only) and
- * the Overview and per-app metrics (the 24-hour endpoint). The verdict sweep
- * establishes that a route is live, not that the tool sent traffic through it -
- * nothing attributes requests to a tool yet.
+ * The Overview reads `GET /v1/me/activity` through `useActivity`, which serves
+ * the previously held reading off disk while the network call is in flight, so
+ * the pane opens on real numbers. Sections the gateway declines are named by
+ * `ActivityGaps` rather than drawn as zeros, and a section still in flight draws
+ * a skeleton rather than either (AG-576). It answers a different question from
+ * the verdict sweep: the sweep establishes that a route is live, the endpoint
+ * reports what was sent through it.
+ *
+ * Still inert: per-app metrics, whose own endpoint is AG-574's work, and the
+ * Gate model catalogue, which the picker draws empty. Disconnect and reset wait
+ * on a first-run screen to return to.
  */
 export function NewUiApp() {
   const [tools, setTools] = useState<Tool[]>([]);
@@ -246,6 +271,83 @@ export function NewUiApp() {
   const [quitLeftBehind, setQuitLeftBehind] = useState<string[] | null>(null);
   const [quitBusy, setQuitBusy] = useState(false);
   const platform = usePlatform();
+  // Which installation the Overview's *filter* covers; `null` is the whole org,
+  // and stays the default because traffic sent before attribution existed has no
+  // installation at all. Selecting one refetches - the gateway narrows every
+  // section server-side, so there is nothing to slice here.
+  //
+  // Named for the filter rather than the id on purpose: `installId` above is this
+  // machine's own identity, which is a different fact. The two were briefly the
+  // same name and the compiler caught it.
+  const [installFilter, setInstallFilter] = useState<string | null>(null);
+  // Which account the reading belongs to. Changing it refetches: numbers read for
+  // one org must not sit on screen under another org's name, and an OAuth account
+  // can switch org without the window remounting.
+  //
+  // The key prefix is in here for the api-key case, where `org_id` is always
+  // absent: the org is whatever the gateway resolves the key to, so replacing a
+  // key with one for a different org changed nothing in this string and nothing
+  // refetched. Org A's figures and org name stayed on screen under org B's
+  // credential until the window was reopened - and reopening painted them again
+  // off disk, because the cache scope had the same gap. `keyPrefix` is read back
+  // from the account file after every save, so it changes exactly when the key
+  // does. Mirrors the scope in `activity_cache.rs`; the two must agree.
+  const credential = account
+    ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}|${keyPrefix ?? ""}`
+    : "";
+  // One fetch per account, plus the pane's own refresh. Not polled: the endpoint's
+  // throttle bucket is keyed on the source address, so a timer here would spend
+  // a budget shared with every other Gate Connect user on the same network.
+  //
+  // Held until the first account read lands and finds a credential. Before that
+  // there is nothing to authenticate with, so a fetch could only fail, and the
+  // pane would open on a "signed out" banner that is about to be wrong.
+  const canRead = loaded && account !== null;
+  const activity = useActivity(canRead, installFilter, credential);
+  const {
+    installations,
+    current: currentInstallId,
+    resolved: installsResolved,
+  } = useInstallations(canRead, credential);
+  /** The tool whose pane is open, or null on any other view. Drives both per-tool
+   *  reads below, and gating on it keeps them from firing for a pane nobody is
+   *  looking at - this endpoint shares an address-keyed rate limit with every
+   *  other control-plane route. */
+  const openTool = view.kind === "app" ? view.slug : null;
+  /**
+   * Whether the gateway has told us which installation this machine is.
+   *
+   * The app pane is scoped to *this machine*, and `installId: null` does not mean
+   * that - it means org-wide, which drops the query parameter entirely. So a null
+   * id must stop the read rather than widen it: otherwise the pane paints the
+   * whole org's traffic under a heading that says one machine, and does it exactly
+   * when this machine is unattributed, which is the case the pane exists to
+   * explain. It is self-concealing too - the org-wide read succeeds, so nothing
+   * is pending and no gap notice fires - so `unattributedMachine` below says it
+   * out loud instead.
+   */
+  const machineKnown = installsResolved && currentInstallId !== null;
+  /** The gateway answered and does not recognise this machine. Distinct from "not
+   *  asked yet", which is why `useInstallations` reports `resolved`. */
+  const unattributedMachine = installsResolved && currentInstallId === null;
+  const toolActivity = useActivity(
+    canRead && openTool !== null && machineKnown,
+    currentInstallId,
+    credential,
+    openTool ?? undefined,
+  );
+  const toolEvents = useToolEvents(
+    canRead && openTool !== null && machineKnown,
+    openTool,
+    currentInstallId,
+    credential,
+  );
+
+  // A machine id belongs to the org it sent traffic to, so a filter selected
+  // before an org switch cannot be honoured after it.
+  useEffect(() => {
+    setInstallFilter(null);
+  }, [credential]);
 
   const loadLaunchAtLogin = useCallback(async () => {
     const launch = await launchAtLoginStatus().catch(() => null);
@@ -583,6 +685,74 @@ export function NewUiApp() {
     [providers, tools, proxy],
   );
 
+  // Re-read the routing facts the notices are built from. Their whole point is
+  // that they disappear once acted on, which only works if the state behind them
+  // is refetched rather than assumed.
+  const refreshRouting = useCallback(async () => {
+    const [t, px] = await Promise.all([
+      listTools().catch(() => tools),
+      proxyStatus().catch(() => proxy),
+    ]);
+    setTools(t);
+    setProxy(px);
+  }, [tools, proxy]);
+
+  const [dismissedNotices, setDismissedNotices] = useState<string[]>([]);
+  const [noticePage, setNoticePage] = useState(0);
+  const [noticeBusy, setNoticeBusy] = useState(false);
+
+  const notices = useMemo(
+    () => buildNotices(groups).filter((n) => !dismissedNotices.includes(n.id)),
+    [groups, dismissedNotices],
+  );
+  // Clamped rather than reset when the list shrinks: fixing the tool on the last
+  // page removes its notice, and a page index left pointing past the end would
+  // blank the banner while notices remain.
+  const notice = notices.length > 0 ? notices[Math.min(noticePage, notices.length - 1)] : null;
+
+  /** Perform a notice's action, then re-read state so it clears itself. */
+  const runNoticeAction = useCallback(
+    async (action: NoticeAction) => {
+      if (noticeBusy) return;
+      // Re-adopting goes through `routeApp`, not a bare `connectTool`: it
+      // overwrites a config somebody hand-wrote, which the design gates behind
+      // the review dialog, it may need the certificate first, and the app it
+      // rewrote may be open on the old route. `useRouting` owns the first two
+      // gates and `routeApp` adds the third, so a notice and a sidebar switch
+      // leave the machine in the same state.
+      setNoticeBusy(true);
+      try {
+        // A switch with an exhaustiveness check, not an `else` fallthrough. The
+        // notice vocabulary is expected to grow with AG-576, and a fourth kind
+        // arriving on the old shape would silently have trusted the certificate
+        // instead of doing its own work. Now it is a build failure.
+        switch (action.kind) {
+          case "reconnect":
+            await routeApp(action.slug, true);
+            break;
+          case "enable-routing":
+            await proxyEnable();
+            break;
+          case "trust-certificate":
+            await proxyTrustCa();
+            break;
+          default: {
+            const unhandled: never = action;
+            throw new Error(`unhandled notice action ${JSON.stringify(unhandled)}`);
+          }
+        }
+      } catch {
+        // Swallowed on purpose for now: the shell has nowhere to render a
+        // failure yet, and the notice staying put is itself the signal that
+        // nothing changed. Wire this to the error surface when one exists.
+      } finally {
+        await refreshRouting();
+        setNoticeBusy(false);
+      }
+    },
+    [noticeBusy, refreshRouting, routeApp],
+  );
+
   const apps = useMemo<SidebarApp[]>(
     () =>
       tools
@@ -777,8 +947,16 @@ export function NewUiApp() {
   const settingsSections = useMemo(
     () =>
       buildSettingsSections({
-        // Plan still has no backend, so it reads as unknown rather than as an
-        // invented value, and its action is omitted entirely.
+        // Device name and plan have no backend yet, so they read as unknown
+        // rather than as invented values.
+        //
+        // The install id stays the *local* one, not the gateway's echo. The echo
+        // is only populated once this machine has sent attributed traffic, so a
+        // fresh install, or a key with no user (where the installations route is
+        // refused outright), would blank the row - and it is the row a support
+        // request asks for, at the moment the user is most likely to be filing
+        // one. The local id always exists. `x-gate-install-id` sends this same
+        // value, so the two never disagree.
         deviceName: device ?? "Unavailable",
         onRenameDevice: device ? () => settings.openRenameDevice(device) : undefined,
         installId: installId ?? "Unavailable",
@@ -846,6 +1024,10 @@ export function NewUiApp() {
         // pressed reads as broken.
         onCheckForUpdates: () => void update.checkNow(true),
         onViewCollectedData: () => setCollectedDataOpen(true),
+        // The rendered report, not a fresh one: Overview's "something is missing"
+        // banner open the same `openDiagnostics`, so the two can never disagree
+        // about what the machine looked like. It runs the live probes rather than
+        // rendering a preview, which is why both entrances share it.
         onViewDiagnostics: () => void openDiagnostics(),
         // Deliberately absent, so the control is absent too: plan upgrade has no
         // billing URL to open and Contact support has no address. Rename is
@@ -866,7 +1048,6 @@ export function NewUiApp() {
       installId,
       keyPrefix,
       device,
-      installId,
       settings.copyText,
       settings.openRenameDevice,
       settings.openReplaceKey,
@@ -877,10 +1058,6 @@ export function NewUiApp() {
       routing.untrustCa,
       openDiagnostics,
       update,
-      platform,
-      proxy,
-      providers,
-      tools,
       noop,
     ],
   );
@@ -1032,7 +1209,9 @@ export function NewUiApp() {
           : undefined
       }
       routing={{ protectedCount, totalCount: apps.length }}
-      orgName={account?.org_name ?? "No organization"}
+      // An API-key account holds no org locally, so the gateway's answer is the
+      // only name it can show. Account first: it is what the user picked.
+      orgName={account?.org_name ?? activity.view?.orgName ?? "No organization"}
       onSwitchOrg={() => {
         setActionError(null);
         void settings.openSwitchOrg();
@@ -1318,8 +1497,14 @@ export function NewUiApp() {
           onToggleProtected={() =>
             void routeApp(view.slug, !(appFor(apps, view.slug)?.on ?? false))
           }
-          stats={EMPTY_STATS}
-          buckets={[]}
+          stats={toolActivity.view?.stats ?? EMPTY_STATS}
+          buckets={toolActivity.view?.buckets ?? []}
+          // Pending while the installation list is still open too: until it
+          // answers we do not know which machine this is, so there is nothing to
+          // read yet - and a skeleton is the honest account of that.
+          pending={
+            !installsResolved || (toolActivity.view === null && toolActivity.failure === null)
+          }
           modelChoice={modelChoice[view.slug] ?? "app"}
           // Switching to a Gate model spends PAYG credits, so it is confirmed
           // rather than taken on a radio click. Switching back is not.
@@ -1333,39 +1518,165 @@ export function NewUiApp() {
           // No billing endpoint, but the row's own glyph promises an external
           // link, and the dashboard is where credits are actually bought.
           onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
-          activity={[]}
-          alert={driftAlert}
+          activity={toolEvents.view?.entries ?? []}
+          eventsPending={
+            !installsResolved || (toolEvents.view === null && toolEvents.failure === null)
+          }
+          onLoadMore={toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined}
+          // Each half reports its own read. Deriving the feed's flag from the
+          // overview's state let a feed that answered - and answered empty - be
+          // reported as unreadable because the *chart* had not landed, which is
+          // precisely the unread-versus-empty confusion these flags exist to
+          // prevent. Two endpoints, two answers.
+          unavailable={{
+            chart: unattributedMachine || (toolActivity.view ? toolActivity.view.missing.chart : true),
+            events: unattributedMachine || toolEvents.failure !== null,
+          }}
+          alert={
+            <>
+              {driftAlert}
+              {unattributedMachine ? (
+                // No numbers can be shown here, and the reason is not a failure:
+                // the gateway answered and does not recognise this machine, so
+                // there is no way to ask "what has this tool done *here*". Said
+                // plainly rather than by showing the org's traffic under one
+                // machine's heading, or zeros under a tool in daily use.
+                <p className="text-base-xs text-base-muted-foreground">
+                  <span className="font-medium">This machine:</span> the gateway has no traffic
+                  attributed to it yet, so this app&apos;s own activity cannot be shown. The
+                  Overview still covers your whole organisation.
+                </p>
+              ) : (
+                <>
+                  {/* The same notices the Overview shows, from the same builder, so
+                      the two panes cannot describe one gateway failure two
+                      different ways. Both reads get one: the feed is its own
+                      endpoint and its own failure, and routing it through here is
+                      what gives it a cause and a retry instead of a bare
+                      "couldn't be read". */}
+                  <ActivityGaps
+                    view={toolActivity.view}
+                    failure={toolActivity.failure}
+                    loading={toolActivity.loading}
+                    onRetry={() => {
+                      toolActivity.reload();
+                      toolEvents.reload();
+                    }}
+                    onDiagnostics={() => void openDiagnostics()}
+                  />
+                  <ActivityGaps
+                    view={null}
+                    failure={toolEvents.failure}
+                    loading={toolEvents.loading}
+                    onRetry={toolEvents.reload}
+                    onDiagnostics={() => void openDiagnostics()}
+                    subject="Recent activity"
+                  />
+                </>
+              )}
+            </>
+          }
         />
       ) : (
         <Overview
-          stats={EMPTY_STATS}
-          buckets={[]}
-          policies={[]}
-          savings={[]}
-          // Neither policies nor savings has a local backend; both are configured
-          // on the web. Dead buttons were worse: the user cannot tell "not built"
-          // from "broken".
-          onManagePolicies={() => void openExternal(GATE_DASHBOARD_URL)}
-          onManageSavings={() => void openExternal(GATE_DASHBOARD_URL)}
-          period="Awaiting the 24-hour backend"
-          alert={driftAlert}
+          stats={activity.view?.stats ?? EMPTY_STATS}
+          buckets={activity.view?.buckets ?? []}
+          policies={activity.view?.policies ?? []}
+          savings={activity.view?.savings ?? []}
+          onManagePolicies={() => void openExternal(GATE_POLICIES_URL)}
+          onManageSavings={() => void openExternal(GATE_SAVINGS_URL)}
+          // Skeletons until there is something real to draw: a zero is a
+          // reading and would claim the user had no traffic, and a dash says we
+          // asked and were refused. Neither is true while the answer is on its
+          // way. A held reading from the cache clears this on the first frame,
+          // so the placeholders are only ever seen by an account that has none.
+          pending={activity.view === null && activity.failure === null}
+          // With no view at all - loading, or a failure with nothing held -
+          // every section is unread, which is what the fallback says. Once
+          // there is one, it names its own gaps.
+          unavailable={activity.view?.missing ?? ALL_MISSING}
+          period={activity.view?.period ?? "Last 24 hours"}
+          scope={
+            <InstallationPicker
+              installations={installations}
+              // What the user asked for, not what the gateway echoed. This is a
+              // control, and driving a control from observed state is the bug
+              // CLAUDE.md's second principle documents: selecting an installation
+              // clears the view, so the echo was `null` for the whole round trip
+              // and the picker snapped back to "All installations" - contradicting
+              // the click that caused it, for three seconds under
+              // `gcSlowActivity(3000)`.
+              //
+              // The old comment argued the label had to agree with numbers that
+              // were "still the previous scope's". They are not: the effect below
+              // clears them, so it agreed with nothing. The figures are skeletons
+              // while this is pending, which is what says the numbers are not the
+              // new scope's yet.
+              value={installFilter}
+              onChange={setInstallFilter}
+            />
+          }
+          alert={
+            <>
+              {notice && (
+                <AlertBanner
+                  // Keyed so switching pages remounts rather than animating one
+                  // card's text into another's.
+                  key={notice.id}
+                  title={notice.title}
+                  body={notice.body}
+                  switchLabel={notice.switchLabel}
+                  // The switch reflects the state being fixed, which is always
+                  // "not routing". Toggling it performs the action.
+                  on={false}
+                  // Both flags, because either path writes: `routingBusy` covers
+                  // the reconnect that goes through `useRouting`, `noticeBusy`
+                  // the two whole-machine actions that do not.
+                  busy={noticeBusy || routingBusy}
+                  onToggle={() => void runNoticeAction(notice.action)}
+                  onDismiss={() => setDismissedNotices((d) => [...d, notice.id])}
+                  paging={
+                    notices.length > 1
+                      ? {
+                          onPrev: () =>
+                            setNoticePage((p) => (p - 1 + notices.length) % notices.length),
+                          onNext: () => setNoticePage((p) => (p + 1) % notices.length),
+                        }
+                      : undefined
+                  }
+                />
+              )}
+              <ActivityGaps
+                view={activity.view}
+                failure={activity.failure}
+                loading={activity.loading}
+                onRetry={activity.reload}
+                onDiagnostics={() => void openDiagnostics()}
+              />
+            </>
+          }
         />
       )}
     </AppShell>
   );
 }
 
-/** The 24-hour endpoint is still being built. Zeros rather than plausible
- *  numbers: a preview that invents traffic is one somebody screenshots as
- *  real. */
+/** Before a reading lands, no section has one. Kept out of the render so the
+ *  object identity is stable and the pane does not repaint for it. */
+const ALL_MISSING = { chart: true, policies: true, savings: true };
+
 /** No gateway endpoint reports the models on offer yet. See the picker. */
 const GATE_MODELS: GateModelOption[] = [];
 
-const EMPTY_STATS = {
-  messages: 0,
-  blockedFlagged: 0,
-  tokensSavedPercent: 0,
-  tokensSavedAmount: "+$0.00",
+/** Shown before the first load lands, and on the per-app pane whose own reading
+ *  is AG-574's work. All null rather than zeros: the tiles render a dash for
+ *  null, and a zero here would be a claim about traffic nobody has measured yet.
+ *  See `UsageStats`. */
+const EMPTY_STATS: UsageStats = {
+  messages: null,
+  blockedFlagged: null,
+  tokensSavedPercent: null,
+  tokensSavedAmount: null,
 };
 
 /** The file Gate rewrites for one tool, for the drift review's copy. */
@@ -1490,4 +1801,92 @@ const AGENT_SCAN_TIMEOUT_MS = 2000;
 function maskedKey(prefix: string | null, hasKey: boolean): string {
   if (!hasKey) return "Not set";
   return prefix ? `${prefix}${"*".repeat(20)}` : "Stored in the keychain";
+}
+
+/** What each `unavailable` cause means, and what the user can do about it.
+ *
+ * AG-576 asks an unavailable metric to name its cause and offer a matching
+ * action rather than blanking the surface. The taxonomy and copy live in
+ * `lib/activityGaps.ts`; this renders it and dispatches the actions.
+ *
+ * Deliberately plain text and text buttons in the pane's alert slot rather than a
+ * designed component: the visual treatment for this state is AG-575's job and
+ * still does not exist in the Figma (checked 2026-08-17 - neither the Overview
+ * page nor the Components page has an unavailable, stale, empty or loading
+ * state). Inventing one would be the "dressing scaffolding up as product"
+ * mistake. What matters now is that a zero is never mistaken for a real reading,
+ * and that every named cause comes with something the user can actually do. */
+function ActivityGaps({
+  view,
+  failure,
+  loading,
+  onRetry,
+  onDiagnostics,
+  subject,
+}: {
+  view: ActivityView | null;
+  failure: ActivityFailure | null;
+  loading: boolean;
+  onRetry: () => void;
+  onDiagnostics: () => void;
+  /** Overrides the notice's subject, for a caller that owns one read rather than
+   *  the whole pane. The app pane mounts this twice - once for the counters and
+   *  chart, once for the event feed - and two notices both headed "Activity"
+   *  would leave the user unable to tell which retry belongs to which. */
+  subject?: string;
+}) {
+  const run = (kind: GapActionKind) => {
+    if (kind === "retry") onRetry();
+    else if (kind === "diagnostics") onDiagnostics();
+    else if (kind === "dashboard") void openExternal(GATE_DASHBOARD_URL);
+    else if (kind === "api-keys") void openExternal(GATE_API_KEYS_URL);
+    else void openExternal(GATE_DOCS_URL);
+  };
+
+  // A failed fetch outranks per-section gaps: if nothing landed there is nothing
+  // to itemise, and the sections listed in the held view describe the *previous*
+  // reading, not this one.
+  const notices = (
+    failure
+      ? [failureNotice(failure)]
+      : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason))
+  ).map((n) => (subject ? { ...n, subject } : n));
+  if (notices.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {/* No separate staleness disclosure. It was a second sentence saying what
+          the period label beside the header already says - "updated 14:03", with
+          the date in front of it when the reading is not from today - and the
+          product call (2026-08-18) was that a held reading is a feature rather
+          than a warning: what the user wants on screen is the last thing that
+          actually happened to their traffic. The notices below still name the
+          cause and offer the action, which is the part that is actionable. */}
+      {notices.map((n) => (
+        <p key={n.subject} className="text-base-xs text-base-muted-foreground">
+          <span className="font-medium">{n.subject}:</span> {n.cause}
+          {n.actions.map((a) => (
+            <button
+              key={a.kind}
+              type="button"
+              onClick={() => run(a.kind)}
+              disabled={a.kind === "retry" && loading}
+              // The visible label is the design's, and it is deliberately short -
+              // "Try again", not "Try again reading your activity". That reads well
+              // inside a sentence and badly out of context, and out of context is
+              // exactly how it reaches a screen reader, a button list, or a test.
+              // Two of these notices can be on screen at once, each with its own
+              // Retry, and the sidebar's failed-scan control is also called "Try
+              // again": three buttons, one name, three different jobs. Naming the
+              // subject fixes the ambiguity without touching the visible copy.
+              aria-label={`${a.label}: ${n.subject}`}
+              className="ml-2 rounded-base font-medium text-base-primary underline decoration-transparent underline-offset-2 transition hover:decoration-inherit focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:text-base-muted-foreground"
+            >
+              {a.kind === "retry" && loading ? "Trying…" : a.label}
+            </button>
+          ))}
+        </p>
+      ))}
+    </div>
+  );
 }

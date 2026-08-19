@@ -58,9 +58,11 @@ test.describe("new UI routing", () => {
     const app = await boot(driftedCodex);
 
     // The card's switch reads off: the app is not protected. This is the path
-    // that re-adopts, and the only one that reaches the review gate.
+    // that re-adopts, and the only one that reaches the review gate. Its
+    // accessible name is the notice's own ("Let Gate Connect manage Codex"),
+    // which is what distinguishes it from the sidebar row's switch.
     await expect(app.page.getByText(/isn't protected/)).toBeVisible();
-    const cardSwitch = app.page.getByRole("switch", { name: "Codex" }).last();
+    const cardSwitch = app.page.getByRole("switch", { name: "Let Gate Connect manage Codex" });
     await expect(cardSwitch).toHaveAttribute("aria-checked", "false");
 
     await cardSwitch.click();
@@ -79,7 +81,7 @@ test.describe("new UI routing", () => {
   test("declining the review leaves the config alone", async ({ boot }) => {
     const app = await boot(driftedCodex);
 
-    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+    await app.page.getByRole("switch", { name: "Let Gate Connect manage Codex" }).click();
     await app.page.getByRole("button", { name: "Keep existing config" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -365,7 +367,11 @@ test.describe("new UI: an empty inventory", () => {
     await expect(app.page.getByText("Couldn’t check for apps")).toBeVisible();
     // The distinction that matters: it must not claim the device is clean.
     await expect(app.page.getByText("No apps detected")).toHaveCount(0);
-    await expect(app.page.getByRole("button", { name: "Try again" })).toBeVisible();
+    // `exact`, for the same reason the Refresh assertion above uses it: the
+    // Overview's activity notices offer their own retry, named "Try again:
+    // <section>" so a screen reader can tell three identically-worded buttons
+    // apart. Substring matching would find those too.
+    await expect(app.page.getByRole("button", { name: "Try again", exact: true })).toBeVisible();
   });
 
   test("neither state appears once apps are found", async ({ boot }) => {
@@ -386,7 +392,7 @@ test.describe("new UI: an empty inventory", () => {
     await app.page.evaluate(() => {
       window.__GATE_E2E__.state.failures = {};
     });
-    await app.page.getByRole("button", { name: "Try again" }).click();
+    await app.page.getByRole("button", { name: "Try again", exact: true }).click();
 
     // Now a real answer: the device genuinely has no tools in this fixture.
     await expect(app.page.getByText("No apps detected")).toBeVisible();

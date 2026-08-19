@@ -371,6 +371,15 @@ Chart is hand-rolled from stacked divs, no chart library: the mark is four
 rectangles, and hand-rolling keeps the series on design tokens. Bars are the
 design's 20px and distribute across the card, so 24 buckets or 6 both work.
 
+Hover shows `chart/tooltip` (`191:79768`): a 200px-wide white card, 1px
+`base/border`, r8, `shadow/md`, p8, heading in `mono/eyebrow` at 14px (10%
+tracking, hence the `tracking-eyebrow-14` token alongside the 12px one), then
+the four legend rows with right-aligned values. Anchored by percentage across
+the plot area rather than by measuring a bar, and flipped to the left of the
+cursor over the last third so it stays inside the card. Hover-only and inside
+the `aria-hidden` subtree on purpose: the sr-only table already carries the same
+figures, so exposing both would announce every hour twice.
+
 Verified against Figma: pane `gray/100`, card Fill 726 / r8 / `#E5E7EB` /
 `shadow/sm`, bars 20px, legend swatches 12x12 r2.
 
@@ -555,13 +564,17 @@ the same PR.
    centred card, no sidebar) and `WelcomePane`, `OrgPickerPane`,
    `ConnectedPane`. Built from the design's own vocabulary rather than invented
    wholesale, but **not in the Figma** and expected to be redrawn.
-7. **Does the chart's `total` series double-count?** The Figma legend calls the
-   blue series "Total messages" but stacks it *underneath* blocked, flagged and
-   redacted. Read literally the bar sums to more than the total. `MessagesBucket`
-   currently treats the four as additive, so `total` means "everything not
-   otherwise accounted for". Worth settling in the 24-hour backend's response
-   shape rather than in the component: if the API really returns a grand total,
-   the chart should subtract rather than stack.
+7. **Does the chart's `total` series double-count? RESOLVED 2026-08-17 - no,
+   the four are additive.** Settled by the Figma's own `chart/tooltip`
+   (`191:79768`), added to the file after this question was written. It lists
+   `Total messages 8 / Blocked 2 / Flagged 2 / Redacted 0` under a heading
+   reading `12`, and that heading carries `mono/eyebrow` - the style the axis
+   ticks use, i.e. an identifier naming the column, not a fifth figure. So
+   "Total messages" is the remainder series, `MessagesBucket` was already right,
+   and the endpoint keeps sending `requests` plus the three security counts with
+   the client subtracting. The sr-only table now names the sum "All messages" so
+   two different figures no longer share one column name.
+
 8. **Sidebar app states: RESOLVED 2026-08-16.** `SidebarApp` now carries an
    `AppStatus` union (`protected` / `not-protected` / `drifted` /
    `not-routed`), and separately an `on` boolean. The split is deliberate and
@@ -1109,3 +1122,67 @@ along. What a general confirmation would add is coverage of the *clean* case,
 where `integrations/codex.rs` still replaces the user's own `model_provider` (and
 stashes it for disconnect). That is a real gap, and a real design decision -
 raised on AG-564 and AG-563 rather than settled here.
+
+## Unavailable and held readings (AG-576)
+
+The ticket's written ACs still describe a Stale badge and a Refresh control; the
+PO's later call dropped both. What shipped instead:
+
+- **Skeletons, never a zero.** `Skeleton` and `EmptyNote` in `gc/base.tsx`, drawn
+  by the stat tiles, the chart (24 fixed-height columns) and both Overview tables
+  while the first read is in flight. A figure on screen is a figure something
+  measured: `0` says the user sent nothing, a dash says we asked and were
+  refused, and neither is true while we are still asking.
+- **"No messages sent in the last 24hrs"** is the exact empty copy, in the chart
+  and in `AppPane`'s recent activity. It appears only when the reading really is
+  zero - a dense series of 24 zero buckets - and never over a section the gateway
+  declined.
+- **`ActivityView.missing`** is new and is not `gaps`. `gaps` says *why*, in copy,
+  for the notice under the header; `missing` says *whether*, as a flag, for the
+  card. A declined section and an empty one both arrive as an empty array, so
+  without the flag the pane reports "no policies configured" over a list nobody
+  would hand over.
+- **The last reading is served off disk.** `crates/core/src/activity_cache.rs`
+  writes the response body to `activity-cache.json` at 0600, keyed on
+  gateway + auth mode + org + install filter, and `useActivity` fires the cached
+  read and the network read together. The cached body is applied only if it wins
+  the race, in either direction: a slow disk must not overwrite a fresh reading,
+  and a failed fetch must not be papered over with older numbers arriving late.
+  A scope change blanks the view; the retry button does not. Sign-out clears the
+  file with the account.
+
+**The empty state is sampled, from `228:89241`** (`App/Claude-desktop/alert/
+gate-model`, supplied 2026-08-19). Two corrections came out of it:
+
+- **A counter with no reading behind it reads `N/A`; a measured zero reads `0`.**
+  The frame draws Messages `0`, Blocked/Flagged `0` and Tokens saved `N/A` side
+  by side, and that is one case rather than a per-counter rule: an org with no
+  traffic, where the two counts genuinely are zero and savings genuinely has no
+  figure. The rule reproduces it exactly and also covers the case the Figma does
+  not draw - nothing read at all, which reads `N/A` three times. No delta is
+  drawn next to `N/A`.
+
+  Settled 2026-08-19 after trying the alternative. Falling the two counts back to
+  `0` on a failed read matched the mock on every screen, at the price of printing
+  "0 messages" over traffic the pane could not see, and of contradicting the
+  chart four inches below it that was already saying "Messages couldn't be read".
+  A number looks more authoritative than a sentence, so the tile would have won
+  that disagreement. `N/A` keeps the whole pane telling one story.
+- The empty note is a **glyph above the sentence**, not a bare line of text: a
+  36px tile with a 1px `base/border` and a 20px muted icon, centred, with the
+  sentence beneath. `messageCircleX` for a message feed (added to `Icon.tsx`),
+  `shieldCheck` for policies, `layers` for savings.
+
+  Each card keeps its own glyph in *both* sentences. A first pass gave every
+  "couldn't be read" note a warning triangle, which stacked three of them down a
+  pane whose single cause was already stated once in the notice above; one
+  refused credential read as three problems. The sentence carries the
+  difference, the notice carries the alarm.
+
+The frame also confirms two things already built: the empty chart sits inside the
+normal Messages card with its heading intact, and Recent activity still lists
+rows dated well outside the 24-hour window while the chart above it says no
+messages were sent. The feed deliberately outlives the chart's window.
+
+Still open: the skeleton silhouettes. No frame draws a loading state, so the
+placeholder columns and rows are inferred from the shapes they stand in for.
