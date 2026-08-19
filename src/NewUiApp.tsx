@@ -65,6 +65,7 @@ import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
 import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
+import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
@@ -242,7 +243,44 @@ export function NewUiApp() {
   // pane would open on a "signed out" banner that is about to be wrong.
   const canRead = loaded && account !== null;
   const activity = useActivity(canRead, installId, credential);
-  const { installations, current: currentInstallId } = useInstallations(canRead, credential);
+  const {
+    installations,
+    current: currentInstallId,
+    resolved: installsResolved,
+  } = useInstallations(canRead, credential);
+  /** The tool whose pane is open, or null on any other view. Drives both per-tool
+   *  reads below, and gating on it keeps them from firing for a pane nobody is
+   *  looking at - this endpoint shares an address-keyed rate limit with every
+   *  other control-plane route. */
+  const openTool = view.kind === "app" ? view.slug : null;
+  /**
+   * Whether the gateway has told us which installation this machine is.
+   *
+   * The app pane is scoped to *this machine*, and `installId: null` does not mean
+   * that - it means org-wide, which drops the query parameter entirely. So a null
+   * id must stop the read rather than widen it: otherwise the pane paints the
+   * whole org's traffic under a heading that says one machine, and does it exactly
+   * when this machine is unattributed, which is the case the pane exists to
+   * explain. It is self-concealing too - the org-wide read succeeds, so nothing
+   * is pending and no gap notice fires - so `unattributedMachine` below says it
+   * out loud instead.
+   */
+  const machineKnown = installsResolved && currentInstallId !== null;
+  /** The gateway answered and does not recognise this machine. Distinct from "not
+   *  asked yet", which is why `useInstallations` reports `resolved`. */
+  const unattributedMachine = installsResolved && currentInstallId === null;
+  const toolActivity = useActivity(
+    canRead && openTool !== null && machineKnown,
+    currentInstallId,
+    credential,
+    openTool ?? undefined,
+  );
+  const toolEvents = useToolEvents(
+    canRead && openTool !== null && machineKnown,
+    openTool,
+    currentInstallId,
+    credential,
+  );
 
   // A machine id belongs to the org it sent traffic to, so a scope selected
   // before an org switch cannot be honoured after it.
@@ -1120,8 +1158,14 @@ export function NewUiApp() {
           name={appFor(apps, view.slug)?.name ?? view.slug}
           isProtected={appFor(apps, view.slug)?.status.kind === "protected"}
           onToggleProtected={noop}
-          stats={EMPTY_STATS}
-          buckets={[]}
+          stats={toolActivity.view?.stats ?? EMPTY_STATS}
+          buckets={toolActivity.view?.buckets ?? []}
+          // Pending while the installation list is still open too: until it
+          // answers we do not know which machine this is, so there is nothing to
+          // read yet - and a skeleton is the honest account of that.
+          pending={
+            !installsResolved || (toolActivity.view === null && toolActivity.failure === null)
+          }
           modelChoice={modelChoice[view.slug] ?? "app"}
           // Switching to a Gate model spends PAYG credits, so it is confirmed
           // rather than taken on a radio click. Switching back is not.
@@ -1133,13 +1177,64 @@ export function NewUiApp() {
           onChangeModel={() => setModelOverlay("picker")}
           credits="-"
           onAddCredits={noop}
-          activity={[]}
-          // Not "this app sent nothing" - "nobody has asked". The per-app
-          // reading is AG-574's endpoint and does not exist yet, so the cards
-          // say they have no reading rather than reporting an app the user has
-          // been working in all morning as idle.
-          unavailable
-          alert={driftAlert}
+          activity={toolEvents.view?.entries ?? []}
+          eventsPending={
+            !installsResolved || (toolEvents.view === null && toolEvents.failure === null)
+          }
+          onLoadMore={toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined}
+          // Each half reports its own read. Deriving the feed's flag from the
+          // overview's state let a feed that answered - and answered empty - be
+          // reported as unreadable because the *chart* had not landed, which is
+          // precisely the unread-versus-empty confusion these flags exist to
+          // prevent. Two endpoints, two answers.
+          unavailable={{
+            chart: unattributedMachine || (toolActivity.view ? toolActivity.view.missing.chart : true),
+            events: unattributedMachine || toolEvents.failure !== null,
+          }}
+          alert={
+            <>
+              {driftAlert}
+              {unattributedMachine ? (
+                // No numbers can be shown here, and the reason is not a failure:
+                // the gateway answered and does not recognise this machine, so
+                // there is no way to ask "what has this tool done *here*". Said
+                // plainly rather than by showing the org's traffic under one
+                // machine's heading, or zeros under a tool in daily use.
+                <p className="text-base-xs text-base-muted-foreground">
+                  <span className="font-medium">This machine:</span> the gateway has no traffic
+                  attributed to it yet, so this app&apos;s own activity cannot be shown. The
+                  Overview still covers your whole organisation.
+                </p>
+              ) : (
+                <>
+                  {/* The same notices the Overview shows, from the same builder, so
+                      the two panes cannot describe one gateway failure two
+                      different ways. Both reads get one: the feed is its own
+                      endpoint and its own failure, and routing it through here is
+                      what gives it a cause and a retry instead of a bare
+                      "couldn't be read". */}
+                  <ActivityGaps
+                    view={toolActivity.view}
+                    failure={toolActivity.failure}
+                    loading={toolActivity.loading}
+                    onRetry={() => {
+                      toolActivity.reload();
+                      toolEvents.reload();
+                    }}
+                    onDiagnostics={showDiagnostics}
+                  />
+                  <ActivityGaps
+                    view={null}
+                    failure={toolEvents.failure}
+                    loading={toolEvents.loading}
+                    onRetry={toolEvents.reload}
+                    onDiagnostics={showDiagnostics}
+                    subject="Recent activity"
+                  />
+                </>
+              )}
+            </>
+          }
         />
       ) : (
         <Overview
@@ -1386,12 +1481,18 @@ function ActivityGaps({
   loading,
   onRetry,
   onDiagnostics,
+  subject,
 }: {
   view: ActivityView | null;
   failure: ActivityFailure | null;
   loading: boolean;
   onRetry: () => void;
   onDiagnostics: () => void;
+  /** Overrides the notice's subject, for a caller that owns one read rather than
+   *  the whole pane. The app pane mounts this twice - once for the counters and
+   *  chart, once for the event feed - and two notices both headed "Activity"
+   *  would leave the user unable to tell which retry belongs to which. */
+  subject?: string;
 }) {
   const run = (kind: GapActionKind) => {
     if (kind === "retry") onRetry();
@@ -1404,9 +1505,11 @@ function ActivityGaps({
   // A failed fetch outranks per-section gaps: if nothing landed there is nothing
   // to itemise, and the sections listed in the held view describe the *previous*
   // reading, not this one.
-  const notices = failure
-    ? [failureNotice(failure)]
-    : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason));
+  const notices = (
+    failure
+      ? [failureNotice(failure)]
+      : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason))
+  ).map((n) => (subject ? { ...n, subject } : n));
   if (notices.length === 0) return null;
 
   return (

@@ -91,6 +91,9 @@ interface RawOverview {
   /** The installation scope the gateway *applied*, echoed back. Optional
    *  because a gateway older than the attribution migration will not send it. */
   installation?: { installId: string | null };
+  /** The tool scope the gateway applied, echoed back. Same optionality, same
+   *  reason. */
+  toolScope?: { tool: string | null };
 }
 
 interface RawRow {
@@ -139,6 +142,10 @@ export interface ActivityView {
    *  disagree the numbers belong to the gateway's answer, and a label taken from
    *  the request would mislabel them. */
   installId: string | null;
+  /** Which tool this reading covers, as the gateway echoed it, or `null` for
+   *  every tool. Read from the response rather than the request, for the reason
+   *  `installId` gives. */
+  toolId: string | null;
 }
 
 /**
@@ -309,6 +316,7 @@ export function adapt(raw: RawOverview): ActivityView {
       savings: raw.tokenSavings.state !== "ok",
     },
     installId: raw.installation?.installId ?? null,
+    toolId: raw.toolScope?.tool ?? null,
   };
 }
 
@@ -330,6 +338,13 @@ export function clockTime(taken: Date, now = new Date()): string {
  * `installId` scopes the reading to one installation; `null` is the whole org.
  * Changing it refetches, because the gateway narrows every section server-side -
  * there is no client-side slice of a payload that only covered one machine.
+ *
+ * `tool` scopes it to one tool the same way, for the app pane (AG-574). One hook
+ * rather than two: the generation guard, the cache-versus-network race and the
+ * clear-on-scope-change effect all apply identically to a tool-scoped read, and a
+ * second copy of that race guard is the thing most likely to drift. Both call
+ * sites keep their own state - hooks do not share any - so the Overview and an
+ * app pane can be mounted at once without either seeing the other's reading.
  *
  * `credential` identifies whose reading this is - the gateway, the org and the
  * credential type. It is not sent anywhere; changing it clears the view and
@@ -361,6 +376,7 @@ export function useActivity(
   enabled: boolean,
   installId: string | null = null,
   credential = "",
+  tool?: string,
 ): {
   view: ActivityView | null;
   failure: ActivityFailure | null;
@@ -386,7 +402,7 @@ export function useActivity(
     // has nothing left to say.
     let answered = false;
 
-    void activityCachedOverview(installId ?? undefined)
+    void activityCachedOverview(installId ?? undefined, tool)
       .then((text) => {
         if (!current() || answered || !text) return;
         setView(adapt(JSON.parse(text) as RawOverview));
@@ -396,7 +412,7 @@ export function useActivity(
         // the network, which is what it did before this existed.
       });
 
-    activityOverview(installId ?? undefined)
+    activityOverview(installId ?? undefined, tool)
       .then((text) => {
         answered = true;
         if (!current()) return;
@@ -414,7 +430,7 @@ export function useActivity(
       .finally(() => {
         if (current()) setLoading(false);
       });
-  }, [enabled, installId, credential]);
+  }, [enabled, installId, credential, tool]);
 
   // A reading belongs to the scope it was taken for, so a scope change drops it
   // rather than leaving it under the new label until the replacement lands.
@@ -423,7 +439,7 @@ export function useActivity(
   useEffect(() => {
     setView(null);
     setFailure(null);
-  }, [credential, installId]);
+  }, [credential, installId, tool]);
 
   useEffect(reload, [reload]);
 
@@ -471,18 +487,33 @@ export function useInstallations(
   installations: Installation[];
   /** This machine's own id, from the gateway, or `null` if it is unattributed. */
   current: string | null;
+  /**
+   * Whether this read has finished, either way.
+   *
+   * Load-bearing, not bookkeeping. `current === null` means two different things
+   * - "not asked yet" and "asked, and this machine is unattributed" - and a
+   * caller that scopes a reading to *this machine* cannot tell them apart without
+   * this flag. It would read org-wide numbers instead and label them as one
+   * machine's, which is worst in exactly the case the app is meant to explain:
+   * a machine that is routing but unattributed. Set on failure too, because a
+   * failed list is also an answer about what we know.
+   */
+  resolved: boolean;
 } {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
+  const [resolved, setResolved] = useState(false);
 
   useEffect(() => {
     if (!enabled) return;
     let live = true;
     // Cleared before the new read, not after it lands: these are one org's
     // machines, and an installation from the org the user just left is a choice
-    // the new reading cannot honour.
+    // the new reading cannot honour. `resolved` goes with them - until this read
+    // answers, nobody may claim to know which machine is this one.
     setInstallations([]);
     setCurrent(null);
+    setResolved(false);
     activityInstallations()
       .then((text) => {
         if (!live) return;
@@ -491,13 +522,18 @@ export function useInstallations(
         setCurrent(raw.current ?? null);
       })
       .catch(() => {
-        // Nothing to say: no list means no picker, and the org-wide reading the
-        // pane already shows is still correct.
+        // Nothing to say for the picker: no list means no picker, and the
+        // org-wide reading the Overview shows is still correct. A machine-scoped
+        // caller is a different matter - `resolved` below is what tells it the
+        // answer was "we could not find out" rather than "not yet".
+      })
+      .finally(() => {
+        if (live) setResolved(true);
       });
     return () => {
       live = false;
     };
   }, [enabled, credential]);
 
-  return { installations, current };
+  return { installations, current, resolved };
 }

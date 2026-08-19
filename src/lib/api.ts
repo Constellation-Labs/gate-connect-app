@@ -124,9 +124,9 @@ export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
  * `installId` scopes the reading to one installation (AC 1). Omitted, it is
  * org-wide: attribution only starts with the gateway migration that added it,
  * so scoping by default would hide every earlier request. */
-export const activityOverview = (installId?: string) =>
+export const activityOverview = (installId?: string, tool?: string) =>
   // The dev delay is a no-op in a real build; see `slowActivity`.
-  slowNetworkRead().then(() => invoke<string>("activity_overview", { installId }));
+  slowNetworkRead().then(() => invoke<string>("activity_overview", { installId, tool }));
 
 /** The last overview that landed for this scope, or `null`.
  *
@@ -135,12 +135,27 @@ export const activityOverview = (installId?: string) =>
  * what AG-576 means by never showing a figure that is not a real one: the
  * numbers on screen are always something that actually happened, and the
  * network answer replaces them when it lands. */
-export const activityCachedOverview = (installId?: string) =>
-  slowCacheRead().then(() => invoke<string | null>("activity_cached_overview", { installId }));
+export const activityCachedOverview = (installId?: string, tool?: string) =>
+  slowCacheRead().then(() =>
+    invoke<string | null>("activity_cached_overview", { installId, tool }),
+  );
 
 /** The installations this account has sent traffic from, as raw JSON text.
  * Derived from traffic, so it is empty until something has been attributed. */
 export const activityInstallations = () => invoke<string>("activity_installations");
+
+/** One page of a tool's recent requests, as raw JSON text (AG-574).
+ *
+ * `tool` is required: the feed is always about one tool, and the gateway refuses a
+ * request that names none. `cursor` is the previous page's `nextCursor`, passed
+ * back unchanged - it is opaque, and the gateway owns its shape.
+ *
+ * Deliberately not paired with a cached read the way the overview is. The held
+ * reading is a single slot and belongs to the Overview; see `activity_cache.rs`. */
+export const activityToolEvents = (tool: string, installId?: string, cursor?: string) =>
+  slowNetworkRead().then(() =>
+    invoke<string>("activity_tool_events", { installId, tool, cursor }),
+  );
 
 /** Persist the selected org and push X-Gate-Org-Id into a running engine/relay
  * live (no restart). */

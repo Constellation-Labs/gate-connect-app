@@ -28,6 +28,7 @@ use serde::Serialize;
 
 use crate::account::{self, AuthMode};
 use crate::oauth;
+use crate::registry::ToolId;
 
 /// Why a fetch failed, in the terms AG-576 needs in order to offer an action.
 ///
@@ -87,6 +88,18 @@ fn activity_endpoint(gateway_base_url: &str) -> String {
     format!("{}/v1/me/activity", gateway_base_url.trim_end_matches('/'))
 }
 
+/// One tool's recent-request feed, with its own test seam.
+/// `<gateway_base_url>/v1/me/tool-events` in real builds.
+fn tool_events_endpoint(gateway_base_url: &str) -> String {
+    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_TOOL_EVENTS_ENDPOINT") {
+        return o.to_string_lossy().into_owned();
+    }
+    format!(
+        "{}/v1/me/tool-events",
+        gateway_base_url.trim_end_matches('/')
+    )
+}
+
 /// Discovery endpoint for the installation picker, with its own test seam.
 /// `<gateway_base_url>/v1/me/installations` in real builds.
 fn installations_endpoint(gateway_base_url: &str) -> String {
@@ -113,13 +126,17 @@ fn installations_endpoint(gateway_base_url: &str) -> String {
 /// has something real to draw before this call returns. Nothing else changes:
 /// the caller still gets the fresh body, and a cache write that fails is not a
 /// failed fetch.
-pub fn overview_json(install_id: Option<&str>) -> Result<String, Failure> {
-    let query: Vec<(&str, &str)> = install_id
-        .filter(|s| !s.is_empty())
-        .map(|id| vec![("installId", id)])
-        .unwrap_or_default();
+pub fn overview_json(install_id: Option<&str>, tool: Option<ToolId>) -> Result<String, Failure> {
+    let install_id = install_id.filter(|s| !s.is_empty());
+    let mut query: Vec<(&str, &str)> = Vec::new();
+    if let Some(id) = install_id {
+        query.push(("installId", id));
+    }
+    if let Some(t) = tool {
+        query.push(("tool", t.slug()));
+    }
     let body = get_json(Endpoint::Activity, &query)?;
-    crate::activity_cache::store(install_id.filter(|s| !s.is_empty()), &body);
+    crate::activity_cache::store(install_id, tool, &body);
     Ok(body)
 }
 
@@ -129,8 +146,36 @@ pub fn overview_json(install_id: Option<&str>) -> Result<String, Failure> {
 /// fresh one are different claims - one is what happened, the other is what is
 /// happening - and folding them into one return value would leave the pane
 /// unable to tell which it is showing. The caller asks for both and decides.
-pub fn cached_overview_json(install_id: Option<&str>) -> Option<String> {
-    crate::activity_cache::load(install_id.filter(|s| !s.is_empty()))
+pub fn cached_overview_json(install_id: Option<&str>, tool: Option<ToolId>) -> Option<String> {
+    crate::activity_cache::load(install_id.filter(|s| !s.is_empty()), tool)
+}
+
+/// Fetch one page of a tool's recent requests, as raw JSON (AG-574).
+///
+/// `tool` is a [`ToolId`] rather than a string so the closed set of slugs is
+/// enforced here, by the compiler, instead of by the gateway rejecting a value
+/// this side let through. The route requires it: the feed is always about one
+/// tool.
+///
+/// `cursor` is the previous page's `nextCursor`, passed back unchanged. It is
+/// opaque on purpose - the gateway owns its shape - so this only forwards it.
+///
+/// Deliberately not cached. The held reading in [`crate::activity_cache`] is one
+/// slot, and spending it on a feed that changes every request would evict the
+/// overview it exists for.
+pub fn tool_events_json(
+    install_id: Option<&str>,
+    tool: ToolId,
+    cursor: Option<&str>,
+) -> Result<String, Failure> {
+    let mut query: Vec<(&str, &str)> = vec![("tool", tool.slug())];
+    if let Some(id) = install_id.filter(|s| !s.is_empty()) {
+        query.push(("installId", id));
+    }
+    if let Some(c) = cursor.filter(|s| !s.is_empty()) {
+        query.push(("cursor", c));
+    }
+    get_json(Endpoint::ToolEvents, &query)
 }
 
 /// Fetch the installations this account has sent traffic from, as raw JSON.
@@ -148,6 +193,7 @@ pub fn installations_json() -> Result<String, Failure> {
 enum Endpoint {
     Activity,
     Installations,
+    ToolEvents,
 }
 
 /// One authenticated control-plane GET, shared by both reads above.
@@ -165,6 +211,7 @@ fn get_json(which: Endpoint, query: &[(&str, &str)]) -> Result<String, Failure> 
     let url = match which {
         Endpoint::Activity => activity_endpoint(&account.gateway_base_url),
         Endpoint::Installations => installations_endpoint(&account.gateway_base_url),
+        Endpoint::ToolEvents => tool_events_endpoint(&account.gateway_base_url),
     };
     // Built through `Url` rather than by string concatenation so a value the user
     // never typed - an install id read back from the gateway's own list - cannot
