@@ -121,14 +121,15 @@ jobs:
       # Fix: strip the bundled copies so the dynamic loader falls back to
       # the system libwayland, repack, then re-sign - the tauri-action step
       # above already signed the pre-strip file, and its signature won't
-      # match the patched bytes. The AppImage signature in latest.json needs
-      # updating; the URL and version are unchanged since the filename is the
-      # same. tauri-action writes TWO keys for the AppImage - the base
-      # "linux-x86_64" and the installer-qualified "linux-x86_64-appimage" -
-      # and the updater plugin prefers the "-appimage" one (it searches
-      # ["{os}-{arch}-{installer}", "{os}-{arch}"] and takes the first hit).
-      # Both must get the re-signed signature, or an AppImage install verifies
-      # the stripped bytes against the stale pre-strip signature and fails.
+      # match the patched bytes.
+      #
+      # Writing that signature into latest.json does NOT belong here. Every
+      # matrix leg's tauri-action uploads its own latest.json, so a leg that
+      # finishes later overwrites whatever this one wrote: on v0.2.0 this step
+      # patched the manifest by 03:00:43 and the macOS leg replaced it at
+      # 03:01:42, putting the pre-strip signature back with nothing to notice.
+      # The re-signed signature leaves here as an artifact instead, and the
+      # `manifest` job applies it once every leg has finished.
       - name: Fix bundled libwayland in AppImage
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
@@ -170,14 +171,7 @@ jobs:
           cp "$APPIMAGE.sig" "/tmp/$SANITIZED.sig"
           gh release upload "$TAG" "/tmp/$SANITIZED" "/tmp/$SANITIZED.sig" --clobber
 
-          gh release download "$TAG" -p latest.json -O /tmp/latest.json --clobber
-          jq --arg sig "$(cat "$APPIMAGE.sig")" '
-            .platforms |= with_entries(
-              if (.value.url // "" | endswith(".AppImage"))
-              then .value.signature = $sig else . end)
-          ' /tmp/latest.json > /tmp/latest.json.new
-          mv /tmp/latest.json.new /tmp/latest.json
-          gh release upload "$TAG" /tmp/latest.json --clobber
+          cp "$APPIMAGE.sig" "$RUNNER_TEMP/appimage.sig"
 
           # Read back what the release now serves, rather than trusting that
           # the uploads landed. A lost upload here hands every AppImage user a
@@ -192,18 +186,17 @@ jobs:
               "expected $EXPECTED_SIZE (the stripped build)" >&2
             exit 1
           fi
-          # Every AppImage entry gets the same signature, so `unique` collapses
-          # to one value unless an entry was missed - which would also fail here.
-          gh release download "$TAG" -p latest.json -O /tmp/latest.published.json --clobber
-          PUBLISHED_SIG=$(jq -r '
-            [.platforms[] | select((.url // "") | endswith(".AppImage")) | .signature]
-            | unique | .[]
-          ' /tmp/latest.published.json)
-          if [ "$PUBLISHED_SIG" != "$(cat "$APPIMAGE.sig")" ]; then
-            echo "latest.json signature does not match the re-signed AppImage" >&2
-            exit 1
-          fi
-          echo "Verified $SANITIZED ($EXPECTED_SIZE bytes) and its latest.json signature"
+          echo "Verified $SANITIZED is published at $EXPECTED_SIZE bytes (stripped)"
+      # The signature only becomes authoritative once the `manifest` job writes
+      # it, so fail loudly here rather than letting that job start without it.
+      - name: Hand the AppImage signature to the manifest job
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage-signature
+          path: ${{ runner.temp }}/appimage.sig
+          if-no-files-found: error
+          retention-days: 1
       # Add version-less copies of each platform's primary installer alongside
       # the versioned assets, so a stable /releases/latest/download/<name> URL
       # always resolves to the newest published release. The versioned assets
@@ -258,14 +251,78 @@ jobs:
               alias_asset "$BUNDLE/dmg" "*.dmg" "Gate.Connect_universal.dmg"
               ;;
           esac
+
+  # Every matrix leg's tauri-action uploads its own latest.json and the leg that
+  # finishes last wins. For the entries tauri-action derives from the release's
+  # .sig assets that is harmless, and in fact required: the last leg to finish
+  # is the only one that has seen every other leg's uploads, so pinning
+  # generation to a single leg would have shipped v0.2.0 with no darwin entries
+  # at all (macOS uploaded its bundles at 03:01:38, after ubuntu finished at
+  # 03:00:43). What last-writer-wins does break is the one signature a leg
+  # patches by hand after re-signing the stripped AppImage.
+  #
+  # So the patch lands here, after the matrix, where nothing can write
+  # latest.json afterwards. tauri-action emits TWO keys for the AppImage - the
+  # base "linux-x86_64" and the installer-qualified "linux-x86_64-appimage" -
+  # and the updater plugin prefers the "-appimage" one (it searches
+  # ["{os}-{arch}-{installer}", "{os}-{arch}"] and takes the first hit). Both
+  # must carry the re-signed signature, or an AppImage install verifies the
+  # stripped bytes against the stale pre-strip signature and fails.
+  manifest:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: appimage-signature
+      - name: Write the re-signed AppImage signature into latest.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          SIG=$(cat appimage.sig)
+          if [ -z "$SIG" ]; then
+            echo "appimage.sig arrived empty" >&2
+            exit 1
+          fi
+
+          gh release download "$TAG" -p latest.json -O latest.json --clobber
+          jq --arg sig "$SIG" '
+            .platforms |= with_entries(
+              if (.value.url // "" | endswith(".AppImage"))
+              then .value.signature = $sig else . end)
+          ' latest.json > patched.json
+          mv patched.json latest.json
+          gh release upload "$TAG" latest.json --clobber
+
+          # Read back what the release serves rather than trusting the upload.
+          # Every AppImage entry gets the same signature, so `unique` collapses
+          # to a single value unless an entry was missed, which fails here too.
+          gh release download "$TAG" -p latest.json -O published.json --clobber
+          PUBLISHED=$(jq -r '
+            [.platforms[] | select((.url // "") | endswith(".AppImage")) | .signature]
+            | unique | .[]
+          ' published.json)
+          if [ "$PUBLISHED" != "$SIG" ]; then
+            echo "latest.json does not serve the re-signed AppImage signature" >&2
+            exit 1
+          fi
+          echo "latest.json carries the re-signed AppImage signature"
+
   # A leg that loses its own upload still exits 0: the alias step trusts that
-  # `gh release upload` returned success, and the AppImage fix step is the only
-  # place that reads anything back. So the matrix can finish green over a
+  # `gh release upload` returned success, and only the AppImage fix step and
+  # the manifest job read anything back. So the matrix can finish green over a
   # release that is missing an installer, or serving an alias built in an
   # earlier attempt. Gate the whole thing on the draft actually carrying every
   # artifact, before a human publishes it.
   verify:
-    needs: release
+    needs: [release, manifest]
     runs-on: ubuntu-latest
     permissions:
       contents: read
