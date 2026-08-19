@@ -214,6 +214,172 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
     );
 }
 
+/// Whether the `curl` on PATH was built with HTTP/2, read off its `Features:`
+/// line. Windows ships a Schannel build with no nghttp2, which rejects
+/// `--http2` outright.
+fn curl_supports_http2() -> bool {
+    std::process::Command::new("curl")
+        .arg("-V")
+        .output()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| line.strip_prefix("Features:"))
+                .any(|features| features.split_whitespace().any(|f| f == "HTTP2"))
+        })
+        .unwrap_or(false)
+}
+
+/// A request whose header block exceeds 16 KiB must still be intercepted and
+/// rewritten, not answered `431` by our own listener.
+///
+/// The engine's h2 server is where this regresses, and it regresses by
+/// OMISSION: hyper's HTTP/2 side inherits the `h2` crate's
+/// `SETTINGS_MAX_HEADER_LIST_SIZE` default of 16 KiB, and hudsucker's fallback
+/// server builder configures only `http1()`, so unless `engine::start` supplies
+/// its own builder the limit is silently ours. It cost us the browser surfaces:
+/// chatgpt.com's web client sends ~8.3 KB of its own headers
+/// (`x-oai-is-pending-updates` alone measured 5446 B, and it grows until the
+/// server acks it) plus a session cookie jar, so every call - including the
+/// `/f/conversation/prepare` that precedes the first chat turn - came back a
+/// bare `431`, no headers and no body. The chat wedges before it sends a turn,
+/// and because the refusal is ours nothing reaches the gateway to explain why.
+///
+/// HTTP/2 is forced and then verified, rather than assumed. The same request
+/// passes over h1 on hyper's far more generous limits (measured: 20 KB fine), so
+/// a client that quietly negotiated HTTP/1.1 would keep this test green while
+/// the regression was back for every browser. That rules out the in-process
+/// `reqwest` client the tests above use: this workspace pins it with
+/// `default-features = false` and no `http2` feature, so it cannot speak h2 at
+/// all. `curl` can, and `%{http_version}` is asserted so a curl built without
+/// HTTP/2 fails loudly instead of silently covering nothing.
+///
+/// Windows is the one exception: its bundled Schannel `curl.exe` has no nghttp2
+/// and cannot drive h2 at all, so the test skips there rather than report a
+/// limit it never reached. What is under test is the engine's own
+/// `ServerBuilder` config, which is not platform-specific, and the Linux and
+/// macOS legs still cover it.
+#[tokio::test]
+async fn proxy_accepts_oversized_h2_request_headers() {
+    if !curl_supports_http2() {
+        // Only Windows gets the pass. Anywhere else, a curl without HTTP/2
+        // would negotiate h1, sail past a limit h1 does not have, and leave the
+        // test green over nothing - the exact hole the version assert guards.
+        assert!(
+            cfg!(windows),
+            "curl must be built with HTTP/2 for this test to cover anything; an \
+             h1 run would pass without ever reaching the header limit"
+        );
+        eprintln!(
+            "skipping proxy_accepts_oversized_h2_request_headers: this curl has \
+             no HTTP/2 support (expected on Windows, whose bundled Schannel \
+             build has no nghttp2)"
+        );
+        return;
+    }
+
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let ca_path = std::env::temp_dir().join(format!(
+        "gate-proxy-e2e-bighdr-ca-{}-{}.pem",
+        std::process::id(),
+        engine.port()
+    ));
+    std::fs::write(&ca_path, &ca_cert_pem).expect("writing CA to temp file");
+
+    // 20 KB in one header: over the 16 KiB default, under the 64 KiB the engine
+    // now sets. Sized from the traffic that broke this rather than to the
+    // boundary - the ChatGPT state blob grows across a session.
+    let big = "a".repeat(20 * 1024);
+    let proxy_url = format!("http://127.0.0.1:{}", engine.port());
+    let ca_arg = ca_path.clone();
+    let big_header = format!("x-big: {big}");
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("curl")
+            .arg("-sS")
+            .arg("--ssl-no-revoke") // (schannel) same reason as the test above
+            .arg("--http2") // the whole point: h1 does not exercise the limit
+            // No `--fail`: the refusal we are guarding against IS an HTTP
+            // status, so it has to be read rather than turned into an exit code.
+            // The mock gateway answers with an empty body, so stdout is exactly
+            // this template.
+            .arg("-w")
+            .arg("%{http_code} %{http_version}")
+            .arg("--cacert")
+            .arg(&ca_arg)
+            .arg("-X")
+            .arg("POST")
+            .arg("-H")
+            .arg("authorization: Bearer app-token")
+            .arg("-H")
+            .arg(&big_header)
+            .arg("-H")
+            .arg("content-type: application/json")
+            .arg("--data")
+            .arg(r#"{"model":"claude","messages":[]}"#)
+            .arg("https://api.anthropic.com/v1/messages")
+            .env("https_proxy", &proxy_url)
+            .env("HTTPS_PROXY", &proxy_url)
+            .env("no_proxy", "")
+            .env("NO_PROXY", "")
+            .output()
+    })
+    .await
+    .expect("joining the curl task")
+    .expect("curl must be installed to run this test");
+
+    engine.stop();
+    let _ = std::fs::remove_file(&ca_path);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    assert_eq!(
+        stdout,
+        "200 2",
+        "expected 200 over HTTP/2; got `{stdout}` (a `431 2` here is the engine \
+         refusing the header block, `200 1.1` means curl fell back to h1 and the \
+         test no longer covers the limit)\nstderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // The rewrite still happened, and the oversized header rode along rather
+    // than being dropped somewhere in the middle.
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "gateway should have received exactly one request"
+    );
+    let r = &reqs[0];
+    assert_eq!(r.path, "/v1/messages");
+    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-big").map(str::len),
+        Some(big.len()),
+        "the oversized header must reach the gateway intact"
+    );
+}
+
 /// The same rewrite guarantee, but for a **real external process** routed
 /// through the engine solely by the `https_proxy` environment variable - the
 /// mechanism config-less, env-honoring apps use. Unlike the tests above, the
