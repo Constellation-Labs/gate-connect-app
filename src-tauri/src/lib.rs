@@ -546,12 +546,32 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
 /// the front end cannot pick between Retry and Sign in by reading an English
 /// sentence. See `gate_connect_core::activity::FailureCode`.
 #[tauri::command]
-async fn activity_overview(install_id: Option<String>) -> Result<String, String> {
+async fn activity_overview(
+    install_id: Option<String>,
+    tool: Option<String>,
+) -> Result<String, String> {
+    let tool = parse_tool(tool)?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::overview_json(install_id.as_deref()).map_err(envelope)
+        gate_connect_core::activity::overview_json(install_id.as_deref(), tool).map_err(envelope)
     })
     .await
     .map_err(|e| format!("activity overview join error: {e}"))?
+}
+
+/// Read a tool slug from the front end, or `None` for every tool.
+///
+/// An unrecognised non-empty slug is an error rather than a silent fall back to
+/// org-wide. The two sides of this boundary share one registry, so a slug that
+/// does not parse means they disagree about it - a bug worth surfacing, not a
+/// request to widen the scope. Falling back would quietly relabel every tool's
+/// traffic as the one the user selected.
+fn parse_tool(tool: Option<String>) -> Result<Option<gate_connect_core::registry::ToolId>, String> {
+    match tool.as_deref().filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(slug) => gate_connect_core::registry::ToolId::from_slug(slug)
+            .map(Some)
+            .ok_or_else(|| format!("unknown tool slug {slug:?}")),
+    }
 }
 
 /// The last overview that landed for this scope, or `None`.
@@ -561,12 +581,42 @@ async fn activity_overview(install_id: Option<String>) -> Result<String, String>
 /// (AG-576). Never an error: no cache and an unreadable cache mean the same
 /// thing to the caller, which is that it waits for [`activity_overview`].
 #[tauri::command]
-async fn activity_cached_overview(install_id: Option<String>) -> Result<Option<String>, String> {
+async fn activity_cached_overview(
+    install_id: Option<String>,
+    tool: Option<String>,
+) -> Result<Option<String>, String> {
+    let tool = parse_tool(tool)?;
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::activity::cached_overview_json(install_id.as_deref())
+        gate_connect_core::activity::cached_overview_json(install_id.as_deref(), tool)
     })
     .await
     .map_err(|e| format!("cached activity join error: {e}"))
+}
+
+/// One page of a tool's recent requests, for the app pane's feed (AG-574).
+///
+/// `tool` is required here, unlike on the overview: the feed is always about one
+/// tool, and the gateway refuses a request that names none. Not cached - see
+/// `activity::tool_events_json` for why the held reading stays with the overview.
+#[tauri::command]
+async fn activity_tool_events(
+    install_id: Option<String>,
+    tool: String,
+    cursor: Option<String>,
+) -> Result<String, String> {
+    let Some(tool) = parse_tool(Some(tool))? else {
+        return Err("a tool slug is required to read a tool's events".into());
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::tool_events_json(
+            install_id.as_deref(),
+            tool,
+            cursor.as_deref(),
+        )
+        .map_err(envelope)
+    })
+    .await
+    .map_err(|e| format!("activity tool events join error: {e}"))?
 }
 
 /// List the installations this account has sent traffic from, for the Overview's
@@ -1823,6 +1873,7 @@ pub fn run() {
                     activity_overview,
                     activity_installations,
                     activity_cached_overview,
+                    activity_tool_events,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -1885,6 +1936,7 @@ pub fn run() {
                     activity_overview,
                     activity_installations,
                     activity_cached_overview,
+                    activity_tool_events,
                     set_org,
                     app_platform,
                     diagnostics,

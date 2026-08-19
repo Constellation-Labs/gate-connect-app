@@ -65,6 +65,7 @@ import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
 import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
+import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
@@ -243,6 +244,22 @@ export function NewUiApp() {
   const canRead = loaded && account !== null;
   const activity = useActivity(canRead, installId, credential);
   const { installations, current: currentInstallId } = useInstallations(canRead, credential);
+  /** The tool whose pane is open, or null on any other view. Drives both per-tool
+   *  reads below, and gating on it keeps them from firing for a pane nobody is
+   *  looking at - this endpoint shares an address-keyed rate limit with every
+   *  other control-plane route. */
+  const openTool = view.kind === "app" ? view.slug : null;
+  /** Scoped to this machine, not the org: the pane sits beside a routing status
+   *  that is entirely local, and "your Claude Code" is what the user came to
+   *  read. `currentInstallId` is the gateway's own view of which installation
+   *  this is, so the two halves of the pane agree about whose traffic it is. */
+  const toolActivity = useActivity(
+    canRead && openTool !== null,
+    currentInstallId,
+    credential,
+    openTool ?? undefined,
+  );
+  const toolEvents = useToolEvents(canRead && openTool !== null, openTool, currentInstallId, credential);
 
   // A machine id belongs to the org it sent traffic to, so a scope selected
   // before an org switch cannot be honoured after it.
@@ -1120,8 +1137,9 @@ export function NewUiApp() {
           name={appFor(apps, view.slug)?.name ?? view.slug}
           isProtected={appFor(apps, view.slug)?.status.kind === "protected"}
           onToggleProtected={noop}
-          stats={EMPTY_STATS}
-          buckets={[]}
+          stats={toolActivity.view?.stats ?? EMPTY_STATS}
+          buckets={toolActivity.view?.buckets ?? []}
+          pending={toolActivity.view === null && toolActivity.failure === null}
           modelChoice={modelChoice[view.slug] ?? "app"}
           // Switching to a Gate model spends PAYG credits, so it is confirmed
           // rather than taken on a radio click. Switching back is not.
@@ -1133,13 +1151,38 @@ export function NewUiApp() {
           onChangeModel={() => setModelOverlay("picker")}
           credits="-"
           onAddCredits={noop}
-          activity={[]}
-          // Not "this app sent nothing" - "nobody has asked". The per-app
-          // reading is AG-574's endpoint and does not exist yet, so the cards
-          // say they have no reading rather than reporting an app the user has
-          // been working in all morning as idle.
-          unavailable
-          alert={driftAlert}
+          activity={toolEvents.view?.entries ?? []}
+          eventsPending={toolEvents.view === null && toolEvents.failure === null}
+          onLoadMore={toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined}
+          // Which sections have no reading behind them. With no view at all the
+          // whole pane is unread, which is not the same as this app having sent
+          // nothing - it may have been in use all morning while attribution
+          // failed. The notice below names the cause.
+          unavailable={
+            toolActivity.view
+              ? { chart: toolActivity.view.missing.chart, events: toolEvents.failure !== null }
+              : ALL_TOOL_MISSING
+          }
+          alert={
+            <>
+              {driftAlert}
+              {/* The same notices the Overview shows, for the same reasons and
+                  from the same builder: a failed read outranks per-section gaps,
+                  and each one names its own remedy. Reused rather than
+                  reimplemented so the two panes cannot describe one gateway
+                  failure two different ways. */}
+              <ActivityGaps
+                view={toolActivity.view}
+                failure={toolActivity.failure}
+                loading={toolActivity.loading}
+                onRetry={() => {
+                  toolActivity.reload();
+                  toolEvents.reload();
+                }}
+                onDiagnostics={showDiagnostics}
+              />
+            </>
+          }
         />
       ) : (
         <Overview
@@ -1218,6 +1261,11 @@ export function NewUiApp() {
 /** Before a reading lands, no section has one. Kept out of the render so the
  *  object identity is stable and the pane does not repaint for it. */
 const ALL_MISSING = { chart: true, policies: true, savings: true };
+
+/** Nothing on the app pane has been read yet. Not "this app is idle": the pane
+ *  may be open on a tool the user has been working in all morning while its
+ *  traffic went unattributed. The notice above the cards names the cause. */
+const ALL_TOOL_MISSING = { chart: true, events: true };
 
 /** No gateway endpoint reports the models on offer yet. See the picker. */
 const GATE_MODELS: GateModelOption[] = [];

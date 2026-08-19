@@ -91,6 +91,9 @@ interface RawOverview {
   /** The installation scope the gateway *applied*, echoed back. Optional
    *  because a gateway older than the attribution migration will not send it. */
   installation?: { installId: string | null };
+  /** The tool scope the gateway applied, echoed back. Same optionality, same
+   *  reason. */
+  toolScope?: { tool: string | null };
 }
 
 interface RawRow {
@@ -139,6 +142,10 @@ export interface ActivityView {
    *  disagree the numbers belong to the gateway's answer, and a label taken from
    *  the request would mislabel them. */
   installId: string | null;
+  /** Which tool this reading covers, as the gateway echoed it, or `null` for
+   *  every tool. Read from the response rather than the request, for the reason
+   *  `installId` gives. */
+  toolId: string | null;
 }
 
 /**
@@ -309,6 +316,7 @@ export function adapt(raw: RawOverview): ActivityView {
       savings: raw.tokenSavings.state !== "ok",
     },
     installId: raw.installation?.installId ?? null,
+    toolId: raw.toolScope?.tool ?? null,
   };
 }
 
@@ -330,6 +338,13 @@ export function clockTime(taken: Date, now = new Date()): string {
  * `installId` scopes the reading to one installation; `null` is the whole org.
  * Changing it refetches, because the gateway narrows every section server-side -
  * there is no client-side slice of a payload that only covered one machine.
+ *
+ * `tool` scopes it to one tool the same way, for the app pane (AG-574). One hook
+ * rather than two: the generation guard, the cache-versus-network race and the
+ * clear-on-scope-change effect all apply identically to a tool-scoped read, and a
+ * second copy of that race guard is the thing most likely to drift. Both call
+ * sites keep their own state - hooks do not share any - so the Overview and an
+ * app pane can be mounted at once without either seeing the other's reading.
  *
  * `credential` identifies whose reading this is - the gateway, the org and the
  * credential type. It is not sent anywhere; changing it clears the view and
@@ -361,6 +376,7 @@ export function useActivity(
   enabled: boolean,
   installId: string | null = null,
   credential = "",
+  tool?: string,
 ): {
   view: ActivityView | null;
   failure: ActivityFailure | null;
@@ -386,7 +402,7 @@ export function useActivity(
     // has nothing left to say.
     let answered = false;
 
-    void activityCachedOverview(installId ?? undefined)
+    void activityCachedOverview(installId ?? undefined, tool)
       .then((text) => {
         if (!current() || answered || !text) return;
         setView(adapt(JSON.parse(text) as RawOverview));
@@ -396,7 +412,7 @@ export function useActivity(
         // the network, which is what it did before this existed.
       });
 
-    activityOverview(installId ?? undefined)
+    activityOverview(installId ?? undefined, tool)
       .then((text) => {
         answered = true;
         if (!current()) return;
@@ -414,7 +430,7 @@ export function useActivity(
       .finally(() => {
         if (current()) setLoading(false);
       });
-  }, [enabled, installId, credential]);
+  }, [enabled, installId, credential, tool]);
 
   // A reading belongs to the scope it was taken for, so a scope change drops it
   // rather than leaving it under the new label until the replacement lands.
@@ -423,7 +439,7 @@ export function useActivity(
   useEffect(() => {
     setView(null);
     setFailure(null);
-  }, [credential, installId]);
+  }, [credential, installId, tool]);
 
   useEffect(reload, [reload]);
 
