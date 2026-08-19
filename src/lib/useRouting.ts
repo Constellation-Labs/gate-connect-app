@@ -4,9 +4,13 @@ import {
   connectTool,
   disconnectTool,
   listTools,
+  proxyDisable,
+  proxyEnable,
   proxySetDomain,
+  proxySetEnvExport,
   proxyStatus,
   proxyTrustCa,
+  proxyUntrustCa,
 } from "./api";
 import { track, trackError } from "./analytics";
 import { cascadeTargets } from "./groups";
@@ -35,6 +39,12 @@ import type { Group } from "./groups";
  * Every path re-reads tools and proxy state in a `finally`. Optimistic UI is
  * wrong here: connecting can flip a provider headline and auto-start the
  * engine, so backend truth is the only safe thing to render.
+ *
+ * Beyond the per-app and per-family switches this also owns the three actions
+ * that are about the engine rather than about one app: the master toggle, the
+ * shell-environment channel, and removing the certificate. They live here
+ * because they share the certificate gate and the re-sync, and because the
+ * window had no way to reach any of them.
  */
 
 /** A decision the UI has to collect before the action can continue. */
@@ -46,7 +56,11 @@ export type RoutingPrompt =
       /** What Gate found, for the dialog's subject row. */
       existingConfig: string;
     }
-  | { kind: "trust" };
+  | { kind: "trust" }
+  /** Removing the certificate, which is not a gate on the way to something
+   * else: it is the action, and it stops every routed domain. Confirmed for
+   * the same reason the destructive dialogs are. */
+  | { kind: "untrust" };
 
 export interface RoutingSnapshot {
   tools: Tool[];
@@ -145,6 +159,24 @@ export function useRouting({
     await ask({ kind: "trust" });
     await proxyTrustCa();
   }, [proxy, ask]);
+
+  /**
+   * Start the engine if it is not running.
+   *
+   * A domain routes through the engine, and `proxy_set_domain` only records the
+   * flag - unlike `connect_tool`, which starts the engine on its own. Without
+   * this, a chat-domain switch in a window whose engine is off writes intent,
+   * routes nothing, and leaves the user no way back: the popover's master switch
+   * was the only thing that could start it, and this shell had no equivalent.
+   *
+   * Called after `ensureCaTrusted`, so `proxy_enable`'s own trust step is a
+   * no-op and the OS prompt has already been asked for.
+   */
+  const ensureEngineRunning = useCallback(async () => {
+    // Null on a platform with no proxy subsystem: there is no engine to start.
+    if (!proxy || proxy.running) return;
+    await proxyEnable();
+  }, [proxy]);
 
   /**
    * Route or unroute one config-file tool. `force` skips the drift gate, which
@@ -270,7 +302,10 @@ export function useRouting({
       if (busy) return;
       setBusy(true);
       try {
-        if (routed) await ensureCaTrusted();
+        if (routed) {
+          await ensureCaTrusted();
+          await ensureEngineRunning();
+        }
         await proxySetDomain(slug, routed);
         track("domain_toggled", { domain: slug, routed });
       } catch (e) {
@@ -282,8 +317,99 @@ export function useRouting({
         setBusy(false);
       }
     },
+    [busy, ensureCaTrusted, ensureEngineRunning, resync, onError],
+  );
+
+  /**
+   * Turn all routing on or off: the engine itself, not one app.
+   *
+   * The popover's master switch (`App.tsx`'s `toggleProxy`) minus the takeover.
+   * The certificate is trusted on the way on, because enabling is the step that
+   * prompts, and never on the way off, which is promptless. The backend owns the
+   * routed set across the toggle - off snapshots what was on, on restores that
+   * snapshot - so this reflects the result through `resync` rather than
+   * reconstructing it here.
+   *
+   * Reports whether the engine actually moved, so the caller can follow up with
+   * the running-apps offer: every routed tool is on its old route until it
+   * restarts, exactly as after a config write.
+   */
+  const setMasterRouted = useCallback(
+    async (routed: boolean): Promise<boolean> => {
+      if (busy) return false;
+      setBusy(true);
+      let changed = false;
+      try {
+        if (routed) await ensureCaTrusted();
+        await (routed ? proxyEnable() : proxyDisable());
+        track(routed ? "proxy_enabled" : "proxy_disabled", { source: "toggle" });
+        changed = true;
+      } catch (e) {
+        if (!(e instanceof Declined)) {
+          trackError(e, "proxy_toggle");
+          onError?.(e, "proxy_toggle");
+        }
+      } finally {
+        await resync();
+        setBusy(false);
+      }
+      return changed;
+    },
     [busy, ensureCaTrusted, resync, onError],
   );
+
+  /**
+   * Turn the shell-environment channel on or off.
+   *
+   * Its own action rather than a branch of `setMasterRouted`, for the reason
+   * `App.tsx` gives: this never starts or stops the engine, it decides whether
+   * the proxy is also written into the user's environment - a machine-wide
+   * change that reaches `git` and `curl`, not just the AI tools.
+   */
+  const setEnvExport = useCallback(
+    async (enabled: boolean) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        await proxySetEnvExport(enabled);
+        track(enabled ? "env_export_enabled" : "env_export_disabled");
+      } catch (e) {
+        trackError(e, "env_export");
+        onError?.(e, "env_export");
+      } finally {
+        await resync();
+        setBusy(false);
+      }
+    },
+    [busy, resync, onError],
+  );
+
+  /**
+   * Remove the Gate certificate from the system trust store.
+   *
+   * Confirmed first: every routed domain stops being inspected the moment this
+   * lands, and the engine keeps running, so the state it leaves behind is one
+   * the user cannot read off a switch. Turning routing off deliberately does
+   * *not* do this - re-enabling stays promptless - which is why it is a separate
+   * action rather than part of the master toggle.
+   */
+  const untrustCa = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await ask({ kind: "untrust" });
+      await proxyUntrustCa();
+      track("ca_untrusted");
+    } catch (e) {
+      if (!(e instanceof Declined)) {
+        trackError(e, "untrust_ca");
+        onError?.(e, "untrust_ca");
+      }
+    } finally {
+      await resync();
+      setBusy(false);
+    }
+  }, [busy, ask, resync, onError]);
 
   return {
     busy,
@@ -292,6 +418,9 @@ export function useRouting({
     setAppRouted,
     setFamilyRouted,
     setDomainRouted,
+    setMasterRouted,
+    setEnvExport,
+    untrustCa,
     writeFailures,
   };
 }

@@ -59,6 +59,7 @@ export function AppPane({
   isProtected,
   since,
   logo,
+  busy,
   onToggleProtected,
   stats,
   buckets,
@@ -77,6 +78,8 @@ export function AppPane({
   since?: string;
   /** 16px brand mark for the header tile. */
   logo?: ReactNode;
+  /** A routing write is in flight, so the switch refuses a second click. */
+  busy?: boolean;
   onToggleProtected: () => void;
   stats: UsageStats;
   buckets: MessagesBucket[];
@@ -119,7 +122,16 @@ export function AppPane({
           <span className="text-base-xs font-medium text-neutral-600">
             {isProtected ? "On" : "Off"}
           </span>
-          <BaseSwitch on={isProtected} label={name} onClick={onToggleProtected} />
+          {/* "Route Claude Code", not "Claude Code": the sidebar row for the
+            * same app is on screen with its own switch, and two switches with
+            * one name is a screen reader reading the same control twice. The
+            * families pane names its switches the same way. */}
+          <BaseSwitch
+            on={isProtected}
+            label={`Route ${name}`}
+            busy={busy}
+            onClick={onToggleProtected}
+          />
         </span>
       </header>
 

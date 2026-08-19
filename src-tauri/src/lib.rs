@@ -1156,6 +1156,47 @@ fn get_preferences() -> gate_connect_core::preferences::Preferences {
     gate_connect_core::preferences::load()
 }
 
+/// This install's stable id, for the Settings row and for support threads.
+///
+/// Not the analytics distinct id, which Settings used to show: that one is absent
+/// in a build with no PostHog key and absent again once somebody opts out of
+/// diagnostics, so the row read Unavailable for reasons that had nothing to do
+/// with the install. The diagnostics report still carries the analytics id under
+/// its own name - they are two different facts.
+#[tauri::command]
+fn install_id() -> Result<String, String> {
+    gate_connect_core::primitives::install_id().map_err(|e| format!("{e:#}"))
+}
+
+/// What to call this machine: the person's own name for it, or the hostname.
+///
+/// Resolved here rather than in the window so there is one answer to show and one
+/// place that decides what an absent override means. The stored value stays an
+/// `Option` (see `preferences::device_name`), so clearing the name goes back to
+/// following the hostname instead of freezing today's.
+#[tauri::command]
+fn device_name() -> String {
+    gate_connect_core::preferences::load()
+        .device_name
+        .unwrap_or_else(host_name)
+}
+
+/// The machine's own name, or a neutral stand-in.
+///
+/// "This device" rather than "Unknown": the string is a label in a row, not a
+/// diagnostic, and a machine whose hostname cannot be read is still the machine
+/// the user is looking at. The diagnostics report is where an unreadable value
+/// has to say so.
+fn host_name() -> String {
+    sysinfo::System::host_name().unwrap_or_else(|| "This device".to_string())
+}
+
+/// Rename this device, or clear the name and follow the hostname again.
+#[tauri::command]
+fn set_device_name(name: String) -> Result<(), String> {
+    gate_connect_core::preferences::set_device_name(&name).map_err(|e| format!("{e:#}"))
+}
+
 /// Turn routing-health notifications on or off. Gates the two notifications the
 /// app actually fires: an expired session, and a quit that could not put a tool
 /// back on its own settings.
@@ -1764,6 +1805,9 @@ pub fn run() {
                     get_preferences,
                     set_routing_health_notifications,
                     set_share_diagnostics,
+                    install_id,
+                    device_name,
+                    set_device_name,
                     set_updater_relaunching,
                     routed_clients_stale,
                     routing_verdicts,
@@ -1814,6 +1858,9 @@ pub fn run() {
                     get_preferences,
                     set_routing_health_notifications,
                     set_share_diagnostics,
+                    install_id,
+                    device_name,
+                    set_device_name,
                     drain_backend_errors,
                 ]
             }

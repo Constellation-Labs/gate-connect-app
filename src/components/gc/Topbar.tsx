@@ -15,11 +15,17 @@ import type { IconName } from "./Icon";
  * Presentational: the shell supplies every handler.
  */
 
-export type TopnavAction = "dashboard" | "support" | "docs";
+/**
+ * The design draws a third entry, Contact support, and it is not here: there is
+ * no support address or URL anywhere in the app to open, and an entry that
+ * cannot do anything is worse than an absent one - the user cannot tell "not
+ * built" from "broken". `SettingsPane` omits its Support row for the same
+ * reason. Add both back together, with an address.
+ */
+export type TopnavAction = "dashboard" | "docs";
 
 const MENU_ITEMS: { action: TopnavAction; icon: IconName; label: string }[] = [
   { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
-  { action: "support", icon: "headset", label: "Contact support" },
   { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
 ];
 

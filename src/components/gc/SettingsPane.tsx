@@ -65,12 +65,11 @@ export interface SettingsSection {
  * opens the report dialog. Expect it to be redrawn.
  *
  * **An omitted handler omits its control**, and a row left with nothing to do
- * omits itself. Several rows the design draws have no backend behind them yet
- * (device rename, notifications, plan upgrade, update checks) and two more wait
- * on a first-run screen to return to (disconnect, reset). A switch or button
- * that visibly does nothing is worse than an absent one: the user cannot tell
- * "not built" from "broken", and on the Danger zone card they cannot tell it
- * from "already done". Same argument as `FamiliesPane`'s master switch.
+ * omits itself. What is still missing a backend is device rename and plan
+ * upgrade, which has no billing URL to open, plus Support, which has no address.
+ * A switch or button that visibly does nothing is worse than an absent one: the
+ * user cannot tell "not built" from "broken", and on the Danger zone card they
+ * cannot tell it from "already done".
  */
 export function buildSettingsSections({
   deviceName,
@@ -86,6 +85,9 @@ export function buildSettingsSections({
   preferencesUnavailable,
   version,
   updateNote,
+  certificate,
+  onChangeGateway,
+  onRemoveCertificate,
   onRenameDevice,
   onCopyInstallId,
   onUpgradePlan,
@@ -123,6 +125,14 @@ export function buildSettingsSections({
   version: string;
   /** Feedback under the version row after an explicit update check. */
   updateNote?: string;
+  /** Whether the Gate certificate is in the system trust store, as a phrase.
+   * Absent on a platform with no proxy subsystem, which has no certificate. */
+  certificate?: string;
+  /** Dev builds only: repoint the account at another environment. */
+  onChangeGateway?: () => void;
+  /** Only offered while the certificate is actually trusted; removing one that
+   * is not there is a button that cannot do anything. */
+  onRemoveCertificate?: () => void;
   onRenameDevice?: () => void;
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
@@ -189,7 +199,16 @@ export function buildSettingsSections({
       id: "connection",
       title: "Connection",
       rows: [
-        { id: "gateway", icon: "globe", label: "Gateway", value: gateway },
+        {
+          id: "gateway",
+          icon: "globe",
+          label: "Gateway",
+          value: gateway,
+          mono: true,
+          action: onChangeGateway
+            ? { label: "Change server", onClick: onChangeGateway }
+            : undefined,
+        },
         {
           id: "api-key",
           icon: "key",
@@ -198,6 +217,31 @@ export function buildSettingsSections({
           mono: true,
           action: onReplaceKey ? { label: "Replace key", onClick: onReplaceKey } : undefined,
         },
+        ...(certificate
+          ? [
+              {
+                id: "certificate",
+                icon: "shieldCheck" as IconName,
+                label: "Gate certificate",
+                description:
+                  "Lets Gate inspect your AI traffic locally. Removing it stops inspection until it is trusted again.",
+                value: certificate,
+                // Red, like Disconnect and Reset: it is reversible, but until it is
+                // reversed every routed domain stops being inspected, and that is
+                // the consequence the user is deciding about. Three red actions on
+                // one screen, where CLAUDE.md says to question a third - questioned
+                // and kept, because the alternative is an outline button that
+                // silently stops the product doing its job.
+                action: onRemoveCertificate
+                  ? {
+                      label: "Remove certificate",
+                      onClick: onRemoveCertificate,
+                      destructive: true,
+                    }
+                  : undefined,
+              } as SettingsRow,
+            ]
+          : []),
         ...(onDisconnect
           ? [
               {

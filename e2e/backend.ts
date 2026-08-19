@@ -123,6 +123,9 @@ export interface BackendState {
         defaulted. False sends first run through the diagnostics step; the
         default here is true so the existing specs reach the app shell. */
     share_diagnostics_recorded: boolean;
+    /** The user's own name for this device, or null when it follows the
+        hostname. The override, exactly as `preferences.json` stores it. */
+    device_name: string | null;
   };
   routedClientsStale: boolean;
   runningAgents: number;
@@ -169,6 +172,12 @@ export interface BackendState {
       at_unix: number;
     }[];
   } | null;
+  /** This install's stable id, as `install_id` reports it. A fixed string rather
+   *  than a generated uuid so a spec can assert on what the row shows. */
+  installId: string;
+  /** The machine's hostname, which `device_name` falls back to when the user has
+   *  not renamed anything - the resolution the real command does in Rust. */
+  hostName: string;
   /** Commands that should reject, keyed by command name. The value is the
    *  error string the backend "returns" - App classifies it exactly as it
    *  would a real Tauri rejection. */
@@ -328,6 +337,7 @@ export function defaultState(): BackendState {
       routing_health_notifications: true,
       share_diagnostics: true,
       share_diagnostics_recorded: true,
+      device_name: null,
     },
     routedClientsStale: false,
     runningAgents: 0,
@@ -339,6 +349,8 @@ export function defaultState(): BackendState {
     pendingRestore: { providers: [], tools: [] },
     pendingResumeKeeps: [],
     restoreJournal: null,
+    installId: "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f",
+    hostName: "e2e-macbook",
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
   };

@@ -265,9 +265,18 @@ pub(crate) fn sh_quote(s: &str) -> String {
     out
 }
 
-/// Stable UUID we send to the gateway audit trail for telemetry attribution.
-/// Generated once and cached at `<app_support_dir>/install-id`.
-#[cfg(target_os = "macos")]
+/// Stable UUID identifying this install, generated once and cached at
+/// `<app_support_dir>/install-id`.
+///
+/// Independent of consent and of any analytics client: Settings shows it as the
+/// Install ID, and it is the one identifier a person can read off a machine that
+/// has never sent anything anywhere. That is why it is not the PostHog distinct
+/// id - that one is absent in a build with no project key, and absent again the
+/// moment somebody opts out of diagnostics, which would blank a row that has
+/// nothing to do with the choice they made.
+///
+/// Nothing sends it yet. The audit trail is where it is headed (hence the name),
+/// and until it gets there its value is lining up two reports from one machine.
 pub fn install_id() -> Result<String> {
     let path = crate::env::app_support_dir()?.join("install-id");
     if let Ok(s) = fs::read_to_string(&path) {
@@ -284,13 +293,16 @@ pub fn install_id() -> Result<String> {
     Ok(id)
 }
 
-#[cfg(target_os = "macos")]
+/// Tiny inline v4 generator, so one call does not pull in `uuid`.
+///
+/// `rand` rather than `/dev/urandom`, which was the reason this and
+/// [`install_id`] were macOS-only: Windows has no such device, so the id could
+/// not exist on two of the three platforms Gate ships to. `rand` is already a
+/// dependency - `oauth` mints the PKCE verifier with it.
 fn simple_uuid_v4() -> Result<String> {
-    // Tiny inline v4 generator so we don't pull `uuid` for one call.
+    use rand::RngCore;
     let mut bytes = [0u8; 16];
-    let mut f = fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
-    use std::io::Read;
-    f.read_exact(&mut bytes).context("reading /dev/urandom")?;
+    rand::thread_rng().fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(format!(

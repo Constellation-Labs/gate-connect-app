@@ -4,33 +4,43 @@ import { act, cleanup, render } from "@testing-library/react";
 import type { Account, Org } from "./api";
 import { useSettingsActions } from "./useSettingsActions";
 
+vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
 vi.mock("./api", () => ({
   clearAccount: vi.fn(),
+  deviceName: vi.fn(),
   getAccount: vi.fn(),
   launchAtLoginStatus: vi.fn(),
+  oauthBeginLogin: vi.fn(),
   oauthListOrgs: vi.fn(),
   oauthSignOut: vi.fn(),
   oauthStatus: vi.fn(),
   proxyDisable: vi.fn(),
   proxyStatus: vi.fn(),
   saveAccount: vi.fn(),
+  setDeviceName: vi.fn(),
   setLaunchAtLogin: vi.fn(),
   setOrg: vi.fn(),
+  switchGateway: vi.fn(),
 }));
 vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 
+import { relaunch } from "@tauri-apps/plugin-process";
 import {
   clearAccount,
+  deviceName,
   getAccount,
   launchAtLoginStatus,
+  oauthBeginLogin,
   oauthListOrgs,
   oauthSignOut,
   oauthStatus,
   proxyDisable,
   proxyStatus,
   saveAccount,
+  setDeviceName,
   setLaunchAtLogin,
   setOrg,
+  switchGateway,
 } from "./api";
 
 const ACCOUNT: Account = {
@@ -57,6 +67,7 @@ function harness(
   const api: { current: ReturnType<typeof useSettingsActions> | null } = { current: null };
   const onLaunchAtLogin = vi.fn();
   const onAccount = vi.fn();
+  const onDeviceName = vi.fn();
   const onSession = vi.fn();
   const onProxy = vi.fn();
   const onError = vi.fn();
@@ -68,6 +79,7 @@ function harness(
       launchAtLogin: over.launchAtLogin ?? false,
       onLaunchAtLogin,
       onAccount,
+      onDeviceName,
       onSession,
       onProxy,
       onError,
@@ -75,7 +87,7 @@ function harness(
     return null;
   }
   render(<Probe />);
-  return { api, onLaunchAtLogin, onAccount, onSession, onProxy, onError };
+  return { api, onLaunchAtLogin, onAccount, onDeviceName, onSession, onProxy, onError };
 }
 
 beforeEach(() => {
@@ -440,6 +452,163 @@ describe("useSettingsActions: copying", () => {
     expect(onError).toHaveBeenCalled();
     expect(api.current!.copied).toBe(false);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("useSettingsActions: renaming the device", () => {
+  it("opens prefilled with the current name", async () => {
+    // The field is an edit, not a blank form.
+    const { api } = harness();
+
+    act(() => api.current!.openRenameDevice("e2e-macbook"));
+
+    expect(api.current!.prompt).toEqual({
+      kind: "rename-device",
+      currentName: "e2e-macbook",
+    });
+    expect(api.current!.newDeviceName).toBe("e2e-macbook");
+  });
+
+  it("saves the name and reports back what the backend resolved", async () => {
+    // Re-read rather than echoed: the backend decides what a name means, and a
+    // cleared one goes back to following the hostname.
+    (deviceName as Mock).mockResolvedValue("Studio Mac");
+    const { api, onDeviceName } = harness();
+
+    act(() => api.current!.openRenameDevice("e2e-macbook"));
+    act(() => api.current!.setNewDeviceName("  Studio Mac  "));
+    await act(async () => {
+      await api.current!.renameDevice();
+    });
+
+    expect(setDeviceName).toHaveBeenCalledWith("Studio Mac");
+    expect(onDeviceName).toHaveBeenCalledWith("Studio Mac");
+    expect(api.current!.prompt).toBeNull();
+  });
+
+  it("will not save a blank name", async () => {
+    // Clearing the override is a backend behaviour, not something the dialog can
+    // reach: its primary is refused, so an empty field cannot be submitted here.
+    const { api } = harness();
+
+    act(() => api.current!.openRenameDevice("e2e-macbook"));
+    act(() => api.current!.setNewDeviceName("   "));
+    await act(async () => {
+      await api.current!.renameDevice();
+    });
+
+    expect(setDeviceName).not.toHaveBeenCalled();
+  });
+
+  it("keeps the dialog open when the rename fails", async () => {
+    (setDeviceName as Mock).mockRejectedValue(new Error("read-only volume"));
+    const { api, onError } = harness();
+
+    act(() => api.current!.openRenameDevice("e2e-macbook"));
+    act(() => api.current!.setNewDeviceName("Studio Mac"));
+    await act(async () => {
+      await api.current!.renameDevice();
+    });
+
+    expect(onError).toHaveBeenCalled();
+    expect(api.current!.prompt?.kind).toBe("rename-device");
+    expect(api.current!.newDeviceName).toBe("Studio Mac");
+  });
+});
+
+describe("useSettingsActions: changing the gateway", () => {
+  it("opens on the account's current server", async () => {
+    const { api } = harness();
+
+    act(() => api.current!.openSwitchGateway());
+
+    expect(api.current!.prompt).toEqual({
+      kind: "switch-gateway",
+      selectedUrl: "https://gw.example",
+    });
+  });
+
+  it("refuses a switch to the server it is already on", async () => {
+    // The dialog also disables its primary, but the guard is here so a stale
+    // click cannot forget a key and relaunch for no reason.
+    const { api } = harness();
+
+    act(() => api.current!.openSwitchGateway());
+    await act(async () => {
+      await api.current!.confirmSwitchGateway();
+    });
+
+    expect(switchGateway).not.toHaveBeenCalled();
+    expect(relaunch).not.toHaveBeenCalled();
+  });
+
+  it("switches, then relaunches into a clean session", async () => {
+    const { api } = harness();
+
+    act(() => api.current!.openSwitchGateway());
+    act(() => api.current!.selectGateway("https://gw-staging.example"));
+    await act(async () => {
+      await api.current!.confirmSwitchGateway();
+    });
+
+    expect(switchGateway).toHaveBeenCalledWith("https://gw-staging.example");
+    // The engine pins the gateway URL when it starts, so the app restarts rather
+    // than reconciling an account, a session and a routing table live.
+    expect(relaunch).toHaveBeenCalled();
+  });
+
+  it("keeps the dialog open when the switch fails", async () => {
+    (switchGateway as Mock).mockRejectedValue(new Error("no such environment"));
+    const { api, onError } = harness();
+
+    act(() => api.current!.openSwitchGateway());
+    act(() => api.current!.selectGateway("https://gw-staging.example"));
+    await act(async () => {
+      await api.current!.confirmSwitchGateway();
+    });
+
+    expect(onError).toHaveBeenCalled();
+    expect(relaunch).not.toHaveBeenCalled();
+    expect(api.current!.prompt?.kind).toBe("switch-gateway");
+  });
+});
+
+describe("useSettingsActions: the OAuth upgrade", () => {
+  it("signs in against the account that already exists", async () => {
+    // Deliberately no `saveAccount`: that is `useSetup.signIn`'s first step, and
+    // here it would repoint a staging install at the default gateway and drop the
+    // key the user still has.
+    (getAccount as Mock).mockResolvedValue({ ...ACCOUNT, auth_mode: "oauth" });
+    (oauthStatus as Mock).mockResolvedValue({
+      signed_in: true,
+      email: "jdoe@acme.com",
+      expires_at_unix: 1,
+    });
+    const { api, onSession } = harness();
+
+    await act(async () => {
+      await api.current!.upgradeToOAuth();
+    });
+
+    expect(oauthBeginLogin).toHaveBeenCalled();
+    expect(saveAccount).not.toHaveBeenCalled();
+    expect(onSession).toHaveBeenCalledWith({
+      account: expect.objectContaining({ auth_mode: "oauth" }),
+      oauth: expect.objectContaining({ signed_in: true }),
+    });
+  });
+
+  it("lets a failed sign-in reach the offer", async () => {
+    // The offer shows the error itself, so this one rethrows rather than routing
+    // it to the shell's banner behind the dialog.
+    (oauthBeginLogin as Mock).mockRejectedValue(new Error("browser closed"));
+    const { api } = harness();
+
+    await expect(
+      act(async () => {
+        await api.current!.upgradeToOAuth();
+      }),
+    ).rejects.toThrow("browser closed");
   });
 });
 
