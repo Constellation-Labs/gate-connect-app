@@ -201,6 +201,72 @@ else
     ok "$platform -> $ref"
   done < <(jq -r '.platforms | to_entries[]
     | [.key, .value.url, (.value.signature // "")] | @tsv' "$WORK/latest.json")
+
+  # Pin the key set. tauri-action owns the scheme, and that is exactly why it is
+  # worth pinning on this side: a key that was renamed or dropped yields a
+  # manifest that parses cleanly and then silently answers "no update
+  # available", so the drift has to fail in CI rather than in the field.
+  # Iterating .platforms cannot see this - a manifest missing darwin entirely
+  # checks five entries, passes five, and looks fine. Additions are only
+  # reported, since a new key cannot break an install that never looks it up.
+  EXPECTED_PLATFORMS=(
+    linux-x86_64 linux-x86_64-appimage linux-x86_64-deb
+    darwin-aarch64 darwin-x86_64 darwin-aarch64-app darwin-x86_64-app
+    windows-x86_64 windows-x86_64-nsis
+  )
+  jq -r '.platforms | keys[]' "$WORK/latest.json" | sort > "$WORK/lj-keys.txt"
+  printf '%s\n' "${EXPECTED_PLATFORMS[@]}" | sort > "$WORK/lj-want.txt"
+  lj_missing=$(comm -13 "$WORK/lj-keys.txt" "$WORK/lj-want.txt")
+  if [ -n "$lj_missing" ]; then
+    while read -r k; do fail "latest.json has no '$k' entry"; done <<< "$lj_missing"
+  else
+    ok "all ${#EXPECTED_PLATFORMS[@]} platform keys present"
+  fi
+  lj_extra=$(comm -23 "$WORK/lj-keys.txt" "$WORK/lj-want.txt")
+  if [ -n "$lj_extra" ]; then
+    while read -r k; do skip "unexpected '$k' entry"; done <<< "$lj_extra"
+  fi
+
+  # The bare "{os}-{arch}" key is the plugin's fallback when no
+  # installer-qualified key matches, so which installer it names is policy
+  # rather than detail: were linux-x86_64 to flip to the deb, every Linux
+  # updater would be handed a .deb through the AppImage path.
+  check_base() { # <key> <required filename suffix>
+    local key="$1" suffix="$2" url
+    url=$(jq -r --arg k "$key" '.platforms[$k].url // ""' "$WORK/latest.json")
+    # A key that is absent was already reported above; do not double-count it.
+    [ -z "$url" ] && return 0
+    case "${url##*/}" in
+      *"$suffix") ok "$key points at *$suffix" ;;
+      *)          fail "$key points at ${url##*/}, expected *$suffix" ;;
+    esac
+  }
+  check_base linux-x86_64   .AppImage
+  check_base windows-x86_64 -setup.exe
+  check_base darwin-aarch64 .app.tar.gz
+  check_base darwin-x86_64  .app.tar.gz
+
+  # The AppImage signature is the one entry a job rewrites by hand, after
+  # stripping libwayland and re-signing the repacked bytes. It is therefore the
+  # one entry that goes stale if anything overwrites latest.json afterwards -
+  # and a stale one leaves the release internally consistent enough that
+  # nothing else notices, which is how v0.2.0 shipped a pre-strip signature.
+  sig_asset="$WORK/Gate.Connect_${VERSION}_amd64.AppImage.sig"
+  if [ ! -s "$sig_asset" ]; then
+    fail "cannot check the AppImage signature: its .sig asset did not download"
+  else
+    want=$(cat "$sig_asset")
+    mapfile -t got < <(jq -r '
+      [.platforms[] | select((.url // "") | endswith(".AppImage")) | .signature]
+      | unique | .[]' "$WORK/latest.json")
+    if [ "${#got[@]}" -ne 1 ]; then
+      fail "AppImage entries carry ${#got[@]} distinct signatures, expected 1"
+    elif [ "${got[0]}" != "$want" ]; then
+      fail "latest.json's AppImage signature does not match its .sig asset"
+    else
+      ok "AppImage signature matches ${sig_asset##*/}"
+    fi
+  fi
 fi
 
 # --- the stable download links, which only exist after publish -------------
