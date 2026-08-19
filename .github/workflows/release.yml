@@ -258,3 +258,23 @@ jobs:
               alias_asset "$BUNDLE/dmg" "*.dmg" "Gate.Connect_universal.dmg"
               ;;
           esac
+  # A leg that loses its own upload still exits 0: the alias step trusts that
+  # `gh release upload` returned success, and the AppImage fix step is the only
+  # place that reads anything back. So the matrix can finish green over a
+  # release that is missing an installer, or serving an alias built in an
+  # earlier attempt. Gate the whole thing on the draft actually carrying every
+  # artifact, before a human publishes it.
+  verify:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify draft release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          MODE: draft
+        run: .github/scripts/verify-release-assets.sh

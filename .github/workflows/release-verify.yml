@@ -1,0 +1,37 @@
+name: Verify release downloads
+
+# The draft-time gate in release.yml cannot cover the window between the last
+# upload and the publish click, which is exactly where v0.2.0 lost
+# Gate.Connect_universal.dmg: the alias uploaded at 03:01:46, the macOS job
+# ended at 03:01:51, and by the 03:09:05 publish the asset was gone. This runs
+# on the publish itself and checks the public URLs a user actually hits,
+# including the stable /releases/latest/download/ aliases, which do not exist
+# until a release is published (a draft serves from /download/untagged-<hash>/).
+on:
+  release:
+    types: [published]
+  # Re-check an already-published release without re-publishing it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to verify (e.g. v0.2.0)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      # On a release event this checks out the tagged commit, so the script is
+      # the one that shipped with the release. On workflow_dispatch it is the
+      # default branch, which is what you want when re-checking an old tag.
+      - uses: actions/checkout@v4
+      - name: Verify published release downloads
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          MODE: published
+        run: .github/scripts/verify-release-assets.sh
