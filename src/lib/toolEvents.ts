@@ -20,8 +20,11 @@ interface RawEvent {
   requestId: string;
   at: string;
   status: "success" | "error";
-  /** Null means the caller may not see this row's security detail, which is not
-   *  the same as `allow` - see the rendering below. */
+  /** Null either because no decision was recorded for this request, or because
+   *  the caller may not see this row's security detail. The gateway deliberately
+   *  does not distinguish them - saying *that* something was withheld would leak
+   *  that a colleague's request was acted on - and both want the same thing on
+   *  screen. What null is not, in either case, is `allow`. */
   securityAction: "allow" | "flag" | "redact" | "block" | null;
   securityCategory: string | null;
   model: string | null;

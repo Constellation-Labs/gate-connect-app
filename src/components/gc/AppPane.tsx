@@ -23,10 +23,11 @@ export interface ActivityEntry {
   /** Pre-formatted upstream so this pane stays locale-agnostic. */
   time: string;
   status: ActivityStatus;
-  /** What the guardrails did, or `null` when the gateway withheld it - security
-   *  detail is self-only for every role, so a colleague's row carries none. Null
-   *  is *not* `allow`: rendering it as one would report a blocked request as
-   *  permitted. */
+  /** What the guardrails did, or `null` when the gateway said nothing - either no
+   *  decision was recorded, or the row is not this caller's and security detail is
+   *  self-only for every role. The two are deliberately indistinguishable here;
+   *  both draw no pill. Null is *not* `allow`: rendering it as one would report a
+   *  blocked request as permitted. */
   security: ActivitySecurity | null;
   /** The model that served the request, or copy saying none was attributed.
    *
@@ -393,7 +394,7 @@ function RecentActivity({
                   // Withheld, not permitted. A pill here would read as a verdict.
                   <span
                     className="text-sm leading-5 text-base-muted-foreground"
-                    title="Only visible on your own requests"
+                    title="No security action recorded, or not your request"
                   >
                     &#8212;
                   </span>
