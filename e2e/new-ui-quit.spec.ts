@@ -93,8 +93,12 @@ test.describe("new UI quit", () => {
 
     await expect(app.page.getByText(/Couldn’t put Codex back/)).toBeVisible();
     expect(await app.lastCall("quit_app")).toBeNull();
-    // Retrying only retouches what failed; quitting stays available.
-    await expect(app.page.getByRole("button", { name: "Try again" })).toBeVisible();
+    // Retrying only retouches what failed; quitting stays available. `exact`
+    // because the Overview's activity notices carry their own retry, named
+    // "Try again: <section>" so assistive tech can tell them apart.
+    await expect(
+      app.page.getByRole("button", { name: "Try again", exact: true }),
+    ).toBeVisible();
     await expect(app.page.getByRole("button", { name: "Quit anyway" })).toBeVisible();
   });
 
