@@ -61,7 +61,11 @@ describe("adaptEvents", () => {
     const view = adaptEvents(envelope([raw({ model: null })]));
 
     expect(view.entries[0].model).toBe("Unknown model");
-    expect(view.entries[0].model).not.toContain("unknown");
+    // Guards the specific leak: the gateway's own sentinel arriving as a lowercase
+    // string and being printed where a model name goes. `not.toContain("unknown")`
+    // used to sit here and passed only because `toContain` is case-sensitive,
+    // which read as asserting the opposite of what the value says.
+    expect(view.entries[0].model).not.toBe("unknown");
   });
 
   it("reads no title from the payload at all", () => {

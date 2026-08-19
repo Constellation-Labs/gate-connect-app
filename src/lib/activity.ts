@@ -487,18 +487,33 @@ export function useInstallations(
   installations: Installation[];
   /** This machine's own id, from the gateway, or `null` if it is unattributed. */
   current: string | null;
+  /**
+   * Whether this read has finished, either way.
+   *
+   * Load-bearing, not bookkeeping. `current === null` means two different things
+   * - "not asked yet" and "asked, and this machine is unattributed" - and a
+   * caller that scopes a reading to *this machine* cannot tell them apart without
+   * this flag. It would read org-wide numbers instead and label them as one
+   * machine's, which is worst in exactly the case the app is meant to explain:
+   * a machine that is routing but unattributed. Set on failure too, because a
+   * failed list is also an answer about what we know.
+   */
+  resolved: boolean;
 } {
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
+  const [resolved, setResolved] = useState(false);
 
   useEffect(() => {
     if (!enabled) return;
     let live = true;
     // Cleared before the new read, not after it lands: these are one org's
     // machines, and an installation from the org the user just left is a choice
-    // the new reading cannot honour.
+    // the new reading cannot honour. `resolved` goes with them - until this read
+    // answers, nobody may claim to know which machine is this one.
     setInstallations([]);
     setCurrent(null);
+    setResolved(false);
     activityInstallations()
       .then((text) => {
         if (!live) return;
@@ -507,13 +522,18 @@ export function useInstallations(
         setCurrent(raw.current ?? null);
       })
       .catch(() => {
-        // Nothing to say: no list means no picker, and the org-wide reading the
-        // pane already shows is still correct.
+        // Nothing to say for the picker: no list means no picker, and the
+        // org-wide reading the Overview shows is still correct. A machine-scoped
+        // caller is a different matter - `resolved` below is what tells it the
+        // answer was "we could not find out" rather than "not yet".
+      })
+      .finally(() => {
+        if (live) setResolved(true);
       });
     return () => {
       live = false;
     };
   }, [enabled, credential]);
 
-  return { installations, current };
+  return { installations, current, resolved };
 }

@@ -15,31 +15,11 @@ import type { MessagesBucket, UsageStats } from "./metrics";
 
 export type ModelChoice = "app" | "gate";
 
-export type ActivityStatus = "success" | "error";
-export type ActivitySecurity = "allow" | "flagged" | "redacted" | "blocked";
-
-export interface ActivityEntry {
-  id: string;
-  /** Pre-formatted upstream so this pane stays locale-agnostic. */
-  time: string;
-  status: ActivityStatus;
-  /** What the guardrails did, or `null` when the gateway said nothing - either no
-   *  decision was recorded, or the row is not this caller's and security detail is
-   *  self-only for every role. The two are deliberately indistinguishable here;
-   *  both draw no pill. Null is *not* `allow`: rendering it as one would report a
-   *  blocked request as permitted. */
-  security: ActivitySecurity | null;
-  /** The model that served the request, or copy saying none was attributed.
-   *
-   *  This column used to hold a conversation title. It cannot: the only
-   *  human-readable label the gateway holds is the user's own prompt, stored
-   *  unredacted, and AG-574 forbids showing prompt text. So the row identifies
-   *  the request by what served it and which conversation it belonged to. */
-  model: string;
-  /** Conversation identifier, rendered mono. */
-  reference: string;
-  onView: () => void;
-}
+// The feed's row type lives in `lib/` with the adapter that produces it; see
+// `toolEventRow.ts`. Re-exported here so existing importers of this module keep
+// working and the pane's own props stay readable.
+export type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
+import type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
 
 export interface GateModel {
   /** Model vendor, e.g. "Anthropic". */
@@ -347,15 +327,14 @@ function RecentActivity({
       {pending ? (
         <PendingRows />
       ) : activity.length === 0 ? (
-        // The entries outlive the window they were sent in: the feed keeps the
-        // last messages even when they are a day or more old, because what the
-        // user came here for is what this app last did, and a table that empties
-        // itself at midnight answers a question nobody asked. So this reads as
-        // "nothing recent", not "nothing ever".
+        // Deliberately NOT the chart's "in the last 24hrs". The entries outlive
+        // the window they were sent in - the feed keeps the last messages even
+        // when they are a day or more old, because what the user came here for is
+        // what this app last did - so borrowing the chart's sentence would state a
+        // window this card does not use. It also put the same line twice on a pane
+        // with no traffic, which is how the inaccuracy came to light.
         <EmptyNote>
-          {unavailable
-            ? "Recent activity couldn't be read"
-            : "No messages sent in the last 24hrs"}
+          {unavailable ? "Recent activity couldn't be read" : "No recent messages"}
         </EmptyNote>
       ) : (
       <table className="mt-4 w-full">
@@ -373,9 +352,12 @@ function RecentActivity({
             <th scope="col" className="pb-2 text-left font-normal">
               Model
             </th>
-            <th scope="col" className="w-20 pb-2 text-right font-normal">
-              Action
-            </th>
+            {/* No Action column. The design draws a per-row "View" that opens the
+                request in the web dashboard, and there is no URL to open: nothing
+                in `dashboard-web` filters by tool, machine or time, so the button
+                had no destination and did nothing when clicked. A control that
+                looks live and is inert is worse than an absent one, so the column
+                returns with the deep link rather than before it. */}
           </tr>
         </thead>
         <tbody>
@@ -407,16 +389,6 @@ function RecentActivity({
                 <p className="truncate font-mono text-base-2xs leading-4 text-base-muted-foreground">
                   {entry.reference}
                 </p>
-              </td>
-              <td className="py-3 text-right">
-                <button
-                  type="button"
-                  onClick={entry.onView}
-                  className="inline-flex items-center gap-1.5 rounded-base border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-                >
-                  View
-                  <Icon name="squareArrowOutUpRight" size={12} />
-                </button>
               </td>
             </tr>
           ))}

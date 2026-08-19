@@ -88,8 +88,8 @@ fn activity_endpoint(gateway_base_url: &str) -> String {
     format!("{}/v1/me/activity", gateway_base_url.trim_end_matches('/'))
 }
 
-/// Discovery endpoint for the installation picker, with its own test seam.
-/// `<gateway_base_url>/v1/me/installations` in real builds.
+/// One tool's recent-request feed, with its own test seam.
+/// `<gateway_base_url>/v1/me/tool-events` in real builds.
 fn tool_events_endpoint(gateway_base_url: &str) -> String {
     if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_TOOL_EVENTS_ENDPOINT") {
         return o.to_string_lossy().into_owned();
@@ -100,6 +100,8 @@ fn tool_events_endpoint(gateway_base_url: &str) -> String {
     )
 }
 
+/// Discovery endpoint for the installation picker, with its own test seam.
+/// `<gateway_base_url>/v1/me/installations` in real builds.
 fn installations_endpoint(gateway_base_url: &str) -> String {
     if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_INSTALLATIONS_ENDPOINT") {
         return o.to_string_lossy().into_owned();

@@ -20,7 +20,6 @@ const entry: ActivityEntry = {
   security: "flagged",
   model: "claude-opus-4",
   reference: "cnv_824bd2c0",
-  onView: () => {},
 };
 
 /**
@@ -68,7 +67,7 @@ describe("AppPane recent activity", () => {
     render(pane({ eventsPending: true }));
     const feed = card("Recent activity");
 
-    expect(within(feed).queryByText("No messages sent in the last 24hrs")).toBeNull();
+    expect(within(feed).queryByText("No recent messages")).toBeNull();
     expect(within(feed).queryByText("Recent activity couldn't be read")).toBeNull();
     expect(feed.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
   });
@@ -78,13 +77,15 @@ describe("AppPane recent activity", () => {
     const feed = card("Recent activity");
 
     expect(within(feed).getByText("Recent activity couldn't be read")).toBeTruthy();
-    expect(within(feed).queryByText("No messages sent in the last 24hrs")).toBeNull();
+    expect(within(feed).queryByText("No recent messages")).toBeNull();
   });
 
   it("reads a genuinely empty feed as nothing recent", () => {
     render(pane());
 
-    expect(within(card("Recent activity")).getByText("No messages sent in the last 24hrs")).toBeTruthy();
+    // Distinct from the chart's sentence on purpose: the feed keeps older rows,
+    // so it must not claim a 24-hour window.
+    expect(within(card("Recent activity")).getByText("No recent messages")).toBeTruthy();
   });
 
   it("renders a row's model and reference, and no conversation title", () => {
@@ -97,12 +98,25 @@ describe("AppPane recent activity", () => {
     expect(screen.queryByRole("columnheader", { name: "Conversation" })).toBeNull();
   });
 
-  it("does not render a verdict pill for a row whose security detail was withheld", () => {
+  it("marks a row whose security detail is absent, without inventing a verdict", () => {
     render(pane({ activity: [{ ...entry, security: null }] }));
+    const feed = card("Recent activity");
 
-    // A withheld action must not read as `allow`.
-    expect(screen.queryByText("allow")).toBeNull();
-    expect(screen.queryByText("flagged")).toBeNull();
+    // Absence of a verdict is not enough: a cell that rendered nothing at all
+    // would satisfy that, and the point is that the row says so.
+    const cell = within(feed).getByTitle("No security action recorded, or not your request");
+    expect(cell.textContent).toBe("\u2014");
+    expect(within(feed).queryByText("allow")).toBeNull();
+    expect(within(feed).queryByText("flagged")).toBeNull();
+  });
+
+  it("offers no per-row action while there is nowhere to send the user", () => {
+    render(pane({ activity: [entry] }));
+
+    // The design draws a "View" per row that opens the request in the web
+    // dashboard, which has no tool/machine/time filter to open. An inert control
+    // is worse than an absent one.
+    expect(within(card("Recent activity")).queryByRole("button", { name: "View" })).toBeNull();
   });
 
   it("offers Load more only when there is another page", () => {
@@ -129,6 +143,6 @@ describe("AppPane counters and chart", () => {
 
     expect(within(card("Messages")).getByText("Messages couldn't be read")).toBeTruthy();
     // The feed is a separate read and still reports its own empty state.
-    expect(within(card("Recent activity")).getByText("No messages sent in the last 24hrs")).toBeTruthy();
+    expect(within(card("Recent activity")).getByText("No recent messages")).toBeTruthy();
   });
 });
