@@ -756,6 +756,8 @@ row has a switch and no room for a second control, and the switch *is* the retry
 but a documentation or diagnostics link per failure needs the per-app pane, and
 Contact support needs a URL that does not exist. Also open: "last completed check
 or routed request" in the summary, which needs the activity endpoint.
+
+
 ## Settings sections and preferences (AG-594)
 
 There was **no preferences store anywhere**. `account.rs` was the only config, and
@@ -804,6 +806,7 @@ switch, which is a claim about the user's setting they cannot distinguish from o
 they made. Wired for launch-at-login and for the preferences pair, which share one
 read and so fail together - a failed preferences read leaves launch-at-login's
 switch alone, and a test pins that.
+
 ## Refreshing the inventory (AG-558)
 
 Detection ran on backend events only, so a tool installed while the window was
@@ -824,6 +827,245 @@ Gate has no integration for; "incomplete installation" needs per-integration
 probes; and the per-entry request counts need per-*tool* attribution, which the
 in-flight `feat/activity-overview-client` does not provide (it is per-installation
 - `activity.ts` has no tool or slug in it).
+
+
+## An empty inventory is not a failed one (AG-560)
+
+`listTools().catch(() => [])` turned a failed read into an empty array, so a device
+Gate could not scan rendered exactly like a device with no AI apps on it - blank
+list, "0/0" count, no explanation. `InventoryState` in `Sidebar.tsx` now tells the
+two apart:
+
+- **`none`** - the scan completed and found nothing. Carries the scan time, which
+  is what makes it an answer rather than a shrug, plus Refresh.
+- **`failed`** - the scan could not complete. Amber, says Gate does not know what
+  is installed and that nothing was changed, and offers Try again.
+- **`ok`** - there are rows, and the rows speak for themselves.
+
+Before the first scan lands the state is `ok`, deliberately: "no apps detected" is
+a claim, and nothing has checked yet.
+
+The eyebrow's refresh control (AG-558) hides while the card is up, since the card
+carries its own and two controls for one action in a 250px rail is one too many.
+
+Not built, and recorded on the ticket: "a detected but unsupported tool remains
+visible" needs detection of tools Gate has no integration for; "a known but absent
+tool may provide an installation action" is optional in the criteria and would put
+uninstalled tools in a rail the Figma draws as installed apps only; and the
+model-control gating would remove the picker shipped in #159.
+
+## The diagnostics switch now gates something (AG-603)
+
+The "Share diagnostic data" switch added for AG-594 recorded a preference that
+**nothing read**, while PostHog collected regardless. `lib/analytics.ts` is a real
+channel - initialised at boot in `main.tsx`, capturing a closed set of event names,
+a filtered prop allowlist, classified error titles and two coarse super-properties
+- and it had no user opt-out at all. A switch that implies control it does not have
+is worse than no switch.
+
+Now:
+
+- **`initAnalytics` reads consent before constructing the client.** An install that
+  opted out never creates it. Consent is checked *before* `posthog.init`, not
+  after, because opting out afterwards would still have put the device on the wire
+  first.
+- **A failed consent read means do not collect.** `preferences::load()` is
+  infallible in Rust, so the only path here is the IPC failing - and consent that
+  cannot be confirmed is not consent.
+- **`setAnalyticsConsent` applies a change immediately.** Off opts the live client
+  out; on starts it if this session never did (the opted-out install) and opts back
+  in otherwise. Called from the Settings switch *before* the write, so a failed
+  write cannot leave the client sending after the user said no.
+- **`initAnalytics` is now async and not awaited** in `main.tsx`: blocking first
+  paint on an IPC round trip would trade a visible delay for a few milliseconds of
+  telemetry.
+
+A read-only "What is collected" list opens from Settings without touching the
+setting, as the criteria require. Its contents are written from what
+`analytics.ts` actually sends, **not** from the ticket's field list - that list
+describes an upload that does not exist (installation name, verification state,
+event-delivery state, notification permission), and describing it would be
+describing something Gate does not do, on the one screen whose job is telling the
+truth about what leaves the machine.
+
+Still open on the ticket: the onboarding Diagnostic data step (shared with AG-554),
+"Send diagnostics now" and the diagnostic reference (no upload path exists), and
+scoping the choice to the selected organization.
+
+
+## The diagnostic-data onboarding step (AG-554 / AG-603)
+
+Consent before collection: `lib/analytics.ts` starts PostHog at launch, so what
+this step buys is a person who has actually been asked. It sits between the
+sign-in confirmation and Overview.
+
+**Derived, not remembered.** `preferences.json` gained
+`share_diagnostics_recorded`, and `useSetup` returns the `diagnostics` stage while
+it is false. That keeps the guarantee the hook already had - stage comes from what
+is on disk - so a reload mid-setup cannot skip the step, and answering it is what
+dismisses it. `undefined` (the read still in flight) is deliberately *not*
+unanswered, or the step would flash at someone who answered months ago.
+
+`share_diagnostics_recorded` defaults to **false**, including on installs written
+before the field existed. Those see the step once, which is the point: sharing
+defaults to on, and a default nobody was asked about is not consent. It is also why
+this is a separate field rather than inferring an answer from `share_diagnostics` -
+the default and a deliberate "yes" are the same value and must not be the same
+fact.
+
+Continue records the **displayed** value whether or not it changed, because leaving
+the default in place is still an answer; treating it as unanswered would ask again
+next launch. The same command backs the Settings switch, so changing it there also
+counts as answering.
+
+The sent / never-sent lists are shared with the Settings disclosure
+(`CollectedDataLists`, one copy, framed by whatever `Wrapper` each caller passes).
+Two copies would drift, and these are the claims the product's reassurance rests
+on - the moment the onboarding promise and the Settings disclosure disagree,
+neither can be trusted.
+
+Layout is provisional; the Figma draws no diagnostics step.
+
+### A harness bug this turned up
+
+`e2e/install.ts`'s `get_preferences` returned the *live* `state.preferences`
+object, which the write stubs mutate in place. So `setPrefs` received an identical
+reference, React skipped the re-render, and a preference change was invisible to
+anything derived from it. Real IPC serialises every response; the stub now returns
+a copy. Worth remembering for the other handlers that still return `state.x`
+directly.
+
+Still open on AG-554: the device-derived installation-name suggestion (device
+rename has no backend command), and distinguishing cancellation from expiration
+from failure in the browser sign-in.
+## Interrupted routing, explained and resumable (AG-570)
+
+Three changes, in three PRs.
+
+**1. The window shell had no backend-error drain.** `drainBackendErrors` existed only
+in `App.tsx`, so a failure buffered Rust-side went to telemetry and nowhere else -
+including `report_backend_error("provider_restore", ...)`, which fires on both
+restore passes in `proxy_enable`. Routing could fail to come back and the window
+said nothing. `forwardBackendErrors` moved to `lib/backendErrors.ts` and both shells
+import it; the popover's behaviour is unchanged.
+
+**2. The snapshots were already a record of unfinished work.** `restore_all`
+re-attempts each recorded entry, keeps failures in the file, and clears it only once
+everything is back. Nothing read them for display. `provider::pending_restore()`
+reports what they owe, `resume_restore` calls `restore_all` and returns **what is
+still outstanding** rather than unit, and `RecoveryBanner` names it with Resume now
+and Finish later. Amber, not red: nothing is lost, and resuming retries exactly what
+failed.
+
+**3. A per-entry journal** (`crates/core/src/recovery.rs`) records what the restore
+*did*, as opposed to what is left. Written as it goes and seeded before the first
+attempt, because an interrupted operation is the one worth describing and a journal
+written on completion would be missing for every case it serves. `RestoreDetailsDialog`
+shows it read-only - AG-570 requires that reviewing changes no state.
+
+Details worth keeping:
+
+- **One journal for the whole restore.** Both passes seed it up front; two writers
+  would clobber each other's file, which they briefly did.
+- **Outcomes come from the control flow, never from an error message.** The restore
+  already branches on not-installed, unknown-slug and signed-out, so classifying
+  those costs nothing and cannot drift.
+- **Dropped entries owe nothing.** `NotInstalled` and `Unknown` are settled, not
+  outstanding; reporting them would ask for action nobody can take.
+- **A journal is an explanation, never a blocker.** A missing or corrupt one reads
+  as absent and the restore still runs. Its fields are `#[serde(default)]`-backed
+  for the same reason - a unit test caught that they were not, which would have
+  silently dropped the explanation on any older file.
+- **Known shortcoming:** only the tool pass can report `DeferredSignedOut`.
+  `enable_skipping` has no signed-out branch, so a provider that cannot re-enable
+  for want of an account lands on `WriteFailed`. Pinned by a test so it stays
+  visible.
+
+Still open: the recovery action lives in the shell banner, not the tray; per-tool
+"last verified route" and "check result" in the summary would need the verdict sweep
+to persist its results; and item 8's default-writing result list exists for the quit
+path only (#162), not yet for sign-out and reset.
+## Quit and teardown in the window shell (AG-596)
+
+The popover has carried the three-way quit since it shipped
+(`components/QuitConfirm.tsx`: disconnect-and-quit / quit-without-disconnecting /
+cancel, with focus on cancel). The window shell had **nothing**: no
+`quit-requested` listener and no dialog, so a tray Quit raised in the new UI went
+unanswered. Fixed by porting the flow, not reinventing it - `QuitDialog` in
+`dialogs.tsx` shares the popover's copy so a user who has seen one is not asked
+to work out whether the other means something different.
+
+`Modal` gained an optional **`middle` action**. Three buttons because the
+outcomes genuinely differ: collapsing "quit without disconnecting" into the
+primary would hide the consequence that makes it a separate choice, and
+collapsing cancel would leave no way out. It is the only dialog that needs it.
+
+The larger change is behavioural, and it applies to **both** shells.
+`provider::snapshot_and_disable_everything` swallowed per-tool disconnect
+failures into `eprintln!` and returned `Ok(())`, so a quit that left a tool
+pointing at a relay about to die reported success and fired a notification
+saying "your tools are back on their own settings". It now returns the display
+names of what it could not put back:
+
+- `disconnect_tools_for_quit` returns `Vec<String>` rather than `()`.
+- The quit notification only claims a clean teardown when there was one.
+- Both shells stop, name the tools, and offer retry / quit-anyway rather than
+  exiting quietly. AG-596 is explicit: Gate Connect "does not claim cleanup
+  completed".
+
+Not covered here, and still open on the ticket: the reset result's equivalent
+listing ("if reset leaves a credential, configuration, or routed tool, Gate
+Connect lists it"). Reset's checkbox gate and confirmation are built; enumerating
+*residue* after the fact needs the same treatment `snapshot_and_disable_everything`
+just got, applied to the reset path.
+
+The restore-vs-AC conflict recorded against AG-564/566/570/596 is unchanged by
+this work: `claude_code.rs` does restore prior values, so no copy here claims
+otherwise.
+## Naming the file Gate rewrites (AG-564)
+
+`Integration::config_location()` is new: the file each integration edits, as a
+display string, implemented for Claude Code, Codex, OpenCode, OpenClaw and Hermes
+and defaulting to `None` for the environment channel, which writes machine-wide
+settings rather than a file of its own. It reaches the UI on `ToolDto` and the
+drift review now names the file before asking the user to approve a rewrite.
+
+Two things this is deliberately *not*:
+
+- **Not a probe.** Reading the location creates nothing. A test pins that,
+  because a call that materialised a config directory would make `status()`
+  report a tool as present because the UI had looked at it.
+- **Not a secret.** It is a path in the user's own home directory, and the point
+  of showing it is that they can go and read it - which is the reassurance
+  CLAUDE.md's first design principle asks for, and stronger than any sentence
+  about what Gate does or does not touch.
+
+### The confirmation this ticket asks for, and why it is not here
+
+AG-564 asks for a confirmation before *every* turn-on: "Before routing is turned
+on, Gate Connect states that it will replace the tool's routing configuration
+with Gate values", with **Use Gate routing** and **Cancel**. It was built, and
+then removed before shipping, for reasons worth recording:
+
+1. **The design draws a bare switch.** The Figma has no confirmation on this flow,
+   and AG-563 - this ticket's design counterpart - is still In review, so the
+   designer has an opinion in flight that this work cannot see. CLAUDE.md makes the
+   Figma the source of truth for exactly this kind of question.
+2. **It stacks two modals on a first turn-on.** The gate lands before
+   `ensureCaTrusted`, so the first tool a user routes would raise "Route X through
+   Gate?" and then "Trust the Gate certificate?" back to back.
+3. **The criteria are written per tool and say nothing about the cascade.**
+   `setFamilyRouted` calls `connectTool` directly rather than through
+   `setAppRouted`, so a family switch would have escaped the gate anyway - which is
+   just as well, since a modal per member would make that switch unusable. But
+   that means the ticket's model and the product's shape disagree.
+
+The warning does exist for the case where something of the user's is actually at
+risk of being overwritten: a drifted config, which has had the review dialog all
+along. What a general confirmation would add is coverage of the *clean* case,
+where `integrations/codex.rs` still replaces the user's own `model_provider` (and
+stashes it for disconnect). That is a real gap, and a real design decision -
+raised on AG-564 and AG-563 rather than settled here.
 
 ## Unavailable and held readings (AG-576)
 

@@ -14,6 +14,11 @@ export interface Tool {
   upstream_provider_name: string;
   default_upstream_url: string;
   requires_upstream_credential: boolean;
+  /** The file Gate rewrites for this tool, so the confirmation can say what is
+   * about to change. Null where no single file names it (the environment
+   * channel). Not a secret - it is a path in the user's own home directory, and
+   * showing it is the point. */
+  config_location: string | null;
   status: Status;
 }
 
@@ -400,9 +405,41 @@ export const pendingQuitTools = () => invoke<string[] | null>("pending_quit_tool
 /** Quit-time teardown: snapshot + disconnect every enabled integration so the
  * CLI tools fall back to their original settings, leaving the routing intent
  * untouched so the next startup restore reapplies them. Fires the "restart
- * your CLI agents" system notification. */
-export const disconnectToolsForQuit = () => invoke<void>("disconnect_tools_for_quit");
+ * your CLI agents" system notification.
+ *
+ * Returns the display names of any tools it could **not** return to their own
+ * settings; empty means the teardown was clean. A non-empty list is not a
+ * rejection - the rest of the sweep ran - but the caller must not quit while
+ * claiming the cleanup finished. */
+export const disconnectToolsForQuit = () => invoke<string[]>("disconnect_tools_for_quit");
 
+/** One thing a routing restore recorded and has not finished. `name` falls back to
+ * the slug when the provider or tool has left the registry since - naming it beats
+ * dropping it from a list the user is being asked to act on. */
+export interface PendingEntry {
+  slug: string;
+  name: string;
+}
+
+/** Routing work that was written down and did not complete. Empty in the normal
+ * case. The snapshots have always recorded unfinished work - `restore_all` keeps
+ * failures in the file and clears it only once everything is back - but nothing
+ * read them for display, so a half-finished restore left some tools routing, some
+ * not, and no statement anywhere that Gate knew. */
+export interface PendingRestore {
+  providers: PendingEntry[];
+  tools: PendingEntry[];
+}
+
+/** What a restore still owes. Read-only and cheap: opens no config, starts
+ * nothing, safe on a status refresh. */
+export const pendingRestore = () => invoke<PendingRestore>("pending_restore");
+
+/** Finish an interrupted restore, and report what is still outstanding.
+ * `restore_all`'s existing retry semantics mean this repeats no completed write.
+ * Returns the remaining state rather than void, because a partial success is the
+ * interesting case and must not read as done. */
+export const resumeRestore = () => invoke<PendingRestore>("resume_restore");
 /** Non-secret Settings choices. Every field defaults to `true`, and an absent
  * field in the stored file loads as `true` - so a switch reads On before anything
  * has ever been written, which is what lets Settings show a truthful default.
@@ -418,6 +455,11 @@ export interface Preferences {
   /** Whether Gate Connect may send diagnostic data. Onboarding records the first
    * answer; Settings changes it after. Nothing is uploaded by setting it. */
   share_diagnostics: boolean;
+  /** Whether the person has ever *answered* the question, rather than having the
+   * default applied for them. False on installs that predate the field, which is
+   * why they see the onboarding step once - consent nobody was asked for is not
+   * consent. `setShareDiagnostics` sets it from either caller. */
+  share_diagnostics_recorded: boolean;
 }
 
 export const getPreferences = () => invoke<Preferences>("get_preferences");
@@ -427,6 +469,39 @@ export const setRoutingHealthNotifications = (enabled: boolean) =>
 
 export const setShareDiagnostics = (enabled: boolean) =>
   invoke<void>("set_share_diagnostics", { enabled });
+
+/** What a restore did to one entry on its last attempt. Closed set, mirroring
+ * `recovery::Outcome`, and every member comes from the restore's own control flow
+ * rather than from matching an error message. */
+export type RestoreOutcome =
+  | "pending"
+  | "restored"
+  | "write_failed"
+  | "not_installed"
+  | "unknown"
+  | "deferred_signed_out";
+
+export interface RestoreRecord {
+  slug: string;
+  name: string;
+  kind: "provider" | "tool";
+  outcome: RestoreOutcome;
+  /** Unix seconds; 0 when the clock could not be read, which the UI shows as
+   * unknown rather than as 1970. */
+  at_unix: number;
+}
+
+/** The last restore, entry by entry. Explanation only - the snapshots behind
+ * {@link pendingRestore} are what a resume actually works from. */
+export interface RestoreJournal {
+  updated_unix: number;
+  requested_routing_on: boolean;
+  entries: RestoreRecord[];
+}
+
+/** What the last restore did, or null when there is nothing to explain: a restore
+ * that completed clears its journal. */
+export const restoreJournal = () => invoke<RestoreJournal | null>("restore_journal");
 
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);

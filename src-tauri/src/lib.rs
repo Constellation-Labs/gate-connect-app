@@ -56,6 +56,9 @@ struct ToolDto {
     upstream_provider_name: String,
     default_upstream_url: String,
     requires_upstream_credential: bool,
+    /// The file Gate rewrites for this tool, for the copy that says what is
+    /// about to change. `None` where no single file names it.
+    config_location: Option<String>,
     status: StatusDto,
 }
 
@@ -105,6 +108,7 @@ fn list_tools() -> Vec<ToolDto> {
             upstream_provider_name: integ.upstream_provider_name().to_string(),
             default_upstream_url: integ.default_upstream_url().to_string(),
             requires_upstream_credential: integ.requires_upstream_credential(),
+            config_location: integ.config_location(),
             status: status_for(integ.as_ref()),
         })
         .collect()
@@ -1401,6 +1405,50 @@ fn probe_session_health() -> gate_connect_core::routing_health::SessionHealth {
     }
 }
 
+/// What a routing restore still owes, from the snapshots on disk.
+///
+/// Read-only and cheap: it opens no tool config and starts nothing, so the UI can
+/// call it on a status refresh. Empty in the normal case.
+#[tauri::command]
+fn pending_restore() -> Result<gate_connect_core::provider::PendingRestore, String> {
+    gate_connect_core::provider::pending_restore().map_err(|e| format!("{e:#}"))
+}
+
+/// Finish an interrupted restore, and report what is still outstanding.
+///
+/// `restore_all` already has the retry semantics this needs: it re-attempts each
+/// recorded entry, keeps failures in the snapshot, and clears the file only once
+/// everything is back. So resuming repeats no completed write and reopens no
+/// verified tool without any new bookkeeping.
+///
+/// Returns the remaining pending state rather than unit, so a caller does not have
+/// to guess whether the resume finished the job - a partial success is the
+/// interesting case and the one that must not read as done.
+#[tauri::command]
+async fn resume_restore() -> Result<gate_connect_core::provider::PendingRestore, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        // Best-effort, like every other caller of this: a failure leaves its
+        // entries in the snapshot, which is exactly what the return value reports.
+        if let Err(e) = gate_connect_core::provider::restore_all() {
+            eprintln!("[gate] resuming an interrupted restore failed: {e}");
+            report_backend_error("provider_restore", format!("{e:#}"));
+        }
+        gate_connect_core::provider::pending_restore().map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("resume restore join error: {e}"))?
+}
+
+/// What the last routing restore did, entry by entry.
+///
+/// Read-only, and `None` when there is nothing to explain - a restore that
+/// completed clears its journal. Never fails: a journal that cannot be read is an
+/// explanation lost, not a recovery blocked, so an unreadable one reads as absent.
+#[tauri::command]
+fn restore_journal() -> Option<gate_connect_core::recovery::RestoreJournal> {
+    gate_connect_core::recovery::load()
+}
+
 /// One running AI tool, as the diagnostics report lists it.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[derive(Serialize)]
@@ -1663,10 +1711,15 @@ fn quit_app(app: tauri::AppHandle) {
 /// app runs with routing intended on. Fires a system notification (the
 /// popover dies with the process) telling the user to restart running CLI
 /// agents, which keep the relay address they resolved at their own launch.
+///
+/// Returns the display names of any tools it could **not** return to their own
+/// settings. Empty means the teardown was clean. A non-empty list is not an
+/// error - the rest of the sweep still ran - but the caller must not report the
+/// quit as tidy, and must not quit without saying so.
 #[tauri::command]
-async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> {
+async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     // Off the main thread: disconnect does config-file I/O.
-    tauri::async_runtime::spawn_blocking(|| {
+    let failed: Vec<String> = tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::provider::snapshot_and_disable_everything().map_err(|e| format!("{e:#}"))
     })
     .await
@@ -1677,22 +1730,38 @@ async fn disconnect_tools_for_quit(app: tauri::AppHandle) -> Result<(), String> 
     // the notification must not suppress the *result*.
     if gate_connect_core::preferences::load().routing_health_notifications {
         use tauri_plugin_notification::NotificationExt;
+        // The clean-teardown wording is only true when the teardown was clean.
+        // With a tool left on Gate's settings, telling the user everything is
+        // back is worse than saying nothing: their next request goes to a relay
+        // that died with this process, and the notification told them it would
+        // not.
+        let body = if failed.is_empty() {
+            // "Your tools", not "Integrations": that word reaches the user
+            // nowhere else in the product, and this notification arrives
+            // seconds after a panel that called them tools. The rest of the
+            // wording is shared with QuitConfirm on purpose.
+            "Your tools are back on their own settings while Gate Connect is \
+             closed. Restart any running CLI agents; everything reconnects \
+             when Gate Connect starts again."
+                .to_string()
+        } else {
+            format!(
+                "Gate Connect closed, but {} could not be put back on {} own \
+                 settings. {} still point at Gate and will not reach a model until \
+                 Gate Connect runs again.",
+                failed.join(", "),
+                if failed.len() == 1 { "its" } else { "their" },
+                if failed.len() == 1 { "It" } else { "They" },
+            )
+        };
         let _ = app
             .notification()
             .builder()
             .title("Gate Connect")
-            .body(
-                // "Your tools", not "Integrations": that word reaches the user
-                // nowhere else in the product, and this notification arrives
-                // seconds after a panel that called them tools. The rest of the
-                // wording is shared with QuitConfirm on purpose.
-                "Your tools are back on their own settings while Gate Connect is \
-                 closed. Restart any running CLI agents; everything reconnects \
-                 when Gate Connect starts again.",
-            )
+            .body(body)
             .show();
     }
-    Ok(())
+    Ok(failed)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1783,6 +1852,9 @@ pub fn run() {
                     set_updater_relaunching,
                     routed_clients_stale,
                     routing_verdicts,
+                    pending_restore,
+                    resume_restore,
+                    restore_journal,
                     running_agents_count,
                     stale_agents_count,
                     running_agents,

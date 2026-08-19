@@ -1,6 +1,8 @@
 import { useRef } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
+import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
+import type { PillTone } from "./Modal";
 import {
   Modal,
   ModalCheckbox,
@@ -120,12 +122,20 @@ export function ReviewConfigDialog({
    * would be pointed at. Absent when no relay port has been bound yet, in which
    * case the row is omitted rather than guessed at. */
   gateRoute,
+  /** The file that gets rewritten, e.g. "/Users/x/.codex/config.toml".
+   *
+   * AG-564 asks the warning to name the tool *and* the configuration location.
+   * Naming the file is also the transparency this product trades on: the user can
+   * go and read it, which is a stronger reassurance than any sentence about what
+   * Gate does or does not touch. Omitted when no single file names it. */
+  configLocation,
   onKeep,
   onReplace,
 }: {
   app: DialogApp;
   existingConfig: string;
   gateRoute?: string | null;
+  configLocation?: string | null;
   onKeep: () => void;
   onReplace: () => void;
 }) {
@@ -155,6 +165,14 @@ export function ReviewConfigDialog({
           description={gateRoute}
           pill={{ label: "Gate route", tone: "green" }}
         />
+      )}
+      {configLocation && (
+        <ModalNote>
+          <p className="font-medium text-neutral-900">The file that changes:</p>
+          {/* Mono, like every other identifier in this UI. `break-all` because a
+              home-directory path overflows the 600px dialog on any real machine. */}
+          <p className="mt-1 break-all font-mono text-base-xs">{configLocation}</p>
+        </ModalNote>
       )}
       <ModalNote>
         <p className="font-medium text-neutral-900">If Gate takes over:</p>
@@ -631,6 +649,304 @@ export function ResetGateConnectDialog({
         onChange={onAcknowledgedChange}
         label="I understand that setup will restart on this device"
       />
+    </Modal>
+  );
+}
+
+/**
+ * What the diagnostic channel actually sends, and what it never sends.
+ *
+ * AG-603 asks for a "What is collected" list that opens without changing the
+ * setting - so this is read-only and its only action closes it.
+ *
+ * The lists are written from `lib/analytics.ts` rather than from the ticket. The
+ * ticket enumerates fields for an upload that does not exist yet (installation
+ * name, verification state, event-delivery state, notification permission); the
+ * channel that *does* exist is PostHog, sending a closed set of event names, a
+ * filtered prop allowlist, classified error titles, and two coarse
+ * super-properties. Describing the ticket's list would be describing something
+ * Gate does not do, on the one screen whose whole job is telling the truth about
+ * what leaves the machine.
+ */
+export function CollectedDataDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal
+      tone="neutral"
+      icon="info"
+      title="What Gate Connect collects"
+      subtitle="Only while Share diagnostic data is on. Nothing here identifies you."
+      primary={{ label: "Close", onClick: onClose }}
+      onDismiss={onClose}
+    >
+      <CollectedDataLists Wrapper={ModalNote} />
+    </Modal>
+  );
+}
+
+/**
+ * The sent / never-sent lists, shared by the Settings dialog above and the
+ * onboarding step in `setup.tsx`.
+ *
+ * One copy on purpose. Two would drift, and these are the claims the product's
+ * reassurance rests on - the moment the onboarding promise and the Settings
+ * disclosure disagree, neither can be trusted.
+ *
+ * `Wrapper` because the two callers frame it differently: the dialog uses
+ * `ModalNote`, the setup pane its own card. The content is what is shared, not the
+ * chrome.
+ */
+export function CollectedDataLists({
+  Wrapper,
+}: {
+  Wrapper: (props: { children: ReactNode }) => ReactNode;
+}) {
+  return (
+    <>
+      <Wrapper>
+        <p className="font-medium text-neutral-900">Sent</p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>
+            An anonymous device id, generated locally. No name, email, or account
+            identifier.
+          </li>
+          <li>App version and operating system.</li>
+          <li>
+            Which action happened, from a fixed list - routing turned on or off, an
+            update installed, a dialog shown. Never free text.
+          </li>
+          <li>
+            A short label for each action: which app or provider it concerned, and
+            whether it was on or off.
+          </li>
+          <li>
+            A classified title when something fails, e.g. &ldquo;keychain
+            denied&rdquo;. The underlying message stays on this machine.
+          </li>
+        </ul>
+      </Wrapper>
+      <Wrapper>
+        <p className="font-medium text-neutral-900">Never sent</p>
+        <ul className="mt-1 list-disc pl-4">
+          <li>Prompts or model responses.</li>
+          <li>API keys, credentials, or anything from your keychain.</li>
+          <li>File paths, hostnames, or the contents of any config file.</li>
+          <li>The text of an error, as opposed to its classification.</li>
+        </ul>
+      </Wrapper>
+    </>
+  );
+}
+
+/** What each outcome means, in the user's words rather than the enum's. */
+const RESTORE_OUTCOME_TEXT: Record<
+  RestoreOutcome,
+  { label: string; detail: string; tone: PillTone }
+> = {
+  pending: {
+    label: "Not reached",
+    detail: "Gate stopped before getting to this one.",
+    tone: "amber",
+  },
+  restored: {
+    label: "Done",
+    detail: "Configuration written. Whether it is routing is shown on its row.",
+    tone: "green",
+  },
+  write_failed: {
+    label: "Failed",
+    detail: "Gate could not write the configuration. Resuming tries this one again.",
+    tone: "amber",
+  },
+  not_installed: {
+    label: "Skipped",
+    detail: "No longer installed, so there was nothing to restore.",
+    tone: "neutral",
+  },
+  unknown: {
+    label: "Skipped",
+    detail: "Gate does not recognise this one any more.",
+    tone: "neutral",
+  },
+  deferred_signed_out: {
+    label: "Waiting",
+    detail: "Nothing was attempted: there is no account to point it at yet.",
+    tone: "amber",
+  },
+};
+
+/**
+ * What the last restore did, entry by entry.
+ *
+ * **Read-only, and deliberately so.** AG-570 requires that reviewing details "does
+ * not change state" - so the only action closes it, and nothing here can be
+ * clicked into a retry. Resuming is the banner's job.
+ *
+ * There are no credentials, paths or request content in a journal entry: it holds
+ * slugs, display names, an outcome from a closed set, and a timestamp. That is what
+ * makes it safe to show in full.
+ *
+ * **Provisional layout.** The Figma draws no details view (AG-569 is To Do).
+ */
+export function RestoreDetailsDialog({
+  journal,
+  onClose,
+}: {
+  journal: RestoreJournal;
+  onClose: () => void;
+}) {
+  const done = journal.entries.filter((e) => e.outcome === "restored").length;
+  return (
+    <Modal
+      tone="neutral"
+      icon="info"
+      title="What happened to routing"
+      subtitle={
+        journal.requested_routing_on
+          ? `Gate was turning routing back on. ${done} of ${journal.entries.length} finished.`
+          : `Gate was turning routing off. ${done} of ${journal.entries.length} finished.`
+      }
+      primary={{ label: "Close", onClick: onClose }}
+      onDismiss={onClose}
+    >
+      {journal.entries.length === 0 ? (
+        <ModalNote>Nothing was recorded for this attempt.</ModalNote>
+      ) : (
+        journal.entries.map((entry) => {
+          const text = RESTORE_OUTCOME_TEXT[entry.outcome];
+          return (
+            <ModalSubject
+              key={`${entry.kind}:${entry.slug}`}
+              icon="cube"
+              title={entry.name}
+              description={text.detail}
+              pill={{ label: text.label, tone: text.tone }}
+            />
+          );
+        })
+      )}
+    </Modal>
+  );
+}
+
+/** "Claude Code", "Claude Code and Codex", "Claude Code, Codex, and OpenCode". */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+/**
+ * Quit, with the three outcomes AG-596 names: disconnect the tools first, quit
+ * and leave them pointing at Gate, or don't quit.
+ *
+ * **Provisional layout.** The Figma draws no quit dialog for the window shell
+ * (AG-595 is still To Do), so the structure here comes from the acceptance
+ * criteria and the popover's `QuitConfirm`, which already implements the same
+ * three choices. The copy is deliberately shared with that panel: a user who has
+ * seen one should not have to work out whether the other means something else.
+ *
+ * Three buttons rather than two because the outcomes genuinely differ. Collapsing
+ * "quit without disconnecting" into the primary would hide the consequence that
+ * makes it different, and collapsing Cancel would leave no way out.
+ *
+ * Cancel takes focus, not the primary: the user asked to quit, but Enter on a
+ * panel they have not read should not decide *how*.
+ */
+export function QuitDialog({
+  tools,
+  busy,
+  onDisconnectAndQuit,
+  onQuitAnyway,
+  onCancel,
+}: {
+  /** Config-routed tools still pointed at Gate. Never empty - the shell only
+   * raises this dialog when the backend reports at least one. */
+  tools: string[];
+  busy?: boolean;
+  onDisconnectAndQuit: () => void;
+  onQuitAnyway: () => void;
+  onCancel: () => void;
+}) {
+  const names = joinNames(tools);
+  const plural = tools.length > 1;
+  return (
+    <Modal
+      tone="warning"
+      icon="logOut"
+      title="Quit Gate Connect?"
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
+      middle={{
+        label: "Quit without disconnecting",
+        onClick: onQuitAnyway,
+        disabled: busy,
+      }}
+      primary={{
+        label: busy ? "Working…" : "Disconnect tools and quit",
+        onClick: onDisconnectAndQuit,
+        disabled: busy,
+      }}
+      onDismiss={busy ? undefined : onCancel}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        {names} still {plural ? "route" : "routes"} through Gate. Quitting stops the
+        local relay {plural ? "they" : "it"} points at, so {plural ? "they" : "it"}{" "}
+        {plural ? "cannot" : "cannot"} reach a model until Gate Connect runs again.
+      </p>
+      <p className="text-sm leading-5 text-neutral-600">
+        {/* "when Gate Connect starts again", not "at the next start": the next
+            start of *what* was the ambiguity, and the tool's own launch is the
+            wrong answer. Same phrasing as the notification this fires. */}
+        Disconnecting puts {plural ? "their" : "its"} own settings back for the
+        meantime, then reconnects {plural ? "them" : "it"} when Gate Connect starts
+        again. Routing stays switched on either way.
+      </p>
+    </Modal>
+  );
+}
+
+/**
+ * What the quit teardown could not finish.
+ *
+ * AG-596 is explicit that Gate Connect "does not claim cleanup completed", so a
+ * partial teardown gets its own dialog rather than a silent exit: the named tools
+ * are still pointed at a relay that dies with this process. Retrying is the
+ * primary; quitting anyway stays available, because refusing to let someone quit
+ * their own app is worse than letting them quit informed.
+ */
+export function QuitLeftBehindDialog({
+  tools,
+  busy,
+  onRetry,
+  onQuitAnyway,
+  onCancel,
+}: {
+  tools: string[];
+  busy?: boolean;
+  onRetry: () => void;
+  onQuitAnyway: () => void;
+  onCancel: () => void;
+}) {
+  const plural = tools.length > 1;
+  return (
+    <Modal
+      tone="warning"
+      icon="triangleAlert"
+      title={plural ? "Some tools stayed on Gate" : "One tool stayed on Gate"}
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
+      middle={{ label: "Quit anyway", onClick: onQuitAnyway, disabled: busy }}
+      primary={{ label: busy ? "Working…" : "Try again", onClick: onRetry, disabled: busy }}
+      onDismiss={busy ? undefined : onCancel}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        Couldn’t put {joinNames(tools)} back on{" "}
+        {plural ? "their own settings" : "its own settings"}.{" "}
+        {plural ? "They still point" : "It still points"} at Gate, and won’t reach a
+        model until Gate Connect runs again.
+      </p>
+      <ModalNote>
+        Everything else was put back. Trying again only retouches the{" "}
+        {plural ? "tools" : "tool"} above.
+      </ModalNote>
     </Modal>
   );
 }

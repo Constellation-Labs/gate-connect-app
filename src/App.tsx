@@ -31,7 +31,6 @@ import {
   routedClientsStale,
   runningAgentsCount,
   staleAgentsCount,
-  drainBackendErrors,
   pendingQuitTools,
 } from "./lib/api";
 import { FirstRun } from "./screens/FirstRun";
@@ -44,6 +43,7 @@ import { Success } from "./screens/Success";
 import { UpdatePanel } from "./components/UpdatePanel";
 import { RoutingChangeNotice } from "./components/RoutingChangeNotice";
 import { QuitConfirm } from "./components/QuitConfirm";
+import { forwardBackendErrors } from "./lib/backendErrors";
 import { OAuthOffer } from "./components/OAuthOffer";
 import { CertificateNotice } from "./components/CertificateNotice";
 import { LinuxTitleBar } from "./components/LinuxTitleBar";
@@ -51,7 +51,6 @@ import { ConstellationHexMark } from "./components/gc/ConstellationHexMark";
 import { Icon } from "./components/gc/Icon";
 import { track, trackError } from "./lib/analytics";
 import {
-  backendErrorContext,
   classifyError,
   TrustDeclined,
   type ClassifiedError,
@@ -121,30 +120,6 @@ function hostOf(url: string | undefined): string {
  *  webview does, so the user has no other way to learn the engine never came
  *  up. A failure here is a total routing outage that the popover would
  *  otherwise render as a healthy screen. */
-const ROUTING_DOWN_CONTEXTS = new Set(["restore_routing", "provider_restore", "provider_reconcile"]);
-
-/** Drain the backend's buffered failures into the analytics seam, and hand back
- *  the first one that means routing is down so a human sees it too. The raw
- *  message is classified frontend-side like any invoke rejection; only the
- *  title goes over the wire.
- *
- *  Telemetry was the only consumer. A buffered "failed to bind loopback port
- *  8317: address in use" produced zero pixels of UI, in the one app whose
- *  first principle is reassurance through transparency, on the one error class
- *  the user cannot discover any other way. */
-async function forwardBackendErrors(): Promise<ClassifiedError | null> {
-  const errs = await drainBackendErrors().catch(() => []);
-  let surfaced: ClassifiedError | null = null;
-  for (const e of errs) {
-    const context = backendErrorContext(e.context);
-    trackError(e.message, context);
-    if (!surfaced && ROUTING_DOWN_CONTEXTS.has(e.context)) {
-      surfaced = classifyError(e.message, context);
-    }
-  }
-  return surfaced;
-}
-
 // The routing takeover teaches its lesson once per install; after the first
 // acknowledgment (persisted like the tour flag), later toggles fall back to
 // the inline restart hint that carries the same advice, so the daily user

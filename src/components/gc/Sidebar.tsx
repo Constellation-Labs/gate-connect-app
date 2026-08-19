@@ -33,6 +33,25 @@ export type AppStatus =
   | { kind: "drifted" }
   | { kind: "not-routed"; detail?: string };
 
+/**
+ * What the last detection scan established, which is not the same as how many
+ * rows it produced.
+ *
+ * An empty list used to mean both "we looked and there is nothing" and "the look
+ * failed" - `listTools().catch(() => [])` collapsed the second into the first, so
+ * a machine that could not be scanned rendered as a machine with no AI tools on
+ * it. Those need different words and different actions, which is the whole of
+ * AG-560's first two criteria.
+ */
+export type InventoryState =
+  /** Tools were found; the list speaks for itself. */
+  | { kind: "ok" }
+  /** The scan completed and found nothing. A real answer, so it carries when it
+   * was taken. */
+  | { kind: "none"; scannedAt: string }
+  /** The scan could not complete. Says so rather than showing an empty shelf. */
+  | { kind: "failed" };
+
 export interface SidebarApp {
   slug: string;
   name: string;
@@ -82,6 +101,7 @@ export function Sidebar({
   onToggleApp,
   onRefresh,
   refreshing,
+  inventory,
 }: {
   orgName: string;
   onSwitchOrg: () => void;
@@ -98,6 +118,9 @@ export function Sidebar({
   /** A scan is in flight; the control refuses clicks and says so to assistive
    * technology. */
   refreshing?: boolean;
+  /** What the last scan actually established. Omitted keeps the old behaviour of
+   * rendering the list and nothing else. */
+  inventory?: InventoryState;
 }) {
   const protectedCount = apps.filter((a) => a.status.kind === "protected").length;
 
@@ -149,7 +172,10 @@ export function Sidebar({
                   was open showed nothing until something unrelated changed it.
                   Small and unlabelled because it sits in a 12px eyebrow - the
                   glyph carries an aria-label rather than visible text. */}
-              {onRefresh && (
+              {/* Hidden while the inventory card is showing: that card carries its
+                  own Refresh, and two controls for one action in a 250px rail is
+                  one too many. */}
+              {onRefresh && (!inventory || inventory.kind === "ok") && (
                 <button
                   type="button"
                   onClick={onRefresh}
@@ -164,6 +190,14 @@ export function Sidebar({
                 </button>
               )}
             </h2>
+
+            {inventory && inventory.kind !== "ok" ? (
+              <InventoryState
+                state={inventory}
+                onRefresh={onRefresh}
+                refreshing={refreshing}
+              />
+            ) : null}
 
             <ul className="flex flex-col gap-1">
               {apps.map((app) => (
@@ -232,6 +266,61 @@ function NavItem({
  * The switch is a sibling rather than a child so a click on it never also
  * navigates.
  */
+/**
+ * The two states an empty app list can be in, told apart.
+ *
+ * Provisional layout: the Figma draws no empty inventory. It lives in the 250px
+ * rail rather than the content pane because it is the *inventory's* state, and
+ * moving it would leave the rail silently blank - which is the ambiguity this
+ * exists to remove. Vertical space is ample even if width is not.
+ */
+function InventoryState({
+  state,
+  onRefresh,
+  refreshing,
+}: {
+  state: Exclude<InventoryState, { kind: "ok" }>;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+}) {
+  const failed = state.kind === "failed";
+  return (
+    <div
+      role="status"
+      className={`flex flex-col gap-2 rounded-lg border p-3 ${
+        failed ? "border-amber-200 bg-amber-50" : "border-base-border bg-base-card"
+      }`}
+    >
+      <p className="text-sm font-medium leading-5 text-neutral-900">
+        {failed ? "Couldn’t check for apps" : "No apps detected"}
+      </p>
+      <p className="text-base-xs leading-4 text-neutral-600">
+        {failed
+          ? // Not "no apps": the difference between "we looked and found none"
+            // and "we could not look" is the whole point of this component.
+            "Gate couldn’t read this device’s app list, so it doesn’t know what is installed. Nothing has been changed."
+          : "Gate looked for supported AI apps and found none installed. Install one and refresh, and it will appear here."}
+      </p>
+      {state.kind === "none" && (
+        // The scan time is what makes "none" an answer rather than a shrug.
+        <p className="font-mono text-base-2xs leading-4 text-base-muted-foreground">
+          Checked {state.scannedAt}
+        </p>
+      )}
+      {onRefresh && (
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="flex h-7 items-center justify-center rounded-base border border-base-border bg-base-card px-2 text-base-xs font-medium text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {refreshing ? "Checking…" : failed ? "Try again" : "Refresh"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function AppRow({
   app,
   selected,

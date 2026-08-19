@@ -92,7 +92,11 @@ export function installFakeTauri(state: BackendState): void {
     "plugin:app|version": () => state.version,
 
     // ---- tools
-    list_tools: () => state.tools,
+    // Fill the field the real backend always sends, so a fixture that omits it
+    // still produces a well-formed Tool rather than an undefined the UI has to
+    // guess about.
+    list_tools: () =>
+      state.tools.map((t) => ({ config_location: null, ...t })),
     connect_tool: ({ slug }) => {
       const t = tool(slug);
       t.status = { kind: "connected" };
@@ -255,13 +259,21 @@ export function installFakeTauri(state: BackendState): void {
     set_updater_relaunching: () => null,
 
     // ---- preferences
-    get_preferences: () => state.preferences,
+    // A copy, not the live object. Real IPC serialises every response, so the
+    // frontend always gets a fresh value; handing out the reference this stub
+    // mutates in place meant `setPrefs` received an identical object, React
+    // skipped the re-render, and a preference change was invisible to anything
+    // derived from it.
+    get_preferences: () => ({ ...state.preferences }),
     set_routing_health_notifications: ({ enabled }) => {
       state.preferences.routing_health_notifications = enabled as boolean;
       return null;
     },
     set_share_diagnostics: ({ enabled }) => {
       state.preferences.share_diagnostics = enabled as boolean;
+      // Answering is what the real command records too, and it is what dismisses
+      // the onboarding step.
+      state.preferences.share_diagnostics_recorded = true;
       return null;
     },
 
@@ -319,14 +331,44 @@ export function installFakeTauri(state: BackendState): void {
       return pending;
     },
     disconnect_tools_for_quit: () => {
+      // A tool the teardown could not put back stays connected, which is what
+      // leaves it pointing at a relay about to die.
       for (const t of state.tools) {
-        if (t.status.kind === "connected") t.status = { kind: "detected" };
+        if (t.status.kind === "connected" && !state.quitLeftBehind.includes(t.name)) {
+          t.status = { kind: "detected" };
+        }
       }
-      return null;
+      return state.quitLeftBehind;
     },
 
     // ---- analytics seam
-    drain_backend_errors: () => [],
+    // Drains, like the real buffer: a second call returns nothing.
+    drain_backend_errors: () => state.backendErrors.splice(0),
+
+    // ---- interrupted restore
+    // Copies, for the reason `get_preferences` does: real IPC serialises every
+    // response, and handing out the live object hides mutations from React.
+    pending_restore: () => ({
+      providers: [...state.pendingRestore.providers],
+      tools: [...state.pendingRestore.tools],
+    }),
+    restore_journal: () =>
+      state.restoreJournal && {
+        ...state.restoreJournal,
+        entries: state.restoreJournal.entries.map((e) => ({ ...e })),
+      },
+    resume_restore: () => {
+      // Mirrors restore_all: entries that fail stay recorded, the rest clear.
+      const keep = (e: { slug: string }) => state.pendingResumeKeeps.includes(e.slug);
+      state.pendingRestore = {
+        providers: state.pendingRestore.providers.filter(keep),
+        tools: state.pendingRestore.tools.filter(keep),
+      };
+      return {
+        providers: [...state.pendingRestore.providers],
+        tools: [...state.pendingRestore.tools],
+      };
+    },
 
     // ---- event plugin
     "plugin:event|listen": ({ event, handler }) => {

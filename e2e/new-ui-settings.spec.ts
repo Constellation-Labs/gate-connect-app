@@ -263,3 +263,47 @@ test.describe("new UI settings preferences", () => {
     }
   });
 });
+
+/**
+ * AG-603: "What is collected opens the field list WITHOUT changing the setting."
+ *
+ * The read-only half is the testable half here: whether the opt-out actually
+ * stops PostHog is pinned in `lib/analytics.test.ts`, since the e2e build has no
+ * analytics key and the channel no-ops entirely.
+ */
+test.describe("new UI: what diagnostics collects", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("the list opens and changes no setting", async ({ boot }) => {
+    const app = await boot({});
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    await app.page.getByRole("button", { name: "View list" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("Sent", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Never sent")).toBeVisible();
+    // The whole point: opening the disclosure must not touch the preference.
+    expect(await app.lastCall("set_share_diagnostics")).toBeNull();
+    // ...and the switch is where it was.
+    await app.page.getByRole("button", { name: "Close" }).click();
+    await expect(
+      app.page.getByRole("switch", { name: "Share diagnostic data" }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  test("it names prompts and credentials as never sent", async ({ boot }) => {
+    // The claims this product's reassurance rests on, so they are asserted
+    // rather than left to the copy drifting.
+    const app = await boot({});
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "View list" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText(/Prompts or model responses/)).toBeVisible();
+    await expect(dialog.getByText(/API keys, credentials/)).toBeVisible();
+  });
+});

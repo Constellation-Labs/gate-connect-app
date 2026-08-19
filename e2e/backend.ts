@@ -33,6 +33,11 @@ export interface ToolFixture {
   upstream_provider_name: string;
   default_upstream_url: string;
   requires_upstream_credential: boolean;
+  /** The file Gate rewrites for this tool. Optional: absent and null both mean
+      "no single file names it", which is what the real backend reports for the
+      environment channel. A spec that cares about the drift review's copy sets
+      it; `list_tools` fills the default so nothing else has to. */
+  config_location?: string | null;
   status: ToolStatus;
 }
 
@@ -111,7 +116,14 @@ export interface BackendState {
   launchAtLogin: { enabled: boolean; pending_disable: boolean };
   /** Settings preferences, as `preferences.json` holds them. Both default on,
       which is what lets a switch read On before anything has been written. */
-  preferences: { routing_health_notifications: boolean; share_diagnostics: boolean };
+  preferences: {
+    routing_health_notifications: boolean;
+    share_diagnostics: boolean;
+    /** Whether the diagnostic-data question has been ANSWERED, as opposed to
+        defaulted. False sends first run through the diagnostics step; the
+        default here is true so the existing specs reach the app shell. */
+    share_diagnostics_recorded: boolean;
+  };
   routedClientsStale: boolean;
   runningAgents: number;
   /** Process names the agent scan reports as running. `runningAgents` is the
@@ -120,6 +132,43 @@ export interface BackendState {
   runningAgentNames: string[];
   staleAgents: number;
   pendingQuitTools: string[] | null;
+  /** Display names `disconnect_tools_for_quit` reports it could NOT put back.
+      Empty = a clean teardown. A spec that cares about the partial-teardown
+      result sets it; the teardown itself still succeeds, which is the point. */
+  quitLeftBehind: string[];
+  /** Failures the Rust side has buffered for the frontend to drain. Emptied by
+      `drain_backend_errors`, like the real buffer. A spec sets this to check that
+      a failure predating the webview - the startup auto-enable runs before either
+      shell mounts - reaches the screen. */
+  backendErrors: { context: string; message: string }[];
+  /** Routing work a restore recorded and did not finish, as the provider snapshots
+      hold it. A spec sets this to produce the recovery notice; `resume_restore`
+      empties it, or leaves `pendingResumeKeeps` behind to model a partial retry. */
+  pendingRestore: {
+    providers: { slug: string; name: string }[];
+    tools: { slug: string; name: string }[];
+  };
+  /** Slugs `resume_restore` should FAIL to finish, so they stay outstanding. */
+  pendingResumeKeeps: string[];
+  /** The read-only account of the last restore, or null when there is nothing to
+      explain. Drives whether the recovery notice offers Review details. */
+  restoreJournal: {
+    updated_unix: number;
+    requested_routing_on: boolean;
+    entries: {
+      slug: string;
+      name: string;
+      kind: "provider" | "tool";
+      outcome:
+        | "pending"
+        | "restored"
+        | "write_failed"
+        | "not_installed"
+        | "unknown"
+        | "deferred_signed_out";
+      at_unix: number;
+    }[];
+  } | null;
   /** Commands that should reject, keyed by command name. The value is the
    *  error string the backend "returns" - App classifies it exactly as it
    *  would a real Tauri rejection. */
@@ -137,6 +186,7 @@ const CLAUDE_CODE: ToolFixture = {
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",
   requires_upstream_credential: false,
+    config_location: null,
   status: { kind: "detected" },
 };
 
@@ -146,6 +196,7 @@ const CODEX: ToolFixture = {
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://api.openai.com/v1",
   requires_upstream_credential: false,
+    config_location: null,
   status: { kind: "detected" },
 };
 
@@ -155,6 +206,7 @@ const OPENCODE: ToolFixture = {
   upstream_provider_name: "your existing providers",
   default_upstream_url: "https://api.anthropic.com",
   requires_upstream_credential: false,
+    config_location: null,
   status: { kind: "detected" },
 };
 
@@ -272,12 +324,21 @@ export function defaultState(): BackendState {
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
-    preferences: { routing_health_notifications: true, share_diagnostics: true },
+    preferences: {
+      routing_health_notifications: true,
+      share_diagnostics: true,
+      share_diagnostics_recorded: true,
+    },
     routedClientsStale: false,
     runningAgents: 0,
     runningAgentNames: [],
     staleAgents: 0,
     pendingQuitTools: null,
+    quitLeftBehind: [],
+    backendErrors: [],
+    pendingRestore: { providers: [], tools: [] },
+    pendingResumeKeeps: [],
+    restoreJournal: null,
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
   };
