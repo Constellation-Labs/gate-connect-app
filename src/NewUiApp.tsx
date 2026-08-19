@@ -1427,6 +1427,15 @@ function ActivityGaps({
               type="button"
               onClick={() => run(a.kind)}
               disabled={a.kind === "retry" && loading}
+              // The visible label is the design's, and it is deliberately short -
+              // "Try again", not "Try again reading your activity". That reads well
+              // inside a sentence and badly out of context, and out of context is
+              // exactly how it reaches a screen reader, a button list, or a test.
+              // Two of these notices can be on screen at once, each with its own
+              // Retry, and the sidebar's failed-scan control is also called "Try
+              // again": three buttons, one name, three different jobs. Naming the
+              // subject fixes the ambiguity without touching the visible copy.
+              aria-label={`${a.label}: ${n.subject}`}
               className="ml-2 rounded-base font-medium text-base-primary underline decoration-transparent underline-offset-2 transition hover:decoration-inherit focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:text-base-muted-foreground"
             >
               {a.kind === "retry" && loading ? "Trying…" : a.label}
