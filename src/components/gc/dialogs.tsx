@@ -88,6 +88,127 @@ export function SwitchOrganizationDialog({
   );
 }
 
+export interface DialogGatewayServer {
+  label: string;
+  url: string;
+}
+
+/**
+ * The environment switch, for people working on Gate itself.
+ *
+ * Confirmed rather than applied on the click, and it spells out the three
+ * consequences: `switch_gateway` forgets the stored key, disconnects managed
+ * tools and stops the engine, which pins the gateway URL when it starts, so the
+ * app relaunches into a clean session. Destructive weighting for that reason -
+ * the popover's version is a ConfirmPanel with the same sentence.
+ */
+export function SwitchGatewayDialog({
+  servers,
+  selectedUrl,
+  currentUrl,
+  busy,
+  onSelect,
+  onCancel,
+  onConfirm,
+}: {
+  servers: DialogGatewayServer[];
+  selectedUrl: string;
+  /** The account's current server, so the dialog can refuse a no-op switch. */
+  currentUrl: string;
+  busy?: boolean;
+  onSelect: (url: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal
+      tone="warning"
+      icon="globe"
+      title="Change gateway server"
+      subtitle="Point this device at another Gate environment."
+      secondary={{ label: "Cancel", onClick: onCancel }}
+      primary={{
+        label: busy ? "Switching..." : "Switch and relaunch",
+        onClick: onConfirm,
+        destructive: true,
+        disabled: busy || selectedUrl === currentUrl,
+      }}
+      onDismiss={onCancel}
+    >
+      <div role="radiogroup" aria-label="Gateway server" className="flex flex-col gap-3">
+        {servers.map((server) => (
+          <ModalOption
+            key={server.url}
+            initials={server.label.slice(0, 2).toUpperCase()}
+            name={server.label}
+            meta={server.url}
+            selected={server.url === selectedUrl}
+            onSelect={() => onSelect(server.url)}
+          />
+        ))}
+      </div>
+      <ModalNote>
+        <p className="font-medium text-neutral-900">Switching starts a fresh session.</p>
+        <p className="mt-1">
+          Your stored key is forgotten, managed tools disconnect, and Gate Connect
+          relaunches against the new server.
+        </p>
+      </ModalNote>
+    </Modal>
+  );
+}
+
+/**
+ * The one-time offer to move a pasted key onto Constellation sign-in.
+ *
+ * Shown once to accounts that predate OAuth or took the key path deliberately;
+ * `lib/oauthOffer.ts` remembers the answer whichever way the user leaves. The
+ * decline is not a "Not now": a pasted key is a supported choice and the copy
+ * says so, which is the popover's `OAuthOffer` argument and its copy.
+ *
+ * The offer is unsolicited, so nothing destructive-looking is needed to keep
+ * focus off the accept: `Modal` opens focus on the first control in the button
+ * row, and that is the decline.
+ */
+export function OAuthOfferDialog({
+  secretStore,
+  busy,
+  error,
+  onSignIn,
+  onKeepKey,
+}: {
+  /** "the keychain" / "Credential Manager", named per platform. */
+  secretStore: string;
+  busy?: boolean;
+  error?: ReactNode;
+  onSignIn: () => void;
+  onKeepKey: () => void;
+}) {
+  return (
+    <Modal
+      icon="shieldCheck"
+      title="Sign in instead of pasting a key"
+      subtitle={`Constellation sign-in keeps your session in ${secretStore} and refreshes it on its own, so there is nothing to rotate when a key expires.`}
+      // Guarded rather than `disabled`: `Modal` does not honour that on the
+      // secondary, and a decline that lands mid-flow would close the offer over
+      // a browser sign-in that is still going to finish.
+      secondary={{ label: "Keep using my API key", onClick: () => !busy && onKeepKey() }}
+      primary={{
+        label: busy ? "Waiting for browser..." : "Sign in with Constellation",
+        onClick: onSignIn,
+        disabled: busy,
+      }}
+      onDismiss={busy ? undefined : onKeepKey}
+    >
+      <p className="text-sm leading-5 text-neutral-600">
+        Your gateway and your routing stay exactly as they are. You can switch either
+        way later, under Connection in Settings.
+      </p>
+      {error}
+    </Modal>
+  );
+}
+
 export function OrganizationSwitchedDialog({
   organizationName,
   onDone,

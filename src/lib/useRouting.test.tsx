@@ -9,9 +9,13 @@ vi.mock("./api", () => ({
   connectTool: vi.fn(),
   disconnectTool: vi.fn(),
   listTools: vi.fn(),
+  proxyDisable: vi.fn(),
+  proxyEnable: vi.fn(),
   proxySetDomain: vi.fn(),
+  proxySetEnvExport: vi.fn(),
   proxyStatus: vi.fn(),
   proxyTrustCa: vi.fn(),
+  proxyUntrustCa: vi.fn(),
 }));
 vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
 
@@ -19,9 +23,13 @@ import {
   connectTool,
   disconnectTool,
   listTools,
+  proxyDisable,
+  proxyEnable,
   proxySetDomain,
+  proxySetEnvExport,
   proxyStatus,
   proxyTrustCa,
+  proxyUntrustCa,
 } from "./api";
 
 const tool = (slug: string, status: Status): Tool => ({
@@ -72,6 +80,10 @@ beforeEach(() => {
   (proxyStatus as Mock).mockResolvedValue(proxyState());
   (proxyTrustCa as Mock).mockResolvedValue(proxyState());
   (proxySetDomain as Mock).mockResolvedValue(proxyState());
+  (proxyEnable as Mock).mockResolvedValue(proxyState());
+  (proxyDisable as Mock).mockResolvedValue(proxyState({ running: false }));
+  (proxySetEnvExport as Mock).mockResolvedValue(proxyState());
+  (proxyUntrustCa as Mock).mockResolvedValue(proxyState({ ca_trusted: false }));
 });
 afterEach(cleanup);
 
@@ -263,6 +275,147 @@ describe("useRouting: domains", () => {
 
     expect(api.current!.prompt).toBeNull();
     expect(proxySetDomain).toHaveBeenCalledWith("claude-web", false);
+  });
+
+  it("starts the engine when it is off, because a domain routes through it", async () => {
+    // `proxy_set_domain` records the flag and nothing else - unlike
+    // `connect_tool`, which starts the engine itself. Without this the switch
+    // writes intent, routes nothing, and the window offers no way back.
+    const { api } = harness([], proxyState({ running: false }));
+
+    await act(async () => {
+      await api.current!.setDomainRouted("claude-web", true);
+    });
+
+    expect(proxyEnable).toHaveBeenCalled();
+    expect(proxySetDomain).toHaveBeenCalledWith("claude-web", true);
+  });
+
+  it("does not start the engine to turn a domain off", async () => {
+    const { api } = harness([], proxyState({ running: false }));
+
+    await act(async () => {
+      await api.current!.setDomainRouted("claude-web", false);
+    });
+
+    expect(proxyEnable).not.toHaveBeenCalled();
+  });
+});
+
+describe("useRouting: the master switch", () => {
+  it("trusts the certificate before starting the engine", async () => {
+    const { api } = harness([], proxyState({ running: false, ca_trusted: false }));
+
+    let done: Promise<boolean> | null = null;
+    await act(async () => {
+      done = api.current!.setMasterRouted(true);
+    });
+    // Asked first: `proxy_enable` trusts the CA itself, and that is the step that
+    // raises the OS prompt.
+    expect(api.current!.prompt).toEqual({ kind: "trust" });
+    expect(proxyEnable).not.toHaveBeenCalled();
+
+    await act(async () => {
+      api.current!.resolvePrompt(true);
+      await done;
+    });
+    expect(proxyTrustCa).toHaveBeenCalled();
+    expect(proxyEnable).toHaveBeenCalled();
+  });
+
+  it("does not ask about the certificate on the way off", async () => {
+    const { api } = harness([], proxyState({ ca_trusted: false }));
+
+    await act(async () => {
+      await api.current!.setMasterRouted(false);
+    });
+
+    expect(api.current!.prompt).toBeNull();
+    expect(proxyTrustCa).not.toHaveBeenCalled();
+    expect(proxyDisable).toHaveBeenCalled();
+  });
+
+  it("reports nothing changed when the certificate is refused", async () => {
+    // The caller follows a real change with the running-apps offer, and there is
+    // nothing to reopen when the engine never started.
+    const { api } = harness([], proxyState({ running: false, ca_trusted: false }));
+
+    let done: Promise<boolean> | null = null;
+    await act(async () => {
+      done = api.current!.setMasterRouted(true);
+    });
+    let changed: boolean | undefined;
+    await act(async () => {
+      api.current!.resolvePrompt(false);
+      changed = await done!;
+    });
+
+    expect(changed).toBe(false);
+    expect(proxyEnable).not.toHaveBeenCalled();
+    // Declining is an answer, not a failure.
+    expect(api.current!.prompt).toBeNull();
+  });
+
+  it("surfaces a failed toggle under its own context", async () => {
+    (proxyEnable as Mock).mockRejectedValue(new Error("admin prompt cancelled"));
+    const { api, onError } = harness([], proxyState({ running: false }));
+
+    await act(async () => {
+      await api.current!.setMasterRouted(true);
+    });
+
+    expect(onError).toHaveBeenCalledWith(expect.any(Error), "proxy_toggle");
+  });
+});
+
+describe("useRouting: the shell environment channel", () => {
+  it("sets it without touching the engine", async () => {
+    // Its own action for a reason: this decides whether the proxy is written into
+    // the user's environment, which reaches git and curl, not just the AI tools.
+    const { api } = harness([], proxyState());
+
+    await act(async () => {
+      await api.current!.setEnvExport(true);
+    });
+
+    expect(proxySetEnvExport).toHaveBeenCalledWith(true);
+    expect(proxyEnable).not.toHaveBeenCalled();
+    expect(proxyDisable).not.toHaveBeenCalled();
+  });
+});
+
+describe("useRouting: removing the certificate", () => {
+  it("confirms first", async () => {
+    const { api } = harness([], proxyState());
+
+    let done: Promise<void> | null = null;
+    await act(async () => {
+      done = api.current!.untrustCa();
+    });
+    expect(api.current!.prompt).toEqual({ kind: "untrust" });
+    expect(proxyUntrustCa).not.toHaveBeenCalled();
+
+    await act(async () => {
+      api.current!.resolvePrompt(true);
+      await done;
+    });
+    expect(proxyUntrustCa).toHaveBeenCalled();
+  });
+
+  it("leaves the certificate alone when the confirmation is refused", async () => {
+    const { api, onError } = harness([], proxyState());
+
+    let done: Promise<void> | null = null;
+    await act(async () => {
+      done = api.current!.untrustCa();
+    });
+    await act(async () => {
+      api.current!.resolvePrompt(false);
+      await done;
+    });
+
+    expect(proxyUntrustCa).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
   });
 });
 

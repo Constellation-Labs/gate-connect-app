@@ -33,7 +33,10 @@ fn default_true() -> bool {
 
 /// The stored preferences. Every field is `#[serde(default)]`-backed so a file
 /// written by an older build - or no file at all - loads as "everything on".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// No longer `Copy`: `device_name` is a `String`, and the alternative - a fixed
+/// buffer, or a separate file for one label - buys nothing. Callers clone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preferences {
     /// Native notifications about routing itself: a session that expired, a
     /// quit that could not put a tool back. These are the two the app actually
@@ -57,6 +60,19 @@ pub struct Preferences {
     /// fact.
     #[serde(default)]
     pub share_diagnostics_recorded: bool,
+    /// What the person calls this machine, when they have renamed it.
+    ///
+    /// `None` is the normal state and is **not** a blank name: the command layer
+    /// resolves it to the machine's own hostname, which is what Settings shows.
+    /// Storing the override rather than the resolved value is what lets a
+    /// renamed-then-cleared device go back to following the hostname, and keeps
+    /// "the user chose this" distinguishable from "this is what the OS reports" -
+    /// the same argument `share_diagnostics_recorded` makes one field up.
+    ///
+    /// Local. Nothing sends it anywhere yet; it labels this install in its own
+    /// window.
+    #[serde(default)]
+    pub device_name: Option<String>,
 }
 
 impl Default for Preferences {
@@ -65,6 +81,7 @@ impl Default for Preferences {
             routing_health_notifications: true,
             share_diagnostics: true,
             share_diagnostics_recorded: false,
+            device_name: None,
         }
     }
 }
@@ -121,6 +138,26 @@ pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
     save(&prefs)
 }
 
+/// Rename this device, or clear the override and go back to the hostname.
+///
+/// A blank or whitespace-only name clears rather than storing an empty label: a
+/// device row with nothing in it is worse than one showing what the OS calls the
+/// machine, and it is the state a user reaches by deleting the text.
+pub fn set_device_name(name: &str) -> Result<()> {
+    let mut prefs = load();
+    prefs.device_name = device_name_override(name);
+    save(&prefs)
+}
+
+/// What a typed name means, with the file left out of it: a real name trimmed, or
+/// `None` for anything blank. Separated so the decision is testable without a
+/// process-global directory override - the rest of this module's tests stay off
+/// the filesystem for the same reason.
+fn device_name_override(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +192,7 @@ mod tests {
             share_diagnostics: true,
             share_diagnostics_recorded: true,
             routing_health_notifications: true,
+            device_name: None,
         })
         .expect("serialize");
         let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
@@ -183,10 +221,50 @@ mod tests {
             routing_health_notifications: false,
             share_diagnostics: true,
             share_diagnostics_recorded: true,
+            device_name: None,
         };
         let raw = serde_json::to_string(&prefs).expect("serialize");
         let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
         assert_eq!(back, prefs);
+    }
+
+    /// A device with no name is not a device called "": the row would render
+    /// blank, where `None` means "follow the hostname", which is what the user
+    /// gets by clearing the field.
+    #[test]
+    fn a_blank_device_name_clears_the_override() {
+        assert_eq!(device_name_override(""), None);
+        assert_eq!(device_name_override("   "), None);
+        assert_eq!(device_name_override("\t\n"), None);
+    }
+
+    /// Surrounding whitespace is a typo, not part of the name - it would show up
+    /// in the row and in every comparison against it.
+    #[test]
+    fn a_device_name_is_stored_trimmed() {
+        assert_eq!(
+            device_name_override("  Studio Mac  ").as_deref(),
+            Some("Studio Mac")
+        );
+        // Only the edges: a name can legitimately have spaces in it.
+        assert_eq!(
+            device_name_override("Gabriel's MacBook Pro").as_deref(),
+            Some("Gabriel's MacBook Pro")
+        );
+    }
+
+    /// An absent name must survive a round trip as absent. Written as `null` and
+    /// read back as `None`, not as `Some("")`.
+    #[test]
+    fn an_absent_device_name_round_trips() {
+        let prefs = Preferences::default();
+        let raw = serde_json::to_string(&prefs).expect("serialize");
+        let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
+        assert_eq!(back.device_name, None);
+        // And a file from a build that predates the field loads the same way.
+        let old: Preferences = serde_json::from_str(r#"{"share_diagnostics":true}"#)
+            .expect("older object should parse");
+        assert_eq!(old.device_name, None);
     }
 
     /// A hand-mangled file must not stop Settings opening. `load` is infallible

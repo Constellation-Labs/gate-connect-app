@@ -430,9 +430,28 @@ export interface Preferences {
    * why they see the onboarding step once - consent nobody was asked for is not
    * consent. `setShareDiagnostics` sets it from either caller. */
   share_diagnostics_recorded: boolean;
+  /** The person's own name for this machine, or null when it follows the
+   * hostname. Read {@link deviceName} to display it - this is the override, not
+   * the resolved value. */
+  device_name: string | null;
 }
 
 export const getPreferences = () => invoke<Preferences>("get_preferences");
+
+/** This install's stable id, cached on disk at first read.
+ *
+ * Not the analytics distinct id: that one is absent in a build with no PostHog
+ * key and absent again once diagnostics are switched off, which blanked the
+ * Settings row for reasons that had nothing to do with the install. */
+export const installId = () => invoke<string>("install_id");
+
+/** What to call this machine: the stored name, or the hostname when there is
+ *  none. Resolved by the backend so there is one answer, not two. */
+export const deviceName = () => invoke<string>("device_name");
+
+/** Rename this device. An empty or blank name clears the override, which puts
+ *  the row back to following the hostname. */
+export const setDeviceName = (name: string) => invoke<void>("set_device_name", { name });
 
 export const setRoutingHealthNotifications = (enabled: boolean) =>
   invoke<void>("set_routing_health_notifications", { enabled });

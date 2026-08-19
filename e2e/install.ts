@@ -277,7 +277,37 @@ export function installFakeTauri(state: BackendState): void {
       return null;
     },
 
+    // Derived from the proxy state the spec set rather than stubbed free-hand, so
+    // a report cannot describe an install the rest of the fake backend is not
+    // running. The window's diagnostics dialog reads this; before it did, four
+    // sections of the report were hard-coded to unknown.
+    diagnostics: () => ({
+      os_name: "macOS 15.3 (24D60)",
+      os_kernel: "",
+      arch: "aarch64",
+      data_dir: "/Users/e2e/Library/Application Support/gate-connect",
+      ca_cert_path: "/Users/e2e/Library/Application Support/gate-connect/ca.crt",
+      ca_cert_present: state.proxy.ca_trusted,
+      routing_intent: state.proxy.running,
+      persisted_engine_proxy_url: state.proxy.running
+        ? `http://127.0.0.1:${state.proxy.port}`
+        : null,
+      relay_base_url: state.proxy.relay_base_url,
+      exported_proxy_url: state.proxy.env_export_opted_in
+        ? `http://127.0.0.1:${state.proxy.port}`
+        : null,
+      system_proxy: state.proxy.running ? "PAC http://127.0.0.1:8" : null,
+    }),
+
     // ---- agents / quit
+    install_id: () => state.installId,
+    // Mirrors the Rust resolution: the stored override, or the hostname.
+    device_name: () => state.preferences.device_name ?? state.hostName,
+    set_device_name: ({ name }) => {
+      const trimmed = (name as string).trim();
+      state.preferences.device_name = trimmed === "" ? null : trimmed;
+      return null;
+    },
     routed_clients_stale: () => state.routedClientsStale,
     running_agents_count: () => state.runningAgents,
     running_agents: () => ({

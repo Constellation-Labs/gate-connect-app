@@ -127,13 +127,15 @@ test.describe("new UI settings", () => {
   test("rows with no backend show no control", async ({ boot }) => {
     // Hidden rather than dead: the user cannot tell an inert control from a
     // broken one. Reset is wired now, so the Danger zone is back - see
-    // new-ui-firstrun.spec.ts.
+    // new-ui-firstrun.spec.ts - and so is Rename device, which stores a name in
+    // preferences.json (new-ui-engine.spec.ts). Upgrade plan is what is left:
+    // there is no billing URL to open.
     const app = await boot({});
 
     await app.page.getByRole("button", { name: "Settings" }).click();
     await expect(app.page.getByRole("heading", { name: "Device" })).toBeVisible();
 
-    for (const gone of ["Rename device", "Upgrade plan"]) {
+    for (const gone of ["Upgrade plan", "Contact support"]) {
       await expect(app.page.getByRole("button", { name: gone })).toHaveCount(0);
     }
     await expect(app.page.getByRole("switch", { name: "Notifications" })).toHaveCount(0);
