@@ -108,12 +108,29 @@ fn installations_endpoint(gateway_base_url: &str) -> String {
 /// Every failure carries a [`FailureCode`]; see that type for why. The gateway's
 /// own error body is kept in the message rather than replaced by a generic
 /// failure, because it is the only place a 4xx explains itself.
+///
+/// A reading that lands is held by [`crate::activity_cache`], so the next open
+/// has something real to draw before this call returns. Nothing else changes:
+/// the caller still gets the fresh body, and a cache write that fails is not a
+/// failed fetch.
 pub fn overview_json(install_id: Option<&str>) -> Result<String, Failure> {
     let query: Vec<(&str, &str)> = install_id
         .filter(|s| !s.is_empty())
         .map(|id| vec![("installId", id)])
         .unwrap_or_default();
-    get_json(Endpoint::Activity, &query)
+    let body = get_json(Endpoint::Activity, &query)?;
+    crate::activity_cache::store(install_id.filter(|s| !s.is_empty()), &body);
+    Ok(body)
+}
+
+/// The last overview that landed for this scope, if there is one.
+///
+/// Deliberately not a fallback inside [`overview_json`]. A held reading and a
+/// fresh one are different claims - one is what happened, the other is what is
+/// happening - and folding them into one return value would leave the pane
+/// unable to tell which it is showing. The caller asks for both and decides.
+pub fn cached_overview_json(install_id: Option<&str>) -> Option<String> {
+    crate::activity_cache::load(install_id.filter(|s| !s.is_empty()))
 }
 
 /// Fetch the installations this account has sent traffic from, as raw JSON.

@@ -116,10 +116,13 @@ import type { Platform } from "./lib/platform";
  * backend behind them are passed no handler, which omits the control rather than
  * leaving a dead one on screen.
  *
- * The Overview reads `GET /v1/me/activity` through `useActivity`. Sections the
- * gateway declines are named by `ActivityGaps` rather than drawn as zeros. It
- * answers a different question from the verdict sweep: the sweep establishes
- * that a route is live, the endpoint reports what was sent through it.
+ * The Overview reads `GET /v1/me/activity` through `useActivity`, which serves
+ * the previously held reading off disk while the network call is in flight, so
+ * the pane opens on real numbers. Sections the gateway declines are named by
+ * `ActivityGaps` rather than drawn as zeros, and a section still in flight draws
+ * a skeleton rather than either (AG-576). It answers a different question from
+ * the verdict sweep: the sweep establishes that a route is live, the endpoint
+ * reports what was sent through it.
  *
  * Still inert: per-app metrics, whose own endpoint is AG-574's work, and the
  * Gate model catalogue, which the picker draws empty. Disconnect and reset wait
@@ -877,6 +880,11 @@ export function NewUiApp() {
           credits="-"
           onAddCredits={noop}
           activity={[]}
+          // Not "this app sent nothing" - "nobody has asked". The per-app
+          // reading is AG-574's endpoint and does not exist yet, so the cards
+          // say they have no reading rather than reporting an app the user has
+          // been working in all morning as idle.
+          unavailable
           alert={driftAlert}
         />
       ) : (
@@ -887,9 +895,16 @@ export function NewUiApp() {
           savings={activity.view?.savings ?? []}
           onManagePolicies={() => void openExternal(GATE_POLICIES_URL)}
           onManageSavings={() => void openExternal(GATE_SAVINGS_URL)}
-          // Dashes rather than zeros until the first load lands: a zero is a
-          // real reading and would claim the user had no traffic.
+          // Skeletons until there is something real to draw: a zero is a
+          // reading and would claim the user had no traffic, and a dash says we
+          // asked and were refused. Neither is true while the answer is on its
+          // way. A held reading from the cache clears this on the first frame,
+          // so the placeholders are only ever seen by an account that has none.
           pending={activity.view === null && activity.failure === null}
+          // With no view at all - loading, or a failure with nothing held -
+          // every section is unread, which is what the fallback says. Once
+          // there is one, it names its own gaps.
+          unavailable={activity.view?.missing ?? ALL_MISSING}
           period={activity.view?.period ?? "Last 24 hours"}
           scope={
             <InstallationPicker
@@ -945,6 +960,10 @@ export function NewUiApp() {
     </AppShell>
   );
 }
+
+/** Before a reading lands, no section has one. Kept out of the render so the
+ *  object identity is stable and the pane does not repaint for it. */
+const ALL_MISSING = { chart: true, policies: true, savings: true };
 
 /** No gateway endpoint reports the models on offer yet. See the picker. */
 const GATE_MODELS: GateModelOption[] = [];
@@ -1133,16 +1152,13 @@ function ActivityGaps({
 
   return (
     <div className="flex flex-col gap-2">
-      {/* Said before the cause, because "what you are looking at is old" is the
-          more urgent fact: the numbers on screen are still readable and a user
-          who misses this will read them as current. A clock time rather than an
-          age, for the reason `ActivityView.takenAt` gives. */}
-      {failure && view && (
-        <p className="text-base-xs text-base-muted-foreground">
-          <span className="font-medium">Stale reading.</span> These numbers are from{" "}
-          {view.takenAt} and have not been refreshed since.
-        </p>
-      )}
+      {/* No separate staleness disclosure. It was a second sentence saying what
+          the period label beside the header already says - "updated 14:03", with
+          the date in front of it when the reading is not from today - and the
+          product call (2026-08-18) was that a held reading is a feature rather
+          than a warning: what the user wants on screen is the last thing that
+          actually happened to their traffic. The notices below still name the
+          cause and offer the action, which is the part that is actionable. */}
       {notices.map((n) => (
         <p key={n.subject} className="text-base-xs text-base-muted-foreground">
           <span className="font-medium">{n.subject}:</span> {n.cause}

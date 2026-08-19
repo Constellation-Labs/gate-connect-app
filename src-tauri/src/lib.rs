@@ -550,6 +550,21 @@ async fn activity_overview(install_id: Option<String>) -> Result<String, String>
     .map_err(|e| format!("activity overview join error: {e}"))?
 }
 
+/// The last overview that landed for this scope, or `None`.
+///
+/// A file read, not a network call, so the pane can paint real numbers on the
+/// frame it opens on instead of a skeleton that resolves a round trip later
+/// (AG-576). Never an error: no cache and an unreadable cache mean the same
+/// thing to the caller, which is that it waits for [`activity_overview`].
+#[tauri::command]
+async fn activity_cached_overview(install_id: Option<String>) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::cached_overview_json(install_id.as_deref())
+    })
+    .await
+    .map_err(|e| format!("cached activity join error: {e}"))
+}
+
 /// List the installations this account has sent traffic from, for the Overview's
 /// installation picker. Same envelope and the same failure taxonomy as
 /// [`activity_overview`].
@@ -1738,6 +1753,7 @@ pub fn run() {
                     oauth_list_orgs,
                     activity_overview,
                     activity_installations,
+                    activity_cached_overview,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -1796,6 +1812,7 @@ pub fn run() {
                     oauth_list_orgs,
                     activity_overview,
                     activity_installations,
+                    activity_cached_overview,
                     set_org,
                     app_platform,
                     diagnostics,

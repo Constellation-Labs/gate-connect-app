@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { adapt } from "./activity";
+import { adapt, clockTime } from "./activity";
 
 /**
  * What the Overview does with the gateway's policy rows.
@@ -85,5 +85,56 @@ describe("adapt", () => {
     );
 
     expect(view.gaps).toEqual([{ section: "Messages", reason: "connectivity" }]);
+  });
+});
+
+/**
+ * `missing` and `gaps` are two readings of the same fact, and the cards need the
+ * one `gaps` cannot give them: a section the gateway declined arrives as an
+ * empty array, exactly like a section that is genuinely empty. Without this flag
+ * the pane prints "No messages sent in the last 24hrs" over a section nobody
+ * answered.
+ */
+describe("adapt section availability", () => {
+  it("flags each declined section separately", () => {
+    const raw = overview([]) as unknown as Record<string, unknown>;
+    const view = adapt({
+      ...raw,
+      requestsByHour: { state: "unavailable", reason: "access" },
+      policies: { state: "ok", rows: [] },
+      tokenSavings: { state: "unavailable", reason: "not_configured" },
+    } as unknown as Parameters<typeof adapt>[0]);
+
+    expect(view.missing).toEqual({ chart: true, policies: false, savings: true });
+  });
+
+  it("flags nothing when every section answered", () => {
+    expect(adapt(overview([])).missing).toEqual({
+      chart: false,
+      policies: false,
+      savings: false,
+    });
+  });
+});
+
+/**
+ * A held reading can outlive the day it was taken on, and "updated 14:03" under
+ * yesterday's figures reads as this afternoon.
+ */
+describe("clockTime", () => {
+  const taken = new Date("2026-08-17T14:03:00.000Z");
+
+  it("prints a bare clock time for a reading from today", () => {
+    const label = clockTime(taken, new Date(taken));
+
+    expect(label).not.toMatch(/,/);
+  });
+
+  it("dates a reading taken on another day", () => {
+    const label = clockTime(taken, new Date("2026-08-18T09:00:00.000Z"));
+
+    // The month and day in front of the same clock time as above.
+    expect(label).toMatch(/^[A-Z][a-z]{2} \d{1,2}, /);
+    expect(label.endsWith(clockTime(taken, new Date(taken)))).toBe(true);
   });
 });

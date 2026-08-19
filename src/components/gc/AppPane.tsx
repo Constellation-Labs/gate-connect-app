@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { BaseSwitch, Card } from "./base";
+import { BaseSwitch, Card, EmptyNote } from "./base";
 import { Icon } from "./Icon";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
@@ -69,6 +69,7 @@ export function AppPane({
   credits,
   onAddCredits,
   activity,
+  unavailable,
   alert,
 }: {
   name: string;
@@ -88,6 +89,12 @@ export function AppPane({
   credits: string;
   onAddCredits: () => void;
   activity: ActivityEntry[];
+  /** Nothing here was read from anywhere. True for now on every app: the
+   *  per-app reading is AG-574's endpoint and does not exist yet, so the cards
+   *  say they have no reading rather than reporting this app as having sent
+   *  nothing - which is what an empty state would claim, about an app the user
+   *  may well have been using all morning. */
+  unavailable?: boolean;
   /** Slot for an `AlertBanner` when this app has drifted. */
   alert?: ReactNode;
 }) {
@@ -126,7 +133,7 @@ export function AppPane({
       {alert}
 
       <StatTiles stats={stats} />
-      <MessagesChart buckets={buckets} />
+      <MessagesChart buckets={buckets} unavailable={unavailable} />
 
       <ModelSelection
         appName={name}
@@ -138,7 +145,7 @@ export function AppPane({
         onAddCredits={onAddCredits}
       />
 
-      <RecentActivity activity={activity} />
+      <RecentActivity activity={activity} unavailable={unavailable} />
     </div>
   );
 }
@@ -289,11 +296,30 @@ function InfoRow({
   );
 }
 
-function RecentActivity({ activity }: { activity: ActivityEntry[] }) {
+function RecentActivity({
+  activity,
+  unavailable,
+}: {
+  activity: ActivityEntry[];
+  /** No feed was read at all; see `AppPane`. */
+  unavailable?: boolean;
+}) {
   return (
     <Card className="p-4">
       <h2 className="text-sm font-medium leading-5 text-neutral-900">Recent activity</h2>
 
+      {activity.length === 0 ? (
+        // The entries outlive the window they were sent in: the feed keeps the
+        // last messages even when they are a day or more old, because what the
+        // user came here for is what this app last did, and a table that empties
+        // itself at midnight answers a question nobody asked. So this reads as
+        // "nothing recent", not "nothing ever".
+        <EmptyNote>
+          {unavailable
+            ? "Recent activity couldn't be read"
+            : "No messages sent in the last 24hrs"}
+        </EmptyNote>
+      ) : (
       <table className="mt-4 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
@@ -348,6 +374,7 @@ function RecentActivity({ activity }: { activity: ActivityEntry[] }) {
           ))}
         </tbody>
       </table>
+      )}
     </Card>
   );
 }

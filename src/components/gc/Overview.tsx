@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Card } from "./base";
+import { Card, EmptyNote, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import { MessagesChart, StatTiles } from "./metrics";
@@ -70,6 +70,7 @@ export function Overview({
   period = "Last 24 hours",
   scope,
   pending,
+  unavailable,
 }: {
   stats: UsageStats;
   buckets: MessagesBucket[];
@@ -77,9 +78,13 @@ export function Overview({
   savings: Saving[];
   onManagePolicies: () => void;
   onManageSavings: () => void;
-  /** First load has not landed. Passed to the tiles so they show dashes rather
-   *  than zeros; see `StatTiles`. */
+  /** First load has not landed. Passed down so every card draws a placeholder
+   *  rather than an answer it does not have yet; see `Skeleton`. */
   pending?: boolean;
+  /** Which sections were not read at all, so they say nothing about the user's
+   *  traffic instead of reporting it as empty. `ActivityView.missing` is where
+   *  this comes from and why the two are separate facts. */
+  unavailable?: { chart?: boolean; policies?: boolean; savings?: boolean };
   /** Slot for an `AlertBanner`, which the design places above the stat tiles. */
   alert?: ReactNode;
   period?: string;
@@ -114,29 +119,51 @@ export function Overview({
           })
         }
       />
-      <MessagesChart buckets={buckets} />
+      <MessagesChart buckets={buckets} pending={pending} unavailable={unavailable?.chart} />
 
       <PolicyTable
         policies={policies}
+        pending={pending}
+        unavailable={unavailable?.policies}
         onManage={onManagePolicies}
       />
-      <SavingsTable savings={savings} onManage={onManageSavings} />
+      <SavingsTable
+        savings={savings}
+        pending={pending}
+        unavailable={unavailable?.savings}
+        onManage={onManageSavings}
+      />
     </div>
   );
 }
 
 function PolicyTable({
   policies,
+  pending,
+  unavailable,
   onManage,
 }: {
   policies: Policy[];
+  pending?: boolean;
+  unavailable?: boolean;
   onManage: () => void;
 }) {
   return (
-    <Card className="p-4">
+    <Card className="p-4" busy={pending}>
       <h2 className="text-sm font-medium leading-5 text-neutral-900">Policies</h2>
 
-      <table className="mt-4 w-full">
+      {pending ? (
+        <PendingRows columns={3} />
+      ) : policies.length === 0 ? (
+        // Two different sentences, because they are two different facts: an org
+        // that has configured no guardrails, and a list the gateway would not
+        // give us. The pane's gap notice supplies the cause and the action for
+        // the second; what this must not do is report it as the first.
+        <EmptyNote icon="shieldCheck">
+          {unavailable ? "Policies couldn't be read" : "No policies configured"}
+        </EmptyNote>
+      ) : (
+        <table className="mt-4 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
             <th scope="col" className="pb-2 text-left font-normal">
@@ -182,6 +209,7 @@ function PolicyTable({
           ))}
         </tbody>
       </table>
+      )}
 
       <ManageLink label="Manage policies" onClick={onManage} />
     </Card>
@@ -190,18 +218,30 @@ function PolicyTable({
 
 function SavingsTable({
   savings,
+  pending,
+  unavailable,
   onManage,
 }: {
   savings: Saving[];
+  pending?: boolean;
+  unavailable?: boolean;
   onManage: () => void;
 }) {
   return (
     // `scroll-mt-6` so the smooth scroll from the Tokens saved counter leaves
     // the same gutter the pane's padding gives every other card, rather than
     // butting the heading against the top edge.
-    <Card id={SAVINGS_SECTION_ID} className="scroll-mt-6 p-4">
+    <Card id={SAVINGS_SECTION_ID} className="scroll-mt-6 p-4" busy={pending}>
       <h2 className="text-sm font-medium leading-5 text-neutral-900">Token savings</h2>
 
+      {pending ? (
+        <PendingRows columns={2} />
+      ) : savings.length === 0 ? (
+        // Same split as the policies card, for the same reason.
+        <EmptyNote icon="layers">
+          {unavailable ? "Token savings couldn't be read" : "No savings configured"}
+        </EmptyNote>
+      ) : (
       <table className="mt-4 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
@@ -229,9 +269,31 @@ function SavingsTable({
           ))}
         </tbody>
       </table>
+      )}
 
       <ManageLink label="Manage savings" onClick={onManage} />
     </Card>
+  );
+}
+
+/**
+ * A card's rows before they exist: fixed count, fixed widths, one line each.
+ *
+ * Three rows because both tables draw three-ish, and a placeholder that guesses
+ * the count high leaves the card collapsing when the real answer lands. The
+ * status column keeps its own narrow shape so the row reads as a row.
+ */
+function PendingRows({ columns }: { columns: 2 | 3 }) {
+  return (
+    <div className="mt-4 flex flex-col gap-3">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="flex items-center justify-between gap-3 border-t border-base-border pt-3">
+          <Skeleton className="h-4 w-40" />
+          {columns === 3 && <Skeleton className="h-4 w-14" />}
+          <Skeleton className="h-4 w-10" />
+        </div>
+      ))}
+    </div>
   );
 }
 

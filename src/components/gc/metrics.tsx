@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Card } from "./base";
+import { Card, EmptyNote, Skeleton } from "./base";
 
 /**
  * The usage summary shared by the Overview pane and the per-app pane: one stat
@@ -13,11 +13,18 @@ import { Card } from "./base";
 /**
  * The three counters on the stat card.
  *
- * **Every field is nullable, and null is not zero.** A counter the gateway
- * declined has no value at all, and AG-576 is explicit that a missing reading
- * must never render as a figure: "0 blocked" is a claim about the user's traffic,
- * and the one place they would look to check it is the tile that just made it up.
- * Null renders as a dash, with `ActivityGaps` saying why underneath.
+ * **Every field is nullable, and null means no reading**, not zero. A counter
+ * that answered `0` is a measurement and prints as `0`; a counter with no
+ * reading behind it prints `N/A`. AG-576's rule, and the reason this type is
+ * nullable at all: "0 blocked" is a claim about the user's traffic, and the one
+ * place they would look to check it is the tile that just made it up.
+ *
+ * The two render identically in the mock only because the mock draws one case.
+ * Figma 228:89333 is an org with no traffic, where the counts genuinely are zero
+ * and Tokens saved genuinely has no figure - so it reads `0` / `0` / `N/A`, and
+ * this rule reproduces that exactly. Nothing was read at all is the other case,
+ * and it reads `N/A` three times, which is what the chart and the tables beneath
+ * it are already saying in words.
  */
 export interface UsageStats {
   messages: number | null;
@@ -54,32 +61,41 @@ const SERIES = [
   { key: "redacted", label: "Redacted", className: "bg-chart-redacted" },
 ] as const;
 
+/** What any counter reads with no figure behind it (Figma 228:89341, where
+ *  Tokens saved is the one with nothing to report). */
+const UNAVAILABLE = "N/A";
+
 export function StatTiles({
   stats,
   pending,
   onSelectTokensSaved,
 }: {
   stats: UsageStats;
-  /** First load has not landed yet. Renders em dashes rather than zeros: a
-   *  zero is a real reading, and showing one while still loading tells the user
-   *  their traffic was nil when we simply do not know yet. */
+  /** First load has not landed yet. Renders skeletons rather than figures: a
+   *  zero is a real reading, and `N/A` says there is none. Neither is true
+   *  while we are still asking. */
   pending?: boolean;
   /** Moves to the Token savings section, per AG-572. */
   onSelectTokensSaved?: () => void;
 }) {
-  const dash = "\u2014";
-  // One rule for both causes of "no figure": nothing has landed yet, or the
-  // gateway declined this counter. Neither may print a number.
+  // Three states, and they are three: `null` here means "still loading" and
+  // draws a skeleton, `N/A` means there is no reading behind this counter, and
+  // a number - including zero - is a reading and prints as one.
   const count = (value: number | null) =>
-    pending || value === null ? dash : value.toLocaleString();
+    pending ? null : value === null ? UNAVAILABLE : value.toLocaleString();
   return (
-    <Card className="flex">
+    <Card className="flex" busy={pending}>
+      {pending && <span className="sr-only">Loading your activity</span>}
       <Stat label="Messages" value={count(stats.messages)} />
       <Stat label="Blocked/Flagged" value={count(stats.blockedFlagged)} divided />
       <Stat
         label="Tokens saved"
         value={
-          pending || stats.tokensSavedPercent === null ? dash : `${stats.tokensSavedPercent}%`
+          pending
+            ? null
+            : stats.tokensSavedPercent === null
+              ? UNAVAILABLE
+              : `${stats.tokensSavedPercent}%`
         }
         delta={pending ? undefined : (stats.tokensSavedAmount ?? undefined)}
         divided
@@ -97,7 +113,8 @@ function Stat({
   onSelect,
 }: {
   label: string;
-  value: string;
+  /** Null while the reading is in flight; see `StatTiles`. */
+  value: string | null;
   delta?: string;
   divided?: boolean;
   onSelect?: () => void;
@@ -117,7 +134,13 @@ function Stat({
         {label}
       </p>
       <p className="mt-2 flex items-baseline gap-2">
-        <span className="text-2xl font-semibold leading-8 text-neutral-900">{value}</span>
+        {value === null ? (
+          // The height of the figure it stands in for, so the card does not
+          // resize under the user when the reading lands.
+          <Skeleton className="my-1 h-6 w-16" />
+        ) : (
+          <span className="text-2xl font-semibold leading-8 text-neutral-900">{value}</span>
+        )}
         {delta && (
           <span className="text-base-xs font-medium text-green-600">{delta}</span>
         )}
@@ -134,16 +157,49 @@ function Stat({
  * Bars are the design's 20px wide and distribute across the card, so the same
  * markup holds whether the backend returns 24 buckets or fewer.
  */
-export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
+export function MessagesChart({
+  buckets,
+  pending,
+  unavailable,
+}: {
+  buckets: MessagesBucket[];
+  /** The series is on its way. Draws placeholder columns rather than an empty
+   *  plot, which would say "no traffic" a beat before the traffic appears. */
+  pending?: boolean;
+  /** No series was read at all - the gateway declined it, or the fetch failed.
+   *  Kept apart from an empty series, because "we were not told" and "nothing
+   *  was sent" are different sentences and only one of them is about the user's
+   *  traffic. The gap notice above the pane says which. */
+  unavailable?: boolean;
+}) {
   const [hovered, setHovered] = useState<number | null>(null);
-  const peak = Math.max(
-    1,
-    ...buckets.map((b) => b.total + b.blocked + b.flagged + b.redacted),
+  const highest = buckets.reduce(
+    (m, b) => Math.max(m, b.total + b.blocked + b.flagged + b.redacted),
+    0,
   );
+  // Floored at 1 so a series of zeroes divides rather than producing NaN heights.
+  // Kept separate from `highest`, which is the honest maximum and the only thing
+  // that can answer whether anything happened.
+  const peak = Math.max(1, highest);
+  // A dense series is what the endpoint returns - an hour with no traffic is a
+  // zero bar, not a missing one - so "nothing happened" is 24 zeroes rather than
+  // an empty array. Both land here as a highest of zero.
+  const empty = !pending && !unavailable && highest === 0;
   return (
-    <Card className="p-4">
+    <Card className="p-4" busy={pending}>
       <h2 className="text-sm font-medium leading-5 text-neutral-900">Messages</h2>
 
+      {pending ? (
+        <PendingChart />
+      ) : unavailable ? (
+        // Not a sentence about their traffic. The pane's gap notice carries the
+        // cause and the retry; this only refuses to draw a plot for a series
+        // nobody sent us.
+        <EmptyNote>Messages couldn&apos;t be read</EmptyNote>
+      ) : empty ? (
+        <EmptyNote>No messages sent in the last 24hrs</EmptyNote>
+      ) : (
+        <>
       {/* The bars are decoration for assistive tech; the table below carries the
           numbers. `role="img"` with a summary label used to be the whole story,
           which meant a screen-reader user got period totals and could not reach
@@ -251,9 +307,42 @@ export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
           </li>
         ))}
       </ul>
+        </>
+      )}
     </Card>
   );
 }
+
+/**
+ * The chart's placeholder: one column per hour of the period it is about to
+ * draw, at heights that do not change between renders.
+ *
+ * Fixed heights and not random ones. A skeleton is a promise about shape, and a
+ * silhouette that reshuffles on every repaint is read as data arriving - which
+ * is the one thing it must not claim.
+ */
+function PendingChart() {
+  return (
+    <>
+      <div aria-hidden className="mt-4 flex h-28 items-end justify-between gap-1">
+        {PENDING_HEIGHTS.map((height, i) => (
+          <Skeleton key={i} className="w-5" style={{ height: `${height}%` }} />
+        ))}
+      </div>
+      <div aria-hidden className="mt-1 flex justify-between gap-1">
+        {PENDING_HEIGHTS.map((_, i) => (
+          <Skeleton key={i} className="h-3 w-5" />
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** 24 columns, one per hour, in a shape that reads as a plot without asserting
+ *  one. Written out rather than generated so the silhouette is reviewable. */
+const PENDING_HEIGHTS = [
+  22, 30, 26, 18, 24, 34, 46, 58, 52, 64, 70, 62, 74, 66, 56, 60, 48, 54, 42, 38, 44, 32, 28, 20,
+];
 
 /**
  * The hovered bucket's four figures (Figma `chart/tooltip`).

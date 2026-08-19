@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { activityInstallations, activityOverview } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { activityCachedOverview, activityInstallations, activityOverview } from "./api";
 import type { MessagesBucket, UsageStats } from "../components/gc/metrics";
 import type { Policy, Saving } from "../components/gc/Overview";
 import type { IconName } from "../components/gc/Icon";
@@ -111,15 +111,27 @@ export interface ActivityView {
   savings: Saving[];
   /** Rendered as the pane's period label, e.g. "Last 24 hours · 14:03". */
   period: string;
-  /** When the gateway computed this reading, rendered as a local clock time.
+  /** When the gateway computed this reading, as a local clock time - with the
+   *  date in front of it when that is not today.
    *
    *  A clock time and not an age: an age has to be recomputed to stay true, and
    *  a "2 minutes ago" that was written twenty minutes ago is a worse lie than
-   *  the staleness it was added to disclose. AG-576 wants the held reading
-   *  labelled with when it was taken, which this does without a timer. */
+   *  the age it was added to disclose. The date appears only when it has to
+   *  because a held reading can outlive the day it was taken on, and "updated
+   *  14:03" under yesterday's figures reads as this afternoon. */
   takenAt: string;
   /** Sections that could not be answered, for the pane's alert slot. */
   gaps: { section: string; reason: UnavailableReason }[];
+  /** Which sections have no reading behind them, for the surfaces that draw
+   *  them.
+   *
+   *  `gaps` says *why*, in copy, for the notice under the header. This says
+   *  *whether*, as a flag, for the card itself - and the two cannot be the same
+   *  field, because a card has to choose between "nothing was sent" and "we were
+   *  not told", and those look identical in an empty array. Getting it wrong
+   *  prints "No messages sent in the last 24hrs" over a section the gateway
+   *  declined to answer. */
+  missing: { chart: boolean; policies: boolean; savings: boolean };
   /** Which installation this reading covers, as the gateway echoed it, or
    *  `null` for the whole org.
    *
@@ -260,10 +272,7 @@ export function adapt(raw: RawOverview): ActivityView {
 
   const saved = c.tokensSaved;
   const amount = saved.amount ?? 0;
-  const takenAt = new Date(raw.generatedAt).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const takenAt = clockTime(new Date(raw.generatedAt));
   return {
     orgName: raw.org.name,
     stats: {
@@ -294,8 +303,25 @@ export function adapt(raw: RawOverview): ActivityView {
     period: `Last 24 hours · updated ${takenAt}`,
     takenAt,
     gaps,
+    missing: {
+      chart: raw.requestsByHour.state !== "ok",
+      policies: raw.policies.state !== "ok",
+      savings: raw.tokenSavings.state !== "ok",
+    },
     installId: raw.installation?.installId ?? null,
   };
+}
+
+/**
+ * A reading's timestamp as the user's own clock reads it, dated when it is not
+ * from today. See `ActivityView.takenAt` for why the date is conditional.
+ *
+ * `now` is a parameter so the boundary is testable without freezing the clock.
+ */
+export function clockTime(taken: Date, now = new Date()): string {
+  const time = taken.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (taken.toDateString() === now.toDateString()) return time;
+  return `${taken.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
 }
 
 /**
@@ -306,18 +332,30 @@ export function adapt(raw: RawOverview): ActivityView {
  * there is no client-side slice of a payload that only covered one machine.
  *
  * `credential` identifies whose reading this is - the gateway, the org and the
- * credential type. It is not sent anywhere; changing it refetches. Numbers belong
- * to the account that was asked for them, so switching org or gateway has to
- * re-read rather than leave the previous org's traffic on screen under the new
- * org's name.
+ * credential type. It is not sent anywhere; changing it clears the view and
+ * refetches. Numbers belong to the account that was asked for them, so switching
+ * org or gateway has to re-read rather than leave the previous org's traffic on
+ * screen under the new org's name.
+ *
+ * **Two reads, not one.** The held reading comes off disk while the network call
+ * is in flight, and whichever the pane has is what it draws. AG-576's rule is
+ * that a figure on screen is always a figure something actually measured: before
+ * this, the first second of every open was zeros-or-dashes and a fetch, and an
+ * open with no connectivity never got past it. Now the pane opens on the last
+ * thing that really happened and swaps it for the current one when it arrives.
+ * The cache only ever answers for its own scope - see `activity_cache.rs` - so
+ * this cannot show one org's traffic under another's name.
+ *
+ * The cached read is ignored once the network answer has landed, in either
+ * direction: a slow disk must not overwrite a fresh reading, and a *failed*
+ * fetch must not be papered over with older numbers arriving late and looking
+ * current.
  *
  * Deliberately not polling. The endpoint sits in the gateway's 100-requests-per-
  * minute throttle bucket, which is keyed on the source address rather than on
  * the credential: inference is exempt from it, but every other Gate Connect user
  * on the same office network or VPN egress is not, so a timer here spends a
- * budget shared with people this window cannot see. `Cache-Control: no-store`
- * plus a rendered `generatedAt` means the held view is legible rather than
- * silently stale, which is what a timer would have bought.
+ * budget shared with people this window cannot see.
  */
 export function useActivity(
   enabled: boolean,
@@ -332,23 +370,60 @@ export function useActivity(
   const [view, setView] = useState<ActivityView | null>(null);
   const [failure, setFailure] = useState<ActivityFailure | null>(null);
   const [loading, setLoading] = useState(false);
+  /** Which attempt is current. A reply from an earlier one is dropped rather
+   *  than applied, so a scope the user has already moved off cannot repaint the
+   *  pane after the fact. */
+  const attempt = useRef(0);
 
   const reload = useCallback(() => {
     if (!enabled) return;
+    const mine = ++attempt.current;
+    const current = () => mine === attempt.current;
     setLoading(true);
     setFailure(null);
+    // Set by whichever way the network call resolves. The cache is a placeholder
+    // for an answer that has not arrived; once one has, in either direction, it
+    // has nothing left to say.
+    let answered = false;
+
+    void activityCachedOverview(installId ?? undefined)
+      .then((text) => {
+        if (!current() || answered || !text) return;
+        setView(adapt(JSON.parse(text) as RawOverview));
+      })
+      .catch(() => {
+        // No held reading, or an unreadable one. Both mean the pane waits for
+        // the network, which is what it did before this existed.
+      });
+
     activityOverview(installId ?? undefined)
       .then((text) => {
+        answered = true;
+        if (!current()) return;
         setView(adapt(JSON.parse(text) as RawOverview));
         setFailure(null);
       })
       .catch((e) => {
-        // Keep the last good view: AG-576 wants a stale reading held with its
-        // timestamp rather than replaced by an empty screen.
+        answered = true;
+        if (!current()) return;
+        // The held view stays: it is a real reading of this same scope, and
+        // replacing it with an empty screen loses the last thing the user knows
+        // actually happened. Its own timestamp says when it was taken.
         setFailure(toFailure(e));
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (current()) setLoading(false);
+      });
   }, [enabled, installId, credential]);
+
+  // A reading belongs to the scope it was taken for, so a scope change drops it
+  // rather than leaving it under the new label until the replacement lands.
+  // Separate from `reload` on purpose: the retry button re-reads without
+  // blanking numbers that are still the best answer available.
+  useEffect(() => {
+    setView(null);
+    setFailure(null);
+  }, [credential, installId]);
 
   useEffect(reload, [reload]);
 

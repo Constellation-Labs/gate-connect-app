@@ -12,6 +12,8 @@
 pub mod account;
 /// The AG-572 activity overview fetch, behind the Overview pane.
 pub mod activity;
+/// The last overview that landed, held on disk so the pane opens on numbers.
+pub mod activity_cache;
 pub mod audit;
 /// Read-only snapshot of this install, for the copy-pasteable support report.
 pub mod diagnostics;

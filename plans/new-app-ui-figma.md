@@ -824,3 +824,67 @@ Gate has no integration for; "incomplete installation" needs per-integration
 probes; and the per-entry request counts need per-*tool* attribution, which the
 in-flight `feat/activity-overview-client` does not provide (it is per-installation
 - `activity.ts` has no tool or slug in it).
+
+## Unavailable and held readings (AG-576)
+
+The ticket's written ACs still describe a Stale badge and a Refresh control; the
+PO's later call dropped both. What shipped instead:
+
+- **Skeletons, never a zero.** `Skeleton` and `EmptyNote` in `gc/base.tsx`, drawn
+  by the stat tiles, the chart (24 fixed-height columns) and both Overview tables
+  while the first read is in flight. A figure on screen is a figure something
+  measured: `0` says the user sent nothing, a dash says we asked and were
+  refused, and neither is true while we are still asking.
+- **"No messages sent in the last 24hrs"** is the exact empty copy, in the chart
+  and in `AppPane`'s recent activity. It appears only when the reading really is
+  zero - a dense series of 24 zero buckets - and never over a section the gateway
+  declined.
+- **`ActivityView.missing`** is new and is not `gaps`. `gaps` says *why*, in copy,
+  for the notice under the header; `missing` says *whether*, as a flag, for the
+  card. A declined section and an empty one both arrive as an empty array, so
+  without the flag the pane reports "no policies configured" over a list nobody
+  would hand over.
+- **The last reading is served off disk.** `crates/core/src/activity_cache.rs`
+  writes the response body to `activity-cache.json` at 0600, keyed on
+  gateway + auth mode + org + install filter, and `useActivity` fires the cached
+  read and the network read together. The cached body is applied only if it wins
+  the race, in either direction: a slow disk must not overwrite a fresh reading,
+  and a failed fetch must not be papered over with older numbers arriving late.
+  A scope change blanks the view; the retry button does not. Sign-out clears the
+  file with the account.
+
+**The empty state is sampled, from `228:89241`** (`App/Claude-desktop/alert/
+gate-model`, supplied 2026-08-19). Two corrections came out of it:
+
+- **A counter with no reading behind it reads `N/A`; a measured zero reads `0`.**
+  The frame draws Messages `0`, Blocked/Flagged `0` and Tokens saved `N/A` side
+  by side, and that is one case rather than a per-counter rule: an org with no
+  traffic, where the two counts genuinely are zero and savings genuinely has no
+  figure. The rule reproduces it exactly and also covers the case the Figma does
+  not draw - nothing read at all, which reads `N/A` three times. No delta is
+  drawn next to `N/A`.
+
+  Settled 2026-08-19 after trying the alternative. Falling the two counts back to
+  `0` on a failed read matched the mock on every screen, at the price of printing
+  "0 messages" over traffic the pane could not see, and of contradicting the
+  chart four inches below it that was already saying "Messages couldn't be read".
+  A number looks more authoritative than a sentence, so the tile would have won
+  that disagreement. `N/A` keeps the whole pane telling one story.
+- The empty note is a **glyph above the sentence**, not a bare line of text: a
+  36px tile with a 1px `base/border` and a 20px muted icon, centred, with the
+  sentence beneath. `messageCircleX` for a message feed (added to `Icon.tsx`),
+  `shieldCheck` for policies, `layers` for savings.
+
+  Each card keeps its own glyph in *both* sentences. A first pass gave every
+  "couldn't be read" note a warning triangle, which stacked three of them down a
+  pane whose single cause was already stated once in the notice above; one
+  refused credential read as three problems. The sentence carries the
+  difference, the notice carries the alarm.
+
+The frame also confirms two things already built: the empty chart sits inside the
+normal Messages card with its heading intact, and Recent activity still lists
+rows dated well outside the 24-hour window while the chart above it says no
+messages were sent. The feed deliberately outlives the chart's window.
+
+Still open: the skeleton silhouettes. No frame draws a loading state, so the
+placeholder columns and rows are inferred from the shapes they stand in for.

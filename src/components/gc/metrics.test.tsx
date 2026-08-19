@@ -63,12 +63,14 @@ describe("MessagesChart accessible table", () => {
 });
 
 /**
- * A declined counter must not print a figure. AG-576's rule, and the reason
- * `UsageStats` is nullable: "0 blocked" is a claim about the user's traffic, and
- * the tile is the one place they would look to check it.
+ * The rule the tiles enforce: a measured zero prints `0`, and a counter with no
+ * reading prints `N/A`. Figma 228:89333 draws `0` / `0` / `N/A` because it is an
+ * org with no traffic, not because the first two can never say `N/A` - and a
+ * screen where nothing was read says it three times.
  */
 describe("StatTiles", () => {
-  const dash = "\u2014";
+  // The design's word for it, not an em dash.
+  const NA = "N/A";
   const stats: UsageStats = {
     messages: 0,
     blockedFlagged: null,
@@ -76,19 +78,85 @@ describe("StatTiles", () => {
     tokensSavedAmount: null,
   };
 
-  it("dashes a declined counter while keeping a real zero", () => {
+  it("keeps a measured zero a zero and marks an unread counter N/A", () => {
     render(<StatTiles stats={stats} />);
 
     // Messages answered zero, so it reads zero. The other two never answered.
     expect(screen.getByText("Messages").parentElement?.textContent).toContain("0");
-    expect(screen.getByText("Blocked/Flagged").parentElement?.textContent).toContain(dash);
-    expect(screen.getByText("Tokens saved").parentElement?.textContent).toContain(dash);
+    expect(screen.getByText("Blocked/Flagged").parentElement?.textContent).toContain(NA);
+    expect(screen.getByText("Tokens saved").parentElement?.textContent).toContain(NA);
+    // Never a fabricated percentage.
     expect(screen.queryByText("0%")).toBeNull();
   });
 
-  it("dashes every counter while the first load is in flight", () => {
+  /** The screen behind the product call of 2026-08-19: a refused credential, so
+   *  nothing was read, so no tile claims anything about the user's traffic. */
+  it("says N/A three times when nothing was read at all", () => {
+    render(
+      <StatTiles
+        stats={{
+          messages: null,
+          blockedFlagged: null,
+          tokensSavedPercent: null,
+          tokensSavedAmount: null,
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText(NA)).toHaveLength(3);
+    expect(screen.queryByText("0")).toBeNull();
+  });
+
+  it("prints a real count rather than the fallback", () => {
+    render(<StatTiles stats={{ ...stats, messages: 1204, blockedFlagged: 7 }} />);
+
+    expect(screen.getByText("1,204")).toBeTruthy();
+    expect(screen.getByText("7")).toBeTruthy();
+  });
+
+  it("prints no counter at all while the first load is in flight", () => {
     render(<StatTiles stats={{ ...stats, messages: 12 }} pending />);
 
     expect(screen.queryByText("12")).toBeNull();
+  });
+});
+
+/**
+ * The chart has three answers and they are three different sentences: the
+ * series is coming, the series says nothing was sent, and nobody would tell us.
+ * Only the middle one is a statement about the user's traffic.
+ */
+describe("MessagesChart empty and pending states", () => {
+  const quiet: MessagesBucket[] = [
+    { label: "11", total: 0, blocked: 0, flagged: 0, redacted: 0 },
+    { label: "12", total: 0, blocked: 0, flagged: 0, redacted: 0 },
+  ];
+  const EMPTY = "No messages sent in the last 24hrs";
+
+  it("says nothing was sent when every bucket really is zero", () => {
+    render(<MessagesChart buckets={quiet} />);
+
+    expect(screen.getByText(EMPTY)).toBeTruthy();
+  });
+
+  it("stays silent about traffic when the series was never read", () => {
+    render(<MessagesChart buckets={[]} unavailable />);
+
+    expect(screen.queryByText(EMPTY)).toBeNull();
+  });
+
+  it("draws placeholder columns rather than an empty plot while loading", () => {
+    const { container } = render(<MessagesChart buckets={quiet} pending />);
+
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(columns(container)).toHaveLength(0);
+    expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
+  });
+
+  it("plots the series once it lands", () => {
+    const { container } = render(<MessagesChart buckets={buckets} />);
+
+    expect(screen.queryByText(EMPTY)).toBeNull();
+    expect(columns(container).length).toBeGreaterThan(0);
   });
 });

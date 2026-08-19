@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { IconName } from "./Icon";
 import { Icon } from "./Icon";
 
@@ -18,16 +18,21 @@ export function Card({
   children,
   className = "",
   id,
+  busy,
 }: {
   children: ReactNode;
   /** Layout only, for callers that need to change the internal padding. */
   className?: string;
   /** Anchor, for callers that are a scroll target. */
   id?: string;
+  /** The card's contents are being loaded. Announced once here rather than by
+   *  each placeholder inside it, which would read as a stream of blanks. */
+  busy?: boolean;
 }) {
   return (
     <section
       id={id}
+      aria-busy={busy || undefined}
       className={`rounded-lg border border-base-border bg-base-card shadow-base-sm ${className}`}
     >
       {children}
@@ -111,5 +116,76 @@ export function BaseSwitch({
         }`}
       />
     </button>
+  );
+}
+
+/**
+ * A placeholder for a value that is on its way.
+ *
+ * AG-576's rule is that a figure on screen has to be a figure something
+ * measured. The first paint of the Overview used to break it twice over: an
+ * unloaded counter rendered as an em dash, which reads as "we measured nothing",
+ * and before that it rendered as `0`, which reads as "you sent nothing". A shape
+ * where the number will be makes the only true statement available - this is
+ * still coming - and it says it without moving the layout when the number lands.
+ *
+ * Sized by the caller, in the same box the real content will occupy. Hidden from
+ * assistive tech: the container that owns a group of these carries `aria-busy`
+ * and says once that it is loading, rather than announcing a row of blanks.
+ */
+export function Skeleton({
+  className = "",
+  style,
+}: {
+  className?: string;
+  /** For a dimension no utility class expresses, such as a column height given
+   *  as a fraction of the plot area. */
+  style?: CSSProperties;
+}) {
+  return (
+    <span
+      aria-hidden
+      style={style}
+      className={`block animate-pulse rounded-base bg-gray-200 ${className}`}
+    />
+  );
+}
+
+/**
+ * What a card says when it has nothing to draw and that is the true answer
+ * (Figma 228:89721, the empty Messages chart on the app pane).
+ *
+ * Distinct from a gap notice, which is what it says when it was not told. The
+ * two are one keystroke apart in the markup and worlds apart to the user: one
+ * reports on their traffic, the other admits we cannot.
+ *
+ * The glyph sits in the same 36px bordered tile `StatusTile` draws at its larger
+ * size, but flat and neutral rather than a coloured gradient: an empty window is
+ * not a warning, and giving it amber would report calm as trouble.
+ *
+ * Each card keeps its *own* glyph whichever sentence it is showing. An earlier
+ * pass put a warning triangle on every "couldn't be read" note, which stacked
+ * three of them down a pane whose single cause was already stated once in the
+ * notice above - one refused credential reading as three problems. The sentence
+ * carries the difference; the notice carries the alarm.
+ */
+export function EmptyNote({
+  children,
+  icon = "messageCircleX",
+}: {
+  children: ReactNode;
+  /** The glyph above the sentence. Defaults to the design's own. */
+  icon?: IconName;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3 py-6">
+      <span
+        aria-hidden
+        className="flex size-9 items-center justify-center rounded-base border border-base-border text-base-muted-foreground"
+      >
+        <Icon name={icon} size={20} />
+      </span>
+      <p className="text-center text-sm leading-5 text-base-muted-foreground">{children}</p>
+    </div>
   );
 }

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { slowCacheRead, slowNetworkRead } from "./slowActivity";
 
 export type Status =
   | { kind: "not_installed" }
@@ -119,7 +120,18 @@ export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
  * org-wide: attribution only starts with the gateway migration that added it,
  * so scoping by default would hide every earlier request. */
 export const activityOverview = (installId?: string) =>
-  invoke<string>("activity_overview", { installId });
+  // The dev delay is a no-op in a real build; see `slowActivity`.
+  slowNetworkRead().then(() => invoke<string>("activity_overview", { installId }));
+
+/** The last overview that landed for this scope, or `null`.
+ *
+ * A disk read. The pane asks for this and for {@link activityOverview} together
+ * so it can open on the previous reading rather than on empty tiles, which is
+ * what AG-576 means by never showing a figure that is not a real one: the
+ * numbers on screen are always something that actually happened, and the
+ * network answer replaces them when it lands. */
+export const activityCachedOverview = (installId?: string) =>
+  slowCacheRead().then(() => invoke<string | null>("activity_cached_overview", { installId }));
 
 /** The installations this account has sent traffic from, as raw JSON text.
  * Derived from traffic, so it is empty until something has been attributed. */
