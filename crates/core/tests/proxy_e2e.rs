@@ -214,6 +214,22 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
     );
 }
 
+/// Whether the `curl` on PATH was built with HTTP/2, read off its `Features:`
+/// line. Windows ships a Schannel build with no nghttp2, which rejects
+/// `--http2` outright.
+fn curl_supports_http2() -> bool {
+    std::process::Command::new("curl")
+        .arg("-V")
+        .output()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| line.strip_prefix("Features:"))
+                .any(|features| features.split_whitespace().any(|f| f == "HTTP2"))
+        })
+        .unwrap_or(false)
+}
+
 /// A request whose header block exceeds 16 KiB must still be intercepted and
 /// rewritten, not answered `431` by our own listener.
 ///
@@ -237,8 +253,31 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
 /// `default-features = false` and no `http2` feature, so it cannot speak h2 at
 /// all. `curl` can, and `%{http_version}` is asserted so a curl built without
 /// HTTP/2 fails loudly instead of silently covering nothing.
+///
+/// Windows is the one exception: its bundled Schannel `curl.exe` has no nghttp2
+/// and cannot drive h2 at all, so the test skips there rather than report a
+/// limit it never reached. What is under test is the engine's own
+/// `ServerBuilder` config, which is not platform-specific, and the Linux and
+/// macOS legs still cover it.
 #[tokio::test]
 async fn proxy_accepts_oversized_h2_request_headers() {
+    if !curl_supports_http2() {
+        // Only Windows gets the pass. Anywhere else, a curl without HTTP/2
+        // would negotiate h1, sail past a limit h1 does not have, and leave the
+        // test green over nothing - the exact hole the version assert guards.
+        assert!(
+            cfg!(windows),
+            "curl must be built with HTTP/2 for this test to cover anything; an \
+             h1 run would pass without ever reaching the header limit"
+        );
+        eprintln!(
+            "skipping proxy_accepts_oversized_h2_request_headers: this curl has \
+             no HTTP/2 support (expected on Windows, whose bundled Schannel \
+             build has no nghttp2)"
+        );
+        return;
+    }
+
     let _serial = SERIAL.lock().await;
     let gateway = start_mock_gateway().await;
 
