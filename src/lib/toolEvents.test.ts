@@ -72,6 +72,14 @@ describe("adaptEvents", () => {
     expect(JSON.stringify(view.entries[0])).not.toContain("data-model");
   });
 
+  it("timestamps a row to the second, with its date", () => {
+    const view = adaptEvents(envelope([raw({ at: "2026-06-06T00:50:51.000Z" })]));
+
+    // Seconds because an agent sends several requests a minute, and the date
+    // because a 24-hour window straddles midnight (Figma 116:30951).
+    expect(view.entries[0].time).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2}:\d{2}$/);
+  });
+
   it("carries the cursor through, and reports its absence", () => {
     expect(adaptEvents(envelope([raw()], "b3Vy")).nextCursor).toBe("b3Vy");
     expect(adaptEvents(envelope([raw()])).nextCursor).toBeNull();

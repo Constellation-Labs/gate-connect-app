@@ -70,16 +70,34 @@ const SECURITY: Record<NonNullable<RawEvent["securityAction"]>, ActivityEntry["s
 };
 
 /**
- * One row, formatted.
+ * When a request happened, to the second (Figma 116:30951, "Jun 6, 00:50:51").
  *
- * The time is a clock time rather than an age, for the reason `ActivityView.takenAt`
- * gives: an age has to be recomputed to stay true, and a stale one is a worse lie
- * than the age it was added to disclose.
+ * Seconds because this is a feed of individual requests and an agent sends several
+ * a minute: without them, four rows read as the same moment and the order looks
+ * arbitrary. The date because the window is 24 hours and so straddles midnight -
+ * a bare clock time makes yesterday evening look like this evening.
+ *
+ * A timestamp rather than an age, for the reason `ActivityView.takenAt` gives: an
+ * age has to be recomputed to stay true, and a "2 minutes ago" written twenty
+ * minutes ago is a worse lie than the age it was added to disclose.
  */
+function eventTime(at: string): string {
+  const d = new Date(at);
+  const date = d.toLocaleDateString([], { month: "short", day: "numeric" });
+  const time = d.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  return `${date}, ${time}`;
+}
+
+/** One row, formatted. */
 function toEntry(raw: RawEvent, onView: (event: RawEvent) => void): ActivityEntry {
   return {
     id: raw.requestId,
-    time: new Date(raw.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    time: eventTime(raw.at),
     status: raw.status,
     // `allow` is the honest default *only* when the gateway answered. A null
     // action is unknown to us and renders as a dash, not as a verdict.

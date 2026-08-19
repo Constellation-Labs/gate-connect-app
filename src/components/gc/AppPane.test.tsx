@@ -15,7 +15,7 @@ const stats: UsageStats = {
 
 const entry: ActivityEntry = {
   id: "req-1",
-  time: "04:14",
+  time: "Jun 6, 00:50:51",
   status: "success",
   security: "flagged",
   model: "claude-opus-4",
