@@ -77,11 +77,27 @@ describe("adaptEvents", () => {
   });
 
   it("timestamps a row to the second, with its date", () => {
-    const view = adaptEvents(envelope([raw({ at: "2026-06-06T00:50:51.000Z" })]));
+    const at = "2026-06-06T00:50:51.000Z";
+    const view = adaptEvents(envelope([raw({ at })]));
+    const time = view.entries[0].time;
 
-    // Seconds because an agent sends several requests a minute, and the date
-    // because a 24-hour window straddles midnight (Figma 116:30951).
-    expect(view.entries[0].time).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2}:\d{2}$/);
+    // Asserts the two properties the design asks for - a date, and seconds - and
+    // not the format. `eventTime` goes through `toLocale*`, so pinning "Jun 6,
+    // 00:50:51" would pass on CI and fail for anyone whose machine is not English
+    // and UTC, which is a test failing on a fact about the developer.
+    const d = new Date(at);
+    expect(time).toContain(d.toLocaleDateString([], { month: "short", day: "numeric" }));
+    expect(time).toContain(
+      d.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }),
+    );
+    // Seconds specifically: an agent sends several requests a minute, and without
+    // them four rows read as the same instant (Figma 116:30951).
+    expect(time).toMatch(/\d{2}:\d{2}:\d{2}/);
   });
 
   it("carries the cursor through, and reports its absence", () => {

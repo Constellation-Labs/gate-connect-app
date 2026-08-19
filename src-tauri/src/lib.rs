@@ -310,6 +310,20 @@ fn base_url_scheme_ok(parsed: &url::Url) -> bool {
     false
 }
 
+/// What [`base_url_scheme_ok`] actually enforces, in the words of the build it is
+/// compiled into.
+///
+/// Beside the check rather than at the two call sites, which both used to say
+/// "must use https" unconditionally. In a debug build that sends a developer who
+/// typoed `http://localhos:3000`, or pointed at a LAN address, off to change the
+/// scheme - which was already right. Mirrors the same fix in `account.rs`.
+fn base_url_scheme_error() -> String {
+    #[cfg(debug_assertions)]
+    return "base url must use https, or http on localhost or 127.0.0.1 exactly".into();
+    #[cfg(not(debug_assertions))]
+    return "base url must use https".into();
+}
+
 #[tauri::command]
 async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), String> {
     if base_url.len() > 2048 {
@@ -317,7 +331,7 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
     }
     let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
     if !base_url_scheme_ok(&parsed) {
-        return Err("base url must use https".into());
+        return Err(base_url_scheme_error());
     }
     if parsed.host_str().is_none() {
         return Err("base url is missing a host".into());
@@ -389,7 +403,7 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
     }
     let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
     if !base_url_scheme_ok(&parsed) {
-        return Err("base url must use https".into());
+        return Err(base_url_scheme_error());
     }
     if parsed.host_str().is_none() {
         return Err("base url is missing a host".into());
@@ -632,11 +646,17 @@ async fn activity_installations() -> Result<String, String> {
 
 /// Serialize an activity failure for the IPC boundary.
 fn envelope(f: gate_connect_core::activity::Failure) -> String {
-    serde_json::to_string(&f)
-        // Serializing two owned strings and a unit enum cannot fail, but
-        // swallowing the cause if it somehow did would be worse than a
-        // fallback the UI still classifies as `unknown`.
-        .unwrap_or_else(|_| format!(r#"{{"code":"unknown","message":"{}"}}"#, f.message))
+    serde_json::to_string(&f).unwrap_or_else(|_| {
+        // Serializing two owned strings and a unit enum cannot fail, but the
+        // fallback still has to produce *valid* JSON: `f.message` can carry an
+        // upstream error body, quotes and backslashes included, and interpolating
+        // it raw made a string that `toFailure` cannot parse - which discards the
+        // code and reports every failure as generic, exactly what this envelope
+        // exists to prevent. Serialize the message on its own so the escaping is
+        // the library's problem, and only hand-write the part that is a constant.
+        let message = serde_json::to_string(&f.message).unwrap_or_else(|_| "\"\"".into());
+        format!(r#"{{"code":"unknown","message":{message}}}"#)
+    })
 }
 
 /// List the orgs the signed-in user may act on (for the org picker). Reads the
