@@ -14,7 +14,11 @@ import type {
   Verdict,
 } from "./lib/api";
 import {
+  deviceName as fetchDeviceName,
+  diagnostics as fetchDiagnostics,
   getAccount,
+  getAccountKeyPrefix,
+  installId as fetchInstallId,
   launchAtLoginStatus,
   listProviders,
   listTools,
@@ -23,7 +27,9 @@ import {
   proxyEnable,
   proxyStatus,
   proxyTrustCa,
+  routedClientsStale,
   routingVerdicts,
+  runningAgents as fetchRunningAgents,
   pendingQuitTools,
   disconnectToolsForQuit,
   quitApp,
@@ -42,6 +48,7 @@ import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
 import { classifyError } from "./lib/errors";
+import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
@@ -49,13 +56,16 @@ import { verdictStatus, verdictsBySlug } from "./lib/verdict";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import {
+  GATEWAY_SERVERS,
   GATE_API_KEYS_URL,
   GATE_DASHBOARD_URL,
   GATE_DOCS_URL,
   GATE_POLICIES_URL,
   GATE_SAVINGS_URL,
-  GATE_SUPPORT_URL,
 } from "./lib/config";
+import { hasSeenTour, markTourSeen } from "./lib/tour";
+import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
+import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
 import { FamiliesPane } from "./components/gc/FamiliesPane";
 import type { Family } from "./components/gc/FamiliesPane";
@@ -86,6 +96,7 @@ import type { GateModelOption } from "./components/gc/dialogs";
 import {
   ConnectedPane,
   DiagnosticsPane,
+  GatewayPicker,
   OrgPickerPane,
   SetupLayout,
   WelcomePane,
@@ -96,10 +107,13 @@ import {
   DiagnosticsDialog,
   RestoreDetailsDialog,
   DisconnectGateDialog,
+  OAuthOfferDialog,
+  RenameDeviceDialog,
   OrganizationSwitchedDialog,
   ReplaceApiKeyDialog,
   ResetGateConnectDialog,
   ReviewConfigDialog,
+  SwitchGatewayDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
 import { AlertBanner, ErrorBanner, RecoveryBanner } from "./components/gc/banners";
@@ -112,9 +126,8 @@ import type {
 } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
-import { analyticsId, setAnalyticsConsent } from "./lib/analytics";
-import { usePlatform } from "./lib/platform";
-import type { Platform } from "./lib/platform";
+import { analyticsId, setAnalyticsConsent, track } from "./lib/analytics";
+import { secretStoreName, usePlatform } from "./lib/platform";
 
 /**
  * The new window UI, and the default surface as of 2026-08-17. `App.tsx` and the
@@ -195,6 +208,41 @@ export function NewUiApp() {
   /** The read-only "what is collected" list. Separate from the report dialog:
    * that one shows this install's values, this one shows what leaves the device. */
   const [collectedDataOpen, setCollectedDataOpen] = useState(false);
+  /**
+   * Leading characters of the stored Gate key, as recorded in the account config.
+   *
+   * Null when there is no key, and also when the account predates the prefix
+   * being written down - which is not the same as knowing it, so the row says the
+   * key is in the keychain rather than drawing a fabricated `sk-gw` and twenty
+   * asterisks, which is what it used to do.
+   *
+   * `backfill_account_key_prefix` could recover it from the keychain and is
+   * deliberately not called: it can raise an OS prompt, and this row is a passive
+   * mask nobody asked to reveal.
+   */
+  const [keyPrefix, setKeyPrefix] = useState<string | null>(null);
+  /**
+   * This install's id and this machine's name, both read from the backend.
+   *
+   * Null while the read is in flight or after it failed, which the rows render as
+   * Unavailable rather than as a value. The install id used to be the PostHog
+   * distinct id, which is absent in a build with no project key and absent again
+   * once diagnostics are switched off - so the row read Unavailable on a perfectly
+   * ordinary dev build, and on any install that opted out. The analytics id is
+   * still in the diagnostics report, under its own name.
+   */
+  const [installId, setInstallId] = useState<string | null>(null);
+  const [device, setDevice] = useState<string | null>(null);
+  /** The environment picker under the sign-in card, collapsed until asked for. */
+  const [gatewayOpen, setGatewayOpen] = useState(false);
+  /**
+   * The one-time offer to move a pasted key onto Constellation sign-in, with its
+   * own busy and error state: the browser flow can fail, and the offer is what
+   * the user is looking at when it does.
+   */
+  const [offerOpen, setOfferOpen] = useState(false);
+  const [offerBusy, setOfferBusy] = useState(false);
+  const [offerError, setOfferError] = useState<ClassifiedError | null>(null);
   // Dismissal is per-session and per-surface: the banner going away should not
   // stop the next launch offering the same update.
   const [updateDismissed, setUpdateDismissed] = useState(false);
@@ -223,11 +271,15 @@ export function NewUiApp() {
   const [quitLeftBehind, setQuitLeftBehind] = useState<string[] | null>(null);
   const [quitBusy, setQuitBusy] = useState(false);
   const platform = usePlatform();
-  // Which installation the Overview covers; `null` is the whole org, and stays
-  // the default because traffic sent before attribution existed has no
+  // Which installation the Overview's *filter* covers; `null` is the whole org,
+  // and stays the default because traffic sent before attribution existed has no
   // installation at all. Selecting one refetches - the gateway narrows every
   // section server-side, so there is nothing to slice here.
-  const [installId, setInstallId] = useState<string | null>(null);
+  //
+  // Named for the filter rather than the id on purpose: `installId` above is this
+  // machine's own identity, which is a different fact. The two were briefly the
+  // same name and the compiler caught it.
+  const [installFilter, setInstallFilter] = useState<string | null>(null);
   // Which account the reading belongs to. Changing it refetches: numbers read for
   // one org must not sit on screen under another org's name, and an OAuth account
   // can switch org without the window remounting.
@@ -242,7 +294,7 @@ export function NewUiApp() {
   // there is nothing to authenticate with, so a fetch could only fail, and the
   // pane would open on a "signed out" banner that is about to be wrong.
   const canRead = loaded && account !== null;
-  const activity = useActivity(canRead, installId, credential);
+  const activity = useActivity(canRead, installFilter, credential);
   const {
     installations,
     current: currentInstallId,
@@ -282,10 +334,10 @@ export function NewUiApp() {
     credential,
   );
 
-  // A machine id belongs to the org it sent traffic to, so a scope selected
+  // A machine id belongs to the org it sent traffic to, so a filter selected
   // before an org switch cannot be honoured after it.
   useEffect(() => {
-    setInstallId(null);
+    setInstallFilter(null);
   }, [credential]);
 
   const loadLaunchAtLogin = useCallback(async () => {
@@ -298,6 +350,19 @@ export function NewUiApp() {
     const p = await getPreferences().catch(() => null);
     setPrefsUnavailable(p === null);
     if (p) setPrefs(p);
+  }, []);
+
+  const loadKeyPrefix = useCallback(async () => {
+    setKeyPrefix(await getAccountKeyPrefix().catch(() => null));
+  }, []);
+
+  const loadIdentity = useCallback(async () => {
+    const [id, name] = await Promise.all([
+      fetchInstallId().catch(() => null),
+      fetchDeviceName().catch(() => null),
+    ]);
+    setInstallId(id);
+    setDevice(name);
   }, []);
 
   /** The routing sweep, kept separate from {@link refresh} because it is the one
@@ -391,6 +456,7 @@ export function NewUiApp() {
       ]);
       void loadLaunchAtLogin();
       void loadPreferences();
+      void loadIdentity();
       setTools(t ?? []);
       setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
       void refreshVerdicts();
@@ -402,6 +468,40 @@ export function NewUiApp() {
       setVersion(v);
       setLoaded(true);
     })();
+  }, []);
+
+  // Re-read on every account change rather than once: replacing the key writes a
+  // new prefix, and an org switch or a sign-out re-reads the account anyway. The
+  // account only changes on a user action, so this is not a poll.
+  useEffect(() => {
+    if (account?.has_api_key) void loadKeyPrefix();
+    else setKeyPrefix(null);
+  }, [account, loadKeyPrefix]);
+
+  /**
+   * First launch ever: open the tutorial window.
+   *
+   * The popover has done this since the intro moved into its own window, and this
+   * shell only offered Replay tutorial in Settings - so a new install on what is
+   * now the default surface replayed something it had never been shown.
+   *
+   * Unlike the popover this does **not** hide the main window. Stepping a 360px
+   * panel aside is housekeeping; a 1024x720 window the user just opened
+   * disappearing reads as a crash, and the onboarding window's close handler
+   * reveals this one either way.
+   */
+  useEffect(() => {
+    if (hasSeenTour()) return;
+    void openOnboardingWindow("firstrun").catch(() => {});
+  }, []);
+
+  // The tutorial announces completion from its own webview; record the flag in
+  // this one too, since the two do not share localStorage on every platform.
+  useEffect(() => {
+    const unlisten = listen(TOUR_SEEN_EVENT, () => markTourSeen());
+    return () => {
+      void unlisten.then((f) => f()).catch(() => {});
+    };
   }, []);
 
   const update = useUpdate();
@@ -502,11 +602,14 @@ export function NewUiApp() {
       // reopen, and the relay may have been auto-enabled by the connect.
       void refreshVerdicts();
     },
-    onError: (e) => {
-      // `connect` covers both directions: the remedy copy is the same either way
-      // for a failed tool write. A partial family failure keeps the remedy but
-      // replaces the title, because naming who failed is the whole point.
-      const classified = classifyError(e, "connect");
+    onError: (e, context) => {
+      // `connect` covers both directions of a tool write: the remedy copy is the
+      // same either way. The engine-level actions are the ones whose remedy
+      // genuinely differs - a cancelled admin prompt on the master toggle has
+      // nothing to do with a config file - so those report their own context.
+      const engineContexts: ErrorContext[] = ["proxy_toggle", "env_export", "untrust_ca"];
+      const ctx = engineContexts.find((c) => c === context) ?? "connect";
+      const classified = classifyError(e, ctx);
       setActionError(
         e instanceof FamilyCascadeError
           ? { ...classified, title: cascadeTitle(e) }
@@ -540,6 +643,22 @@ export function NewUiApp() {
     async (slug: string, next: boolean, force = false) => {
       setActionError(null);
       if (await routing.setAppRouted(slug, next, force)) {
+        await runningApps.offerAfterChange();
+      }
+    },
+    [routing, runningApps],
+  );
+
+  /**
+   * Turn all routing on or off.
+   *
+   * Same follow-up as a config write: every routed tool is on its old route until
+   * it restarts, so a master toggle that actually moved offers to close them.
+   */
+  const toggleMaster = useCallback(
+    async (next: boolean) => {
+      setActionError(null);
+      if (await routing.setMasterRouted(next)) {
         await runningApps.offerAfterChange();
       }
     },
@@ -708,34 +827,118 @@ export function NewUiApp() {
     launchAtLogin,
     onLaunchAtLogin: ({ enabled }) => setLaunchAtLogin(enabled),
     onAccount: setAccount,
+    onDeviceName: setDevice,
     onSession,
     onProxy: setProxy,
     onError: (e) => setActionError(classifyError(e, "generic")),
   });
 
-  // Diagnostics has two entrances - Settings, and the "something is missing"
-  // banner on Overview - and both open the same rendered report rather than a
-  // dialog that fetches its own, so the two can never disagree.
-  const showDiagnostics = useCallback(() => {
+  /**
+   * The one-time OAuth offer, for an account still on a pasted key.
+   *
+   * Raised here rather than in `useSetup`, and only from inside the app shell:
+   * the setup panes are the sign-in decision itself, and an offer stacked over
+   * them would be asking the same question twice.
+   */
+  useEffect(() => {
+    if (!loaded) return;
+    if (account?.auth_mode !== "api_key" || !account.has_api_key) return;
+    if (hasSeenOAuthOffer()) return;
+    setOfferOpen(true);
+  }, [loaded, account]);
+
+  const acceptOffer = useCallback(async () => {
+    setOfferError(null);
+    setOfferBusy(true);
+    try {
+      await settings.upgradeToOAuth();
+      track("oauth_offer_accepted");
+      // Seen whichever way the user leaves, so a completed upgrade cannot be
+      // offered again on the next launch either.
+      markOAuthOfferSeen();
+      setOfferOpen(false);
+    } catch (e) {
+      setOfferError(classifyError(e, "sign_in"));
+    } finally {
+      setOfferBusy(false);
+    }
+  }, [settings]);
+
+  const declineOffer = useCallback(() => {
+    markOAuthOfferSeen();
+    setOfferOpen(false);
+  }, []);
+
+  /**
+   * Build the diagnostics report against live probes.
+   *
+   * This used to pass `backend: null`, `oauth: null`, `agents: null` and
+   * `clientsStale: false` - four sections the popover fills in, and the last of
+   * those is not "unknown" but a claim that routed clients are fine. Every probe
+   * exists; the window simply never ran them.
+   *
+   * Sequential and best-effort, the same call `screens/Diagnostics.tsx` makes: on
+   * macOS the backend snapshot shells out per network service, and these all touch
+   * the same subsystems. A hole in the report is a finding; a report that took
+   * thirty seconds is not.
+   */
+  const openDiagnostics = useCallback(async () => {
+    // Something on screen while the probes run. A button that sits silent for a
+    // couple of seconds reads as broken, which is the argument the version row's
+    // update note makes.
+    setDiagnosticsReport(COLLECTING_DIAGNOSTICS);
+    const backend = await fetchDiagnostics().catch(() => null);
+    const launch = await launchAtLoginStatus().catch(() => null);
+    const clientsStale = await routedClientsStale().catch(() => false);
+    // One process walk, raced against a timer: a process table that never answers
+    // costs the scan and nothing else.
+    let scanTimer: ReturnType<typeof setTimeout> | undefined;
+    const agents = await Promise.race([
+      fetchRunningAgents().catch(() => null),
+      new Promise<null>((resolve) => {
+        scanTimer = setTimeout(() => resolve(null), AGENT_SCAN_TIMEOUT_MS);
+      }),
+    ]);
+    clearTimeout(scanTimer);
     setDiagnosticsReport(
-      previewDiagnostics({ now: new Date(), version, platform, account, proxy, providers, tools }),
+      buildDiagnosticsReport({
+        now: new Date(),
+        version,
+        platform,
+        analyticsId: analyticsId(),
+        backend,
+        account,
+        oauth,
+        proxy,
+        providers,
+        tools,
+        launchAtLogin: launch,
+        clientsStale,
+        agents,
+      }),
     );
-  }, [version, platform, account, proxy, providers, tools]);
+  }, [version, platform, account, oauth, proxy, providers, tools]);
 
   const settingsSections = useMemo(
     () =>
       buildSettingsSections({
         // Device name and plan have no backend yet, so they read as unknown
-        // rather than as invented values. The install id now has one: it is the
-        // id this app stamps on every routed request, reported back by the
-        // gateway, so the row shows the identity the user's traffic actually
-        // carries rather than a local guess at it.
-        deviceName: "-",
-        installId: currentInstallId ?? "-",
+        // rather than as invented values.
+        //
+        // The install id stays the *local* one, not the gateway's echo. The echo
+        // is only populated once this machine has sent attributed traffic, so a
+        // fresh install, or a key with no user (where the installations route is
+        // refused outright), would blank the row - and it is the row a support
+        // request asks for, at the moment the user is most likely to be filing
+        // one. The local id always exists. `x-gate-install-id` sends this same
+        // value, so the two never disagree.
+        deviceName: device ?? "Unavailable",
+        onRenameDevice: device ? () => settings.openRenameDevice(device) : undefined,
+        installId: installId ?? "Unavailable",
         loginId: account?.org_name ?? "-",
         plan: "-",
         gateway: account?.gateway_base_url ?? "-",
-        apiKeyMasked: account?.has_api_key ? `sk-gw${"*".repeat(20)}` : "Not set",
+        apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
         launchAtLogin,
         launchAtLoginUnavailable,
         routingHealthNotifications: prefs?.routing_health_notifications,
@@ -743,7 +946,14 @@ export function NewUiApp() {
         preferencesUnavailable: prefsUnavailable,
         version: version ? `v${version}` : "-",
         updateNote: updateNoteFor(update),
-        onCopyInstallId: currentInstallId ? () => void settings.copyText(currentInstallId) : noop,
+        // Absent on a platform with no proxy subsystem: there is no engine, so
+        // there is no certificate to describe.
+        certificate: proxy ? (proxy.ca_trusted ? "Trusted" : "Not trusted") : undefined,
+        // Only while it is actually trusted. Removing a certificate that is not
+        // there is a button that cannot do anything.
+        onRemoveCertificate: proxy?.ca_trusted ? () => void routing.untrustCa() : undefined,
+        onChangeGateway: settings.openSwitchGateway,
+        onCopyInstallId: installId ? () => void settings.copyText(installId) : noop,
         // Only where there is a key to replace. On an OAuth account `saveAccount`
         // with a key would flip auth_mode to api_key, quietly converting the
         // account behind a button that says "replace".
@@ -790,16 +1000,14 @@ export function NewUiApp() {
         onCheckForUpdates: () => void update.checkNow(true),
         onViewCollectedData: () => setCollectedDataOpen(true),
         // The rendered report, not a fresh one: Overview's "something is missing"
-        // banner opens the same `showDiagnostics`, and two builders could
-        // disagree about what the machine looked like. `showDiagnostics` builds
-        // it from the same `previewDiagnostics` call this used to inline, so
-        // routing both entry points through it changes nothing but the count.
-        onViewDiagnostics: showDiagnostics,
-        // Deliberately absent, so the control is absent too: rename device,
-        // notifications and plan upgrade have no backend command at all, update
-        // checks belong with the update banner, and disconnect and reset both
-        // end with no account - which needs a first-run screen to return to
-        // that this shell does not have yet.
+        // banner open the same `openDiagnostics`, so the two can never disagree
+        // about what the machine looked like. It runs the live probes rather than
+        // rendering a preview, which is why both entrances share it.
+        onViewDiagnostics: () => void openDiagnostics(),
+        // Deliberately absent, so the control is absent too: plan upgrade has no
+        // billing URL to open and Contact support has no address. Rename is
+        // omitted only while the name has not been read - renaming to something
+        // when Gate cannot say what it is now would be a blind edit.
       }),
     // The individual callbacks rather than `settings`: the hook returns a fresh
     // object each render, which would defeat the memo.
@@ -812,13 +1020,18 @@ export function NewUiApp() {
       loadLaunchAtLogin,
       loadPreferences,
       version,
-      currentInstallId,
-      showDiagnostics,
+      installId,
+      keyPrefix,
+      device,
       settings.copyText,
+      settings.openRenameDevice,
       settings.openReplaceKey,
       settings.openDisconnect,
       settings.openReset,
+      settings.openSwitchGateway,
       settings.toggleLaunchAtLogin,
+      routing.untrustCa,
+      openDiagnostics,
       update,
       noop,
     ],
@@ -864,8 +1077,9 @@ export function NewUiApp() {
   const onMenuSelect = useCallback((action: TopnavAction) => {
     setMenuOpen(false);
     if (action === "dashboard") void openExternal(GATE_DASHBOARD_URL);
+    // The docs entry was drawn, listed and dead: `GATE_DOCS_URL` is the same one
+    // the Settings row opens.
     else if (action === "docs") void openExternal(GATE_DOCS_URL);
-    else void openExternal(GATE_SUPPORT_URL);
   }, []);
 
   const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;
@@ -896,6 +1110,18 @@ export function NewUiApp() {
             apiKey={setup.apiKey}
             onApiKeyChange={setup.setApiKey}
             onConnectWithApiKey={() => void setup.connectWithApiKey()}
+            // The card had no way to name the gateway it was about to sign in
+            // against, so the new shell could only ever reach the build's
+            // default - the popover has offered this since first run existed.
+            gateway={
+              <GatewayPicker
+                value={setup.gateway}
+                servers={GATEWAY_SERVERS}
+                open={gatewayOpen}
+                onOpenChange={setGatewayOpen}
+                onSelect={setup.setGateway}
+              />
+            }
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
           />
@@ -1039,7 +1265,28 @@ export function NewUiApp() {
           >
             <p className="text-sm leading-5 text-neutral-600">
               Your operating system will ask for permission. The certificate stays on this
-              machine and is removed when you reset Gate Connect.
+              machine, and you can remove it from Settings at any time.
+            </p>
+          </Modal>
+        ) : routing.prompt?.kind === "untrust" ? (
+          // The other half of the certificate story, and the reason the trust copy
+          // above no longer says reset is the only way out.
+          <Modal
+            tone="danger"
+            icon="triangleAlert"
+            title="Remove the Gate certificate?"
+            subtitle="Sites and apps routed through the local proxy stop being inspected until it is trusted again."
+            secondary={{ label: "Keep it", onClick: () => routing.resolvePrompt(false) }}
+            primary={{
+              label: "Remove certificate",
+              onClick: () => routing.resolvePrompt(true),
+              destructive: true,
+            }}
+            onDismiss={() => routing.resolvePrompt(false)}
+          >
+            <p className="text-sm leading-5 text-neutral-600">
+              Routing itself stays on, and your tools keep their configuration. Your
+              operating system may ask for permission to remove it.
             </p>
           </Modal>
         ) : runningApps.stage?.kind === "offer" ? (
@@ -1097,9 +1344,7 @@ export function NewUiApp() {
           />
         ) : settings.prompt?.kind === "replace-key" ? (
           <ReplaceApiKeyDialog
-            currentKeyMasked={
-              account?.has_api_key ? `sk-gw${"*".repeat(20)}` : "Not set"
-            }
+            currentKeyMasked={maskedKey(keyPrefix, account?.has_api_key ?? false)}
             newKey={settings.newKey}
             onNewKeyChange={settings.setNewKey}
             onCancel={settings.dismissPrompt}
@@ -1112,6 +1357,24 @@ export function NewUiApp() {
             onSelect={settings.selectOrg}
             onCancel={settings.dismissPrompt}
             onConfirm={() => void settings.confirmSwitchOrg()}
+          />
+        ) : settings.prompt?.kind === "rename-device" ? (
+          <RenameDeviceDialog
+            currentName={settings.prompt.currentName}
+            newName={settings.newDeviceName}
+            onNewNameChange={settings.setNewDeviceName}
+            onCancel={settings.dismissPrompt}
+            onRename={() => void settings.renameDevice()}
+          />
+        ) : settings.prompt?.kind === "switch-gateway" ? (
+          <SwitchGatewayDialog
+            servers={GATEWAY_SERVERS}
+            selectedUrl={settings.prompt.selectedUrl}
+            currentUrl={account?.gateway_base_url ?? ""}
+            busy={settings.busy}
+            onSelect={settings.selectGateway}
+            onCancel={settings.dismissPrompt}
+            onConfirm={() => void settings.confirmSwitchGateway()}
           />
         ) : settings.prompt?.kind === "org-switched" ? (
           <OrganizationSwitchedDialog
@@ -1130,6 +1393,25 @@ export function NewUiApp() {
             onCancel={settings.dismissPrompt}
             onReset={() => void settings.confirmReset()}
           />
+        ) : offerOpen ? (
+          // Lowest precedence in the stack: anything the user just did, a pending
+          // quit, or an update outranks an offer they did not ask for.
+          <OAuthOfferDialog
+            secretStore={secretStoreName(platform, "the")}
+            busy={offerBusy}
+            error={
+              offerError && (
+                <p
+                  role="alert"
+                  className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
+                >
+                  <span className="font-medium">{offerError.title}</span> {offerError.hint}
+                </p>
+              )
+            }
+            onSignIn={() => void acceptOffer()}
+            onKeepKey={declineOffer}
+          />
         ) : undefined
       }
     >
@@ -1138,6 +1420,31 @@ export function NewUiApp() {
       ) : view.kind === "families" ? (
         <FamiliesPane
           families={families}
+          // The engine's own switch. Without it a window whose routing was off
+          // could start it only by accident, through a config member's connect -
+          // and a chat domain, which routes through the engine rather than the
+          // relay, could not start it at all.
+          master={
+            proxy
+              ? {
+                  on: proxy.running,
+                  busy: routingBusy,
+                  caTrusted: proxy.ca_trusted,
+                  onToggle: (next) => void toggleMaster(next),
+                  // Absent on Linux, where these variables *are* the system proxy
+                  // and cannot be declined without turning routing off.
+                  envExport: proxy.env_export_separable
+                    ? {
+                        on: proxy.env_export_opted_in,
+                        onToggle: (next) => {
+                          setActionError(null);
+                          void routing.setEnvExport(next);
+                        },
+                      }
+                    : undefined,
+                }
+              : undefined
+          }
           onToggleFamily={(id, next) => {
             const group = groups.find((g) => g.id === id);
             if (group) void routeFamily(group, next);
@@ -1156,8 +1463,15 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(apps, view.slug)?.name ?? view.slug}
-          isProtected={appFor(apps, view.slug)?.status.kind === "protected"}
-          onToggleProtected={noop}
+          // Intent, not the verdict: a drifted app is still one the user asked to
+          // route, and driving this switch from the observed status is the bug
+          // `lib/groups.ts` documents - it renders off, and clicking it turns off
+          // the setting the user was trying to turn on.
+          isProtected={appFor(apps, view.slug)?.on ?? false}
+          busy={routingBusy}
+          onToggleProtected={() =>
+            void routeApp(view.slug, !(appFor(apps, view.slug)?.on ?? false))
+          }
           stats={toolActivity.view?.stats ?? EMPTY_STATS}
           buckets={toolActivity.view?.buckets ?? []}
           // Pending while the installation list is still open too: until it
@@ -1176,7 +1490,9 @@ export function NewUiApp() {
           gateModel={{ vendor: "-", id: "-" }}
           onChangeModel={() => setModelOverlay("picker")}
           credits="-"
-          onAddCredits={noop}
+          // No billing endpoint, but the row's own glyph promises an external
+          // link, and the dashboard is where credits are actually bought.
+          onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
           activity={toolEvents.view?.entries ?? []}
           eventsPending={
             !installsResolved || (toolEvents.view === null && toolEvents.failure === null)
@@ -1221,14 +1537,14 @@ export function NewUiApp() {
                       toolActivity.reload();
                       toolEvents.reload();
                     }}
-                    onDiagnostics={showDiagnostics}
+                    onDiagnostics={() => void openDiagnostics()}
                   />
                   <ActivityGaps
                     view={null}
                     failure={toolEvents.failure}
                     loading={toolEvents.loading}
                     onRetry={toolEvents.reload}
-                    onDiagnostics={showDiagnostics}
+                    onDiagnostics={() => void openDiagnostics()}
                     subject="Recent activity"
                   />
                 </>
@@ -1262,7 +1578,7 @@ export function NewUiApp() {
               // refetch is in flight the numbers on screen are still the
               // previous scope's, and the label has to agree with them.
               value={activity.view?.installId ?? null}
-              onChange={setInstallId}
+              onChange={setInstallFilter}
             />
           }
           alert={
@@ -1300,7 +1616,7 @@ export function NewUiApp() {
                 failure={activity.failure}
                 loading={activity.loading}
                 onRetry={activity.reload}
-                onDiagnostics={showDiagnostics}
+                onDiagnostics={() => void openDiagnostics()}
               />
             </>
           }
@@ -1431,35 +1747,25 @@ function memberToFamilyMember(
   return { key: m.key, name: m.name, kind: m.kind, status, on: m.desired };
 }
 
+/** Placeholder while the probes run, and what a copy taken mid-collection would
+ *  hand over - so it says what it is rather than looking like a report. */
+const COLLECTING_DIAGNOSTICS = "Collecting diagnostics...";
+
+/** The process walk's budget, matching `screens/Diagnostics.tsx`: a report that
+ *  is missing the agent section beats a dialog that never opens. */
+const AGENT_SCAN_TIMEOUT_MS = 2000;
+
 /**
- * The same report the popover builds, minus the probes this preview does not
- * run: the backend snapshot, the OAuth bundle and the running-agent scan all
- * arrive as null, which `buildDiagnosticsReport` already renders as unknown.
+ * The stored Gate key, masked.
+ *
+ * The prefix is the part that identifies *which* key is stored, which is the
+ * whole reason to show a masked value at all. Accounts saved before the prefix
+ * was recorded have none, and say so: an invented `sk-gw` is the same class of
+ * mistake as the zeroed metrics.
  */
-function previewDiagnostics(args: {
-  now: Date;
-  version: string;
-  platform: Platform;
-  account: Account | null;
-  proxy: ProxyState | null;
-  providers: ProviderState[];
-  tools: Tool[];
-}): string {
-  return buildDiagnosticsReport({
-    now: args.now,
-    version: args.version,
-    platform: args.platform,
-    analyticsId: analyticsId(),
-    backend: null,
-    account: args.account,
-    oauth: null,
-    proxy: args.proxy,
-    providers: args.providers,
-    tools: args.tools,
-    launchAtLogin: null,
-    clientsStale: false,
-    agents: null,
-  });
+function maskedKey(prefix: string | null, hasKey: boolean): string {
+  if (!hasKey) return "Not set";
+  return prefix ? `${prefix}${"*".repeat(20)}` : "Stored in the keychain";
 }
 
 /** What each `unavailable` cause means, and what the user can do about it.

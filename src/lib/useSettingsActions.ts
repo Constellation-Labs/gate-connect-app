@@ -1,15 +1,20 @@
 import { useCallback, useState } from "react";
+import { relaunch } from "@tauri-apps/plugin-process";
 import {
   clearAccount,
+  deviceName as fetchDeviceName,
   getAccount,
+  oauthBeginLogin,
   oauthListOrgs,
   oauthSignOut,
   oauthStatus,
   proxyDisable,
   proxyStatus,
   saveAccount,
+  setDeviceName,
   setLaunchAtLogin,
   setOrg,
+  switchGateway,
 } from "./api";
 import type { Account, OAuthStatus, Org, ProxyState } from "./api";
 import { launchAtLoginStatus } from "./api";
@@ -36,9 +41,15 @@ import { track, trackError } from "./analytics";
  */
 export type SettingsPrompt =
   | { kind: "replace-key" }
+  /** Renaming this device. Carries the name being replaced so the dialog can
+   * show it without the shell threading it back in. */
+  | { kind: "rename-device"; currentName: string }
   | { kind: "switch-org"; orgs: Org[]; selectedId: string }
   | { kind: "org-switched"; name: string }
   | { kind: "disconnect" }
+  /** The environment picker, for people working on Gate itself. Carries the
+   * selection because switching is confirmed, not applied on the click. */
+  | { kind: "switch-gateway"; selectedUrl: string }
   | { kind: "reset"; acknowledged: boolean };
 
 export interface SettingsActions {
@@ -48,6 +59,11 @@ export interface SettingsActions {
   /** Draft value for the replace-key field, owned here so the dialog stays presentational. */
   newKey: string;
   setNewKey: (next: string) => void;
+  /** Draft value for the rename-device field. Separate from `newKey`: one dialog
+   * is open at a time, but a shared draft would carry a typed key into the next
+   * dialog's field. */
+  newDeviceName: string;
+  setNewDeviceName: (next: string) => void;
   /** Whether the install ID was just copied, for the row's confirmation. */
   copied: boolean;
 
@@ -56,11 +72,19 @@ export interface SettingsActions {
   copyText: (text: string) => Promise<void>;
   openReplaceKey: () => void;
   replaceKey: () => Promise<void>;
+  openRenameDevice: (currentName: string) => void;
+  renameDevice: () => Promise<void>;
   openSwitchOrg: () => Promise<void>;
   selectOrg: (id: string) => void;
   confirmSwitchOrg: () => Promise<void>;
   openDisconnect: () => void;
   confirmDisconnect: () => Promise<void>;
+  /** Move a key-based account onto Constellation sign-in, from the one-time
+   * offer. Resolves once the browser flow is over, so the offer can close. */
+  upgradeToOAuth: () => Promise<void>;
+  openSwitchGateway: () => void;
+  selectGateway: (url: string) => void;
+  confirmSwitchGateway: () => Promise<void>;
   openReset: () => void;
   acknowledgeReset: (next: boolean) => void;
   confirmReset: () => Promise<void>;
@@ -72,6 +96,7 @@ export function useSettingsActions({
   launchAtLogin,
   onLaunchAtLogin,
   onAccount,
+  onDeviceName,
   onSession,
   onProxy,
   onError,
@@ -83,6 +108,10 @@ export function useSettingsActions({
   /** Both the enabled flag and whether an opt-out is still pending. */
   onLaunchAtLogin: (state: { enabled: boolean; pendingDisable: boolean }) => void;
   onAccount: (account: Account | null) => void;
+  /** The resolved device name after a rename - the stored one, or the hostname
+   * again when the name was cleared. Re-read rather than echoed, since the
+   * backend decides what an empty name means. */
+  onDeviceName: (name: string) => void;
   /** Both credentials at once, for the two actions that end the session. */
   onSession: (next: { account: Account | null; oauth: OAuthStatus | null }) => void;
   onProxy: (next: ProxyState | null) => void;
@@ -91,11 +120,13 @@ export function useSettingsActions({
   const [prompt, setPrompt] = useState<SettingsPrompt | null>(null);
   const [busy, setBusy] = useState(false);
   const [newKey, setNewKey] = useState("");
+  const [newDeviceName, setNewDeviceName] = useState("");
   const [copied, setCopied] = useState(false);
 
   const dismissPrompt = useCallback(() => {
     setPrompt(null);
     setNewKey("");
+    setNewDeviceName("");
   }, []);
 
   /**
@@ -246,6 +277,90 @@ export function useSettingsActions({
     }
   }, [busy, onSession, onError]);
 
+  /**
+   * The OAuth offer's accept.
+   *
+   * Deliberately **not** `useSetup.signIn`: that one saves the account first,
+   * with the *default* gateway and no key, which is right for a machine with no
+   * account and wrong here - it would repoint a staging install at production
+   * and drop the key the user still has. `oauth_begin_login` records OAuth
+   * against the account that already exists, which is all this needs.
+   */
+  const upgradeToOAuth = useCallback(async () => {
+    setBusy(true);
+    try {
+      await oauthBeginLogin();
+      const [acct, oauth] = await Promise.all([
+        getAccount().catch(() => null),
+        oauthStatus().catch(() => null),
+      ]);
+      onSession({ account: acct, oauth });
+    } finally {
+      setBusy(false);
+    }
+  }, [onSession]);
+
+  /** Prefilled with the current name: the field is an edit, not a blank form,
+   *  and the commonest rename is a small change to what is already there. */
+  const openRenameDevice = useCallback((currentName: string) => {
+    setPrompt({ kind: "rename-device", currentName });
+    setNewDeviceName(currentName);
+  }, []);
+
+  const renameDevice = useCallback(async () => {
+    if (prompt?.kind !== "rename-device" || busy) return;
+    const name = newDeviceName.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      await setDeviceName(name);
+      onDeviceName(await fetchDeviceName());
+      setPrompt(null);
+      setNewDeviceName("");
+    } catch (err) {
+      // The dialog stays open, like the key form: the name is still in the field
+      // and retrying is one click, where a closed dialog loses what was typed.
+      onError(err);
+      trackError(err, "generic");
+    } finally {
+      setBusy(false);
+    }
+  }, [prompt, busy, newDeviceName, onDeviceName, onError]);
+
+  const openSwitchGateway = useCallback(() => {
+    setPrompt({ kind: "switch-gateway", selectedUrl: account?.gateway_base_url ?? "" });
+  }, [account]);
+
+  const selectGateway = useCallback((url: string) => {
+    setPrompt((p) => (p?.kind === "switch-gateway" ? { ...p, selectedUrl: url } : p));
+  }, []);
+
+  /**
+   * Repoint the account at another environment, then relaunch.
+   *
+   * Switching forgets the stored key, disconnects managed tools and stops the
+   * engine, which pins the gateway URL when it starts. `App.tsx` relaunches for
+   * that reason and this does too: patching the rest of the window live would
+   * mean reconciling an account, a session and a routing table that all just
+   * changed underneath it.
+   */
+  const confirmSwitchGateway = useCallback(async () => {
+    if (prompt?.kind !== "switch-gateway" || busy) return;
+    const url = prompt.selectedUrl;
+    if (!url || url === account?.gateway_base_url) return;
+    setBusy(true);
+    try {
+      await switchGateway(url);
+      // Nothing below runs on success.
+      await relaunch();
+    } catch (err) {
+      onError(err);
+      trackError(err, "generic");
+    } finally {
+      setBusy(false);
+    }
+  }, [prompt, busy, account, onError]);
+
   const openReset = useCallback(() => setPrompt({ kind: "reset", acknowledged: false }), []);
 
   const acknowledgeReset = useCallback((next: boolean) => {
@@ -295,10 +410,16 @@ export function useSettingsActions({
     busy,
     newKey,
     setNewKey,
+    newDeviceName,
+    setNewDeviceName,
     copied,
     dismissPrompt,
     openDisconnect,
     confirmDisconnect,
+    upgradeToOAuth,
+    openSwitchGateway,
+    selectGateway,
+    confirmSwitchGateway,
     openReset,
     acknowledgeReset,
     confirmReset,
@@ -306,6 +427,8 @@ export function useSettingsActions({
     copyText,
     openReplaceKey,
     replaceKey,
+    openRenameDevice,
+    renameDevice,
     openSwitchOrg,
     selectOrg,
     confirmSwitchOrg,

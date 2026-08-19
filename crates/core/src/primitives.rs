@@ -266,12 +266,23 @@ pub(crate) fn sh_quote(s: &str) -> String {
     out
 }
 
-/// Stable UUID we send to the gateway audit trail for telemetry attribution.
-/// Generated once and cached at `<app_support_dir>/install-id`.
+/// Stable UUID identifying this install, generated once and cached at
+/// `<app_support_dir>/install-id`.
 ///
-/// This is the machine's *self-asserted* identity: it groups requests in the
-/// activity view and authorizes nothing. Anyone can forge it, and the gateway
-/// treats it accordingly.
+/// Independent of consent and of any analytics client: Settings shows it as the
+/// Install ID, and it is the one identifier a person can read off a machine that
+/// has never sent anything anywhere. That is why it is not the PostHog distinct
+/// id - that one is absent in a build with no project key, and absent again the
+/// moment somebody opts out of diagnostics, which would blank a row that has
+/// nothing to do with the choice they made.
+///
+/// **It is sent now.** `inject_attribution` stamps it on every routed request as
+/// `x-gate-install-id`, so the activity view can group traffic by machine. That
+/// makes it the machine's *self-asserted* identity: it groups requests and
+/// authorizes nothing, anyone can forge it, and the gateway treats it
+/// accordingly. Being sent independently of the diagnostics consent is the point
+/// of the paragraph above, not an oversight - it is routing metadata, not
+/// telemetry - but it does mean the disclosure copy has to name it.
 pub fn install_id() -> Result<String> {
     let path = crate::env::app_support_dir()?.join("install-id");
     if let Ok(s) = fs::read_to_string(&path) {
@@ -280,7 +291,7 @@ pub fn install_id() -> Result<String> {
             return Ok(s);
         }
     }
-    let id = simple_uuid_v4();
+    let id = simple_uuid_v4()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok();
     }
@@ -307,21 +318,26 @@ pub fn install_id_cached() -> Option<&'static str> {
     .as_deref()
 }
 
-fn simple_uuid_v4() -> String {
-    // Tiny inline v4 generator so we don't pull `uuid` for one call. `rand` is
-    // already a dependency (PKCE), and unlike a `/dev/urandom` read it works on
-    // Windows too.
-    let mut bytes: [u8; 16] = rand::random();
+/// Tiny inline v4 generator, so one call does not pull in `uuid`.
+///
+/// `rand` rather than `/dev/urandom`, which was the reason this and
+/// [`install_id`] were macOS-only: Windows has no such device, so the id could
+/// not exist on two of the three platforms Gate ships to. `rand` is already a
+/// dependency - `oauth` mints the PKCE verifier with it.
+fn simple_uuid_v4() -> Result<String> {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    format!(
+    Ok(format!(
   "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
   bytes[0], bytes[1], bytes[2], bytes[3],
   bytes[4], bytes[5],
   bytes[6], bytes[7],
   bytes[8], bytes[9],
   bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-  )
+  ))
 }
 
 #[cfg(test)]

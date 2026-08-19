@@ -22,6 +22,16 @@
 //! wrapper test that sets it would otherwise redirect a request test running in
 //! parallel. That seam earns its place because an account's base URL must be
 //! https, so it can never name a loopback mock itself.
+//!
+//! One rule for any test added here that arranges with `account::save`,
+//! `set_org`, or anything else instrumented to emit: call `audit::flush()`
+//! between the arrange and `spawn_mock`. `emit_best_effort` spawns a detached
+//! thread and resolves the endpoint seam when that thread *runs*, so an
+//! arrange-time emit left in flight can read the endpoint this test is about to
+//! set and POST to its mock. The assertion then fails on that stray event
+//! instead of on anything the test is about, which reads as a mystery rather
+//! than as a race. Flushing while the seam is still unset keeps those emits on
+//! the hermetic `None` arm that `TempDataDir` describes.
 
 use std::collections::HashMap;
 use std::fs;
@@ -50,48 +60,37 @@ impl Captured {
     }
 }
 
-/// Join every emit already in flight, so none of them can still be looking up
-/// the endpoint seam when this test moves it.
+/// Serve the same HTTP response to every connection on a fresh loopback port,
+/// forwarding each parsed request over the channel. Returns the base URL.
 ///
-/// The wrappers are fire-and-forget: `emit_best_effort` spawns a thread, and
-/// `audit_endpoint()` reads `GATE_CONNECT_TEST_AUDIT_ENDPOINT` *inside* it. So a
-/// setup call like `account::save` leaves a thread that has not read the seam
-/// yet, and a test that then points the seam at its own mock has handed that
-/// thread the mock's address. The mock serves exactly one request, so the setup
-/// event is captured as though it were the event under test, and the real emit
-/// arrives to find nobody listening.
-///
-/// This is what CI hit on macOS, where the thread is scheduled late enough for
-/// the window to open: `gateway_switch_emits_to_the_old_gateway_naming_the_new_one`
-/// read back `api_key_saved`, and `unknown_port_is_null_rather_than_zero` read
-/// back a body with no `proxy` object at all. Reproducible anywhere by sleeping
-/// 50ms at the top of that spawned thread.
-///
-/// Call after any setup that emits, before naming a mock. Instant in practice:
-/// under the test-home seam and with no endpoint set, those emits skip without
-/// touching the network.
-fn settle_setup() {
-    audit::flush();
-}
-
-/// Serve exactly one HTTP response on a fresh loopback port, forwarding the
-/// parsed request over the channel. Returns the base URL.
+/// Answering every connection rather than only the first is what keeps a racing
+/// emit legible. A mock that closed after one request would serve the stray emit
+/// and then reset the connection for the event the test actually asserts on, so
+/// one late arrange-time thread surfaced as `Connection reset by peer` against a
+/// line that had nothing to do with it. The `flush()` in each setup is what stops
+/// the stray request happening at all; this is what stops it being confusing if
+/// one ever does. The thread parks in `accept` until the binary exits, or returns
+/// early once the test has dropped its receiver.
 fn spawn_mock(status_line: &'static str, body: &'static str) -> (String, mpsc::Receiver<Captured>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
     let base = format!("http://{}", listener.local_addr().expect("mock addr"));
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let Ok((mut stream, _)) = listener.accept() else {
-            return;
-        };
-        if let Some(captured) = read_request(&mut stream) {
-            tx.send(captured).ok();
-        }
         let response = format!(
             "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
-        stream.write_all(response.as_bytes()).ok();
+        while let Ok((mut stream, _)) = listener.accept() {
+            // Answer before forwarding, so the client is never left waiting on a
+            // capture the test may no longer be listening for.
+            let captured = read_request(&mut stream);
+            stream.write_all(response.as_bytes()).ok();
+            if let Some(captured) = captured {
+                if tx.send(captured).is_err() {
+                    return;
+                }
+            }
+        }
     });
     (base, rx)
 }
@@ -181,8 +180,8 @@ impl Drop for TempDataDir {
         // Before clearing the seams, and while this test still holds `LOCK`: an
         // emit thread outliving its test would read the *next* test's endpoint
         // and land on the next test's mock. `LOCK` cannot prevent that - the
-        // thread never takes it. See `settle_setup`.
-        settle_setup();
+        // thread never takes it. See the flush rule in the module doc.
+        audit::flush();
         std::env::remove_var("GATE_CONNECT_TEST_HOME");
         std::env::remove_var("GATE_CONNECT_TEST_AUDIT_ENDPOINT");
         let _ = fs::remove_dir_all(&self.dir);
@@ -456,8 +455,15 @@ fn unknown_port_is_null_rather_than_zero() {
     keychain::use_in_memory_backend();
     account::save("https://gw.example.test", Some("sk-gw-stored")).unwrap();
     account::set_org("org-uuid-1", "Example Org").unwrap();
-    // Settle the setup's own emits before naming a mock. See `settle_setup`.
-    settle_setup();
+
+    // Drain the arrange emits before the mock exists. `emit_best_effort` spawns
+    // a detached thread that resolves the endpoint seam when it *runs*, not when
+    // it is spawned, so an emit still in flight here would read the endpoint set
+    // below and POST to this test's own mock: that consumes the mock's single
+    // connection and hands `rx.recv()` the wrong event, while the event under
+    // test gets a connection reset. Flushing while the seam is still unset is
+    // what makes the skip documented on `TempDataDir` actually hold.
+    audit::flush();
 
     let (base, rx) = spawn_mock("200 OK", "{}");
     std::env::set_var(
@@ -509,8 +515,10 @@ fn gateway_switch_emits_to_the_old_gateway_naming_the_new_one() {
     let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
     account::save("https://old.example.test", Some("sk-gw-stored")).unwrap();
-    // Settle the setup's own emits before naming a mock. See `settle_setup`.
-    settle_setup();
+
+    // Same reason as above: drain the `save` emit while the endpoint seam is
+    // still unset, so it cannot land on the mock spawned just below.
+    audit::flush();
 
     let (base, rx) = spawn_mock("201 Created", "{}");
     std::env::set_var(

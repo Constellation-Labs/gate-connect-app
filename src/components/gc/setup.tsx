@@ -161,6 +161,77 @@ function SetupError({ children }: { children: ReactNode }) {
   );
 }
 
+export interface GatewayChoice {
+  label: string;
+  url: string;
+}
+
+/**
+ * The environment picker, for people working on Gate itself.
+ *
+ * Footer-quiet on purpose, the same call `screens/FirstRun.tsx` makes: the
+ * sign-in decision stays a two-option screen, and the gateway is a line of mono
+ * under it with one small control. Collapsed until asked for, because for
+ * everybody else the answer is already right.
+ */
+export function GatewayPicker({
+  value,
+  servers,
+  open,
+  onOpenChange,
+  onSelect,
+}: {
+  value: string;
+  servers: GatewayChoice[];
+  open: boolean;
+  onOpenChange: (next: boolean) => void;
+  onSelect: (url: string) => void;
+}) {
+  if (!open) {
+    return (
+      <div className="flex items-baseline justify-center gap-2 text-center">
+        <span className="font-mono text-base-xs text-base-muted-foreground">{value}</span>
+        <button
+          type="button"
+          onClick={() => onOpenChange(true)}
+          className="-mx-1.5 -my-1.5 px-1.5 py-1.5 text-base-xs font-medium text-neutral-600 underline decoration-base-input underline-offset-2 transition-colors hover:text-neutral-900"
+        >
+          change
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-base-border pt-4">
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-base-xs font-medium uppercase tracking-[0.08em] text-base-muted-foreground">
+          Gateway server
+        </span>
+        <button
+          type="button"
+          onClick={() => onOpenChange(false)}
+          className="text-base-xs font-medium text-neutral-600 transition-colors hover:text-neutral-900"
+        >
+          Hide
+        </button>
+      </div>
+      <div role="radiogroup" aria-label="Gateway server" className="flex flex-col gap-2">
+        {servers.map((server) => (
+          <ModalOption
+            key={server.url}
+            initials={server.label.slice(0, 2).toUpperCase()}
+            name={server.label}
+            meta={server.url}
+            selected={server.url === value}
+            onSelect={() => onSelect(server.url)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Sign-in. OAuth is the primary path; the API-key path stays available because
  * it is the only route forward for a user whose account has no OAuth identity.
@@ -185,7 +256,9 @@ export function WelcomePane({
   apiKey: string;
   onApiKeyChange: (next: string) => void;
   onConnectWithApiKey: () => void;
-  /** Slot for the gateway selector, which only dev builds render. */
+  /** Slot for the gateway selector, which only dev builds render. Sits in the
+   * footer rather than inside the key form: the gateway is saved before the
+   * browser flow too, so it governs both paths. */
   gateway?: ReactNode;
   busy?: boolean;
   error?: ReactNode;
@@ -222,12 +295,13 @@ export function WelcomePane({
             mono
             type="password"
           />
-          {gateway}
           <PrimaryButton onClick={onConnectWithApiKey} busy={busy}>
             Connect
           </PrimaryButton>
         </div>
       )}
+
+      {gateway}
     </div>
   );
 }

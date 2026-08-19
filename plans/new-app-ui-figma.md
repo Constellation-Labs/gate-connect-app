@@ -690,10 +690,66 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    requests to a tool. That needs a per-tool segment in the relay path
    (`/<tool>/<domain-slug>` instead of `/<domain-slug>`), which would also give
    AG-574 its per-tool counts.
-7. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
+7. **Controls the popover had and the window did not: DONE.** A sweep of which
+   `lib/api.ts` commands each shell can reach found eleven gaps, all of them
+   wiring rather than missing backends.
+
+   The one that changed behaviour rather than reach: **there was no way to turn
+   routing on or off after first run.** `proxyEnable` was called only by
+   `useSetup.turnOnRouting` and `proxyDisable` only by reset, and
+   `proxy_set_domain` does not start the engine the way `connect_tool` does - so a
+   chat domain toggled with the engine off wrote intent, routed nothing, and had
+   no control anywhere to recover. `useRouting` now owns three engine-level
+   actions (`setMasterRouted`, `setEnvExport`, `untrustCa`), `setDomainRouted`
+   starts the engine after the certificate gate, and `FamiliesPane` grew a master
+   card carrying the switch and the shell-environment sub-switch. Not in the
+   Figma, like the rest of that pane.
+
+   The **app pane's own switch was `noop`**, and its `isProtected` came from the
+   observed verdict - the exact conflation `lib/groups.ts` documents, where a
+   drifted app renders off and clicking the switch turns off the setting the user
+   was trying to turn on. It now reads intent and calls `routeApp`. Its label is
+   `Route <app>` rather than `<app>`, because the sidebar row for the same app is
+   on screen with a switch of its own.
+
+   Also wired: the topnav's dead **Read Gate docs** entry (and Contact support
+   removed, since there is no address - `SettingsPane` omits its row for the same
+   reason); the **diagnostics report**, which was passing `backend`, `oauth` and
+   `agents` as null and `clientsStale` as `false` - a claim, not an unknown - and
+   now runs the probes `screens/Diagnostics.tsx` runs; the **API-key row**, which
+   drew `sk-gw` plus twenty asterisks and now shows the recorded prefix or says
+   the key is in the keychain; the **first-launch tutorial**, which only the
+   popover opened; the **gateway picker** on the sign-in card and a Change server
+   row in Settings, so the window is no longer stuck on the build's default; the
+   **certificate**, which could be trusted but never removed; the dead **Add
+   credits** and **Manage** buttons, pointed at the dashboard; and the one-time
+   **OAuth offer**, which no key-based install on the default shell was seeing.
+
+   Two rows needed a backend rather than wiring, and got a small one. **Install
+   ID** showed the PostHog distinct id, which is absent in a build with no project
+   key and absent again the moment somebody opts out of diagnostics - a row
+   reading Unavailable for reasons that had nothing to do with the install.
+   `primitives::install_id` already existed, cached at
+   `<app_support_dir>/install-id`, but was macOS-only with zero callers because it
+   read `/dev/urandom`; it now uses `rand` (already a dependency, for PKCE) and is
+   exposed as `install_id`. The analytics id stays in the diagnostics report under
+   its own name - they are two different facts. **Device** was hardcoded `"-"`
+   while `RenameDeviceDialog` sat built and unwired: `preferences.json` gained
+   `device_name: Option<String>`, `device_name` resolves the override or the
+   machine's hostname (`sysinfo`, already a `src-tauri` dependency), and
+   `set_device_name` stores it. `Preferences` is no longer `Copy`.
+
+   The name is local - nothing sends it anywhere yet - and clearing it back to the
+   hostname is a backend behaviour with no UI path, since the dialog refuses an
+   empty field. Both are worth revisiting when the dashboard grows a device list.
+
+   Covered by `e2e/new-ui-engine.spec.ts`: the hook tests cannot see whether a
+   control is connected to an action, which is what all of these were.
+
+8. **Metrics.** Overview and `AppPane` render zeros against `EMPTY_STATS`
    pending the 24-hour endpoint. Open question 7 (whether `total` double-counts)
    should be settled in that response shape, not in the chart.
-8. **Retire the popover.** `App.tsx`, `screens/`, `gc/ui.tsx`, the `gc.*`
+9. **Retire the popover.** `App.tsx`, `screens/`, `gc/ui.tsx`, the `gc.*`
    palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together.
    Item 1 was the blocker and is done, so what remains is repointing the e2e
    suite at the new shell and deleting; the popover's own specs go with it.

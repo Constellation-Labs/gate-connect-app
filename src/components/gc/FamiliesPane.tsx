@@ -30,6 +30,28 @@ export interface FamilyMember {
   busy?: boolean;
 }
 
+/**
+ * The engine itself, above the families that ride on it.
+ *
+ * Not in the Figma either, and the omission is load-bearing: with routing off,
+ * a family switch can still start the engine (a config member's connect does it
+ * implicitly) but a chat domain cannot, so the window could reach a state it
+ * had no control for. `envExport` is the master's sub-setting - whether the
+ * proxy also goes into the shell environment, which reaches `git` and `curl`
+ * and not just the AI tools - and is absent on Linux, where those variables
+ * *are* the system proxy and cannot be declined separately.
+ */
+export interface MasterRouting {
+  on: boolean;
+  busy?: boolean;
+  onToggle: (next: boolean) => void;
+  /** Whether the certificate is in the system trust store. Routing without it
+   * inspects nothing, so the card says so rather than leaving the switch to
+   * imply otherwise. */
+  caTrusted?: boolean;
+  envExport?: { on: boolean; onToggle: (next: boolean) => void };
+}
+
 export interface Family {
   id: string;
   name: string;
@@ -56,10 +78,14 @@ const KIND_TEXT: Record<MemberKind, string> = {
 
 export function FamiliesPane({
   families,
+  master,
   onToggleFamily,
   onToggleMember,
 }: {
   families: Family[];
+  /** Omit on a platform with no proxy subsystem, where there is no engine to
+   * turn on and the card would describe nothing. */
+  master?: MasterRouting;
   /**
    * Omit to hide the family-level switches. A master switch has to cascade over
    * members, skipping the ones with a hand-written config, and until that is
@@ -79,6 +105,52 @@ export function FamiliesPane({
           everything under it.
         </p>
       </header>
+
+      {master && (
+        <Card>
+          <div className="flex items-center gap-3 p-4">
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-sm font-medium leading-5 text-neutral-900">
+                Route traffic through Gate
+              </h2>
+              <p className="text-base-xs leading-4 text-base-muted-foreground">
+                {master.on
+                  ? master.caTrusted === false
+                    ? "Running, but the certificate is not trusted - nothing is being inspected"
+                    : "The local engine is running"
+                  : "Everything below stays off until this is on"}
+              </p>
+            </div>
+            <BaseSwitch
+              on={master.on}
+              label="Route traffic through Gate"
+              busy={master.busy}
+              onClick={() => master.onToggle(!master.on)}
+            />
+          </div>
+
+          {master.envExport && (
+            <div className="flex items-center gap-3 border-t border-base-border px-4 py-3">
+              <Icon name="codeXml" size={16} className="shrink-0 text-neutral-500" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm leading-5 text-neutral-900">
+                  Also set shell environment variables
+                </p>
+                <p className="text-base-2xs leading-4 text-base-muted-foreground">
+                  Routes command-line tools too. Machine-wide: it reaches git and curl,
+                  not only your AI tools.
+                </p>
+              </div>
+              <BaseSwitch
+                on={master.envExport.on}
+                label="Also set shell environment variables"
+                busy={master.busy}
+                onClick={() => master.envExport?.onToggle(!master.envExport.on)}
+              />
+            </div>
+          )}
+        </Card>
+      )}
 
       {families.map((family) => {
         const routed = family.members.filter((m) => m.status.kind === "protected").length;

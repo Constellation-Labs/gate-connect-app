@@ -55,13 +55,28 @@ describe("buildSettingsSections", () => {
     expect(destructive).toEqual(["session", "reset"]);
   });
 
+  it("marks removing the certificate destructive too", () => {
+    // The third red action on the screen, and a deliberate one: until it is
+    // trusted again, nothing routed through the local proxy is inspected.
+    const rows = sections({ certificate: "Trusted", onRemoveCertificate: noop }).flatMap(
+      (s) => s.rows,
+    );
+    expect(rows.filter((r) => r.action?.destructive).map((r) => r.id)).toEqual([
+      "certificate",
+      "session",
+      "reset",
+    ]);
+  });
+
   it("renders identifiers in mono and prose in sans", () => {
     // CLAUDE.md's one typography rule the new design did not overturn.
     const mono = sections()
       .flatMap((s) => s.rows)
       .filter((r) => r.mono)
       .map((r) => r.id);
-    expect(mono).toEqual(["install-id", "api-key", "version"]);
+    // The gateway joined them: a base URL is an identifier, which is exactly
+    // what CLAUDE.md reserves mono for.
+    expect(mono).toEqual(["install-id", "gateway", "api-key", "version"]);
   });
 });
 
