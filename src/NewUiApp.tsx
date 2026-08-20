@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import type {
@@ -130,6 +130,22 @@ import { analyticsId, setAnalyticsConsent, track } from "./lib/analytics";
 import { secretStoreName, usePlatform } from "./lib/platform";
 
 /**
+ * How often the window re-reads what is installed.
+ *
+ * Nothing on the backend watches for a tool appearing - there is no event to
+ * listen for - so detection is the one reading that has to be pulled. Five
+ * seconds is short enough that installing a tool in a terminal and switching
+ * back shows it already there, and the reading it costs is two local calls.
+ */
+const DETECT_POLL_MS = 5000;
+
+/** A whole reading, for deciding whether a poll changed anything. Compared by
+ * value because the identity never matches: every poll builds fresh objects. */
+function detectionSignature(reading: unknown): string {
+  return JSON.stringify(reading);
+}
+
+/**
  * The new window UI, and the default surface as of 2026-08-17. `App.tsx` and the
  * popover are still reachable via `gcNewUi(false)`.
  *
@@ -202,6 +218,16 @@ export function NewUiApp() {
    * and must not render as it.
    */
   const [scan, setScan] = useState<{ kind: "ok"; at: Date } | { kind: "failed" } | null>(null);
+  /**
+   * What detection last put on screen, so a poll can tell a changed machine from
+   * an unchanged one and leave the unchanged one entirely alone.
+   *
+   * Written from an effect on the state itself rather than by the poll, because
+   * the poll is not the only writer: a toggle re-reads both through `useRouting`,
+   * and a ref updated in only one of those places would report a change that had
+   * already been drawn.
+   */
+  const rendered = useRef({ tools: "", proxy: "" });
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
@@ -415,7 +441,46 @@ export function NewUiApp() {
     void loadPending();
   }, [refreshVerdicts, loadPending]);
 
-  /** Re-run detection because the user asked. Same reads as the event-driven
+  /**
+   * Re-read what is installed, without the routing sweep.
+   *
+   * The polled half of {@link refresh}. `list_tools` walks config files and
+   * `proxy_status` reads state already in memory, so both can run on a timer; the
+   * sweep cannot, because it probes the relay and the gateway.
+   *
+   * A reading that matches what is on screen is dropped rather than re-set. Both
+   * of these feed every memo below, and committing an equal-but-new object every
+   * five seconds would rebuild the families, the settings sections and the
+   * routing callbacks for no change at all.
+   */
+  const redetect = useCallback(async () => {
+    const [t, px] = await Promise.all([
+      listTools().catch(() => null),
+      proxyStatus().catch(() => null),
+    ]);
+    // Written on every poll, not only on a change: this timestamp is the empty
+    // card's evidence that something is still looking, and letting it go stale
+    // while the polling continued would misdate a scan that did happen.
+    setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
+    let changed = false;
+    // A failed read commits nothing, so it also reports nothing as changed - the
+    // last good list stays on screen and the card says the scan failed.
+    if (t && detectionSignature(t) !== rendered.current.tools) {
+      setTools(t);
+      changed = true;
+    }
+    if (px && detectionSignature(px) !== rendered.current.proxy) {
+      setProxy(px);
+      changed = true;
+    }
+    // Either one moving invalidates every verdict: a tool that just appeared has
+    // none yet, and the engine coming up or going down changes all of them,
+    // because the relay health check behind them is shared.
+    if (changed) void refreshVerdicts();
+  }, [refreshVerdicts]);
+
+  /** Re-run detection because the user asked - the inventory card's control, for
+   * a scan that failed and may not fail again. Same reads as the event-driven
    * `refresh`, plus a flag so the control can refuse a second click. */
   const refreshNow = useCallback(async () => {
     setRefreshing(true);
@@ -425,6 +490,35 @@ export function NewUiApp() {
       setRefreshing(false);
     }
   }, [refresh]);
+
+  useEffect(() => {
+    rendered.current = {
+      tools: detectionSignature(tools),
+      proxy: detectionSignature(proxy),
+    };
+  }, [tools, proxy]);
+
+  // Detection is the one reading the window cannot be told about: the backend
+  // emits nothing when a tool is installed, so a window left open used to show a
+  // list that had stopped being true. It polls instead, which is what the manual
+  // refresh control in the "Protected apps" eyebrow used to stand in for.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      // A hidden window is not looked at, and polling one only spends I/O.
+      if (document.hidden) return;
+      void redetect();
+    }, DETECT_POLL_MS);
+    // Ticks are skipped while hidden, so coming back reads immediately rather
+    // than showing a list that could be as old as the window was away.
+    const onVisible = () => {
+      if (!document.hidden) void redetect();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [redetect]);
 
   useEffect(() => {
     const sweep = () => {

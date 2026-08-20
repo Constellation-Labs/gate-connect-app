@@ -867,14 +867,35 @@ switch alone, and a test pins that.
 
 Detection ran on backend events only, so a tool installed while the window was
 open stayed invisible until something unrelated repainted the sidebar. The
-"Protected apps" eyebrow gained a small refresh control that re-reads tools and
-proxy state and re-runs the routing sweep.
+"Protected apps" eyebrow first gained a small refresh control for this. It has
+since been removed: the Figma draws no such control, and a control is the wrong
+answer to a reading the user has no reason to know is stale. Detection polls
+instead, on `DETECT_POLL_MS` (5s) in `NewUiApp`.
 
-Provisional: the Figma draws no refresh control. It is 20px in a 12px eyebrow with
-an `aria-label` rather than visible text, and no spinner - the scan is fast enough
-that one would only flash, so `aria-busy` plus the disabled state is the signal.
-`refreshing` is deliberately separate from `routingBusy`: that one guards a
-*write*, and refusing to re-read during a toggle would be the wrong coupling.
+What the poll reads is deliberately narrower than `refresh`. `list_tools` walks
+config files and `proxy_status` reads memory, so both are fine on a timer;
+`routing_verdicts` probes the relay *and* the gateway session, so it is not. The
+poll compares both readings against the last ones rendered - `detectionSignature`
+over a `rendered` ref, kept current by an effect on the state itself so that a
+toggle's own re-read counts as drawn - and commits nothing when they match. Every
+memo below hangs off `tools` and `proxy`, so re-setting an equal-but-new object
+every five seconds would rebuild the families, the settings sections and the
+routing callbacks for no change. When either does move the sweep runs: a row that
+just appeared has no verdict and reads "Checking", and the engine coming up
+changes all of them at once.
+Hidden windows skip their ticks and read once on `visibilitychange`, so nothing is
+spent on a minimized window and coming back does not show a stale list. Two e2e
+tests pin the split: the list is re-read with nothing asking, and an unchanged
+machine does not re-run the sweep.
+
+`scan` is still written on every tick even when nothing changed: the timestamp is
+the empty card's evidence that something is still looking.
+
+The inventory card keeps its own Refresh / Try again. A *failed* scan is a state a
+user may reasonably want to retry against rather than wait out, which is why
+`refreshNow` and the `refreshing` flag survive. `refreshing` is deliberately
+separate from `routingBusy`: that one guards a *write*, and refusing to re-read
+during a toggle would be the wrong coupling.
 
 The rest of AG-558 is not buildable and is documented on the ticket: every
 integration returns `requires_upstream_credential() == false`, so "installed but
@@ -901,8 +922,8 @@ two apart:
 Before the first scan lands the state is `ok`, deliberately: "no apps detected" is
 a claim, and nothing has checked yet.
 
-The eyebrow's refresh control (AG-558) hides while the card is up, since the card
-carries its own and two controls for one action in a 250px rail is one too many.
+The card's Refresh is now the only one in the rail: the eyebrow control it used to
+hide behind was removed when detection started polling (see AG-558 above).
 
 Not built, and recorded on the ticket: "a detected but unsupported tool remains
 visible" needs detection of tools Gate has no integration for; "a known but absent
