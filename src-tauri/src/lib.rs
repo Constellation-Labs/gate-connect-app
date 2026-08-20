@@ -1296,11 +1296,28 @@ struct VerdictDto {
 /// per-tool calls would be the same answer at N times the cost, and would let
 /// two rows in one refresh disagree about whether the session is alive.
 ///
-/// `(async)` for the reason on [`running_agents_count`]: the process walk on
-/// Linux would otherwise run on the GTK loop.
+/// Off the main thread for the reason on [`running_agents_count`] - but as a
+/// real `async fn` handing the work to `spawn_blocking`, not as
+/// `#[tauri::command(async)]` on a sync fn. That attribute does not move a sync
+/// body to the blocking pool: the macro inlines it into `async_runtime::spawn`,
+/// so it runs on a tokio *worker*, with the runtime entered. Both probes below
+/// are blocking HTTP, and reqwest's blocking client asserts against being
+/// called from an entered worker in debug builds - it builds and immediately
+/// drops a throwaway runtime purely to detect the case. The resulting panic
+/// took the task with it, so the webview's `invoke` promise never settled and
+/// the refresh hung.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command(async)]
-fn routing_verdicts() -> Vec<VerdictDto> {
+#[tauri::command]
+async fn routing_verdicts() -> Vec<VerdictDto> {
+    // A join error means the probe itself panicked. An empty sweep is what this
+    // command already returns when it can tell nothing about any tool.
+    tauri::async_runtime::spawn_blocking(routing_verdicts_now)
+        .await
+        .unwrap_or_default()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn routing_verdicts_now() -> Vec<VerdictDto> {
     use gate_connect_core::routing_health::{self, ConfigState, Evidence};
 
     let route = gate_connect_core::proxy::probe_relay_route();
