@@ -226,6 +226,23 @@ test.describe("new UI: the two ways back to first run", () => {
     expect(await app.lastCall("save_account")).toBeNull();
   });
 
+  test("a failed browser sign-in says so instead of going quiet", async ({ boot }) => {
+    // The row called upgradeToOAuth through `void`, so a rejected browser flow
+    // became an unhandled promise: the busy flag cleared and the pane went
+    // silent, which is exactly what a button that does nothing looks like.
+    const app = await boot({
+      account: { has_api_key: true, auth_mode: "api_key", org_id: null, org_name: null },
+      failures: { oauth_begin_login: "the sign-in window closed before it finished" },
+    });
+
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "Use a Gate account" }).click();
+
+    await expect(app.page.getByRole("alert")).toBeVisible();
+    // And the row survives, so the user can try again.
+    await expect(app.page.getByRole("button", { name: "Use a Gate account" })).toBeVisible();
+  });
+
   test("an OAuth account is not offered a key to replace", async ({ boot }) => {
     // saveAccount with a key would flip auth_mode to api_key, quietly converting
     // the account behind a button that says "replace".

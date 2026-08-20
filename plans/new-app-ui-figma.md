@@ -405,6 +405,20 @@ has. The e2e test pins it by asserting `oauth_begin_login` fired and
 with the shipping app, not a design instruction. Expect it to be redrawn, and
 treat it the way the diagnostics row is treated.
 
+**A trap this row fell into first.** `upgradeToOAuth` throws on a browser flow
+that fails, times out or is abandoned, and the row was calling it through `void`.
+The rejection became an unhandled promise, `finally` cleared the busy flag, and
+the pane went silent - which is indistinguishable from a button that does
+nothing, and is exactly how it was reported. Any call site for one of these
+actions needs a `catch` onto `setActionError`, the way `acceptOffer` beside it
+always had. The e2e that pins it fails without the fix on *uncaught page errors*,
+because the fixture treats an unhandled rejection as a crash.
+
+`settings.busy` also has to be in the `settingsSections` memo's dependency list.
+That array names individual callbacks on purpose - the hook returns a fresh
+object each render - so a value read inside the memo and missing from the array
+simply never updates, which is what kept the waiting note from ever appearing.
+
 ### Left undone, deliberately
 
 - **`Auth / Error states` carries no ready mark**, so the setup-timeout dialog and

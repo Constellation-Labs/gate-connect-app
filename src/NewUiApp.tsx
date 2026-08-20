@@ -110,7 +110,7 @@ import type {
 } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
-import { analyticsId, setAnalyticsConsent, track } from "./lib/analytics";
+import { analyticsId, setAnalyticsConsent, track, trackError } from "./lib/analytics";
 import { secretStoreName, usePlatform } from "./lib/platform";
 
 /**
@@ -724,6 +724,26 @@ export function NewUiApp() {
     }
   }, [settings]);
 
+  /**
+   * Settings' "Use a Gate account".
+   *
+   * `upgradeToOAuth` throws on a browser flow that fails, times out or is
+   * abandoned, and the row called it through `void` - so the rejection became an
+   * unhandled promise, the busy flag cleared in `finally`, and the pane went
+   * quiet. That is indistinguishable from a button that does nothing, which is
+   * exactly how it was reported. The offer dialog beside it has always caught;
+   * this now does too, onto the shell's own error banner.
+   */
+  const switchToGateAccount = useCallback(async () => {
+    setActionError(null);
+    try {
+      await settings.upgradeToOAuth();
+    } catch (e) {
+      trackError(e, "sign_in");
+      setActionError(classifyError(e, "sign_in"));
+    }
+  }, [settings]);
+
   const declineOffer = useCallback(() => {
     markOAuthOfferSeen();
     setOfferOpen(false);
@@ -815,7 +835,7 @@ export function NewUiApp() {
         // offer it may already have dismissed. An OAuth account is not offered
         // the reverse, matching the popover.
         onSwitchToGateAccount:
-          account?.auth_mode === "api_key" ? () => void settings.upgradeToOAuth() : undefined,
+          account?.auth_mode === "api_key" ? () => void switchToGateAccount() : undefined,
         signInNote: settings.busy
           ? "Finish signing in on the page that opened in your browser."
           : undefined,
@@ -884,6 +904,10 @@ export function NewUiApp() {
       settings.copyText,
       settings.openRenameDevice,
       settings.openReplaceKey,
+      // `busy` drives the sign-in row's waiting note, so the memo has to see it
+      // change or the note never appears.
+      settings.busy,
+      switchToGateAccount,
       settings.openDisconnect,
       settings.openReset,
       settings.openSwitchGateway,
