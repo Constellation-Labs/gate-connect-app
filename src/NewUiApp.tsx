@@ -1107,6 +1107,7 @@ export function NewUiApp() {
           <ErrorBanner
             title={actionError.title}
             hint={actionError.hint}
+            raw={actionError.raw}
             onDismiss={() => setActionError(null)}
           />
         ) : recoveryNames.length > 0 && !recoveryHidden ? (

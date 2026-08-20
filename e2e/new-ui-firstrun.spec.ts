@@ -238,7 +238,16 @@ test.describe("new UI: the two ways back to first run", () => {
     await app.page.getByRole("button", { name: "Settings" }).click();
     await app.page.getByRole("button", { name: "Use a Gate account" }).click();
 
-    await expect(app.page.getByRole("alert")).toBeVisible();
+    const alert = app.page.getByRole("alert");
+    await expect(alert).toBeVisible();
+    // Not "Couldn't save your account": nothing was being saved.
+    await expect(alert).toContainText(/complete sign-in/);
+
+    // The hint says the details below help when reporting it, so they have to
+    // actually be below it. The banner used to render none.
+    await alert.getByText("Details", { exact: true }).click();
+    await expect(alert).toContainText("the sign-in window closed before it finished");
+
     // And the row survives, so the user can try again.
     await expect(app.page.getByRole("button", { name: "Use a Gate account" })).toBeVisible();
   });

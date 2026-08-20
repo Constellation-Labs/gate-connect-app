@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { BaseSwitch, StatusTile } from "./base";
 import { Icon } from "./Icon";
 
@@ -186,12 +187,33 @@ function PageButton({ side, onClick }: { side: "prev" | "next"; onClick: () => v
 export function ErrorBanner({
   title,
   hint,
+  raw,
   onDismiss,
 }: {
   title: string;
   hint: string;
+  /**
+   * The underlying message. Five of `classifyError`'s branches end on a hint
+   * that says "the details below help when reporting it", and this banner used
+   * to render no details at all - so the copy promised something that was not
+   * on screen, and a failure nobody had classified read as a dead end.
+   *
+   * Withheld when it only repeats the title, which is the same guard the
+   * popover's `ErrorNote` makes.
+   */
+  raw?: string;
   onDismiss: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
+  // Timed reset with a cleanup rather than a bare setTimeout: the banner is
+  // dismissed by whatever the user does next, and a pending timer would then
+  // set state on an unmounted component.
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(t);
+  }, [copied]);
+
   return (
     <div
       role="alert"
@@ -201,6 +223,26 @@ export function ErrorBanner({
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium leading-5 text-red-900">{title}</p>
         <p className="text-base-xs leading-4 text-red-900/80">{hint}</p>
+        {raw && raw !== title && (
+          <details className="mt-1">
+            <summary className="cursor-pointer py-0.5 text-base-2xs text-red-900/70">
+              Details
+            </summary>
+            <p className="mt-1 break-all font-mono text-base-2xs leading-4 text-red-900/80">
+              {raw}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(raw).then(() => setCopied(true));
+              }}
+              className="mt-1.5 inline-flex items-center gap-1 text-base-2xs font-medium text-red-900/70 transition-colors hover:text-red-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
+            >
+              <Icon name={copied ? "check" : "copy"} size={12} />
+              {copied ? "Copied" : "Copy details"}
+            </button>
+          </details>
+        )}
       </div>
       <button
         type="button"
