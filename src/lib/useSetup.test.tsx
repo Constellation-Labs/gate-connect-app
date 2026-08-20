@@ -183,6 +183,57 @@ describe("useSetup: signing in", () => {
     expect(saveOrder).toBeLessThan(loginOrder);
   });
 
+  /**
+   * Re-signing in must not repoint the install.
+   *
+   * The gateway used to be `useState(DEFAULT_GATEWAY_BASE_URL)`, seeded before
+   * the account read landed and never synced, so this write sent production for
+   * an account that had been on staging. That also picks the Cognito pool
+   * `OAuthConfig::from_build_env` resolves, so the visible symptom was not a
+   * wrong URL in Settings but a sign-in that failed before the browser opened.
+   */
+  it("re-signs in against the account's own gateway, not the build default", async () => {
+    const { api } = harness({
+      account: oauthAccount({ gateway_base_url: "https://gateway-staging.example" }),
+      oauth: SIGNED_OUT,
+    });
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+
+    expect(saveAccount).toHaveBeenCalledWith("https://gateway-staging.example", null);
+    expect(saveAccount).not.toHaveBeenCalledWith(DEFAULT_GATEWAY_BASE_URL, null);
+  });
+
+  it("still uses the build default when there is no account to read one from", async () => {
+    // First run on a fresh machine: nothing on disk, so the default is the only
+    // answer, and the picker keeps overriding it.
+    const { api } = harness({ account: null, oauth: null });
+    expect(api.current!.gateway).toBe(DEFAULT_GATEWAY_BASE_URL);
+
+    act(() => api.current!.setGateway("https://gateway-staging.example"));
+    expect(api.current!.gateway).toBe("https://gateway-staging.example");
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+    expect(saveAccount).toHaveBeenCalledWith("https://gateway-staging.example", null);
+  });
+
+  /** The picker is an explicit choice and outranks the account it was made
+   *  against, or selecting a server would appear to do nothing. */
+  it("lets the picker override the account's gateway", () => {
+    const { api } = harness({
+      account: oauthAccount({ gateway_base_url: "https://gw.example" }),
+      oauth: SIGNED_OUT,
+    });
+    expect(api.current!.gateway).toBe("https://gw.example");
+
+    act(() => api.current!.setGateway("https://gateway-staging.example"));
+    expect(api.current!.gateway).toBe("https://gateway-staging.example");
+  });
+
   it("re-reads the session so the stage moves on its own", async () => {
     const { api } = harness({ account: null, oauth: null });
 
@@ -255,9 +306,12 @@ describe("useSetup: the API-key path", () => {
     });
 
     expect(oauthSignOut).toHaveBeenCalled();
-    // The gateway survives: clearing the account outright would repoint a
-    // staging install at production.
-    expect(saveAccount).toHaveBeenCalledWith(DEFAULT_GATEWAY_BASE_URL, null);
+    // The gateway survives, and it is *the account's own* - not the build
+    // default. This assertion used to name the default while the comment
+    // claimed the gateway survived, which is the bug the two together hid:
+    // signing out, then back in, rewrote a staging or local account with the
+    // production URL.
+    expect(saveAccount).toHaveBeenCalledWith("https://gw.example", null);
     expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false });
   });
 

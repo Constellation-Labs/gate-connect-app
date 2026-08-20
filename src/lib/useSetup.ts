@@ -116,7 +116,19 @@ export function useSetup({
   const [keyPaneOpen, setKeyPaneOpen] = useState(false);
   const [apiKey, setApiKeyValue] = useState("");
   const [deviceNameDraft, setDeviceNameDraft] = useState("");
-  const [gateway, setGatewayValue] = useState(DEFAULT_GATEWAY_BASE_URL);
+  // The picker's explicit choice, null until the user makes one.
+  //
+  // The effective gateway is *derived* rather than seeded into state, because the
+  // account lands a beat after mount and a `useState` initialiser would freeze
+  // the build default before it arrives. That is how re-signing in came to
+  // rewrite a staging or local install's account with the production URL: the
+  // picker showed production, `signIn` persisted it, and `OAuthConfig::from_build_env`
+  // then resolved its pool from the *new* host - so a build carrying only one
+  // pool's credentials failed with "OAuth is not configured in this build"
+  // before the browser ever opened. `useSettingsActions.upgradeToOAuth` avoids
+  // `signIn` for this exact reason; the hazard belongs fixed here instead.
+  const [gatewayChoice, setGatewayChoice] = useState<string | null>(null);
+  const gateway = gatewayChoice ?? account?.gateway_base_url ?? DEFAULT_GATEWAY_BASE_URL;
   // The two pieces of stage that cannot be derived.
   //
   // `confirmationSeen`: "signed in" is true the moment the org lands, so without
@@ -356,7 +368,7 @@ export function useSetup({
     openApiKey: () => setKeyPaneOpen(true),
     closeApiKey: () => setKeyPaneOpen(false),
     setApiKey: setApiKeyValue,
-    setGateway: setGatewayValue,
+    setGateway: setGatewayChoice,
     connectWithApiKey,
     loadOrgs,
     selectOrg: setSelectedOrgId,
