@@ -309,7 +309,10 @@ test.describe("new UI: the two ways back to first run", () => {
       oauth: { signed_in: false, email: null, expires_at_unix: 0 },
     });
 
-    await app.page.getByRole("button", { name: "Continue with Gate account" }).click();
+    // The account survives a disconnect, so this is the reauth pane: "Session
+    // expired", and the primary reads "Sign in again" rather than the first-run
+    // wording. That is the button the report came from.
+    await app.page.getByRole("button", { name: "Sign in again" }).click();
 
     await expect
       .poll(() => app.lastCall("save_account"))
