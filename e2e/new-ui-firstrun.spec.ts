@@ -20,7 +20,7 @@ test.describe("new UI first run", () => {
   test("no account lands on sign-in, not the app shell", async ({ boot }) => {
     const app = await boot({ account: null, oauth: { signed_in: false, email: null, expires_at_unix: 0 } });
 
-    await expect(app.page.getByRole("heading", { name: "Welcome to Gate Connect" })).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "Gate Connect" })).toBeVisible();
     // No sidebar: there is nothing to navigate to yet.
     await expect(app.page.getByRole("navigation", { name: "Main" })).toHaveCount(0);
   });
@@ -33,7 +33,7 @@ test.describe("new UI first run", () => {
       oauth: { signed_in: false, email: null, expires_at_unix: 0 },
     });
 
-    await app.page.getByRole("button", { name: "Sign in with Constellation" }).click();
+    await app.page.getByRole("button", { name: "Continue with Gate account" }).click();
 
     // The account has to exist on disk for the sign-in to record OAuth against.
     await expect.poll(() => app.lastCall("save_account")).toMatchObject({ apiKey: null });
@@ -46,6 +46,32 @@ test.describe("new UI first run", () => {
     await expect
       .poll(() => app.lastCall("set_org"))
       .toEqual({ orgId: "org-2", orgName: "Side Project" });
+    // The machine is named before any app is chosen, which is the order the
+    // Auth flow's own copy promises.
+    await expect(app.page.getByRole("heading", { name: "Name this device" })).toBeVisible();
+    await app.page.getByRole("button", { name: "Skip naming" }).click();
+    await expect(app.page.getByRole("heading", { name: "You're connected" })).toBeVisible();
+  });
+
+  test("names the device between connecting and the confirmation", async ({ boot }) => {
+    const app = await boot({
+      account: null,
+      oauth: { signed_in: false, email: null, expires_at_unix: 0 },
+      orgs: [{ orgId: "org-1", name: "Only Org", slug: "only", role: "admin" }],
+    });
+
+    await app.page.getByRole("button", { name: "Continue with Gate account" }).click();
+
+    const name = app.page.getByLabel("Device name");
+    await expect(name).toBeVisible();
+    // Refused while the field is empty: skipping is the way past, not an empty
+    // Continue that would write a blank name and clear the override.
+    await expect(app.page.getByRole("button", { name: "Continue" })).toBeDisabled();
+
+    await name.fill("Studio Mac");
+    await app.page.getByRole("button", { name: "Continue" }).click();
+
+    await expect.poll(() => app.lastCall("set_device_name")).toEqual({ name: "Studio Mac" });
     await expect(app.page.getByRole("heading", { name: "You're connected" })).toBeVisible();
   });
 
@@ -56,12 +82,13 @@ test.describe("new UI first run", () => {
       orgs: [{ orgId: "org-1", name: "Only Org", slug: "only", role: "admin" }],
     });
 
-    await app.page.getByRole("button", { name: "Sign in with Constellation" }).click();
+    await app.page.getByRole("button", { name: "Continue with Gate account" }).click();
 
     await expect.poll(() => app.lastCall("set_org")).toEqual({
       orgId: "org-1",
       orgName: "Only Org",
     });
+    await app.page.getByRole("button", { name: "Skip naming" }).click();
     await expect(app.page.getByRole("heading", { name: "You're connected" })).toBeVisible();
   });
 
@@ -71,13 +98,18 @@ test.describe("new UI first run", () => {
       oauth: { signed_in: false, email: null, expires_at_unix: 0 },
     });
 
-    await app.page.getByRole("button", { name: "Use a Gate API key instead" }).click();
-    await app.page.getByLabel("Gate API key").fill("sk-gw-pasted");
-    await app.page.getByRole("button", { name: "Connect" }).click();
+    // The key is a destination of its own, not a form that unfolds under the
+    // sign-in buttons.
+    await app.page.getByRole("button", { name: "Use an API key" }).click();
+    await expect(app.page.getByRole("heading", { name: "Use an API key" })).toBeVisible();
+    await app.page.getByLabel("API key").fill("sk-gw-pasted");
+    await app.page.getByRole("button", { name: "Connect and continue" }).click();
 
     await expect.poll(() => app.lastCall("save_account")).toMatchObject({
       apiKey: "sk-gw-pasted",
     });
+    // The key route names the device too - the pane's copy says so.
+    await app.page.getByRole("button", { name: "Skip naming" }).click();
     await expect(app.page.getByRole("heading", { name: "You're connected" })).toBeVisible();
   });
 
@@ -90,7 +122,8 @@ test.describe("new UI first run", () => {
       orgs: [{ orgId: "org-1", name: "Only Org", slug: "only", role: "admin" }],
     });
 
-    await app.page.getByRole("button", { name: "Sign in with Constellation" }).click();
+    await app.page.getByRole("button", { name: "Continue with Gate account" }).click();
+    await app.page.getByRole("button", { name: "Skip naming" }).click();
     await app.page.getByRole("button", { name: "Turn on routing" }).click();
 
     await expect.poll(() => app.calls().then((c) => c.some((x) => x.cmd === "proxy_enable"))).toBe(
@@ -143,7 +176,7 @@ test.describe("new UI: the two ways back to first run", () => {
     expect(disable).toBeGreaterThanOrEqual(0);
     expect(disable).toBeLessThan(clear);
 
-    await expect(app.page.getByRole("heading", { name: "Welcome to Gate Connect" })).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "Gate Connect" })).toBeVisible();
   });
 
   test("disconnect ends the session and keeps the account", async ({ boot }) => {

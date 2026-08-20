@@ -32,13 +32,18 @@ export interface Saving {
 }
 
 /**
- * Action pills. Text sits at the palette's 900 level; the 100 backgrounds are
- * inferred from that pairing rather than sampled from Figma.
+ * Action pills. Every fill was read off the pixels of `Overview-partly-routed-1`
+ * on 2026-08-20: `red/200`, `amber/200`, `violet/200`, at a 2px radius with 8/4
+ * padding and an 8px gap. Text sits at the matching 900.
+ *
+ * **Violet, not purple.** The drawn REDACT fill is `#ddd6fe`, which is violet/200;
+ * purple/200 is `#e9d5ff`. The same mistake was in `chart.redacted`. Nothing else
+ * in this palette is violet, so it is easy to "correct" back by eye - don't.
  */
 const ACTION_STYLES: Record<PolicyAction, string> = {
-  block: "bg-red-100 text-red-900",
-  flag: "bg-amber-100 text-amber-900",
-  redact: "bg-purple-100 text-purple-900",
+  block: "bg-red-200 text-red-900",
+  flag: "bg-amber-200 text-amber-900",
+  redact: "bg-violet-200 text-violet-900",
 };
 
 export function Overview({
@@ -120,7 +125,7 @@ function PolicyTable({
               </td>
               <td className="py-3 text-right">
                 <span
-                  className={`inline-block rounded-base px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
+                  className={`inline-block rounded-sm px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
                 >
                   {policy.action}
                 </span>
@@ -185,8 +190,8 @@ function SavingsTable({
 function StatusPill({ on }: { on: boolean }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-base px-1.5 py-0.5 text-base-xs font-medium leading-4 ${
-        on ? "bg-green-100 text-green-900" : "bg-neutral-100 text-neutral-600"
+      className={`inline-flex items-center gap-2 rounded-sm px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${
+        on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-neutral-600"
       }`}
     >
       {on && <Icon name="check" size={12} />}

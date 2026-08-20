@@ -76,9 +76,11 @@ import {
 } from "./components/gc/dialogs";
 import type { GateModelOption } from "./components/gc/dialogs";
 import {
+  ApiKeyPane,
   ConnectedPane,
   DiagnosticsPane,
   GatewayPicker,
+  NameDevicePane,
   OrgPickerPane,
   SetupLayout,
   WelcomePane,
@@ -674,6 +676,9 @@ export function NewUiApp() {
     // `undefined` while the preference read is in flight, which is not the same as
     // unanswered - see the note on the hook's argument.
     diagnosticsAnswered: prefs?.share_diagnostics_recorded,
+    // Same `undefined` distinction: null means the name follows the hostname,
+    // and no preferences at all means the read has not landed.
+    deviceNamed: prefs ? prefs.device_name !== null : undefined,
   });
 
   const settings = useSettingsActions({
@@ -943,6 +948,15 @@ export function NewUiApp() {
   }
   if (setup.stage.kind !== "ready") {
     const stage = setup.stage;
+    const gatewayPicker = (
+      <GatewayPicker
+        value={setup.gateway}
+        servers={GATEWAY_SERVERS}
+        open={gatewayOpen}
+        onOpenChange={setGatewayOpen}
+        onSelect={setup.setGateway}
+      />
+    );
     return (
       <SetupLayout
         menuOpen={menuOpen}
@@ -953,23 +967,21 @@ export function NewUiApp() {
           <WelcomePane
             reauth={stage.reauth}
             onSignIn={() => void setup.signIn()}
-            apiKeyOpen={setup.apiKeyOpen}
-            onToggleApiKey={setup.toggleApiKey}
-            apiKey={setup.apiKey}
-            onApiKeyChange={setup.setApiKey}
-            onConnectWithApiKey={() => void setup.connectWithApiKey()}
+            onUseApiKey={setup.openApiKey}
             // The card had no way to name the gateway it was about to sign in
             // against, so the new shell could only ever reach the build's
             // default - the popover has offered this since first run existed.
-            gateway={
-              <GatewayPicker
-                value={setup.gateway}
-                servers={GATEWAY_SERVERS}
-                open={gatewayOpen}
-                onOpenChange={setGatewayOpen}
-                onSelect={setup.setGateway}
-              />
-            }
+            gateway={gatewayPicker}
+            busy={setup.busy}
+            error={setupError && <SetupNote error={setupError} />}
+          />
+        ) : stage.kind === "api-key" ? (
+          <ApiKeyPane
+            apiKey={setup.apiKey}
+            onApiKeyChange={setup.setApiKey}
+            onConnect={() => void setup.connectWithApiKey()}
+            onGoBack={setup.closeApiKey}
+            gateway={gatewayPicker}
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
           />
@@ -979,7 +991,20 @@ export function NewUiApp() {
             selectedId={setup.selectedOrgId}
             onSelect={setup.selectOrg}
             onContinue={() => void setup.confirmOrg()}
-            onUseApiKey={setup.useApiKeyInstead}
+            // The design draws both affordances on the dead end and both mean
+            // the same thing here: the session is already spent, so the only
+            // way back to the sign-in choice is to drop it.
+            onGoBack={() => void setup.signOut()}
+            onUseDifferentAccount={() => void setup.signOut()}
+            busy={setup.busy}
+            error={setupError && <SetupNote error={setupError} />}
+          />
+        ) : stage.kind === "name-device" ? (
+          <NameDevicePane
+            value={setup.deviceNameDraft}
+            onChange={setup.setDeviceNameDraft}
+            onContinue={() => void setup.nameDevice()}
+            onSkip={setup.skipNaming}
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
           />

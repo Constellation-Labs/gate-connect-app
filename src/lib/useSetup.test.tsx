@@ -10,9 +10,11 @@ vi.mock("./api", () => ({
   getAccount: vi.fn(),
   oauthBeginLogin: vi.fn(),
   oauthListOrgs: vi.fn(),
+  oauthSignOut: vi.fn(),
   oauthStatus: vi.fn(),
   proxyEnable: vi.fn(),
   saveAccount: vi.fn(),
+  setDeviceName: vi.fn(),
   setOrg: vi.fn(),
 }));
 vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
@@ -22,9 +24,11 @@ import {
   getAccount,
   oauthBeginLogin,
   oauthListOrgs,
+  oauthSignOut,
   oauthStatus,
   proxyEnable,
   saveAccount,
+  setDeviceName,
   setOrg,
 } from "./api";
 import { markOAuthOfferSeen } from "./oauthOffer";
@@ -66,6 +70,7 @@ function harness(initial: {
   account?: Account | null;
   oauth?: OAuthStatus | null;
   proxyRunning?: boolean;
+  deviceNamed?: boolean;
 }) {
   const api: { current: ReturnType<typeof useSetup> | null } = { current: null };
   const onProxy = vi.fn();
@@ -82,6 +87,7 @@ function harness(initial: {
       oauth: session.oauth,
       onSession: setSession,
       onProxy,
+      deviceNamed: initial.deviceNamed,
     });
     return null;
   }
@@ -99,6 +105,8 @@ beforeEach(() => {
   (proxyEnable as Mock).mockResolvedValue({ running: true });
   (getAccount as Mock).mockResolvedValue(oauthAccount());
   (oauthStatus as Mock).mockResolvedValue(SIGNED_IN);
+  (oauthSignOut as Mock).mockResolvedValue(undefined);
+  (setDeviceName as Mock).mockResolvedValue(undefined);
 });
 afterEach(cleanup);
 
@@ -229,19 +237,81 @@ describe("useSetup: the API-key path", () => {
     expect(saveAccount).not.toHaveBeenCalled();
   });
 
-  it("escapes the org-picker dead end to the key form", async () => {
-    // Signed in, no organization, no admin to ask: the key form is the only way
-    // forward, and derivation alone would keep returning to the picker.
+  it("escapes the org-picker dead end by dropping the session", async () => {
+    // Signed in, no organization, no admin to ask. `Auth / Organizations` sends
+    // this back to the sign-in choice rather than sideways into the key form:
+    // an account with nothing to route for cannot go forward, and both drawn
+    // affordances - "Go back" and "Use a different account" - mean this.
     const { api } = harness({
       account: oauthAccount({ org_id: null, org_name: null }),
       oauth: SIGNED_IN,
     });
     expect(api.current!.stage.kind).toBe("org-picker");
 
-    act(() => api.current!.useApiKeyInstead());
+    (getAccount as Mock).mockResolvedValue(null);
+    (oauthStatus as Mock).mockResolvedValue(SIGNED_OUT);
+    await act(async () => {
+      await api.current!.signOut();
+    });
 
+    expect(oauthSignOut).toHaveBeenCalled();
+    // The gateway survives: clearing the account outright would repoint a
+    // staging install at production.
+    expect(saveAccount).toHaveBeenCalledWith(DEFAULT_GATEWAY_BASE_URL, null);
     expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false });
-    expect(api.current!.apiKeyOpen).toBe(true);
+  });
+
+  it("opens the key route as its own pane, and goes back", () => {
+    const { api } = harness({ account: null, oauth: null });
+
+    act(() => api.current!.openApiKey());
+    expect(api.current!.stage).toEqual({ kind: "api-key" });
+
+    act(() => api.current!.closeApiKey());
+    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false });
+  });
+
+  it("names the device after a sign-in, before confirming", async () => {
+    const { api } = harness({ account: null, oauth: null, deviceNamed: false });
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+    expect(api.current!.stage).toEqual({ kind: "name-device" });
+
+    act(() => api.current!.setDeviceNameDraft("Chad's Macbook Pro"));
+    await act(async () => {
+      await api.current!.nameDevice();
+    });
+
+    expect(setDeviceName).toHaveBeenCalledWith("Chad's Macbook Pro");
+    // Does not wait on the preferences re-read that flips `deviceNamed`.
+    expect(api.current!.stage).toEqual({ kind: "connected" });
+  });
+
+  it("lets naming be skipped, and does not ask again", async () => {
+    const { api } = harness({ account: null, oauth: null, deviceNamed: false });
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+    expect(api.current!.stage).toEqual({ kind: "name-device" });
+
+    act(() => api.current!.skipNaming());
+
+    expect(setDeviceName).not.toHaveBeenCalled();
+    expect(api.current!.stage).toEqual({ kind: "connected" });
+  });
+
+  it("never asks a returning user to name a machine that follows the hostname", () => {
+    // `device_name` is null for everyone who never renamed, so deriving from it
+    // alone would greet them with the pane on every launch.
+    const { api } = harness({
+      account: oauthAccount(),
+      oauth: SIGNED_IN,
+      deviceNamed: false,
+    });
+    expect(api.current!.stage).toEqual({ kind: "ready" });
   });
 });
 

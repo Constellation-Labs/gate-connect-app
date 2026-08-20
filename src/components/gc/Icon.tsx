@@ -39,6 +39,7 @@ export type IconName =
   | "headset"
   | "bookOpenText"
   | "monitorSmartphone"
+  | "monitor"
   | "idCard"
   | "user"
   | "receipt"
@@ -247,6 +248,15 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M10 19v-3.96" />
       <path d="M7 19h5" />
       <rect width="6" height="10" x="16" y="12" rx="2" />
+    </>
+  ),
+  // Lucide `Monitor`. The Auth flow's "Name this device" pane is drawn with a
+  // plain display, not the monitor-plus-phone pair `monitorSmartphone` draws.
+  monitor: (
+    <>
+      <rect width="20" height="14" x="2" y="3" rx="2" />
+      <path d="M8 21h8" />
+      <path d="M12 17v4" />
     </>
   ),
   idCard: (

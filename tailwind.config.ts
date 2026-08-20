@@ -170,7 +170,7 @@ export default {
           messages: "#60a5fa", // tailwind blue/400
           blocked: "#f87171", // tailwind red/400
           flagged: "#fbbf24", // tailwind amber/400
-          redacted: "#a855f7", // tailwind purple/500
+          redacted: "#8b5cf6", // tailwind violet/500
         },
 
         // ── Gate Connect popover palette (Claude Design handoff). ──
