@@ -111,12 +111,15 @@ export function Sidebar({
   /** Opens the per-app pane. */
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
-  /** Re-run detection now. Omitted leaves the control out entirely, on the same
-   * rule the Settings rows follow: a button that does nothing is worse than no
-   * button. */
+  /** Re-run detection now, for the inventory card's Refresh / Try again. There is
+   * no control for this while the list has rows: detection polls itself, so a
+   * tool installed while the window is open appears on its own. The card keeps
+   * one because a *failed* scan is a state the user may want to retry against
+   * rather than wait out. Omitted leaves it out entirely, on the same rule the
+   * Settings rows follow: a button that does nothing is worse than no button. */
   onRefresh?: () => void;
-  /** A scan is in flight; the control refuses clicks and says so to assistive
-   * technology. */
+  /** A scan is in flight; the card's control refuses clicks and says so to
+   * assistive technology. */
   refreshing?: boolean;
   /** What the last scan actually established. Omitted keeps the old behaviour of
    * rendering the list and nothing else. */
@@ -167,28 +170,6 @@ export function Sidebar({
               <span>
                 {protectedCount}/{apps.length}
               </span>
-              {/* Provisional: the Figma draws no refresh control. Detection only
-                  ran on backend events, so installing a tool while this window
-                  was open showed nothing until something unrelated changed it.
-                  Small and unlabelled because it sits in a 12px eyebrow - the
-                  glyph carries an aria-label rather than visible text. */}
-              {/* Hidden while the inventory card is showing: that card carries its
-                  own Refresh, and two controls for one action in a 250px rail is
-                  one too many. */}
-              {onRefresh && (!inventory || inventory.kind === "ok") && (
-                <button
-                  type="button"
-                  onClick={onRefresh}
-                  aria-label="Refresh apps"
-                  aria-busy={refreshing || undefined}
-                  disabled={refreshing}
-                  className="flex size-5 items-center justify-center rounded-base text-base-muted-foreground transition-colors hover:bg-gray-100 hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {/* No spinner: the scan is fast enough that one would flash.
-                      `aria-busy` plus the disabled state is the whole signal. */}
-                  <Icon name="refresh" size={12} />
-                </button>
-              )}
             </h2>
 
             {inventory && inventory.kind !== "ok" ? (

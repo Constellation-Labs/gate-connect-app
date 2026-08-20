@@ -449,6 +449,66 @@ pub(crate) const GATE_AUTHORIZATION_HEADER: &str = "x-gate-authorization";
 /// Selected-org header, injected alongside the OAuth token (the gateway
 /// requires it on every OAuth request).
 pub(crate) const GATE_ORG_HEADER: &str = "x-gate-org-id";
+/// This installation's id, so the activity view can group traffic by machine.
+/// Self-asserted and non-secret: it identifies nothing to authorize against.
+pub(crate) const GATE_INSTALL_ID_HEADER: &str = "x-gate-install-id";
+/// Which tool sent the request, when we can tell. Feeds the per-tool series in
+/// the activity view.
+pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
+
+/// Stamp the attribution headers the activity view groups by.
+///
+/// Deliberately infallible. These headers exist so a dashboard can say "this
+/// machine, this tool"; the request they ride on is carrying the user's actual
+/// work. Anything we can't determine - no install id, an id the header codec
+/// rejects, an unrecognised client - is simply left off, and the gateway
+/// records that request as unattributed exactly as it did before attribution
+/// existed. Failing a request to protect a chart would be the wrong trade.
+///
+/// Any value the caller sent is overwritten: a tool cannot label its traffic as
+/// another machine's.
+fn inject_attribution(headers: &mut HeaderMap) {
+    headers.remove(GATE_INSTALL_ID_HEADER);
+    if let Some(id) = crate::primitives::install_id_cached() {
+        if let Ok(value) = HeaderValue::from_str(id) {
+            headers.insert(HeaderName::from_static(GATE_INSTALL_ID_HEADER), value);
+        }
+    }
+    let tool = client_tool(headers);
+    headers.remove(GATE_CLIENT_HEADER);
+    if let Some(slug) = tool {
+        headers.insert(
+            HeaderName::from_static(GATE_CLIENT_HEADER),
+            HeaderValue::from_static(slug),
+        );
+    }
+}
+
+/// Guess which tool sent a request from its own `User-Agent`.
+///
+/// A heuristic, and the honest ceiling of what either path can know: the relay
+/// is keyed by provider slug rather than by tool, and the MITM engine sees only
+/// a CONNECT to a host. Matching is substring-based because these agents append
+/// their own versions and platform strings, which we don't want to track.
+///
+/// Unrecognised is `None`, never a guess. A wrong slug is worse than no slug:
+/// it would attribute one tool's traffic to another in a view the user reads to
+/// find out what their machine is doing.
+fn client_tool(headers: &HeaderMap) -> Option<&'static str> {
+    let ua = headers.get(hyper::header::USER_AGENT)?.to_str().ok()?;
+    let ua = ua.to_ascii_lowercase();
+    // `claude-cli` is Claude Code's agent; the rest identify themselves by name.
+    // Slugs match `registry::ToolId::slug`, so one tool is one series.
+    [
+        ("claude-cli", "claude-code"),
+        ("codex", "codex"),
+        ("opencode", "opencode"),
+        ("openclaw", "openclaw"),
+        ("hermes", "hermes"),
+    ]
+    .into_iter()
+    .find_map(|(needle, slug)| ua.contains(needle).then_some(slug))
+}
 
 /// Inject the live Gate credential into `headers`, the single precedence rule
 /// shared by the MITM engine ([`engine::apply_rewrite`]) and the loopback
@@ -461,12 +521,17 @@ pub(crate) const GATE_ORG_HEADER: &str = "x-gate-org-id";
 /// added: a non-empty `oauth_token` wins - `X-Gate-Authorization: Bearer
 /// <token>` plus `X-Gate-Org-Id` when `org_id` is `Some` - otherwise the legacy
 /// `X-Gate-Api-Key`.
+///
+/// Attribution ([`inject_attribution`]) is stamped either way: it says which
+/// machine the request left, which is true no matter whose credential carries
+/// it, and it is not a credential decision.
 pub(crate) fn inject_gate_credential(
     headers: &mut HeaderMap,
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
 ) -> Result<()> {
+    inject_attribution(headers);
     if headers.contains_key(GATE_KEY_HEADER) {
         return Ok(());
     }
@@ -1835,5 +1900,87 @@ mod tests {
 
         crate::env::set_app_support_dir_for_tests(None);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The `User-Agent` guess is the only tool signal either path has, so its
+    /// misses matter as much as its hits.
+    #[test]
+    fn identifies_a_tool_only_when_its_agent_says_so() {
+        let tool = |ua: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                hyper::header::USER_AGENT,
+                HeaderValue::from_str(ua).unwrap(),
+            );
+            client_tool(&h)
+        };
+
+        assert_eq!(
+            tool("claude-cli/2.1.0 (external, cli)"),
+            Some("claude-code")
+        );
+        assert_eq!(tool("codex_cli_rs/0.55.0"), Some("codex"));
+        assert_eq!(tool("opencode/0.4.2"), Some("opencode"));
+        // Case is the tool's business, not ours: one tool has to be one series.
+        assert_eq!(tool("Codex/1.0"), Some("codex"));
+
+        // No agent, or one we don't recognise, is unattributed - never a guess.
+        // A wrong slug would put one tool's traffic under another's name in the
+        // very view the user reads to find out what their machine is doing.
+        assert_eq!(client_tool(&HeaderMap::new()), None);
+        assert_eq!(tool("curl/8.7.1"), None);
+        assert_eq!(tool("Mozilla/5.0 (Macintosh) Chrome/120"), None);
+    }
+
+    /// Attribution is stamped from our own state, never from the caller's.
+    #[test]
+    fn attribution_overwrites_whatever_the_caller_claimed() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(GATE_INSTALL_ID_HEADER),
+            HeaderValue::from_static("someone-elses-machine"),
+        );
+        h.insert(
+            HeaderName::from_static(GATE_CLIENT_HEADER),
+            HeaderValue::from_static("claude-code"),
+        );
+
+        inject_attribution(&mut h);
+
+        // The client header is derived from the User-Agent, and there is none
+        // here, so the claim is dropped rather than believed.
+        assert_eq!(h.get(GATE_CLIENT_HEADER), None);
+        // Whatever the id resolves to, it is ours or it is absent - a local
+        // process cannot label its traffic as another installation's.
+        let claimed = h
+            .get(GATE_INSTALL_ID_HEADER)
+            .map(|v| v.to_str().unwrap().to_string());
+        assert_ne!(claimed.as_deref(), Some("someone-elses-machine"));
+        assert_eq!(claimed.as_deref(), crate::primitives::install_id_cached());
+    }
+
+    /// Attribution rides alongside the credential decision without touching it.
+    #[test]
+    fn a_caller_supplied_key_still_gets_attributed() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(GATE_KEY_HEADER),
+            HeaderValue::from_static("sk-gw-callers-own"),
+        );
+        h.insert(
+            hyper::header::USER_AGENT,
+            HeaderValue::from_static("claude-cli/2.1.0"),
+        );
+
+        inject_gate_credential(&mut h, "sk-gw-ours", Some("token"), Some("org")).unwrap();
+
+        // The credential is left exactly as it arrived: that branch is the
+        // caller's to own.
+        assert_eq!(h.get(GATE_KEY_HEADER).unwrap(), "sk-gw-callers-own");
+        assert_eq!(h.get(GATE_AUTHORIZATION_HEADER), None);
+        // The request still left this machine, from this tool, so it is still
+        // attributable. Failing to record that would leave an unexplained hole
+        // in the activity view.
+        assert_eq!(h.get(GATE_CLIENT_HEADER).unwrap(), "claude-code");
     }
 }

@@ -58,9 +58,11 @@ test.describe("new UI routing", () => {
     const app = await boot(driftedCodex);
 
     // The card's switch reads off: the app is not protected. This is the path
-    // that re-adopts, and the only one that reaches the review gate.
+    // that re-adopts, and the only one that reaches the review gate. Its
+    // accessible name is the notice's own ("Let Gate Connect manage Codex"),
+    // which is what distinguishes it from the sidebar row's switch.
     await expect(app.page.getByText(/isn't protected/)).toBeVisible();
-    const cardSwitch = app.page.getByRole("switch", { name: "Codex" }).last();
+    const cardSwitch = app.page.getByRole("switch", { name: "Let Gate Connect manage Codex" });
     await expect(cardSwitch).toHaveAttribute("aria-checked", "false");
 
     await cardSwitch.click();
@@ -79,7 +81,7 @@ test.describe("new UI routing", () => {
   test("declining the review leaves the config alone", async ({ boot }) => {
     const app = await boot(driftedCodex);
 
-    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+    await app.page.getByRole("switch", { name: "Let Gate Connect manage Codex" }).click();
     await app.page.getByRole("button", { name: "Keep existing config" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -282,33 +284,47 @@ test.describe("new UI drift repair", () => {
  * detection."
  *
  * Detection only ran on backend events, so installing a tool while this window
- * was open showed nothing until something unrelated repainted it.
+ * was open showed nothing until something unrelated repainted it. It was a manual
+ * control first; now the window polls, and the control is gone from the eyebrow.
  */
 test.describe("new UI: refreshing the inventory", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
   });
 
-  test("the refresh control re-reads tools and re-runs the routing sweep", async ({ boot }) => {
+  const countOf = async (app: { calls: () => Promise<{ cmd: string }[]> }, cmd: string) =>
+    (await app.calls()).filter((c) => c.cmd === cmd).length;
+
+  test("the tool list is re-read with nothing asking it to be", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    const before = (await app.calls()).filter((c) => c.cmd === "list_tools").length;
-    await app.page.getByRole("button", { name: "Refresh apps" }).click();
-
+    const before = await countOf(app, "list_tools");
+    // No click anywhere: there is no control for this any more. The timeouts in
+    // this describe block are all several polling periods, not a guess.
     await expect
-      .poll(async () => (await app.calls()).filter((c) => c.cmd === "list_tools").length)
+      .poll(() => countOf(app, "list_tools"), { timeout: 20_000 })
       .toBeGreaterThan(before);
-    // The sweep rides along: a tool that just appeared has no verdict yet, and
-    // leaving the old ones on screen would describe a different set of tools.
-    await expect
-      .poll(async () => (await app.calls()).filter((c) => c.cmd === "routing_verdicts").length)
-      .toBeGreaterThan(1);
   });
 
-  test("a tool installed while the window was open appears on refresh", async ({ boot }) => {
+  test("a poll that finds nothing new does not re-run the routing sweep", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+    await expect.poll(() => countOf(app, "routing_verdicts")).toBeGreaterThan(0);
+
+    // The sweep probes the relay and the gateway, so it is the one reading that
+    // must not ride a timer. An unchanged machine costs the two local reads only.
+    const sweeps = await countOf(app, "routing_verdicts");
+    const polls = await countOf(app, "list_tools");
+    await expect
+      .poll(() => countOf(app, "list_tools"), { timeout: 30_000 })
+      .toBeGreaterThan(polls + 1);
+    expect(await countOf(app, "routing_verdicts")).toBe(sweeps);
+  });
+
+  test("a tool installed while the window was open appears on its own", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
     await expect(app.page.getByRole("switch", { name: "Codex" })).toHaveCount(0);
+    const sweeps = await countOf(app, "routing_verdicts");
 
     await app.patch({
       tools: [
@@ -322,12 +338,16 @@ test.describe("new UI: refreshing the inventory", () => {
         },
       ],
     });
-    // Starting from an empty list, so the control on screen is the inventory
-    // card's Refresh - the eyebrow one is hidden while that card shows.
-    await app.page.getByRole("button", { name: "Refresh", exact: true }).click();
 
-    await expect(app.page.getByRole("switch", { name: "Codex" }).first()).toBeVisible();
+    await expect(app.page.getByRole("switch", { name: "Codex" }).first()).toBeVisible({
+      timeout: 20_000,
+    });
     await expect(app.page.getByText("No apps detected")).toHaveCount(0);
+    // The sweep rides a change: a tool that just appeared has no verdict yet, and
+    // its row would sit on "Checking" until something unrelated repainted it.
+    await expect
+      .poll(() => countOf(app, "routing_verdicts"), { timeout: 20_000 })
+      .toBeGreaterThan(sweeps);
   });
 });
 
@@ -349,8 +369,9 @@ test.describe("new UI: an empty inventory", () => {
 
     await expect(app.page.getByText("No apps detected")).toBeVisible();
     await expect(app.page.getByText(/^Checked /)).toBeVisible();
-    // The card's own control. The eyebrow one is hidden while this card shows,
-    // so there is exactly one Refresh on screen.
+    // The card keeps a control of its own - a scan may have failed and be worth
+    // retrying against rather than waiting out. It is the only one on screen: the
+    // eyebrow's was removed when detection started polling.
     await expect(app.page.getByRole("button", { name: "Refresh", exact: true })).toBeVisible();
     await expect(app.page.getByRole("button", { name: "Refresh apps" })).toHaveCount(0);
   });
@@ -365,7 +386,11 @@ test.describe("new UI: an empty inventory", () => {
     await expect(app.page.getByText("Couldn’t check for apps")).toBeVisible();
     // The distinction that matters: it must not claim the device is clean.
     await expect(app.page.getByText("No apps detected")).toHaveCount(0);
-    await expect(app.page.getByRole("button", { name: "Try again" })).toBeVisible();
+    // `exact`, for the same reason the Refresh assertion above uses it: the
+    // Overview's activity notices offer their own retry, named "Try again:
+    // <section>" so a screen reader can tell three identically-worded buttons
+    // apart. Substring matching would find those too.
+    await expect(app.page.getByRole("button", { name: "Try again", exact: true })).toBeVisible();
   });
 
   test("neither state appears once apps are found", async ({ boot }) => {
@@ -386,7 +411,7 @@ test.describe("new UI: an empty inventory", () => {
     await app.page.evaluate(() => {
       window.__GATE_E2E__.state.failures = {};
     });
-    await app.page.getByRole("button", { name: "Try again" }).click();
+    await app.page.getByRole("button", { name: "Try again", exact: true }).click();
 
     // Now a real answer: the device genuinely has no tools in this fixture.
     await expect(app.page.getByText("No apps detected")).toBeVisible();

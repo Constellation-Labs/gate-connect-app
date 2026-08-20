@@ -286,14 +286,52 @@ fn backfill_account_key_prefix() -> Result<Option<String>, String> {
     account::backfill_api_key_prefix().map_err(|e| format!("{e:#}"))
 }
 
+/// Is this gateway base URL's scheme acceptable?
+///
+/// This is the IPC boundary, so the check is deliberately defensive: a
+/// compromised renderer must not be able to repoint the app at a plaintext host
+/// and harvest the key off the wire. Production rule is therefore `https` only,
+/// and `crates/core`'s `account::save` enforces the same rule again underneath.
+///
+/// Debug builds also accept `http://localhost` and `http://127.0.0.1` so the app
+/// can talk to a gateway running on this machine. Host-exact, so
+/// `http://localhost.evil.test` is still refused, and `#[cfg(debug_assertions)]`
+/// compiles it out of `tauri build` (which is `--release`). Mirrors the guard in
+/// `account::is_acceptable_gateway_url`; both must agree or the UI and the core
+/// disagree about what is valid.
+fn base_url_scheme_ok(parsed: &url::Url) -> bool {
+    if parsed.scheme() == "https" {
+        return true;
+    }
+    #[cfg(debug_assertions)]
+    if parsed.scheme() == "http" {
+        return matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"));
+    }
+    false
+}
+
+/// What [`base_url_scheme_ok`] actually enforces, in the words of the build it is
+/// compiled into.
+///
+/// Beside the check rather than at the two call sites, which both used to say
+/// "must use https" unconditionally. In a debug build that sends a developer who
+/// typoed `http://localhos:3000`, or pointed at a LAN address, off to change the
+/// scheme - which was already right. Mirrors the same fix in `account.rs`.
+fn base_url_scheme_error() -> String {
+    #[cfg(debug_assertions)]
+    return "base url must use https, or http on localhost or 127.0.0.1 exactly".into();
+    #[cfg(not(debug_assertions))]
+    return "base url must use https".into();
+}
+
 #[tauri::command]
 async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), String> {
     if base_url.len() > 2048 {
         return Err("base url is unexpectedly long (>2048 bytes)".into());
     }
     let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
-    if parsed.scheme() != "https" {
-        return Err("base url must use https".into());
+    if !base_url_scheme_ok(&parsed) {
+        return Err(base_url_scheme_error());
     }
     if parsed.host_str().is_none() {
         return Err("base url is missing a host".into());
@@ -364,8 +402,8 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
         return Err("base url is unexpectedly long (>2048 bytes)".into());
     }
     let parsed = url::Url::parse(&base_url).map_err(|e| format!("invalid base url: {e}"))?;
-    if parsed.scheme() != "https" {
-        return Err("base url must use https".into());
+    if !base_url_scheme_ok(&parsed) {
+        return Err(base_url_scheme_error());
     }
     if parsed.host_str().is_none() {
         return Err("base url is missing a host".into());
@@ -505,6 +543,120 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("set auth mode join error: {e}"))?
+}
+
+/// Fetch the 24-hour activity overview for the Overview pane (AG-572).
+///
+/// `install_id` scopes the reading to one installation (AC 1); omitted, it is
+/// org-wide, which stays the default because attribution only starts with the
+/// gateway migration that added it - scoping by default would hide every
+/// earlier request from a total the user could already see.
+///
+/// The payload stays raw JSON while the gateway contract moves; `lib/activity.ts`
+/// is the only place that models it.
+///
+/// Failures cross as a JSON envelope, `{"code":…,"message":…}`, not as prose.
+/// AG-576 requires the pane to name the cause and offer a matching action, and
+/// the front end cannot pick between Retry and Sign in by reading an English
+/// sentence. See `gate_connect_core::activity::FailureCode`.
+#[tauri::command]
+async fn activity_overview(
+    install_id: Option<String>,
+    tool: Option<String>,
+) -> Result<String, String> {
+    let tool = parse_tool(tool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::overview_json(install_id.as_deref(), tool).map_err(envelope)
+    })
+    .await
+    .map_err(|e| format!("activity overview join error: {e}"))?
+}
+
+/// Read a tool slug from the front end, or `None` for every tool.
+///
+/// An unrecognised non-empty slug is an error rather than a silent fall back to
+/// org-wide. The two sides of this boundary share one registry, so a slug that
+/// does not parse means they disagree about it - a bug worth surfacing, not a
+/// request to widen the scope. Falling back would quietly relabel every tool's
+/// traffic as the one the user selected.
+fn parse_tool(tool: Option<String>) -> Result<Option<gate_connect_core::registry::ToolId>, String> {
+    match tool.as_deref().filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(slug) => gate_connect_core::registry::ToolId::from_slug(slug)
+            .map(Some)
+            .ok_or_else(|| format!("unknown tool slug {slug:?}")),
+    }
+}
+
+/// The last overview that landed for this scope, or `None`.
+///
+/// A file read, not a network call, so the pane can paint real numbers on the
+/// frame it opens on instead of a skeleton that resolves a round trip later
+/// (AG-576). Never an error: no cache and an unreadable cache mean the same
+/// thing to the caller, which is that it waits for [`activity_overview`].
+#[tauri::command]
+async fn activity_cached_overview(
+    install_id: Option<String>,
+    tool: Option<String>,
+) -> Result<Option<String>, String> {
+    let tool = parse_tool(tool)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::cached_overview_json(install_id.as_deref(), tool)
+    })
+    .await
+    .map_err(|e| format!("cached activity join error: {e}"))
+}
+
+/// One page of a tool's recent requests, for the app pane's feed (AG-574).
+///
+/// `tool` is required here, unlike on the overview: the feed is always about one
+/// tool, and the gateway refuses a request that names none. Not cached - see
+/// `activity::tool_events_json` for why the held reading stays with the overview.
+#[tauri::command]
+async fn activity_tool_events(
+    install_id: Option<String>,
+    tool: String,
+    cursor: Option<String>,
+) -> Result<String, String> {
+    let Some(tool) = parse_tool(Some(tool))? else {
+        return Err("a tool slug is required to read a tool's events".into());
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::tool_events_json(
+            install_id.as_deref(),
+            tool,
+            cursor.as_deref(),
+        )
+        .map_err(envelope)
+    })
+    .await
+    .map_err(|e| format!("activity tool events join error: {e}"))?
+}
+
+/// List the installations this account has sent traffic from, for the Overview's
+/// installation picker. Same envelope and the same failure taxonomy as
+/// [`activity_overview`].
+#[tauri::command]
+async fn activity_installations() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::activity::installations_json)
+        .await
+        .map_err(|e| format!("activity installations join error: {e}"))?
+        .map_err(envelope)
+}
+
+/// Serialize an activity failure for the IPC boundary.
+fn envelope(f: gate_connect_core::activity::Failure) -> String {
+    serde_json::to_string(&f).unwrap_or_else(|_| {
+        // Serializing two owned strings and a unit enum cannot fail, but the
+        // fallback still has to produce *valid* JSON: `f.message` can carry an
+        // upstream error body, quotes and backslashes included, and interpolating
+        // it raw made a string that `toFailure` cannot parse - which discards the
+        // code and reports every failure as generic, exactly what this envelope
+        // exists to prevent. Serialize the message on its own so the escaping is
+        // the library's problem, and only hand-write the part that is a constant.
+        let message = serde_json::to_string(&f.message).unwrap_or_else(|_| "\"\"".into());
+        format!(r#"{{"code":"unknown","message":{message}}}"#)
+    })
 }
 
 /// List the orgs the signed-in user may act on (for the org picker). Reads the
@@ -1779,6 +1931,10 @@ pub fn run() {
                     oauth_sign_out,
                     set_auth_mode,
                     oauth_list_orgs,
+                    activity_overview,
+                    activity_installations,
+                    activity_cached_overview,
+                    activity_tool_events,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -1841,6 +1997,10 @@ pub fn run() {
                     oauth_sign_out,
                     set_auth_mode,
                     oauth_list_orgs,
+                    activity_overview,
+                    activity_installations,
+                    activity_cached_overview,
+                    activity_tool_events,
                     set_org,
                     app_platform,
                     diagnostics,

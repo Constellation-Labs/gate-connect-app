@@ -118,6 +118,7 @@ export function AlertBanner({
   body,
   on,
   switchLabel,
+  busy,
   onToggle,
   onDismiss,
   paging,
@@ -127,6 +128,9 @@ export function AlertBanner({
   on: boolean;
   /** Accessible name for the switch, which the visible title does not supply. */
   switchLabel: string;
+  /** The action this banner offers is in flight. Threaded to the switch so the
+   *  remedy cannot be started twice while the first attempt is still writing. */
+  busy?: boolean;
   onToggle: () => void;
   onDismiss: () => void;
   /** Present only in the multiple-apps variant. */
@@ -143,7 +147,7 @@ export function AlertBanner({
       </div>
 
       <div className="flex shrink-0 items-center gap-3">
-        <BaseSwitch on={on} label={switchLabel} onClick={onToggle} />
+        <BaseSwitch on={on} label={switchLabel} busy={busy} onClick={onToggle} />
         <button
           type="button"
           onClick={onDismiss}

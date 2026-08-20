@@ -51,6 +51,7 @@ export type IconName =
   | "codeXml"
   | "circleCheck"
   | "circleX"
+  | "messageCircleX"
   | "creditCard";
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -332,6 +333,16 @@ const PATHS: Record<IconName, JSX.Element> = {
   circleX: (
     <>
       <circle cx="12" cy="12" r="10" />
+      <path d="m15 9-6 6" />
+      <path d="m9 9 6 6" />
+    </>
+  ),
+  // Lucide `message-circle-x`. The empty-activity glyph: a conversation that did
+  // not happen, rather than a warning - nothing is wrong when no one sent
+  // anything.
+  messageCircleX: (
+    <>
+      <path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" />
       <path d="m15 9-6 6" />
       <path d="m9 9 6 6" />
     </>

@@ -159,8 +159,8 @@ fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
 // injection rule live in the parent module so the relay and the MITM engine
 // can't drift; this module just references them.
 use super::{
-    inject_gate_credential, GATE_AUTHORIZATION_HEADER, GATE_KEY_HEADER, GATE_ORG_HEADER,
-    UPSTREAM_URL_HEADER,
+    inject_gate_credential, GATE_AUTHORIZATION_HEADER, GATE_CLIENT_HEADER, GATE_INSTALL_ID_HEADER,
+    GATE_KEY_HEADER, GATE_ORG_HEADER, UPSTREAM_URL_HEADER,
 };
 
 /// Everything a relay connection needs, shared across all requests.
@@ -703,6 +703,11 @@ fn strip_gate_headers(headers: &mut HeaderMap) {
     headers.remove(GATE_AUTHORIZATION_HEADER);
     headers.remove(GATE_KEY_HEADER);
     headers.remove(GATE_ORG_HEADER);
+    // Attribution is for Gate's own activity view. A provider has no business
+    // learning which machine or which tool this was, so it goes no further even
+    // though the passthrough path never stamps it itself.
+    headers.remove(GATE_INSTALL_ID_HEADER);
+    headers.remove(GATE_CLIENT_HEADER);
 }
 
 /// Hop-by-hop headers must not be forwarded end-to-end (RFC 9110 §7.6.1).

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
-import { BaseSwitch, Card } from "./base";
+import { BaseSwitch, Card, EmptyNote, Skeleton } from "./base";
 import { Icon } from "./Icon";
-import { EmptyNote, MessagesChart, StatTiles } from "./metrics";
+import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
 
 /**
@@ -15,21 +15,11 @@ import type { MessagesBucket, UsageStats } from "./metrics";
 
 export type ModelChoice = "app" | "gate";
 
-export type ActivityStatus = "success" | "error";
-export type ActivitySecurity = "allow" | "flagged" | "redacted" | "blocked";
-
-export interface ActivityEntry {
-  id: string;
-  /** Pre-formatted upstream so this pane stays locale-agnostic. */
-  time: string;
-  status: ActivityStatus;
-  security: ActivitySecurity;
-  /** What the conversation was about. */
-  title: string;
-  /** Conversation identifier, rendered mono. */
-  reference: string;
-  onView: () => void;
-}
+// The feed's row type lives in `lib/` with the adapter that produces it; see
+// `toolEventRow.ts`. Re-exported here so existing importers of this module keep
+// working and the pane's own props stay readable.
+export type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
+import type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
 
 export interface GateModel {
   /** Model vendor, e.g. "Anthropic". */
@@ -73,6 +63,10 @@ export function AppPane({
   credits,
   onAddCredits,
   activity,
+  pending,
+  eventsPending,
+  onLoadMore,
+  unavailable,
   alert,
 }: {
   name: string;
@@ -94,6 +88,24 @@ export function AppPane({
   credits: string;
   onAddCredits: () => void;
   activity: ActivityEntry[];
+  /** The first reading for this tool has not landed. Draws skeletons rather than
+   *  answers, per AG-576. */
+  pending?: boolean;
+  /** The feed's own first page has not landed. Separate from `pending` because
+   *  the counters and the feed are two reads: one can be drawn while the other
+   *  is still coming. */
+  eventsPending?: boolean;
+  /** Fetch the next page of the feed. Absent when there is no next page, which
+   *  is what removes the control rather than leaving a dead one on screen. */
+  onLoadMore?: () => void;
+  /** Which sections have no reading behind them.
+   *
+   *  Not "this app sent nothing": a tool can be routing correctly and still be
+   *  unattributed, because the slug is guessed from a User-Agent and an agent the
+   *  matcher cannot place is left unlabelled. So an unread section says so, and
+   *  the pane's notice names the cause. Reporting it as an empty state would tell
+   *  a user who has been working all morning that their tool is idle. */
+  unavailable?: { chart?: boolean; events?: boolean };
   /** Slot for an `AlertBanner` when this app has drifted. */
   alert?: ReactNode;
 }) {
@@ -140,8 +152,8 @@ export function AppPane({
 
       {alert}
 
-      <StatTiles stats={stats} />
-      <MessagesChart buckets={buckets} />
+      <StatTiles stats={stats} pending={pending} />
+      <MessagesChart buckets={buckets} pending={pending} unavailable={unavailable?.chart} />
 
       <ModelSelection
         appName={name}
@@ -153,7 +165,12 @@ export function AppPane({
         onAddCredits={onAddCredits}
       />
 
-      <RecentActivity activity={activity} />
+      <RecentActivity
+        activity={activity}
+        pending={eventsPending}
+        unavailable={unavailable?.events}
+        onLoadMore={onLoadMore}
+      />
     </div>
   );
 }
@@ -304,22 +321,37 @@ function InfoRow({
   );
 }
 
-function RecentActivity({ activity }: { activity: ActivityEntry[] }) {
-  // A header row over nothing reads as a table that failed to load. The design
-  // replaces the whole table, headers included.
-  if (activity.length === 0) {
-    return (
-      <Card className="p-4">
-        <h2 className="text-sm font-medium leading-5 text-neutral-900">Recent activity</h2>
-        <EmptyNote>No recent activity in the last 24hrs</EmptyNote>
-      </Card>
-    );
-  }
-
+function RecentActivity({
+  activity,
+  pending,
+  unavailable,
+  onLoadMore,
+}: {
+  activity: ActivityEntry[];
+  /** The first page is in flight; see `AppPane`. */
+  pending?: boolean;
+  /** No feed was read at all; see `AppPane`. */
+  unavailable?: boolean;
+  /** Absent when there is no next page. */
+  onLoadMore?: () => void;
+}) {
   return (
-    <Card className="p-4">
+    <Card className="p-4" busy={pending}>
       <h2 className="text-sm font-medium leading-5 text-neutral-900">Recent activity</h2>
 
+      {pending ? (
+        <PendingRows />
+      ) : activity.length === 0 ? (
+        // Deliberately NOT the chart's "in the last 24hrs". The entries outlive
+        // the window they were sent in - the feed keeps the last messages even
+        // when they are a day or more old, because what the user came here for is
+        // what this app last did - so borrowing the chart's sentence would state a
+        // window this card does not use. It also put the same line twice on a pane
+        // with no traffic, which is how the inaccuracy came to light.
+        <EmptyNote>
+          {unavailable ? "Recent activity couldn't be read" : "No recent messages"}
+        </EmptyNote>
+      ) : (
       <table className="mt-4 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
@@ -333,11 +365,14 @@ function RecentActivity({ activity }: { activity: ActivityEntry[] }) {
               Security
             </th>
             <th scope="col" className="pb-2 text-left font-normal">
-              Conversation
+              Model
             </th>
-            <th scope="col" className="w-20 pb-2 text-right font-normal">
-              Action
-            </th>
+            {/* No Action column. The design draws a per-row "View" that opens the
+                request in the web dashboard, and there is no URL to open: nothing
+                in `dashboard-web` filters by tool, machine or time, so the button
+                had no destination and did nothing when clicked. A control that
+                looks live and is inert is worse than an absent one, so the column
+                returns with the deep link rather than before it. */}
           </tr>
         </thead>
         <tbody>
@@ -350,31 +385,70 @@ function RecentActivity({ activity }: { activity: ActivityEntry[] }) {
                 <Pill className={STATUS_STYLES[entry.status]}>{entry.status}</Pill>
               </td>
               <td className="py-3 pr-4">
-                <Pill className={SECURITY_STYLES[entry.security]}>{entry.security}</Pill>
+                {entry.security ? (
+                  <Pill className={SECURITY_STYLES[entry.security]}>{entry.security}</Pill>
+                ) : (
+                  // Withheld, not permitted. A pill here would read as a verdict.
+                  <span
+                    className="text-sm leading-5 text-base-muted-foreground"
+                    title="No security action recorded, or not your request"
+                  >
+                    &#8212;
+                  </span>
+                )}
               </td>
               <td className="min-w-0 py-3 pr-4">
                 <p className="truncate text-sm leading-5 text-neutral-900">
-                  {entry.title}
+                  {entry.model}
                 </p>
                 <p className="truncate font-mono text-base-2xs leading-4 text-base-muted-foreground">
                   {entry.reference}
                 </p>
               </td>
-              <td className="py-3 text-right">
-                <button
-                  type="button"
-                  onClick={entry.onView}
-                  className="inline-flex items-center gap-1.5 rounded-base border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-                >
-                  View
-                  <Icon name="squareArrowOutUpRight" size={12} />
-                </button>
-              </td>
             </tr>
           ))}
         </tbody>
       </table>
+      )}
+
+      {onLoadMore && (
+        <div className="mt-4 flex justify-center">
+          <button
+            type="button"
+            onClick={onLoadMore}
+            className="rounded-base border border-base-border bg-base-card px-3 py-1.5 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            Load more
+          </button>
+        </div>
+      )}
     </Card>
+  );
+}
+
+/**
+ * The feed before it exists: five rows, fixed widths, one line each.
+ *
+ * Five because that is what the design draws, and a placeholder that guesses the
+ * count high leaves the card collapsing when the real answer lands. Mirrors
+ * `Overview`'s `PendingRows`, which does the same job for its two tables.
+ */
+function PendingRows() {
+  return (
+    <div className="mt-4 flex flex-col gap-3">
+      {[0, 1, 2, 3, 4].map((i) => (
+        <div
+          key={i}
+          className="flex items-center justify-between gap-3 border-t border-base-border pt-3"
+        >
+          <Skeleton className="h-4 w-16" />
+          <Skeleton className="h-4 w-14" />
+          <Skeleton className="h-4 w-14" />
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-4 w-12" />
+        </div>
+      ))}
+    </div>
   );
 }
 
