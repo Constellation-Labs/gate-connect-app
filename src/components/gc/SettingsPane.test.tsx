@@ -77,6 +77,58 @@ describe("the way back to a Gate account", () => {
   });
 });
 
+/**
+ * An OAuth account keeps its old key in the keychain - the upgrade does not
+ * delete it - so `has_api_key` stays true and the pane drew a masked key under
+ * "API key" for a session a Cognito bearer authenticates. On the one screen
+ * whose job is to say where the credential lives, that named the wrong one, and
+ * offered no way to change it either (`onReplaceKey` is withheld for OAuth).
+ */
+describe("what a Gate account sees under Connection", () => {
+  const gateAccount = { authMode: "oauth" as const, onReplaceKey: undefined };
+
+  it("drops the API key row entirely", () => {
+    const connection = sections(gateAccount).find((s) => s.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).not.toContain("api-key");
+  });
+
+  it("puts the sign-in method in its place rather than going quiet", () => {
+    const connection = sections(gateAccount).find((s) => s.id === "connection")!;
+    const ids = connection.rows.map((r) => r.id);
+    const row = connection.rows.find((r) => r.id === "sign-in-method")!;
+
+    expect(row.value).toBe("Gate account");
+    // Where the key row used to be: directly under the gateway.
+    expect(ids.indexOf("sign-in-method")).toBe(ids.indexOf("gateway") + 1);
+  });
+
+  it("offers no switch to a Gate account it already is", () => {
+    const row = sections(gateAccount)
+      .find((s) => s.id === "connection")!
+      .rows.find((r) => r.id === "sign-in-method")!;
+    expect(row.action).toBeUndefined();
+  });
+
+  it("keeps Disconnect Gate, which is the row that ends the session", () => {
+    const connection = sections(gateAccount).find((s) => s.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).toContain("session");
+  });
+
+  it("leaves a key account's rows alone", () => {
+    const connection = sections({ authMode: "api_key" }).find((s) => s.id === "connection")!;
+    const ids = connection.rows.map((r) => r.id);
+    expect(ids).toContain("api-key");
+    expect(ids).not.toContain("sign-in-method");
+  });
+
+  /** The state before the account read lands. The key row is the older default,
+   *  and flashing it away and back is worse than showing it a beat early. */
+  it("keeps the key row while the auth mode is still unknown", () => {
+    const connection = sections({ authMode: undefined }).find((s) => s.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).toContain("api-key");
+  });
+});
+
 describe("buildSettingsSections", () => {
   it("keeps Diagnostics reachable from Settings", () => {
     // The Figma does not draw this row. `screens/Diagnostics.tsx` has nowhere

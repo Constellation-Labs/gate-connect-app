@@ -118,7 +118,7 @@ import {
   SwitchGatewayDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
-import { AlertBanner, ErrorBanner, RecoveryBanner } from "./components/gc/banners";
+import { AlertBanner, ErrorBanner, ErrorDetails, RecoveryBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type {
   AppStatus,
@@ -1083,6 +1083,10 @@ export function NewUiApp() {
         plan: "-",
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
+        // Decides whether the key row is drawn at all: an upgraded account still
+        // has its old key in the keychain, so `has_api_key` alone would keep
+        // naming a credential that no longer authenticates anything.
+        authMode: account?.auth_mode,
         launchAtLogin,
         launchAtLoginUnavailable,
         routingHealthNotifications: prefs?.routing_health_notifications,
@@ -1896,10 +1900,21 @@ function toSetupOrg(org: Org): SetupOrganization {
 }
 
 /** Title plus remedy, the same two lines the popover's `ErrorNote` shows. */
+/**
+ * A classified failure on a setup pane.
+ *
+ * Carries `ErrorDetails` for the same reason `ErrorBanner` does: the fallback
+ * hint promises "the details below", and this is the surface with no other way
+ * to see them - a first-run or re-sign-in failure has no shell behind it. An
+ * unclassified `oauth_begin_login` failure ("OAuth is not configured in this
+ * build", a refused loopback port) landed here as a bare "Couldn't complete
+ * sign-in" with nothing under it, which is a dead end rather than a report.
+ */
 function SetupNote({ error }: { error: ClassifiedError }) {
   return (
     <>
       <span className="font-medium">{error.title}</span> {error.hint}
+      <ErrorDetails raw={error.raw} title={error.title} />
     </>
   );
 }

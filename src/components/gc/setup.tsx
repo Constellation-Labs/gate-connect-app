@@ -180,15 +180,18 @@ function TextField({
   );
 }
 
-/** Shown for a failure the user can act on. Mirrors the popover's `ErrorNote`. */
+/** Shown for a failure the user can act on. Mirrors the popover's `ErrorNote`.
+ *
+ *  A `div` rather than a `p`: the note carries `ErrorDetails`, and a `<details>`
+ *  is not phrasing content, so a paragraph here would be invalid markup. */
 function SetupError({ children }: { children: ReactNode }) {
   return (
-    <p
+    <div
       role="alert"
       className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
     >
       {children}
-    </p>
+    </div>
   );
 }
 

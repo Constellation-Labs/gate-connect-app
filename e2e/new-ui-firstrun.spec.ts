@@ -264,6 +264,57 @@ test.describe("new UI: the two ways back to first run", () => {
     // And no offer to switch to what it already is.
     await expect(app.page.getByRole("button", { name: "Use a Gate account" })).toHaveCount(0);
   });
+
+  test("an OAuth account is not shown an API key at all", async ({ boot }) => {
+    // The upgrade leaves the old key in the keychain, so `has_api_key` stays
+    // true and Connection drew a masked key for a session a Cognito bearer
+    // authenticates - naming the wrong credential on the one screen whose job
+    // is to say where the credential lives.
+    const app = await boot({ account: { has_api_key: true, auth_mode: "oauth" } });
+
+    await app.page.getByRole("button", { name: "Settings" }).click();
+
+    await expect(app.page.getByText("API key", { exact: true })).toHaveCount(0);
+    // Replaced by what actually signs them in, rather than left blank.
+    await expect(app.page.getByText("Gate account", { exact: true })).toBeVisible();
+    await expect(app.page.getByRole("button", { name: "Disconnect Gate" })).toBeVisible();
+  });
+
+  test("a failed sign-in on the setup screen shows its details too", async ({ boot }) => {
+    // The reported case: disconnect, then sign in again, and the browser never
+    // opens. `ErrorBanner` had gained the expander; the setup screen had not, so
+    // the one surface with no shell behind it promised details and showed none.
+    const app = await boot({
+      account: null,
+      oauth: { signed_in: false, email: null, expires_at_unix: 0 },
+      failures: { oauth_begin_login: "OAuth is not configured in this build" },
+    });
+
+    await app.page.getByRole("button", { name: "Continue with Gate account" }).click();
+
+    const alert = app.page.getByRole("alert");
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText(/complete sign-in/);
+
+    await alert.getByText("Details", { exact: true }).click();
+    await expect(alert).toContainText("OAuth is not configured in this build");
+  });
+
+  test("re-signing in keeps the account's own gateway", async ({ boot }) => {
+    // Disconnecting leaves the account on disk. The sign-in pane used to send
+    // the *build default* here, so a staging install was silently repointed at
+    // production - which also changes the Cognito pool the login resolves.
+    const app = await boot({
+      account: { gateway_base_url: "https://gateway-staging.example", auth_mode: "oauth" },
+      oauth: { signed_in: false, email: null, expires_at_unix: 0 },
+    });
+
+    await app.page.getByRole("button", { name: "Continue with Gate account" }).click();
+
+    await expect
+      .poll(() => app.lastCall("save_account"))
+      .toMatchObject({ baseUrl: "https://gateway-staging.example", apiKey: null });
+  });
 });
 
 /**
