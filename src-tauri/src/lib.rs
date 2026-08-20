@@ -153,6 +153,7 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url,
             upstream_url,
+            billing_mode: account.billing_mode,
             relay_base_url: gate_connect_core::proxy::relay_base_url(),
             engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
         };
@@ -219,6 +220,10 @@ struct AccountDto {
     /// the legacy key controls only in API-key mode. Serialized snake_case
     /// (`"api_key"` / `"oauth"`).
     auth_mode: gate_connect_core::account::AuthMode,
+    /// Who pays the upstream provider, so a UI can show it once one is
+    /// designed. Read-only here; `set_billing_mode` is the setter. Serialized
+    /// lowercase (`"byok"` / `"payg"`).
+    billing_mode: gate_connect_core::account::BillingMode,
     /// Selected org (OAuth mode), so the UI can show it and route to the picker
     /// when an OAuth session has no org yet. Both `None` until the user picks.
     org_id: Option<String>,
@@ -255,6 +260,7 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     };
     let has_api_key = account::has_api_key().map_err(|e| format!("{e:#}"))?;
     let auth_mode = account::auth_mode().map_err(|e| format!("{e:#}"))?;
+    let billing_mode = account::billing_mode().map_err(|e| format!("{e:#}"))?;
     let (org_id, org_name) = match account::selected_org().map_err(|e| format!("{e:#}"))? {
         Some((id, name)) => (Some(id), Some(name)),
         None => (None, None),
@@ -263,6 +269,7 @@ fn get_account() -> Result<Option<AccountDto>, String> {
         gateway_base_url,
         has_api_key,
         auth_mode,
+        billing_mode,
         org_id,
         org_name,
     }))
@@ -543,6 +550,62 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("set auth mode join error: {e}"))?
+}
+
+/// Switch who pays the upstream provider.
+///
+/// The relay and the MITM engine read the mode per request, so `refresh_mode`
+/// is all that in-flight routing needs. Codex is the exception: its provider
+/// block encodes whether Codex authenticates at all, so a connected Codex is
+/// re-applied here. Every other integration writes a base URL and no
+/// credential, and needs nothing.
+///
+/// Re-applying Codex is best-effort: the mode is already persisted by then, and
+/// failing the whole call would leave the UI unable to say what happened. A
+/// Codex left on the old shape reports `Drifted` on the next status read, which
+/// is the path back.
+#[tauri::command]
+async fn set_billing_mode(payg: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mode = if payg {
+            gate_connect_core::account::BillingMode::Payg
+        } else {
+            gate_connect_core::account::BillingMode::Byok
+        };
+        gate_connect_core::account::set_billing_mode(mode).map_err(|e| format!("{e:#}"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager().refresh_mode();
+        reapply_codex_for_mode(mode);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("set billing mode join error: {e}"))?
+}
+
+/// Rewrite Codex's provider block for `mode`, if Codex is currently routed
+/// through Gate. Silent when Codex isn't installed or isn't connected - there
+/// is nothing to rewrite, and a mode switch is not the place to start routing a
+/// tool the user never connected.
+fn reapply_codex_for_mode(mode: gate_connect_core::account::BillingMode) {
+    let Some(integ) = registry::find(ToolId::Codex) else {
+        return;
+    };
+    if !matches!(integ.status(), Ok(gate_connect_core::Status::Connected)) {
+        return;
+    }
+    let Ok(Some(account)) = account::load() else {
+        return;
+    };
+    let input = ConnectInput {
+        gateway_base_url: account.gateway_base_url,
+        upstream_url: integ.default_upstream_url().to_string(),
+        billing_mode: mode,
+        relay_base_url: gate_connect_core::proxy::relay_base_url(),
+        engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
+    };
+    if let Err(e) = integ.connect(&input) {
+        eprintln!("re-applying Codex for the new billing mode failed: {e:#}");
+    }
 }
 
 /// Fetch the 24-hour activity overview for the Overview pane (AG-572).
@@ -1947,6 +2010,7 @@ pub fn run() {
                     oauth_status,
                     oauth_sign_out,
                     set_auth_mode,
+                    set_billing_mode,
                     oauth_list_orgs,
                     activity_overview,
                     activity_installations,
@@ -2013,6 +2077,7 @@ pub fn run() {
                     oauth_status,
                     oauth_sign_out,
                     set_auth_mode,
+                    set_billing_mode,
                     oauth_list_orgs,
                     activity_overview,
                     activity_installations,

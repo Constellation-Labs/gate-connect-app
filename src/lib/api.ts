@@ -24,12 +24,20 @@ export interface Tool {
 
 export type AuthMode = "api_key" | "oauth";
 
+/** Who pays the upstream provider. `byok` forwards each tool's own provider
+ * credential; `payg` sends none, so Gate routes through the workspace's
+ * provider accounts and debits its prepaid balance. */
+export type BillingMode = "byok" | "payg";
+
 export interface Account {
   gateway_base_url: string;
   has_api_key: boolean;
   /** Which credential the account authenticates with. Drives sign-in routing
    * and whether the legacy key controls show in Settings. */
   auth_mode: AuthMode;
+  /** Who pays the upstream provider. No UI surfaces this yet - the backend
+   * mechanism landed first (see docs/payg-implementation-plan.md §3). */
+  billing_mode: BillingMode;
   /** Selected org (OAuth mode). Both null until the user picks one; an OAuth
    * account with no org routes to the picker. */
   org_id: string | null;
@@ -109,6 +117,11 @@ export const oauthSignOut = () => invoke<void>("oauth_sign_out");
 /** Set the auth mode explicitly. Used when choosing the legacy pasted-key path
  * from the sign-in screen; OAuth sign-in sets it implicitly. */
 export const setAuthMode = (oauth: boolean) => invoke<void>("set_auth_mode", { oauth });
+
+/** Switch who pays the upstream provider. The relay and the MITM engine read
+ * the mode per request, so routing follows immediately; a connected Codex is
+ * re-applied on the Rust side, since its provider block encodes the mode. */
+export const setBillingMode = (payg: boolean) => invoke<void>("set_billing_mode", { payg });
 
 /** List the orgs the signed-in user may act on, for the picker. */
 export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");

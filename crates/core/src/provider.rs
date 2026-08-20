@@ -312,6 +312,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderStat
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
+                billing_mode: account.billing_mode,
                 relay_base_url: crate::proxy::relay_base_url(),
                 engine_proxy_url: crate::proxy::engine_proxy_url(),
             };
@@ -482,6 +483,7 @@ pub fn reconcile_enabled() -> Result<()> {
             let input = ConnectInput {
                 gateway_base_url: account.gateway_base_url.clone(),
                 upstream_url: integ.default_upstream_url().to_string(),
+                billing_mode: account.billing_mode,
                 relay_base_url: relay_base_url.clone(),
                 engine_proxy_url: crate::proxy::engine_proxy_url(),
             };
@@ -532,6 +534,7 @@ fn reconcile_unmapped_tools(
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url.clone(),
             upstream_url: integ.default_upstream_url().to_string(),
+            billing_mode: account.billing_mode,
             relay_base_url: Some(relay_base_url.to_string()),
             engine_proxy_url: crate::proxy::engine_proxy_url(),
         };
@@ -926,6 +929,7 @@ fn restore_swept_tools(journal: &mut recovery::JournalWriter) -> Result<()> {
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url.clone(),
             upstream_url: integ.default_upstream_url().to_string(),
+            billing_mode: account.billing_mode,
             relay_base_url: relay_base_url.clone(),
             engine_proxy_url: crate::proxy::engine_proxy_url(),
         };

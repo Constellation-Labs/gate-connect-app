@@ -31,6 +31,7 @@ const account: Account = {
   gateway_base_url: "https://gateway.constellationgate.ai",
   has_api_key: false,
   auth_mode: "oauth",
+  billing_mode: "byok",
   org_id: "2f9c0000-0000-0000-0000-000000000000",
   org_name: "Constellation",
 };
