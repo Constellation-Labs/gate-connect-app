@@ -12,11 +12,12 @@ import type { TopnavAction } from "./Topbar";
  * The screens that run before there is anything to navigate: sign-in, choosing
  * an organization, and the connected confirmation.
  *
- * **None of these are in the Figma.** The design starts from a signed-in window
- * with apps already listed, so first run had nowhere to land. They are built
- * from the design's own vocabulary - the window chrome, one centred card, the
- * dialog button weighting - rather than invented wholesale, and are explicitly
- * provisional. See plans/new-app-ui-figma.md.
+ * The `Flows / Auth` page landed on 2026-08-19 and these follow it: sign-in,
+ * the key route as a destination of its own, choosing an organization, naming
+ * the device, and the connected confirmation. They were built provisionally
+ * before that page existed; what is here now is the drawn flow, minus the
+ * `Auth / Error states` section, which carries no ready mark.
+ * See plans/new-app-ui-figma.md.
  *
  * No sidebar: there is nothing to navigate to yet, and showing an empty rail
  * would advertise a list the user cannot populate.
@@ -57,7 +58,7 @@ function SetupHeader({
   subtitle,
   mark,
 }: {
-  title: string;
+  title: ReactNode;
   subtitle: string;
   mark?: ReactNode;
 }) {
@@ -76,23 +77,53 @@ function PrimaryButton({
   children,
   onClick,
   busy,
+  disabled,
 }: {
   children: ReactNode;
   onClick: () => void;
   busy?: boolean;
+  /** The Auth panes draw their primary muted until the field below it is filled
+   *  and the org list has a selection. Same argument as `ModalButton`. */
+  disabled?: boolean;
 }) {
+  const inert = busy || disabled;
   return (
     <button
       type="button"
-      onClick={busy ? undefined : onClick}
+      onClick={inert ? undefined : onClick}
       aria-busy={busy || undefined}
-      aria-disabled={busy || undefined}
+      aria-disabled={inert || undefined}
       className={`flex h-9 w-full items-center justify-center rounded-base bg-blue-ribbon-700 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-ribbon-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-        busy ? "opacity-70" : ""
-      }`}
+        inert ? "opacity-70" : ""
+      } ${disabled && !busy ? "cursor-not-allowed" : ""}`}
     >
       {children}
     </button>
+  );
+}
+
+/** The quiet text link the Auth panes hang under their primary: "Go back",
+ *  "Skip naming", "Use a different account". */
+function SetupLink({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mx-auto text-sm font-medium leading-5 text-base-primary underline underline-offset-2 transition-colors hover:text-blue-ribbon-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** `or`, between the two sign-in routes. */
+function OrDivider() {
+  return (
+    <div className="flex items-center gap-3">
+      <span aria-hidden className="h-px flex-1 bg-base-border" />
+      <span className="text-base-xs leading-4 text-base-muted-foreground">or</span>
+      <span aria-hidden className="h-px flex-1 bg-base-border" />
+    </div>
   );
 }
 
@@ -149,15 +180,18 @@ function TextField({
   );
 }
 
-/** Shown for a failure the user can act on. Mirrors the popover's `ErrorNote`. */
+/** Shown for a failure the user can act on. Mirrors the popover's `ErrorNote`.
+ *
+ *  A `div` rather than a `p`: the note carries `ErrorDetails`, and a `<details>`
+ *  is not phrasing content, so a paragraph here would be invalid markup. */
 function SetupError({ children }: { children: ReactNode }) {
   return (
-    <p
+    <div
       role="alert"
       className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
     >
       {children}
-    </p>
+    </div>
   );
 }
 
@@ -240,22 +274,16 @@ export function GatewayPicker({
 export function WelcomePane({
   reauth,
   onSignIn,
-  apiKeyOpen,
-  onToggleApiKey,
-  apiKey,
-  onApiKeyChange,
-  onConnectWithApiKey,
+  onUseApiKey,
   gateway,
   busy,
   error,
 }: {
   reauth?: boolean;
   onSignIn: () => void;
-  apiKeyOpen: boolean;
-  onToggleApiKey: () => void;
-  apiKey: string;
-  onApiKeyChange: (next: string) => void;
-  onConnectWithApiKey: () => void;
+  /** Opens the key pane. The design makes the key its own destination rather
+   *  than a form that unfolds under the sign-in buttons, so this navigates. */
+  onUseApiKey: () => void;
   /** Slot for the gateway selector, which only dev builds render. Sits in the
    * footer rather than inside the key form: the gateway is saved before the
    * browser flow too, so it governs both paths. */
@@ -266,11 +294,19 @@ export function WelcomePane({
   return (
     <div className="flex flex-col gap-6">
       <SetupHeader
-        title={reauth ? "Session expired" : "Welcome to Gate Connect"}
+        title={
+          reauth ? (
+            "Session expired"
+          ) : (
+            <>
+              <span className="text-blue-ribbon-800">Gate</span> Connect
+            </>
+          )
+        }
         subtitle={
           reauth
             ? "Sign in again to keep routing your apps through Gate."
-            : "Point your AI tools at Gate once, and stop thinking about credentials."
+            : "Sign in once, then choose which AI apps route through Gate. Claude, Codex, OpenCode, and supported apps keep working normally while Gate handles protection underneath."
         }
       />
 
@@ -278,30 +314,110 @@ export function WelcomePane({
 
       <div className="flex flex-col gap-3">
         <PrimaryButton onClick={onSignIn} busy={busy}>
-          {reauth ? "Sign in again" : "Sign in with Constellation"}
+          {reauth ? "Sign in again" : "Continue with Gate account"}
         </PrimaryButton>
-        <SecondaryButton onClick={onToggleApiKey}>
-          {apiKeyOpen ? "Hide API key option" : "Use a Gate API key instead"}
-        </SecondaryButton>
+        <OrDivider />
+        <SecondaryButton onClick={onUseApiKey}>Use an API key</SecondaryButton>
       </div>
 
-      {apiKeyOpen && (
-        <div className="flex flex-col gap-3 border-t border-base-border pt-6">
-          <TextField
-            label="Gate API key"
-            value={apiKey}
-            onChange={onApiKeyChange}
-            placeholder="sk-gw..."
-            mono
-            type="password"
-          />
-          <PrimaryButton onClick={onConnectWithApiKey} busy={busy}>
-            Connect
-          </PrimaryButton>
-        </div>
-      )}
+      {gateway}
+    </div>
+  );
+}
+
+/**
+ * `Auth / Connect with API key`. Its own pane, with its own account of what
+ * happens after it connects, and a way back to the sign-in choice.
+ */
+export function ApiKeyPane({
+  apiKey,
+  onApiKeyChange,
+  onConnect,
+  onGoBack,
+  gateway,
+  busy,
+  error,
+}: {
+  apiKey: string;
+  onApiKeyChange: (next: string) => void;
+  onConnect: () => void;
+  onGoBack: () => void;
+  gateway?: ReactNode;
+  busy?: boolean;
+  error?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-6">
+      <SetupHeader
+        mark={<Icon name="key" size={24} />}
+        title="Use an API key"
+        subtitle="Paste a Gate API key from your dashboard. After it connects, you will name this device before choosing which apps are protected."
+      />
+
+      {error && <SetupError>{error}</SetupError>}
+
+      <div className="flex flex-col gap-3">
+        <TextField
+          label="API key"
+          value={apiKey}
+          onChange={onApiKeyChange}
+          placeholder="Enter or paste your API key"
+          mono
+          type="password"
+        />
+        <PrimaryButton onClick={onConnect} busy={busy} disabled={!apiKey.trim()}>
+          Connect and continue
+        </PrimaryButton>
+        <SetupLink onClick={onGoBack}>Go back</SetupLink>
+      </div>
 
       {gateway}
+    </div>
+  );
+}
+
+/**
+ * Both routes end here before any app is chosen, which is what the key pane's
+ * own copy promises. Skipping is drawn as a first-class exit and leaves the
+ * name following the hostname, which is what `device_name: null` already means.
+ */
+export function NameDevicePane({
+  value,
+  onChange,
+  onContinue,
+  onSkip,
+  busy,
+  error,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  onContinue: () => void;
+  onSkip: () => void;
+  busy?: boolean;
+  error?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-6">
+      <SetupHeader
+        mark={<Icon name="monitor" size={24} />}
+        title="Name this device"
+        subtitle="Naming will help you tell this device apart from the others connected to your Gate account."
+      />
+
+      {error && <SetupError>{error}</SetupError>}
+
+      <div className="flex flex-col gap-3">
+        <TextField
+          label="Device name"
+          value={value}
+          onChange={onChange}
+          placeholder="Enter a device name"
+        />
+        <PrimaryButton onClick={onContinue} busy={busy} disabled={!value.trim()}>
+          Continue
+        </PrimaryButton>
+        <SetupLink onClick={onSkip}>Skip naming</SetupLink>
+      </div>
     </div>
   );
 }
@@ -322,7 +438,8 @@ export function OrgPickerPane({
   selectedId,
   onSelect,
   onContinue,
-  onUseApiKey,
+  onGoBack,
+  onUseDifferentAccount,
   busy,
   error,
 }: {
@@ -330,27 +447,38 @@ export function OrgPickerPane({
   selectedId?: string;
   onSelect: (id: string) => void;
   onContinue: () => void;
-  /** The only way forward for an account with no organization. */
-  onUseApiKey: () => void;
+  /** The dead end's way out. An account that is authenticated but owns nothing
+   *  to route for cannot go forward, and the design sends it back to sign-in
+   *  rather than sideways into the key form. */
+  onGoBack: () => void;
+  onUseDifferentAccount: () => void;
   busy?: boolean;
   error?: ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-6">
       <SetupHeader
+        mark={<Icon name="usersRound" size={24} />}
         title="Choose an organization"
-        subtitle="This decides where your activity is recorded and whose Gate credits you use."
+        subtitle="Gate Connect will use the selected organization for routing, activity, and PAYG credits on this device."
       />
 
       {error && <SetupError>{error}</SetupError>}
 
       {organizations.length === 0 ? (
         <div className="flex flex-col gap-3">
-          <p className="text-sm leading-5 text-neutral-600">
-            This account is not in any organization yet. You can connect with a Gate API
-            key instead.
-          </p>
-          <SecondaryButton onClick={onUseApiKey}>Use a Gate API key</SecondaryButton>
+          <div className="flex flex-col gap-1 rounded-lg border border-amber-300 bg-amber-50 p-3 text-center">
+            <p className="flex items-center justify-center gap-1.5 text-sm font-medium leading-5 text-amber-900">
+              <Icon name="triangleAlert" size={16} />
+              No organizations found.
+            </p>
+            <p className="text-sm leading-5 text-amber-900">
+              You will need to setup your first organization through Gate AI before
+              continuing to setup Gate Connect.
+            </p>
+          </div>
+          <PrimaryButton onClick={onGoBack}>Go back</PrimaryButton>
+          <SetupLink onClick={onUseDifferentAccount}>Use a different account</SetupLink>
         </div>
       ) : (
         <>
@@ -366,9 +494,12 @@ export function OrgPickerPane({
               />
             ))}
           </div>
-          <PrimaryButton onClick={onContinue} busy={busy}>
-            Continue
-          </PrimaryButton>
+          <div className="flex flex-col gap-3">
+            <PrimaryButton onClick={onContinue} busy={busy} disabled={!selectedId}>
+              Continue
+            </PrimaryButton>
+            <SetupLink onClick={onUseDifferentAccount}>Use a different account</SetupLink>
+          </div>
         </>
       )}
     </div>

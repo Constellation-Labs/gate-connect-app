@@ -139,6 +139,14 @@ describe("MessagesChart empty and pending states", () => {
     expect(screen.getByText(EMPTY)).toBeTruthy();
   });
 
+  // What ships today: the endpoint has answered, and it answered with no
+  // buckets at all. That is still a reading of zero traffic, not a refusal.
+  it("says nothing was sent when the series came back with no buckets", () => {
+    render(<MessagesChart buckets={[]} />);
+
+    expect(screen.getByText(EMPTY)).toBeTruthy();
+  });
+
   it("stays silent about traffic when the series was never read", () => {
     render(<MessagesChart buckets={[]} unavailable />);
 

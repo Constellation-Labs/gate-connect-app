@@ -113,6 +113,329 @@ Still unbuilt: the App page's **choose model** dialog. It is only known from a
 frame caption; nothing about its contents has been read, so building it would be
 invention.
 
+## Re-verification of the Flows pages, 2026-08-19
+
+MCP allowed exactly one read this month before the View-seat cap cut in. That
+call confirmed the document still reports a single top-level page, `Components`
+(113:16762): **MCP never sees the `Flows` pages**, so everything below was read
+through the browser using the Layers-panel + `shift+2` method.
+
+### Two new flow pages, both marked ready
+
+The Pages list now reads `Components`, `Flows` (**Onboarding**, **Auth**,
+`Overview`, `App`, `Settings`), `Sandbox`, `Icons`. Onboarding and Auth did not
+exist on 2026-08-17, and both carry the designer's green check.
+
+This flips **open question 6**. Setup and onboarding were built provisionally
+*because* they were "not in the Figma". They now are, and what was built does
+not match them.
+
+#### Auth (177:79238) - four sections
+
+`Auth / Connect with Gate` ✅, `Auth / Connect with API key` ✅,
+`Auth / Organizations` ✅, and `Auth / Error states` with **no check**, so that
+last one is still moving and should not be chased yet.
+
+The drawn flow is auth, then **name this device**, then choose apps. The API-key
+path skips the org picker entirely and goes straight to naming; the copy states
+the order outright: "After it connects, you will name this device before
+choosing which apps are protected."
+
+| Step | Drawn | Built in `setup.tsx` |
+| --- | --- | --- |
+| Sign in | `Gate Connect` lockup, "Continue with Gate account", `or`, outline "Use an API key" | `WelcomePane`, "Sign in with Constellation" over a disclosure toggle "Use a Gate API key instead" |
+| API key | its own pane: "Use an API key", field, "Connect and continue", "Go back" | inline disclosure under the welcome pane, not a destination |
+| Organization | "Choose an organization", radio rows with initials tile, name, `12 members · Free plan` | `OrgPickerPane`, same shape |
+| **Name this device** | own pane, field, `Continue`, `Skip naming` link | **not built** |
+
+Copy that differs verbatim:
+
+- Sign-in body is "Sign in once, then choose which AI apps route through Gate.
+  Claude, Codex, OpenCode, and supported apps keep working normally while Gate
+  handles protection underneath." The built pane says "Point your AI tools at
+  Gate once, and stop thinking about credentials."
+- Org-picker subtitle is "Gate Connect will use the selected organization for
+  routing, activity, and PAYG credits on this device." The built pane says
+  "This decides where your activity is recorded and whose Gate credits you use."
+- Every pane carries a `Use a different account` link, which nothing builds.
+
+`Auth / Organizations` draws the cardinality states explicitly: none, one, two,
+three, and a scrollable many. **The empty state's escape is `Go back` plus
+`Use a different account`**, inside an amber note reading "No organizations
+found. You will need to setup your first organization through Gate AI before
+continuing to setup Gate Connect." The built `OrgPickerPane` escapes to the key
+form instead, which its own comment calls "the only way forward". The design
+disagrees.
+
+`Auth / Error states` (not ready, recorded only so it is not read as missing):
+a **Setup timeout** dialog ("Go back" / "Retry") over the org picker, and a
+device-name field failing validation with "Incorrect characters or symbols used".
+
+#### Onboarding (177:79237)
+
+A welcome frame plus a three-step tutorial, all in the window shell with a
+progress bar under the topbar and a persistent `Do not show this intro again`
+checkbox in the footer.
+
+| # | Drawn | `screens/Onboarding.tsx` |
+| --- | --- | --- |
+| - | "Welcome to Gate Connect" / "Created by Constellation Network" | same, subtitle reads "Created by Constellation Gate AI" |
+| 1 of 3 | "What is Gate Connect?" | "How to turn it on" |
+| 2 of 3 | "Where is Gate Connect?" + `Show me where Gate Connect lives` | same title, and `step.locate` already builds that button |
+| 3 of 3 | "See what Gate is doing" | **no counterpart** |
+
+Step 3 is about the dashboard: "Once requests pass through Gate, the desktop app
+shows recent activity, security actions, and compression savings without
+exposing prompt or response content", over a note "Notifications will alert you
+when a request has been blocked or flagged."
+
+**Step 2 is worth a decision.** Its copy is "Gate Connect stays open in your menu
+bar ... Click the Gate Connect icon to open the compact popover for a quick
+status check, or expand it to the full desktop app for more details, alerts, and
+controls." The onboarding therefore *teaches* popover and window as two states of
+one product with an expand/collapse between them. **Open question 5 removed
+Minimize2 on the grounds that it duplicated an OS control**, and the Auth frames
+still draw both an ellipsis and a collapse button at top right. Either the
+tutorial copy is stale or dropping Minimize2 was wrong; the designer should say
+which.
+
+### The action pills were sampled at last, and the inference was wrong
+
+`Overview.tsx` still carries the comment that the `100` backgrounds "are inferred
+from that pairing rather than sampled from Figma". Deep-selecting the FLAG pill
+on `Overview-partly-routed-1` (116:26405) settles it:
+
+| Property | Figma | Built |
+| --- | --- | --- |
+| Background | `tailwind colors/amber/200` `#FDE68A` | `bg-amber-100` |
+| Text | `tailwind-colors/amber/900` `#78350F` | `text-amber-900` ✓ |
+| Radius | 2px | `rounded-base`, 4px |
+| Padding | 8px horizontal, 4px vertical | `px-1.5 py-0.5`, 6px / 2px |
+| Type | `mono/label-12`, Geist Mono Medium 12/16, 6% | `font-mono text-base-xs font-medium tracking-label` ✓ |
+
+Only FLAG was sampled. BLOCK, REDACT and the green `ON` pill were left alone, but
+the 200 stop is consistent with the status tile's own 50 -> 200 gradient, so
+expect all four to move one step and check them before shipping the change.
+
+### Unchanged
+
+Token layer still matches every value sampled on 2026-08-17: `base.*`,
+`blue-ribbon` 700/800/900, the four Settings labels, the window frame's 8px
+radius, and the Overview stat trio (`MESSAGES` / `BLOCKED/FLAGGED` /
+`TOKENS SAVED`, the last with a green `+$3.10` delta).
+
+
+### Built 2026-08-19
+
+**Action pills.** `Overview.tsx` and `AppPane.tsx` move to the 200 stop at a 2px
+radius with 8/4 padding, and the comments that called the backgrounds inferred
+are gone. `StatusPill` picks up the pill's mono/uppercase treatment; its `Off`
+fill stays neutral-100 because no frame draws an off pill. BLOCK, REDACT and the green ON fill went unsampled that
+day - the renderer froze first - and were read on 2026-08-20; see below.
+
+**The Auth flow.** `setup.tsx` gained `ApiKeyPane` and `NameDevicePane`, and
+`WelcomePane` lost the inline key form: the key is a destination now, reached
+through `Use an API key` under an `or` divider, with `Go back` returning. Copy
+throughout is the drawn copy. `SetupHeader` takes a `ReactNode` title so the
+sign-in card can show the two-tone wordmark, `PrimaryButton` gained `disabled`
+so the drawn muted primaries refuse an empty field or an unselected org, and
+`SetupLink` / `OrDivider` are the small pieces those panes needed.
+
+`useSetup` gained the `api-key` and `name-device` stages and a `signOut`.
+Naming derives from `device_name === null`, guarded on `sawSignedOut` for the
+reason the confirmation is: null is what every never-renamed install carries, so
+deriving from it alone would meet returning users with the pane on every launch.
+`namingDone` covers both skipping and saving, since the preference re-read that
+flips `deviceNamed` lands a beat after the save.
+
+`signOut` drops the OAuth session **and** rewrites the account with the gateway
+and no key, so the key path leaves too. It deliberately does not call
+`clear_account`, which would take the chosen gateway with it and quietly repoint
+a staging install at production.
+
+`keyFormForced` and `useApiKeyInstead` are gone. **The window and the popover now
+disagree about the org-picker dead end**: the window signs out, the popover still
+offers the key form (`screens/OrgPicker.tsx`, pinned by
+`signin.spec.ts` "the key form is reachable from the org picker's dead end").
+That is the design's call, taken knowingly, and it is a real divergence until the
+popover retires.
+
+**Onboarding.** Four steps now, matching the drawn flow: the welcome, "What is
+Gate Connect?", "Where is Gate Connect?" and "See what Gate is doing". `Step`
+gained an optional `note` for the bordered strip each tutorial step carries, and
+`hero` became optional. Step 2 keeps its platform-aware sub-heading rather than
+the design's macOS-only "menu bar", and step 1 keeps the config-versus-proxy
+mechanism sentence the design drops, because neither is expressible in the drawn
+copy and both are true.
+
+Both tutorial illustrations are now the Figma's own art, captured 2026-08-20:
+`onboarding-what-is-gate-connect.png` (the apps-to-Gate flow diagram) and
+`onboarding-see-what-gate-is-doing.png` (the Overview dashboard). Each is the
+590x220 panel inside its step's card, taken through the browser at roughly 1.7x
+so it holds up on a retina panel - MCP has no quota to export with and the View
+seat cannot use Dev Mode. The dashboard one is cropped mid-chart in the design,
+so it carries the same bottom fade the platform mockups use; the diagram is whole
+and does not. `RoutingHero` and its `app-integrations.png` import are gone, and
+the PNG went with them: it was the popover's Routing screen, the last caller of it
+disappeared with the hero, and nothing else in the repo referenced it.
+
+`new-ui-firstrun.spec.ts` follows, with a new test pinning that the device is
+named between connecting and the confirmation, and that Continue refuses an empty
+field. 428 unit tests and 156 e2e pass.
+
+### Built 2026-08-20
+
+**The pill fills, read off the pixels.** Rather than fight the properties panel a
+second time, the Policies table was captured as a PNG and the fills counted
+directly. Three matched Tailwind exactly, at distance 0.0, which is what makes
+the fourth trustworthy: `red/200 #FECACA`, `amber/200 #FDE68A`, `green/200
+#BBF7D0` - and REDACT at **`#DDD6FE`, which is `violet/200`, not `purple/200`
+(`#E9D5FF`)**.
+
+So the redaction hue was wrong in two places, and had been since the tokens
+landed. `chart.redacted` was `#A855F7` (purple/500) against a drawn `#8B5CF6`
+(violet/500), and the REDACT / `redacted` pills were `purple-200/900`. Both now
+say violet. The other three chart series were confirmed correct in the same pass
+(`#60A5FA`, `#F87171`, `#FBBF24`), so only the one hue moved. Nothing else in the
+palette is violet, which makes this easy to "correct" back by eye - the comments
+in `Overview.tsx` and `AppPane.tsx` say so explicitly.
+
+**The onboarding window moved to the new shell.** `screens/Onboarding.tsx` was
+the last thing still rendering on the popover-era `gc/` ink system. It now draws
+what the design draws: a 48px topbar with the brand lockup centred, a progress
+rail directly beneath it, one card per tutorial step carrying a `TUTORIAL`
+eyebrow and an `N of 3` counter, and a footer holding the opt-out checkbox and
+Previous / Next. Private `IntroTopbar`, `IntroProgress` and `IntroButton` are
+local to the file - `gc/Topbar` owns an overflow menu the intro has no use for,
+and the setup panes' buttons are private to theirs.
+
+Two things fell out of it. The step dots are gone, replaced by the rail, which
+takes over their `Step N of M` announcement through `role="progressbar"` rather
+than the dots' `role="img"`. And the tutorial art is **not** wrapped in a panel:
+the captures already *are* the design's 590x220 panel, border and gray field
+included, so the first attempt drew two nested boxes.
+
+The welcome frame keeps its own shape - centred mark, title, rule, copy, no card -
+because that is how the design draws it.
+
+### Sync, 2026-08-20 (second pass)
+
+Re-read on the report that every flow is now green. Most of it is, and one
+thing that was said to be green is not.
+
+**`Auth / Error states` still carries no check.** Verified twice, the second
+time after a hard reload, in both the layers panel and the canvas section label,
+while the three sections beside it (`Connect with Gate`, `Connect with API key`,
+`Organizations`) all show theirs. So the setup-timeout dialog and the
+device-name validation rule stay unbuilt. Both frames were read on 2026-08-19
+and are described above, so if the designer has signed them off verbally and the
+file simply has not caught up, this is short work - but the file is the signal
+this plan follows, and it says not yet.
+
+**Settings is green throughout** - `Reset Gate Connect`, `Disconnect Gate
+session`, `Update device name` (twice), `Main screens`, `Dimensions` - and every
+one of those flows is built.
+
+**The App page carries a section nothing here had ever read: `App / No data
+1+ day state` ✅.** It holds two states that the panes did not have:
+
+- **No data.** Stat tiles read `0`, `0`, **`N/A`** - not `0%`. The Messages card
+  drops its axis and legend for a centred column-chart mark over "No messages
+  sent in the last 24hrs", and Recent activity drops its header row for "No
+  recent activity in the last 24hrs".
+- **Loading.** The same cards with their labels in place and their values
+  replaced by grey skeleton bars, including 24 uniform full-height bars where
+  the chart goes.
+
+The no-data half is now built, and it matters more than it looks: **both panes
+already pass `EMPTY_STATS` and `buckets={[]}`**, because the 24-hour endpoint does
+not exist, so this is the state the app is in every time anyone opens it. What
+shipped before drew a labelled 24-column axis under 24 invisible bars and a table
+header over no rows, which reads as a chart that failed rather than a quiet day.
+
+`UsageStats.tokensSavedPercent` became `number | null` to carry it. `0%` is a
+claim about traffic that was never measured; `N/A` is the design's own answer and
+is the honest one. `tokensSavedAmount` follows it, since there is no amount to put
+beside a figure that does not exist.
+
+`EmptyNote` lives in `metrics.tsx` because the chart is shared by both panes, so
+the Overview inherits the same treatment without a second implementation.
+`metrics.test.tsx` pins all of it, including that one bucket carrying traffic is
+enough to bring the chart back.
+
+**The loading half is deliberately not built.** Nothing can be loading until
+there is an endpoint to load from, and a skeleton no code path can reach is dead
+code. Its appearance is recorded above for whoever lands that endpoint.
+
+**Not re-read this pass:** the Overview page. Three page-switch attempts failed -
+Figma's Pages list needs a click to select and another to navigate, and it stopped
+taking the second one - so its own `overview-loading` frame was not opened. The
+shared components mean the Overview picks up the empty treatment regardless; what
+is unverified is whether its no-data copy differs from the App page's.
+
+### Both ways in, 2026-08-20
+
+The popover lets an account be either a pasted key or a Gate sign-in, and lets a
+key account move to the second whenever it likes: `screens/Settings.tsx` carries
+a permanent **"Switch to Constellation sign-in"** row under the key.
+
+The window shell had the choice at **first run only**. `WelcomePane` offers both
+routes and both are wired, but after setup the sole path from a key account to a
+Gate account was the one-time `OAuthOfferDialog` - and `markOAuthOfferSeen()`
+means dismissing it once removed the route permanently. An install that said "not
+now" could never say yes.
+
+`SettingsPane` now carries a **Sign-in method** row directly under the API key,
+valued `API key`, whose action is **Use a Gate account**. It is gated exactly as
+Replace key is, on `auth_mode === "api_key"`, so an OAuth account is not offered a
+switch to what it already is - matching the popover, which offers no reverse
+either. While the browser flow is open the row's description says where the user
+should be looking, reusing the `updateNote` mechanism rather than inventing a
+busy state for `SettingsAction`.
+
+It calls the existing `useSettingsActions.upgradeToOAuth`, **not**
+`useSetup.signIn`. That distinction was already documented in the hook and is the
+whole reason the action exists: `signIn` saves the account first, with the default
+gateway and no key, which is right for a machine with no account and wrong here -
+it would repoint a staging install at production and drop the key the user still
+has. The e2e test pins it by asserting `oauth_begin_login` fired and
+`save_account` did not.
+
+**Not in the Figma.** The drawn Settings screen has no such row; this is parity
+with the shipping app, not a design instruction. Expect it to be redrawn, and
+treat it the way the diagnostics row is treated.
+
+**A trap this row fell into first.** `upgradeToOAuth` throws on a browser flow
+that fails, times out or is abandoned, and the row was calling it through `void`.
+The rejection became an unhandled promise, `finally` cleared the busy flag, and
+the pane went silent - which is indistinguishable from a button that does
+nothing, and is exactly how it was reported. Any call site for one of these
+actions needs a `catch` onto `setActionError`, the way `acceptOffer` beside it
+always had. The e2e that pins it fails without the fix on *uncaught page errors*,
+because the fixture treats an unhandled rejection as a crash.
+
+`settings.busy` also has to be in the `settingsSections` memo's dependency list.
+That array names individual callbacks on purpose - the hook returns a fresh
+object each render - so a value read inside the memo and missing from the array
+simply never updates, which is what kept the waiting note from ever appearing.
+
+### Left undone, deliberately
+
+- **`Auth / Error states` carries no ready mark**, so the setup-timeout dialog and
+  the device-name validation rule are unbuilt. The field accepts anything the
+  backend accepts.
+- **Minimize2 is still a question for the designer.** Onboarding step 2 teaches
+  expand/collapse between popover and window; open question 5 removed the control.
+  Nothing was changed either way pending an answer.
+- **The onboarding window is still on the old `gc/` ink system.** The design draws
+  these four steps inside the new window shell - topbar, progress bar, card - and
+  what ships is the popover-era layout with new words in it. Retheming it is its
+  own piece of work and was not attempted here.
+- **"Go back" and "Use a different account" do the same thing** on the org dead
+  end, because by then the session is already spent and dropping it is the only
+  move. Both are drawn; worth asking whether one was meant to do something else.
+
+
 ## Branching model
 
 `feat/new-app-ui` is the **integration base** for the design work, not a branch
@@ -559,11 +882,14 @@ the same PR.
    carries only the overflow menu, and the brand lockup is genuinely centred
    rather than sitting at the design's 504px, an offset that existed only
    because a second button balanced it.
-6. **Onboarding / FirstRun / OrgPicker / Success: RESOLVED 2026-08-16 - built
-   provisionally.** `setup.tsx` gives them `SetupLayout` (chrome plus one
-   centred card, no sidebar) and `WelcomePane`, `OrgPickerPane`,
-   `ConnectedPane`. Built from the design's own vocabulary rather than invented
-   wholesale, but **not in the Figma** and expected to be redrawn.
+6. **Onboarding / FirstRun / OrgPicker / Success: RESOLVED 2026-08-19 - drawn,
+   and rebuilt against the drawing.** Built provisionally on 2026-08-16 because
+   the design had nothing to say about first run; `Flows / Onboarding` and
+   `Flows / Auth` landed on 2026-08-19 and both are marked ready. `setup.tsx`
+   now follows them - see "Built 2026-08-19". What remains open is the
+   `Auth / Error states` section, which carries no ready mark, and the fact that
+   the onboarding tutorial still renders in the popover-era `gc/` ink system
+   rather than the window shell the design draws it in.
 7. **Does the chart's `total` series double-count? RESOLVED 2026-08-17 - no,
    the four are additive.** Settled by the Figma's own `chart/tooltip`
    (`191:79768`), added to the file after this question was written. It lists
@@ -574,7 +900,6 @@ the same PR.
    and the endpoint keeps sending `requests` plus the three security counts with
    the client subtracting. The sr-only table now names the sum "All messages" so
    two different figures no longer share one column name.
-
 8. **Sidebar app states: RESOLVED 2026-08-16.** `SidebarApp` now carries an
    `AppStatus` union (`protected` / `not-protected` / `drifted` /
    `not-routed`), and separately an `on` boolean. The split is deliberate and

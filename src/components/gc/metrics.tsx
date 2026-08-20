@@ -209,9 +209,9 @@ export function MessagesChart({
         // Not a sentence about their traffic. The pane's gap notice carries the
         // cause and the retry; this only refuses to draw a plot for a series
         // nobody sent us.
-        <EmptyNote>Messages couldn&apos;t be read</EmptyNote>
+        <EmptyNote icon="chartColumn">Messages couldn&apos;t be read</EmptyNote>
       ) : empty ? (
-        <EmptyNote>No messages sent in the last 24hrs</EmptyNote>
+        <EmptyNote icon="chartColumn">No messages sent in the last 24hrs</EmptyNote>
       ) : (
         <>
       {/* The bars are decoration for assistive tech; the table below carries the

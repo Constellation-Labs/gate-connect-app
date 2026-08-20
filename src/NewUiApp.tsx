@@ -94,9 +94,11 @@ import {
 } from "./components/gc/dialogs";
 import type { GateModelOption } from "./components/gc/dialogs";
 import {
+  ApiKeyPane,
   ConnectedPane,
   DiagnosticsPane,
   GatewayPicker,
+  NameDevicePane,
   OrgPickerPane,
   SetupLayout,
   WelcomePane,
@@ -116,7 +118,7 @@ import {
   SwitchGatewayDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
-import { AlertBanner, ErrorBanner, RecoveryBanner } from "./components/gc/banners";
+import { AlertBanner, ErrorBanner, ErrorDetails, RecoveryBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type {
   AppStatus,
@@ -126,7 +128,7 @@ import type {
 } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
-import { analyticsId, setAnalyticsConsent, track } from "./lib/analytics";
+import { analyticsId, setAnalyticsConsent, track, trackError } from "./lib/analytics";
 import { secretStoreName, usePlatform } from "./lib/platform";
 
 /**
@@ -938,6 +940,9 @@ export function NewUiApp() {
     // `undefined` while the preference read is in flight, which is not the same as
     // unanswered - see the note on the hook's argument.
     diagnosticsAnswered: prefs?.share_diagnostics_recorded,
+    // Same `undefined` distinction: null means the name follows the hostname,
+    // and no preferences at all means the read has not landed.
+    deviceNamed: prefs ? prefs.device_name !== null : undefined,
   });
 
   const settings = useSettingsActions({
@@ -980,6 +985,26 @@ export function NewUiApp() {
       setOfferError(classifyError(e, "sign_in"));
     } finally {
       setOfferBusy(false);
+    }
+  }, [settings]);
+
+  /**
+   * Settings' "Use a Gate account".
+   *
+   * `upgradeToOAuth` throws on a browser flow that fails, times out or is
+   * abandoned, and the row called it through `void` - so the rejection became an
+   * unhandled promise, the busy flag cleared in `finally`, and the pane went
+   * quiet. That is indistinguishable from a button that does nothing, which is
+   * exactly how it was reported. The offer dialog beside it has always caught;
+   * this now does too, onto the shell's own error banner.
+   */
+  const switchToGateAccount = useCallback(async () => {
+    setActionError(null);
+    try {
+      await settings.upgradeToOAuth();
+    } catch (e) {
+      trackError(e, "sign_in");
+      setActionError(classifyError(e, "sign_in"));
     }
   }, [settings]);
 
@@ -1058,6 +1083,10 @@ export function NewUiApp() {
         plan: "-",
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
+        // Decides whether the key row is drawn at all: an upgraded account still
+        // has its old key in the keychain, so `has_api_key` alone would keep
+        // naming a credential that no longer authenticates anything.
+        authMode: account?.auth_mode,
         launchAtLogin,
         launchAtLoginUnavailable,
         routingHealthNotifications: prefs?.routing_health_notifications,
@@ -1077,6 +1106,15 @@ export function NewUiApp() {
         // with a key would flip auth_mode to api_key, quietly converting the
         // account behind a button that says "replace".
         onReplaceKey: account?.auth_mode === "api_key" ? settings.openReplaceKey : undefined,
+        // Same gate as Replace key, and the counterpart to it: a key account can
+        // move to a Gate account whenever it likes, not only in the one-time
+        // offer it may already have dismissed. An OAuth account is not offered
+        // the reverse, matching the popover.
+        onSwitchToGateAccount:
+          account?.auth_mode === "api_key" ? () => void switchToGateAccount() : undefined,
+        signInNote: settings.busy
+          ? "Finish signing in on the page that opened in your browser."
+          : undefined,
         // Only where there is a session to end. An API-key account never had one;
         // reset is its way out.
         onDisconnect: account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
@@ -1145,6 +1183,10 @@ export function NewUiApp() {
       settings.copyText,
       settings.openRenameDevice,
       settings.openReplaceKey,
+      // `busy` drives the sign-in row's waiting note, so the memo has to see it
+      // change or the note never appears.
+      settings.busy,
+      switchToGateAccount,
       settings.openDisconnect,
       settings.openReset,
       settings.openSwitchGateway,
@@ -1214,6 +1256,15 @@ export function NewUiApp() {
   }
   if (setup.stage.kind !== "ready") {
     const stage = setup.stage;
+    const gatewayPicker = (
+      <GatewayPicker
+        value={setup.gateway}
+        servers={GATEWAY_SERVERS}
+        open={gatewayOpen}
+        onOpenChange={setGatewayOpen}
+        onSelect={setup.setGateway}
+      />
+    );
     return (
       <SetupLayout
         menuOpen={menuOpen}
@@ -1224,23 +1275,21 @@ export function NewUiApp() {
           <WelcomePane
             reauth={stage.reauth}
             onSignIn={() => void setup.signIn()}
-            apiKeyOpen={setup.apiKeyOpen}
-            onToggleApiKey={setup.toggleApiKey}
-            apiKey={setup.apiKey}
-            onApiKeyChange={setup.setApiKey}
-            onConnectWithApiKey={() => void setup.connectWithApiKey()}
+            onUseApiKey={setup.openApiKey}
             // The card had no way to name the gateway it was about to sign in
             // against, so the new shell could only ever reach the build's
             // default - the popover has offered this since first run existed.
-            gateway={
-              <GatewayPicker
-                value={setup.gateway}
-                servers={GATEWAY_SERVERS}
-                open={gatewayOpen}
-                onOpenChange={setGatewayOpen}
-                onSelect={setup.setGateway}
-              />
-            }
+            gateway={gatewayPicker}
+            busy={setup.busy}
+            error={setupError && <SetupNote error={setupError} />}
+          />
+        ) : stage.kind === "api-key" ? (
+          <ApiKeyPane
+            apiKey={setup.apiKey}
+            onApiKeyChange={setup.setApiKey}
+            onConnect={() => void setup.connectWithApiKey()}
+            onGoBack={setup.closeApiKey}
+            gateway={gatewayPicker}
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
           />
@@ -1250,7 +1299,20 @@ export function NewUiApp() {
             selectedId={setup.selectedOrgId}
             onSelect={setup.selectOrg}
             onContinue={() => void setup.confirmOrg()}
-            onUseApiKey={setup.useApiKeyInstead}
+            // The design draws both affordances on the dead end and both mean
+            // the same thing here: the session is already spent, so the only
+            // way back to the sign-in choice is to drop it.
+            onGoBack={() => void setup.signOut()}
+            onUseDifferentAccount={() => void setup.signOut()}
+            busy={setup.busy}
+            error={setupError && <SetupNote error={setupError} />}
+          />
+        ) : stage.kind === "name-device" ? (
+          <NameDevicePane
+            value={setup.deviceNameDraft}
+            onChange={setup.setDeviceNameDraft}
+            onContinue={() => void setup.nameDevice()}
+            onSkip={setup.skipNaming}
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
           />
@@ -1322,6 +1384,7 @@ export function NewUiApp() {
           <ErrorBanner
             title={actionError.title}
             hint={actionError.hint}
+            raw={actionError.raw}
             onDismiss={() => setActionError(null)}
           />
         ) : recoveryNames.length > 0 && !recoveryHidden ? (
@@ -1837,10 +1900,21 @@ function toSetupOrg(org: Org): SetupOrganization {
 }
 
 /** Title plus remedy, the same two lines the popover's `ErrorNote` shows. */
+/**
+ * A classified failure on a setup pane.
+ *
+ * Carries `ErrorDetails` for the same reason `ErrorBanner` does: the fallback
+ * hint promises "the details below", and this is the surface with no other way
+ * to see them - a first-run or re-sign-in failure has no shell behind it. An
+ * unclassified `oauth_begin_login` failure ("OAuth is not configured in this
+ * build", a refused loopback port) landed here as a bare "Couldn't complete
+ * sign-in" with nothing under it, which is a dead end rather than a report.
+ */
 function SetupNote({ error }: { error: ClassifiedError }) {
   return (
     <>
       <span className="font-medium">{error.title}</span> {error.hint}
+      <ErrorDetails raw={error.raw} title={error.title} />
     </>
   );
 }

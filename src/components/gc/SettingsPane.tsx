@@ -1,6 +1,7 @@
 import { BaseSwitch, Card } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
+import type { AuthMode } from "../../lib/api";
 
 /**
  * The Settings pane (Figma `Flows / Settings`). Named `SettingsPane` rather
@@ -78,6 +79,7 @@ export function buildSettingsSections({
   plan,
   gateway,
   apiKeyMasked,
+  authMode,
   launchAtLogin,
   launchAtLoginUnavailable,
   routingHealthNotifications,
@@ -92,6 +94,8 @@ export function buildSettingsSections({
   onCopyInstallId,
   onUpgradePlan,
   onReplaceKey,
+  onSwitchToGateAccount,
+  signInNote,
   onDisconnect,
   onToggleLaunchAtLogin,
   onRetryLaunchAtLogin,
@@ -113,6 +117,21 @@ export function buildSettingsSections({
   gateway: string;
   /** Already masked upstream - this pane never sees the key. */
   apiKeyMasked: string;
+  /**
+   * How the account actually authenticates, which decides whether the API key
+   * row belongs on screen at all.
+   *
+   * An OAuth account keeps whatever key it had before the upgrade: the keychain
+   * item is not deleted, so `has_api_key` stays true and this pane used to draw
+   * a masked key under "API key" for a session authenticated by a Cognito
+   * bearer. On the screen whose whole job is to say where the credential lives,
+   * that named the wrong one - and the key it named cannot be replaced from
+   * here either, because `onReplaceKey` is withheld for OAuth.
+   *
+   * Undefined leaves the key row in place: it is the state before the account
+   * read lands, and the key row is the older default.
+   */
+  authMode?: AuthMode;
   launchAtLogin: boolean;
   /** The launch-at-login read failed. Drives the Unavailable row; the boolean
    * above is then meaningless and must not reach a switch. */
@@ -137,6 +156,14 @@ export function buildSettingsSections({
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
   onReplaceKey?: () => void;
+  /** Offered only to an account still on a pasted key. The popover has carried
+   * this since it shipped (`screens/Settings.tsx`); the new shell had only the
+   * one-time `OAuthOfferDialog`, and `markOAuthOfferSeen` meant that dismissing
+   * it once left no route to a Gate account at all. */
+  onSwitchToGateAccount?: () => void;
+  /** Replaces that row's description while the browser flow is open, the same
+   * way `updateNote` speaks for the version row. */
+  signInNote?: string;
   onDisconnect?: () => void;
   onToggleLaunchAtLogin: () => void;
   /** Present only when the launch-at-login read failed, so the row can offer a
@@ -209,14 +236,54 @@ export function buildSettingsSections({
             ? { label: "Change server", onClick: onChangeGateway }
             : undefined,
         },
-        {
-          id: "api-key",
-          icon: "key",
-          label: "API key",
-          value: apiKeyMasked,
-          mono: true,
-          action: onReplaceKey ? { label: "Replace key", onClick: onReplaceKey } : undefined,
-        },
+        // Only for an account a key actually authenticates. See `authMode`.
+        ...(authMode === "oauth"
+          ? []
+          : [
+              {
+                id: "api-key",
+                icon: "key" as IconName,
+                label: "API key",
+                value: apiKeyMasked,
+                mono: true,
+                action: onReplaceKey
+                  ? { label: "Replace key", onClick: onReplaceKey }
+                  : undefined,
+              } as SettingsRow,
+            ]),
+        // Takes the key row's place for a Gate account, so the section still
+        // says what signs the user in rather than going quiet about it. The
+        // switch action stays gated on the handler, which the shell withholds
+        // for an account already on OAuth - there is nowhere to switch to.
+        ...(authMode === "oauth"
+          ? [
+              {
+                id: "sign-in-method",
+                icon: "shieldCheck" as IconName,
+                label: "Sign-in method",
+                description:
+                  signInNote ??
+                  "Your Gate account keeps its session in the OS secret store and refreshes on its own, so there is no key to paste or rotate.",
+                value: "Gate account",
+              } as SettingsRow,
+            ]
+          : onSwitchToGateAccount
+            ? [
+                {
+                  id: "sign-in-method",
+                  icon: "shieldCheck" as IconName,
+                  label: "Sign-in method",
+                  description:
+                    signInNote ??
+                    "A Gate account keeps its session in the OS secret store and refreshes on its own, so there is nothing to paste or rotate.",
+                  value: "API key",
+                  action: {
+                    label: "Use a Gate account",
+                    onClick: onSwitchToGateAccount,
+                  },
+                } as SettingsRow,
+              ]
+            : []),
         ...(certificate
           ? [
               {

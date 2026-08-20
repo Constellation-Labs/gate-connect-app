@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { BaseSwitch, StatusTile } from "./base";
 import { Icon } from "./Icon";
 
@@ -183,6 +184,55 @@ function PageButton({ side, onClick }: { side: "prev" | "next"; onClick: () => v
 }
 
 /**
+ * The underlying message, behind an expander, with a copy button.
+ *
+ * Two of `classifyError`'s hints end on "the details below help when reporting
+ * it", and one of them is the catch-all fallback - so every context without a
+ * branch of its own lands on copy that promises something below. That makes
+ * this the surface for any failure nobody classified. `ErrorBanner` grew it
+ * first and the setup screen still had none, which meant a first-run or
+ * re-sign-in failure - the one with no shell behind it - read as a dead end.
+ * Shared rather than copied so the next surface cannot forget it again.
+ *
+ * Renders nothing when `raw` is absent or merely repeats the title, which is
+ * the same guard the popover's `ErrorNote` makes.
+ */
+export function ErrorDetails({ raw, title }: { raw?: string; title: string }) {
+  const [copied, setCopied] = useState(false);
+  // Timed reset with a cleanup rather than a bare setTimeout: the surface is
+  // dismissed by whatever the user does next, and a pending timer would then
+  // set state on an unmounted component.
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  if (!raw || raw === title) return null;
+
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer py-0.5 text-base-2xs text-red-900/70">
+        Details
+      </summary>
+      <p className="mt-1 break-all font-mono text-base-2xs leading-4 text-red-900/80">
+        {raw}
+      </p>
+      <button
+        type="button"
+        onClick={() => {
+          void navigator.clipboard.writeText(raw).then(() => setCopied(true));
+        }}
+        className="mt-1.5 inline-flex items-center gap-1 text-base-2xs font-medium text-red-900/70 transition-colors hover:text-red-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
+      >
+        <Icon name={copied ? "check" : "copy"} size={12} />
+        {copied ? "Copied" : "Copy details"}
+      </button>
+    </details>
+  );
+}
+
+/**
  * A failed action, stated where the user acted. Deliberately not `AlertBanner`:
  * that one carries a switch because a drifted app can be re-routed from it, and
  * a failure has nothing to toggle.
@@ -190,10 +240,13 @@ function PageButton({ side, onClick }: { side: "prev" | "next"; onClick: () => v
 export function ErrorBanner({
   title,
   hint,
+  raw,
   onDismiss,
 }: {
   title: string;
   hint: string;
+  /** The underlying message; see `ErrorDetails`. */
+  raw?: string;
   onDismiss: () => void;
 }) {
   return (
@@ -205,6 +258,7 @@ export function ErrorBanner({
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium leading-5 text-red-900">{title}</p>
         <p className="text-base-xs leading-4 text-red-900/80">{hint}</p>
+        <ErrorDetails raw={raw} title={title} />
       </div>
       <button
         type="button"

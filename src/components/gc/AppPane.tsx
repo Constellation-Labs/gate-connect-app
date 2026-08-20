@@ -30,18 +30,21 @@ export interface GateModel {
   logo?: ReactNode;
 }
 
-/** Text sits at the palette's 900 level; the 100 backgrounds are inferred from
- *  that pairing rather than sampled, same as the Overview's action pills. */
+/** The 200 stop, following the Overview's action pills, whose fills were read
+ *  from the pixels on 2026-08-20. These particular pills were not sampled
+ *  themselves - the App page draws them too small - but they are the same
+ *  `mono/label-12` badge. Note `redacted` is **violet**, not purple: that is what
+ *  the Overview's REDACT pill and the chart's Redacted series both measure. */
 const STATUS_STYLES: Record<ActivityStatus, string> = {
-  success: "bg-green-100 text-green-900",
-  error: "bg-red-100 text-red-900",
+  success: "bg-green-200 text-green-900",
+  error: "bg-red-200 text-red-900",
 };
 
 const SECURITY_STYLES: Record<ActivitySecurity, string> = {
-  allow: "bg-green-100 text-green-900",
-  flagged: "bg-amber-100 text-amber-900",
-  redacted: "bg-purple-100 text-purple-900",
-  blocked: "bg-red-100 text-red-900",
+  allow: "bg-green-200 text-green-900",
+  flagged: "bg-amber-200 text-amber-900",
+  redacted: "bg-violet-200 text-violet-900",
+  blocked: "bg-red-200 text-red-900",
 };
 
 export function AppPane({
@@ -452,7 +455,7 @@ function PendingRows() {
 function Pill({ className, children }: { className: string; children: ReactNode }) {
   return (
     <span
-      className={`inline-block rounded-base px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
+      className={`inline-block rounded-sm px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
     >
       {children}
     </span>
