@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { BaseSwitch, Card } from "./base";
 import { Icon } from "./Icon";
-import { MessagesChart, StatTiles } from "./metrics";
+import { EmptyNote, MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
 
 /**
@@ -305,6 +305,17 @@ function InfoRow({
 }
 
 function RecentActivity({ activity }: { activity: ActivityEntry[] }) {
+  // A header row over nothing reads as a table that failed to load. The design
+  // replaces the whole table, headers included.
+  if (activity.length === 0) {
+    return (
+      <Card className="p-4">
+        <h2 className="text-sm font-medium leading-5 text-neutral-900">Recent activity</h2>
+        <EmptyNote>No recent activity in the last 24hrs</EmptyNote>
+      </Card>
+    );
+  }
+
   return (
     <Card className="p-4">
       <h2 className="text-sm font-medium leading-5 text-neutral-900">Recent activity</h2>

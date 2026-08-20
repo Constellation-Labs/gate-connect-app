@@ -40,6 +40,7 @@ export type IconName =
   | "bookOpenText"
   | "monitorSmartphone"
   | "monitor"
+  | "chartColumn"
   | "idCard"
   | "user"
   | "receipt"
@@ -248,6 +249,15 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M10 19v-3.96" />
       <path d="M7 19h5" />
       <rect width="6" height="10" x="16" y="12" rx="2" />
+    </>
+  ),
+  // Lucide `ChartColumn`. The Messages card's empty state.
+  chartColumn: (
+    <>
+      <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+      <path d="M18 17V9" />
+      <path d="M13 17V5" />
+      <path d="M8 17v-3" />
     </>
   ),
   // Lucide `Monitor`. The Auth flow's "Name this device" pane is drawn with a

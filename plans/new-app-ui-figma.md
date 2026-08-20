@@ -318,6 +318,61 @@ included, so the first attempt drew two nested boxes.
 The welcome frame keeps its own shape - centred mark, title, rule, copy, no card -
 because that is how the design draws it.
 
+### Sync, 2026-08-20 (second pass)
+
+Re-read on the report that every flow is now green. Most of it is, and one
+thing that was said to be green is not.
+
+**`Auth / Error states` still carries no check.** Verified twice, the second
+time after a hard reload, in both the layers panel and the canvas section label,
+while the three sections beside it (`Connect with Gate`, `Connect with API key`,
+`Organizations`) all show theirs. So the setup-timeout dialog and the
+device-name validation rule stay unbuilt. Both frames were read on 2026-08-19
+and are described above, so if the designer has signed them off verbally and the
+file simply has not caught up, this is short work - but the file is the signal
+this plan follows, and it says not yet.
+
+**Settings is green throughout** - `Reset Gate Connect`, `Disconnect Gate
+session`, `Update device name` (twice), `Main screens`, `Dimensions` - and every
+one of those flows is built.
+
+**The App page carries a section nothing here had ever read: `App / No data
+1+ day state` ✅.** It holds two states that the panes did not have:
+
+- **No data.** Stat tiles read `0`, `0`, **`N/A`** - not `0%`. The Messages card
+  drops its axis and legend for a centred column-chart mark over "No messages
+  sent in the last 24hrs", and Recent activity drops its header row for "No
+  recent activity in the last 24hrs".
+- **Loading.** The same cards with their labels in place and their values
+  replaced by grey skeleton bars, including 24 uniform full-height bars where
+  the chart goes.
+
+The no-data half is now built, and it matters more than it looks: **both panes
+already pass `EMPTY_STATS` and `buckets={[]}`**, because the 24-hour endpoint does
+not exist, so this is the state the app is in every time anyone opens it. What
+shipped before drew a labelled 24-column axis under 24 invisible bars and a table
+header over no rows, which reads as a chart that failed rather than a quiet day.
+
+`UsageStats.tokensSavedPercent` became `number | null` to carry it. `0%` is a
+claim about traffic that was never measured; `N/A` is the design's own answer and
+is the honest one. `tokensSavedAmount` follows it, since there is no amount to put
+beside a figure that does not exist.
+
+`EmptyNote` lives in `metrics.tsx` because the chart is shared by both panes, so
+the Overview inherits the same treatment without a second implementation.
+`metrics.test.tsx` pins all of it, including that one bucket carrying traffic is
+enough to bring the chart back.
+
+**The loading half is deliberately not built.** Nothing can be loading until
+there is an endpoint to load from, and a skeleton no code path can reach is dead
+code. Its appearance is recorded above for whoever lands that endpoint.
+
+**Not re-read this pass:** the Overview page. Three page-switch attempts failed -
+Figma's Pages list needs a click to select and another to navigate, and it stopped
+taking the second one - so its own `overview-loading` frame was not opened. The
+shared components mean the Overview picks up the empty treatment regardless; what
+is unverified is whether its no-data copy differs from the App page's.
+
 ### Left undone, deliberately
 
 - **`Auth / Error states` carries no ready mark**, so the setup-timeout dialog and

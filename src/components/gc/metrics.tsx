@@ -1,4 +1,6 @@
 import { Card } from "./base";
+import { Icon } from "./Icon";
+import type { IconName } from "./Icon";
 
 /**
  * The usage summary shared by the Overview pane and the per-app pane: one stat
@@ -12,10 +14,13 @@ import { Card } from "./base";
 export interface UsageStats {
   messages: number;
   blockedFlagged: number;
-  /** Whole percent, e.g. 38 renders as "38%". */
-  tokensSavedPercent: number;
-  /** Pre-formatted and currency-aware upstream, e.g. "+$3.10". */
-  tokensSavedAmount: string;
+  /** Whole percent, e.g. 38 renders as "38%". **Null when there is nothing to
+   * divide by**, which the design draws as `N/A` rather than `0%` - a period
+   * with no traffic saved no tokens, but it did not save none of them either. */
+  tokensSavedPercent: number | null;
+  /** Pre-formatted and currency-aware upstream, e.g. "+$3.10". Omitted with a
+   * null percent, since there is no amount to report. */
+  tokensSavedAmount?: string;
 }
 
 /**
@@ -52,8 +57,8 @@ export function StatTiles({ stats }: { stats: UsageStats }) {
       />
       <Stat
         label="Tokens saved"
-        value={`${stats.tokensSavedPercent}%`}
-        delta={stats.tokensSavedAmount}
+        value={stats.tokensSavedPercent === null ? "N/A" : `${stats.tokensSavedPercent}%`}
+        delta={stats.tokensSavedPercent === null ? undefined : stats.tokensSavedAmount}
         divided
       />
     </Card>
@@ -94,7 +99,36 @@ function Stat({
  * Bars are the design's 20px wide and distribute across the card, so the same
  * markup holds whether the backend returns 24 buckets or fewer.
  */
+/**
+ * What a metrics card shows when the period it covers is genuinely empty, as
+ * opposed to still loading. Centred in the card's body, below its heading.
+ *
+ * The design draws a small mark above the line in both places it appears. Only
+ * the Messages one is identifiable (a column chart); the Recent activity mark
+ * could not be read at the resolution the frame gave up, so that call site
+ * passes no icon rather than inventing one.
+ */
+export function EmptyNote({ children, icon }: { children: string; icon?: IconName }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
+      {icon && (
+        <span aria-hidden className="text-base-muted-foreground">
+          <Icon name={icon} size={20} />
+        </span>
+      )}
+      <p className="text-sm leading-5 text-base-muted-foreground">{children}</p>
+    </div>
+  );
+}
+
 export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
+  // Empty means "no traffic in the period", which is not the same as no
+  // buckets: an hour-by-hour response for a quiet day is 24 buckets of zero,
+  // and drawing 24 invisible bars over a labelled axis reads as a broken chart.
+  const empty = buckets.every(
+    (b) => b.total + b.blocked + b.flagged + b.redacted === 0,
+  );
+
   const peak = Math.max(
     1,
     ...buckets.map((b) => b.total + b.blocked + b.flagged + b.redacted),
@@ -108,6 +142,15 @@ export function MessagesChart({ buckets }: { buckets: MessagesBucket[] }) {
     }),
     { total: 0, blocked: 0, flagged: 0, redacted: 0 },
   );
+
+  if (empty) {
+    return (
+      <Card className="p-4">
+        <h2 className="text-sm font-medium leading-5 text-neutral-900">Messages</h2>
+        <EmptyNote icon="chartColumn">No messages sent in the last 24hrs</EmptyNote>
+      </Card>
+    );
+  }
 
   return (
     <Card className="p-4">

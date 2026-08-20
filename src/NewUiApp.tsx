@@ -1386,11 +1386,14 @@ export function NewUiApp() {
 /** No gateway endpoint reports the models on offer yet. See the picker. */
 const GATE_MODELS: GateModelOption[] = [];
 
+/** What both panes show until the 24-hour endpoint exists. `null` rather than
+ *  `0` for the saving: the design draws `N/A` for a period it has no figure for,
+ *  and "0%" would be a claim about traffic that was never measured. */
 const EMPTY_STATS = {
   messages: 0,
   blockedFlagged: 0,
-  tokensSavedPercent: 0,
-  tokensSavedAmount: "+$0.00",
+  tokensSavedPercent: null,
+  tokensSavedAmount: undefined,
 };
 
 /** The file Gate rewrites for one tool, for the drift review's copy. */
