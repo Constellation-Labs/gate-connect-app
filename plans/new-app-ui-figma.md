@@ -373,6 +373,38 @@ taking the second one - so its own `overview-loading` frame was not opened. The
 shared components mean the Overview picks up the empty treatment regardless; what
 is unverified is whether its no-data copy differs from the App page's.
 
+### Both ways in, 2026-08-20
+
+The popover lets an account be either a pasted key or a Gate sign-in, and lets a
+key account move to the second whenever it likes: `screens/Settings.tsx` carries
+a permanent **"Switch to Constellation sign-in"** row under the key.
+
+The window shell had the choice at **first run only**. `WelcomePane` offers both
+routes and both are wired, but after setup the sole path from a key account to a
+Gate account was the one-time `OAuthOfferDialog` - and `markOAuthOfferSeen()`
+means dismissing it once removed the route permanently. An install that said "not
+now" could never say yes.
+
+`SettingsPane` now carries a **Sign-in method** row directly under the API key,
+valued `API key`, whose action is **Use a Gate account**. It is gated exactly as
+Replace key is, on `auth_mode === "api_key"`, so an OAuth account is not offered a
+switch to what it already is - matching the popover, which offers no reverse
+either. While the browser flow is open the row's description says where the user
+should be looking, reusing the `updateNote` mechanism rather than inventing a
+busy state for `SettingsAction`.
+
+It calls the existing `useSettingsActions.upgradeToOAuth`, **not**
+`useSetup.signIn`. That distinction was already documented in the hook and is the
+whole reason the action exists: `signIn` saves the account first, with the default
+gateway and no key, which is right for a machine with no account and wrong here -
+it would repoint a staging install at production and drop the key the user still
+has. The e2e test pins it by asserting `oauth_begin_login` fired and
+`save_account` did not.
+
+**Not in the Figma.** The drawn Settings screen has no such row; this is parity
+with the shipping app, not a design instruction. Expect it to be redrawn, and
+treat it the way the diagnostics row is treated.
+
 ### Left undone, deliberately
 
 - **`Auth / Error states` carries no ready mark**, so the setup-timeout dialog and

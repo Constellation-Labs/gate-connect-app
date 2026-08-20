@@ -209,6 +209,23 @@ test.describe("new UI: the two ways back to first run", () => {
     await expect(app.page.getByRole("button", { name: "Replace key" })).toBeVisible();
   });
 
+  test("a key account can move to a Gate account from Settings", async ({ boot }) => {
+    // The popover has carried this since it shipped. The window had only the
+    // one-time OAuth offer, and dismissing that once left no route to a Gate
+    // account at all.
+    const app = await boot({
+      account: { has_api_key: true, auth_mode: "api_key", org_id: null, org_name: null },
+    });
+
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "Use a Gate account" }).click();
+
+    await expect.poll(() => app.lastCall("oauth_begin_login")).not.toBeNull();
+    // Not `save_account`: that would repoint the account at the default gateway
+    // and drop the key the user still has.
+    expect(await app.lastCall("save_account")).toBeNull();
+  });
+
   test("an OAuth account is not offered a key to replace", async ({ boot }) => {
     // saveAccount with a key would flip auth_mode to api_key, quietly converting
     // the account behind a button that says "replace".
@@ -218,6 +235,8 @@ test.describe("new UI: the two ways back to first run", () => {
 
     await expect(app.page.getByRole("button", { name: "Replace key" })).toHaveCount(0);
     await expect(app.page.getByRole("button", { name: "Disconnect Gate" })).toBeVisible();
+    // And no offer to switch to what it already is.
+    await expect(app.page.getByRole("button", { name: "Use a Gate account" })).toHaveCount(0);
   });
 });
 

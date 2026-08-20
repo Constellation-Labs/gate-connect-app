@@ -92,6 +92,8 @@ export function buildSettingsSections({
   onCopyInstallId,
   onUpgradePlan,
   onReplaceKey,
+  onSwitchToGateAccount,
+  signInNote,
   onDisconnect,
   onToggleLaunchAtLogin,
   onRetryLaunchAtLogin,
@@ -137,6 +139,14 @@ export function buildSettingsSections({
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
   onReplaceKey?: () => void;
+  /** Offered only to an account still on a pasted key. The popover has carried
+   * this since it shipped (`screens/Settings.tsx`); the new shell had only the
+   * one-time `OAuthOfferDialog`, and `markOAuthOfferSeen` meant that dismissing
+   * it once left no route to a Gate account at all. */
+  onSwitchToGateAccount?: () => void;
+  /** Replaces that row's description while the browser flow is open, the same
+   * way `updateNote` speaks for the version row. */
+  signInNote?: string;
   onDisconnect?: () => void;
   onToggleLaunchAtLogin: () => void;
   /** Present only when the launch-at-login read failed, so the row can offer a
@@ -217,6 +227,23 @@ export function buildSettingsSections({
           mono: true,
           action: onReplaceKey ? { label: "Replace key", onClick: onReplaceKey } : undefined,
         },
+        ...(onSwitchToGateAccount
+          ? [
+              {
+                id: "sign-in-method",
+                icon: "shieldCheck" as IconName,
+                label: "Sign-in method",
+                description:
+                  signInNote ??
+                  "A Gate account keeps its session in the OS secret store and refreshes on its own, so there is nothing to paste or rotate.",
+                value: "API key",
+                action: {
+                  label: "Use a Gate account",
+                  onClick: onSwitchToGateAccount,
+                },
+              } as SettingsRow,
+            ]
+          : []),
         ...(certificate
           ? [
               {

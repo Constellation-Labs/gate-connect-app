@@ -38,6 +38,45 @@ function sections(overrides: Partial<Parameters<typeof buildSettingsSections>[0]
 
 afterEach(cleanup);
 
+describe("the way back to a Gate account", () => {
+  it("offers a key account a Gate account, under its key", () => {
+    // The popover has always carried this. The new shell had only the one-time
+    // OAuthOfferDialog, so dismissing that once left no route to OAuth at all.
+    const built = sections({ onSwitchToGateAccount: noop });
+    const connection = built.find((sec) => sec.id === "connection")!;
+    const ids = connection.rows.map((r) => r.id);
+
+    expect(ids).toContain("sign-in-method");
+    expect(ids.indexOf("sign-in-method")).toBe(ids.indexOf("api-key") + 1);
+
+    const row = connection.rows.find((r) => r.id === "sign-in-method")!;
+    expect(row.value).toBe("API key");
+    expect(row.action?.label).toBe("Use a Gate account");
+  });
+
+  it("omits it when the shell does not offer one", () => {
+    // An OAuth account has nowhere to switch to, and the shell says so by
+    // withholding the handler - the same way it withholds Replace key.
+    const built = sections({ onSwitchToGateAccount: undefined });
+    const connection = built.find((sec) => sec.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).not.toContain("sign-in-method");
+  });
+
+  it("speaks for itself while the browser flow is open", () => {
+    const built = sections({
+      onSwitchToGateAccount: noop,
+      signInNote: "Finish signing in on the page that opened in your browser.",
+    });
+    const row = built
+      .find((sec) => sec.id === "connection")!
+      .rows.find((r) => r.id === "sign-in-method")!;
+
+    expect(row.description).toBe(
+      "Finish signing in on the page that opened in your browser.",
+    );
+  });
+});
+
 describe("buildSettingsSections", () => {
   it("keeps Diagnostics reachable from Settings", () => {
     // The Figma does not draw this row. `screens/Diagnostics.tsx` has nowhere

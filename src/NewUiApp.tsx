@@ -810,6 +810,15 @@ export function NewUiApp() {
         // with a key would flip auth_mode to api_key, quietly converting the
         // account behind a button that says "replace".
         onReplaceKey: account?.auth_mode === "api_key" ? settings.openReplaceKey : undefined,
+        // Same gate as Replace key, and the counterpart to it: a key account can
+        // move to a Gate account whenever it likes, not only in the one-time
+        // offer it may already have dismissed. An OAuth account is not offered
+        // the reverse, matching the popover.
+        onSwitchToGateAccount:
+          account?.auth_mode === "api_key" ? () => void settings.upgradeToOAuth() : undefined,
+        signInNote: settings.busy
+          ? "Finish signing in on the page that opened in your browser."
+          : undefined,
         // Only where there is a session to end. An API-key account never had one;
         // reset is its way out.
         onDisconnect: account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
