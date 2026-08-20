@@ -47,6 +47,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+use crate::account::BillingMode;
 use crate::proxy::{default_domains, ProxyDomain};
 
 /// Where the stable relay port is persisted. CLI tool configs bake
@@ -178,6 +179,11 @@ struct RelayState {
     /// Live selected org UUID; empty means "none selected". Injected only when
     /// a token is present.
     org: watch::Receiver<Arc<str>>,
+    /// Live billing mode. `Payg` drops the upstream hint and the tool's own
+    /// credential on a rewrite, so the gateway bills the org's balance; `Byok`
+    /// is today's shape. Resolved per domain - see
+    /// [`effective_billing_mode`](super::effective_billing_mode).
+    mode: watch::Receiver<BillingMode>,
     /// The built-in domain catalog. Used to (a) resolve the leading path segment
     /// of a request to a known upstream - so a local process can't aim the relay
     /// at an arbitrary host - and (b) classify the remaining path the way the
@@ -202,6 +208,7 @@ impl RelayState {
         api_key: watch::Receiver<Arc<str>>,
         token: watch::Receiver<Arc<str>>,
         org: watch::Receiver<Arc<str>>,
+        mode: watch::Receiver<BillingMode>,
         intercept: watch::Receiver<bool>,
         owner_uid: Option<u32>,
     ) -> Self {
@@ -235,6 +242,7 @@ impl RelayState {
             api_key,
             token,
             org,
+            mode,
             domains,
             intercept,
             owner_uid,
@@ -259,19 +267,24 @@ impl RelayState {
 /// Adopt a pre-bound loopback listener and start serving on the current tokio
 /// runtime. The accept loop lives until the runtime is dropped (engine stop),
 /// mirroring the PAC responder's lifetime.
+// The engine's live channels passed straight through to [`RelayState`]; bundling
+// them into a struct would just restate that struct's fields at the one call
+// site. Same reasoning as `helper_client::set_intercept`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn(
     std_listener: std::net::TcpListener,
     gateway: Uri,
     api_key: watch::Receiver<Arc<str>>,
     token: watch::Receiver<Arc<str>>,
     org: watch::Receiver<Arc<str>>,
+    mode: watch::Receiver<BillingMode>,
     intercept: watch::Receiver<bool>,
     owner_uid: Option<u32>,
 ) -> Result<()> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
     let state = Arc::new(RelayState::new(
-        &gateway, api_key, token, org, intercept, owner_uid,
+        &gateway, api_key, token, org, mode, intercept, owner_uid,
     ));
     tokio::spawn(accept_loop(listener, state));
     Ok(())
@@ -360,6 +373,11 @@ pub fn serve() -> Result<()> {
         ));
         let (org_tx, org_rx) =
             watch::channel::<Arc<str>>(Arc::from(crate::account::org_id_for_injection().as_str()));
+        // Refreshed in the same loop as the org below: a headless host is
+        // long-lived, and `gate-connect billing-mode` writes the account file
+        // from a different process, so re-reading is the only way this host
+        // learns of a switch.
+        let (mode_tx, mode_rx) = watch::channel(account.billing_mode);
         // The standalone host always intercepts - routing through Gate is the
         // whole point of `proxy relay`, and its own loop below keeps the token
         // fresh. The sender lives for the whole (never-ending) block.
@@ -379,6 +397,7 @@ pub fn serve() -> Result<()> {
             key_rx,
             token_rx,
             org_rx,
+            mode_rx,
             intercept_rx,
             owner_uid,
         ));
@@ -411,6 +430,7 @@ pub fn serve() -> Result<()> {
                 crate::oauth::access_token_for_injection().as_str(),
             ));
             let _ = org_tx.send(Arc::from(crate::account::org_id_for_injection().as_str()));
+            let _ = mode_tx.send(crate::account::billing_mode_for_injection());
         }
     })
 }
@@ -472,21 +492,31 @@ async fn proxy(
     headers.remove(HOST);
     let target = match route {
         Route::Rewrite => {
-            inject_credential(&mut headers, state).map_err(|e| {
+            let mode = super::effective_billing_mode(*state.mode.borrow(), &routed.slug);
+            inject_credential(&mut headers, state, mode).map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("injecting Gate credential: {e:#}"),
                 )
             })?;
-            // We set the upstream hint, overwriting anything the caller sent.
-            // The value comes from the catalog entry we resolved, so a local
-            // process can't aim the gateway at a host of its choosing.
-            set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
-                )
-            })?;
+            // BYOK: we set the upstream hint, overwriting anything the caller
+            // sent. The value comes from the catalog entry we resolved, so a
+            // local process can't aim the gateway at a host of its choosing.
+            //
+            // PAYG: the hint's ABSENCE is the whole switch, so it is removed
+            // instead - including anything the caller sent, which would
+            // otherwise be a way for a local process to force BYOK and spend
+            // the tool's own credential.
+            if mode == BillingMode::Byok {
+                set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
+                    )
+                })?;
+            } else {
+                headers.remove(UPSTREAM_URL_HEADER);
+            }
             format!("{}{}", state.gateway_base, routed.path_and_query)
         }
         Route::Passthrough => {
@@ -548,15 +578,16 @@ async fn proxy(
 
 /// Inject the live Gate credential, via the rule shared with the MITM engine
 /// ([`inject_gate_credential`]): a caller-supplied `x-gate-api-key` is left
-/// untouched; otherwise an OAuth token wins over the legacy key.
-fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> {
+/// untouched; otherwise an OAuth token wins over the legacy key. In `Payg` the
+/// same helper also strips the tool's own upstream credential.
+fn inject_credential(headers: &mut HeaderMap, state: &RelayState, mode: BillingMode) -> Result<()> {
     // Clone the values out of the watch guards so no lock is held.
     let token: Arc<str> = state.token.borrow().clone();
     let api_key: Arc<str> = state.api_key.borrow().clone();
     let org: Arc<str> = state.org.borrow().clone();
     let oauth_token = (!token.is_empty()).then(|| token.as_ref());
     let org_id = (!org.is_empty()).then(|| org.as_ref());
-    inject_gate_credential(headers, &api_key, oauth_token, org_id)
+    inject_gate_credential(headers, &api_key, oauth_token, org_id, mode)
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM
@@ -575,9 +606,12 @@ enum Route {
 /// whether that path rewrites to the gateway.
 #[derive(Debug)]
 struct Routed {
-    /// The catalog upstream. Sent on as `x-gate-upstream-url` when rewriting,
-    /// and used as the base of the direct hop when passing through.
+    /// The catalog upstream. Sent on as `x-gate-upstream-url` when rewriting
+    /// under BYOK, and used as the base of the direct hop when passing through.
     upstream_url: String,
+    /// Catalog slug that owns the request, so the caller can resolve the
+    /// billing shape for it ([`effective_billing_mode`](super::effective_billing_mode)).
+    slug: String,
     /// Path + query **relative to `upstream_url`** - our own slug segment
     /// removed. Both the gateway and the direct upstream append this to their
     /// own base, so it must not carry anything Gate-internal.
@@ -632,6 +666,7 @@ fn resolve_route(
         if let Some(d) = domains.iter().find(|d| d.slug == segment) {
             return Ok(Routed {
                 upstream_url: d.upstream_url.clone(),
+                slug: d.slug.clone(),
                 route: classify(d, &inner),
                 path_and_query: inner,
             });
@@ -660,6 +695,7 @@ fn resolve_route(
         })?;
     Ok(Routed {
         upstream_url: d.upstream_url.clone(),
+        slug: d.slug.clone(),
         route: classify(d, path_and_query),
         path_and_query: path_and_query.to_string(),
     })

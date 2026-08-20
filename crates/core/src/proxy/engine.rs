@@ -27,8 +27,9 @@ use hudsucker::{
 use hyper_rustls::ConfigBuilderExt;
 use tokio::sync::{oneshot, watch};
 
+use crate::account::BillingMode;
 use crate::proxy::cert_authority::GateCa;
-use crate::proxy::{decide, should_intercept_host, Decision, ProxyDomain};
+use crate::proxy::{decide, effective_billing_mode, should_intercept_host, Decision, ProxyDomain};
 
 /// Everything the engine needs to run one session. The account + CA are
 /// fixed for the engine's lifetime; the domain set can be updated live via
@@ -49,6 +50,11 @@ pub struct EngineConfig {
     /// org is selected or in legacy API-key mode. Hot-swappable via
     /// [`RunningEngine::update_org`].
     pub org_id: String,
+    /// Who pays the upstream provider. `Payg` drops `X-Gate-Upstream-Url` and
+    /// the client's own credential on the rewrite path, so the gateway bills
+    /// the org's balance instead of the tool's provider account.
+    /// Hot-swappable via [`RunningEngine::update_mode`].
+    pub billing_mode: BillingMode,
     /// Full domain catalog; the engine routes only the `enabled` ones.
     pub domains: Vec<ProxyDomain>,
     /// PEM of the local root CA cert (public).
@@ -112,6 +118,7 @@ pub struct RunningEngine {
     key_tx: watch::Sender<Arc<str>>,
     token_tx: watch::Sender<Arc<str>>,
     org_tx: watch::Sender<Arc<str>>,
+    mode_tx: watch::Sender<BillingMode>,
     /// Whether the relay rewrites inference to the gateway (true) or forwards
     /// everything straight to the real upstream (false). See
     /// [`set_relay_intercept`](Self::set_relay_intercept).
@@ -176,6 +183,14 @@ impl RunningEngine {
     /// Cheap - no restart; this is how an org switch reaches in-flight routing.
     pub fn update_org(&self, org_id: &str) {
         let _ = self.org_tx.send(Arc::from(org_id));
+    }
+
+    /// Push a changed billing mode to the live engine (and the relay it hosts).
+    /// Cheap - no restart; this is how flipping BYOK/PAYG reaches in-flight
+    /// routing, and it is the only way the shape of subsequent requests changes
+    /// without reconnecting every tool.
+    pub fn update_mode(&self, mode: BillingMode) {
+        let _ = self.mode_tx.send(mode);
     }
 
     /// Flip the relay between gateway interception (rewrite inference and
@@ -310,6 +325,9 @@ struct GateHandler {
     /// Live-updatable selected org UUID. Empty string means "none selected";
     /// injected as `X-Gate-Org-Id` only when an OAuth token is present.
     org: watch::Receiver<Arc<str>>,
+    /// Live-updatable billing mode. Resolved per domain before it is applied -
+    /// see [`effective_billing_mode`].
+    mode: watch::Receiver<BillingMode>,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
@@ -462,7 +480,7 @@ impl HttpHandler for GateHandler {
             // Gate the rewrite on owner UID too: plain-HTTP requests reach here
             // without a CONNECT (so `should_intercept` never gated them), and we
             // must not inject the Gate key for a non-owner peer.
-            if let (Decision::Rewrite { upstream_url }, true) =
+            if let (Decision::Rewrite { upstream_url, slug }, true) =
                 (decide(&rules, host, &path), self.peer_allowed(ctx))
             {
                 let api_key = self.api_key.borrow().clone();
@@ -470,6 +488,7 @@ impl HttpHandler for GateHandler {
                 let oauth_token = (!token.is_empty()).then(|| token.as_ref());
                 let org = self.org.borrow().clone();
                 let org_id = (!org.is_empty()).then(|| org.as_ref());
+                let mode = effective_billing_mode(*self.mode.borrow(), &slug);
                 match apply_rewrite(
                     &mut req,
                     &self.gateway,
@@ -477,6 +496,7 @@ impl HttpHandler for GateHandler {
                     &api_key,
                     oauth_token,
                     org_id,
+                    mode,
                 ) {
                     Ok(()) => {
                         action = "rewrite->gateway";
@@ -549,17 +569,21 @@ impl HttpHandler for GateHandler {
 
 /// Repoint a request at the gateway: swap scheme + authority for the
 /// gateway's, strip the upstream's own path prefix, and inject the Gate
-/// headers. The app's own auth header (bearer / `x-api-key`) is left intact -
-/// Gate validates the Gate credential and forwards the rest. The credential
-/// precedence (a caller-supplied `x-gate-api-key` is respected, else OAuth
-/// token wins over the legacy key) lives in [`super::inject_gate_credential`],
-/// shared with the relay so the two paths can't drift.
+/// headers. In BYOK the app's own auth header (bearer / `x-api-key`) is left
+/// intact - Gate validates the Gate credential and forwards the rest. In PAYG
+/// both that header and the upstream hint are dropped, which is what tells the
+/// gateway to bill the org and forward under its own provider account; the
+/// credential precedence and the strip both live in
+/// [`super::inject_gate_credential`], shared with the relay so the two paths
+/// can't drift.
 ///
 /// The path strip is what keeps a provider whose API lives under a reserved
 /// prefix routable: Gate appends the forwarded path to `X-Gate-Upstream-Url`,
 /// so moving `/api` from the request line into the upstream URL reassembles to
 /// the same provider URL while sending Gate a path its ALB won't divert. See
-/// the `openrouter` catalog entry in [`super::default_domains`].
+/// the `openrouter` catalog entry in [`super::default_domains`]. In PAYG there
+/// is no upstream URL to reassemble against, and the strip is what leaves the
+/// gateway-native path (`/v1/chat/completions`) its reseller router expects.
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
@@ -567,6 +591,7 @@ pub(crate) fn apply_rewrite<T>(
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
+    mode: BillingMode,
 ) -> Result<()> {
     let gw = gateway.clone().into_parts();
     let mut parts = req.uri().clone().into_parts();
@@ -592,11 +617,20 @@ pub(crate) fn apply_rewrite<T>(
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
     let headers = req.headers_mut();
-    super::inject_gate_credential(headers, api_key, oauth_token, org_id)?;
-    headers.insert(
-        super::UPSTREAM_URL_HEADER,
-        HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
-    );
+    super::inject_gate_credential(headers, api_key, oauth_token, org_id, mode)?;
+    // PAYG is the ABSENCE of this header: with it the gateway forwards under
+    // the caller's own credential (BYOK), without it the gateway routes to one
+    // of the org's provider accounts and debits its balance. Nothing else in
+    // the request says which mode it is.
+    if mode == BillingMode::Byok {
+        headers.insert(
+            super::UPSTREAM_URL_HEADER,
+            HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
+        );
+    } else {
+        // A caller cannot smuggle BYOK back in on a PAYG rewrite.
+        headers.remove(super::UPSTREAM_URL_HEADER);
+    }
     Ok(())
 }
 
@@ -799,6 +833,7 @@ where
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
     let (org_tx, org_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.org_id.as_str()));
+    let (mode_tx, mode_rx) = watch::channel(cfg.billing_mode);
     // Intercepting until told otherwise: the engine only starts on an explicit
     // enable / SetIntercept, both of which mean "route through Gate".
     let (relay_intercept_tx, relay_intercept_rx) = watch::channel(true);
@@ -809,6 +844,7 @@ where
     let relay_key_rx = key_rx.clone();
     let relay_token_rx = token_rx.clone();
     let relay_org_rx = org_rx.clone();
+    let relay_mode_rx = mode_rx.clone();
     // The relay gates its accept loop on the same owner UID the MITM path uses.
     let relay_owner_uid = cfg.owner_uid;
     let handler = GateHandler {
@@ -817,6 +853,7 @@ where
         api_key: key_rx,
         token: token_rx,
         org: org_rx,
+        mode: mode_rx,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
     };
@@ -924,6 +961,7 @@ where
                     relay_key_rx,
                     relay_token_rx,
                     relay_org_rx,
+                    relay_mode_rx,
                     relay_intercept_rx,
                     relay_owner_uid,
                 ) {
@@ -953,6 +991,7 @@ where
             key_tx,
             token_tx,
             org_tx,
+            mode_tx,
             relay_intercept_tx,
             stopping,
         }),
@@ -985,6 +1024,7 @@ mod tests {
             "sk-gw-test",
             None,
             None,
+            BillingMode::Byok,
         )
         .unwrap();
 
@@ -1024,6 +1064,7 @@ mod tests {
             "sk-gw-test",
             Some("cognito-access-token"),
             Some("org-uuid-1"),
+            BillingMode::Byok,
         )
         .unwrap();
 
@@ -1044,6 +1085,82 @@ mod tests {
             req.headers().get("authorization").unwrap(),
             "Bearer app-token"
         );
+    }
+
+    /// PAYG is defined by what is NOT on the request: no upstream hint (the
+    /// gateway's switch into reseller routing) and no credential of the app's
+    /// own (which the gateway would classify as a passthrough token, forcing
+    /// BYOK and then refusing the request for want of an upstream URL).
+    #[test]
+    fn payg_rewrite_drops_the_upstream_hint_and_the_apps_own_credential() {
+        let gateway: Uri = "https://gateway-staging.constellationgate.ai"
+            .parse()
+            .unwrap();
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages?beta=true")
+            .header("authorization", "Bearer sk-ant-oat01-app-token")
+            .header("x-api-key", "sk-ant-api03-app-key")
+            .body(())
+            .unwrap();
+
+        apply_rewrite(
+            &mut req,
+            &gateway,
+            "https://api.anthropic.com",
+            "sk-gw-test",
+            None,
+            None,
+            BillingMode::Payg,
+        )
+        .unwrap();
+
+        // Still repointed at the gateway, path and query intact.
+        assert_eq!(
+            req.uri().to_string(),
+            "https://gateway-staging.constellationgate.ai/v1/messages?beta=true"
+        );
+        // Our own credential still identifies the workspace.
+        assert_eq!(req.headers().get("x-gate-api-key").unwrap(), "sk-gw-test");
+        // The two absences that ARE pay-as-you-go.
+        assert!(
+            req.headers().get("x-gate-upstream-url").is_none(),
+            "the upstream hint's absence is what selects reseller routing"
+        );
+        assert!(
+            req.headers().get("authorization").is_none(),
+            "a provider token here would be read as passthrough and force BYOK"
+        );
+        assert!(req.headers().get("x-api-key").is_none());
+    }
+
+    /// A caller that sets the upstream hint itself must not be able to force
+    /// BYOK - and so spend the tool's own provider credential - on an account
+    /// that is in PAYG.
+    #[test]
+    fn payg_rewrite_removes_a_caller_supplied_upstream_hint() {
+        let gateway: Uri = "https://gateway-staging.constellationgate.ai"
+            .parse()
+            .unwrap();
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages")
+            .header("x-gate-upstream-url", "https://api.anthropic.com")
+            .body(())
+            .unwrap();
+
+        apply_rewrite(
+            &mut req,
+            &gateway,
+            "https://api.anthropic.com",
+            "sk-gw-test",
+            None,
+            None,
+            BillingMode::Payg,
+        )
+        .unwrap();
+
+        assert!(req.headers().get("x-gate-upstream-url").is_none());
     }
 
     /// Exercises the `/proc/net/tcp` parse (incl. the address byte-swap) against
