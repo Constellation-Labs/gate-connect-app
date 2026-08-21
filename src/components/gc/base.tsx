@@ -43,17 +43,21 @@ export function Card({
 /**
  * The 28x28 status chip that fronts the routing banners, and at 36px the alert
  * banner. One shape, two palettes: a vertical 50 -> 200 gradient, a 300 border
- * and a 700 icon, all on Tailwind's default ramps (Figma 113:16788 / 113:16891).
+ * and a 600 icon, all on Tailwind's default ramps (Figma 113:16788 / 113:16891).
+ *
+ * The icon step is 600, not 700: the ShieldBan inside the Overview frame's
+ * routing banner reads `tailwind colors/amber/600` #D97706, which is also the
+ * amber `tailwind.config.ts` records as the design's own.
  *
  * Tone classes are spelled out rather than interpolated - Tailwind only sees
  * literal class names at build time.
  */
 const TILE_TONES = {
-  green: "from-green-50 to-green-200 border-green-300 text-green-700",
-  amber: "from-amber-50 to-amber-200 border-amber-300 text-amber-700",
+  green: "from-green-50 to-green-200 border-green-300 text-green-600",
+  amber: "from-amber-50 to-amber-200 border-amber-300 text-amber-600",
   // Not in the Figma, which draws no failure state. Follows the same 50 -> 200
-  // gradient, 300 border, 700 icon pattern as the two that are.
-  red: "from-red-50 to-red-200 border-red-300 text-red-700",
+  // gradient, 300 border, 600 icon pattern as the two that are.
+  red: "from-red-50 to-red-200 border-red-300 text-red-600",
 } as const;
 
 export function StatusTile({

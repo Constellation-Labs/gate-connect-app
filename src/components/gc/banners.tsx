@@ -26,7 +26,7 @@ export function UpdateBanner({
   onDismiss: () => void;
 }) {
   return (
-    <div className="relative flex h-12 w-full items-center justify-between border-b border-black/20 bg-gradient-to-b from-blue-ribbon-800 to-blue-ribbon-900 px-4">
+    <div className="relative flex h-12 w-full items-center justify-between border-b border-base-border bg-gradient-to-b from-blue-ribbon-800 to-blue-ribbon-900 px-4">
       <span
         aria-hidden
         className="pointer-events-none absolute inset-0"
@@ -36,15 +36,17 @@ export function UpdateBanner({
           backgroundSize: "8px 8px",
         }}
       />
-      <p className="relative text-sm font-medium leading-5 text-white">
-        Update available <span className="text-white/50">-</span>{" "}
-        <span className="font-mono text-white/80">{version}</span>
+      <p className="relative text-sm leading-5 text-white">
+        <span className="font-medium">Update available</span>{" "}
+        {/* One mono run at 400, dash included, matching the design's single
+         * `- v0.5.0` text node. */}
+        <span className="font-mono">- {version}</span>
       </p>
       <div className="relative flex items-center gap-3">
         <button
           type="button"
           onClick={onUpdate}
-          className="flex h-6 items-center rounded-sm border border-white/40 px-2 text-base-xs font-medium leading-4 text-white transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          className="flex h-6 items-center rounded-sm border border-base-input bg-base-card px-2.5 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.06)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
         >
           Update
         </button>
@@ -52,7 +54,7 @@ export function UpdateBanner({
           type="button"
           onClick={onDismiss}
           aria-label="Dismiss update notice"
-          className="text-white/80 transition-colors hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          className="-m-1 rounded-sm p-1 text-base-primary-foreground transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
         >
           <Icon name="x" size={16} />
         </button>

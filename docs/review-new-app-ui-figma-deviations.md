@@ -9,6 +9,12 @@ not used either. So the reference here is the plan's own sampled-value tables pl
 the two Figma captures committed under `src/assets/`. Where a finding depends on
 a value nobody has sampled, it says so rather than asserting a mismatch.
 
+**Superseded in part, 2026-08-21.** `121:33256` (`topsection` of
+`overview-dimensions`: `topnav` over `banner/update` over
+`banner/status-protected`) was read through the browser, so those two banners are
+no longer inferred. What that closed is in §G, "Settled by the 2026-08-21 Figma
+read"; the rows it touches say so.
+
 Token hygiene is clean: no `bg-blue-*`/`text-blue-*` against the redefined OKLCH
 ramp, no px font literals, no `purple` left where the drawn fill is violet.
 
@@ -138,7 +144,7 @@ they are all one screen apart.
 | App-page status/security pills at the 200 stop | `gc/AppPane.tsx:34` | Not sampled - the App page draws them too small |
 | `StatusPill` "Off" fill `neutral-100` | `gc/Overview.tsx:309` | No frame draws an off pill |
 | Sidebar right border `black/8%` | `gc/Sidebar.tsx:133` | Not `base.border #e5e7eb`; no sampled value recorded either way |
-| Update banner bottom border `black/20` | `gc/banners.tsx:29` | Plan records "1px" with no colour |
+| Update banner bottom border `black/20` | `gc/banners.tsx:29` | **Settled 2026-08-21**: the frame draws 1px `base/border` #e5e7eb. Fixed |
 | Gate-model option icon | `gc/AppPane.tsx:213` | Still the `layers` placeholder; the design draws brand art |
 
 ---
@@ -215,12 +221,37 @@ Surfaces swept: `Topbar`, `Sidebar`, `banners`, `Overview`, `metrics`, `AppPane`
 | --- | --- | --- | --- |
 | G1 | **Two names for one ground.** `base.background` is `#f9fafb`, which *is* `gray-50`. Both `bg-base-background` and `bg-gray-50` are in use, while the pane ground is `bg-gray-100`. Three names, two colours. | `base.tsx`, `Onboarding`, `Sidebar`, `AppPane`, `SettingsPane`, `Modal`, `setup` | A rule, not a value. Zero visual change. |
 | G2 | **Two names for primary.** `base.primary` is `#203de2`, which *is* `blue-ribbon-700`. `Onboarding` uses both in one file. | `Onboarding`, `Modal`, `setup`, `base.tsx` | A rule, not a value. Zero visual change. |
-| G3 | **Modal tone icons sit on two different stops.** `text-red-600` for danger, but `text-amber-700` / `text-green-700` for warning and success. The plan records `red-600` as sampled; the other two were never recorded. | `Modal.tsx` | One Figma read. |
+| G3 | **Modal tone icons sit on two different stops.** `text-red-600` for danger, but `text-amber-700` / `text-green-700` for warning and success. The plan records `red-600` as sampled; the other two were never recorded. | `Modal.tsx` | **Partly answered 2026-08-21**: the ShieldBan in the routing banner reads `amber/600`, and all three `StatusTile` tones moved to 600. `Modal.tsx` is a different node and still sits on 700. |
 | G4 | **Modal tone tiles are a flat `100`; `StatusTile` is a `50 -> 200` gradient with a `300` border.** Two treatments for what may be one component in the design. | `Modal.tsx` vs `base.tsx` | One Figma read. |
 | G5 | **Border tokens used as backgrounds.** `bg-base-border` and `bg-base-input` back what are presumably dividers, rails and switch tracks. Visually plausible, semantically wrong: changing a border colour would move a rail. | `setup.tsx`, `Onboarding`, `base.tsx` | A rule, plus confirmation the rail colour really is the border colour. |
-| G6 | **Four hand-rolled alpha borders** where every other border in the app is `base-border` or `base-input`: `black/[0.08]` (sidebar right edge), `black/20` (update banner bottom), `white/[0.24]` (app tiles), `white/40`. | `Sidebar`, `banners`, `AppPane` | Four Figma values. Two were already open in §D; `white/[0.24]` and `white/40` are new. |
+| G6 | **Four hand-rolled alpha borders** where every other border in the app is `base-border` or `base-input`: `black/[0.08]` (sidebar right edge), `black/20` (update banner bottom), `white/[0.24]` (app tiles), `white/40`. | `Sidebar`, `banners`, `AppPane` | **Two settled 2026-08-21** and fixed: `black/20` is `base/border`, and `white/40` was the `Update` button's border, which the frame draws as `base/input` on a white face. `black/[0.08]` (sidebar) and `white/[0.24]` (app tiles) are still open. |
 | G7 | **Neutral stops in use exceed the stops ever verified.** In use: 50, 100, 400, 500, 600, 700, 900. Recorded as sampled: 50, 600, 900. So 100, 400, 500 and 700 are all unchecked. | every surface | A spot check, most cheaply as a variables dump. |
 | G8 | **Onboarding still carries popover-era styling.** `rounded-[28px]` is off-system entirely; `rounded-[2px]` duplicates `rounded-sm`; and `shadow-[0_14px_34px_rgba(0,42,95,0.5)]` is a navy glow built on `#002a5f`, the `NAVY` constant from the popover-era `ConstellationHexMark`. The design draws this screen inside the new window shell, so these are very likely leftovers from the port rather than drawn values. | `screens/Onboarding.tsx` | One Figma read to confirm, then deletion. |
+
+### Settled by the 2026-08-21 Figma read
+
+`121:33256`, read through the browser (Layers panel click, then `shift+2`, values
+off the properties panel). The routing banner needed nothing: fixed 1024x48,
+padding 8/16, `base/card`, 1px bottom `base/border`, tile and right rail all
+already exact. The update banner needed four, and `StatusTile` a fifth.
+
+| Value | Drawn as | Was | Now |
+| --- | --- | --- | --- |
+| `Update` button | `Button` variant Outline, size xs: `base/card` fill, 1px `base/input`, `base/primary` label, padding 4/10, the domed three-shadow recipe | `white/40` border and `white` label on transparent, `px-2` | A white face, the same recipe `OutlineIconButton` already carried |
+| Version run | one Geist Mono 400 node reading `- v0.5.0`, `base/white` | dash in sans at `white/50`, version mono at `white/80`, both inheriting weight 500 | one mono 400 run at full white, dash inside it |
+| Banner bottom border | 1px `base/border` #e5e7eb | `black/20` | `base-border` |
+| Dismiss glyph | `base/primary-foreground` #f9fafb | `white/80` | `base-primary-foreground`, a name the token export already carried with no call site |
+| `StatusTile` icon | ShieldBan `amber/600` #d97706 | `amber-700` | 600 on all three tones |
+
+Geometry that was already right, recorded so nobody measures it twice: the `x`
+and `shieldBan` glyphs both render the drawn vector exactly at `size={16}` (this
+repo's `x` path spans 12 of 24 viewBox units, so 16px yields the drawn 8x8), and
+the tile is 28px.
+
+Left open deliberately: the frame draws no hover for the dismiss glyph, and at
+`base/primary-foreground` the glyph has no colour headroom, so its hover became a
+10% white scrim on a hit area grown with a negative margin. That is a choice, not
+a sampled value.
 
 ### What this changes about the ask
 
@@ -232,6 +263,9 @@ treating two names as two intentions.
 G3, G4, G6, G7 and the rest of G8 are **possible real mismatches**, and none of
 them can be settled from the code. Combined with §D, the outstanding value count
 is eleven, not five.
+
+That count predates the 2026-08-21 read, which closed three of them: the update
+banner's bottom border, `white/40`, and the tile icon stop.
 
 ---
 

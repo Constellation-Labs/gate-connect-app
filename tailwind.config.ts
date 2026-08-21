@@ -147,6 +147,11 @@ export default {
           border: "#e5e7eb",
           input: "#d1d5db",
           primary: "#203de2",
+          // From the token export (`docs/new_ui_design/tokens.json`), which
+          // names it but had no call site until the update banner's dismiss
+          // glyph. Same hex as `background` and as `gray-50`; kept under the
+          // export's own name so the value stays traceable.
+          "primary-foreground": "#f9fafb",
           "muted-foreground": "#6b7280",
         },
 
