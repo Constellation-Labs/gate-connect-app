@@ -34,6 +34,7 @@
 //! drop-in has always been both at once; macOS exports the variables via
 //! `launchctl setenv` and Windows via `HKCU\Environment` alongside the PAC.
 
+use crate::account::BillingMode;
 use anyhow::{Context, Result};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -525,13 +526,27 @@ fn client_tool(headers: &HeaderMap) -> Option<&'static str> {
 /// Attribution ([`inject_attribution`]) is stamped either way: it says which
 /// machine the request left, which is true no matter whose credential carries
 /// it, and it is not a credential decision.
+///
+/// In `Payg` the tool's own credential is REMOVED (`Authorization` /
+/// `x-api-key`). The gateway classifies any non-`sk-gw-` value in those slots
+/// as a passthrough token, which forces BYOK and is then refused for want of an
+/// upstream URL, so a leftover `sk-ant-…` does not merely go unused - it breaks
+/// the request. Nothing is lost by dropping it: the gateway strips inbound
+/// `authorization` / `x-api-key` before forwarding anyway and re-keys with the
+/// provider account's own credential. The strip runs ahead of the
+/// caller-supplied-key short-circuit below, because a caller that sets its own
+/// `X-Gate-Api-Key` can just as easily be carrying a provider token beside it.
 pub(crate) fn inject_gate_credential(
     headers: &mut HeaderMap,
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
+    mode: BillingMode,
 ) -> Result<()> {
     inject_attribution(headers);
+    if mode == BillingMode::Payg {
+        strip_client_auth(headers);
+    }
     if headers.contains_key(GATE_KEY_HEADER) {
         return Ok(());
     }
@@ -559,6 +574,50 @@ pub(crate) fn inject_gate_credential(
         }
     }
     Ok(())
+}
+
+/// Which credential slots a tool authenticates to its provider with. Removed on
+/// a PAYG rewrite; never touched on a passthrough hop, where they are the only
+/// thing that can authenticate the request.
+const CLIENT_AUTH_HEADERS: [&str; 2] = ["authorization", "x-api-key"];
+
+/// Drop the tool's own upstream credential. See [`inject_gate_credential`] for
+/// why PAYG requires this rather than merely tolerating the header.
+fn strip_client_auth(headers: &mut HeaderMap) {
+    for name in CLIENT_AUTH_HEADERS {
+        headers.remove(name);
+    }
+}
+
+/// Catalog slugs PAYG can serve, i.e. the ones whose forwarded path is a shape
+/// the gateway's reseller router understands (`/v1/messages`,
+/// `/v1/chat/completions`, `/v1/responses`).
+///
+/// An allowlist, not a denylist, so a domain added later defaults to BYOK and a
+/// new entry can never start spending an org's balance by omission.
+///
+/// Everything left out is left out for a reason:
+/// - `claude-web`, `chatgpt-apps` - consumer chat surfaces authenticated by a
+///   session cookie and covered by the user's own subscription. Gate estimates
+///   their cost rather than billing it, and their paths are not inference-API
+///   shapes the reseller router serves.
+/// - `chatgpt` - Codex's ChatGPT-subscription Responses route. Subscription
+///   traffic is by definition not pay-as-you-go; Codex reaches PAYG through the
+///   `openai` entry instead (see `integrations::codex`).
+/// - `opencode` - its inference lives under `/zen/v1/…`, which is not a path
+///   the reseller router recognises.
+const PAYG_ELIGIBLE_SLUGS: [&str; 3] = ["anthropic", "openai", "openrouter"];
+
+/// The mode to actually route `slug` under. PAYG only applies to the domains in
+/// [`PAYG_ELIGIBLE_SLUGS`]; every other domain keeps its BYOK shape even while
+/// the account is in PAYG, because rewriting it without an upstream URL would
+/// break it and route nothing.
+pub(crate) fn effective_billing_mode(mode: BillingMode, slug: &str) -> BillingMode {
+    match mode {
+        BillingMode::Byok => BillingMode::Byok,
+        BillingMode::Payg if PAYG_ELIGIBLE_SLUGS.contains(&slug) => BillingMode::Payg,
+        BillingMode::Payg => BillingMode::Byok,
+    }
 }
 
 /// One routable provider. The built-in set is defined by
@@ -644,8 +703,10 @@ pub(crate) enum Decision {
     /// Matched host but not an inference path: forward to the real
     /// upstream unchanged.
     Passthrough,
-    /// Rewrite to the gateway, injecting this upstream URL.
-    Rewrite { upstream_url: String },
+    /// Rewrite to the gateway, injecting this upstream URL. `slug` names the
+    /// catalog entry that claimed the path, so the caller can resolve the
+    /// billing shape for it ([`effective_billing_mode`]).
+    Rewrite { upstream_url: String, slug: String },
 }
 
 /// True if any enabled domain claims `host`. Used by the engine's
@@ -753,6 +814,7 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
         {
             return Decision::Rewrite {
                 upstream_url: d.upstream_url.clone(),
+                slug: d.slug.clone(),
             };
         }
     }
@@ -1249,7 +1311,8 @@ mod tests {
                 assert_eq!(
                     decide(std::slice::from_ref(&mitm), &d.hosts[0], &request_path),
                     Decision::Rewrite {
-                        upstream_url: d.upstream_url.clone()
+                        upstream_url: d.upstream_url.clone(),
+                        slug: d.slug.clone()
                     },
                     "{}: shadowed on the relay route, so `decide` must carry {request_path}",
                     d.slug
@@ -1391,7 +1454,8 @@ mod tests {
         assert_eq!(
             decide(&d, "api.anthropic.com", "/v1/messages?beta=true"),
             Decision::Rewrite {
-                upstream_url: "https://api.anthropic.com".into()
+                upstream_url: "https://api.anthropic.com".into(),
+                slug: "anthropic".into()
             }
         );
     }
@@ -1444,14 +1508,16 @@ mod tests {
         assert_eq!(
             decide(&d, "api.anthropic.com", "/v1/complete"),
             Decision::Rewrite {
-                upstream_url: "https://api.anthropic.com".into()
+                upstream_url: "https://api.anthropic.com".into(),
+                slug: "anthropic".into()
             }
         );
         // count_tokens rides under /v1/messages, so the prefix still catches it.
         assert_eq!(
             decide(&d, "api.anthropic.com", "/v1/messages/count_tokens"),
             Decision::Rewrite {
-                upstream_url: "https://api.anthropic.com".into()
+                upstream_url: "https://api.anthropic.com".into(),
+                slug: "anthropic".into()
             }
         );
     }
@@ -1506,7 +1572,8 @@ mod tests {
         assert_eq!(
             decide(&d, "openrouter.ai", "/api/v1/chat/completions"),
             Decision::Rewrite {
-                upstream_url: "https://openrouter.ai/api".into()
+                upstream_url: "https://openrouter.ai/api".into(),
+                slug: "openrouter".into()
             }
         );
         // Outside the upstream's subtree: not this domain's traffic.
@@ -1531,7 +1598,8 @@ mod tests {
         assert_eq!(
             decide(&d, "api.openai.com", "/v1/responses"),
             Decision::Rewrite {
-                upstream_url: "https://api.openai.com".into()
+                upstream_url: "https://api.openai.com".into(),
+                slug: "openai".into()
             }
         );
         // case-insensitive host match
@@ -1556,7 +1624,8 @@ mod tests {
             assert_eq!(
                 decide(&d, "api.openai.com", path),
                 Decision::Rewrite {
-                    upstream_url: "https://api.openai.com".into()
+                    upstream_url: "https://api.openai.com".into(),
+                    slug: "openai".into()
                 },
                 "inference path {path} must rewrite to the gateway"
             );
@@ -1594,7 +1663,8 @@ mod tests {
         assert_eq!(
             decide(&d, "claude.ai", CLAUDE_COMPLETION),
             Decision::Rewrite {
-                upstream_url: "https://claude.ai/api".into()
+                upstream_url: "https://claude.ai/api".into(),
+                slug: "claude-web".into()
             }
         );
         // Query strings must not change the verdict.
@@ -1605,7 +1675,8 @@ mod tests {
                 &format!("{CLAUDE_COMPLETION}?rendering_mode=messages")
             ),
             Decision::Rewrite {
-                upstream_url: "https://claude.ai/api".into()
+                upstream_url: "https://claude.ai/api".into(),
+                slug: "claude-web".into()
             }
         );
     }
@@ -1640,7 +1711,8 @@ mod tests {
             assert_eq!(
                 decide(&d, "claude.ai", path),
                 Decision::Rewrite {
-                    upstream_url: "https://claude.ai/api".into()
+                    upstream_url: "https://claude.ai/api".into(),
+                    slug: "claude-web".into()
                 }
             );
         }
@@ -1691,7 +1763,8 @@ mod tests {
             assert_eq!(
                 decide(&d, "chatgpt.com", path),
                 Decision::Rewrite {
-                    upstream_url: "https://chatgpt.com".into()
+                    upstream_url: "https://chatgpt.com".into(),
+                    slug: "chatgpt-apps".into()
                 },
                 "{path} should route to Gate"
             );
@@ -1789,14 +1862,16 @@ mod tests {
         assert_eq!(
             decide(&both, "chatgpt.com", "/backend-api/codex/responses"),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com/backend-api".into()
+                upstream_url: "https://chatgpt.com/backend-api".into(),
+                slug: "chatgpt".into()
             },
             "the Responses call belongs to the `chatgpt` entry's split"
         );
         assert_eq!(
             decide(&both, "chatgpt.com", "/backend-api/f/conversation"),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com".into()
+                upstream_url: "https://chatgpt.com".into(),
+                slug: "chatgpt-apps".into()
             },
             "and the app's chat turn still belongs to `chatgpt-apps`"
         );
@@ -1818,7 +1893,8 @@ mod tests {
         assert_eq!(
             decide(&d, "chatgpt.com", "/backend-api/f/conversation"),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com".into()
+                upstream_url: "https://chatgpt.com".into(),
+                slug: "chatgpt-apps".into()
             }
         );
     }
@@ -1959,6 +2035,80 @@ mod tests {
         assert_eq!(claimed.as_deref(), crate::primitives::install_id_cached());
     }
 
+    /// PAYG applies per domain, and the list is an allowlist: a domain nobody
+    /// has cleared for reseller routing keeps its BYOK shape even while the
+    /// account bills through Gate. The consumer-chat surfaces are the ones this
+    /// protects - they authenticate with a session cookie, so stripping it would
+    /// break them and route nothing.
+    #[test]
+    fn payg_applies_only_to_the_eligible_domains() {
+        for slug in ["anthropic", "openai", "openrouter"] {
+            assert_eq!(
+                effective_billing_mode(BillingMode::Payg, slug),
+                BillingMode::Payg,
+                "{slug} serves a gateway-native inference path"
+            );
+        }
+        for slug in ["claude-web", "chatgpt-apps", "chatgpt", "opencode"] {
+            assert_eq!(
+                effective_billing_mode(BillingMode::Payg, slug),
+                BillingMode::Byok,
+                "{slug} is a subscription or non-reseller path"
+            );
+        }
+        // A domain added later defaults to BYOK rather than silently starting to
+        // spend an org's balance.
+        assert_eq!(
+            effective_billing_mode(BillingMode::Payg, "some-future-provider"),
+            BillingMode::Byok
+        );
+        // And BYOK is never widened by the eligibility list.
+        assert_eq!(
+            effective_billing_mode(BillingMode::Byok, "anthropic"),
+            BillingMode::Byok
+        );
+    }
+
+    /// Every eligible slug must actually exist in the catalog: a typo here would
+    /// silently keep PAYG off for that provider, which is the failure mode this
+    /// allowlist is otherwise good at hiding.
+    #[test]
+    fn every_payg_eligible_slug_is_a_real_catalog_entry() {
+        let catalog = default_domains();
+        for slug in PAYG_ELIGIBLE_SLUGS {
+            assert!(
+                catalog.iter().any(|d| d.slug == slug),
+                "{slug} is listed as PAYG-eligible but is not in the catalog"
+            );
+        }
+    }
+
+    /// PAYG removes the tool's own credential, and does so even when the caller
+    /// supplied its own Gate key - that branch leaves the Gate headers alone,
+    /// but a provider token sitting beside them would still force BYOK.
+    #[test]
+    fn payg_strips_the_client_credential_even_behind_a_caller_supplied_key() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HeaderName::from_static(GATE_KEY_HEADER),
+            HeaderValue::from_static("sk-gw-callers-own"),
+        );
+        h.insert(
+            hyper::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-ant-oat01-app"),
+        );
+        h.insert(
+            HeaderName::from_static("x-api-key"),
+            HeaderValue::from_static("sk-ant-api03-app"),
+        );
+
+        inject_gate_credential(&mut h, "sk-gw-ours", None, None, BillingMode::Payg).unwrap();
+
+        assert_eq!(h.get(GATE_KEY_HEADER).unwrap(), "sk-gw-callers-own");
+        assert_eq!(h.get(hyper::header::AUTHORIZATION), None);
+        assert_eq!(h.get("x-api-key"), None);
+    }
+
     /// Attribution rides alongside the credential decision without touching it.
     #[test]
     fn a_caller_supplied_key_still_gets_attributed() {
@@ -1972,7 +2122,14 @@ mod tests {
             HeaderValue::from_static("claude-cli/2.1.0"),
         );
 
-        inject_gate_credential(&mut h, "sk-gw-ours", Some("token"), Some("org")).unwrap();
+        inject_gate_credential(
+            &mut h,
+            "sk-gw-ours",
+            Some("token"),
+            Some("org"),
+            BillingMode::Byok,
+        )
+        .unwrap();
 
         // The credential is left exactly as it arrived: that branch is the
         // caller's to own.

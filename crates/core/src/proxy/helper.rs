@@ -247,6 +247,7 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
             api_key,
             oauth_token,
             org_id,
+            billing_mode,
             ca_cert_pem,
             ca_key_pem,
             domains,
@@ -292,6 +293,7 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
                     running.update_api_key(&api_key);
                     running.update_token(&oauth_token);
                     running.update_org(&org_id);
+                    running.update_mode(billing_mode);
                     running.update_domains(&domains);
                     running.set_relay_intercept(true);
                     Response::Intercepting {
@@ -306,6 +308,7 @@ fn handle_request(req: Request, engine: &Shared, detached: &AtomicBool) -> Respo
                             api_key,
                             oauth_token,
                             org_id,
+                            billing_mode,
                             domains,
                             ca_cert_pem,
                             ca_key_pem,

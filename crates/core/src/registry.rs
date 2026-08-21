@@ -54,6 +54,12 @@ impl fmt::Display for ToolId {
 pub struct ConnectInput {
     pub gateway_base_url: String,
     pub upstream_url: String,
+    /// Who pays the upstream provider, from the account
+    /// ([`crate::account::BillingMode`]). Most integrations ignore it: they
+    /// write a relay base URL and no credential, so the relay applies the mode
+    /// per request. Codex is the exception - its provider block has to say
+    /// whether Codex authenticates at all (see `integrations::codex`).
+    pub billing_mode: crate::account::BillingMode,
     /// Loopback base URL of the reverse-proxy relay
     /// ([`crate::proxy::relay_base_url`]). Relay-routed integrations point
     /// their tool config here and inject no credential (the relay injects the

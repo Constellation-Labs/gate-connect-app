@@ -927,7 +927,8 @@ mod tests {
         assert_eq!(
             decide(&routed, "chatgpt.com", MODEL_CALL),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com/backend-api".into()
+                upstream_url: "https://chatgpt.com/backend-api".into(),
+                slug: CHATGPT_DOMAIN_SLUG.into()
             }
         );
 
@@ -942,7 +943,8 @@ mod tests {
                 MODEL_CALL
             ),
             Decision::Rewrite {
-                upstream_url: "https://chatgpt.com/backend-api".into()
+                upstream_url: "https://chatgpt.com/backend-api".into(),
+                slug: CHATGPT_DOMAIN_SLUG.into()
             }
         );
     }

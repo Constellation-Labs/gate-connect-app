@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::account::BillingMode;
 use crate::proxy::{default_domains, ProxyDomain};
 
 /// Subdirectory under `$XDG_RUNTIME_DIR` holding the daemon's socket + token.
@@ -130,6 +131,12 @@ pub enum Request {
         /// Selected org UUID, injected as `X-Gate-Org-Id` alongside the OAuth
         /// token; empty means none selected.
         org_id: String,
+        /// Who pays the upstream provider. `serde(default)` keeps an older
+        /// client's message parseable, and defaults to `Byok` - the shape that
+        /// forwards the tool's own credential, so a client that cannot say
+        /// which mode it wants never spends an org's balance by accident.
+        #[serde(default)]
+        billing_mode: BillingMode,
         ca_cert_pem: String,
         ca_key_pem: String,
         domains: Vec<ProxyDomain>,
@@ -235,6 +242,51 @@ mod tests {
         assert!(!line.contains('\n'));
         let back: Request = serde_json::from_str(&line).unwrap();
         assert!(matches!(back, Request::SetPassthrough));
+    }
+
+    /// The billing mode crosses a process boundary into a separately-installed
+    /// daemon binary, so both halves of that hop need pinning: a mode we send
+    /// must arrive, and a message from a client too old to know the field must
+    /// still parse - as `Byok`, the shape that forwards the tool's own
+    /// credential rather than spending an org's balance.
+    #[test]
+    fn set_intercept_carries_the_billing_mode() {
+        let req = Request::SetIntercept {
+            gateway_base_url: "https://gw.example.com".into(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            billing_mode: BillingMode::Payg,
+            ca_cert_pem: String::new(),
+            ca_key_pem: String::new(),
+            domains: Vec::new(),
+            detached: false,
+            preferred_port: None,
+            preferred_relay_port: None,
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        let back: Request = serde_json::from_str(&line).unwrap();
+        match back {
+            Request::SetIntercept { billing_mode, .. } => {
+                assert_eq!(billing_mode, BillingMode::Payg)
+            }
+            other => panic!("expected SetIntercept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_intercept_without_a_billing_mode_parses_as_byok() {
+        let line = r#"{"SetIntercept":{"gateway_base_url":"https://gw.example.com",
+            "api_key":"sk-gw-test","oauth_token":"","org_id":"","ca_cert_pem":"",
+            "ca_key_pem":"","domains":[],"preferred_port":null,
+            "preferred_relay_port":null}}"#;
+        let back: Request = serde_json::from_str(line).expect("an older client must still parse");
+        match back {
+            Request::SetIntercept { billing_mode, .. } => {
+                assert_eq!(billing_mode, BillingMode::Byok)
+            }
+            other => panic!("expected SetIntercept, got {other:?}"),
+        }
     }
 
     #[test]
