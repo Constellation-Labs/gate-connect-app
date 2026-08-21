@@ -1139,6 +1139,170 @@ static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 /// site so the next open reconciles again. Starts false (window not yet shown).
 static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
+/// Set while a reveal is waiting for the compositor to acknowledge the state
+/// change below, so the restore knows there is work to do.
+#[cfg(target_os = "linux")]
+static DECOR_RESTORE_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// The state the window should end up in: what it was in before the reveal.
+#[cfg(target_os = "linux")]
+static DECOR_WANT_MAXIMIZED: AtomicBool = AtomicBool::new(false);
+
+/// The window's own size, captured before the state change so the restore can
+/// put it back without trusting GTK to have remembered it. Physical pixels;
+/// zero means nothing usable was captured. Only written while the window is
+/// un-maximised, since a maximised `inner_size` is the screen.
+#[cfg(target_os = "linux")]
+static DECOR_SAVED_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(target_os = "linux")]
+static DECOR_SAVED_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Give the window's first map a compositor configure, so its native title-bar
+/// buttons work, then put it back in the state the user left it in.
+///
+/// **A window has to be born with negotiated geometry.** Anything whose first
+/// map comes from `show()` on a hidden window comes up with dead decoration
+/// input regions - close, minimise and maximise all swallow their clicks, while
+/// a double-click on the bar still works because the WM handles that at frame
+/// level. Four cases established it: `visible: false` plus `show()` is broken;
+/// `visible: true` on a normal launch works; `visible: true` hidden before the
+/// map and revealed from the tray is broken again; and the onboarding window,
+/// built visible at runtime, needs none of this. The config flag was never the
+/// variable - whether the first map carries a compositor configure is.
+///
+/// A maximise/un-maximise is how that configure gets forced: the compositor owns
+/// the bounds of a maximised window, so a change either into or out of that
+/// state must be configured. **Which direction depends on where the window
+/// starts**, and that is the part this got wrong twice. Maximising an
+/// already-maximised window is a no-op, so a window closed while maximised was
+/// skipped entirely and reopened with dead buttons. So: apply the *opposite* of
+/// the wanted state before the show, and the wanted state after it.
+///
+/// Mechanisms that do **not** work, recorded so they are not retried: a 1px
+/// `set_size` (a client-side request GTK satisfies with no round trip, and a
+/// delta small enough to coalesce away), and toggling `set_decorations`
+/// (rebuilds the title-bar widgets, renegotiates no geometry).
+///
+/// Runs on every reveal of a hidden window, not once per process: every map of a
+/// hidden window is broken, so a one-shot let the bug back on the second open.
+///
+/// The principled repair is still to build this window at runtime the way
+/// `open_onboarding_window` does, so it is never shown-after-hidden and none of
+/// this exists. That is larger because a `--silent` session keeps the hidden
+/// webview alive on purpose - detection polling, the `quit-requested` listener
+/// and the backend-error drain all live in it - so it cannot simply be created
+/// on demand.
+#[cfg(target_os = "linux")]
+fn map_maximized_for_decorations(window: &tauri::WebviewWindow) {
+    // A reveal of a window that is already up needs nothing, and toggling its
+    // state would be destructive.
+    if window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let want_maximized = window.is_maximized().unwrap_or(false);
+    // Only meaningful un-maximised: maximised, `inner_size` is the screen.
+    if !want_maximized {
+        if let Ok(size) = window.inner_size() {
+            if size.width > 0 && size.height > 0 {
+                DECOR_SAVED_W.store(size.width, Ordering::Release);
+                DECOR_SAVED_H.store(size.height, Ordering::Release);
+            }
+        }
+    }
+    DECOR_WANT_MAXIMIZED.store(want_maximized, Ordering::Release);
+    DECOR_RESTORE_PENDING.store(true, Ordering::Release);
+    // The opposite state, so the map itself has to be configured.
+    let asked = if want_maximized {
+        window.unmaximize()
+    } else {
+        window.maximize()
+    };
+    if asked.is_err() {
+        DECOR_RESTORE_PENDING.store(false, Ordering::Release);
+        return;
+    }
+    poll_restore_after_repair(&window.app_handle().clone());
+}
+
+/// Put the window back into the state [`map_maximized_for_decorations`] recorded,
+/// once the opposite state is observably in effect.
+///
+/// **Gated on `is_maximized()`, not on which event arrived.** Three attempts
+/// failed by trusting an event to mean "the configure landed": a queued
+/// event-loop turn, then `Resized`, then `Resized`-or-`Focused(true)`. The last
+/// lost because `Focused(true)` fires during `show()`, *before* the configure
+/// comes back, so the flag was consumed early and the restore raced as before.
+/// Window state cannot be fooled that way: until the pre-state is really in
+/// effect the request stays armed and a later event tries again.
+///
+/// Backed by a short poll too, because if no further event arrives after the
+/// configure there is nothing left to re-trigger this.
+///
+/// Queued rather than called inline so GTK is not re-entered mid dispatch.
+/// Takes `&Window`, not `&WebviewWindow`: that is what `on_window_event` hands
+/// out, and the state calls live on both.
+#[cfg(target_os = "linux")]
+fn restore_after_repair(window: &tauri::Window) {
+    if !DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
+        return;
+    }
+    let want_maximized = DECOR_WANT_MAXIMIZED.load(Ordering::Acquire);
+    // Wait until the opposite state is actually in effect.
+    if window.is_maximized().unwrap_or(false) != !want_maximized {
+        return;
+    }
+    if !DECOR_RESTORE_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let w = window.clone();
+    let _ = window.app_handle().clone().run_on_main_thread(move || {
+        if want_maximized {
+            let _ = w.maximize();
+            return;
+        }
+        let _ = w.unmaximize();
+        // Then set the size ourselves, on the next turn so the un-maximise has
+        // been applied first. GTK's own restore geometry is not trustworthy: by
+        // the second reveal it has been overwritten with the maximised bounds,
+        // so `unmaximize` alone reopened the window at screen size.
+        let width = DECOR_SAVED_W.load(Ordering::Acquire);
+        let height = DECOR_SAVED_H.load(Ordering::Acquire);
+        if width == 0 || height == 0 {
+            return;
+        }
+        let w2 = w.clone();
+        let _ = w.app_handle().clone().run_on_main_thread(move || {
+            let _ = w2.set_size(tauri::PhysicalSize::new(width, height));
+            let _ = w2.center();
+        });
+    });
+}
+
+/// Re-check [`restore_after_repair`] on a timer, for the case where the
+/// configure is the last event the window sees.
+///
+/// Off-thread sleeps, main-thread checks: window APIs are only touched inside
+/// `run_on_main_thread`. Bounded, so a window whose state never changes stops
+/// being polled rather than being watched forever.
+#[cfg(target_os = "linux")]
+fn poll_restore_after_repair(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if !DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
+                return;
+            }
+            let inner = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                if let Some(w) = inner.get_webview_window("main") {
+                    restore_after_repair(&w.as_ref().window_ref().clone());
+                }
+            });
+        }
+    });
+}
+
 /// Whether the coming exit is an updater-driven relaunch rather than a user
 /// quit. The exit handler clears the routing intent on a plain quit when
 /// launch-at-login is off (no login item means nothing would re-route after a
@@ -1821,6 +1985,9 @@ fn reveal_popover_window(app: &tauri::AppHandle) {
     };
     #[cfg(target_os = "linux")]
     let _ = window.unminimize();
+    // Before the show, for the reason in `map_maximized_for_decorations`.
+    #[cfg(target_os = "linux")]
+    map_maximized_for_decorations(&window);
     let _ = window.show();
     let _ = window.set_focus();
     #[cfg(target_os = "macos")]
@@ -2127,6 +2294,15 @@ pub fn run() {
                     reveal_popover_window(window.app_handle());
                 }
                 return;
+            }
+            // First post-map event after a maximised map: geometry is settled,
+            // so put the window back to its configured size.
+            #[cfg(target_os = "linux")]
+            match event {
+                WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
+                    restore_after_repair(window);
+                }
+                _ => {}
             }
             // X-button on the popover should hide it, not quit the app.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -2532,17 +2708,18 @@ pub fn run() {
                 .show_menu_on_left_click(false) // left-click toggles window; right-click shows menu
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            // On Linux the SNI/AppIndicator tray hands us no
-                            // click rect and GNOME often never fires the
-                            // left-click path, so the right-click menu is how
-                            // users reach this. Either way it only reveals the
-                            // window; it does not place it.
-                            #[cfg(target_os = "linux")]
-                            let _ = window.unminimize();
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        // On Linux the SNI/AppIndicator tray hands us no click
+                        // rect and GNOME often never fires the left-click path,
+                        // so the right-click menu is how users reach this.
+                        // Either way it only reveals the window; it does not
+                        // place it.
+                        //
+                        // Goes through `reveal_popover_window` rather than
+                        // repeating show/focus inline. Three copies of this
+                        // existed and only one of them carried the Linux
+                        // decoration repair, so a `--silent` launch revealed
+                        // from the tray came up with dead title-bar buttons.
+                        reveal_popover_window(app);
                     }
                     "quit" => request_quit(app),
                     _ => {}
@@ -2575,12 +2752,7 @@ pub fn run() {
                                 // tray click would lose wherever the user had
                                 // put it - which is why the click rect is no
                                 // longer even read.
-                                #[cfg(target_os = "linux")]
-                                let _ = window.unminimize();
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                                #[cfg(target_os = "macos")]
-                                order_front_regardless(&window);
+                                reveal_popover_window(app);
                             }
                         }
                     }
@@ -2617,6 +2789,10 @@ pub fn run() {
                 // 1024x720 window. Within a session, hide/show keeps whatever
                 // position the user chose.
                 let _ = window.center();
+                // Before the show, not after: the point is for the *first* map
+                // to be the maximised one.
+                #[cfg(target_os = "linux")]
+                map_maximized_for_decorations(&window);
                 let _ = window.show();
                 let _ = window.set_focus();
             }
