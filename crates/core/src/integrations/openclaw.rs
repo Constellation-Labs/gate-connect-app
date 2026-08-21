@@ -791,8 +791,27 @@ mod tests {
             "a healthy config is Connected regardless of the domain catalog"
         );
 
-        let note = coverage_note(OpenAiAuthMode::Bearer)
-            .expect("no domains file in a bare test env, so the note applies");
+        // `coverage_note` reads the domain catalog through `app_support_dir()`, so
+        // with no redirect in place it reads the *developer's* real one. Anyone who
+        // has run Gate Connect with the chatgpt domain on had the note suppressed
+        // and failed here, for reasons the code under test has nothing to do with.
+        // The bare env this wants has to be built, not assumed.
+        let note = {
+            let _lock = crate::env::path_env_lock();
+            let home =
+                std::env::temp_dir().join(format!("gate-openclaw-note-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&home);
+            let prev = std::env::var_os("GATE_CONNECT_TEST_HOME");
+            std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+            let note = coverage_note(OpenAiAuthMode::Bearer);
+            match prev {
+                Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+                None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&home);
+            note
+        }
+        .expect("an empty home has no domains file, so the note applies");
         assert!(note.contains("chatgpt"), "must name the domain: {note}");
         assert!(
             note.contains("proxy domain chatgpt on"),
