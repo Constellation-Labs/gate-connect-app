@@ -706,6 +706,7 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
         api_key: "sk-gw-test".into(),
         oauth_token: String::new(), // legacy API-key path
         org_id: String::new(),      // no org on the legacy path
+        billing_mode: Default::default(),
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
