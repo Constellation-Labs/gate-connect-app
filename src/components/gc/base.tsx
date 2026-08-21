@@ -33,7 +33,7 @@ export function Card({
     <section
       id={id}
       aria-busy={busy || undefined}
-      className={`rounded-lg border border-base-border bg-base-card shadow-base-sm ${className}`}
+      className={`rounded-md border border-base-border bg-base-card shadow-base-sm ${className}`}
     >
       {children}
     </section>
@@ -68,7 +68,7 @@ export function StatusTile({
   return (
     <span
       aria-hidden
-      className={`flex shrink-0 items-center justify-center rounded-base border bg-gradient-to-b ${TILE_TONES[tone]} ${
+      className={`flex shrink-0 items-center justify-center rounded-sm border bg-gradient-to-b ${TILE_TONES[tone]} ${
         size === 36 ? "size-9" : "size-7"
       }`}
     >
@@ -146,7 +146,7 @@ export function Skeleton({
     <span
       aria-hidden
       style={style}
-      className={`block animate-pulse rounded-base bg-gray-200 ${className}`}
+      className={`block animate-pulse rounded-sm bg-gray-200 ${className}`}
     />
   );
 }
@@ -181,7 +181,7 @@ export function EmptyNote({
     <div className="flex flex-col items-center gap-3 py-6">
       <span
         aria-hidden
-        className="flex size-9 items-center justify-center rounded-base border border-base-border text-base-muted-foreground"
+        className="flex size-9 items-center justify-center rounded-sm border border-base-border text-base-muted-foreground"
       >
         <Icon name={icon} size={20} />
       </span>

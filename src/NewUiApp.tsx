@@ -1585,7 +1585,7 @@ export function NewUiApp() {
               offerError && (
                 <p
                   role="alert"
-                  className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
+                  className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
                 >
                   <span className="font-medium">{offerError.title}</span> {offerError.hint}
                 </p>
@@ -2048,7 +2048,7 @@ function ActivityGaps({
               // again": three buttons, one name, three different jobs. Naming the
               // subject fixes the ambiguity without touching the visible copy.
               aria-label={`${a.label}: ${n.subject}`}
-              className="ml-2 rounded-base font-medium text-base-primary underline decoration-transparent underline-offset-2 transition hover:decoration-inherit focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:text-base-muted-foreground"
+              className="ml-2 rounded-sm font-medium text-base-primary underline decoration-transparent underline-offset-2 transition hover:decoration-inherit focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:text-base-muted-foreground"
             >
               {a.kind === "retry" && loading ? "Trying…" : a.label}
             </button>

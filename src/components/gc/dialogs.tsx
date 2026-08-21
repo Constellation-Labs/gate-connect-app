@@ -442,7 +442,7 @@ export function DiagnosticsDialog({
       primary={{ label: copied ? "Copied" : "Copy report", onClick: onCopy }}
       onDismiss={onClose}
     >
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-base-border bg-gray-50 p-4 font-mono text-base-xs leading-4 text-neutral-700">
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-base-xs leading-4 text-neutral-700">
         {report}
       </pre>
     </Modal>
@@ -517,7 +517,7 @@ export function ModelPickerDialog({
                 role="radio"
                 aria-checked={selected}
                 onClick={() => onSelect(model.id)}
-                className={`flex items-center gap-3 rounded-base border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+                className={`flex items-center gap-3 rounded-sm border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
                   selected
                     ? "border-base-primary bg-base-card"
                     : "border-transparent hover:bg-gray-50"
@@ -574,10 +574,10 @@ export function UseGateModelDialog({
 
       {/* Label left, balance right - the one row in the dialogs that reads
        * across rather than stacking, so it is not a `ModalSubject`. */}
-      <div className="flex items-center gap-3 rounded-lg border border-base-border p-3">
+      <div className="flex items-center gap-3 rounded-md border border-base-border p-3">
         <span
           aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
         >
           <Icon name="creditCard" size={16} />
         </span>

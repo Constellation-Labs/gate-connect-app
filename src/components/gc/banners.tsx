@@ -44,7 +44,7 @@ export function UpdateBanner({
         <button
           type="button"
           onClick={onUpdate}
-          className="flex h-6 items-center rounded-base border border-white/40 px-2 text-base-xs font-medium leading-4 text-white transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          className="flex h-6 items-center rounded-sm border border-white/40 px-2 text-base-xs font-medium leading-4 text-white transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
         >
           Update
         </button>
@@ -137,7 +137,7 @@ export function AlertBanner({
   paging?: { onPrev: () => void; onNext: () => void };
 }) {
   return (
-    <div className="relative flex items-center gap-6 rounded-lg border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
+    <div className="relative flex items-center gap-6 rounded-md border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
       <div className="flex min-w-0 flex-1 items-center gap-4">
         <StatusTile tone="amber" icon="triangleAlert" size={36} />
         <div className="min-w-0">
@@ -331,7 +331,7 @@ export function RecoveryBanner({
         <button
           type="button"
           onClick={onReviewDetails}
-          className="shrink-0 rounded-base px-2 py-1 text-base-xs font-medium text-amber-900 underline decoration-amber-300 transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+          className="shrink-0 rounded-sm px-2 py-1 text-base-xs font-medium text-amber-900 underline decoration-amber-300 transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
         >
           Review details
         </button>
@@ -340,7 +340,7 @@ export function RecoveryBanner({
         type="button"
         onClick={onResume}
         disabled={busy}
-        className="shrink-0 rounded-base border border-amber-300 bg-base-card px-2 py-1 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+        className="shrink-0 rounded-sm border border-amber-300 bg-base-card px-2 py-1 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {busy ? "Resuming…" : "Resume now"}
       </button>

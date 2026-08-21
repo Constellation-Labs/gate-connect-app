@@ -100,7 +100,7 @@ export function Overview({
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
       <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-medium leading-6 tracking-heading text-neutral-900">
+        <h1 className="text-xl font-medium tracking-heading text-neutral-900">
           Overview
         </h1>
         <div className="flex items-center gap-3">
@@ -194,7 +194,7 @@ function PolicyTable({
               <td className="py-3 text-right">
                 {policy.action ? (
                   <span
-                    className={`inline-block rounded-sm px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
+                    className={`inline-block rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
                   >
                     {policy.action}
                   </span>
@@ -305,7 +305,7 @@ function PendingRows({ columns }: { columns: 2 | 3 }) {
 function StatusPill({ on }: { on: boolean }) {
   return (
     <span
-      className={`inline-flex items-center gap-2 rounded-sm px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${
+      className={`inline-flex items-center gap-2 rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${
         on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-neutral-600"
       }`}
     >
@@ -322,7 +322,7 @@ function ManageLink({ label, onClick }: { label: string; onClick: () => void }) 
       <button
         type="button"
         onClick={onClick}
-        className="flex items-center gap-1.5 rounded-base px-1.5 py-1 text-base-xs font-medium text-base-primary transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-base-xs font-medium text-base-primary transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {label}
         <Icon name="squareArrowOutUpRight" size={12} />
