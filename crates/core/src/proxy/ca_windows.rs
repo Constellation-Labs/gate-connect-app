@@ -27,7 +27,10 @@
 use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use hudsucker::rcgen::KeyPair;
@@ -52,6 +55,145 @@ fn certutil() -> Command {
     let mut cmd = Command::new("certutil");
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
+}
+
+/// How long a **non-interactive** `certutil` call may run before we stop waiting
+/// on it and kill it.
+///
+/// None of the bounded calls below wait on a human - they are root-store lookups
+/// and deletes that answer in milliseconds on a healthy machine - so a wait this
+/// long already means the child is never coming back. Leaving it unbounded is
+/// what turns a `certutil` that dies badly into an unusable machine: a process
+/// that crashes here stays alive while Windows Error Reporting collects its
+/// dump, and the status path re-spawns it on a timer. `disable_quiet` documents
+/// the same hazard, worked around for the exit path only.
+const CERTUTIL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Gap between `try_wait` polls while waiting out [`CERTUTIL_TIMEOUT`].
+const CERTUTIL_POLL: Duration = Duration::from_millis(50);
+
+/// Run a **non-interactive** `certutil` invocation to completion, or kill it and
+/// answer `None` once it outlives [`CERTUTIL_TIMEOUT`].
+///
+/// Deliberately not used for `-addstore Root` in [`ensure_trusted`]: that call
+/// raises Windows' native trust dialog and legitimately blocks on a human, so a
+/// timeout would kill a prompt the user is still reading.
+///
+/// Stdio is `null` rather than piped. No bounded caller reads the output (they
+/// all key on the exit status), and piping a child we may stop waiting on would
+/// leave us holding the pipe ends of a process we just killed. `kill` is
+/// `TerminateProcess` and returns without blocking; the handle is closed on
+/// drop, so there is deliberately no `wait()` behind it - reaping is a Unix
+/// concern, and waiting on a kill that failed would reintroduce the hang this
+/// exists to remove.
+fn certutil_bounded(mut cmd: Command) -> Result<Option<ExitStatus>> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("spawning certutil")?;
+    let deadline = Instant::now() + CERTUTIL_TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait().context("waiting on certutil")? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            return Ok(None);
+        }
+        thread::sleep(CERTUTIL_POLL);
+    }
+}
+
+/// The error for a bounded call we had to kill, named after the verb that hung.
+fn certutil_timed_out(verb: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "certutil {verb} did not finish within {}s and was killed",
+        CERTUTIL_TIMEOUT.as_secs()
+    )
+}
+
+/// How long [`is_trusted`] stops shelling out after `certutil` fails to answer.
+///
+/// The bounded wait above keeps one bad call from wedging the app, but it does
+/// not stop the *next* one: the window polls `proxy_status` every few seconds,
+/// so a host where `certutil` dies on every invocation was still handed a dozen
+/// or more doomed spawns a minute, each one potentially its own Windows Error
+/// Reporting dump. Five minutes is long enough that the churn stops mattering
+/// and short enough that a machine which recovers is noticed without a restart.
+/// Any explicit trust change resets it - see [`forget_trust_reading`] - so a user
+/// who acts on the error is never waiting out the cooldown.
+const CERTUTIL_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// Last answer [`is_trusted`] got out of `certutil`, and when it last failed to
+/// get one.
+struct TrustProbe {
+    /// The last successful reading, with the cert thumbprint it was taken for.
+    /// Keyed on the thumbprint for the same reason the lookup is: a reading for
+    /// the *previous* CA says nothing about the one now on disk.
+    last: Option<(String, bool)>,
+    /// When `certutil` most recently failed to answer (killed, or unspawnable).
+    /// `None` once it answers again.
+    failed_at: Option<Instant>,
+}
+
+static TRUST_PROBE: Mutex<TrustProbe> = Mutex::new(TrustProbe {
+    last: None,
+    failed_at: None,
+});
+
+/// The reading to serve without spawning anything. `Ok(None)` means go ahead and
+/// probe; `Ok(Some(answer))` is the cached reading while the cooldown holds; an
+/// error means the cooldown holds and there is nothing cached to serve.
+fn trust_reading_during_cooldown(thumb: &str) -> Result<Option<bool>> {
+    let probe = TRUST_PROBE.lock().expect("trust probe mutex poisoned");
+    let Some(failed_at) = probe.failed_at else {
+        return Ok(None);
+    };
+    let waited = failed_at.elapsed();
+    if waited >= CERTUTIL_COOLDOWN {
+        return Ok(None);
+    }
+    match probe.last.as_ref() {
+        Some((cached, answer)) if cached == thumb => Ok(Some(*answer)),
+        // Nothing to serve: either no call ever succeeded, or the one that did
+        // was about a different CA. Reporting that beats inventing a "no", which
+        // would advertise an untrusted CA on the one screen the user checks it on
+        // and send `ensure_trusted` at a re-install with its dialog.
+        _ => Err(anyhow::anyhow!(
+            "certutil failed to answer {}s ago and is not being re-run for another {}s",
+            waited.as_secs(),
+            CERTUTIL_COOLDOWN.saturating_sub(waited).as_secs()
+        )),
+    }
+}
+
+/// Record what a probe produced: a reading closes the breaker, a failure to
+/// answer opens it for [`CERTUTIL_COOLDOWN`].
+fn record_trust_probe(thumb: &str, answer: &Result<bool>) {
+    let mut probe = TRUST_PROBE.lock().expect("trust probe mutex poisoned");
+    match answer {
+        Ok(hit) => {
+            probe.last = Some((thumb.to_string(), *hit));
+            probe.failed_at = None;
+        }
+        Err(_) => probe.failed_at = Some(Instant::now()),
+    }
+}
+
+/// Drop the cached reading and close the breaker, after this process changes the
+/// trust itself.
+///
+/// Two jobs. The cached answer is now wrong (we just installed or removed the
+/// very root it describes, without the thumbprint changing), and a user who
+/// reached one of those paths has asked for something specific, which is reason
+/// enough to let the next status read pay for a real probe rather than serving
+/// them a cooldown.
+fn forget_trust_reading() {
+    let mut probe = TRUST_PROBE.lock().expect("trust probe mutex poisoned");
+    probe.last = None;
+    probe.failed_at = None;
 }
 
 /// A loaded CA. The cert is public; the key is sensitive and only handed to the
@@ -123,9 +265,9 @@ pub fn load_or_create() -> Result<Ca> {
     // by CN, so `ensure_trusted` would see the stale root and no-op while
     // every MITM handshake fails against the new CA. Best-effort delete of
     // any previous cert from the per-user root store before persisting.
-    let _ = certutil()
-        .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
-        .status();
+    let mut stale = certutil();
+    stale.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+    let _ = certutil_bounded(stale);
 
     let (cert_pem, key_pem) = generate()?;
     if let Some(parent) = path.parent() {
@@ -199,7 +341,21 @@ pub fn is_trusted() -> Result<bool> {
         Some(t) => t,
         None => return Ok(false),
     };
-    Ok(root_store_has(Scope::User, &thumb)? || root_store_has(Scope::Machine, &thumb)?)
+    // Ask the breaker before certutil: on a host where certutil cannot answer,
+    // the status poll's cadence would otherwise keep spawning children that only
+    // ever get killed.
+    if let Some(cached) = trust_reading_during_cooldown(&thumb)? {
+        return Ok(cached);
+    }
+    let answer = root_store_has(Scope::User, &thumb).and_then(|user_store| {
+        if user_store {
+            Ok(true)
+        } else {
+            root_store_has(Scope::Machine, &thumb)
+        }
+    });
+    record_trust_probe(&thumb, &answer);
+    answer
 }
 
 /// Which root store a `certutil` call addresses. `-user` is the per-user store
@@ -224,12 +380,16 @@ impl Scope {
 /// Whether `id` (a thumbprint or a CN) matches a cert in this scope's root
 /// store. Read-only, so the machine store needs no elevation.
 fn root_store_has(scope: Scope, id: &str) -> Result<bool> {
-    let out = certutil()
-        .args(scope.args())
-        .args(["-store", "Root", id])
-        .output()
-        .context("running certutil -store Root")?;
-    Ok(out.status.success())
+    let mut cmd = certutil();
+    cmd.args(scope.args()).args(["-store", "Root", id]);
+    let finished = certutil_bounded(cmd).context("running certutil -store Root")?;
+    // A lookup we had to kill is unanswerable, not a "no". Answering false would
+    // report an installed root as untrusted and send `ensure_trusted` at a
+    // re-install - and its dialog - over a cert the OS already holds. Callers
+    // that can live without an answer fold this to false themselves; see
+    // `store_has_our_ca`.
+    let status = finished.ok_or_else(|| certutil_timed_out("-store Root"))?;
+    Ok(status.success())
 }
 
 /// Trust the CA if it isn't already. `certutil -user -addstore Root` installs
@@ -243,9 +403,9 @@ pub fn ensure_trusted() -> Result<()> {
     // A prior install may have left a same-CN root (different key) in the
     // per-user store; drop it so we don't stack a duplicate before adding the
     // current cert. Best-effort - a missing cert just makes this a no-op.
-    let _ = certutil()
-        .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
-        .status();
+    let mut stale = certutil();
+    stale.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+    let _ = certutil_bounded(stale);
     let cert = cert_path()?;
     let status = certutil()
         .args(["-user", "-addstore", "Root"])
@@ -257,6 +417,7 @@ pub fn ensure_trusted() -> Result<()> {
             "couldn't trust the proxy CA \u{2014} the certificate trust dialog was cancelled or denied"
         );
     }
+    forget_trust_reading();
     Ok(())
 }
 
@@ -277,13 +438,14 @@ pub fn untrust() -> Result<()> {
     // it would send `certutil -user -delstore` after a cert that isn't there
     // and turn a nothing-to-do into a hard failure.
     if per_user_store_has_our_ca() {
-        let status = certutil()
-            .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
-            .status()
-            .context("running certutil -delstore Root")?;
+        let mut cmd = certutil();
+        cmd.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+        let finished = certutil_bounded(cmd).context("running certutil -delstore Root")?;
+        let status = finished.ok_or_else(|| certutil_timed_out("-delstore Root"))?;
         if !status.success() {
             anyhow::bail!("couldn't untrust the proxy CA (certutil -delstore Root failed)");
         }
+        forget_trust_reading();
     }
     // Read before the teardown: the lookup is thumbprint-keyed on the cert file
     // that `remove_ca_material` is about to delete.
@@ -322,9 +484,9 @@ pub fn ensure_trusted_system() -> Result<()> {
     // A prior install may have left a same-CN root (different key) in the
     // per-user store, where it would keep shadowing ours. Best-effort, and
     // non-privileged - this is the user's own store.
-    let _ = certutil()
-        .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
-        .status();
+    let mut stale = certutil();
+    stale.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+    let _ = certutil_bounded(stale);
     let cert = cert_path()?;
     let out = certutil()
         .args(["-addstore", "-f", "Root"])
@@ -337,6 +499,7 @@ pub fn ensure_trusted_system() -> Result<()> {
             certutil_detail(&out)
         );
     }
+    forget_trust_reading();
     Ok(())
 }
 
@@ -360,10 +523,11 @@ pub fn untrust_system() -> Result<()> {
     // half is this process's to remove. Read before the teardown, which deletes
     // the cert file the thumbprint is computed from.
     if per_user_store_has_our_ca() {
-        let _ = certutil()
-            .args(["-user", "-delstore", "Root", CA_COMMON_NAME])
-            .status();
+        let mut stale = certutil();
+        stale.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
+        let _ = certutil_bounded(stale);
     }
+    forget_trust_reading();
     remove_ca_material()
 }
 
