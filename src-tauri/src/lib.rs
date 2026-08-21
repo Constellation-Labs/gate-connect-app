@@ -1259,7 +1259,7 @@ fn restore_after_repair(window: &tauri::Window) {
     }
     let want_maximized = DECOR_WANT_MAXIMIZED.load(Ordering::Acquire);
     // Wait until the opposite state is actually in effect.
-    if window.is_maximized().unwrap_or(false) != !want_maximized {
+    if window.is_maximized().unwrap_or(false) == want_maximized {
         return;
     }
     if !DECOR_RESTORE_PENDING.swap(false, Ordering::AcqRel) {
