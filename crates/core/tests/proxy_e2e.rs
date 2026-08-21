@@ -811,9 +811,10 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
         upstream_proxy: None,
     };
 
-    // First run: ephemeral bind, note where it landed.
-    let engine = engine::start(config(None), || {}).expect("first engine start");
-    let port = engine.port();
+    // First run on a port of our own choosing (see `seed_preferred_port`).
+    let port = seed_preferred_port();
+    let engine = engine::start(config(Some(port)), || {}).expect("first engine start");
+    assert_eq!(engine.port(), port, "first run must take the seeded port");
     engine.stop();
 
     // Restart preferring that port: same address, and it still routes.
@@ -839,17 +840,37 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     );
     engine.stop();
 
-    // Preferred port taken by someone else: fall back to an ephemeral port
-    // rather than failing the start.
-    let blocker = std::net::TcpListener::bind(("127.0.0.1", port)).expect("occupying the port");
-    let engine = engine::start(config(Some(port)), || {}).expect("fallback engine start");
+    // Preferred port taken by someone else: fall back to another port rather
+    // than failing the start. The blocker holds a port of its own instead of
+    // the one just freed above: a freed port can be picked up by anything else
+    // on the machine (including this suite's other test binaries) between the
+    // stop and the rebind, which would make this bind flaky.
+    let blocker = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupying a port");
+    let taken = blocker.local_addr().unwrap().port();
+    let engine = engine::start(config(Some(taken)), || {}).expect("fallback engine start");
     assert_ne!(
         engine.port(),
-        port,
-        "a taken preferred port must fall back to an ephemeral one"
+        taken,
+        "a taken preferred port must fall back to another one"
     );
     engine.stop();
     drop(blocker);
+}
+
+/// A port from the OS's ephemeral range, released before it is returned, for
+/// the restart tests to hand back as a *preferred* port.
+///
+/// They cannot let the engine pick its own: a fresh pick comes from
+/// `engine::bind_fresh`'s 100-port band, and a band port freed between the stop
+/// and the restart is fair game for anything else scanning that band - notably
+/// `relay_e2e`, which also brings engines up while cargo runs the two binaries
+/// concurrently. Seeding from the ephemeral range instead keeps these tests out
+/// of that shared namespace while still exercising the real reclaim path
+/// (`bind_preferred`, including the `SO_REUSEADDR` rebind over the first run's
+/// TIME_WAIT remnants).
+fn seed_preferred_port() -> u16 {
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("seeding a preferred port");
+    probe.local_addr().unwrap().port()
 }
 
 /// Same restart contract for the PAC listener (PAC-driven platforms only):
@@ -877,9 +898,14 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
         upstream_proxy: None,
     };
 
-    // First run: note the PAC port.
-    let engine = engine::start(config(None), || {}).expect("first engine start");
-    let pac_port = engine.pac_port();
+    // First run on a PAC port of our own choosing (see `seed_preferred_port`).
+    let pac_port = seed_preferred_port();
+    let engine = engine::start(config(Some(pac_port)), || {}).expect("first engine start");
+    assert_eq!(
+        engine.pac_port(),
+        pac_port,
+        "first run must take the seeded PAC port"
+    );
     engine.stop();
 
     // Restart preferring it: same address, and the served PAC points at the
@@ -902,14 +928,16 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
     );
     engine.stop();
 
-    // Taken PAC port: fall back rather than failing the start.
-    let blocker =
-        std::net::TcpListener::bind(("127.0.0.1", pac_port)).expect("occupying the PAC port");
-    let engine = engine::start(config(Some(pac_port)), || {}).expect("fallback engine start");
+    // Taken PAC port: fall back rather than failing the start. As above, the
+    // blocker holds a port of its own rather than racing to reclaim the one
+    // just freed.
+    let blocker = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupying a port");
+    let taken = blocker.local_addr().unwrap().port();
+    let engine = engine::start(config(Some(taken)), || {}).expect("fallback engine start");
     assert_ne!(
         engine.pac_port(),
-        pac_port,
-        "a taken preferred PAC port must fall back to an ephemeral one"
+        taken,
+        "a taken preferred PAC port must fall back to another one"
     );
     engine.stop();
     drop(blocker);

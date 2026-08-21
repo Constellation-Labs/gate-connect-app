@@ -113,8 +113,6 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
     })
 }
 
-/// Bind the relay's loopback listener, reusing `preferred` (the persisted port)
-/// when free, else an ephemeral port. Non-blocking so tokio can adopt it.
 /// Bind the relay's loopback port, reusing `preferred` (the persisted port) when
 /// there is one.
 ///
@@ -125,8 +123,10 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
 /// into every tool config - while the process actually serving traffic is the
 /// other one, on the old port. Measured: a `proxy relay` run alongside the
 /// desktop app moved the persisted port from 45981 to 44225 while the app kept
-/// serving 45981. Ephemeral is still right when there is no preferred port
-/// (first run), where there is no baked URL to invalidate.
+/// serving 45981. A freshly picked port is still right when there is no
+/// preferred port (first run), where there is no baked URL to invalidate;
+/// [`super::engine::bind_fresh`] takes it from a band outside the OS's
+/// ephemeral range so the next run can actually rebind it.
 ///
 /// [`super::engine::bind_preferred`] does the binding so this agrees with the
 /// engine on what "taken" means: a live listener, not a TIME_WAIT remnant of a
@@ -141,9 +141,7 @@ fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
                  moving to another would silently take them off the running host."
             )
         })?,
-        None => {
-            std::net::TcpListener::bind(("127.0.0.1", 0)).context("binding relay loopback port")?
-        }
+        None => super::engine::bind_fresh().context("binding relay loopback port")?,
     };
     let port = listener
         .local_addr()
