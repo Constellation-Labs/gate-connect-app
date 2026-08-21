@@ -811,9 +811,10 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
         upstream_proxy: None,
     };
 
-    // First run: ephemeral bind, note where it landed.
-    let engine = engine::start(config(None), || {}).expect("first engine start");
-    let port = engine.port();
+    // First run on a port of our own choosing (see `seed_preferred_port`).
+    let port = seed_preferred_port();
+    let engine = engine::start(config(Some(port)), || {}).expect("first engine start");
+    assert_eq!(engine.port(), port, "first run must take the seeded port");
     engine.stop();
 
     // Restart preferring that port: same address, and it still routes.
@@ -856,6 +857,22 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     drop(blocker);
 }
 
+/// A port from the OS's ephemeral range, released before it is returned, for
+/// the restart tests to hand back as a *preferred* port.
+///
+/// They cannot let the engine pick its own: a fresh pick comes from
+/// `engine::bind_fresh`'s 100-port band, and a band port freed between the stop
+/// and the restart is fair game for anything else scanning that band - notably
+/// `relay_e2e`, which also brings engines up while cargo runs the two binaries
+/// concurrently. Seeding from the ephemeral range instead keeps these tests out
+/// of that shared namespace while still exercising the real reclaim path
+/// (`bind_preferred`, including the `SO_REUSEADDR` rebind over the first run's
+/// TIME_WAIT remnants).
+fn seed_preferred_port() -> u16 {
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("seeding a preferred port");
+    probe.local_addr().unwrap().port()
+}
+
 /// Same restart contract for the PAC listener (PAC-driven platforms only):
 /// the `AutoConfigURL` a client captured bakes the PAC port in, so a restart
 /// must serve a fresh PAC - pointing at the live engine port - from the same
@@ -881,9 +898,14 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
         upstream_proxy: None,
     };
 
-    // First run: note the PAC port.
-    let engine = engine::start(config(None), || {}).expect("first engine start");
-    let pac_port = engine.pac_port();
+    // First run on a PAC port of our own choosing (see `seed_preferred_port`).
+    let pac_port = seed_preferred_port();
+    let engine = engine::start(config(Some(pac_port)), || {}).expect("first engine start");
+    assert_eq!(
+        engine.pac_port(),
+        pac_port,
+        "first run must take the seeded PAC port"
+    );
     engine.stop();
 
     // Restart preferring it: same address, and the served PAC points at the
