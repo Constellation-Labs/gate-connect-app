@@ -30,18 +30,31 @@ export interface GateModel {
   logo?: ReactNode;
 }
 
-/** Text sits at the palette's 900 level; the 100 backgrounds are inferred from
- *  that pairing rather than sampled, same as the Overview's action pills. */
-const STATUS_STYLES: Record<ActivityStatus, string> = {
-  success: "bg-green-100 text-green-900",
-  error: "bg-red-100 text-red-900",
-};
-
-const SECURITY_STYLES: Record<ActivitySecurity, string> = {
-  allow: "bg-green-100 text-green-900",
+/**
+ * One badge per row, under a single Security column (Figma 272:3266).
+ *
+ * Status and security used to be two columns; the design merged them, so a row
+ * that failed reads ERROR and every other row reads what the guardrails did.
+ * `error` is in this map rather than a second one because they now compete for one
+ * cell and the precedence has to live somewhere the reader can see it.
+ *
+ * `allow` is neutral grey, not green, which is the change worth noticing: green
+ * reads as "good", and the useful signal in this column is when something was
+ * *acted on*. A wall of green ticks is what makes the one amber row easy to miss.
+ *
+ * Text sits at the palette's 900 level; the 100 backgrounds are inferred from that
+ * pairing rather than sampled.
+ */
+const BADGE_STYLES: Record<ActivitySecurity | ActivityStatus, string> = {
+  allow: "bg-neutral-100 text-neutral-600",
   flagged: "bg-amber-100 text-amber-900",
   redacted: "bg-purple-100 text-purple-900",
   blocked: "bg-red-100 text-red-900",
+  error: "bg-red-100 text-red-900",
+  // Never rendered: a successful request shows its security action instead. Here
+  // so the map stays exhaustive over both unions and a new status cannot be added
+  // without deciding what it looks like.
+  success: "bg-neutral-100 text-neutral-600",
 };
 
 export function AppPane({
@@ -355,9 +368,9 @@ function RecentActivity({
             <th scope="col" className="pb-2 text-left font-normal">
               Time
             </th>
-            <th scope="col" className="pb-2 text-left font-normal">
-              Status
-            </th>
+            {/* One column, not two: the design merged status into security, so a
+                failed request reads ERROR and every other row reads what the
+                guardrails did. */}
             <th scope="col" className="pb-2 text-left font-normal">
               Security
             </th>
@@ -379,11 +392,25 @@ function RecentActivity({
                 {entry.time}
               </td>
               <td className="py-3 pr-4">
-                <Pill className={STATUS_STYLES[entry.status]}>{entry.status}</Pill>
-              </td>
-              <td className="py-3 pr-4">
-                {entry.security ? (
-                  <Pill className={SECURITY_STYLES[entry.security]}>{entry.security}</Pill>
+                {/* Error outranks the guardrail verdict, which is the design's
+                    call and the defensible one: a request that did not complete
+                    is the thing the reader needs first. It does cost information -
+                    a failed request that was also flagged now shows only ERROR -
+                    so the row keeps both facts in its tooltip rather than losing
+                    the quieter one entirely. */}
+                {entry.status === "error" ? (
+                  <Pill
+                    className={BADGE_STYLES.error}
+                    title={
+                      entry.security
+                        ? `Request failed. Guardrails: ${entry.security}.`
+                        : "Request failed."
+                    }
+                  >
+                    error
+                  </Pill>
+                ) : entry.security ? (
+                  <Pill className={BADGE_STYLES[entry.security]}>{entry.security}</Pill>
                 ) : (
                   // Withheld, not permitted. A pill here would read as a verdict.
                   <span
@@ -449,9 +476,20 @@ function PendingRows() {
   );
 }
 
-function Pill({ className, children }: { className: string; children: ReactNode }) {
+function Pill({
+  className,
+  title,
+  children,
+}: {
+  className: string;
+  /** Hover detail, for a badge that stands in for more than it says - the merged
+   *  security column uses it to keep the guardrail verdict on a failed row. */
+  title?: string;
+  children: ReactNode;
+}) {
   return (
     <span
+      title={title}
       className={`inline-block rounded-base px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
     >
       {children}

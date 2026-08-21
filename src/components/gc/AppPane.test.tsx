@@ -98,6 +98,24 @@ describe("AppPane recent activity", () => {
     expect(screen.queryByRole("columnheader", { name: "Conversation" })).toBeNull();
   });
 
+  it("shows one badge, and lets a failure outrank the guardrail verdict", () => {
+    render(pane({ activity: [{ ...entry, status: "error", security: "flagged" }] }));
+    const feed = card("Recent activity");
+
+    // Status and security share a column now, so the row cannot show both. The
+    // failure wins, and the verdict it displaced stays reachable on hover rather
+    // than being dropped.
+    expect(within(feed).getByText("error")).toBeTruthy();
+    expect(within(feed).queryByText("flagged")).toBeNull();
+    expect(within(feed).getByTitle("Request failed. Guardrails: flagged.")).toBeTruthy();
+  });
+
+  it("shows the guardrail verdict when the request succeeded", () => {
+    render(pane({ activity: [{ ...entry, status: "success", security: "redacted" }] }));
+
+    expect(within(card("Recent activity")).getByText("redacted")).toBeTruthy();
+  });
+
   it("marks a row whose security detail is absent, without inventing a verdict", () => {
     render(pane({ activity: [{ ...entry, security: null }] }));
     const feed = card("Recent activity");
