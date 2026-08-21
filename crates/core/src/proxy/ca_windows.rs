@@ -407,14 +407,31 @@ pub fn ensure_trusted() -> Result<()> {
     stale.args(["-user", "-delstore", "Root", CA_COMMON_NAME]);
     let _ = certutil_bounded(stale);
     let cert = cert_path()?;
-    let status = certutil()
+    // `output()` rather than `status()`: the dialog is a window certutil raises,
+    // so capturing the pipes does not suppress it, and without them certutil's
+    // own complaint went to an inherited stderr nobody reads. It is the only
+    // description of a failure that is *not* the user saying no.
+    let out = certutil()
         .args(["-user", "-addstore", "Root"])
         .arg(&cert)
-        .status()
+        .output()
         .context("running certutil -addstore Root")?;
-    if !status.success() {
+    if !out.status.success() {
+        // A declined dialog and a crashed certutil are both "non-zero", and
+        // reporting the second as the first told the user to click Trust again -
+        // advice that cannot work, on the failure where the detail matters most.
+        // Only the decline keeps the old sentence, which is what
+        // `lib/errors.ts` matches to name the dialog and its button.
+        if let Some(code) = crash_code(&out.status) {
+            anyhow::bail!(
+                "couldn't trust the proxy CA: certutil did not exit on its own, \
+                 it was terminated by Windows with {code:#010x}{}",
+                certutil_detail(&out)
+            );
+        }
         anyhow::bail!(
-            "couldn't trust the proxy CA \u{2014} the certificate trust dialog was cancelled or denied"
+            "couldn't trust the proxy CA \u{2014} the certificate trust dialog was cancelled or denied{}",
+            certutil_detail(&out)
         );
     }
     forget_trust_reading();
@@ -551,6 +568,19 @@ fn store_has_our_ca(scope: Scope) -> bool {
         .flatten()
         .and_then(|t| root_store_has(scope, &t).ok())
         .unwrap_or(false)
+}
+
+/// The NTSTATUS code behind an exit that was a crash rather than a decision, or
+/// `None` for an ordinary non-zero exit.
+///
+/// A process killed by an unhandled exception reports the exception as its exit
+/// code, and those all carry NTSTATUS severity `ERROR` (the top two bits set:
+/// `0xC0000005` access violation, `0xC0000409` stack buffer overrun). Nothing
+/// certutil chooses to exit with looks like that, so the shape is what separates
+/// "this host cannot run certutil" from "the user clicked No".
+fn crash_code(status: &ExitStatus) -> Option<u32> {
+    let code = status.code()? as u32;
+    (code >> 30 == 0b11).then_some(code)
 }
 
 /// certutil's own complaint, appended to our message when there is one. Its
