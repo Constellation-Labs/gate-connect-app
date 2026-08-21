@@ -232,3 +232,45 @@ treating two names as two intentions.
 G3, G4, G6, G7 and the rest of G8 are **possible real mismatches**, and none of
 them can be settled from the code. Combined with §D, the outstanding value count
 is eleven, not five.
+
+---
+
+## Appendix: why Linux-only window behaviour lives in Rust
+
+Not a Figma finding. Recorded here because it was worked out twice during this
+branch, both times to decide where a platform-specific window setting should go,
+and the reasoning otherwise survives nowhere: `tauri.conf.json` is JSON and
+cannot hold a comment.
+
+**The trap.** Tauri supports `tauri.linux.conf.json`, merged over the base config
+for Linux builds. It looks like the obvious place to change one window field per
+platform. It is not, because `tauri-utils/src/config/parse.rs:180` merges with
+`json_patch::merge`, which is **JSON Merge Patch (RFC 7396)** - and under that
+spec a patch value that is not an object *replaces* the target. An array is not
+an object, so arrays are never merged element-wise.
+
+`app.windows` is an array holding one window object with thirteen fields. So this,
+which reads like it flips a single flag:
+
+```json
+{ "app": { "windows": [ { "visible": true } ] } }
+```
+
+replaces the entire array with a one-element array carrying only `visible`.
+Everything else is gone, **`label` included**, so `get_webview_window("main")`
+returns `None` everywhere and the app breaks on the first run. This is not a
+subtle drift risk; it fails immediately.
+
+Done properly, all thirteen fields get copied into the Linux file, and the cost
+becomes drift instead: change `width`, `resizable` or `decorations` in the base
+config later and it silently will not apply on Linux, because the array was
+replaced rather than merged. Nothing warns you.
+
+**So the rule is:** `tauri.conf.json` stays the single definition of the window,
+and anything that must differ on one platform is applied in Rust after the window
+exists. The live example is the decoration repair in `src-tauri/src/lib.rs`
+(`map_maximized_for_decorations` / `restore_after_repair`), which is Linux-gated
+in code rather than in config for exactly this reason.
+
+Two candidates were rejected on these grounds during this branch: a Linux-only
+`decorations: false`, and a Linux-only `visible: true`.
