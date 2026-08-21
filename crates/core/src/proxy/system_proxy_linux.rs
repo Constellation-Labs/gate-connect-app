@@ -264,10 +264,11 @@ mod tests {
         // GATE_CONNECT_TEST_HOME data-dir seam) and share a single temp dir, so
         // they must not run concurrently: otherwise one test's teardown
         // `remove_dir_all` races another's writes and the atomic rename fails
-        // with ENOENT. Serialize them. (`unwrap_or_else` swallows a poisoned
-        // lock from an earlier panicking test so the rest still run.)
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        // with ENOENT. Serialize them - and not only against each other: this
+        // sets `GATE_CONNECT_TEST_HOME` for the whole process, so the exclusion
+        // has to cover every test that reads a per-user path, not just this
+        // module's. See `crate::env::path_env_lock`.
+        let _lock = crate::env::path_env_lock();
 
         // `dropin_path` keys off `dirs::config_dir()` (XDG_CONFIG_HOME), and the
         // snapshot/port paths off `app_support_dir`; point both at a throwaway
