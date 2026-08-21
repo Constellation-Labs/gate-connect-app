@@ -839,14 +839,18 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     );
     engine.stop();
 
-    // Preferred port taken by someone else: fall back to an ephemeral port
-    // rather than failing the start.
-    let blocker = std::net::TcpListener::bind(("127.0.0.1", port)).expect("occupying the port");
-    let engine = engine::start(config(Some(port)), || {}).expect("fallback engine start");
+    // Preferred port taken by someone else: fall back to another port rather
+    // than failing the start. The blocker holds a port of its own instead of
+    // the one just freed above: a freed port can be picked up by anything else
+    // on the machine (including this suite's other test binaries) between the
+    // stop and the rebind, which would make this bind flaky.
+    let blocker = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupying a port");
+    let taken = blocker.local_addr().unwrap().port();
+    let engine = engine::start(config(Some(taken)), || {}).expect("fallback engine start");
     assert_ne!(
         engine.port(),
-        port,
-        "a taken preferred port must fall back to an ephemeral one"
+        taken,
+        "a taken preferred port must fall back to another one"
     );
     engine.stop();
     drop(blocker);
@@ -902,14 +906,16 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
     );
     engine.stop();
 
-    // Taken PAC port: fall back rather than failing the start.
-    let blocker =
-        std::net::TcpListener::bind(("127.0.0.1", pac_port)).expect("occupying the PAC port");
-    let engine = engine::start(config(Some(pac_port)), || {}).expect("fallback engine start");
+    // Taken PAC port: fall back rather than failing the start. As above, the
+    // blocker holds a port of its own rather than racing to reclaim the one
+    // just freed.
+    let blocker = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupying a port");
+    let taken = blocker.local_addr().unwrap().port();
+    let engine = engine::start(config(Some(taken)), || {}).expect("fallback engine start");
     assert_ne!(
         engine.pac_port(),
-        pac_port,
-        "a taken preferred PAC port must fall back to an ephemeral one"
+        taken,
+        "a taken preferred PAC port must fall back to another one"
     );
     engine.stop();
     drop(blocker);

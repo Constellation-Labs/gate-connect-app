@@ -26,6 +26,7 @@ use hudsucker::{
     Body, HttpContext, HttpHandler, Proxy, RequestOrResponse,
 };
 use hyper_rustls::ConfigBuilderExt;
+use rand::Rng;
 use tokio::sync::{oneshot, watch};
 
 use crate::proxy::cert_authority::GateCa;
@@ -649,9 +650,9 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
 const STABLE_PORT_RANGE: std::ops::Range<u16> = 47100..47200;
 
 /// Bind a fresh loopback listener for a port the caller intends to *persist*
-/// and rebind on later runs. Scans [`STABLE_PORT_RANGE`] and takes the first
-/// free port, falling back to an OS-assigned ephemeral port only if the whole
-/// band is busy.
+/// and rebind on later runs. Scans [`STABLE_PORT_RANGE`] from a random offset
+/// and takes the first free port, falling back to an OS-assigned ephemeral
+/// port only if the whole band is busy.
 ///
 /// Why not `:0` directly: a port the OS hands out as ephemeral is one it also
 /// hands out to everything else, and nothing holds it while Gate is stopped -
@@ -664,8 +665,19 @@ const STABLE_PORT_RANGE: std::ops::Range<u16> = 47100..47200;
 /// configs bake the relay URL - and the user has to restart them. Picking from
 /// a quiet band below the dynamic range means the port we persist is one
 /// nothing else is handing out.
+///
+/// The offset is random rather than scanning from the band's start, because a
+/// fixed start makes the lowest free port a contended resource: two Gate
+/// processes coming up together (the app and a standalone `proxy relay`) would
+/// both reach for it, and - worse - a port freed a moment ago is the first one
+/// the next scan hands out, so a neighbour can snatch the port a restarting
+/// listener is about to reclaim. Every port in the band satisfies the point of
+/// the band, so there is nothing to gain by preferring one end of it.
 pub(super) fn bind_fresh() -> std::io::Result<std::net::TcpListener> {
-    for port in STABLE_PORT_RANGE {
+    let span = STABLE_PORT_RANGE.len() as u16;
+    let offset = rand::thread_rng().gen_range(0..span);
+    for i in 0..span {
+        let port = STABLE_PORT_RANGE.start + (offset + i) % span;
         if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
             return Ok(listener);
         }
