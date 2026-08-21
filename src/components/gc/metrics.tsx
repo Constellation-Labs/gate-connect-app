@@ -316,7 +316,7 @@ export function MessagesChart({
       <ul className="mt-4 flex items-center justify-center gap-4">
         {SERIES.map(({ key, label, className }) => (
           <li key={key} className="flex items-center gap-1.5">
-            <span aria-hidden className={`size-3 rounded-sm ${className}`} />
+            <span aria-hidden className={`size-3 rounded-xs ${className}`} />
             <span className="text-base-xs text-neutral-600">{label}</span>
           </li>
         ))}
@@ -382,7 +382,7 @@ function ChartTooltip({
 }) {
   return (
     <div
-      className="pointer-events-none absolute top-1/2 z-10 w-[12.5rem] -translate-y-1/2 rounded-lg border border-base-border bg-base-card p-2 shadow-base-md"
+      className="pointer-events-none absolute top-1/2 z-10 w-[12.5rem] -translate-y-1/2 rounded-md border border-base-border bg-base-card p-2 shadow-base-md"
       style={
         side === "right"
           ? { left: `calc(${offset * 100}% + 0.75rem)` }
@@ -396,7 +396,7 @@ function ChartTooltip({
         {SERIES.map(({ key, label, className }) => (
           <div key={key} className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
-              <span className={`size-3 rounded-sm ${className}`} />
+              <span className={`size-3 rounded-xs ${className}`} />
               <span className="text-base-xs leading-4 text-neutral-900">{label}</span>
             </span>
             <span className="text-base-xs font-medium leading-4 text-neutral-900">

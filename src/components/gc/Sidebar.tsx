@@ -203,7 +203,7 @@ function OrgSwitcher({ name, onClick }: { name: string; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center justify-between rounded-base border border-base-input bg-base-card px-1.5 py-2 shadow-base-2xs"
+      className="flex w-full items-center justify-between rounded-sm border border-base-input bg-base-card px-1.5 py-2 shadow-base-2xs"
     >
       <span className="flex items-center gap-2">
         <Icon name="usersRound" size={16} />
@@ -230,7 +230,7 @@ function NavItem({
       type="button"
       onClick={onClick}
       aria-current={active ? "page" : undefined}
-      className={`flex w-full items-center gap-2 rounded-base px-1.5 py-2 text-base-xs font-medium leading-4 ${
+      className={`flex w-full items-center gap-2 rounded-sm px-1.5 py-2 text-base-xs font-medium leading-4 ${
         active
           ? "border border-base-border bg-gray-100 text-base-primary shadow-base-2xs"
           : "text-neutral-900"
@@ -268,7 +268,7 @@ function InventoryState({
   return (
     <div
       role="status"
-      className={`flex flex-col gap-2 rounded-lg border p-3 ${
+      className={`flex flex-col gap-2 rounded-md border p-3 ${
         failed ? "border-amber-200 bg-amber-50" : "border-base-border bg-base-card"
       }`}
     >
@@ -293,7 +293,7 @@ function InventoryState({
           type="button"
           onClick={onRefresh}
           disabled={refreshing}
-          className="flex h-7 items-center justify-center rounded-base border border-base-border bg-base-card px-2 text-base-xs font-medium text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-7 items-center justify-center rounded-sm border border-base-border bg-base-card px-2 text-base-xs font-medium text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           {refreshing ? "Checking…" : failed ? "Try again" : "Refresh"}
         </button>
@@ -318,7 +318,7 @@ function AppRow({
 
   return (
     <li
-      className={`flex w-full items-center gap-4 rounded-lg px-1 py-1.5 ${
+      className={`flex w-full items-center gap-4 rounded-md px-1 py-1.5 ${
         selected ? "bg-gray-100" : ""
       }`}
     >
@@ -326,11 +326,11 @@ function AppRow({
         type="button"
         onClick={() => onSelect(app.slug)}
         aria-current={selected ? "page" : undefined}
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-base text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         <span
           aria-hidden
-          className="flex size-8 shrink-0 items-center justify-center rounded-base border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
+          className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
           style={{
             backgroundImage:
               "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",

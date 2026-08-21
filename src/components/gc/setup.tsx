@@ -45,7 +45,7 @@ export function SetupLayout({
         onMenuSelect={onMenuSelect}
       />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-gray-100 p-6">
-        <div className="w-full max-w-[520px] rounded-lg border border-base-border bg-base-card p-6 shadow-base-sm">
+        <div className="w-full max-w-[520px] rounded-md border border-base-border bg-base-card p-6 shadow-base-sm">
           {children}
         </div>
       </div>
@@ -65,7 +65,7 @@ function SetupHeader({
   return (
     <header className="flex flex-col items-center text-center">
       <span className="mb-4">{mark ?? <ConstellationHexMark size={40} />}</span>
-      <h1 className="text-xl font-medium leading-6 tracking-heading text-neutral-900">
+      <h1 className="text-xl font-medium tracking-heading text-neutral-900">
         {title}
       </h1>
       <p className="mt-1 text-sm leading-5 text-neutral-600">{subtitle}</p>
@@ -93,7 +93,7 @@ function PrimaryButton({
       onClick={inert ? undefined : onClick}
       aria-busy={busy || undefined}
       aria-disabled={inert || undefined}
-      className={`flex h-9 w-full items-center justify-center rounded-base bg-blue-ribbon-700 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-ribbon-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex h-9 w-full items-center justify-center rounded-sm bg-blue-ribbon-700 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-ribbon-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         inert ? "opacity-70" : ""
       } ${disabled && !busy ? "cursor-not-allowed" : ""}`}
     >
@@ -138,7 +138,7 @@ function SecondaryButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-9 w-full items-center justify-center rounded-base border border-base-border bg-base-card px-4 text-sm font-medium text-neutral-900 shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      className="flex h-9 w-full items-center justify-center rounded-sm border border-base-border bg-base-card px-4 text-sm font-medium text-neutral-900 shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
     >
       {children}
     </button>
@@ -172,7 +172,7 @@ function TextField({
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className={`h-9 w-full rounded-base border border-base-input bg-base-card px-3 text-sm text-neutral-900 shadow-base-2xs placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+        className={`h-9 w-full rounded-sm border border-base-input bg-base-card px-3 text-sm text-neutral-900 shadow-base-2xs placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
           mono ? "font-mono" : ""
         }`}
       />
@@ -188,7 +188,7 @@ function SetupError({ children }: { children: ReactNode }) {
   return (
     <div
       role="alert"
-      className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
+      className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
     >
       {children}
     </div>
@@ -467,7 +467,7 @@ export function OrgPickerPane({
 
       {organizations.length === 0 ? (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1 rounded-lg border border-amber-300 bg-amber-50 p-3 text-center">
+          <div className="flex flex-col gap-1 rounded-md border border-amber-300 bg-amber-50 p-3 text-center">
             <p className="flex items-center justify-center gap-1.5 text-sm font-medium leading-5 text-amber-900">
               <Icon name="triangleAlert" size={16} />
               No organizations found.
@@ -531,7 +531,7 @@ export function ConnectedPane({
         title="You're connected"
         subtitle={`Gate Connect is signed in to ${workspace}.`}
         mark={
-          <span className="flex size-12 items-center justify-center rounded-lg bg-green-100 text-green-700">
+          <span className="flex size-12 items-center justify-center rounded-md bg-green-100 text-green-700">
             <Icon name="circleCheck" size={24} />
           </span>
         }
@@ -586,13 +586,13 @@ export function DiagnosticsPane({
         title="Help fix problems"
         subtitle="Gate Connect can send diagnostic data about itself. You can change this any time in Settings."
         mark={
-          <span className="flex size-12 items-center justify-center rounded-lg bg-gray-100 text-neutral-700">
+          <span className="flex size-12 items-center justify-center rounded-md bg-gray-100 text-neutral-700">
             <Icon name="info" size={24} />
           </span>
         }
       />
 
-      <div className="flex items-center gap-3 rounded-lg border border-base-border bg-base-card p-4">
+      <div className="flex items-center gap-3 rounded-md border border-base-border bg-base-card p-4">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium leading-5 text-neutral-900">
             Share diagnostic data
@@ -625,6 +625,6 @@ export function DiagnosticsPane({
 /** The card the setup pane frames each list in - `ModalNote`'s counterpart here. */
 function SetupNote({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-lg border border-base-border bg-gray-50 p-3">{children}</div>
+    <div className="rounded-md border border-base-border bg-gray-50 p-3">{children}</div>
   );
 }

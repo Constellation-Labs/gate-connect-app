@@ -102,14 +102,14 @@ export function Modal({
         <div className="flex items-start gap-4">
           <span
             aria-hidden
-            className={`flex size-12 shrink-0 items-center justify-center rounded-lg ${TONE_STYLES[tone]}`}
+            className={`flex size-12 shrink-0 items-center justify-center rounded-md ${TONE_STYLES[tone]}`}
           >
             <Icon name={icon} size={24} />
           </span>
           <div className="min-w-0 flex-1">
             <h2
               id={titleId}
-              className="text-xl font-medium leading-6 tracking-heading text-neutral-900"
+              className="text-xl font-medium tracking-heading text-neutral-900"
             >
               {title}
             </h2>
@@ -134,7 +134,7 @@ export function Modal({
                 ref={safeRef}
                 type="button"
                 onClick={secondary.onClick}
-                className="flex h-9 items-center rounded-base border border-base-border bg-base-card px-4 text-sm font-medium text-neutral-900 shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                className="flex h-9 items-center rounded-sm border border-base-border bg-base-card px-4 text-sm font-medium text-neutral-900 shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
                 {secondary.label}
               </button>
@@ -144,7 +144,7 @@ export function Modal({
                 type="button"
                 onClick={middle.disabled ? undefined : middle.onClick}
                 aria-disabled={middle.disabled || undefined}
-                className={`flex h-9 items-center rounded-base border border-base-input bg-base-card px-4 text-sm font-medium shadow-base-2xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 items-center rounded-sm border border-base-input bg-base-card px-4 text-sm font-medium shadow-base-2xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   middle.disabled ? "cursor-not-allowed opacity-45" : "hover:bg-gray-50"
                 } ${
                   middle.destructive
@@ -160,7 +160,7 @@ export function Modal({
                 type="button"
                 onClick={primary.disabled ? undefined : primary.onClick}
                 aria-disabled={primary.disabled || undefined}
-                className={`flex h-9 items-center rounded-base px-4 text-sm font-medium text-white transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 items-center rounded-sm px-4 text-sm font-medium text-white transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   primary.disabled ? "cursor-not-allowed opacity-45" : ""
                 } ${
                   primary.destructive
@@ -212,10 +212,10 @@ export function ModalSubject({
 }) {
   const identity = variant === "identity";
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-base-border p-3">
+    <div className="flex items-center gap-3 rounded-md border border-base-border p-3">
       <span
         aria-hidden
-        className="flex size-10 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+        className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
       >
         {icon}
       </span>
@@ -243,7 +243,7 @@ export function ModalSubject({
       </div>
       {pill && (
         <span
-          className={`shrink-0 rounded-base px-2 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${PILL_STYLES[pill.tone]}`}
+          className={`shrink-0 rounded-sm px-2 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${PILL_STYLES[pill.tone]}`}
         >
           {pill.label}
         </span>
@@ -255,7 +255,7 @@ export function ModalSubject({
 /** The tinted block explaining what the action will actually do. */
 export function ModalNote({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-lg bg-gray-50 p-4 text-sm leading-5 text-neutral-600">
+    <div className="rounded-md bg-gray-50 p-4 text-sm leading-5 text-neutral-600">
       {children}
     </div>
   );
@@ -286,13 +286,13 @@ export function ModalOption({
       role="radio"
       aria-checked={selected}
       onClick={onSelect}
-      className={`flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex w-full items-center gap-3 rounded-md border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         selected ? "border-base-primary" : "border-base-border hover:bg-gray-50"
       }`}
     >
       <span
         aria-hidden
-        className="flex size-10 shrink-0 items-center justify-center rounded-base bg-gray-100 text-sm font-medium text-neutral-700"
+        className="flex size-10 shrink-0 items-center justify-center rounded-sm bg-gray-100 text-sm font-medium text-neutral-700"
       >
         {initials}
       </span>
@@ -352,7 +352,7 @@ export function ModalField({
           readOnly={readOnly}
           placeholder={placeholder}
           onChange={(e) => onChange?.(e.target.value)}
-          className={`h-9 w-full rounded-base border bg-base-card pl-3 text-sm shadow-base-2xs placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+          className={`h-9 w-full rounded-sm border bg-base-card pl-3 text-sm shadow-base-2xs placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
             readOnly
               ? "border-base-border text-base-muted-foreground"
               : "border-base-input text-neutral-900"
@@ -391,11 +391,11 @@ export function ModalSteps({
         {steps.map((step, i) => (
           <li
             key={step.title}
-            className="flex items-start gap-3 rounded-lg border border-base-border bg-gray-50 p-3"
+            className="flex items-start gap-3 rounded-md border border-base-border bg-gray-50 p-3"
           >
             <span
               aria-hidden
-              className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border bg-base-card text-sm font-medium text-neutral-700"
+              className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-sm font-medium text-neutral-700"
             >
               {i + 1}
             </span>

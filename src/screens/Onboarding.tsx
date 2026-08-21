@@ -205,7 +205,7 @@ function IntroButton({
       type="button"
       onClick={disabled ? undefined : onClick}
       aria-disabled={disabled || undefined}
-      className={`flex h-9 min-w-[88px] items-center justify-center rounded-base px-4 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex h-9 min-w-[88px] items-center justify-center rounded-sm px-4 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         primary
           ? "bg-blue-ribbon-700 text-white hover:bg-blue-ribbon-800"
           : "border border-base-border bg-base-card text-neutral-900 shadow-base-2xs hover:bg-gray-50"
@@ -321,7 +321,7 @@ export function Onboarding() {
               </div>
             </div>
           ) : (
-            <section className="rounded-lg border border-base-border bg-base-card p-6 shadow-base-sm">
+            <section className="rounded-md border border-base-border bg-base-card p-6 shadow-base-sm">
               <div className="flex items-baseline justify-between gap-3">
                 <span className="font-mono text-base-xs uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
                   Tutorial
@@ -330,7 +330,7 @@ export function Onboarding() {
                   {index} of {tutorialTotal}
                 </span>
               </div>
-              <h1 className="mt-2 text-balance text-xl font-semibold leading-6 tracking-heading">
+              <h1 className="mt-2 text-balance text-xl font-semibold tracking-heading">
                 {step.title}
               </h1>
               <p className="mt-1.5 text-pretty text-sm leading-5 text-neutral-600">{step.sub}</p>
@@ -346,7 +346,7 @@ export function Onboarding() {
               <div className="mt-4">{step.hero}</div>
 
               {step.note && (
-                <p className="mt-3 flex items-center gap-2 rounded-lg border border-base-border bg-base-card px-3 py-2 text-left text-base-xs leading-4 text-neutral-600">
+                <p className="mt-3 flex items-center gap-2 rounded-md border border-base-border bg-base-card px-3 py-2 text-left text-base-xs leading-4 text-neutral-600">
                   {step.noteIcon && (
                     <span aria-hidden className="shrink-0 text-base-muted-foreground">
                       <Icon name={step.noteIcon} size={16} />
@@ -381,7 +381,7 @@ export function Onboarding() {
               }}
               // WKWebView renders native checkboxes white-on-white and
               // effectively invisible, so we draw the box + check ourselves.
-              className="peer size-4 cursor-pointer appearance-none rounded-[2px] border border-base-input bg-base-card transition-colors checked:border-base-primary checked:bg-base-primary"
+              className="peer size-4 cursor-pointer appearance-none rounded-xs border border-base-input bg-base-card transition-colors checked:border-base-primary checked:bg-base-primary"
             />
             <svg
               aria-hidden

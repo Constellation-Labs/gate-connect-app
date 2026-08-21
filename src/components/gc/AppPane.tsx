@@ -114,7 +114,7 @@ export function AppPane({
       <header className="flex items-center gap-3">
         <span
           aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-base border border-white/[0.24] bg-black text-sm font-medium text-white"
+          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-sm font-medium text-white"
           style={{
             backgroundImage:
               "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
@@ -123,7 +123,7 @@ export function AppPane({
           {logo ?? name.charAt(0)}
         </span>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-xl font-medium leading-6 tracking-heading text-neutral-900">
+          <h1 className="truncate text-xl font-medium tracking-heading text-neutral-900">
             {name}
           </h1>
           <p className="text-base-xs font-medium leading-4">
@@ -264,7 +264,7 @@ function ModelOption({
       role="radio"
       aria-checked={selected}
       onClick={onSelect}
-      className={`flex items-center gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex items-center gap-3 rounded-md border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         selected
           ? "border-base-primary bg-base-card"
           : "border-base-border bg-base-card hover:bg-gray-50"
@@ -272,7 +272,7 @@ function ModelOption({
     >
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
       >
         {icon}
       </span>
@@ -301,10 +301,10 @@ function InfoRow({
   action: { label: string; onClick: () => void; external?: boolean };
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-base-border p-3">
+    <div className="flex items-center gap-3 rounded-md border border-base-border p-3">
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
       >
         {icon}
       </span>
@@ -312,7 +312,7 @@ function InfoRow({
       <button
         type="button"
         onClick={action.onClick}
-        className="flex shrink-0 items-center gap-1.5 rounded-base border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex shrink-0 items-center gap-1.5 rounded-sm border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {action.label}
         {action.external && <Icon name="squareArrowOutUpRight" size={12} />}
@@ -416,7 +416,7 @@ function RecentActivity({
           <button
             type="button"
             onClick={onLoadMore}
-            className="rounded-base border border-base-border bg-base-card px-3 py-1.5 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            className="rounded-sm border border-base-border bg-base-card px-3 py-1.5 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Load more
           </button>
@@ -455,7 +455,7 @@ function PendingRows() {
 function Pill({ className, children }: { className: string; children: ReactNode }) {
   return (
     <span
-      className={`inline-block rounded-sm px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
+      className={`inline-block rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
     >
       {children}
     </span>

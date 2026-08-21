@@ -512,7 +512,7 @@ export function buildSettingsSections({
 export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
-      <h1 className="text-xl font-medium leading-6 tracking-heading text-neutral-900">
+      <h1 className="text-xl font-medium tracking-heading text-neutral-900">
         Settings
       </h1>
 
@@ -614,7 +614,7 @@ function ActionButton({ action }: { action: SettingsAction }) {
     <button
       type="button"
       onClick={action.onClick}
-      className={`flex shrink-0 items-center gap-1.5 rounded-base px-2 py-1 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+      className={`flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
         action.destructive
           ? "bg-red-600 text-white hover:bg-red-700 focus-visible:outline-red-600"
           : "border border-base-border bg-base-card text-base-primary shadow-base-2xs hover:bg-gray-50 focus-visible:outline-base-primary"
