@@ -185,6 +185,31 @@ export function AppPane({
   );
 }
 
+/**
+ * The upstream's mark beside the model (Figma 272:3282).
+ *
+ * A monogram, not a brand asset: this repo carries no provider logos - the sidebar
+ * falls back to a letter for the same reason - and drawing someone else's mark
+ * badly from memory is worse than not drawing it. Swap this for the real SVGs when
+ * they land; the shape and size are already what the design asks for.
+ *
+ * Renders nothing when the provider is unknown, rather than a question mark: the
+ * model name beside it already carries the row, and an empty slot keeps the column
+ * aligned.
+ */
+function VendorMark({ provider }: { provider: string | null }) {
+  if (!provider) return <span aria-hidden className="size-4 shrink-0" />;
+  return (
+    <span
+      aria-hidden
+      title={provider}
+      className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-neutral-200 font-mono text-[0.5rem] font-semibold uppercase leading-none text-neutral-700"
+    >
+      {provider.charAt(0)}
+    </span>
+  );
+}
+
 function ModelSelection({
   appName,
   choice,
@@ -377,12 +402,12 @@ function RecentActivity({
             <th scope="col" className="pb-2 text-left font-normal">
               Model
             </th>
-            {/* No Action column. The design draws a per-row "View" that opens the
-                request in the web dashboard, and there is no URL to open: nothing
-                in `dashboard-web` filters by tool, machine or time, so the button
-                had no destination and did nothing when clicked. A control that
-                looks live and is inert is worse than an absent one, so the column
-                returns with the deep link rather than before it. */}
+            <th scope="col" className="pb-2 text-left font-normal">
+              Message
+            </th>
+            <th scope="col" className="w-20 pb-2 text-right font-normal">
+              Action
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -421,13 +446,35 @@ function RecentActivity({
                   </span>
                 )}
               </td>
-              <td className="min-w-0 py-3 pr-4">
-                <p className="truncate text-sm leading-5 text-neutral-900">
-                  {entry.model}
-                </p>
+              <td className="whitespace-nowrap py-3 pr-4">
+                <span className="flex items-center gap-2">
+                  <VendorMark provider={entry.provider} />
+                  <span className="text-sm leading-5 text-neutral-900">{entry.model}</span>
+                </span>
+              </td>
+              <td className="min-w-0 max-w-0 py-3 pr-4">
+                {/* `max-w-0` with `truncate` is what makes the ellipsis actually
+                    appear: a table cell sizes to its content otherwise, and the
+                    design truncates this column rather than letting a prompt push
+                    the Action button off the card. */}
+                {entry.title && (
+                  <p className="truncate text-sm leading-5 text-neutral-900">{entry.title}</p>
+                )}
                 <p className="truncate font-mono text-base-2xs leading-4 text-base-muted-foreground">
                   {entry.reference}
                 </p>
+              </td>
+              <td className="py-3 text-right">
+                {entry.onView ? (
+                  <button
+                    type="button"
+                    onClick={entry.onView}
+                    className="inline-flex items-center gap-1.5 rounded-base border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                  >
+                    View
+                    <Icon name="squareArrowOutUpRight" size={12} />
+                  </button>
+                ) : null}
               </td>
             </tr>
           ))}

@@ -18,7 +18,9 @@ function raw(overrides: Record<string, unknown> = {}) {
     securityAction: "flag" as const,
     securityCategory: "pii",
     model: "claude-opus-4",
-    sessionRef: "cnv_824bd2c0",
+    provider: "anthropic",
+    sessionRef: "824bd2c0-4123",
+    conversationTitle: "Update our data-model.md",
     ...overrides,
   };
 }
@@ -68,12 +70,27 @@ describe("adaptEvents", () => {
     expect(view.entries[0].model).not.toBe("unknown");
   });
 
-  it("reads no title from the payload at all", () => {
-    // Guards against reviving the conversation title, which could only come from
-    // the user's own prompt text.
-    const view = adaptEvents(envelope([raw({ title: "Update our data-model.md" })]));
+  it("carries the conversation title the gateway sent", () => {
+    // Superseded a test that asserted the opposite. Figma 272:3286 restored this
+    // column and product accepted that the label is the user's own prompt; the
+    // gateway gates it per row so a colleague's never arrives here.
+    const view = adaptEvents(envelope([raw({ conversationTitle: "Update our data-model.md" })]));
 
-    expect(JSON.stringify(view.entries[0])).not.toContain("data-model");
+    expect(view.entries[0].title).toBe("Update our data-model.md");
+  });
+
+  it("leaves the title null when the gateway sent none", () => {
+    // No session, a placeholder name, or a row this caller may not see into. The
+    // row does not distinguish them: all three mean nothing to show.
+    const view = adaptEvents(envelope([raw({ conversationTitle: null })]));
+
+    expect(view.entries[0].title).toBeNull();
+  });
+
+  it("carries the provider for the vendor mark", () => {
+    expect(adaptEvents(envelope([raw({ provider: "anthropic" })])).entries[0].provider).toBe(
+      "anthropic",
+    );
   });
 
   it("timestamps a row to the second, with its date", () => {

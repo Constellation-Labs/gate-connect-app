@@ -28,7 +28,11 @@ interface RawEvent {
   securityAction: "allow" | "flag" | "redact" | "block" | null;
   securityCategory: string | null;
   model: string | null;
+  provider: string | null;
   sessionRef: string | null;
+  /** The user's own prompt, shortened and per-row gated upstream. Null when there
+   *  is nothing to show; see `ActivityEntry.title`. */
+  conversationTitle: string | null;
 }
 
 interface RawToolEvents {
@@ -102,6 +106,8 @@ function toEntry(raw: RawEvent): ActivityEntry {
     // action is unknown to us and renders as a dash, not as a verdict.
     security: raw.securityAction ? SECURITY[raw.securityAction] : null,
     model: raw.model ?? NO_MODEL,
+    provider: raw.provider,
+    title: raw.conversationTitle,
     reference: raw.sessionRef ?? NO_REFERENCE,
   };
 }

@@ -368,6 +368,23 @@ export function NewUiApp() {
     currentInstallId,
     credential,
   );
+  /**
+   * The feed's rows, each with somewhere to go.
+   *
+   * `onView` is attached here rather than in the adapter because the adapter has
+   * no business knowing where a request can be looked at - and for a whole round
+   * it could not have known, since `dashboard-web` had no route to send anyone to.
+   * It has one: `/messages/:requestId` opens the request's own detail, and
+   * `ActivityEntry.id` *is* the request id.
+   */
+  const toolEventRows = useMemo(
+    () =>
+      (toolEvents.view?.entries ?? []).map((e) => ({
+        ...e,
+        onView: () => void openExternal(`${GATE_DASHBOARD_URL}messages/${e.id}`),
+      })),
+    [toolEvents.view],
+  );
 
   // A machine id belongs to the org it sent traffic to, so a filter selected
   // before an org switch cannot be honoured after it.
@@ -1612,7 +1629,7 @@ export function NewUiApp() {
           // No billing endpoint, but the row's own glyph promises an external
           // link, and the dashboard is where credits are actually bought.
           onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
-          activity={toolEvents.view?.entries ?? []}
+          activity={toolEventRows}
           eventsPending={
             !installsResolved || (toolEvents.view === null && toolEvents.failure === null)
           }

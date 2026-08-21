@@ -26,15 +26,32 @@ export interface ActivityEntry {
    * blocked request as permitted.
    */
   security: ActivitySecurity | null;
-  /**
-   * The model that served the request, or copy saying none was attributed.
-   *
-   * This column used to hold a conversation title. It cannot: the only
-   * human-readable label the gateway holds is the user's own prompt, stored
-   * unredacted, and AG-574 excludes prompt text. So the row identifies the request
-   * by what served it and which conversation it belonged to.
-   */
+  /** The model that served the request, or copy saying none was attributed. */
   model: string;
-  /** Conversation identifier, rendered mono. */
+  /** Which upstream served it (`anthropic`, `openai`), for the vendor mark beside
+   *  the model. Null when the request never reached one. */
+  provider: string | null;
+  /**
+   * What the conversation was about, or null when there is nothing to show.
+   *
+   * This is the user's own prompt, shortened upstream. The design asks for it
+   * (Figma 272:3286) and product accepted that; the gateway gates it per row so a
+   * colleague's prompt never arrives here in the first place. Null covers three
+   * different cases the row does not distinguish - no session, a session still
+   * holding its placeholder name, and a row this caller may not see into - because
+   * all three mean the same thing to the reader: nothing to show.
+   */
+  title: string | null;
+  /** Conversation identifier, rendered mono, e.g. `824bd2c0-4123`. */
   reference: string;
+  /**
+   * Open this request in the web dashboard.
+   *
+   * Optional, and supplied by the surface rather than the adapter: the adapter has
+   * no business knowing where a request can be looked at. Absent means no Action
+   * control is drawn - which is what happened for the whole of the last round,
+   * when `dashboard-web` had no route to send anyone to. It has one:
+   * `/messages/:requestId` opens the request's detail.
+   */
+  onView?: () => void;
 }

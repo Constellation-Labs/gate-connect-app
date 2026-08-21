@@ -19,7 +19,9 @@ const entry: ActivityEntry = {
   status: "success",
   security: "flagged",
   model: "claude-opus-4",
-  reference: "cnv_824bd2c0",
+  provider: "anthropic",
+  title: "Update our data-model.md",
+  reference: "824bd2c0-4123",
 };
 
 /**
@@ -88,16 +90,6 @@ describe("AppPane recent activity", () => {
     expect(within(card("Recent activity")).getByText("No recent messages")).toBeTruthy();
   });
 
-  it("renders a row's model and reference, and no conversation title", () => {
-    render(pane({ activity: [entry] }));
-
-    expect(screen.getByText("claude-opus-4")).toBeTruthy();
-    expect(screen.getByText("cnv_824bd2c0")).toBeTruthy();
-    // The column is Model now. A title could only have come from prompt text.
-    expect(screen.getByRole("columnheader", { name: "Model" })).toBeTruthy();
-    expect(screen.queryByRole("columnheader", { name: "Conversation" })).toBeNull();
-  });
-
   it("shows one badge, and lets a failure outrank the guardrail verdict", () => {
     render(pane({ activity: [{ ...entry, status: "error", security: "flagged" }] }));
     const feed = card("Recent activity");
@@ -128,13 +120,41 @@ describe("AppPane recent activity", () => {
     expect(within(feed).queryByText("flagged")).toBeNull();
   });
 
-  it("offers no per-row action while there is nowhere to send the user", () => {
+  it("offers a per-row action when the surface supplies a destination", () => {
+    const onView = vi.fn();
+    render(pane({ activity: [{ ...entry, onView }] }));
+
+    within(card("Recent activity")).getByRole("button", { name: "View" }).click();
+    expect(onView).toHaveBeenCalledOnce();
+  });
+
+  it("draws no action when there is nowhere to send the user", () => {
+    // The row type makes `onView` optional for exactly this: an inert control is
+    // worse than an absent one.
     render(pane({ activity: [entry] }));
 
-    // The design draws a "View" per row that opens the request in the web
-    // dashboard, which has no tool/machine/time filter to open. An inert control
-    // is worse than an absent one.
     expect(within(card("Recent activity")).queryByRole("button", { name: "View" })).toBeNull();
+  });
+
+  it("renders the message, its reference, and the vendor beside the model", () => {
+    render(pane({ activity: [entry] }));
+    const feed = card("Recent activity");
+
+    expect(within(feed).getByText("Update our data-model.md")).toBeTruthy();
+    expect(within(feed).getByText("824bd2c0-4123")).toBeTruthy();
+    expect(within(feed).getByText("claude-opus-4")).toBeTruthy();
+    expect(within(feed).getByTitle("anthropic")).toBeTruthy();
+    expect(within(feed).getByRole("columnheader", { name: "Message" })).toBeTruthy();
+  });
+
+  it("shows the reference alone when there is no message to show", () => {
+    // Null covers three cases the row does not distinguish - no session, a
+    // placeholder name, and a row this caller may not see into.
+    render(pane({ activity: [{ ...entry, title: null }] }));
+    const feed = card("Recent activity");
+
+    expect(within(feed).queryByText("Update our data-model.md")).toBeNull();
+    expect(within(feed).getByText("824bd2c0-4123")).toBeTruthy();
   });
 
   it("offers Load more only when there is another page", () => {
