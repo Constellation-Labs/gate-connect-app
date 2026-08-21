@@ -17,6 +17,25 @@ fn test_home_override() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
+/// Serializes the unit tests that redirect per-user paths for the whole process.
+///
+/// The seam above is an environment variable, so it is process-global, while
+/// libtest runs unit tests as threads of one process. A test that sets it and a
+/// test that depends on its absence cannot overlap: whichever reads during the
+/// other's window resolves against the wrong filesystem, and the failure surfaces
+/// in the reader rather than in whoever moved the ground.
+///
+/// A lock private to one module does not buy this, since it excludes that module's
+/// own tests and nothing else. Every test that redirects these paths, or that reads
+/// them and would be wrong to see someone else's, takes this one lock; what each
+/// one stands to read instead is documented at its own call site.
+#[cfg(test)]
+pub(crate) fn path_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    // A panicking test poisons the lock; the rest should still run.
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A non-empty path from an environment variable, or `None`.
 fn env_path(var: &str) -> Option<PathBuf> {
     std::env::var_os(var)

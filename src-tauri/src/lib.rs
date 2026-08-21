@@ -806,12 +806,23 @@ fn provider_disable(slug: String) -> Result<gate_connect_core::provider::Provide
 // handler block below. Each build refreshes the tray status dot from
 // enable/disable so the routing state shows in the menu bar / taskbar.
 
+/// Async so the body lands on the blocking pool rather than the main thread. On
+/// Windows `status()` shells out to `certutil` for the CA-trust reading, and a
+/// sync command runs on the thread driving the event loop - so a `certutil` that
+/// hangs (a crash on the host keeps the process alive while Windows Error
+/// Reporting collects its dump) froze the window and left the app unquittable.
+/// `ca_windows::certutil_bounded` caps that wait; this keeps even the capped
+/// wait off the UI thread.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> {
-    gate_connect_core::proxy::manager()
-        .status()
-        .map_err(|e| format!("{e:#}"))
+async fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::proxy::manager()
+            .status()
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("proxy status join error: {e}"))?
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

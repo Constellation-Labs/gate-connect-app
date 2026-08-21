@@ -18,6 +18,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use hudsucker::{
     hyper::{header::HeaderValue, Method, Request, Uri},
+    hyper_util::{rt::TokioExecutor, server::conn::auto::Builder as ServerBuilder},
     rcgen::{Issuer, KeyPair},
     rustls::crypto::{aws_lc_rs, CryptoProvider},
     rustls::pki_types::{pem::PemObject, CertificateDer},
@@ -919,10 +920,37 @@ where
                     .enable_http1()
                     .enable_http2()
                     .build();
+                // Supplying our own server builder to raise the h2 header
+                // limit. hudsucker's fallback builder only configures `http1()`,
+                // so h2 keeps the `h2` crate default
+                // `SETTINGS_MAX_HEADER_LIST_SIZE` of 16 KiB - and the browser
+                // surfaces blow straight through it: chatgpt.com's web client
+                // sends ~8.3 KB of its own headers on every call
+                // (`x-oai-is-pending-updates` alone was 5446 B in a capture, and
+                // it grows until the server acks it) plus a session cookie jar,
+                // landing just over 16 KB. hyper answers that with a bare
+                // `431` - no headers, no body - so the request never leaves the
+                // machine and the client's chat wedges before its first turn.
+                // Measured at the engine: 16000 B of headers passed, 17000 B
+                // got the 431, and the same 20 KB forced to HTTP/1.1 passed
+                // (h1's limits are generous), which is why only h2 clients with
+                // fat jars - i.e. browsers, not the CLI tools - ever saw it.
+                //
+                // The `http1()` calls are NOT optional decoration: they
+                // replicate what hudsucker sets when no builder is supplied
+                // (`proxy/mod.rs`), and dropping them would silently give up
+                // header-case preservation for every upstream.
+                let mut server = ServerBuilder::new(TokioExecutor::new());
+                server
+                    .http1()
+                    .title_case_headers(true)
+                    .preserve_header_case(true);
+                server.http2().max_header_list_size(64 * 1024);
                 let proxy = match Proxy::builder()
                     .with_listener(listener)
                     .with_ca(ca)
                     .with_http_connector(https)
+                    .with_server(server)
                     .with_http_handler(handler)
                     .with_graceful_shutdown(async move {
                         let _ = shutdown_rx.await;
