@@ -650,9 +650,9 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
 const STABLE_PORT_RANGE: std::ops::Range<u16> = 47100..47200;
 
 /// Bind a fresh loopback listener for a port the caller intends to *persist*
-/// and rebind on later runs. Scans [`STABLE_PORT_RANGE`] from a random offset
-/// and takes the first free port, falling back to an OS-assigned ephemeral
-/// port only if the whole band is busy.
+/// and rebind on later runs. Takes the first free port in
+/// [`candidate_ports`]'s order, falling back to an OS-assigned ephemeral port
+/// only if the whole band is busy.
 ///
 /// Why not `:0` directly: a port the OS hands out as ephemeral is one it also
 /// hands out to everything else, and nothing holds it while Gate is stopped -
@@ -666,23 +666,53 @@ const STABLE_PORT_RANGE: std::ops::Range<u16> = 47100..47200;
 /// a quiet band below the dynamic range means the port we persist is one
 /// nothing else is handing out.
 ///
-/// The offset is random rather than scanning from the band's start, because a
+pub(super) fn bind_fresh() -> std::io::Result<std::net::TcpListener> {
+    for port in candidate_ports(&persisted_ports()) {
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+            return Ok(listener);
+        }
+    }
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+}
+
+/// Every port in [`STABLE_PORT_RANGE`], in the order a fresh bind should try
+/// them: a random rotation of the band, with the ports this install already
+/// remembers for its own listeners (`ours`) moved to the back.
+///
+/// The rotation is random rather than scanning from the band's start, because a
 /// fixed start makes the lowest free port a contended resource: two Gate
 /// processes coming up together (the app and a standalone `proxy relay`) would
 /// both reach for it, and - worse - a port freed a moment ago is the first one
 /// the next scan hands out, so a neighbour can snatch the port a restarting
 /// listener is about to reclaim. Every port in the band satisfies the point of
 /// the band, so there is nothing to gain by preferring one end of it.
-pub(super) fn bind_fresh() -> std::io::Result<std::net::TcpListener> {
+///
+/// Deferring `ours` keeps this install from stealing from itself. The three
+/// listeners bind in sequence, so without it the MITM listener falling back to
+/// a fresh port could take the very port the PAC or relay listener is about to
+/// reclaim two lines later, and a standalone `proxy relay` starting while the
+/// app is stopped could take the app's remembered port. They are deferred
+/// rather than dropped: one of our own free ports still beats leaving the band
+/// for an ephemeral port that the next run may not get back.
+fn candidate_ports(ours: &[u16]) -> Vec<u16> {
     let span = STABLE_PORT_RANGE.len() as u16;
     let offset = rand::thread_rng().gen_range(0..span);
-    for i in 0..span {
-        let port = STABLE_PORT_RANGE.start + (offset + i) % span;
-        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
-            return Ok(listener);
-        }
-    }
-    std::net::TcpListener::bind(("127.0.0.1", 0))
+    let rotated = (0..span).map(|i| STABLE_PORT_RANGE.start + (offset + i) % span);
+    let (deferred, first): (Vec<u16>, Vec<u16>) = rotated.partition(|p| ours.contains(p));
+    first.into_iter().chain(deferred).collect()
+}
+
+/// The ports this install has remembered for its own listeners: the MITM and
+/// PAC ports (`proxy/port`, `proxy/pac-port`) and the relay port
+/// (`proxy/relay-port`). Best-effort - anything missing or unreadable simply
+/// isn't deferred.
+fn persisted_ports() -> Vec<u16> {
+    let mut ports: Vec<u16> = ["port", "pac-port"]
+        .iter()
+        .filter_map(|name| super::port_persist::load(name).ok().flatten())
+        .collect();
+    ports.extend(super::relay::load_persisted_port());
+    ports
 }
 
 /// Bind `127.0.0.1:port` for the preferred-port reuse path. On unix a plain
@@ -1059,6 +1089,47 @@ mod tests {
         );
         assert_ne!(a, b);
         assert!(STABLE_PORT_RANGE.contains(&a) && STABLE_PORT_RANGE.contains(&b));
+    }
+
+    /// The band is offered in full, so a fresh bind never runs out of it while
+    /// a port is still free.
+    #[test]
+    fn candidate_ports_covers_the_band_exactly_once() {
+        let mut ports = candidate_ports(&[]);
+        ports.sort_unstable();
+        assert_eq!(ports, STABLE_PORT_RANGE.collect::<Vec<_>>());
+    }
+
+    /// Ports this install remembers go to the back: the PAC and relay
+    /// listeners bind after the MITM one and reclaim theirs by preference, so a
+    /// fresh pick must not take a port that is about to be wanted.
+    #[test]
+    fn candidate_ports_defers_the_ports_we_remember() {
+        let ours = vec![
+            STABLE_PORT_RANGE.start + 7,
+            STABLE_PORT_RANGE.start + 42,
+            STABLE_PORT_RANGE.start + 91,
+        ];
+        let ports = candidate_ports(&ours);
+        let tail = &ports[ports.len() - ours.len()..];
+        for port in &ours {
+            assert!(tail.contains(port), "{port} should be deferred to the tail");
+        }
+        // Deferred, not dropped: still every port in the band.
+        let mut sorted = ports.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, STABLE_PORT_RANGE.collect::<Vec<_>>());
+    }
+
+    /// The rotation is random, so concurrent hosts don't converge on one port.
+    #[test]
+    fn candidate_ports_starts_somewhere_different() {
+        let firsts: std::collections::HashSet<u16> =
+            (0..8).map(|_| candidate_ports(&[])[0]).collect();
+        assert!(
+            firsts.len() > 1,
+            "eight draws all starting at the same port is not a rotation: {firsts:?}"
+        );
     }
 
     /// Losing the persisted port must fall back into the band too - falling
