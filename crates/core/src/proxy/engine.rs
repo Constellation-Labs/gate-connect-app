@@ -612,11 +612,9 @@ pub(crate) fn apply_rewrite<T>(
 fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
     let listener = match preferred {
         Some(p) => bind_preferred(p)
-            .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
-            .with_context(|| format!("binding loopback (preferred {p}, then ephemeral)"))?,
-        None => {
-            std::net::TcpListener::bind(("127.0.0.1", 0)).context("binding a free loopback port")?
-        }
+            .or_else(|_| bind_fresh())
+            .with_context(|| format!("binding loopback (preferred {p}, then a fresh port)"))?,
+        None => bind_fresh().context("binding a free loopback port")?,
     };
     let port = listener
         .local_addr()
@@ -641,6 +639,38 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
         .set_nonblocking(true)
         .context("setting the loopback listener non-blocking")?;
     Ok((listener, port))
+}
+
+/// Port band a *fresh* listener is picked from, first free port wins. Sits
+/// inside IANA's registered range and below Windows' default dynamic range
+/// (49152-65535), clear of assigned neighbours like 47001 (WinRM). One engine
+/// brings up three listeners (MITM, relay, PAC), so the band is sized well
+/// past what a few concurrent hosts need.
+const STABLE_PORT_RANGE: std::ops::Range<u16> = 47100..47200;
+
+/// Bind a fresh loopback listener for a port the caller intends to *persist*
+/// and rebind on later runs. Scans [`STABLE_PORT_RANGE`] and takes the first
+/// free port, falling back to an OS-assigned ephemeral port only if the whole
+/// band is busy.
+///
+/// Why not `:0` directly: a port the OS hands out as ephemeral is one it also
+/// hands out to everything else, and nothing holds it while Gate is stopped -
+/// so the next run's rebind races every local process that opened an outbound
+/// socket in the meantime. On Windows it is worse than a race: Hyper-V, WSL2
+/// and Docker Desktop reserve whole blocks of the dynamic range at boot, and a
+/// persisted port inside a reserved block fails to bind on *every* start, so
+/// the port silently moves each time. Either way the clients that captured the
+/// old port are stranded - `HTTPS_PROXY` is read once per process, and CLI tool
+/// configs bake the relay URL - and the user has to restart them. Picking from
+/// a quiet band below the dynamic range means the port we persist is one
+/// nothing else is handing out.
+pub(super) fn bind_fresh() -> std::io::Result<std::net::TcpListener> {
+    for port in STABLE_PORT_RANGE {
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+            return Ok(listener);
+        }
+    }
+    std::net::TcpListener::bind(("127.0.0.1", 0))
 }
 
 /// Bind `127.0.0.1:port` for the preferred-port reuse path. On unix a plain
@@ -992,6 +1022,48 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh listener must land in the band we can actually rebind next run,
+    /// not on an OS-assigned ephemeral port.
+    #[test]
+    fn bind_fresh_picks_from_the_stable_band() {
+        let listener = bind_fresh().expect("a free port in the band");
+        let port = listener.local_addr().unwrap().port();
+        assert!(
+            STABLE_PORT_RANGE.contains(&port),
+            "{port} is outside {STABLE_PORT_RANGE:?}"
+        );
+    }
+
+    /// Successive binds skip what the previous one holds, so the three
+    /// listeners one engine brings up never collide.
+    #[test]
+    fn bind_fresh_skips_ports_already_held() {
+        let first = bind_fresh().expect("first port");
+        let second = bind_fresh().expect("second port");
+        let (a, b) = (
+            first.local_addr().unwrap().port(),
+            second.local_addr().unwrap().port(),
+        );
+        assert_ne!(a, b);
+        assert!(STABLE_PORT_RANGE.contains(&a) && STABLE_PORT_RANGE.contains(&b));
+    }
+
+    /// Losing the persisted port must fall back into the band too - falling
+    /// back to an ephemeral port is what made the next restart move again.
+    #[test]
+    fn bind_loopback_falls_into_the_band_when_the_preferred_port_is_taken() {
+        // A *live* listener on an ephemeral port: `bind_preferred` treats this
+        // as taken (as opposed to a TIME_WAIT remnant, which it reclaims).
+        let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("squatter");
+        let taken = squatter.local_addr().unwrap().port();
+        let (_listener, port) = bind_loopback(Some(taken)).expect("fallback binds");
+        assert_ne!(port, taken);
+        assert!(
+            STABLE_PORT_RANGE.contains(&port),
+            "{port} is outside {STABLE_PORT_RANGE:?}"
+        );
+    }
 
     #[test]
     fn rewrite_swaps_authority_keeps_path_and_injects_headers() {
