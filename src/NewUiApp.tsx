@@ -230,6 +230,19 @@ export function NewUiApp() {
    * already been drawn.
    */
   const rendered = useRef({ tools: "", proxy: "" });
+  /**
+   * Whether a poll is still in flight, so a tick can drop itself rather than
+   * stack on the one before it.
+   *
+   * The interval fires on a clock, not on the previous read finishing, and
+   * `redetect` is not always cheap: on Windows `proxy_status` shells out to
+   * `certutil` for the CA-trust reading. On a host where that call hangs until
+   * it is killed, every tick used to add another one, so the machine ended up
+   * hosting a growing pile of doomed children. Dropping the tick is right rather
+   * than queueing it: the next one is only seconds away, and it wants a fresh
+   * reading, not this stale one's turn.
+   */
+  const redetecting = useRef(false);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
@@ -456,29 +469,35 @@ export function NewUiApp() {
    * routing callbacks for no change at all.
    */
   const redetect = useCallback(async () => {
-    const [t, px] = await Promise.all([
-      listTools().catch(() => null),
-      proxyStatus().catch(() => null),
-    ]);
-    // Written on every poll, not only on a change: this timestamp is the empty
-    // card's evidence that something is still looking, and letting it go stale
-    // while the polling continued would misdate a scan that did happen.
-    setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
-    let changed = false;
-    // A failed read commits nothing, so it also reports nothing as changed - the
-    // last good list stays on screen and the card says the scan failed.
-    if (t && detectionSignature(t) !== rendered.current.tools) {
-      setTools(t);
-      changed = true;
+    if (redetecting.current) return;
+    redetecting.current = true;
+    try {
+      const [t, px] = await Promise.all([
+        listTools().catch(() => null),
+        proxyStatus().catch(() => null),
+      ]);
+      // Written on every poll, not only on a change: this timestamp is the empty
+      // card's evidence that something is still looking, and letting it go stale
+      // while the polling continued would misdate a scan that did happen.
+      setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
+      let changed = false;
+      // A failed read commits nothing, so it also reports nothing as changed -
+      // the last good list stays on screen and the card says the scan failed.
+      if (t && detectionSignature(t) !== rendered.current.tools) {
+        setTools(t);
+        changed = true;
+      }
+      if (px && detectionSignature(px) !== rendered.current.proxy) {
+        setProxy(px);
+        changed = true;
+      }
+      // Either one moving invalidates every verdict: a tool that just appeared
+      // has none yet, and the engine coming up or going down changes all of
+      // them, because the relay health check behind them is shared.
+      if (changed) void refreshVerdicts();
+    } finally {
+      redetecting.current = false;
     }
-    if (px && detectionSignature(px) !== rendered.current.proxy) {
-      setProxy(px);
-      changed = true;
-    }
-    // Either one moving invalidates every verdict: a tool that just appeared has
-    // none yet, and the engine coming up or going down changes all of them,
-    // because the relay health check behind them is shared.
-    if (changed) void refreshVerdicts();
   }, [refreshVerdicts]);
 
   /** Re-run detection because the user asked - the inventory card's control, for
