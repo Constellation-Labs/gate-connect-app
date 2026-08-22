@@ -657,7 +657,9 @@ async fn proxy_enable(
     }
     // Crash safety net: routing is now on, but with no login item registered a
     // crash would strand the system proxy at a dead port with nothing
-    // relaunching at boot to run the startup self-heal.
+    // relaunching at boot to run the startup self-heal. (macOS/Windows only;
+    // see the function's doc for why Linux is excluded.)
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     arm_crash_safety_net(&app);
     Ok(state)
 }
@@ -672,13 +674,27 @@ async fn proxy_enable(
 /// not leave a registration that reads as the user's choice. Best-effort:
 /// routing is already on when this runs, so failures only lose the net.
 ///
+/// macOS/Windows only. On Linux the engine lives in a detached helper daemon
+/// that owns the port and falls back to pass-through when the GUI dies, so a
+/// crash cannot strand the system proxy at a dead port - the net has nothing
+/// to heal. And Linux has no exit-time safe point (the RunEvent::Exit
+/// handler is macOS/Windows-only), so an armed marker would survive every
+/// clean quit and turn each boot into a silent teardown launch.
+///
+/// Accepted trade for launch-at-login decliners: with routing restored on
+/// any launch, this arms once per routed session instead of once per manual
+/// routing toggle. The registration cadence matches the old behavior - with
+/// the intent cleared at exit, a decliner re-toggled routing (and re-armed
+/// the net) every session anyway - and a clean quit still deregisters, so
+/// their "off" keeps meaning the app does not run at boot.
+///
 /// Known (accepted) race: this read-then-write pair and the one in
 /// `set_launch_at_login` share no lock, so a Settings toggle landing
 /// between the `is_enabled()` check and the arm+enable below can end up
 /// marked pending (a fresh opt-in reported as off) until the next safe
 /// point clears it. The window is milliseconds wide and both sites are
 /// driven by one user in one popover; not worth a lock.
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn arm_crash_safety_net(app: &tauri::AppHandle) {
     use gate_connect_core::proxy::autostart_optout;
     use tauri_plugin_autostart::ManagerExt;
@@ -826,8 +842,8 @@ fn launch_at_login_status(app: tauri::AppHandle) -> Result<LaunchAtLoginStatus, 
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     use gate_connect_core::proxy::autostart_optout;
     use tauri_plugin_autostart::ManagerExt;
-    // This marker/login-item read-then-write and the safety-net block in
-    // `proxy_enable` share no lock; see the accepted-race note there.
+    // This marker/login-item read-then-write and `arm_crash_safety_net`
+    // share no lock; see the accepted-race note on that function.
     let mgr = app.autolaunch();
     if enabled {
         autostart_optout::set_pending(false).map_err(|e| format!("{e:#}"))?;
@@ -929,16 +945,16 @@ static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 /// Whether the coming exit is an updater-driven relaunch rather than a user
-/// quit. The exit handler clears the routing intent on a plain quit when
-/// launch-at-login is off (no login item means nothing would re-route after a
-/// reboot), but an update install relaunches us immediately - clearing the
-/// intent there would leave routing off after every upgrade. Set by the
-/// frontend after the update download completes, right before it kicks off
-/// the install (not around the whole download: a quit while the download is
-/// still running is a genuine user exit and must keep the exit-time intent
-/// clear and deferred opt-out completion); reset if the install fails. If the
-/// relaunch itself fails after a successful install the flag stays set, which
-/// at worst preserves an intent that matched the pre-update state anyway.
+/// quit. The exit handler completes a pending launch-at-login opt-out on a
+/// plain quit, but an update install relaunches us immediately, and the
+/// relaunched session would just re-arm the safety net it lost - so the
+/// pending marker and login item ride through the relaunch untouched. Set by
+/// the frontend after the update download completes, right before it kicks
+/// off the install (not around the whole download: a quit while the download
+/// is still running is a genuine user exit and must complete the opt-out as
+/// usual); reset if the install fails. If the relaunch itself fails after a
+/// successful install the flag stays set, which at worst defers the opt-out
+/// completion to the next safe point.
 static UPDATER_RELAUNCHING: AtomicBool = AtomicBool::new(false);
 
 /// Whether the startup auto-enable brought the engine back on a *different*
@@ -1842,6 +1858,7 @@ pub fn run() {
                             // first thing to route on a machine with no login
                             // item, so it needs the same crash safety net as
                             // the routing toggle.
+                            #[cfg(any(target_os = "macos", target_os = "windows"))]
                             arm_crash_safety_net(&handle);
                             // Engine port changed (or none was persisted - the
                             // first launch after upgrading from a build without
