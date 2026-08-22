@@ -68,8 +68,11 @@ export function AppPane({
   buckets,
   modelChoice,
   onChooseModel,
+  modelSupported,
   gateModel,
   onChangeModel,
+  modelBusy,
+  modelPending,
   credits,
   onAddCredits,
   activity,
@@ -90,12 +93,37 @@ export function AppPane({
   onToggleProtected: () => void;
   stats: UsageStats;
   buckets: MessagesBucket[];
-  modelChoice: ModelChoice;
+  /** What this app is set to, or `null` when no reading landed.
+   *
+   *  Null is not "App default". A control drawn from a failed read is the bug
+   *  CLAUDE.md's principle 2 names: the card would show App default, and clicking
+   *  Gate model would look like a change when it is the first thing anyone said.
+   *  So null disables the choice and says why. */
+  modelChoice: ModelChoice | null;
   onChooseModel: (choice: ModelChoice) => void;
-  gateModel: GateModel;
+  /** False when the gateway cannot identify this app on a request, so no
+   *  preference it stored could ever be applied. The card explains instead of
+   *  offering a control that would do nothing. */
+  modelSupported?: boolean;
+  /** The remembered model, or `null` when none has been chosen.
+   *
+   *  Remembered, not necessarily active: it stays on screen under App default so
+   *  the user can see what they would be switching to, and the card marks it
+   *  inactive rather than letting its presence imply Gate is serving it. */
+  gateModel: GateModel | null;
   onChangeModel: () => void;
-  /** Pre-formatted balance, e.g. "$10.25 available". */
-  credits: string;
+  /** A model write is in flight, so the controls refuse a second click. */
+  modelBusy?: boolean;
+  /** The model *preference* read has not landed.
+   *
+   *  Its own flag rather than the pane's `pending`, which tracks the activity
+   *  reading. Sharing one made the card draw skeletons whenever this machine was
+   *  unattributed - a fact about traffic, with nothing to say about a setting. */
+  modelPending?: boolean;
+  /** Pre-formatted balance, or `null` when nothing reports one. Renders "N/A":
+   *  no endpoint returns a Gate credit balance yet, and a dash reads as a value.
+   *  See principle 6. */
+  credits: string | null;
   onAddCredits: () => void;
   activity: ActivityEntry[];
   /** The first reading for this tool has not landed. Draws skeletons rather than
@@ -168,6 +196,9 @@ export function AppPane({
       <ModelSelection
         appName={name}
         choice={modelChoice}
+        supported={modelSupported ?? true}
+        pending={modelPending}
+        busy={modelBusy}
         onChoose={onChooseModel}
         gateModel={gateModel}
         onChangeModel={onChangeModel}
@@ -210,9 +241,34 @@ function VendorMark({ provider }: { provider: string | null }) {
   );
 }
 
+/**
+ * The Model selection card (Figma `Flows / App`).
+ *
+ * Three things this deliberately does not do.
+ *
+ * **It does not default.** `choice` of `null` means no reading landed, and the
+ * radios are drawn unselected and disabled rather than showing App default. A
+ * switch driven by a failed read is the bug `lib/groups.ts` documents for
+ * routing: the control renders one way, and clicking it turns off the setting the
+ * user was trying to turn on.
+ *
+ * **It does not imply that a remembered model is a live one.** The design keeps
+ * "Current Gate model" visible under App default so the user can see what they
+ * would be switching to. Drawing it identically in both states would conflate
+ * intent with what is actually served, so under App default the row is dimmed and
+ * labelled - `source` is the only thing that decides what Gate serves.
+ *
+ * **It does not offer a control it cannot honour.** `supported` is false for an
+ * app the gateway cannot identify on a request; no preference stored against it
+ * could ever apply, so the card says so instead of storing a choice that changes
+ * nothing.
+ */
 function ModelSelection({
   appName,
   choice,
+  supported,
+  pending,
+  busy,
   onChoose,
   gateModel,
   onChangeModel,
@@ -220,13 +276,20 @@ function ModelSelection({
   onAddCredits,
 }: {
   appName: string;
-  choice: ModelChoice;
+  choice: ModelChoice | null;
+  supported: boolean;
+  pending?: boolean;
+  busy?: boolean;
   onChoose: (choice: ModelChoice) => void;
-  gateModel: GateModel;
+  gateModel: GateModel | null;
   onChangeModel: () => void;
-  credits: string;
+  credits: string | null;
   onAddCredits: () => void;
 }) {
+  // Under App default a chosen model is remembered, not served. Kept as one
+  // named value because three places below depend on it and they must agree.
+  const gateActive = choice === "gate";
+
   return (
     <Card className="p-4">
       <h2 className="text-sm font-medium leading-5 text-neutral-900">Model selection</h2>
@@ -234,37 +297,73 @@ function ModelSelection({
         Choose whether {appName} or Gate selects the AI model for requests
       </p>
 
-      <div role="radiogroup" aria-label="Model selection" className="mt-4 grid grid-cols-2 gap-4">
-        <ModelOption
-          selected={choice === "app"}
-          onSelect={() => onChoose("app")}
-          icon={<Icon name="cube" size={16} />}
-          title="App default"
-          description="Use the model configured in your app"
-        />
-        <ModelOption
-          selected={choice === "gate"}
-          onSelect={() => onChoose("gate")}
-          icon={<Icon name="layers" size={16} />}
-          title="Gate model"
-          description="Use a model selected in Gate AI"
-        />
-      </div>
+      {!supported ? (
+        <EmptyNote className="mt-4" icon="cube">
+          Gate cannot identify {appName} on a request, so it cannot serve a
+          different model for it. {appName} keeps using the model it is configured
+          with.
+        </EmptyNote>
+      ) : pending ? (
+        <div className="mt-4 grid grid-cols-2 gap-4">
+          <Skeleton className="h-[3.75rem]" />
+          <Skeleton className="h-[3.75rem]" />
+        </div>
+      ) : (
+        <>
+          <div role="radiogroup" aria-label="Model selection" className="mt-4 grid grid-cols-2 gap-4">
+            <ModelOption
+              selected={choice === "app"}
+              disabled={choice === null || busy}
+              onSelect={() => onChoose("app")}
+              icon={<Icon name="cube" size={16} />}
+              title="App default"
+              description="Use the model configured in your app"
+            />
+            <ModelOption
+              selected={gateActive}
+              disabled={choice === null || busy}
+              onSelect={() => onChoose("gate")}
+              icon={<Icon name="layers" size={16} />}
+              title="Gate model"
+              description="Use a model selected in Gate AI"
+            />
+          </div>
+          {choice === null && (
+            <EmptyNote className="mt-4" icon="cube">
+              Gate could not read this app's model setting, so it is not shown. The
+              setting itself is unchanged.
+            </EmptyNote>
+          )}
+        </>
+      )}
 
-      {/* Only meaningful once Gate is picking the model, but the design keeps it
-       * visible either way so the user can see what they would switch to. */}
+      {/* Visible under either choice - the design's point is that you can see
+       * what you would switch to. What changes is whether it reads as live. */}
       <p className="mt-4 text-base-xs text-base-muted-foreground">Current Gate model</p>
 
       <div className="mt-2 flex flex-col gap-2">
-        <InfoRow
-          icon={gateModel.logo ?? <Icon name="cube" size={16} />}
-          action={{ label: "Change model", onClick: onChangeModel }}
-        >
-          <p className="text-base-2xs leading-4 text-base-muted-foreground">
-            {gateModel.vendor}
-          </p>
-          <p className="font-mono text-sm leading-5 text-neutral-900">{gateModel.id}</p>
-        </InfoRow>
+        {gateModel === null ? (
+          <EmptyNote icon="cube">
+            No Gate model chosen yet.
+            {supported && " Choose one to see what Gate would serve."}
+          </EmptyNote>
+        ) : (
+          <InfoRow
+            icon={gateModel.logo ?? <Icon name="cube" size={16} />}
+            action={
+              supported ? { label: "Change model", onClick: onChangeModel, disabled: busy } : undefined
+            }
+            // Dimmed under App default: it is what the user would switch to, not
+            // what their requests are being answered with.
+            muted={!gateActive}
+          >
+            <p className="text-base-2xs leading-4 text-base-muted-foreground">
+              {gateModel.vendor}
+              {!gateActive && " - not in use"}
+            </p>
+            <p className="font-mono text-sm leading-5 text-neutral-900">{gateModel.id}</p>
+          </InfoRow>
+        )}
 
         <InfoRow
           icon={<Icon name="creditCard" size={16} />}
@@ -272,7 +371,7 @@ function ModelSelection({
         >
           <p className="text-sm leading-5 text-neutral-900">
             <span className="text-neutral-600">Gate credits: </span>
-            {credits}
+            {credits ?? "N/A"}
           </p>
         </InfoRow>
       </div>
@@ -282,12 +381,16 @@ function ModelSelection({
 
 function ModelOption({
   selected,
+  disabled,
   onSelect,
   icon,
   title,
   description,
 }: {
   selected: boolean;
+  /** No reading landed, or a write is in flight. Disabled rather than hidden so
+   *  the card keeps its shape and the user can see the choice exists. */
+  disabled?: boolean;
   onSelect: () => void;
   icon: ReactNode;
   title: string;
@@ -298,11 +401,12 @@ function ModelOption({
       type="button"
       role="radio"
       aria-checked={selected}
+      disabled={disabled}
       onClick={onSelect}
-      className={`flex items-center gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex items-center gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-60 ${
         selected
           ? "border-base-primary bg-base-card"
-          : "border-base-border bg-base-card hover:bg-gray-50"
+          : "border-base-border bg-base-card enabled:hover:bg-gray-50"
       }`}
     >
       <span
@@ -330,13 +434,21 @@ function InfoRow({
   icon,
   children,
   action,
+  muted,
 }: {
   icon: ReactNode;
   children: ReactNode;
-  action: { label: string; onClick: () => void; external?: boolean };
+  /** Omitted when there is nothing to do here, which removes the button rather
+   *  than leaving a dead one on screen. */
+  action?: { label: string; onClick: () => void; external?: boolean; disabled?: boolean };
+  /** Drawn as present but not in force. Opacity rather than a grey palette so
+   *  the row reads as the same thing, dimmed - which is what it is. */
+  muted?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-base-border p-3">
+    <div
+      className={`flex items-center gap-3 rounded-lg border border-base-border p-3 ${muted ? "opacity-60" : ""}`}
+    >
       <span
         aria-hidden
         className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
@@ -344,14 +456,17 @@ function InfoRow({
         {icon}
       </span>
       <div className="min-w-0 flex-1">{children}</div>
-      <button
-        type="button"
-        onClick={action.onClick}
-        className="flex shrink-0 items-center gap-1.5 rounded-base border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-      >
-        {action.label}
-        {action.external && <Icon name="squareArrowOutUpRight" size={12} />}
-      </button>
+      {action && (
+        <button
+          type="button"
+          onClick={action.onClick}
+          disabled={action.disabled}
+          className="flex shrink-0 items-center gap-1.5 rounded-base border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          {action.label}
+          {action.external && <Icon name="squareArrowOutUpRight" size={12} />}
+        </button>
+      )}
     </div>
   );
 }

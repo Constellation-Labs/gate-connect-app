@@ -18,6 +18,9 @@ pub mod audit;
 /// Read-only snapshot of this install, for the copy-pasteable support report.
 pub mod diagnostics;
 pub mod env;
+/// One authenticated control-plane call, and the failure codes the UI branches
+/// on. Shared by [`activity`] and [`tool_models`].
+pub mod gateway_api;
 pub mod keychain;
 pub mod oauth;
 pub mod org;
@@ -33,6 +36,8 @@ pub mod registry;
 /// What a tool is *doing*, as opposed to what its config says. Kept separate
 /// from [`registry::Status`] on purpose - see the module docs.
 pub mod routing_health;
+/// Which Gate model a tool should run on (AG-588), stored per organization.
+pub mod tool_models;
 
 pub mod integrations {
     pub mod claude_code;

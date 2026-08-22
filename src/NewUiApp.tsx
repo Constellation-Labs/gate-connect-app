@@ -75,6 +75,7 @@ import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
 import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
+import { useGateModels, useToolModels } from "./lib/toolModels";
 import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
@@ -92,7 +93,6 @@ import {
   QuitLeftBehindDialog,
   UseGateModelDialog,
 } from "./components/gc/dialogs";
-import type { GateModelOption } from "./components/gc/dialogs";
 import {
   ConnectedPane,
   DiagnosticsPane,
@@ -273,15 +273,34 @@ export function NewUiApp() {
   // stop the next launch offering the same update.
   const [updateDismissed, setUpdateDismissed] = useState(false);
   /**
-   * Which model an app runs on, and the two overlays that change it.
+   * The two overlays that change an app's model, and what each is for.
    *
-   * Session-only, and deliberately so: there is no backend for model selection
-   * at all - no command, no Rust - so nothing here survives a reload. The design
-   * is built and the wiring is in place; what is missing is somewhere to put the
-   * answer. See plans/new-app-ui-figma.md.
+   * The choice itself is no longer here: it lives in the org's preferences on the
+   * gateway (AG-588), read by `useToolModels` below. What is local is only which
+   * dialog is on screen and why it was opened.
+   *
+   * The picker carries `then`, because "choose a model" means two different
+   * things depending on how it was reached. Opened from the Gate model radio it
+   * is a step in switching, and the choice has to continue into the billing
+   * confirmation; opened from Change model while on App default it is a browse,
+   * and the choice is remembered without spending anything. Collapsing them
+   * would either bill a user who only looked, or silently drop the switch they
+   * asked for.
    */
-  const [modelChoice, setModelChoice] = useState<Record<string, ModelChoice>>({});
-  const [modelOverlay, setModelOverlay] = useState<"picker" | "confirm-gate" | null>(null);
+  const [modelOverlay, setModelOverlay] = useState<
+    | { kind: "picker"; then: "activate" | "remember" }
+    | { kind: "confirm-gate"; modelId: string }
+    | null
+  >(null);
+  /** A model write is in flight. Keyed by nothing: only one pane is open. */
+  const [modelBusy, setModelBusy] = useState(false);
+  /** The last model write that failed, in the gateway's own words.
+   *
+   *  Its message rather than a code: the refusals on this path are written to be
+   *  read by a person ("Your role can view this organization's model settings but
+   *  not change them"), and no code we could branch on carries which rule
+   *  refused. */
+  const [modelError, setModelError] = useState<string | null>(null);
   /**
    * A quit the tray deferred to this window, and its aftermath.
    *
@@ -362,12 +381,104 @@ export function NewUiApp() {
     credential,
     openTool ?? undefined,
   );
+  /** The org's per-tool model preferences (AG-588). One read for the whole
+   *  sidebar: the preference is org-wide, so asking per pane would repeat the
+   *  same question. */
+  const toolModels = useToolModels(canRead, credential);
+  /** The catalogue, deferred until the picker is actually raised. It is a few
+   *  hundred rows that nothing else needs. */
+  const gateModels = useGateModels(modelOverlay?.kind === "picker");
+
+  /**
+   * The gateway's platform id for the open app, or null when it has none.
+   *
+   * Null is the honest answer for a tool the gateway cannot identify on a
+   * request: no preference stored against it could be applied, so the card
+   * withholds the control rather than offering one that changes nothing. Carried
+   * on the tool list from Rust, where `ToolId::platform_id` is a match on the
+   * enum - see that method for why this is not just the slug.
+   */
+  const openPlatformId = openTool ? (tools.find((t) => t.slug === openTool)?.platform_id ?? null) : null;
+  /** This app's stored preference, or undefined when the org has never set one
+   *  (which is not the same as a failed read - see `openModelChoice`). */
+  const openPref = openPlatformId ? toolModels.view?.byPlatform.get(openPlatformId) : undefined;
+  /**
+   * What the open app is set to, or null when we do not know.
+   *
+   * Null while the read is in flight or after it failed, and the card draws no
+   * selection for it. Defaulting to "app" here would be the principle 2 bug in
+   * its purest form: an org that had switched to a Gate model would see App
+   * default selected the moment a read failed, and clicking Gate model would read
+   * as a change when it was a no-op.
+   */
+  const openModelChoice: ModelChoice | null =
+    toolModels.view === null ? null : openPref?.source === "gate" ? "gate" : "app";
+  /** The remembered model id, active or not. */
+  const openModelId = openPref?.modelIds[0] ?? null;
+
   const toolEvents = useToolEvents(
     canRead && openTool !== null && machineKnown,
     openTool,
     currentInstallId,
     credential,
   );
+  // A write failure belongs to the pane it happened on. Without this, refusing a
+  // change on Codex would keep saying so over Claude Code's pane, blaming the
+  // wrong app for a refusal that had nothing to do with it.
+  useEffect(() => {
+    setModelError(null);
+  }, [openTool, credential]);
+
+  /**
+   * Write one model preference, and turn the one failure that is not an error
+   * into the dialog it asks for.
+   *
+   * `needs_paid_ack` means the gateway has never seen this org accept paid use.
+   * The UI normally asks first, so reaching here means something got past that -
+   * a second machine that acknowledged and then had it revoked, or a build whose
+   * dialog was skipped. Raising the confirmation is the remedy the code names, so
+   * it is what happens, rather than reporting an error the user cannot act on.
+   *
+   * Everything else surfaces the gateway's own sentence. A role refusal and a
+   * dead network need different things from the reader, and only the message
+   * distinguishes them on a write.
+   */
+  const saveModel = useCallback(
+    async (source: "tool" | "gate", modelIds: string[], acknowledgePaidUse = false) => {
+      if (!openTool) return;
+      setModelBusy(true);
+      setModelError(null);
+      const failure = await toolModels.save(openTool, source, modelIds, acknowledgePaidUse);
+      setModelBusy(false);
+      if (!failure) return;
+      if (failure.code === "needs_paid_ack" && modelIds[0]) {
+        setModelOverlay({ kind: "confirm-gate", modelId: modelIds[0] });
+        return;
+      }
+      setModelError(failure.message);
+    },
+    [openTool, toolModels],
+  );
+
+  /**
+   * Hand routing to Gate for one model, asking about billing first if the org has
+   * never been asked.
+   *
+   * The check is on the *organization*, not on this app or this machine: AG-588
+   * words the confirmation as once per organization, so a colleague having
+   * accepted is what makes this quiet the second time.
+   */
+  const activateGateModel = useCallback(
+    (modelId: string) => {
+      if (toolModels.view?.firstPaidAckAt) {
+        void saveModel("gate", [modelId]);
+      } else {
+        setModelOverlay({ kind: "confirm-gate", modelId });
+      }
+    },
+    [saveModel, toolModels.view?.firstPaidAckAt],
+  );
+
   /**
    * The feed's rows, each with somewhere to go.
    *
@@ -1442,29 +1553,48 @@ export function NewUiApp() {
             app={{ name: closedLabel(runningApps.stage.apps) }}
             onDone={runningApps.dismiss}
           />
-        ) : modelOverlay === "picker" ? (
+        ) : modelOverlay?.kind === "picker" ? (
           <ModelPickerDialog
-            // Empty until a gateway endpoint reports what it offers. The design
-            // draws eleven `gate/...` ids; shipping those as though they were
-            // real would put a fabricated model catalogue in front of the user,
-            // which is the same argument the zeroed metrics make.
-            models={GATE_MODELS}
-            selectedId={undefined}
-            onSelect={() => setModelOverlay(null)}
+            // A real catalogue now, read from the gateway. Still empty on a
+            // deployment with no platform provider accounts, which the dialog
+            // says in words - the design draws eleven `gate/...` ids, and
+            // shipping those as though they were real would put a fabricated
+            // catalogue in front of the user.
+            models={gateModels.models ?? []}
+            loading={gateModels.loading && gateModels.models === null}
+            failure={gateModels.failure?.message ?? null}
+            selectedId={openModelId ?? undefined}
+            onSelect={(id) => {
+              const then = modelOverlay.then;
+              setModelOverlay(null);
+              // "Remember" keeps the current source, which is App default here:
+              // the user browsed and picked, and nothing starts being billed for
+              // it. "Activate" continues into the billing confirmation.
+              if (then === "activate") activateGateModel(id);
+              else void saveModel("tool", [id]);
+            }}
             onDismiss={() => setModelOverlay(null)}
           />
-        ) : modelOverlay === "confirm-gate" ? (
+        ) : modelOverlay?.kind === "confirm-gate" ? (
           <UseGateModelDialog
             app={{ name: appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "this app" }}
-            vendor="-"
-            modelId="-"
-            credits="-"
-            onKeepAppDefault={() => setModelOverlay(null)}
-            onUseGateCredits={() => {
-              if (view.kind === "app") {
-                setModelChoice((m) => ({ ...m, [view.slug]: "gate" }));
-              }
+            vendor={modelOverlay.modelId.split("/")[0]}
+            modelId={modelOverlay.modelId}
+            // No endpoint reports a balance; N/A rather than a dash, which would
+            // read as one. The sentence above it already says credits are spent.
+            credits="N/A"
+            onKeepAppDefault={() => {
+              const modelId = modelOverlay.modelId;
               setModelOverlay(null);
+              // They declined the billing, not the model. Keeping the pick means
+              // the picker does not have to be walked again to change their mind,
+              // and under App default it is remembered rather than served.
+              if (modelId !== openModelId) void saveModel("tool", [modelId]);
+            }}
+            onUseGateCredits={() => {
+              const modelId = modelOverlay.modelId;
+              setModelOverlay(null);
+              void saveModel("gate", [modelId], true);
             }}
           />
         ) : journalOpen && journal ? (
@@ -1616,16 +1746,50 @@ export function NewUiApp() {
           pending={
             !installsResolved || (toolActivity.view === null && toolActivity.failure === null)
           }
-          modelChoice={modelChoice[view.slug] ?? "app"}
+          modelChoice={openModelChoice}
+          modelSupported={openPlatformId !== null}
+          modelBusy={modelBusy}
+          // The preference's own read, not the activity pane's: an unattributed
+          // machine has nothing to say about a setting.
+          modelPending={toolModels.view === null && toolModels.failure === null}
           // Switching to a Gate model spends PAYG credits, so it is confirmed
-          // rather than taken on a radio click. Switching back is not.
+          // rather than taken on a radio click. Switching back is not - and it
+          // keeps the chosen model, which is the whole reason a preference may
+          // name a model while its source is "tool".
           onChooseModel={(choice) => {
-            if (choice === "gate") setModelOverlay("confirm-gate");
-            else setModelChoice((m) => ({ ...m, [view.slug]: "app" }));
+            if (choice === "gate") {
+              if (openModelId) activateGateModel(openModelId);
+              // Nothing to switch *to* yet, so the picker comes first. Saving
+              // `gate` with no model is refused by the gateway and by its schema,
+              // and rightly: Gate cannot serve a model nobody chose.
+              else setModelOverlay({ kind: "picker", then: "activate" });
+            } else {
+              void saveModel("tool", openModelId ? [openModelId] : []);
+            }
           }}
-          gateModel={{ vendor: "-", id: "-" }}
-          onChangeModel={() => setModelOverlay("picker")}
-          credits="-"
+          gateModel={
+            openModelId
+              ? // Vendor from the id's own namespace rather than from the
+                // catalogue: the catalogue is only loaded when the picker is
+                // open, and a card that showed a vendor only while a dialog was
+                // up would be stranger than one that reads it off the id. AG-592
+                // is where a selected model gets looked up and told it is gone.
+                { vendor: openModelId.split("/")[0], id: openModelId }
+              : null
+          }
+          onChangeModel={() =>
+            setModelOverlay({
+              kind: "picker",
+              // Already on Gate: a different model is served immediately, and
+              // billing was accepted when the switch was made. On App default it
+              // is a browse, and picking must not start spending.
+              then: openModelChoice === "gate" ? "activate" : "remember",
+            })
+          }
+          // No endpoint reports a Gate credit balance - the gateway has a PAYG
+          // service but no controller over it - so this is null and reads N/A.
+          // A dash would read as a value. See principle 6.
+          credits={null}
           // No billing endpoint, but the row's own glyph promises an external
           // link, and the dashboard is where credits are actually bought.
           onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
@@ -1646,6 +1810,14 @@ export function NewUiApp() {
           alert={
             <>
               {driftAlert}
+              {modelError && (
+                // The gateway's own sentence, not a code. A role refusal and a
+                // dead network want different things from the reader, and on a
+                // write the message is the only thing that tells them apart.
+                <p className="text-base-xs text-red-700">
+                  <span className="font-medium">Model not changed:</span> {modelError}
+                </p>
+              )}
               {unattributedMachine ? (
                 // No numbers can be shown here, and the reason is not a failure:
                 // the gateway answered and does not recognise this machine, so
@@ -1775,9 +1947,6 @@ export function NewUiApp() {
 /** Before a reading lands, no section has one. Kept out of the render so the
  *  object identity is stable and the pane does not repaint for it. */
 const ALL_MISSING = { chart: true, policies: true, savings: true };
-
-/** No gateway endpoint reports the models on offer yet. See the picker. */
-const GATE_MODELS: GateModelOption[] = [];
 
 /** Shown before the first load lands, and on the per-app pane whose own reading
  *  is AG-574's work. All null rather than zeros: the tiles render a dash for

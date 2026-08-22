@@ -96,7 +96,14 @@ export function installFakeTauri(state: BackendState): void {
     // still produces a well-formed Tool rather than an undefined the UI has to
     // guess about.
     list_tools: () =>
-      state.tools.map((t) => ({ config_location: null, ...t })),
+      state.tools.map((t) => ({
+        config_location: null,
+        // The real mapping is a match on the ToolId enum in Rust; defaulting to
+        // the slug is what it produces for every tool the app ships except
+        // Hermes. A fixture sets null to exercise the unsupported case.
+        platform_id: t.slug,
+        ...t,
+      })),
     connect_tool: ({ slug }) => {
       const t = tool(slug);
       t.status = { kind: "connected" };
@@ -110,6 +117,57 @@ export function installFakeTauri(state: BackendState): void {
     has_upstream_credential: () => true,
     save_upstream_api_key: () => null,
     clear_upstream_credential: () => null,
+
+    // ---- model selection (AG-588)
+    tool_model_preferences: () =>
+      JSON.stringify({
+        generatedAt: "2026-08-22T10:00:00.000Z",
+        org: { orgId: "org-e2e", name: state.account?.org_name ?? null },
+        preferences: state.toolModels.preferences.map((p) => ({
+          ...p,
+          updatedAt: "2026-08-22T10:00:00.000Z",
+        })),
+        firstPaidAckAt: state.toolModels.firstPaidAckAt,
+      }),
+    // Enforces the rules the gateway enforces, because they are what the UI is
+    // built around: a first paid selection is refused until acknowledged, and
+    // `gate` with no model is refused outright. A mock that accepted everything
+    // would let the confirmation flow rot without a spec noticing.
+    set_tool_model: ({ tool, source, modelIds, acknowledgePaidUse }) => {
+      const t = state.tools.find((x) => x.slug === tool);
+      const platformId = t?.platform_id === undefined ? t?.slug : t.platform_id;
+      if (!platformId) throw `no platform id for ${String(tool)}`;
+      const ids = (modelIds as string[]) ?? [];
+      if (source === "gate" && ids.length === 0) {
+        throw JSON.stringify({
+          code: "gateway",
+          message: 'Invalid modelIds: source "gate" needs at least one model.',
+        });
+      }
+      if (source === "gate" && !state.toolModels.firstPaidAckAt && acknowledgePaidUse !== true) {
+        throw JSON.stringify({
+          code: "needs_paid_ack",
+          message: "Serving a Gate model bills this organization.",
+        });
+      }
+      if (source === "gate" && acknowledgePaidUse === true && !state.toolModels.firstPaidAckAt) {
+        state.toolModels.firstPaidAckAt = "2026-08-22T10:00:01.000Z";
+      }
+      const existing = state.toolModels.preferences.find((p) => p.platformId === platformId);
+      if (existing) {
+        existing.source = source as "tool" | "gate";
+        existing.modelIds = ids;
+      } else {
+        state.toolModels.preferences.push({
+          platformId: platformId as string,
+          source: source as "tool" | "gate",
+          modelIds: ids,
+        });
+      }
+      return JSON.stringify({ preference: { platformId, source, modelIds: ids } });
+    },
+    gate_model_catalogue: () =>
+      JSON.stringify({ object: "list", data: state.toolModels.catalogue }),
 
     // ---- account
     get_account: () => state.account,

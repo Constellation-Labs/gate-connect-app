@@ -23,59 +23,18 @@
 //! model here and no field has to be agreed twice. Failures, by contrast, *are*
 //! typed - see [`FailureCode`].
 
-use anyhow::Context;
-use serde::Serialize;
-
-use crate::account::{self, AuthMode};
-use crate::oauth;
+use crate::account;
+use crate::gateway_api;
 use crate::registry::ToolId;
 
-/// Why a fetch failed, in the terms AG-576 needs in order to offer an action.
+/// The failure taxonomy, and the authenticated call itself, now live in
+/// [`crate::gateway_api`] - a second feature needed the same credential rules
+/// (AG-588), and two copies of "which header does this account send" is the one
+/// duplication that returns a plausible answer for the wrong org.
 ///
-/// Deliberately a code rather than a message: the app has to *branch* on this to
-/// choose between Retry, Sign in, Switch organization and Contact support, and
-/// branching on English prose is how a copy edit becomes a bug.
-///
-/// Note what is absent. None of these has anything to do with whether routing is
-/// switched on. AG-576 calls that conflation out by name: "the gateway is
-/// unreachable" and "the user turned routing off" are different facts with
-/// different remedies, and reporting one as the other sends the user to fix
-/// something that was never broken.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FailureCode {
-    /// This machine could not reach the gateway at all: DNS, TCP, TLS, timeout.
-    Offline,
-    /// There is no live credential to send, so the user has to sign in again.
-    SignedOut,
-    /// OAuth session is live but no org is selected, so there is nothing to
-    /// scope the reading to.
-    NoOrg,
-    /// A credential was sent and the gateway refused it (401 or 403).
-    Rejected,
-    /// The gateway answered, unhappily. Any other non-2xx.
-    Gateway,
-    /// Anything else, including a response body we could not read.
-    Unknown,
-}
-
-/// A failed fetch: the code the UI branches on, plus the detail a support report
-/// needs. Both travel to the front end, which shows the code's copy and keeps
-/// the message for diagnostics.
-#[derive(Debug, Clone, Serialize)]
-pub struct Failure {
-    pub code: FailureCode,
-    pub message: String,
-}
-
-impl Failure {
-    fn new(code: FailureCode, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-}
+/// Re-exported rather than relocated in the callers: `activity::Failure` is the
+/// path the IPC layer already names.
+pub use crate::gateway_api::{Failure, FailureCode};
 
 /// Endpoint URL. Test seam mirroring [`crate::org`]'s
 /// `GATE_CONNECT_TEST_ORGS_ENDPOINT`, so the fetch can be pointed at a loopback
@@ -196,7 +155,11 @@ enum Endpoint {
     ToolEvents,
 }
 
-/// One authenticated control-plane GET, shared by both reads above.
+/// One authenticated control-plane GET, shared by every read above.
+///
+/// Nothing here but the URL: the credential rules, timeout, install-id header
+/// and failure mapping are [`crate::gateway_api::call_json`]'s, so the reads and
+/// AG-588's write cannot diverge on any of them.
 fn get_json(which: Endpoint, query: &[(&str, &str)]) -> Result<String, Failure> {
     let account = match account::load() {
         Ok(Some(a)) => a,
@@ -213,107 +176,5 @@ fn get_json(which: Endpoint, query: &[(&str, &str)]) -> Result<String, Failure> 
         Endpoint::Installations => installations_endpoint(&account.gateway_base_url),
         Endpoint::ToolEvents => tool_events_endpoint(&account.gateway_base_url),
     };
-    // Built through `Url` rather than by string concatenation so a value the user
-    // never typed - an install id read back from the gateway's own list - cannot
-    // smuggle a second parameter into the request.
-    let url = match reqwest::Url::parse(&url).context("parsing the activity endpoint URL") {
-        Ok(mut u) => {
-            for (k, v) in query {
-                u.query_pairs_mut().append_pair(k, v);
-            }
-            u
-        }
-        Err(e) => return Err(Failure::new(FailureCode::Unknown, format!("{e:#}"))),
-    };
-
-    let client = match reqwest::blocking::Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .context("building the activity HTTP client")
-    {
-        Ok(c) => c,
-        Err(e) => return Err(Failure::new(FailureCode::Unknown, format!("{e:#}"))),
-    };
-
-    let mut req = client.get(url.clone());
-
-    // Name this installation on the control plane too, so the gateway can mark
-    // which entry in the list is the machine asking. Absent when the id could
-    // not be resolved: the reading is still correct, it just cannot say "this
-    // one is you".
-    if let Some(id) = crate::primitives::install_id_cached() {
-        req = req.header("x-gate-install-id", id);
-    }
-
-    // Mirror the credential the engine and relay would send for this account,
-    // so the pane cannot show numbers for an identity the user's traffic is
-    // not actually using.
-    if account.auth_mode == AuthMode::OAuth {
-        let token = oauth::access_token_for_injection();
-        if token.is_empty() {
-            return Err(Failure::new(
-                FailureCode::SignedOut,
-                "no live OAuth session for this account",
-            ));
-        }
-        let org = account::org_id_for_injection();
-        if org.is_empty() {
-            return Err(Failure::new(FailureCode::NoOrg, "no organization selected"));
-        }
-        req = req
-            .header("x-gate-authorization", format!("Bearer {token}"))
-            .header("x-gate-org-id", org);
-    } else {
-        if account.api_key.is_empty() {
-            return Err(Failure::new(
-                FailureCode::SignedOut,
-                "no API key stored for this account",
-            ));
-        }
-        req = req.header("x-gate-api-key", account.api_key);
-    }
-
-    let resp = match req.send() {
-        Ok(r) => r,
-        Err(e) => {
-            // `is_connect` covers DNS and TCP, `is_timeout` the 15s ceiling
-            // above. Both mean the same thing to the user - the gateway is not
-            // answering this machine - and neither implicates their credential.
-            let code = if e.is_connect() || e.is_timeout() {
-                FailureCode::Offline
-            } else {
-                FailureCode::Unknown
-            };
-            return Err(Failure::new(
-                code,
-                format!("calling the gateway endpoint {url}: {e}"),
-            ));
-        }
-    };
-
-    let status = resp.status();
-    let body = match resp.text() {
-        Ok(b) => b,
-        Err(e) => {
-            return Err(Failure::new(
-                FailureCode::Unknown,
-                format!("reading the {url} response body: {e}"),
-            ))
-        }
-    };
-    if !status.is_success() {
-        let code = if status == reqwest::StatusCode::UNAUTHORIZED
-            || status == reqwest::StatusCode::FORBIDDEN
-        {
-            FailureCode::Rejected
-        } else {
-            FailureCode::Gateway
-        };
-        return Err(Failure::new(
-            code,
-            format!("gateway {url} returned {status}: {body}"),
-        ));
-    }
-    Ok(body)
+    gateway_api::call_json(gateway_api::Method::Get, url, query, None)
 }

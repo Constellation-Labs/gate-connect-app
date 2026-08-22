@@ -25,6 +25,42 @@ impl ToolId {
         }
     }
 
+    /// The gateway's `agent_framework` id for this tool, or `None` when the
+    /// gateway cannot name it.
+    ///
+    /// **Not the same namespace as [`Self::slug`], even where the strings
+    /// coincide.** The slug is ours: it names a tool this app can configure, and
+    /// it is what the desktop app stamps on `x-gate-client` after guessing from a
+    /// User-Agent. A platform id is the gateway's: `platform-registry.ts` derives
+    /// it per request from evidence a client cannot as easily fake, and it is
+    /// what `gateway_requests.agent_framework` holds.
+    ///
+    /// Four of ours line up with one of theirs and one does not, which is exactly
+    /// why this is a written-out match rather than passing the slug through.
+    /// Passing it through would work today for four tools and 400 for Hermes, and
+    /// would silently break the day either side renames anything. Being a match
+    /// on the enum, adding a tool forces whoever adds it to answer this question.
+    ///
+    /// `None` is not a gap to fill in later by guessing. A model preference keyed
+    /// on a platform the gateway never stamps could never be enforced, so the
+    /// pane must decline to offer the choice rather than store one that does
+    /// nothing - see `tool_models`.
+    pub const fn platform_id(self) -> Option<&'static str> {
+        match self {
+            ToolId::ClaudeCode => Some("claude-code"),
+            ToolId::Codex => Some("codex"),
+            ToolId::OpenCode => Some("opencode"),
+            ToolId::OpenClaw => Some("openclaw"),
+            // Absent from the gateway's registry: nothing there detects Hermes,
+            // so its requests are attributed to `direct-api` and a preference
+            // keyed on it would have nothing to match.
+            ToolId::Hermes => None,
+            // Not a tool at all - the exported proxy variables. Whatever routes
+            // through them is attributed as itself.
+            ToolId::EnvProxy => None,
+        }
+    }
+
     pub fn from_slug(s: &str) -> Option<Self> {
         match s {
             "claude-code" => Some(ToolId::ClaudeCode),
@@ -307,5 +343,35 @@ mod tests {
         );
         assert!(hidden_in_ui_slugs().contains(&"env-proxy"));
         assert_eq!(ToolId::from_slug("env-proxy"), Some(ToolId::EnvProxy));
+    }
+
+    /// The platform id is a *different namespace* from the slug, and this is the
+    /// test that keeps the coincidence from being mistaken for a rule.
+    ///
+    /// Four of our slugs happen to equal a gateway platform id and one does not.
+    /// Anyone who reads only the four would reasonably conclude the mapping is
+    /// the identity and replace it with `slug()`, which would 400 for Hermes and
+    /// break silently the day either side renames anything.
+    #[test]
+    fn platform_ids_are_not_just_the_slug() {
+        // Where they coincide, they must coincide exactly: a preference is stored
+        // under this string and matched against `agent_framework`.
+        for tool in [
+            ToolId::ClaudeCode,
+            ToolId::Codex,
+            ToolId::OpenCode,
+            ToolId::OpenClaw,
+        ] {
+            assert_eq!(tool.platform_id(), Some(tool.slug()), "{tool}");
+        }
+
+        // And where they do not, there is no id to invent. Nothing in the
+        // gateway's registry detects Hermes, so its traffic is attributed to
+        // `direct-api`; the environment channel is not a tool at all. A
+        // preference keyed on either could never be applied, which is why the
+        // app pane withholds the control rather than storing a choice that does
+        // nothing.
+        assert_eq!(ToolId::Hermes.platform_id(), None);
+        assert_eq!(ToolId::EnvProxy.platform_id(), None);
     }
 }

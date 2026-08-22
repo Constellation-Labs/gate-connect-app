@@ -163,6 +163,10 @@ export type FailureCode =
   | "signed_out"
   | "no_org"
   | "rejected"
+  /** The org has never accepted paid Gate model use and a write needed it.
+   *  Only `setToolModel` raises it; see `toolModels.ts`. Its own code because it
+   *  is the one failure here whose remedy is a dialog rather than a retry. */
+  | "needs_paid_ack"
   | "gateway"
   | "unknown";
 
@@ -177,6 +181,7 @@ const FAILURE_CODES: FailureCode[] = [
   "signed_out",
   "no_org",
   "rejected",
+  "needs_paid_ack",
   "gateway",
   "unknown",
 ];

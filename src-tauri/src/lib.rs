@@ -59,6 +59,17 @@ struct ToolDto {
     /// The file Gate rewrites for this tool, for the copy that says what is
     /// about to change. `None` where no single file names it.
     config_location: Option<String>,
+    /// The gateway's `agent_framework` id for this tool, or `None` when the
+    /// gateway cannot name it on a request.
+    ///
+    /// Carried on the tool list so the front end never has to keep its own copy
+    /// of the mapping: `ToolId::platform_id` is a match on the enum, so adding a
+    /// tool forces the question to be answered once, in Rust, where it can be
+    /// enforced. A second table in TypeScript is how the two would disagree.
+    ///
+    /// `None` is what tells the app pane to withhold the model-selection control
+    /// rather than offer a choice the gateway could never apply.
+    platform_id: Option<String>,
     status: StatusDto,
 }
 
@@ -109,6 +120,7 @@ fn list_tools() -> Vec<ToolDto> {
             default_upstream_url: integ.default_upstream_url().to_string(),
             requires_upstream_credential: integ.requires_upstream_credential(),
             config_location: integ.config_location(),
+            platform_id: integ.id().platform_id().map(str::to_string),
             status: status_for(integ.as_ref()),
         })
         .collect()
@@ -641,6 +653,68 @@ async fn activity_installations() -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(gate_connect_core::activity::installations_json)
         .await
         .map_err(|e| format!("activity installations join error: {e}"))?
+        .map_err(envelope)
+}
+
+/// This organization's per-tool model preferences (AG-588).
+///
+/// Not scoped to a tool: one read covers every app in the sidebar, because the
+/// preference is org-wide by design. Same envelope and failure taxonomy as
+/// [`activity_overview`].
+#[tauri::command]
+async fn tool_model_preferences() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::tool_models::preferences_json)
+        .await
+        .map_err(|e| format!("tool model preferences join error: {e}"))?
+        .map_err(envelope)
+}
+
+/// Choose the model one tool runs on.
+///
+/// `source` is `"tool"` (the app picks) or `"gate"` (Gate serves `model_ids`).
+/// An unrecognised value is an error rather than a default, for the reason
+/// [`parse_tool`] gives: a silent fall back would store the opposite of what the
+/// user clicked.
+///
+/// `acknowledge_paid_use` carries the billing confirmation. The gateway refuses a
+/// first `gate` selection without it and reports `needs_paid_ack`, which the pane
+/// turns into the dialog rather than an error - so passing false is safe, not a
+/// bug.
+#[tauri::command]
+async fn set_tool_model(
+    tool: String,
+    source: String,
+    model_ids: Vec<String>,
+    acknowledge_paid_use: bool,
+) -> Result<String, String> {
+    let Some(tool) = parse_tool(Some(tool))? else {
+        return Err("a tool slug is required to set a model preference".into());
+    };
+    let source = gate_connect_core::tool_models::Source::from_wire(&source)
+        .ok_or_else(|| format!("unknown model source {source:?}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::tool_models::set_preference_json(
+            tool,
+            source,
+            &model_ids,
+            acknowledge_paid_use,
+        )
+        .map_err(envelope)
+    })
+    .await
+    .map_err(|e| format!("set tool model join error: {e}"))?
+}
+
+/// The models this gateway offers, for the picker.
+///
+/// An empty catalogue is a successful answer, not a failure: it is built from
+/// platform provider accounts, and a deployment with none has nothing to offer.
+/// The picker says so in words rather than drawing an empty list.
+#[tauri::command]
+async fn gate_model_catalogue() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::tool_models::catalogue_json)
+        .await
+        .map_err(|e| format!("gate model catalogue join error: {e}"))?
         .map_err(envelope)
 }
 
@@ -1935,6 +2009,9 @@ pub fn run() {
                     activity_installations,
                     activity_cached_overview,
                     activity_tool_events,
+                    tool_model_preferences,
+                    set_tool_model,
+                    gate_model_catalogue,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -2001,6 +2078,9 @@ pub fn run() {
                     activity_installations,
                     activity_cached_overview,
                     activity_tool_events,
+                    tool_model_preferences,
+                    set_tool_model,
+                    gate_model_catalogue,
                     set_org,
                     app_platform,
                     diagnostics,

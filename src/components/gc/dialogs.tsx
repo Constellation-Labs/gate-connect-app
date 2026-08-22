@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
+import { Skeleton } from "./base";
 import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
 import type { PillTone } from "./Modal";
 import {
@@ -481,11 +482,21 @@ export interface GateModelOption {
  */
 export function ModelPickerDialog({
   models,
+  loading,
+  failure,
   selectedId,
   onSelect,
   onDismiss,
 }: {
   models: GateModelOption[];
+  /** The catalogue has not landed. Distinct from an empty one, which is a real
+   *  answer: a gateway with no platform provider accounts offers nothing, and
+   *  saying "no models" while the list is still coming would be a claim we have
+   *  not earned. */
+  loading?: boolean;
+  /** The catalogue could not be read, in the gateway's own words. Distinct again
+   *  from empty: "we could not ask" is not "there are none". */
+  failure?: string | null;
   selectedId?: string;
   onSelect: (id: string) => void;
   onDismiss: () => void;
@@ -498,12 +509,26 @@ export function ModelPickerDialog({
       secondary={{ label: "Cancel", onClick: onDismiss }}
       onDismiss={onDismiss}
     >
-      {models.length === 0 ? (
+      {loading ? (
+        <div className="flex flex-col gap-1" aria-busy>
+          {[0, 1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-9" />
+          ))}
+        </div>
+      ) : failure ? (
+        <ModalNote>
+          <p className="font-medium text-neutral-900">Gate could not list its models</p>
+          <p className="mt-1">
+            Nothing has changed: this app keeps the model it is using. Close this and try
+            again.
+          </p>
+        </ModalNote>
+      ) : models.length === 0 ? (
         <ModalNote>
           <p className="font-medium text-neutral-900">No models to choose from yet</p>
           <p className="mt-1">
-            Gate will list the models your gateway offers here. Until then, apps keep
-            using the model they are configured with.
+            This gateway offers no models of its own, so apps keep using the model they
+            are configured with.
           </p>
         </ModalNote>
       ) : (

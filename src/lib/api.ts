@@ -19,6 +19,18 @@ export interface Tool {
    * channel). Not a secret - it is a path in the user's own home directory, and
    * showing it is the point. */
   config_location: string | null;
+  /** The gateway's `agent_framework` id for this tool, or null when the gateway
+   * cannot name it on a request.
+   *
+   * Not the same namespace as `slug`, even where the strings match: the slug is
+   * ours and names a tool this app configures, the platform id is the gateway's
+   * and is what it derives per request. Supplied by Rust rather than mapped here
+   * so the two cannot disagree - see `ToolId::platform_id`.
+   *
+   * Null withholds the model-selection control: a preference keyed on a platform
+   * the gateway never stamps could not be enforced, and a switch that changes
+   * nothing is worse than no switch. */
+  platform_id: string | null;
   status: Status;
 }
 
@@ -156,6 +168,39 @@ export const activityToolEvents = (tool: string, installId?: string, cursor?: st
   slowNetworkRead().then(() =>
     invoke<string>("activity_tool_events", { installId, tool, cursor }),
   );
+
+/** This organization's per-tool model preferences, as raw JSON text (AG-588).
+ *
+ * Not scoped to a tool. The preference is org-wide by design, so one read serves
+ * every app in the sidebar; asking per tool would repeat the same question for
+ * the same answer. */
+export const toolModelPreferences = () =>
+  slowNetworkRead().then(() => invoke<string>("tool_model_preferences"));
+
+/** Choose the model one tool runs on, returning the stored row as raw JSON text.
+ *
+ * `source` is `"tool"` (the app picks its own) or `"gate"` (Gate serves
+ * `modelIds`). `modelIds` must be empty for `"tool"` and hold at least one id for
+ * `"gate"` - the gateway refuses either mistake, and its schema refuses the
+ * second even if the route were bypassed.
+ *
+ * `acknowledgePaidUse` carries the billing confirmation. Passing `false` is safe:
+ * a first `"gate"` selection without it fails as `needs_paid_ack`, which is the
+ * signal to raise the dialog rather than an error to report. */
+export const setToolModel = (
+  tool: string,
+  source: "tool" | "gate",
+  modelIds: string[],
+  acknowledgePaidUse = false,
+) => invoke<string>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
+
+/** The models this gateway offers, as raw JSON text (Vercel AI Gateway shape).
+ *
+ * An empty `data` array is a real answer, not a failed read: the catalogue is
+ * built from platform provider accounts, and a deployment with none has nothing
+ * to offer. */
+export const gateModelCatalogue = () =>
+  slowNetworkRead().then(() => invoke<string>("gate_model_catalogue"));
 
 /** Persist the selected org and push X-Gate-Org-Id into a running engine/relay
  * live (no restart). */

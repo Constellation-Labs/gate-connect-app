@@ -37,6 +37,9 @@ function makeTool(
     default_upstream_url: "https://api.anthropic.com",
     requires_upstream_credential: false,
   config_location: null,
+  // No model preference in these fixtures: they exercise routing and grouping,
+  // and a platform id only matters where a model is chosen.
+  platform_id: null,
     status,
   };
 }

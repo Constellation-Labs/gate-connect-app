@@ -104,6 +104,9 @@ const tools: Tool[] = [
     default_upstream_url: "https://api.anthropic.com",
     requires_upstream_credential: false,
   config_location: null,
+  // No model preference in these fixtures: they exercise routing and grouping,
+  // and a platform id only matters where a model is chosen.
+  platform_id: null,
     status: { kind: "connected" },
   },
   {
@@ -113,6 +116,7 @@ const tools: Tool[] = [
     default_upstream_url: "https://api.openai.com",
     requires_upstream_credential: false,
   config_location: null,
+  platform_id: null,
     status: { kind: "drifted", reason: "base_url points elsewhere" },
   },
 ];
