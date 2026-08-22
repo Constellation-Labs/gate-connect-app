@@ -657,60 +657,64 @@ async fn proxy_enable(
     }
     // Crash safety net: routing is now on, but with no login item registered a
     // crash would strand the system proxy at a dead port with nothing
-    // relaunching at boot to run the startup self-heal. Register the login
-    // item and arm the pending-disable marker (the deferred-opt-out mechanism,
-    // see autostart_optout's module docs), so every existing safe point
-    // deregisters it and the Settings toggle keeps reporting the user's
-    // choice. Skipped when the user opted in themselves - arming would make
-    // the status lie and a later safe point would remove a registration they
-    // want. Marker before registration: a crash between the two steps must
-    // not leave a registration that reads as the user's choice. Best-effort:
-    // routing is already on, so failures only lose the net, not the command.
-    //
-    // Known (accepted) race: this read-then-write pair and the one in
-    // `set_launch_at_login` share no lock, so a Settings toggle landing
-    // between this `is_enabled()` check and the arm+enable below can end up
-    // marked pending (a fresh opt-in reported as off) until the next safe
-    // point clears it. The window is milliseconds wide and both sites are
-    // driven by one user in one popover; not worth a lock.
-    {
-        use gate_connect_core::proxy::autostart_optout;
-        use tauri_plugin_autostart::ManagerExt;
-        let mgr = app.autolaunch();
-        match mgr.is_enabled() {
-            Ok(false) => {
-                match autostart_optout::record_safety_net_registration() {
-                    Ok(()) => {
-                        if let Err(e) = mgr.enable() {
-                            eprintln!("[gate] registering launch-at-login safety net failed: {e}");
-                            report_backend_error("launch_at_login", format!("{e:#}"));
-                            // Nothing got registered, so there is nothing for the
-                            // marker to defer; leaving it armed would only make a
-                            // real opt-in later read as pending.
-                            if let Err(e) = autostart_optout::set_pending(false) {
-                                eprintln!("[gate] clearing safety-net marker failed: {e}");
-                            }
+    // relaunching at boot to run the startup self-heal.
+    arm_crash_safety_net(&app);
+    Ok(state)
+}
+
+/// Crash safety net for a session with routing on but no login item: register
+/// launch-at-login and arm the pending-disable marker (the deferred-opt-out
+/// mechanism, see autostart_optout's module docs), so every existing safe
+/// point deregisters the item and the Settings toggle keeps reporting the
+/// user's choice. Skipped when the user opted in themselves - arming would
+/// make the status lie and a later safe point would remove a registration
+/// they want. Marker before registration: a crash between the two steps must
+/// not leave a registration that reads as the user's choice. Best-effort:
+/// routing is already on when this runs, so failures only lose the net.
+///
+/// Known (accepted) race: this read-then-write pair and the one in
+/// `set_launch_at_login` share no lock, so a Settings toggle landing
+/// between the `is_enabled()` check and the arm+enable below can end up
+/// marked pending (a fresh opt-in reported as off) until the next safe
+/// point clears it. The window is milliseconds wide and both sites are
+/// driven by one user in one popover; not worth a lock.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn arm_crash_safety_net(app: &tauri::AppHandle) {
+    use gate_connect_core::proxy::autostart_optout;
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    match mgr.is_enabled() {
+        Ok(false) => {
+            match autostart_optout::record_safety_net_registration() {
+                Ok(()) => {
+                    if let Err(e) = mgr.enable() {
+                        eprintln!("[gate] registering launch-at-login safety net failed: {e}");
+                        report_backend_error("launch_at_login", format!("{e:#}"));
+                        // Nothing got registered, so there is nothing for the
+                        // marker to defer; leaving it armed would only make a
+                        // real opt-in later read as pending.
+                        if let Err(e) = autostart_optout::set_pending(false) {
+                            eprintln!("[gate] clearing safety-net marker failed: {e}");
                         }
                     }
-                    Err(e) => {
-                        eprintln!("[gate] arming launch-at-login safety-net marker failed: {e}");
-                        report_backend_error("launch_at_login", format!("{e:#}"));
-                    }
+                }
+                Err(e) => {
+                    eprintln!("[gate] arming launch-at-login safety-net marker failed: {e}");
+                    report_backend_error("launch_at_login", format!("{e:#}"));
                 }
             }
-            // Already registered (the user's own opt-in, or a still-pending
-            // marker from an earlier session): nothing to arm.
-            Ok(true) => {}
-            // Can't tell whether a login item exists: don't risk arming the
-            // marker over a real opt-in. Losing the net is the lesser harm,
-            // but it should be visible.
-            Err(e) => {
-                eprintln!("[gate] probing launch-at-login for the safety net failed: {e}");
-                report_backend_error("launch_at_login", format!("{e:#}"));
-            }
+        }
+        // Already registered (the user's own opt-in, or a still-pending
+        // marker from an earlier session): nothing to arm.
+        Ok(true) => {}
+        // Can't tell whether a login item exists: don't risk arming the
+        // marker over a real opt-in. Losing the net is the lesser harm,
+        // but it should be visible.
+        Err(e) => {
+            eprintln!("[gate] probing launch-at-login for the safety net failed: {e}");
+            report_backend_error("launch_at_login", format!("{e:#}"));
         }
     }
-    Ok(state)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -1770,19 +1774,19 @@ pub fn run() {
                     // launch means the previous session never hit a clean stop
                     // (crash / hard restart; on Linux even a clean quit, since
                     // the exit handler below is macOS/Windows-only). Make sure
-                    // routing is actually off, then finish the job: deregister,
-                    // drop the routing intent so a later manual launch stays
-                    // passthrough, and exit - the user asked us not to run at
-                    // startup. On macOS/Windows the reconcile above has already
-                    // *reverted* any stranded system proxy; on Linux it does
-                    // the opposite - it re-honors (re-enables) a leftover
-                    // snapshot - so without an explicit disable here the daemon
-                    // would keep intercepting headless after we exit, and the
-                    // re-written snapshot would make every later manual launch
-                    // re-honor routing again with the intent cleared. A manual
-                    // or updater-driven launch (not --silent) skips this and
-                    // restores routing as the user left it; the still-pending
-                    // opt-out completes at the next safe point instead.
+                    // routing is actually off, then finish the job: deregister
+                    // and exit - the user asked us not to run at startup. The
+                    // routing intent stays put: the opt-out governs autostart,
+                    // not routing, so the next manual launch restores routing
+                    // as the user left it. On macOS/Windows the reconcile
+                    // above has already *reverted* any stranded system proxy;
+                    // on Linux it does the opposite - it re-honors
+                    // (re-enables) a leftover snapshot - so without an
+                    // explicit disable here the daemon would keep intercepting
+                    // headless after we exit. A manual or updater-driven
+                    // launch (not --silent) skips this and restores routing as
+                    // the user left it; the still-pending opt-out completes at
+                    // the next safe point instead.
                     if silent_launch && gate_connect_core::proxy::autostart_optout::pending() {
                         // Linux-only: macOS/Windows reconciled to "off" above,
                         // and running disable there would force_off proxy
@@ -1798,21 +1802,17 @@ pub fn run() {
                             report_backend_error("restore_routing", format!("{e:#}"));
                         }
                         complete_pending_autostart_disable(&handle);
-                        if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
-                            eprintln!("[gate] clearing routing intent failed: {e}");
-                            report_backend_error("routing_intent", format!("{e:#}"));
-                        }
                         handle.exit(0);
                         return;
                     }
 
                     // Restart persistence: bring routing back if the user last
                     // left it on. The exit-time disable reverts the *system
-                    // proxy* only and keeps the routing intent when "Launch at
-                    // login" is on, so this is what re-routes after a reboot.
-                    // (With launch-at-login off, exit clears the intent, so we
-                    // stay passthrough.) No intent recorded means first run, or
-                    // the user left routing off - stay passthrough.
+                    // proxy* only and never touches the routing intent, so
+                    // every launch - login item, manual, updater relaunch -
+                    // restores routing as the user left it. No intent recorded
+                    // means first run, or the user last turned routing off -
+                    // stay passthrough.
                     if !gate_connect_core::proxy::intent::load_intent() {
                         return;
                     }
@@ -1838,6 +1838,11 @@ pub fn run() {
                     match gate_connect_core::proxy::manager().enable() {
                         Ok(state) => {
                             mark_routing_enabled();
+                            // Restore-on-any-launch means this can be the
+                            // first thing to route on a machine with no login
+                            // item, so it needs the same crash safety net as
+                            // the routing toggle.
+                            arm_crash_safety_net(&handle);
                             // Engine port changed (or none was persisted - the
                             // first launch after upgrading from a build without
                             // port persistence): clients that resolved the
@@ -2181,25 +2186,14 @@ pub fn run() {
                 // strand it. An updater-driven relaunch is exempt - the app
                 // comes right back, so the pending opt-out stays armed and
                 // routing is restored exactly as the user left it.
-                use tauri_plugin_autostart::ManagerExt;
                 if !UPDATER_RELAUNCHING.load(Ordering::Acquire) {
                     complete_pending_autostart_disable(app_handle);
                 }
-                // If the user hasn't asked Gate to launch at login, it won't
-                // relaunch to re-route after a restart - so clear the routing
-                // intent too, otherwise a later manual launch would silently
-                // re-enable routing. Launch-at-login on keeps the intent, so
-                // opting in is what persists routing across a restart. A
-                // still-pending opt-out counts as off: it's the user's choice,
-                // even if the deregistration above couldn't complete.
-                if !UPDATER_RELAUNCHING.load(Ordering::Acquire)
-                    && (!app_handle.autolaunch().is_enabled().unwrap_or(false)
-                        || gate_connect_core::proxy::autostart_optout::pending())
-                {
-                    if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
-                        eprintln!("[gate] clearing routing intent on exit failed: {e}");
-                    }
-                }
+                // Exit reverts the *system proxy* only. The routing intent is
+                // the user's last explicit toggle and survives every quit: the
+                // next launch, however it happens, restores routing as it was
+                // left. The only durable "off" is the routing switch itself
+                // (proxy_disable clears the intent).
             }
             let _ = &event;
             let _ = &app_handle;
