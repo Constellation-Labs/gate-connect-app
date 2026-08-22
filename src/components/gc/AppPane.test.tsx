@@ -93,9 +93,31 @@ describe("AppPane recent activity", () => {
 
     expect(screen.getByText("claude-opus-4")).toBeTruthy();
     expect(screen.getByText("cnv_824bd2c0")).toBeTruthy();
-    // The column is Model now. A title could only have come from prompt text.
+    // Model and Message are separate columns now, per `table/recent-activity`.
+    // The Message cell carries only the reference: a title could only have come
+    // from prompt text.
     expect(screen.getByRole("columnheader", { name: "Model" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Message" })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Conversation" })).toBeNull();
+  });
+
+  it("wears one pill per row, and the recorded verdict outranks the error", () => {
+    render(
+      pane({
+        activity: [
+          { ...entry, id: "req-flagged", status: "error", security: "flagged" },
+          { ...entry, id: "req-error", status: "error", security: null },
+        ],
+      }),
+    );
+    const feed = card("Recent activity");
+
+    // The design merged the old Status column into Security: no SUCCESS pill
+    // exists, and ERROR appears only when the gateway recorded no action.
+    expect(within(feed).queryByRole("columnheader", { name: "Status" })).toBeNull();
+    expect(within(feed).getByText("flagged")).toBeTruthy();
+    expect(within(feed).getByText("error")).toBeTruthy();
+    expect(within(feed).queryByText("success")).toBeNull();
   });
 
   it("marks a row whose security detail is absent, without inventing a verdict", () => {
@@ -103,20 +125,24 @@ describe("AppPane recent activity", () => {
     const feed = card("Recent activity");
 
     // Absence of a verdict is not enough: a cell that rendered nothing at all
-    // would satisfy that, and the point is that the row says so.
+    // would satisfy that, and the point is that the row says so. `status` is
+    // "success" here, so no ERROR pill stands in either.
     const cell = within(feed).getByTitle("No security action recorded, or not your request");
     expect(cell.textContent).toBe("\u2014");
     expect(within(feed).queryByText("allow")).toBeNull();
     expect(within(feed).queryByText("flagged")).toBeNull();
+    expect(within(feed).queryByText("error")).toBeNull();
   });
 
-  it("offers no per-row action while there is nowhere to send the user", () => {
-    render(pane({ activity: [entry] }));
+  it("draws a View per row, and hands the entry to whoever owns a destination", () => {
+    const onViewEntry = vi.fn();
+    render(pane({ activity: [entry], onViewEntry }));
 
-    // The design draws a "View" per row that opens the request in the web
-    // dashboard, which has no tool/machine/time filter to open. An inert control
-    // is worse than an absent one.
-    expect(within(card("Recent activity")).queryByRole("button", { name: "View" })).toBeNull();
+    // Drawn ahead of its wiring by decision (2026-08-21): the dashboard cannot
+    // filter by request yet, so the shell passes no handler in production.
+    const view = within(card("Recent activity")).getByRole("button", { name: "View" });
+    view.click();
+    expect(onViewEntry).toHaveBeenCalledWith(entry);
   });
 
   it("offers Load more only when there is another page", () => {

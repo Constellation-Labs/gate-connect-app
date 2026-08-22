@@ -305,24 +305,27 @@ function PendingRows({ columns }: { columns: 2 | 3 }) {
 function StatusPill({ on }: { on: boolean }) {
   return (
     <span
-      className={`inline-flex items-center gap-2 rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${
+      className={`inline-flex items-center gap-1 rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${
         on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-neutral-600"
       }`}
     >
-      {on && <Icon name="check" size={12} />}
+      {/* The drawn glyph is circleCheck at 12px in green/800, one step lighter
+        * than the label (sampled from `Overview/routed-1` on 2026-08-21). */}
+      {on && <Icon name="circleCheck" size={12} className="text-green-800" />}
       {on ? "On" : "Off"}
     </span>
   );
 }
 
-/** Right-aligned footer link. Both destinations open the web dashboard. */
+/** Right-aligned footer action under a full-width rule, per the drawn cards.
+ *  Both destinations open the web dashboard. */
 function ManageLink({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <div className="mt-4 flex justify-end">
+    <div className="mt-3 flex justify-end border-t border-base-border pt-3">
       <button
         type="button"
         onClick={onClick}
-        className="flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-base-xs font-medium text-base-primary transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex items-center gap-1.5 rounded-sm border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {label}
         <Icon name="squareArrowOutUpRight" size={12} />

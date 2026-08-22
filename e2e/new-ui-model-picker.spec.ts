@@ -54,7 +54,8 @@ test.describe("new UI model picker", () => {
     // Inside the dialog: the pane behind it has its own App-default/Gate radios.
     await expect(app.page.getByRole("dialog").getByRole("radio")).toHaveCount(0);
 
-    await app.page.getByRole("button", { name: "Cancel" }).click();
+    // The design gives this dialog an X rather than a Cancel button.
+    await app.page.getByRole("button", { name: "Close" }).click();
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 

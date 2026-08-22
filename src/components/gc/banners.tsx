@@ -98,7 +98,9 @@ export function RoutingBanner({
         <span
           className={`font-medium ${allProtected ? "text-green-600" : "text-amber-600"}`}
         >
-          {allProtected ? "Routing" : "Partly routed"}
+          {/* "Routed", not "Routing": every routed frame on Flows/Overview reads
+            * `Routed · 4 of 4 Apps` (re-read 2026-08-21). */}
+          {allProtected ? "Routed" : "Partly routed"}
         </span>
         <span className="text-neutral-400"> · </span>
         <span className="text-neutral-600">

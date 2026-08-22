@@ -77,6 +77,21 @@ export interface SidebarApp {
   busy?: boolean;
 }
 
+/**
+ * One eyebrow-labelled cluster of app rows. The design draws the rail grouped
+ * by family (Figma `Flows / App`, read 2026-08-21: "ANTHROPIC" over the two
+ * Claude apps, "OPEN AI" over Codex, and so on), replacing the earlier flat
+ * list under a "Protected apps N/N" counter, which no frame draws any more.
+ */
+export interface SidebarGroup {
+  /** Stable key - the family's id. */
+  id: string;
+  /** The eyebrow. Empty renders no header, which is the state before the
+   * catalog has loaded and grouping is not yet known. */
+  label: string;
+  apps: SidebarApp[];
+}
+
 const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: string }> = {
   protected: { label: "Protected", className: "text-green-600" },
   "not-protected": { label: "Not protected", className: "text-amber-600" },
@@ -96,7 +111,7 @@ export function Sidebar({
   onSwitchOrg,
   view,
   onNavigate,
-  apps,
+  groups,
   onSelectApp,
   onToggleApp,
   onRefresh,
@@ -107,7 +122,7 @@ export function Sidebar({
   onSwitchOrg: () => void;
   view: SidebarView;
   onNavigate: (view: SidebarView) => void;
-  apps: SidebarApp[];
+  groups: SidebarGroup[];
   /** Opens the per-app pane. */
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
@@ -125,15 +140,16 @@ export function Sidebar({
    * rendering the list and nothing else. */
   inventory?: InventoryState;
 }) {
-  const protectedCount = apps.filter((a) => a.status.kind === "protected").length;
-
   return (
     <nav
       aria-label="Main"
-      className="flex w-[250px] shrink-0 flex-col border-r border-black/[0.08] bg-base-card p-4"
+      // 250px fixed, 16px padding, a 20px rhythm between the switcher, the nav,
+      // the divider and the app groups, and a 1px right edge at 5% black - all
+      // read off `nav/sidebar/overview` (113:16794) on 2026-08-21.
+      className="flex w-[250px] shrink-0 flex-col border-r border-black/[0.05] bg-base-card p-4"
     >
       <div className="flex flex-1 flex-col gap-6">
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-5">
           <OrgSwitcher name={orgName} onClick={onSwitchOrg} />
 
           <div className="flex flex-col gap-1">
@@ -162,16 +178,9 @@ export function Sidebar({
 
           <hr className="border-t border-base-border" />
 
-          <div className="flex flex-col gap-4">
-            {/* The Figma mock reads "4/4" beside two switched-off apps, which
-             * can only be stale copy - the count is protected-over-total. */}
-            <h2 className="flex items-center gap-2 font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
-              <span className="flex-1">Protected apps</span>
-              <span>
-                {protectedCount}/{apps.length}
-              </span>
-            </h2>
-
+          {/* 12px between groups, 8px inside one - `apps-section` (113:16814),
+           * re-read 2026-08-21. */}
+          <div className="flex flex-col gap-3">
             {inventory && inventory.kind !== "ok" ? (
               <InventoryState
                 state={inventory}
@@ -180,17 +189,26 @@ export function Sidebar({
               />
             ) : null}
 
-            <ul className="flex flex-col gap-1">
-              {apps.map((app) => (
-                <AppRow
-                  key={app.slug}
-                  app={app}
-                  selected={view.kind === "app" && view.slug === app.slug}
-                  onSelect={onSelectApp}
-                  onToggle={onToggleApp}
-                />
-              ))}
-            </ul>
+            {groups.map((group) => (
+              <div key={group.id} className="flex flex-col gap-2">
+                {group.label && (
+                  <h2 className="font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
+                    {group.label}
+                  </h2>
+                )}
+                <ul className="flex flex-col gap-1">
+                  {group.apps.map((app) => (
+                    <AppRow
+                      key={app.slug}
+                      app={app}
+                      selected={view.kind === "app" && view.slug === app.slug}
+                      onSelect={onSelectApp}
+                      onToggle={onToggleApp}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -318,8 +336,15 @@ function AppRow({
 
   return (
     <li
-      className={`flex w-full items-center gap-4 rounded-md px-1 py-1.5 ${
-        selected ? "bg-gray-100" : ""
+      // Hover and selection share one treatment, read off the component's
+      // row-hover variant (121:33421): a `neutral-100` fill inside a 1px
+      // `neutral-200` border, with the name in `base/primary`. The border is
+      // reserved while at rest so rows do not shift on hover. Drawn radius is
+      // 4px, which the radius scale maps onto `sm`.
+      className={`group flex w-full items-center gap-4 rounded-sm border px-1 py-1.5 ${
+        selected
+          ? "border-neutral-200 bg-neutral-100"
+          : "border-transparent hover:border-neutral-200 hover:bg-neutral-100"
       }`}
     >
       <button
@@ -341,7 +366,7 @@ function AppRow({
         <span className="flex min-w-0 flex-1 flex-col">
           <span
             className={`truncate text-base-xs font-medium leading-4 ${
-              selected ? "text-base-primary" : "text-neutral-900"
+              selected ? "text-base-primary" : "text-neutral-900 group-hover:text-base-primary"
             }`}
           >
             {app.name}

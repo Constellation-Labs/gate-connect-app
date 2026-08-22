@@ -52,6 +52,7 @@ export type IconName =
   | "circleCheck"
   | "circleX"
   | "messageCircleX"
+  | "share2"
   | "creditCard";
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -322,6 +323,15 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="m18 16 4-4-4-4" />
       <path d="m6 8-4 4 4 4" />
       <path d="m14.5 4-5 16" />
+    </>
+  ),
+  share2: (
+    <>
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <path d="m8.59 13.51 6.83 3.98" />
+      <path d="m15.41 6.51-6.82 3.98" />
     </>
   ),
   circleCheck: (

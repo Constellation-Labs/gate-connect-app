@@ -51,7 +51,7 @@ import { classifyError } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
-import { buildGroups } from "./lib/groups";
+import { MULTI_PROVIDER_ID, buildGroups } from "./lib/groups";
 import { verdictStatus, verdictsBySlug } from "./lib/verdict";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
@@ -124,6 +124,7 @@ import type {
   AppStatus,
   InventoryState,
   SidebarApp,
+  SidebarGroup,
   SidebarView,
 } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
@@ -887,6 +888,50 @@ export function NewUiApp() {
   );
 
   /**
+   * The rail's rows under their family eyebrows (Figma `Flows / App`, read
+   * 2026-08-21). Labels are the drawn vendor captions - "Anthropic" over the
+   * Claude apps, "OpenAI" over Codex - taken from each family's
+   * `upstream_provider_name`, which is per-vendor by construction. The
+   * multi-provider tools carry a sentence fragment there ("your existing
+   * providers"), and the design puts each under its own name ("OPENCODE"), so
+   * the leftover family splits into one group per tool. Before the catalog
+   * loads, one unlabelled group keeps the rows on screen rather than blanking
+   * the rail on a grouping that is not yet known.
+   */
+  const sidebarGroups = useMemo<SidebarGroup[]>(() => {
+    if (groups.length === 0) {
+      return apps.length > 0 ? [{ id: "all", label: "", apps }] : [];
+    }
+    const bySlug = new Map(apps.map((a) => [a.slug, a]));
+    const grouped: SidebarGroup[] = [];
+    for (const g of groups) {
+      const members: { app: SidebarApp; vendor: string }[] = [];
+      for (const m of g.members) {
+        if (m.kind !== "config" || !m.tool) continue;
+        const app = bySlug.get(m.key);
+        if (!app) continue;
+        bySlug.delete(m.key);
+        members.push({ app, vendor: m.tool.upstream_provider_name });
+      }
+      if (members.length === 0) continue;
+      if (g.id === MULTI_PROVIDER_ID) {
+        for (const { app } of members) {
+          grouped.push({ id: app.slug, label: app.name, apps: [app] });
+        }
+      } else {
+        grouped.push({ id: g.id, label: members[0].vendor, apps: members.map((m) => m.app) });
+      }
+    }
+    // A row the catalog did not claim keeps its place rather than vanishing.
+    // buildGroups sweeps leftovers into "Other tools", so this only catches a
+    // tool list and a catalog momentarily out of step with each other.
+    if (bySlug.size > 0) {
+      grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
+    }
+    return grouped;
+  }, [groups, apps]);
+
+  /**
    * What the sidebar should say when the app list is empty. `ok` while there are
    * rows, because the rows speak for themselves; before the first scan lands the
    * state is unknown, and rendering "no apps detected" then would be a claim
@@ -1289,6 +1334,22 @@ export function NewUiApp() {
         menuOpen={menuOpen}
         onMenuToggle={() => setMenuOpen((v) => !v)}
         onMenuSelect={onMenuSelect}
+        // Positional: how far along the drawn flow this pane sits. Every Setup
+        // frame carries the rail; the exact fractions are the flow's own order
+        // rather than sampled stops.
+        progress={
+          stage.kind === "welcome"
+            ? 0.1
+            : stage.kind === "api-key"
+              ? 0.25
+              : stage.kind === "org-picker"
+                ? 0.4
+                : stage.kind === "name-device"
+                  ? 0.6
+                  : stage.kind === "diagnostics"
+                    ? 0.8
+                    : 1
+        }
       >
         {stage.kind === "welcome" ? (
           <WelcomePane
@@ -1355,6 +1416,15 @@ export function NewUiApp() {
                 .catch((e) => setActionError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());
             }}
+            onSkip={() => {
+              // The drawn escape. Skipping consent is declining it: recorded as
+              // off, not left unanswered, or the step would ask again next
+              // launch and a skipped default-on would keep collecting.
+              setAnalyticsConsent(false);
+              void setShareDiagnostics(false)
+                .catch((e) => setActionError(classifyError(e, "generic")))
+                .finally(() => void loadPreferences());
+            }}
           />
         ) : (
           <ConnectedPane
@@ -1393,7 +1463,7 @@ export function NewUiApp() {
       }}
       view={view}
       onNavigate={setView}
-      apps={apps}
+      appGroups={sidebarGroups}
       onSelectApp={(slug) => setView({ kind: "app", slug })}
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
@@ -1509,6 +1579,7 @@ export function NewUiApp() {
           />
         ) : modelOverlay === "picker" ? (
           <ModelPickerDialog
+            appName={appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "This app"}
             // Empty until a gateway endpoint reports what it offers. The design
             // draws eleven `gate/...` ids; shipping those as though they were
             // real would put a fabricated model catalogue in front of the user,
@@ -1555,6 +1626,7 @@ export function NewUiApp() {
           <SwitchOrganizationDialog
             organizations={settings.prompt.orgs.map(toDialogOrg)}
             selectedId={settings.prompt.selectedId}
+            currentId={account?.org_id ?? undefined}
             onSelect={settings.selectOrg}
             onCancel={settings.dismissPrompt}
             onConfirm={() => void settings.confirmSwitchOrg()}

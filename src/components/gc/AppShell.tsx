@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { RoutingBanner, UpdateBanner } from "./banners";
 import { Sidebar } from "./Sidebar";
-import type { InventoryState, SidebarApp, SidebarView } from "./Sidebar";
+import type { InventoryState, SidebarGroup, SidebarView } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import type { TopnavAction } from "./Topbar";
 
@@ -26,7 +26,7 @@ export function AppShell({
   onSwitchOrg,
   view,
   onNavigate,
-  apps,
+  appGroups,
   onSelectApp,
   onToggleApp,
   onRefreshApps,
@@ -46,7 +46,8 @@ export function AppShell({
   onSwitchOrg: () => void;
   view: SidebarView;
   onNavigate: (view: SidebarView) => void;
-  apps: SidebarApp[];
+  /** The rail's app rows, grouped under their family eyebrows. */
+  appGroups: SidebarGroup[];
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
   /** Re-run tool detection. Passed straight through to the sidebar, which owns
@@ -97,7 +98,7 @@ export function AppShell({
           onSwitchOrg={onSwitchOrg}
           view={view}
           onNavigate={onNavigate}
-          apps={apps}
+          groups={appGroups}
           onSelectApp={onSelectApp}
           onToggleApp={onToggleApp}
           onRefresh={onRefreshApps}

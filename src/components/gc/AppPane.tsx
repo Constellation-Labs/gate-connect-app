@@ -19,7 +19,7 @@ export type ModelChoice = "app" | "gate";
 // `toolEventRow.ts`. Re-exported here so existing importers of this module keep
 // working and the pane's own props stay readable.
 export type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
-import type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
+import type { ActivityEntry, ActivitySecurity } from "../../lib/toolEventRow";
 
 export interface GateModel {
   /** Model vendor, e.g. "Anthropic". */
@@ -30,22 +30,33 @@ export interface GateModel {
   logo?: ReactNode;
 }
 
-/** The 200 stop, following the Overview's action pills, whose fills were read
- *  from the pixels on 2026-08-20. These particular pills were not sampled
- *  themselves - the App page draws them too small - but they are the same
- *  `mono/label-12` badge. Note `redacted` is **violet**, not purple: that is what
- *  the Overview's REDACT pill and the chart's Redacted series both measure. */
-const STATUS_STYLES: Record<ActivityStatus, string> = {
-  success: "bg-green-200 text-green-900",
-  error: "bg-red-200 text-red-900",
+/**
+ * One pill per row, in the design's own set (`table/recent-activity`, 272:3150,
+ * sampled from the properties panel 2026-08-21): ERROR / REDACTED / FLAGGED /
+ * ALLOW / BLOCKED. These are the 100 stop with 700 text - deliberately quieter
+ * than the Overview's 200/900 action pills - with ALLOW as a grey non-verdict
+ * (`gray/100` over `base/muted-foreground`) and REDACTED's text at the 800.
+ * ERROR and BLOCKED sample identically.
+ */
+const PILL_STYLES: Record<ActivitySecurity | "error", string> = {
+  error: "bg-red-100 text-red-700",
+  allow: "bg-gray-100 text-base-muted-foreground",
+  flagged: "bg-amber-100 text-amber-700",
+  redacted: "bg-violet-100 text-violet-800",
+  blocked: "bg-red-100 text-red-700",
 };
 
-const SECURITY_STYLES: Record<ActivitySecurity, string> = {
-  allow: "bg-green-200 text-green-900",
-  flagged: "bg-amber-200 text-amber-900",
-  redacted: "bg-violet-200 text-violet-900",
-  blocked: "bg-red-200 text-red-900",
-};
+/**
+ * Which pill a row wears. The design merged the old Status column into
+ * Security, so one cell must choose: the guardrail's verdict outranks the
+ * transport outcome, because a blocked request usually *also* errors from the
+ * client's side, and a column of ERRORs over what Gate actually did would bury
+ * the pane's story. ERROR is what remains when the gateway recorded no action.
+ */
+function rowVerdict(entry: ActivityEntry): ActivitySecurity | "error" | null {
+  if (entry.security) return entry.security;
+  return entry.status === "error" ? "error" : null;
+}
 
 export function AppPane({
   name,
@@ -66,6 +77,7 @@ export function AppPane({
   pending,
   eventsPending,
   onLoadMore,
+  onViewEntry,
   unavailable,
   alert,
 }: {
@@ -98,6 +110,10 @@ export function AppPane({
   /** Fetch the next page of the feed. Absent when there is no next page, which
    *  is what removes the control rather than leaving a dead one on screen. */
   onLoadMore?: () => void;
+  /** Open one request in the web dashboard. The button is drawn regardless -
+   *  the design's call - and this is where its destination lands once
+   *  `dashboard-web` can filter by request. */
+  onViewEntry?: (entry: ActivityEntry) => void;
   /** Which sections have no reading behind them.
    *
    *  Not "this app sent nothing": a tool can be routing correctly and still be
@@ -170,6 +186,7 @@ export function AppPane({
         pending={eventsPending}
         unavailable={unavailable?.events}
         onLoadMore={onLoadMore}
+        onViewEntry={onViewEntry}
       />
     </div>
   );
@@ -215,6 +232,10 @@ function ModelSelection({
           description="Use a model selected in Gate AI"
         />
       </div>
+
+      {/* The design separates the choice above from the current-model rows
+       * below with a full-width rule. */}
+      <hr className="mt-4 border-t border-base-border" />
 
       {/* Only meaningful once Gate is picking the model, but the design keeps it
        * visible either way so the user can see what they would switch to. */}
@@ -326,6 +347,7 @@ function RecentActivity({
   pending,
   unavailable,
   onLoadMore,
+  onViewEntry,
 }: {
   activity: ActivityEntry[];
   /** The first page is in flight; see `AppPane`. */
@@ -334,6 +356,8 @@ function RecentActivity({
   unavailable?: boolean;
   /** Absent when there is no next page. */
   onLoadMore?: () => void;
+  /** See `AppPane`. */
+  onViewEntry?: (entry: ActivityEntry) => void;
 }) {
   return (
     <Card className="p-4" busy={pending}>
@@ -359,34 +383,30 @@ function RecentActivity({
               Time
             </th>
             <th scope="col" className="pb-2 text-left font-normal">
-              Status
-            </th>
-            <th scope="col" className="pb-2 text-left font-normal">
               Security
             </th>
             <th scope="col" className="pb-2 text-left font-normal">
               Model
             </th>
-            {/* No Action column. The design draws a per-row "View" that opens the
-                request in the web dashboard, and there is no URL to open: nothing
-                in `dashboard-web` filters by tool, machine or time, so the button
-                had no destination and did nothing when clicked. A control that
-                looks live and is inert is worse than an absent one, so the column
-                returns with the deep link rather than before it. */}
+            <th scope="col" className="pb-2 text-left font-normal">
+              Message
+            </th>
+            <th scope="col" className="pb-2 text-right font-normal">
+              Action
+            </th>
           </tr>
         </thead>
         <tbody>
-          {activity.map((entry) => (
+          {activity.map((entry) => {
+            const verdict = rowVerdict(entry);
+            return (
             <tr key={entry.id} className="border-t border-base-border">
               <td className="whitespace-nowrap py-3 pr-4 text-sm leading-5 text-neutral-900">
                 {entry.time}
               </td>
               <td className="py-3 pr-4">
-                <Pill className={STATUS_STYLES[entry.status]}>{entry.status}</Pill>
-              </td>
-              <td className="py-3 pr-4">
-                {entry.security ? (
-                  <Pill className={SECURITY_STYLES[entry.security]}>{entry.security}</Pill>
+                {verdict ? (
+                  <Pill className={PILL_STYLES[verdict]}>{verdict}</Pill>
                 ) : (
                   // Withheld, not permitted. A pill here would read as a verdict.
                   <span
@@ -398,15 +418,40 @@ function RecentActivity({
                 )}
               </td>
               <td className="min-w-0 py-3 pr-4">
+                {/* Name only - the design pairs it with a vendor mark, but no
+                  * marks are exported yet (open question 2), and the sidebar's
+                  * tiles already fall back the same way. */}
                 <p className="truncate text-sm leading-5 text-neutral-900">
                   {entry.model}
                 </p>
-                <p className="truncate font-mono text-base-2xs leading-4 text-base-muted-foreground">
+              </td>
+              <td className="min-w-0 py-3 pr-4">
+                {/* The design draws a message title over this identifier. There
+                  * is no title to draw: AG-574 excludes prompt text, and the only
+                  * human-readable label the gateway holds for a conversation is
+                  * the user's own prompt, stored unredacted. So the cell carries
+                  * what the row can truthfully be identified by. */}
+                <p className="truncate font-mono text-base-xs leading-4 text-base-muted-foreground">
                   {entry.reference}
                 </p>
               </td>
+              <td className="py-3 text-right">
+                {/* Opens the request in the web dashboard - once there is a URL
+                  * for it. The dashboard has no tool/machine/time filter yet, so
+                  * the shell has nothing to pass for `onViewEntry`; the button is
+                  * drawn ahead of its wiring by decision (2026-08-21). */}
+                <button
+                  type="button"
+                  onClick={() => onViewEntry?.(entry)}
+                  className="inline-flex items-center gap-1.5 rounded-sm border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                >
+                  View
+                  <Icon name="squareArrowOutUpRight" size={12} />
+                </button>
+              </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
       )}
@@ -443,7 +488,7 @@ function PendingRows() {
         >
           <Skeleton className="h-4 w-16" />
           <Skeleton className="h-4 w-14" />
-          <Skeleton className="h-4 w-14" />
+          <Skeleton className="h-4 w-24" />
           <Skeleton className="h-4 w-32" />
           <Skeleton className="h-4 w-12" />
         </div>
@@ -453,9 +498,11 @@ function PendingRows() {
 }
 
 function Pill({ className, children }: { className: string; children: ReactNode }) {
+  // Drawn at 4px; the radius scale names no 4px stop and its comment maps the
+  // drawn 4 onto `sm`, the same call the controls made.
   return (
     <span
-      className={`inline-block rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
+      className={`inline-block rounded-sm px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
     >
       {children}
     </span>

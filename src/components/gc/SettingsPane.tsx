@@ -338,26 +338,21 @@ export function buildSettingsSections({
             ? { unavailable: { onRetry: onRetryLaunchAtLogin } }
             : { toggle: { on: launchAtLogin, onToggle: onToggleLaunchAtLogin } }),
         },
-      ],
-    },
-    // Its own section rather than a row under Startup: these are choices about
-    // what interrupts the user, not about what happens at boot.
-    //
-    // One switch, not the four the criteria list. Blocked-event, flagged-event
-    // and sound notifications are specified alongside the live security-event
-    // feed, and there is no feed - the only notifications this app fires are
-    // about routing itself. A switch for an event that cannot arrive would tell
-    // the user they had turned something off.
-    ...(onToggleRoutingHealthNotifications
-      ? [
-          {
-            id: "notifications",
-            title: "Notifications",
-            rows: [
+        // A row under Startup, where the drawn screen keeps it ("Settings /
+        // Main screens", read 2026-08-21) - an earlier build gave it a section
+        // of its own because AG-594 names one.
+        //
+        // One switch, not the four the criteria list, and not the drawn
+        // description either: the drawing promises alerts when a request is
+        // blocked or flagged, and those events need the live security feed
+        // (AG-578), which does not exist. The only notifications this app fires
+        // are about routing itself, so that is what the row claims to control.
+        ...(onToggleRoutingHealthNotifications
+          ? [
               {
                 id: "routing-health",
                 icon: "bell" as IconName,
-                label: "Routing health",
+                label: "Notifications",
                 description:
                   "Tell me when a session expires or a tool cannot be put back",
                 ...(preferencesUnavailable && onRetryPreferences
@@ -368,11 +363,11 @@ export function buildSettingsSections({
                         onToggle: onToggleRoutingHealthNotifications,
                       },
                     }),
-              },
-            ],
-          },
-        ]
-      : []),
+              } as SettingsRow,
+            ]
+          : []),
+      ],
+    },
     // Diagnostics gets its own section, out of About: sharing data is a privacy
     // choice, and the report is the evidence of what would be shared. Sending a
     // report on demand, and the reference it returns, belong with the collection
@@ -388,7 +383,7 @@ export function buildSettingsSections({
                 icon: "shieldCheck" as IconName,
                 label: "Share diagnostic data",
                 description:
-                  "Send Gate errors and routing state to help fix problems. Never prompts, responses, or credentials.",
+                  "Send Gate errors and routing state to help fix problems. Never prompts or credentials.",
                 ...(preferencesUnavailable && onRetryPreferences
                   ? { unavailable: { onRetry: onRetryPreferences } }
                   : {

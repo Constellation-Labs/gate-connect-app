@@ -350,29 +350,31 @@ test.describe("new UI: the diagnostic-data step", () => {
   test("an unanswered install is asked before it reaches the app", async ({ boot }) => {
     const app = await boot(unanswered);
 
-    await expect(app.page.getByRole("heading", { name: "Help fix problems" })).toBeVisible();
-    // The switch defaults on, and the primary is Continue rather than Accept:
+    await expect(app.page.getByRole("heading", { name: "Share diagnostic data" })).toBeVisible();
+    // The switch defaults on, and the primary finishes rather than "Accepts":
     // leaving it alone is a real answer.
     await expect(
-      app.page.getByRole("switch", { name: "Share diagnostic data" }),
+      app.page.getByRole("switch", { name: "Diagnostic data sharing" }),
     ).toHaveAttribute("aria-checked", "true");
-    await expect(app.page.getByRole("button", { name: "Continue" })).toBeVisible();
+    await expect(app.page.getByRole("button", { name: "Finish setup" })).toBeVisible();
   });
 
-  test("it lists what is and is not collected", async ({ boot }) => {
+  test("it states what never leaves the machine", async ({ boot }) => {
+    // The itemised sent / never-sent lists moved to Settings with the redraw;
+    // the step's own copy carries the never-shared claim.
     const app = await boot(unanswered);
 
-    await expect(app.page.getByText("Sent", { exact: true })).toBeVisible();
-    await expect(app.page.getByText("Never sent")).toBeVisible();
-    await expect(app.page.getByText(/Prompts or model responses/)).toBeVisible();
+    await expect(
+      app.page.getByText(/Prompts, credentials, or private information are never shared/),
+    ).toBeVisible();
   });
 
-  /** Leaving the default in place is an answer, so Continue must record it - or the
-   * next launch would ask again. */
-  test("Continue records an unchanged choice and opens the app", async ({ boot }) => {
+  /** Leaving the default in place is an answer, so finishing must record it - or
+   * the next launch would ask again. */
+  test("Finish setup records an unchanged choice and opens the app", async ({ boot }) => {
     const app = await boot(unanswered);
 
-    await app.page.getByRole("button", { name: "Continue" }).click();
+    await app.page.getByRole("button", { name: "Finish setup" }).click();
 
     await expect.poll(() => app.lastCall("set_share_diagnostics")).toEqual({ enabled: true });
     await expect(app.page.getByRole("button", { name: "Settings" })).toBeVisible();
@@ -381,8 +383,17 @@ test.describe("new UI: the diagnostic-data step", () => {
   test("switching it off records the refusal, and still opens the app", async ({ boot }) => {
     const app = await boot(unanswered);
 
-    await app.page.getByRole("switch", { name: "Share diagnostic data" }).click();
-    await app.page.getByRole("button", { name: "Continue" }).click();
+    await app.page.getByRole("switch", { name: "Diagnostic data sharing" }).click();
+    await app.page.getByRole("button", { name: "Finish setup" }).click();
+
+    await expect.poll(() => app.lastCall("set_share_diagnostics")).toEqual({ enabled: false });
+    await expect(app.page.getByRole("button", { name: "Settings" })).toBeVisible();
+  });
+
+  test("skipping records the refusal rather than leaving it unanswered", async ({ boot }) => {
+    const app = await boot(unanswered);
+
+    await app.page.getByRole("button", { name: "Skip data sharing" }).click();
 
     await expect.poll(() => app.lastCall("set_share_diagnostics")).toEqual({ enabled: false });
     await expect(app.page.getByRole("button", { name: "Settings" })).toBeVisible();
@@ -394,7 +405,7 @@ test.describe("new UI: the diagnostic-data step", () => {
       preferences: { ...unanswered.preferences, share_diagnostics_recorded: true },
     });
 
-    await expect(app.page.getByRole("heading", { name: "Help fix problems" })).toHaveCount(0);
+    await expect(app.page.getByRole("heading", { name: "Share diagnostic data" })).toHaveCount(0);
     await expect(app.page.getByRole("button", { name: "Settings" })).toBeVisible();
   });
 });

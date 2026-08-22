@@ -4,7 +4,6 @@ import { ConstellationHexMark } from "./ConstellationHexMark";
 import { Icon } from "./Icon";
 import { ModalOption } from "./Modal";
 import { BaseSwitch } from "./base";
-import { CollectedDataLists } from "./dialogs";
 import { Topbar } from "./Topbar";
 import type { TopnavAction } from "./Topbar";
 
@@ -30,11 +29,16 @@ export function SetupLayout({
   menuOpen,
   onMenuToggle,
   onMenuSelect,
+  progress,
   children,
 }: {
   menuOpen: boolean;
   onMenuToggle: () => void;
   onMenuSelect: (action: TopnavAction) => void;
+  /** How far through setup this pane sits, 0..1. Every drawn Setup frame
+   * carries the rail under the topbar (`Flows / Setup`, read 2026-08-21), the
+   * same element the onboarding tour has. Omitted draws no rail. */
+  progress?: number;
   children: ReactNode;
 }) {
   return (
@@ -44,6 +48,21 @@ export function SetupLayout({
         onMenuToggle={onMenuToggle}
         onMenuSelect={onMenuSelect}
       />
+      {progress !== undefined && (
+        <div
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progress * 100)}
+          aria-label="Setup progress"
+          className="h-1 shrink-0 bg-gray-100"
+        >
+          <div
+            className="h-full bg-gradient-to-r from-blue-ribbon-800 to-blue-ribbon-700 transition-[width] duration-300"
+            style={{ width: `${progress * 100}%` }}
+          />
+        </div>
+      )}
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-gray-100 p-6">
         <div className="w-full max-w-[520px] rounded-md border border-base-border bg-base-card p-6 shadow-base-sm">
           {children}
@@ -560,71 +579,61 @@ export function ConnectedPane({
  * collection, not after it. `lib/analytics.ts` starts PostHog at launch, so the
  * first thing this step buys is a person who has actually been asked.
  *
- * **Provisional layout.** The Figma draws no diagnostics step (AG-551 and AG-553
- * are still moving). Structure comes from AG-603 and AG-554: the switch defaults
- * On, the list of what is and is not collected sits under it, and Continue records
- * the displayed value.
+ * Drawn at last (`Flows / Setup`, "Share diagnostic data", read 2026-08-21): a
+ * share2 tile, one sentence of copy, the sharing row with its switch, a
+ * `Finish setup` primary and a `Skip data sharing` link. The full sent /
+ * never-sent lists moved out of this step with the redraw - the sentence
+ * carries the never-shared claim, and the itemised lists stay one click away
+ * under Settings ("What is collected").
  *
- * The switch is **on by default and the primary is Continue, not Accept** -
- * leaving it alone is a real answer, and the copy says so rather than implying the
- * person has to agree to proceed.
+ * The switch is **on by default and the primary finishes, not "Accept"** -
+ * leaving it alone is a real answer. Skipping is also an answer: it records
+ * sharing off, because a skipped consent is not consent.
  */
 export function DiagnosticsPane({
   share,
   onToggleShare,
   busy,
   onContinue,
+  onSkip,
 }: {
   share: boolean;
   onToggleShare: () => void;
   busy?: boolean;
   onContinue: () => void;
+  /** The drawn "Skip data sharing" link: records sharing off and finishes. */
+  onSkip: () => void;
 }) {
   return (
     <div className="flex flex-col gap-6">
       <SetupHeader
-        title="Help fix problems"
-        subtitle="Gate Connect can send diagnostic data about itself. You can change this any time in Settings."
+        title="Share diagnostic data"
+        subtitle="Opt in to send Gate errors and routing state to help fix problems. Prompts, credentials, or private information are never shared."
         mark={
           <span className="flex size-12 items-center justify-center rounded-md bg-gray-100 text-neutral-700">
-            <Icon name="info" size={24} />
+            <Icon name="share2" size={24} />
           </span>
         }
       />
 
-      <div className="flex items-center gap-3 rounded-md border border-base-border bg-base-card p-4">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium leading-5 text-neutral-900">
-            Share diagnostic data
-          </p>
-          <p className="text-base-xs leading-4 text-neutral-600">
-            {share
-              ? "Gate will send the data listed below."
-              : "Gate will not send diagnostic data."}
-          </p>
-        </div>
+      <div className="flex items-center gap-3 rounded-md border border-base-border bg-base-card px-4 py-3">
+        <p className="min-w-0 flex-1 text-sm font-medium leading-5 text-neutral-900">
+          Diagnostic data sharing
+        </p>
         <span className="flex shrink-0 items-center gap-2">
           <span className="text-base-xs font-medium text-neutral-600">
             {share ? "On" : "Off"}
           </span>
-          <BaseSwitch on={share} label="Share diagnostic data" onClick={onToggleShare} />
+          <BaseSwitch on={share} label="Diagnostic data sharing" onClick={onToggleShare} />
         </span>
       </div>
 
-      <div className="flex flex-col gap-3 text-base-xs leading-4 text-neutral-600">
-        <CollectedDataLists Wrapper={SetupNote} />
+      <div className="flex flex-col gap-4">
+        <PrimaryButton onClick={onContinue} busy={busy}>
+          Finish setup
+        </PrimaryButton>
+        <SetupLink onClick={onSkip}>Skip data sharing</SetupLink>
       </div>
-
-      <PrimaryButton onClick={onContinue} busy={busy}>
-        Continue
-      </PrimaryButton>
     </div>
-  );
-}
-
-/** The card the setup pane frames each list in - `ModalNote`'s counterpart here. */
-function SetupNote({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-md border border-base-border bg-gray-50 p-3">{children}</div>
   );
 }

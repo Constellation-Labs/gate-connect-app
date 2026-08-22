@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
 import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
@@ -53,12 +53,17 @@ export interface DialogOrganization {
 export function SwitchOrganizationDialog({
   organizations,
   selectedId,
+  currentId,
   onSelect,
   onCancel,
   onConfirm,
 }: {
   organizations: DialogOrganization[];
   selectedId: string;
+  /** The org this device already uses. While it is the one selected the primary
+   * is refused - the drawn dialog mutes it - because confirming a no-op switch
+   * would fire the whole switch sequence to change nothing. */
+  currentId?: string;
   onSelect: (id: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -67,9 +72,13 @@ export function SwitchOrganizationDialog({
     <Modal
       icon="usersRound"
       title="Switch organization"
-      subtitle="Choose where this device sends activity and uses Gate credits"
+      subtitle="Select where this device sends activity and uses Gate credits"
       secondary={{ label: "Cancel", onClick: onCancel }}
-      primary={{ label: "Switch organization", onClick: onConfirm }}
+      primary={{
+        label: "Switch organization",
+        onClick: onConfirm,
+        disabled: currentId !== undefined && selectedId === currentId,
+      }}
       onDismiss={onCancel}
     >
       <div role="radiogroup" aria-label="Organization" className="flex flex-col gap-3">
@@ -221,9 +230,10 @@ export function OrganizationSwitchedDialog({
       tone="success"
       icon="circleCheck"
       title="Organization switched"
-      subtitle={`Gate Connect is now using ${organizationName}.`}
+      subtitle={`Gate Connect is now using ${organizationName}`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
+      narrow
     >
       <ModalNote>
         <p className="font-medium text-neutral-900">Your local routing is unchanged.</p>
@@ -328,10 +338,10 @@ export function ApplyChangesDialog({
     <Modal
       tone="warning"
       icon="triangleAlert"
-      title="Apply changes to running apps"
-      subtitle="Your configuration is now saved. One final step makes the new route active"
-      secondary={{ label: "Close affected apps", onClick: onCloseApps }}
-      primary={{ label: "I will reopen later", onClick: onReopenLater }}
+      title="Apply changes to running apps?"
+      subtitle="Your configuration is saved. One final step makes the new route active"
+      secondary={{ label: "Yes, close affected apps", onClick: onCloseApps }}
+      primary={{ label: "No, I will reopen later", onClick: onReopenLater }}
       onDismiss={onReopenLater}
     >
       {apps.map((app) => (
@@ -367,8 +377,8 @@ export function CloseAppsDialog({
       icon="triangleAlert"
       title="Close affected apps now?"
       subtitle="Unsaved work or active sessions in these apps may be interrupted"
-      secondary={{ label: "Go back", onClick: onGoBack }}
-      primary={{ label: `Close ${label}`, onClick: onCloseApps, destructive: true }}
+      secondary={{ label: "No, I will close later", onClick: onGoBack }}
+      primary={{ label: "Yes, close apps", onClick: onCloseApps, destructive: true }}
       onDismiss={onGoBack}
     >
       {apps.map((app) => (
@@ -403,6 +413,7 @@ export function ChangeReadyDialog({
       subtitle={`${app.name} closed successfully`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
+      narrow
     >
       <ModalNote>
         <p className="font-medium text-neutral-900">The new Gate route is active</p>
@@ -436,7 +447,8 @@ export function DiagnosticsDialog({
   return (
     <Modal
       icon="info"
-      title="Diagnostics"
+      title="Diagnostics report"
+      // The drawn subtitle reads "this installed" - a typo, kept corrected.
       subtitle="The state of this install, as text you can hand to someone else"
       secondary={{ label: "Close", onClick: onClose }}
       primary={{ label: copied ? "Copied" : "Copy report", onClick: onCopy }}
@@ -461,42 +473,58 @@ export interface GateModelOption {
 
 /**
  * Choosing which Gate model an app runs on (Figma `App / Select a model`, the
- * "App w/ choose model modal open" frame).
+ * "App w/ choose model modal open" frame, re-read 2026-08-21).
  *
- * The design draws this as a **dropdown anchored to the Change model button**,
- * not a centred dialog: a white rounded panel, one row per model, the current
- * one first and outlined. Rendered here as a modal-positioned popover so it
- * keeps the focus trap and escape handling every other overlay has - anchoring
- * it to the button would need the pane to own the trigger's geometry, and the
- * design's own placement is only legible at one zoom level.
+ * The design now draws this as a centred dialog rather than the dropdown an
+ * earlier read described: header with an X, a search field beside an
+ * "All providers" filter, a "Showing X of Y models" line, then one radio row
+ * per model with the selected one outlined. One deliberate deviation:
+ *
+ * - The drawn subtitle reads "<App> uses on Gate model", which is not a
+ *   sentence; rendered with the one word that makes it one. Raised as a copy
+ *   question rather than shipped verbatim.
  *
  * Model ids are mono. They are identifiers, and CLAUDE.md names them
  * explicitly; the frame renders them in the UI face, which reads as a slip
  * rather than a decision, since every other identifier in the design is mono.
- *
- * The top edge of the drawn panel was cut off in the only readable capture, so
- * whether it carries a search field is unknown. Omitted here: eleven rows do not
- * need one, and inventing a control the designer may not have drawn is worse
- * than leaving room for it.
  */
 export function ModelPickerDialog({
+  appName,
   models,
   selectedId,
   onSelect,
   onDismiss,
 }: {
+  /** Whose model is being chosen, for the subtitle. */
+  appName: string;
   models: GateModelOption[];
   selectedId?: string;
   onSelect: (id: string) => void;
   onDismiss: () => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [vendor, setVendor] = useState("all");
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const vendors = useMemo(
+    () => [...new Set(models.map((m) => m.vendor))],
+    [models],
+  );
+  const needle = query.trim().toLowerCase();
+  const shown = models.filter(
+    (m) =>
+      (vendor === "all" || m.vendor === vendor) &&
+      m.id.toLowerCase().includes(needle),
+  );
+
   return (
     <Modal
       icon="layers"
       title="Choose a Gate model"
-      subtitle="Requests routed through Gate will use this model"
-      secondary={{ label: "Cancel", onClick: onDismiss }}
+      subtitle={`What ${appName} uses on Gate model`}
+      onClose={onDismiss}
       onDismiss={onDismiss}
+      initialFocus={searchRef}
     >
       {models.length === 0 ? (
         <ModalNote>
@@ -507,30 +535,84 @@ export function ModelPickerDialog({
           </p>
         </ModalNote>
       ) : (
-        <div role="radiogroup" aria-label="Gate model" className="flex flex-col gap-1">
-          {models.map((model) => {
-            const selected = model.id === selectedId;
-            return (
-              <button
-                key={model.id}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                onClick={() => onSelect(model.id)}
-                className={`flex items-center gap-3 rounded-sm border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-                  selected
-                    ? "border-base-primary bg-base-card"
-                    : "border-transparent hover:bg-gray-50"
-                }`}
-              >
-                <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
-                  {model.logo ?? <Icon name="cube" size={16} />}
-                </span>
-                <span className="font-mono text-sm leading-5 text-neutral-900">{model.id}</span>
-              </button>
-            );
-          })}
-        </div>
+        <>
+          <div className="flex items-center gap-3">
+            <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-sm border border-base-input bg-base-card px-2.5 shadow-base-2xs focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-base-primary">
+              <Icon name="search" size={16} className="shrink-0 text-neutral-500" />
+              <input
+                ref={searchRef}
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search models"
+                aria-label="Search models"
+                className="w-full bg-transparent text-sm leading-5 text-neutral-900 outline-none placeholder:text-neutral-500"
+              />
+            </label>
+            <select
+              value={vendor}
+              onChange={(e) => setVendor(e.target.value)}
+              aria-label="Provider"
+              className="h-9 shrink-0 rounded-sm border border-base-input bg-base-card px-2.5 text-sm font-medium leading-5 text-neutral-900 shadow-base-2xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            >
+              <option value="all">All providers</option>
+              {vendors.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* The line stays true when it reads "Showing 0 of 14": a search with
+            * no hits already says so in the one place the user is looking. */}
+          <p className="text-base-xs leading-4 text-base-muted-foreground">
+            Showing {shown.length} of {models.length} models · 400+ in Gate AI
+          </p>
+
+          <div
+            role="radiogroup"
+            aria-label="Gate model"
+            className="-mr-2 flex max-h-80 flex-col gap-1 overflow-y-auto pr-2"
+          >
+            {shown.map((model) => {
+              const selected = model.id === selectedId;
+              return (
+                <button
+                  key={model.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => onSelect(model.id)}
+                  className={`flex items-center gap-3 rounded-sm border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+                    selected
+                      ? "border-base-primary bg-base-card"
+                      : "border-base-border hover:bg-gray-50"
+                  }`}
+                >
+                  <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
+                    {model.logo ?? <Icon name="cube" size={16} />}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-neutral-900">
+                    {model.id}
+                  </span>
+                  {selected ? (
+                    <Icon
+                      name="circleCheck"
+                      size={16}
+                      className="shrink-0 text-base-primary"
+                    />
+                  ) : (
+                    <span
+                      aria-hidden
+                      className="size-4 shrink-0 rounded-full border border-base-input"
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </>
       )}
     </Modal>
   );
@@ -563,6 +645,7 @@ export function UseGateModelDialog({
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}
+      narrow
     >
       <ModalSubject
         icon={vendorLogo ?? <Icon name="cube" size={16} />}

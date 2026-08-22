@@ -313,7 +313,7 @@ export function MessagesChart({
         </tbody>
       </table>
 
-      <ul className="mt-4 flex items-center justify-center gap-4">
+      <ul className="mt-4 flex items-center gap-4">
         {SERIES.map(({ key, label, className }) => (
           <li key={key} className="flex items-center gap-1.5">
             <span aria-hidden className={`size-3 rounded-xs ${className}`} />
@@ -328,35 +328,45 @@ export function MessagesChart({
 }
 
 /**
- * The chart's placeholder: one column per hour of the period it is about to
- * draw, at heights that do not change between renders.
- *
- * Fixed heights and not random ones. A skeleton is a promise about shape, and a
- * silhouette that reshuffles on every repaint is read as data arriving - which
- * is the one thing it must not claim.
+ * The chart's placeholder, as `overview-loading` (228:85602) draws it: one
+ * uniform full-height column per hour of the period, over the real numbered
+ * ticks and the real legend - the card keeps its shape and only the readings
+ * are missing. An earlier version drew a fixed silhouette at varied heights,
+ * which read as data that had already arrived.
  */
 function PendingChart() {
   return (
     <>
       <div aria-hidden className="mt-4 flex h-28 items-end justify-between gap-1">
-        {PENDING_HEIGHTS.map((height, i) => (
-          <Skeleton key={i} className="w-5" style={{ height: `${height}%` }} />
+        {PENDING_HOURS.map((hour) => (
+          <Skeleton key={hour} className="h-full w-5" />
         ))}
       </div>
       <div aria-hidden className="mt-1 flex justify-between gap-1">
-        {PENDING_HEIGHTS.map((_, i) => (
-          <Skeleton key={i} className="h-3 w-5" />
+        {PENDING_HOURS.map((hour) => (
+          <span
+            key={hour}
+            className="w-5 text-center font-mono text-base-2xs text-base-muted-foreground"
+          >
+            {hour}
+          </span>
         ))}
       </div>
+      <ul className="mt-4 flex items-center gap-4">
+        {SERIES.map(({ key, label, className }) => (
+          <li key={key} className="flex items-center gap-1.5">
+            <span aria-hidden className={`size-3 rounded-xs ${className}`} />
+            <span className="text-base-xs text-neutral-600">{label}</span>
+          </li>
+        ))}
+      </ul>
     </>
   );
 }
 
-/** 24 columns, one per hour, in a shape that reads as a plot without asserting
- *  one. Written out rather than generated so the silhouette is reviewable. */
-const PENDING_HEIGHTS = [
-  22, 30, 26, 18, 24, 34, 46, 58, 52, 64, 70, 62, 74, 66, 56, 60, 48, 54, 42, 38, 44, 32, 28, 20,
-];
+/** Positional ticks for the placeholder, 1..24 as the frame draws them. Indexes,
+ *  not hours-ago: the real axis replaces them with the data's own labels. */
+const PENDING_HOURS = Array.from({ length: 24 }, (_, i) => i + 1);
 
 /**
  * The hovered bucket's four figures (Figma `chart/tooltip`).

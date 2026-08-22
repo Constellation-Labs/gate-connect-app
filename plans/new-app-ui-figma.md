@@ -373,6 +373,182 @@ taking the second one - so its own `overview-loading` frame was not opened. The
 shared components mean the Overview picks up the empty treatment regardless; what
 is unverified is whether its no-data copy differs from the App page's.
 
+### Sync 2026-08-21: Settings, Setup, Onboarding, and the rest of the file
+
+The remaining flows, read the same day. All Settings and Setup sections carry
+the check except **`Auth / Error states`, which still has none** - the
+setup-timeout dialog and the device-name validation stay unbuilt, third read
+running.
+
+**Settings caught up with the build, and the build moved twice.** The drawn
+screen now includes the Change server action and a full Diagnostics section
+(Share diagnostic data + Diagnostics report / View report) - both previously
+built as undrawn deviations, now canon. What moved to match the drawing: the
+Notifications switch is a **row under Startup** again (AG-594's separate
+section is not drawn; the row keeps the honest "session expires / cannot be
+put back" description because the drawn "blocked or flagged" copy still
+promises events AG-578 has not built); the share-diagnostics description
+drops ", responses," to read exactly as drawn; and the report dialog is
+titled **"Diagnostics report"**. Kept deviations: the Help section and the
+Sign-in method / certificate / What-is-collected rows (not drawn, all
+previously recorded), and the drawn report subtitle's "this installed" typo,
+shipped corrected. Rename, Replace key, Disconnect and Reset all match their
+frames verbatim.
+
+**Setup gained two drawn things.** Every frame carries a **progress rail**
+under the topbar - `SetupLayout` takes `progress` now, fed positionally per
+stage. And the diagnostics step is finally drawn ("Share diagnostic data"):
+rebuilt to match - share2 tile (glyph added), the drawn one-line copy, a
+"Diagnostic data sharing" switch row, **Finish setup** as the primary and a
+**Skip data sharing** link that records the refusal rather than leaving the
+question unanswered. The itemised sent / never-sent lists moved out of the
+step with the redraw; they remain in Settings under "What is collected". The
+sign-in, API-key, org-picker and name-device frames all match what was built
+on 2026-08-19, including the busy states.
+
+**Onboarding matches as built** (welcome + three steps, rail, footer). No
+changes.
+
+**The rest of the file.** The Components page still carries the older
+`banner/routing` copy (`Routing · 2 of 4 Apps` beside an all-protected
+message); the flow frames' `Routed · N of N` wins, being both newer and
+internally consistent. `topnav/menu` still draws Contact support, which stays
+omitted for want of an address. Icons is a glyph library. The **Design docs
+and Comments pages could not be opened** - Figma's page switching refused
+across a dozen attempts in two sessions of this pass - so whatever they hold
+is unread; they are documentation pages, not flow drawings, but worth a look
+when the canvas cooperates.
+
+514 unit tests and the full 163-test e2e suite pass.
+
+### Sync 2026-08-21: the Overview flow, read at last
+
+`Flows / Overview` (116:26381) had not been re-read since the failed page
+switches of 2026-08-20. Every section carries the check: Dimensions, Main
+screens, two Turn-routing-ON dialog sections, and Switching an organization.
+What moved, and what was confirmed:
+
+**The action pills did not change.** BLOCK sampled `red/200` `#FECACA` over
+`red/900` at a 2px radius - exactly what shipped on 2026-08-20 - so the
+Overview's action pills and the App table's 100/700 status badges really are
+two different components, not one drifting spec. **The ON pill gained a
+glyph**: `circleCheck` at 12px in `green/800`, a 4px gap ahead of the
+`green/200`/`green/900` label. `StatusPill` moved from a bare `check` at an
+8px gap. **The Manage footers are bordered buttons now**, sitting under a
+full-width rule; `ManageLink` moved from a borderless text link.
+
+**`overview-loading` (228:85602) was finally read**, and the built silhouette
+was wrong in three ways: the drawn placeholder is 24 *uniform full-height*
+columns, the numbered ticks render as numbers (1..24) rather than skeleton
+bars, and the legend stays on screen while loading. `PendingChart` follows.
+The legend is also **left-aligned** in every frame; the built one was centred.
+One discrepancy left alone: the loading frame draws a rule above the legend
+and the loaded frames do not, so the shared markup follows the loaded state.
+
+**The routed banner says "Routed"**, not the "Routing" the earlier read
+recorded (`Routed · 4 of 4 Apps` in every routed frame). `RoutingBanner`
+updated.
+
+**The dialogs moved, mostly in copy.** Apply changes gained its question mark
+and Yes/No button prefixes ("Yes, close affected apps" / "No, I will reopen
+later"); Close apps' escape is "No, I will close later" and its destructive
+primary is the generic "Yes, close apps" rather than naming the app; Switch
+organization's subtitle starts "Select", and its drawn primary is muted while
+the selected org is the current one - `SwitchOrganizationDialog` gained
+`currentId` and refuses the no-op, which the shell feeds from the account.
+The Organization-switched copy, flagged on 2026-08-17 as the least certain of
+the seven, is confirmed verbatim. And the three short confirmations - Change
+is ready, Organization switched, Use a Gate model - are drawn at **520px**,
+not the template's 600: `Modal` gained `narrow`.
+
+Review config, Change is ready, the alert banner, the stat trio, the tooltip
+and the chart's loaded anatomy all match as built; the extra transparency the
+review dialog carries (the Gate route and the file path) stays. e2e:
+`new-ui-running-apps.spec.ts` follows the new button labels.
+
+### Sync 2026-08-21: the App page moved, and the build follows it
+
+Read through the browser (MCP quota still spent). The Pages list itself has
+changed: `Comments` and `Design docs` are new top-level pages, and the Flows
+page formerly named `Auth` is now `Setup`. Only `Flows / App` (116:30199) was
+read this pass; every section on it carries the ready check, including two new
+ones: **`App / Table guide`** and the reworked **`App / Select a model`**.
+
+**Recent activity is a different table** (`table/recent-activity`, 272:3150).
+Columns are now Time / Security / Model / Message / Action. The old Status
+column is gone - ERROR joined the Security pill set - and the pills were
+sampled from the properties panel: **the 100 stop with 700 text**, at a 4px
+radius with 8/4 padding, not the Overview pills' 200/900 at 2px. ERROR and
+BLOCKED sample identically (`red/100` / `red/700`); FLAGGED is
+`amber/100`/`amber/700`; REDACTED is `violet/100` with its text at the **800**;
+ALLOW is `gray/100` over `base/muted-foreground` - a grey non-verdict, not a
+green badge. Built in `AppPane.tsx`: one pill per row, the recorded verdict
+outranking the transport error because a blocked request usually also errors
+client-side, with ERROR reserved for rows where the gateway recorded no
+action. The Model cell is the model name alone (the drawn vendor mark waits on
+open question 2), and the Message cell carries the mono session reference -
+the drawn title over it could only come from prompt text, which AG-574
+excludes. **The Action column is drawn but not wired** (decision, 2026-08-21):
+each row carries the design's View button with the external-link glyph, and
+`AppPane` exposes `onViewEntry` for the destination, but the shell passes no
+handler yet because nothing in `dashboard-web` filters by tool, machine or
+time. The deep link is the remaining work, not the column.
+
+**The model picker is a centred dialog now, not a dropdown.** The earlier
+read's cut-off top edge turns out to have hidden a real header: X dismiss,
+a "Search models" field, an "All providers" filter, and a count line reading
+"Showing 10 of 14 models · 400+ in Gate AI". `ModelPickerDialog` rebuilt to
+match: search filters on the id, the provider select is derived from the model
+list, the count line reports the filter's own numbers, and rows carry trailing
+radio circles with the selected one outlined. `Modal` gained an opt-in
+`onClose` X for it. The count line ships the drawn "· 400+ in Gate AI" tail
+verbatim (decision, 2026-08-21). One deviation, recorded at the component: the
+drawn subtitle "Claude Desktop uses on Gate model" is not a sentence, shipped
+as "What {app} uses on Gate model" and raised as a copy question. The list is
+still empty until a gateway endpoint reports models; the empty note keeps the
+search chrome off screen rather than drawing dead controls.
+
+**The sidebar is grouped now.** Every frame on the page draws the rail's apps
+under mono eyebrows - `ANTHROPIC` over the two Claude apps, `OPEN AI` over
+Codex, `OPENCODE` over OpenCode - and the `PROTECTED APPS 4/4` counter is
+gone, which retires open question 1. Built as `SidebarGroup`: the shell groups
+rows by the routing families `buildGroups` already computes, labelled with the
+drawn vendor captions via each family's `upstream_provider_name` (decision,
+2026-08-21). The multi-provider tools carry a sentence fragment in that field
+("your existing providers"), and the design draws each under its own name, so
+the leftover family splits into one group per tool. Before the catalog loads,
+one unlabelled group keeps the rows on screen. The drawn rail also shows no
+Families nav item; ours stays, per the standing deviation.
+
+**Small pieces.** The Model selection card gained the drawn divider above
+"Current Gate model". `UseGateModelDialog`, the alert banners, the stat trio,
+the chart and the no-data states all still match their frames; none were
+touched.
+
+**`nav/sidebar/overview` (113:16794) was pulled from the Components page**, and
+it confirms the grouped rail is canonical, not an App-page quirk: all three
+sidebar variants there draw the vendor eyebrows and none draw the old
+`PROTECTED APPS` counter. Sampled values, and what moved to match them:
+container is 250px with 16px padding, a **20px** stack rhythm (was 16) and a
+1px right edge at **5%** black (was 8%); nav labels and row names are
+`label/12` (Geist Medium 12/16), active nav in `base/primary`, row names in
+`base/foreground`; the app tile is 32x32, r4, black under the white-to-black
+gradient with a 1px white border at 24%; rows are 44px, padding 6/4, gap 16,
+**radius 4px** - which the radius scale maps onto `sm`, so the row moved from
+`rounded-md`. The row-hover variant (121:33421) draws the treatment the rail
+lacked: a `neutral-100` fill inside a 1px `neutral-200` border with the name
+in `base/primary`. Built as one treatment for hover and selection, with the
+border reserved at rest so rows do not shift. A second read on a fresh tab
+(the first ended in the recurring renderer freeze) closed the gaps the freeze
+had left: the group eyebrow is `mono/eyebrow` (Geist Mono Medium 12/16, 10%
+tracking, uppercase, `base/muted-foreground`), matching what was built on
+sight; a group's eyebrow sits 8px above its rows; and `apps-section`
+(113:16814) spaces the groups at **12px**, so the rail moved from 16.
+
+`new-ui-model-picker.spec.ts` follows the picker (X instead of Cancel), and
+`AppPane.test.tsx` pins the merged pill column. 514 unit tests and the 114
+new-UI e2e tests pass.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a

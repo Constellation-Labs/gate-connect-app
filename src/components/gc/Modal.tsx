@@ -50,6 +50,8 @@ export function Modal({
   middle,
   primary,
   onDismiss,
+  onClose,
+  narrow,
   initialFocus,
 }: {
   tone?: ModalTone;
@@ -71,6 +73,13 @@ export function Modal({
   primary?: ModalButton;
   /** Escape and scrim clicks. Omit to make the dialog unskippable. */
   onDismiss?: () => void;
+  /** The design draws its short confirmations - Change is ready, Organization
+   * switched, Use a Gate model - at 520px rather than the template's 600. */
+  narrow?: boolean;
+  /** Draws an X at the header's right edge. Only for the dialogs the design
+   * gives one - the model picker is the first - and separate from `onDismiss`
+   * because a visible control and an escape hatch are different affordances. */
+  onClose?: () => void;
   /** Where focus opens. The form dialogs point this at the field being edited;
    * without it the trap takes the first focusable, which on those is the
    * read-only current-value input. Ignored when the primary is destructive,
@@ -97,7 +106,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="w-[600px] max-w-full rounded-xl bg-base-card p-6 shadow-base-lg"
+        className={`${narrow ? "w-[520px]" : "w-[600px]"} max-w-full rounded-xl bg-base-card p-6 shadow-base-lg`}
       >
         <div className="flex items-start gap-4">
           <span
@@ -123,6 +132,16 @@ export function Modal({
               </p>
             )}
           </div>
+          {onClose && (
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={onClose}
+              className="shrink-0 rounded-sm p-1 text-neutral-500 transition-colors hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            >
+              <Icon name="x" size={16} />
+            </button>
+          )}
         </div>
 
         {children && <div className="mt-4 flex flex-col gap-3">{children}</div>}

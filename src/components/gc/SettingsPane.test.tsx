@@ -252,7 +252,6 @@ describe("SettingsPane", () => {
       "Account",
       "Connection",
       "Startup",
-      "Notifications",
       "Diagnostics",
       "About",
       "Help",
@@ -275,7 +274,7 @@ describe("SettingsPane", () => {
       screen.getByRole("switch", { name: "Launch at login" }).getAttribute("aria-checked"),
     ).toBe("false");
     expect(
-      screen.getByRole("switch", { name: "Routing health" }).getAttribute("aria-checked"),
+      screen.getByRole("switch", { name: "Notifications" }).getAttribute("aria-checked"),
     ).toBe("true");
   });
 
