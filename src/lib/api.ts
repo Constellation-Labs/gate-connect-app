@@ -254,10 +254,11 @@ export const setLaunchAtLogin = (enabled: boolean) =>
   invoke<void>("set_launch_at_login", { enabled });
 
 /** Mark (or unmark) the next exit as an updater-driven relaunch, so the exit
- * handler keeps the routing intent and the relaunched app restores routing.
- * Set after the update download completes, right before `install()` (Windows
- * exits from inside it); a quit while the download is still running is a
- * genuine user exit and must not carry the mark. Reset if the install fails. */
+ * handler leaves a pending launch-at-login opt-out (and its login item) in
+ * place for the relaunched app instead of completing it. Set after the update
+ * download completes, right before `install()` (Windows exits from inside
+ * it); a quit while the download is still running is a genuine user exit and
+ * must not carry the mark. Reset if the install fails. */
 export const setUpdaterRelaunching = (relaunching: boolean) =>
   invoke<void>("set_updater_relaunching", { relaunching });
 
