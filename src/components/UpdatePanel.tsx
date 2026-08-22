@@ -78,8 +78,8 @@ export function UpdatePanel({
     // Download and install as separate phases so the updater-relaunch mark
     // brackets only the install: quitting the app while the (long) download
     // is still running is a genuine user exit, and a set mark there would
-    // make the exit handler skip its routing-intent clear and deferred
-    // launch-at-login opt-out completion with no relaunch coming.
+    // make the exit handler skip its deferred launch-at-login opt-out
+    // completion with no relaunch coming.
     try {
       await update.download();
     } catch (err) {
@@ -89,10 +89,11 @@ export function UpdatePanel({
       return;
     }
     try {
-      // Mark the coming exit as an updater relaunch so the backend keeps the
-      // routing intent and restores routing after the restart. Before the
-      // install, not after: on Windows the installer exits the app from
-      // inside install().
+      // Mark the coming exit as an updater relaunch so the backend carries a
+      // pending launch-at-login opt-out (and its login item) through to the
+      // relaunched app instead of completing it at exit. Before the install,
+      // not after: on Windows the installer exits the app from inside
+      // install().
       await setUpdaterRelaunching(true);
       await update.install();
       // Best-effort: on Windows the installer exits the app from inside
