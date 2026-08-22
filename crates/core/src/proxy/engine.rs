@@ -61,8 +61,9 @@ pub struct EngineConfig {
     /// previously-chosen port so a restart keeps the same address - the system
     /// proxy pointer baked into a login session (Linux) or a client that
     /// resolved the proxy once at its own launch (macOS/Windows) stays valid
-    /// across app restarts instead of dangling at a dead ephemeral port. Falls
-    /// back to an ephemeral port if `p` is taken (or `None`). All three
+    /// across app restarts instead of dangling at a dead port. Falls back to
+    /// a fresh pick from the stable band ([`bind_fresh`]) if `p` is taken (or
+    /// `None`). All three
     /// platforms persist and pass the last-bound port.
     pub preferred_port: Option<u16>,
     /// Preferred loopback port for the PAC listener, same contract as
@@ -605,7 +606,7 @@ pub(crate) fn apply_rewrite<T>(
 /// Bind a loopback listener and return it together with the port it landed on.
 /// Tries `preferred` first (so a restart can reuse the same port and keep a
 /// frozen system-proxy pointer valid); if that's unavailable - taken, or
-/// `None` - falls back to an ephemeral port. Returning the *live* listener -
+/// `None` - falls back to a fresh pick from the stable band ([`bind_fresh`]). Returning the *live* listener -
 /// rather than probing a port and dropping it before hudsucker binds - closes
 /// the TOCTOU window where another process could grab the port in the gap. The
 /// socket stays held from here until it's handed to the proxy. Set non-blocking
@@ -665,13 +666,19 @@ const STABLE_PORT_RANGE: std::ops::Range<u16> = 47100..47200;
 /// configs bake the relay URL - and the user has to restart them. Picking from
 /// a quiet band below the dynamic range means the port we persist is one
 /// nothing else is handing out.
-///
 pub(super) fn bind_fresh() -> std::io::Result<std::net::TcpListener> {
     for port in candidate_ports(&persisted_ports()) {
         if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
             return Ok(listener);
         }
     }
+    // Whole band unavailable (exhaustion, or something blanket-bound it): an
+    // ephemeral port keeps this session alive, but the next run may not get
+    // it back - the moving-port symptom is back, so name the reason here.
+    eprintln!(
+        "gate proxy: no free port in {STABLE_PORT_RANGE:?}; binding an ephemeral port instead. \
+         It may not survive a restart."
+    );
     std::net::TcpListener::bind(("127.0.0.1", 0))
 }
 
@@ -719,8 +726,8 @@ fn persisted_ports() -> Vec<u16> {
 /// bind is tried first; when it fails with the port "in use", the previous
 /// engine session's connections may just be lingering as server-side
 /// TIME_WAIT sockets (they stay for minutes), and without `SO_REUSEADDR` the
-/// restart's rebind fails and silently falls back to an ephemeral port -
-/// defeating the address stability the preferred port exists for. But BSD /
+/// restart's rebind fails and the port silently moves - defeating the address
+/// stability the preferred port exists for. But BSD /
 /// macOS `SO_REUSEADDR` also permits a `127.0.0.1:P` bind while another
 /// process holds a *live* `0.0.0.0:P` listener, which would silently shadow
 /// that app's loopback traffic. A connect probe tells the two apart: a port
@@ -742,7 +749,8 @@ pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250)).is_ok() {
         // Someone is live on this port (loopback or wildcard) - don't shadow
-        // it; let the caller fall back to an ephemeral port.
+        // it; let the caller handle the taken port (the engine falls back to
+        // a fresh band port, the standalone relay host refuses to start).
         return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse));
     }
     let socket = socket2::Socket::new(
@@ -827,7 +835,8 @@ async fn serve_pac(
     }
 }
 
-/// Start the engine on an ephemeral loopback port. Blocks until the proxy
+/// Start the engine on a loopback port - the preferred one when the config
+/// carries it, else a fresh pick from the stable band. Blocks until the proxy
 /// has built and bound (or fails), then returns a handle. The tokio runtime
 /// lives on the spawned thread and is torn down when the handle is stopped
 /// or dropped.
