@@ -1,0 +1,79 @@
+name: macOS port diagnostic
+
+# Throwaway. Lives only on the `diagnose/macos-port-rebind` branch to answer
+# one question on a real macOS runner: when the engine loses its preferred
+# port after a disable, is the old listener still up (teardown lag, a product
+# bug) or was the port taken by something else in the process (contention, a
+# test-harness artifact)? Delete the branch and this file once answered.
+on:
+  push:
+    branches: [diagnose/macos-port-rebind]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Port release probe
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.86.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-latest
+
+      # 1. Does the real test fail when it is the only thing in the process?
+      #    Passing here but failing in step 3 means contention, not teardown.
+      - name: The failing test, alone
+        id: alone
+        continue-on-error: true
+        run: |
+          cargo test -p gate-connect-core --lib \
+            proxy::manager_core::tests::engine_port_persists_across_an_enable_cycle \
+            -- --exact --nocapture --test-threads=1
+
+      # 2. The instrumented probe: still_accepting / rebindable_after / which
+      #    band ports the engine holds while up.
+      - name: Instrumented probe
+        run: |
+          cargo test -p gate-connect-core --lib \
+            proxy::manager_core::tests::diagnose_preferred_port_release \
+            -- --exact --ignored --nocapture --test-threads=1
+
+      # 3. The whole lib suite, as CI runs it, to reproduce the flake in
+      #    context and see how often it bites.
+      - name: Full lib suite (in context)
+        id: suite
+        continue-on-error: true
+        run: cargo test -p gate-connect-core --lib
+
+      # 4. The flake is a race, so one green run proves nothing about its
+      #    rate. Loop the suite and count. The suite takes ~0.3s.
+      - name: Who holds the port at rebind (200 runs)
+        run: |
+          fails=0
+          for i in $(seq 1 200); do
+            out=$(cargo test -p gate-connect-core --lib -- --nocapture 2>&1) || fails=$((fails+1))
+            # Print the holder evidence whenever it fires, pass or fail: a port
+            # held at the rebind instant is the finding, even on a run that
+            # then got its fallback and passed.
+            if printf '%s\n' "$out" | grep -q 'HELD-AT-REBIND'; then
+              echo "=== run $i: port held at rebind ==="
+              printf '%s\n' "$out" | grep -E 'HELD-AT-REBIND|lsof:|netstat:|wanted the previous|panicked at|left:|right:' | head -20
+            fi
+          done
+          echo "PORTED-FIXES: $fails/200 (4/60 baseline; 4/200 band lock; 2/200 teardown)"
+          echo "At the old rate, 200 clean runs would happen by chance about 1 time in 800,000."
+
+      - name: Verdict
+        run: |
+          echo "alone: ${{ steps.alone.outcome }}"
+          echo "full suite: ${{ steps.suite.outcome }}"
