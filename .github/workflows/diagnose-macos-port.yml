@@ -61,17 +61,13 @@ jobs:
         run: |
           fails=0
           for i in $(seq 1 200); do
-            out=$(cargo test -p gate-connect-core --lib -- --nocapture 2>&1) || fails=$((fails+1))
-            # Print the holder evidence whenever it fires, pass or fail: a port
-            # held at the rebind instant is the finding, even on a run that
-            # then got its fallback and passed.
-            if printf '%s\n' "$out" | grep -q 'HELD-AT-REBIND'; then
-              echo "=== run $i: port held at rebind ==="
-              printf '%s\n' "$out" | grep -E 'HELD-AT-REBIND|lsof:|netstat:|wanted the previous|panicked at|left:|right:' | head -20
+            if ! out=$(cargo test -p gate-connect-core --lib 2>&1); then
+              fails=$((fails+1))
+              echo "=== run $i FAILED ==="
+              printf '%s\n' "$out" | grep -E 'panicked at|left:|right:|wanted the previous|^test result: FAILED|^error' | head -12
             fi
           done
           echo "PORTED-FIXES: $fails/200 (4/60 baseline; 4/200 band lock; 2/200 teardown)"
-          echo "At the old rate, 200 clean runs would happen by chance about 1 time in 800,000."
 
       - name: Verdict
         run: |
