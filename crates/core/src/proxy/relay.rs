@@ -267,14 +267,13 @@ pub(crate) fn spawn(
     org: watch::Receiver<Arc<str>>,
     intercept: watch::Receiver<bool>,
     owner_uid: Option<u32>,
-) -> Result<()> {
+) -> Result<tokio::task::JoinHandle<()>> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
     let state = Arc::new(RelayState::new(
         &gateway, api_key, token, org, intercept, owner_uid,
     ));
-    tokio::spawn(accept_loop(listener, state));
-    Ok(())
+    Ok(tokio::spawn(accept_loop(listener, state)))
 }
 
 /// Accept connections forever, serving each on the relay handler. Shared by the

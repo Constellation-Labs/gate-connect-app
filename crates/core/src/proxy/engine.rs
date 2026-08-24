@@ -1033,25 +1033,35 @@ where
                 };
 
                 let _ = ready_tx.send(Ok(()));
-                // Bring up the PAC responder on the engine runtime; it dies with
-                // the runtime when the engine stops. Non-fatal if it can't start
-                // - the proxy still runs, WinINET just fails the PAC fetch and
-                // falls back to DIRECT (no interception) rather than stranding
-                // traffic.
+                // The PAC responder and the relay run as detached tasks on this
+                // runtime, and neither watches the shutdown channel - they are
+                // accept loops with no exit condition. Their handles are kept so
+                // the teardown below can close their listeners *before* this
+                // future returns; see the note there.
+                let mut detached: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+                // Bring up the PAC responder on the engine runtime. Non-fatal if
+                // it can't start - the proxy still runs, WinINET just fails the
+                // PAC fetch and falls back to DIRECT (no interception) rather
+                // than stranding traffic.
                 #[cfg(any(target_os = "windows", target_os = "macos"))]
                 {
                     match tokio::net::TcpListener::from_std(pac_listener) {
                         Ok(pac) => {
-                            tokio::spawn(serve_pac(pac, pac_rules_rx, port, upstream_proxy));
+                            detached.push(tokio::spawn(serve_pac(
+                                pac,
+                                pac_rules_rx,
+                                port,
+                                upstream_proxy,
+                            )));
                         }
                         Err(e) => eprintln!("gate proxy PAC listener failed to start: {e}"),
                     }
                 }
-                // Bring up the CLI reverse-proxy relay on the same runtime;
-                // like the PAC responder it dies with the runtime on stop.
+                // Bring up the CLI reverse-proxy relay on the same runtime.
                 // Non-fatal: if it can't adopt its listener the MITM proxy
                 // still runs, only CLI tools pointed at the relay fail.
-                if let Err(e) = super::relay::spawn(
+                match super::relay::spawn(
                     relay_listener,
                     relay_gateway,
                     relay_key_rx,
@@ -1060,10 +1070,26 @@ where
                     relay_intercept_rx,
                     relay_owner_uid,
                 ) {
-                    eprintln!("gate proxy relay failed to start: {e}");
+                    Ok(handle) => detached.push(handle),
+                    Err(e) => eprintln!("gate proxy relay failed to start: {e}"),
                 }
                 if let Err(e) = proxy.start().await {
                     eprintln!("gate proxy engine stopped with error: {e}");
+                }
+
+                // Close the detached listeners here, rather than leaving them to
+                // the runtime drop. `stop()` joins this thread, so a caller is
+                // entitled to read a returned `disable()` as "the ports are
+                // free": the persisted-port reuse on the next enable depends on
+                // exactly that, and the relay port is baked into CLI tool
+                // configs, so losing it points those tools at a dead address.
+                // Runtime drop does eventually cancel these tasks, but it is not
+                // ordered against this future returning - measured on macOS,
+                // both listeners were still accepting after `disable()` returned
+                // in a few percent of enable/disable cycles.
+                for handle in detached {
+                    handle.abort();
+                    let _ = handle.await;
                 }
             });
 
