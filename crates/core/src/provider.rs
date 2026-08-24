@@ -740,32 +740,51 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
 
 /// Master ON: re-enable every provider that was on when routing was last
 /// turned off, then reconnect any standalone tools the master-off sweep
-/// disconnected. Entries that fail to restore stay in their snapshot so a
+/// disconnected. Entries that are not back yet stay in their snapshot so a
 /// later call can retry them; each snapshot is cleared once everything in it
 /// is back. Idempotent; a missing snapshot is a no-op. Callers run this twice
 /// per master-on: once before the proxy comes up (config-based tools, and the
 /// engine's "at least one provider" precondition) and once after (domain-only
 /// providers, which have nothing to configure until the proxy is running).
+///
+/// **"Back" is read off the provider, not off the call's return.** The two
+/// passes exist because the first one *cannot* finish the job: a domain-only
+/// provider (OpenRouter, or Anthropic on a machine with no Claude app) has no
+/// tool to configure and no running engine to flip its domain in, so
+/// `enable_inner` takes its `plan.nothing` path and returns `Ok` having done
+/// nothing. Treating that `Ok` as a completed restore cleared the snapshot
+/// between the passes, so the post-enable pass - the one that could actually
+/// do the work - found nothing to restore and every domain-only provider
+/// silently stayed off for the rest of the session. It went unnoticed because
+/// the same path *bails* when the skip list is empty, which does keep the
+/// snapshot: only a cycle that recorded a switched-off family member lost it.
 pub fn restore_all() -> Result<()> {
     let _guard = master_flow_guard();
     // Members that were off before routing stopped stay off; the family around
     // them comes back. See [`RESTORE_SKIP_MEMBERS`].
     let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
-    let mut failed = Vec::new();
+    let mut pending = Vec::new();
     for slug in load_snapshot(PROVIDER_SNAPSHOT)? {
-        if let Err(e) = enable_skipping(&slug, &skip) {
-            eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
-            failed.push(slug);
+        match enable_skipping(&slug, &skip) {
+            // Genuinely on again: the provider's own state says so.
+            Ok(state) if state.enabled => {}
+            // Ran too early to do anything. Not a failure - nothing is wrong,
+            // the engine just is not up yet - and not a completion either.
+            Ok(_) => pending.push(slug),
+            Err(e) => {
+                eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
+                pending.push(slug);
+            }
         }
     }
-    if failed.is_empty() {
+    if pending.is_empty() {
         clear_snapshot(PROVIDER_SNAPSHOT)?;
         // The cycle is complete, so the skip list has done its job. Held until
         // now for the same reason the provider snapshot is: a partial restore
         // gets retried, and the retry needs to know what to leave alone.
         clear_snapshot(RESTORE_SKIP_MEMBERS)?;
     } else {
-        save_snapshot(PROVIDER_SNAPSHOT, &failed)?;
+        save_snapshot(PROVIDER_SNAPSHOT, &pending)?;
     }
     restore_swept_tools()
 }
