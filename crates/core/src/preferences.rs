@@ -24,6 +24,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 use crate::env;
 use crate::primitives;
@@ -163,6 +164,53 @@ fn config_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("preferences.json"))
 }
 
+/// Hot-path cache for [`gate_models_for`].
+///
+/// The model choice is consulted on **every proxied request**, and a file read
+/// per request is not a cost the user's actual work should pay. Unlike
+/// [`crate::primitives::install_id_cached`] this cannot be a `OnceLock`: the
+/// value changes whenever someone picks a model, and a choice that only took
+/// effect after a restart would be its own bug report.
+///
+/// [`save`] refreshes it, so an in-process write is visible immediately. A write
+/// from the CLI is not, which is the one staleness this accepts: the proxy and
+/// the window are the same process, and the CLI does not currently set models.
+static CACHE: RwLock<Option<Preferences>> = RwLock::new(None);
+
+/// The models Gate should serve for one tool, or `None` to leave the request
+/// alone.
+///
+/// `None` covers every case where the tool's own model must win: no entry, an
+/// entry whose source is [`ModelSource::Tool`], or an empty set. That last one
+/// matters - a `Gate` source with nothing chosen is not "serve anything", it is
+/// a state the UI prevents and the request path must not invent a meaning for.
+///
+/// Infallible by construction, for the reason `install_id_cached` gives: this is
+/// called while forwarding the user's real work, and a preferences file that
+/// cannot be read must degrade to "the tool picks", never to a failed request.
+pub fn gate_models_for(slug: &str) -> Option<Vec<String>> {
+    {
+        let cache = CACHE.read().ok()?;
+        if let Some(prefs) = cache.as_ref() {
+            return servable(prefs, slug);
+        }
+    }
+    let prefs = load();
+    let answer = servable(&prefs, slug);
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = Some(prefs);
+    }
+    answer
+}
+
+fn servable(prefs: &Preferences, slug: &str) -> Option<Vec<String>> {
+    let choice = prefs.tool_models.get(slug)?;
+    if choice.source != ModelSource::Gate || choice.model_ids.is_empty() {
+        return None;
+    }
+    Some(choice.model_ids.clone())
+}
+
 /// Read the preferences, falling back to the defaults.
 ///
 /// A missing file is the normal first-run state, and an unparseable one is
@@ -185,7 +233,25 @@ pub fn save(prefs: &Preferences) -> Result<()> {
     let path = config_path()?;
     let body = serde_json::to_vec_pretty(prefs).context("serializing preferences")?;
     primitives::write_file(&path, &body, 0o644)
-        .with_context(|| format!("writing {}", path.display()))
+        .with_context(|| format!("writing {}", path.display()))?;
+    // Refresh rather than clear: the next reader is on the request path, and
+    // handing it a miss would put the file read back where this cache exists to
+    // keep it out of. Written after the file so a failed write leaves the cache
+    // agreeing with what is on disk.
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = Some(prefs.clone());
+    }
+    Ok(())
+}
+
+/// Drop the cached copy. Tests only - each one points the app-support dir
+/// somewhere new, and a value cached from the previous directory would outlive
+/// it.
+#[doc(hidden)]
+pub fn reset_cache_for_tests() {
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = None;
+    }
 }
 
 /// Turn routing-health notifications on or off, leaving the other preferences
