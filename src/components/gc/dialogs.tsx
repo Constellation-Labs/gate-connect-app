@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
 import { Skeleton } from "./base";
@@ -452,42 +452,59 @@ export function DiagnosticsDialog({
 
 /** One selectable Gate model. */
 export interface GateModelOption {
-  /** Fully qualified id, e.g. "gate/opus 5". Rendered mono - it is an identifier. */
+  /** Canonical id, e.g. `anthropic/claude-opus-5`. Rendered mono - it is an
+   *  identifier, which CLAUDE.md names explicitly. The Figma draws these in the
+   *  UI face, which reads as a slip rather than a decision since every other
+   *  identifier in the design is mono. */
   id: string;
-  /** Who makes the model, for the glyph and for grouping in the caller's head. */
+  /** Who makes the model, for the glyph, the provider filter and grouping in the
+   *  reader's head. */
   vendor: string;
   /** 16px vendor mark. Falls back to a cube while the marks are unexported. */
   logo?: ReactNode;
 }
 
+/** What the picker is choosing: one model, or a set (AG-590). */
+export type ModelPickerMode = "single" | "multi";
+
 /**
- * Choosing which Gate model an app runs on (Figma `App / Select a model`, the
- * "App w/ choose model modal open" frame).
+ * Choosing which Gate model an app runs on (Figma 139:66117, `card/choose-model`).
  *
- * The design draws this as a **dropdown anchored to the Change model button**,
- * not a centred dialog: a white rounded panel, one row per model, the current
- * one first and outlined. Rendered here as a modal-positioned popover so it
- * keeps the focus trap and escape handling every other overlay has - anchoring
- * it to the button would need the pane to own the trigger's geometry, and the
- * design's own placement is only legible at one zoom level.
+ * A centred 600px dialog with a search field, a provider filter, a count line and
+ * a scrolling list - not the dropdown anchored to the Change model button that an
+ * earlier revision of this comment described. That mattered once the catalogue
+ * turned out to hold 344 models rather than the eleven the frame draws: a list
+ * that long is unusable without search, which is presumably why the design has
+ * one.
  *
- * Model ids are mono. They are identifiers, and CLAUDE.md names them
- * explicitly; the frame renders them in the UI face, which reads as a slip
- * rather than a decision, since every other identifier in the design is mono.
+ * **Model ids stay canonical.** The frame draws a `gate/...` namespace
+ * (`gate/opus 5`, `gate/kimi-k3`) which no catalogue serves; the real ids are
+ * `provider/model` (`anthropic/claude-opus-5`). Rendering the drawn ids would put
+ * a fabricated catalogue in front of the user, which is the same argument the
+ * zeroed metrics make.
  *
- * The top edge of the drawn panel was cut off in the only readable capture, so
- * whether it carries a search field is unknown. Omitted here: eleven rows do not
- * need one, and inventing a control the designer may not have drawn is worse
- * than leaving room for it.
+ * **`multi` is an extension, not a drawn state.** The frame shows radios, so
+ * single-select is the designed behaviour and is what `"single"` reproduces.
+ * AG-590 asks for a set, and AG-589 - the design task that would specify how that
+ * looks - is still open, so `"multi"` swaps the radios for checkboxes and adds a
+ * footer that states the count. Deliberately the smallest departure that answers
+ * the ticket: if AG-589 lands on something else, one branch changes rather than a
+ * second dialog being deleted.
  */
 export function ModelPickerDialog({
+  appName,
+  mode = "single",
   models,
   loading,
   failure,
-  selectedId,
+  selectedIds,
   onSelect,
+  onSave,
   onDismiss,
 }: {
+  /** Named in the subtitle, as the frame does. */
+  appName: string;
+  mode?: ModelPickerMode;
   models: GateModelOption[];
   /** The catalogue has not landed. Distinct from an empty one, which is a real
    *  answer: a gateway with no platform provider accounts offers nothing, and
@@ -497,16 +514,65 @@ export function ModelPickerDialog({
   /** The catalogue could not be read, in the gateway's own words. Distinct again
    *  from empty: "we could not ask" is not "there are none". */
   failure?: string | null;
-  selectedId?: string;
+  /** Already-chosen ids. One entry in `"single"`, any number in `"multi"`. */
+  selectedIds: string[];
+  /** `"single"`: the chosen model, applied immediately - the frame has no footer,
+   *  so a click is the decision. */
   onSelect: (id: string) => void;
+  /** `"multi"`: the whole set, applied on Save. A set is not a sequence of
+   *  independent clicks - AG-590 requires the final model not be removable
+   *  without choosing another - so it is confirmed once rather than written per
+   *  toggle. */
+  onSave?: (ids: string[]) => void;
   onDismiss: () => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [vendor, setVendor] = useState("all");
+  /** Draft set, only used in `"multi"`. Seeded from the stored set so Cancel is
+   *  a real cancel. */
+  const [draft, setDraft] = useState<string[]>(selectedIds);
+
+  const vendors = useMemo(
+    () => [...new Set(models.map((m) => m.vendor))].sort((a, b) => (a < b ? -1 : 1)),
+    [models],
+  );
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return models.filter(
+      (m) =>
+        (vendor === "all" || m.vendor === vendor) &&
+        (q === "" || m.id.toLowerCase().includes(q) || m.vendor.toLowerCase().includes(q)),
+    );
+  }, [models, query, vendor]);
+
+  const chosen = mode === "multi" ? draft : selectedIds;
+  /** AG-590: the last model cannot be removed without choosing another. The
+   *  remedy the ticket names is "or return to Tool default", which is the pane's
+   *  radio, not this dialog - so here the last one simply refuses to clear, and
+   *  the footer says why. */
+  const wouldEmpty = (id: string) => chosen.length === 1 && chosen[0] === id;
+
   return (
     <Modal
       icon="layers"
       title="Choose a Gate model"
-      subtitle="Requests routed through Gate will use this model"
-      secondary={{ label: "Cancel", onClick: onDismiss }}
+      subtitle={
+        mode === "multi"
+          ? `${appName} may use any model you enable here`
+          : `${appName} uses one Gate model`
+      }
+      closeButton
+      secondary={mode === "multi" ? { label: "Cancel", onClick: onDismiss } : undefined}
+      primary={
+        mode === "multi" && onSave
+          ? {
+              label: "Save models",
+              onClick: () => onSave(draft),
+              disabled: draft.length === 0,
+            }
+          : undefined
+      }
       onDismiss={onDismiss}
     >
       {loading ? (
@@ -532,30 +598,126 @@ export function ModelPickerDialog({
           </p>
         </ModalNote>
       ) : (
-        <div role="radiogroup" aria-label="Gate model" className="flex flex-col gap-1">
-          {models.map((model) => {
-            const selected = model.id === selectedId;
-            return (
-              <button
-                key={model.id}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                onClick={() => onSelect(model.id)}
-                className={`flex items-center gap-3 rounded-base border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-                  selected
-                    ? "border-base-primary bg-base-card"
-                    : "border-transparent hover:bg-gray-50"
-                }`}
+        <>
+          {/* Search and provider filter (Figma 139:66683). Both are client-side
+           *  over the catalogue already in hand - the endpoint takes no query, and
+           *  344 rows filter faster than a round trip. */}
+          <div className="flex gap-3">
+            <label className="relative flex-1">
+              <span className="sr-only">Search models</span>
+              <Icon
+                name="search"
+                size={16}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-base-muted-foreground"
+              />
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search models"
+                className="h-9 w-full rounded-base border border-base-input bg-base-card pl-9 pr-3 text-sm leading-5 text-neutral-900 placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+              />
+            </label>
+            <label className="shrink-0">
+              <span className="sr-only">Filter by provider</span>
+              <select
+                value={vendor}
+                onChange={(e) => setVendor(e.target.value)}
+                className="h-9 w-[8.5rem] rounded-base border border-base-input bg-base-card px-3 text-sm leading-5 text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
-                <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
-                  {model.logo ?? <Icon name="cube" size={16} />}
-                </span>
-                <span className="font-mono text-sm leading-5 text-neutral-900">{model.id}</span>
-              </button>
-            );
-          })}
-        </div>
+                <option value="all">All providers</option>
+                {vendors.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {/* The frame reads "Showing 10 of 14 models・400+ in Gate AI". The third
+           *  clause distinguishes what this tool may use from everything Gate
+           *  offers, and nothing filters per tool yet - so the two numbers would
+           *  be the same and saying it twice would imply a filter that is not
+           *  running. Reinstate it with AG-590's per-tool filtering. */}
+          <p className="text-base-xs leading-4 text-base-muted-foreground">
+            Showing {shown.length} of {models.length} models
+          </p>
+
+          {shown.length === 0 ? (
+            <ModalNote>
+              <p>No model matches that search.</p>
+            </ModalNote>
+          ) : (
+            <div
+              role={mode === "multi" ? "group" : "radiogroup"}
+              aria-label="Gate model"
+              className="-mr-1 flex max-h-[26rem] flex-col gap-px overflow-y-auto pr-1"
+            >
+              {shown.map((model) => {
+                const selected = chosen.includes(model.id);
+                const locked = mode === "multi" && selected && wouldEmpty(model.id);
+                return (
+                  <button
+                    key={model.id}
+                    type="button"
+                    role={mode === "multi" ? "checkbox" : "radio"}
+                    aria-checked={selected}
+                    aria-disabled={locked || undefined}
+                    title={
+                      locked
+                        ? "Gate needs at least one model. Choose another first, or switch this app back to App default."
+                        : undefined
+                    }
+                    onClick={() => {
+                      if (mode === "single") return onSelect(model.id);
+                      if (locked) return;
+                      setDraft((d) =>
+                        d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
+                      );
+                    }}
+                    className={`flex shrink-0 items-center gap-3 rounded-base border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+                      selected
+                        ? "border-base-primary bg-base-card"
+                        : "border-transparent hover:bg-gray-50"
+                    } ${locked ? "cursor-not-allowed" : ""}`}
+                  >
+                    <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
+                      {model.logo ?? <Icon name="cube" size={16} />}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-neutral-900">
+                      {model.id}
+                    </span>
+                    {selected ? (
+                      <Icon name="circleCheck" size={16} className="shrink-0 text-base-primary" />
+                    ) : (
+                      <span
+                        aria-hidden
+                        className="size-4 shrink-0 rounded-full border border-base-input"
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {mode === "multi" && (
+            // AG-590 asks that the set be stated before confirmation, and that
+            // the cost consequence be stated with it.
+            <ModalNote>
+              <p className="font-medium text-neutral-900">
+                {draft.length === 1
+                  ? "1 model enabled"
+                  : `${draft.length} models enabled`}
+              </p>
+              <p className="mt-1">
+                Eligible requests may use any of them and consume Gate credits. Gate never
+                uses a model you have not enabled.
+              </p>
+            </ModalNote>
+          )}
+        </>
       )}
     </Modal>
   );
@@ -565,6 +727,7 @@ export function UseGateModelDialog({
   app,
   vendor,
   modelId,
+  alsoEnabled = [],
   /** Pre-formatted balance, e.g. "$10.25 available". */
   credits,
   vendorLogo,
@@ -574,6 +737,13 @@ export function UseGateModelDialog({
   app: DialogApp;
   vendor: string;
   modelId: string;
+  /** The rest of the enabled set, beyond the one named above (AG-590).
+   *
+   *  Listed rather than counted: the ticket requires the flow to state which
+   *  models may be used before the charge is accepted, and "and 4 others" is not
+   *  that. Empty for a single-model switch, which is the common case and draws
+   *  exactly as the Figma does. */
+  alsoEnabled?: string[];
   credits: string;
   vendorLogo?: ReactNode;
   onKeepAppDefault: () => void;
@@ -596,6 +766,25 @@ export function UseGateModelDialog({
         variant="identity"
         pill={{ label: "PAYG", tone: "neutral" }}
       />
+
+      {alsoEnabled.length > 0 && (
+        <ModalNote>
+          <p className="font-medium text-neutral-900">
+            {alsoEnabled.length === 1 ? "Also enabled" : `Also enabled (${alsoEnabled.length})`}
+          </p>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {alsoEnabled.map((id) => (
+              <li key={id} className="font-mono text-base-xs leading-4">
+                {id}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2">
+            Eligible requests may use any of these and consume Gate credits. Gate never uses
+            a model you have not enabled.
+          </p>
+        </ModalNote>
+      )}
 
       {/* Label left, balance right - the one row in the dialogs that reads
        * across rather than stacking, so it is not a `ModalSubject`. */}

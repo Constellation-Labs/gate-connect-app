@@ -69,7 +69,9 @@ test.describe("new UI model picker", () => {
     await expect(app.page.getByText("No models to choose from yet")).toBeVisible();
     await expect(app.page.getByRole("dialog").getByRole("radio")).toHaveCount(0);
 
-    await app.page.getByRole("button", { name: "Cancel" }).click();
+    // The X, not a Cancel button: single-select applies on click, so the Figma
+    // gives the dialog no footer and the close control is the only exit.
+    await app.page.getByRole("button", { name: "Close" }).click();
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
   });
 
@@ -215,4 +217,117 @@ test.describe("new UI model picker", () => {
     await expect(app.page.getByText(/could not read this app's model setting/i)).toBeVisible();
   });
 
+});
+
+/**
+ * The picker as the Figma actually draws it (139:66117), and the multi-select
+ * extension AG-590 asks for.
+ *
+ * The search field and provider filter are not decoration: the real catalogue
+ * holds 344 models, not the eleven the frame draws, and a list that long is
+ * unusable without them.
+ */
+test.describe("new UI model picker search and set", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  const many = [
+    ...catalogue,
+    { id: "openai/gpt-5", owned_by: "openai", name: "GPT-5" },
+    { id: "deepseek/deepseek-v3", owned_by: "deepseek", name: "DeepSeek V3" },
+  ];
+
+  test("search narrows the list and says how many are showing", async ({ boot }) => {
+    const app = await boot({ ...base, toolModels: { catalogue: many } });
+    await openApp(app);
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("Showing 4 of 4 models")).toBeVisible();
+
+    await dialog.getByRole("searchbox").fill("opus");
+    await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
+    await expect(dialog.getByRole("radio")).toHaveCount(1);
+  });
+
+  test("says so when a search matches nothing, rather than showing an empty list", async ({
+    boot,
+  }) => {
+    const app = await boot({ ...base, toolModels: { catalogue: many } });
+    await openApp(app);
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("searchbox").fill("nothing-matches-this");
+
+    await expect(dialog.getByText("No model matches that search.")).toBeVisible();
+    await expect(dialog.getByRole("radio")).toHaveCount(0);
+  });
+
+  test("the provider filter narrows to one vendor", async ({ boot }) => {
+    const app = await boot({ ...base, toolModels: { catalogue: many } });
+    await openApp(app);
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("combobox").selectOption("openai");
+
+    await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
+  });
+
+  test("Edit set enables several models at once and states the count", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue: many,
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "gate", model_ids: [catalogue[0].id] } },
+      },
+    });
+    await openApp(app);
+
+    await app.page.getByRole("button", { name: "Edit set" }).click();
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
+
+    await expect(dialog.getByText("2 models enabled")).toBeVisible();
+    await dialog.getByRole("button", { name: "Save models" }).click();
+
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+    // The card keeps one row and says how many more, so the pane does not grow.
+    await expect(app.page.getByText(/\+ 1 more enabled/)).toBeVisible();
+  });
+
+  test("refuses to remove the last enabled model", async ({ boot }) => {
+    // AG-590: the final model cannot be removed without selecting another or
+    // returning to App default. The dialog holds the line; the pane's radio is
+    // the other way out.
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue: many,
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "gate", model_ids: [catalogue[0].id] } },
+      },
+    });
+    await openApp(app);
+
+    await app.page.getByRole("button", { name: "Edit set" }).click();
+    const dialog = app.page.getByRole("dialog");
+    const only = dialog.getByRole("checkbox", { name: catalogue[0].id });
+
+    // Asserted as state rather than by clicking: the row carries
+    // `aria-disabled`, so a click is refused before it reaches the handler -
+    // which is the point, and is also why Playwright will not click it.
+    await expect(only).toHaveAttribute("aria-checked", "true");
+    await expect(only).toHaveAttribute("aria-disabled", "true");
+    await expect(only).toHaveAttribute("title", /at least one model/);
+    await expect(dialog.getByText("1 model enabled")).toBeVisible();
+
+    // And the way out the ticket names still works: enable a second, and the
+    // first unlocks.
+    await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
+    await expect(only).not.toHaveAttribute("aria-disabled", "true");
+  });
 });

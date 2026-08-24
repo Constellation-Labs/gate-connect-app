@@ -22,12 +22,19 @@ export type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/
 import type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
 
 export interface GateModel {
-  /** Model vendor, e.g. "Anthropic". */
+  /** Model vendor, e.g. "anthropic". */
   vendor: string;
-  /** Fully qualified model id, rendered mono, e.g. "gate/opus 5". */
+  /** Canonical model id, rendered mono, e.g. `anthropic/claude-opus-5`. */
   id: string;
   /** Vendor mark, 16px. */
   logo?: ReactNode;
+  /** How many further models are enabled alongside this one (AG-590).
+   *
+   *  A count here rather than a row each: the Figma gives this card one model
+   *  row, and growing it to six would push the chart and the feed off the pane.
+   *  The full set is listed where it matters - in the picker, and in the
+   *  confirmation before anything is billed. */
+  alsoEnabled?: number;
 }
 
 /**
@@ -70,6 +77,7 @@ export function AppPane({
   onChooseModel,
   gateModel,
   onChangeModel,
+  onEditModelSet,
   modelBusy,
   modelPending,
   credits,
@@ -107,6 +115,12 @@ export function AppPane({
    *  inactive rather than letting its presence imply Gate is serving it. */
   gateModel: GateModel | null;
   onChangeModel: () => void;
+  /** Open the picker in multi-select, to edit the whole enabled set (AG-590).
+   *
+   *  A separate control from Change model because they answer different
+   *  questions: "use this one instead" and "also allow these". Omit it and the
+   *  card offers only the single-model swap, which is what the Figma draws. */
+  onEditModelSet?: () => void;
   /** A model write is in flight, so the controls refuse a second click. */
   modelBusy?: boolean;
   /** The model *preference* read has not landed.
@@ -196,6 +210,7 @@ export function AppPane({
         onChoose={onChooseModel}
         gateModel={gateModel}
         onChangeModel={onChangeModel}
+        onEditModelSet={onEditModelSet}
         credits={credits}
         onAddCredits={onAddCredits}
       />
@@ -265,6 +280,7 @@ function ModelSelection({
   onChoose,
   gateModel,
   onChangeModel,
+  onEditModelSet,
   credits,
   onAddCredits,
 }: {
@@ -275,6 +291,7 @@ function ModelSelection({
   onChoose: (choice: ModelChoice) => void;
   gateModel: GateModel | null;
   onChangeModel: () => void;
+  onEditModelSet?: () => void;
   credits: string | null;
   onAddCredits: () => void;
 }) {
@@ -325,7 +342,9 @@ function ModelSelection({
 
       {/* Visible under either choice - the design's point is that you can see
        * what you would switch to. What changes is whether it reads as live. */}
-      <p className="mt-4 text-base-xs text-base-muted-foreground">Current Gate model</p>
+      <p className="mt-4 text-base-xs text-base-muted-foreground">
+        {gateModel?.alsoEnabled ? "Current Gate models" : "Current Gate model"}
+      </p>
 
       <div className="mt-2 flex flex-col gap-2">
         {gateModel === null ? (
@@ -336,12 +355,21 @@ function ModelSelection({
           <InfoRow
             icon={gateModel.logo ?? <Icon name="cube" size={16} />}
             action={{ label: "Change model", onClick: onChangeModel, disabled: busy }}
+            // AG-590's entry point, beside the swap rather than replacing it.
+            secondaryAction={
+              onEditModelSet
+                ? { label: "Edit set", onClick: onEditModelSet, disabled: busy }
+                : undefined
+            }
             // Dimmed under App default: it is what the user would switch to, not
             // what their requests are being answered with.
             muted={!gateActive}
           >
             <p className="text-base-2xs leading-4 text-base-muted-foreground">
               {gateModel.vendor}
+              {gateModel.alsoEnabled
+                ? ` + ${gateModel.alsoEnabled} more enabled`
+                : ""}
               {!gateActive && " - not in use"}
             </p>
             <p className="font-mono text-sm leading-5 text-neutral-900">{gateModel.id}</p>
@@ -417,6 +445,7 @@ function InfoRow({
   icon,
   children,
   action,
+  secondaryAction,
   muted,
 }: {
   icon: ReactNode;
@@ -424,6 +453,8 @@ function InfoRow({
   /** Omitted when there is nothing to do here, which removes the button rather
    *  than leaving a dead one on screen. */
   action?: { label: string; onClick: () => void; external?: boolean; disabled?: boolean };
+  /** A second, lower-emphasis action. Only the model row has one. */
+  secondaryAction?: { label: string; onClick: () => void; disabled?: boolean };
   /** Drawn as present but not in force. Opacity rather than a grey palette so
    *  the row reads as the same thing, dimmed - which is what it is. */
   muted?: boolean;
@@ -439,6 +470,16 @@ function InfoRow({
         {icon}
       </span>
       <div className="min-w-0 flex-1">{children}</div>
+      {secondaryAction && (
+        <button
+          type="button"
+          onClick={secondaryAction.onClick}
+          disabled={secondaryAction.disabled}
+          className="flex shrink-0 items-center rounded-base px-2 py-1 text-base-xs font-medium leading-4 text-base-muted-foreground transition-colors enabled:hover:bg-gray-50 enabled:hover:text-neutral-900 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          {secondaryAction.label}
+        </button>
+      )}
       {action && (
         <button
           type="button"

@@ -288,8 +288,8 @@ export function NewUiApp() {
    * asked for.
    */
   const [modelOverlay, setModelOverlay] = useState<
-    | { kind: "picker"; then: "activate" | "remember" }
-    | { kind: "confirm-gate"; modelId: string }
+    | { kind: "picker"; then: "activate" | "remember"; mode: "single" | "multi" }
+    | { kind: "confirm-gate"; modelIds: string[] }
     | null
   >(null);
   /** A model write is in flight. Keyed by nothing: only one pane is open. */
@@ -403,8 +403,16 @@ export function NewUiApp() {
    */
   const openModelChoice: ModelChoice | null =
     toolModels.view === null ? null : openPref?.source === "gate" ? "gate" : "app";
-  /** The remembered model id, active or not. */
-  const openModelId = openPref?.modelIds[0] ?? null;
+  /**
+   * The remembered models, active or not.
+   *
+   * A list because AG-590 enables a set. The pane's "Current Gate model" row
+   * shows the first and says how many more there are, which keeps the card the
+   * height the Figma draws whether one model is enabled or six.
+   */
+  const openModelIds = openPref?.modelIds ?? [];
+  /** The primary - what a single-model reading of the same state would show. */
+  const openModelId = openModelIds[0] ?? null;
 
   const toolEvents = useToolEvents(
     canRead && openTool !== null && machineKnown,
@@ -420,18 +428,12 @@ export function NewUiApp() {
   }, [openTool, credential]);
 
   /**
-   * Write one model preference, and turn the one failure that is not an error
-   * into the dialog it asks for.
+   * Write one model choice, and surface anything that goes wrong in its own
+   * words.
    *
-   * `needs_paid_ack` means the gateway has never seen this org accept paid use.
-   * The UI normally asks first, so reaching here means something got past that -
-   * a second machine that acknowledged and then had it revoked, or a build whose
-   * dialog was skipped. Raising the confirmation is the remedy the code names, so
-   * it is what happens, rather than reporting an error the user cannot act on.
-   *
-   * Everything else surfaces the gateway's own sentence. A role refusal and a
-   * dead network need different things from the reader, and only the message
-   * distinguishes them on a write.
+   * A local file write, so the failures are things like a read-only home rather
+   * than a policy refusal - and no code distinguishes them. The message is what
+   * tells the reader whether to retry or to look at their disk.
    */
   const saveModel = useCallback(
     async (source: "tool" | "gate", modelIds: string[], acknowledgePaidUse = false) => {
@@ -440,30 +442,27 @@ export function NewUiApp() {
       setModelError(null);
       const failure = await toolModels.save(openTool, source, modelIds, acknowledgePaidUse);
       setModelBusy(false);
-      if (!failure) return;
-      if (failure.code === "needs_paid_ack" && modelIds[0]) {
-        setModelOverlay({ kind: "confirm-gate", modelId: modelIds[0] });
-        return;
-      }
-      setModelError(failure.message);
+      if (failure) setModelError(failure.message);
     },
     [openTool, toolModels],
   );
 
   /**
-   * Hand routing to Gate for one model, asking about billing first if the org has
-   * never been asked.
+   * Hand routing to Gate for a set of models, asking about billing first if this
+   * install has never been asked.
    *
-   * The check is on the *organization*, not on this app or this machine: AG-588
-   * words the confirmation as once per organization, so a colleague having
-   * accepted is what makes this quiet the second time.
+   * Per install now that the choice is local - the trade recorded in
+   * `preferences.rs`. Empty sets are refused here rather than written: Gate
+   * cannot serve a model nobody enabled, and AG-590 makes that a rule rather
+   * than an accident.
    */
   const activateGateModel = useCallback(
-    (modelId: string) => {
+    (modelIds: string[]) => {
+      if (modelIds.length === 0) return;
       if (toolModels.view?.paidAckUnix) {
-        void saveModel("gate", [modelId]);
+        void saveModel("gate", modelIds);
       } else {
-        setModelOverlay({ kind: "confirm-gate", modelId });
+        setModelOverlay({ kind: "confirm-gate", modelIds });
       }
     },
     [saveModel, toolModels.view?.paidAckUnix],
@@ -1550,41 +1549,56 @@ export function NewUiApp() {
             // says in words - the design draws eleven `gate/...` ids, and
             // shipping those as though they were real would put a fabricated
             // catalogue in front of the user.
+            appName={appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "This app"}
+            // Multi-select once more than one model is already enabled, or when
+            // the user asked to edit the set. Single otherwise, which is the
+            // state the Figma draws and the common case.
+            mode={modelOverlay.mode}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
             failure={gateModels.failure?.message ?? null}
-            selectedId={openModelId ?? undefined}
+            selectedIds={openModelIds}
             onSelect={(id) => {
               const then = modelOverlay.then;
               setModelOverlay(null);
               // "Remember" keeps the current source, which is App default here:
               // the user browsed and picked, and nothing starts being billed for
               // it. "Activate" continues into the billing confirmation.
-              if (then === "activate") activateGateModel(id);
+              if (then === "activate") activateGateModel([id]);
               else void saveModel("tool", [id]);
+            }}
+            onSave={(ids) => {
+              const then = modelOverlay.then;
+              setModelOverlay(null);
+              if (then === "activate") activateGateModel(ids);
+              else void saveModel("tool", ids);
             }}
             onDismiss={() => setModelOverlay(null)}
           />
         ) : modelOverlay?.kind === "confirm-gate" ? (
           <UseGateModelDialog
             app={{ name: appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "this app" }}
-            vendor={modelOverlay.modelId.split("/")[0]}
-            modelId={modelOverlay.modelId}
+            vendor={modelOverlay.modelIds[0].split("/")[0]}
+            modelId={modelOverlay.modelIds[0]}
+            // Names the rest rather than hiding them: AG-590 requires the set be
+            // listed before the charge is accepted.
+            alsoEnabled={modelOverlay.modelIds.slice(1)}
             // No endpoint reports a balance; N/A rather than a dash, which would
             // read as one. The sentence above it already says credits are spent.
             credits="N/A"
             onKeepAppDefault={() => {
-              const modelId = modelOverlay.modelId;
+              const ids = modelOverlay.modelIds;
               setModelOverlay(null);
-              // They declined the billing, not the model. Keeping the pick means
-              // the picker does not have to be walked again to change their mind,
-              // and under App default it is remembered rather than served.
-              if (modelId !== openModelId) void saveModel("tool", [modelId]);
+              // They declined the billing, not the models. Keeping the picks
+              // means the picker does not have to be walked again to change their
+              // mind, and under App default they are remembered rather than
+              // served.
+              if (ids.join() !== openModelIds.join()) void saveModel("tool", ids);
             }}
             onUseGateCredits={() => {
-              const modelId = modelOverlay.modelId;
+              const ids = modelOverlay.modelIds;
               setModelOverlay(null);
-              void saveModel("gate", [modelId], true);
+              void saveModel("gate", ids, true);
             }}
           />
         ) : journalOpen && journal ? (
@@ -1747,11 +1761,10 @@ export function NewUiApp() {
           // name a model while its source is "tool".
           onChooseModel={(choice) => {
             if (choice === "gate") {
-              if (openModelId) activateGateModel(openModelId);
-              // Nothing to switch *to* yet, so the picker comes first. Saving
-              // `gate` with no model is refused by the gateway and by its schema,
-              // and rightly: Gate cannot serve a model nobody chose.
-              else setModelOverlay({ kind: "picker", then: "activate" });
+              if (openModelIds.length > 0) activateGateModel(openModelIds);
+              // Nothing to switch *to* yet, so the picker comes first: Gate
+              // cannot serve a model nobody enabled.
+              else setModelOverlay({ kind: "picker", then: "activate", mode: "single" });
             } else {
               void saveModel("tool", openModelId ? [openModelId] : []);
             }
@@ -1763,7 +1776,11 @@ export function NewUiApp() {
                 // open, and a card that showed a vendor only while a dialog was
                 // up would be stranger than one that reads it off the id. AG-592
                 // is where a selected model gets looked up and told it is gone.
-                { vendor: openModelId.split("/")[0], id: openModelId }
+                {
+                  vendor: openModelId.split("/")[0],
+                  id: openModelId,
+                  alsoEnabled: openModelIds.length - 1,
+                }
               : null
           }
           onChangeModel={() =>
@@ -1773,6 +1790,17 @@ export function NewUiApp() {
               // billing was accepted when the switch was made. On App default it
               // is a browse, and picking must not start spending.
               then: openModelChoice === "gate" ? "activate" : "remember",
+              mode: "single",
+            })
+          }
+          // AG-590's entry point: edit the whole enabled set rather than swap
+          // the one model. Separate control because they are different
+          // questions - "use this instead" and "also allow these".
+          onEditModelSet={() =>
+            setModelOverlay({
+              kind: "picker",
+              then: openModelChoice === "gate" ? "activate" : "remember",
+              mode: "multi",
             })
           }
           // No endpoint reports a Gate credit balance - the gateway has a PAYG
