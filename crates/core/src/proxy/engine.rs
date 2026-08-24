@@ -1098,10 +1098,27 @@ where
 mod tests {
     use super::*;
 
+    /// Serialize the tests that bind real listeners in [`STABLE_PORT_RANGE`].
+    ///
+    /// [`bind_fresh`] reads the persisted ports through the path seams to know
+    /// what to *skip*, which already puts these tests under the rule
+    /// `path_env_lock` states: anything reading those paths that would be wrong
+    /// to see another test's must take the lock. Skipping it also let them race
+    /// the real-engine tests in `manager_core`, which hold the same lock: this
+    /// band is 100 ports wide, an engine holds three of them, and a fresh bind
+    /// here could take the very port an enable/disable cycle there was about to
+    /// reclaim. That surfaced as a ~7%-per-run failure of
+    /// `engine_port_persists_across_an_enable_cycle` on macOS, which binds one
+    /// more listener per engine than Linux does.
+    fn band_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::env::path_env_lock()
+    }
+
     /// A fresh listener must land in the band we can actually rebind next run,
     /// not on an OS-assigned ephemeral port.
     #[test]
     fn bind_fresh_picks_from_the_stable_band() {
+        let _lock = band_lock();
         let listener = bind_fresh().expect("a free port in the band");
         let port = listener.local_addr().unwrap().port();
         assert!(
@@ -1114,6 +1131,7 @@ mod tests {
     /// listeners one engine brings up never collide.
     #[test]
     fn bind_fresh_skips_ports_already_held() {
+        let _lock = band_lock();
         let first = bind_fresh().expect("first port");
         let second = bind_fresh().expect("second port");
         let (a, b) = (
@@ -1169,6 +1187,7 @@ mod tests {
     /// back to an ephemeral port is what made the next restart move again.
     #[test]
     fn bind_loopback_falls_into_the_band_when_the_preferred_port_is_taken() {
+        let _lock = band_lock();
         // A *live* listener on an ephemeral port: `bind_preferred` treats this
         // as taken (as opposed to a TIME_WAIT remnant, which it reclaims).
         let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("squatter");
