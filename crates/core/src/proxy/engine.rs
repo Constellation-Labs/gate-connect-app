@@ -735,7 +735,7 @@ fn persisted_ports() -> Vec<u16> {
 /// agree on what "the port is taken" means - a live listener, not a TIME_WAIT
 /// remnant of the host that just exited.
 #[cfg(unix)]
-pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+fn bind_preferred_once(port: u16) -> std::io::Result<std::net::TcpListener> {
     if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
         return Ok(listener);
     }
@@ -758,8 +758,43 @@ pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener
 }
 
 #[cfg(not(unix))]
-pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+fn bind_preferred_once(port: u16) -> std::io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(("127.0.0.1", port))
+}
+
+/// How long a preferred-port bind keeps retrying before conceding the port.
+///
+/// Sized for a previous session still letting go, not for waiting out another
+/// application: the engine's own listeners close as its runtime winds down, and
+/// on macOS that was measured taking anywhere from microseconds to a few
+/// milliseconds after `disable()` returned.
+const PREFERRED_BIND_GRACE: Duration = Duration::from_millis(250);
+
+/// Bind the preferred port, retrying briefly before falling back.
+///
+/// The single attempt below answers "is the port free *right now*", and for a
+/// port we are trying to *re*claim that is the wrong question: our own previous
+/// session may still be releasing it. Conceding on the first refusal is what
+/// makes a quick disable/enable land on a fresh port - precisely what the
+/// preferred port exists to prevent, and what CLI tools baking the relay port
+/// into their configs cannot survive.
+///
+/// The engine's own teardown is ordered now (see the detached-listener join in
+/// `start`), so this is the belt to that braces: it also covers a port held by
+/// a `TIME_WAIT` remnant that has not yet expired, or by anything else
+/// transient, without needing to know which. Bounded, so a port a *foreign*
+/// application genuinely owns costs one short delay at enable time and then
+/// falls back exactly as before - the live-listener probe inside still refuses
+/// to shadow it.
+pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+    let deadline = std::time::Instant::now() + PREFERRED_BIND_GRACE;
+    loop {
+        match bind_preferred_once(port) {
+            Ok(listener) => return Ok(listener),
+            Err(e) if std::time::Instant::now() >= deadline => return Err(e),
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
 }
 
 /// Build the PAC (proxy auto-config) script WinINET runs for every connection.
