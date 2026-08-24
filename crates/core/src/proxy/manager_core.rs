@@ -412,13 +412,20 @@ impl<O: DesktopOps> DesktopManager<O> {
             eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
             None
         });
-        match snapshot {
-            Some(snapshot) => self.ops.restore(&snapshot)?,
-            None => self.ops.force_off()?,
-        }
+        // Revert first, stop second - a live engine behind a reverted proxy is
+        // harmless, the reverse strands HTTPS at a dead port. But the engine has
+        // already been taken out of the guard, so returning early on a failed
+        // revert would drop it, and `RunningEngine::drop` does not join: the
+        // listeners would stay up with no handle left to stop them, while our
+        // own state says nothing is running. Keep the result, stop, then report.
+        let reverted = match snapshot {
+            Some(snapshot) => self.ops.restore(&snapshot),
+            None => self.ops.force_off(),
+        };
         if let Some(running) = running {
             running.stop();
         }
+        reverted?;
         let _ = self.ops.clear_snapshot();
 
         Ok(())
