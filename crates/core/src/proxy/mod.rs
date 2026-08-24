@@ -2185,10 +2185,12 @@ mod tests {
 
         // `app_support_dir` checks the `GATE_CONNECT_TEST_HOME` env seam before
         // the mutex override installed below, so a concurrent test holding that
-        // var set would send these writes into *its* temp dir - and the reads
-        // somewhere else again once it restores the var. Every path-redirecting
-        // test in the crate serializes on this lock; see
-        // `crate::env::path_env_lock`.
+        // var set would send these writes into *its* temp dir, which then
+        // either vanishes when that test cleans up, or leaves the reads
+        // resolving somewhere else again once it restores the var. Both were
+        // seen before this lock: the first on Windows, the second on macOS.
+        // Every path-redirecting test in the crate serializes on this lock;
+        // see `crate::env::path_env_lock`.
         let _lock = crate::env::path_env_lock();
 
         let home = std::env::temp_dir().join(format!(
