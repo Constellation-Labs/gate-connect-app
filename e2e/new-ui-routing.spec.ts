@@ -120,6 +120,34 @@ test.describe("new UI routing", () => {
     expect(await callsFor(app.page, "connect_tool")).toEqual([]);
   });
 
+  test("the certificate gate names the system dialog Windows is about to raise", async ({
+    boot,
+  }) => {
+    // AG-534. `proxy_trust_ca` shells out to `certutil -user -addstore Root`,
+    // which raises a red "Security Warning" quoting the CA's name - unexplained,
+    // that reads as malware rather than as the step the user just asked for.
+    const app = await boot({
+      platform: "windows",
+      proxy: { running: true, ca_trusted: false },
+      tools: [
+        {
+          slug: "claude-code",
+          name: "Claude Code",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          requires_upstream_credential: false,
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+
+    await expect(
+      app.page.getByText("Windows will show a security warning: that’s expected, choose Yes."),
+    ).toBeVisible();
+  });
+
   test("turning an app off needs no gate at all", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
