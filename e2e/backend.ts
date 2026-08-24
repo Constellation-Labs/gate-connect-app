@@ -161,7 +161,18 @@ const ANTHROPIC_DOMAIN: DomainFixture = {
 /** Claude Desktop's chat surface. Off, supported, and reached only through its
  *  own row: it carries the user's claude.ai session cookie rather than a
  *  brokered key. In `defaultState`'s domain list because the shipped catalog
- *  always carries it: the row exists on every ledger, switched off. */
+ *  always carries it: the row exists on every ledger, switched off.
+ *
+ *  "Every ledger" means every STAGING ledger, and this fixture and
+ *  `CHATGPT_APPS_DOMAIN` are both the staging shape. `proxy::config`'s
+ *  `STAGING_ONLY_SLUGS` clears `supported` on these two unless the account
+ *  points at the staging gateway, and `defaultState`'s account names the
+ *  production host - the fixture is deliberately inconsistent with it, because
+ *  the gate lives entirely in the backend. What the frontend does with a
+ *  gated-off domain is already covered without a special case: `buildGroups`
+ *  filters on `supported`, so the row is simply absent, which is what an
+ *  unsupported domain has always meant here. Flip `supported` to false in a
+ *  spec's `merge` to render that. */
 export const CLAUDE_WEB_DOMAIN: DomainFixture = {
   slug: "claude-web",
   display_name: "Claude Desktop chat",
@@ -195,6 +206,25 @@ export const CHATGPT_DOMAIN: DomainFixture = {
   upstream_url: "https://chatgpt.com/backend-api",
   rewrite_prefixes: ["/codex/responses"],
   passthrough_prefixes: [],
+  enabled: false,
+  supported: true,
+};
+
+/** The ChatGPT app's own chat turn plus Codex's tool plane, sharing chatgpt.com
+ *  with the entry above under a different URL split. Same deal as the two rows
+ *  above - off, supported, its own row - because the chat half carries the
+ *  user's session cookie. Present here because the provider names it in
+ *  `chat_domain_slugs`, and a slug named there with no domain to match is a row
+ *  the ledger promises and never renders; `provider.rs`'s
+ *  `chat_domains_reach_the_ledger_without_reaching_the_cascade` asserts the same
+ *  pairing on the backend catalog. */
+export const CHATGPT_APPS_DOMAIN: DomainFixture = {
+  slug: "chatgpt-apps",
+  display_name: "ChatGPT app chat + Codex tools",
+  hosts: ["chatgpt.com"],
+  upstream_url: "https://chatgpt.com",
+  rewrite_prefixes: ["/backend-api/f/conversation", "/backend-api/ps/mcp", "/backend-api/wham/"],
+  passthrough_prefixes: ["/backend-api/f/conversation/prepare"],
   enabled: false,
   supported: true,
 };
@@ -234,6 +264,7 @@ export function defaultState(): BackendState {
         { ...CLAUDE_WEB_DOMAIN },
         { ...OPENAI_DOMAIN },
         { ...CHATGPT_DOMAIN },
+        { ...CHATGPT_APPS_DOMAIN },
       ],
     },
     tools: [{ ...CLAUDE_CODE }, { ...CODEX }, { ...OPENCODE }],
@@ -246,7 +277,7 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["claude-code"],
         domain_slugs: ["anthropic"],
-        chat_domain_slugs: [],
+        chat_domain_slugs: ["claude-web"],
       },
       {
         slug: "openai",
@@ -256,7 +287,7 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["codex"],
         domain_slugs: ["openai"],
-        chat_domain_slugs: ["chatgpt"],
+        chat_domain_slugs: ["chatgpt", "chatgpt-apps"],
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
