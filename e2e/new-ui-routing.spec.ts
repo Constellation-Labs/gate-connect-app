@@ -61,7 +61,7 @@ test.describe("new UI routing", () => {
     // that re-adopts, and the only one that reaches the review gate. Its
     // accessible name is the notice's own ("Let Gate Connect manage Codex"),
     // which is what distinguishes it from the sidebar row's switch.
-    await expect(app.page.getByText(/isn't protected/)).toBeVisible();
+    await expect(app.page.getByText("Reconnect to restore protection")).toBeVisible();
     const cardSwitch = app.page.getByRole("switch", { name: "Let Gate Connect manage Codex" });
     await expect(cardSwitch).toHaveAttribute("aria-checked", "false");
 
@@ -323,7 +323,10 @@ test.describe("new UI: refreshing the inventory", () => {
   test("a tool installed while the window was open appears on its own", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
-    await expect(app.page.getByRole("switch", { name: "Codex" })).toHaveCount(0);
+    // `exact`: the rail's ChatGPT (Codex subscription) row is drawn from the
+    // catalog whether or not any tool is installed, and its switch's name
+    // would otherwise substring-match "Codex".
+    await expect(app.page.getByRole("switch", { name: "Codex", exact: true })).toHaveCount(0);
     const sweeps = await countOf(app, "routing_verdicts");
 
     await app.patch({
@@ -339,7 +342,9 @@ test.describe("new UI: refreshing the inventory", () => {
       ],
     });
 
-    await expect(app.page.getByRole("switch", { name: "Codex" }).first()).toBeVisible({
+    await expect(
+      app.page.getByRole("switch", { name: "Codex", exact: true }).first(),
+    ).toBeVisible({
       timeout: 20_000,
     });
     await expect(app.page.getByText("No apps detected")).toHaveCount(0);
@@ -706,5 +711,63 @@ test.describe("new UI: the review names the file it will change", () => {
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText("The file that changes:")).toHaveCount(0);
+  });
+});
+
+/**
+ * The rail as `Components / Sidenav` draws it (read 2026-08-23): proxy-routed
+ * members are rows beside the config tools, every eyebrow carries its
+ * protected-over-total counter, and the multi-provider tools share one
+ * "Other tools" group. Hook tests cannot see whether a row's switch reaches
+ * the right command, which is what the first of these pins.
+ */
+test.describe("new UI sidebar rail", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("a proxy domain is a rail row: its switch routes it, its name opens nothing", async ({
+    boot,
+  }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    // No pane exists for a domain yet, so the name is a label, not a link.
+    await expect(
+      app.page.getByRole("switch", { name: "ChatGPT (Codex subscription)" }),
+    ).toBeVisible();
+    await expect(
+      app.page.getByRole("button", { name: "ChatGPT (Codex subscription)" }),
+    ).toHaveCount(0);
+
+    await app.page.getByRole("switch", { name: "ChatGPT (Codex subscription)" }).click();
+
+    // A domain routes through the engine's flag, never a config write.
+    await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
+      slug: "chatgpt",
+      enabled: true,
+    });
+    expect(await callsFor(app.page, "connect_tool")).toEqual([]);
+  });
+
+  test("a group's eyebrow counts protected rows over rows", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    // OPEN AI holds Codex (detected, off), OpenAI apps and ChatGPT (both off).
+    // `exact`, because the routing banner's "0 of 3 Apps" contains the phrase.
+    await expect(app.page.getByText("0 of 3", { exact: true })).toBeVisible();
+
+    // Routing the OpenAI apps domain with the engine up and the certificate
+    // trusted makes it the group's one protected row.
+    await app.page.getByRole("switch", { name: "OpenAI apps" }).click();
+    await expect(app.page.getByText("1 of 3", { exact: true })).toBeVisible();
+  });
+
+  test("the multi-provider tools share one Other tools eyebrow", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await expect(app.page.getByRole("heading", { name: "Other tools" })).toBeVisible();
+    // Not one eyebrow per tool - the 2026-08-21 read drew that, and the
+    // Sidenav page reversed it.
+    await expect(app.page.getByRole("heading", { name: "OpenCode" })).toHaveCount(0);
   });
 });

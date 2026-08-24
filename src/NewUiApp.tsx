@@ -888,15 +888,18 @@ export function NewUiApp() {
   );
 
   /**
-   * The rail's rows under their family eyebrows (Figma `Flows / App`, read
-   * 2026-08-21). Labels are the drawn vendor captions - "Anthropic" over the
+   * The rail's rows under their family eyebrows (`Components / Sidenav`, read
+   * 2026-08-23). Labels are the drawn vendor captions - "Anthropic" over the
    * Claude apps, "OpenAI" over Codex - taken from each family's
-   * `upstream_provider_name`, which is per-vendor by construction. The
-   * multi-provider tools carry a sentence fragment there ("your existing
-   * providers"), and the design puts each under its own name ("OPENCODE"), so
-   * the leftover family splits into one group per tool. Before the catalog
-   * loads, one unlabelled group keeps the rows on screen rather than blanking
-   * the rail on a grouping that is not yet known.
+   * `upstream_provider_name`, falling back to the family's own name for a
+   * family with no config tool to read it from. The multi-provider tools sit
+   * under one "Other tools" eyebrow, as drawn - the 2026-08-21 read had each
+   * under its own name, and the Sidenav page reversed that. Proxy members
+   * (the chat domains and a family's app surfaces) are rows too now: no
+   * verdict covers them - the sweep is per tool - so their status derives
+   * from the domain's own state, and no pane opens for them yet. Before the
+   * catalog loads, one unlabelled group keeps the rows on screen rather than
+   * blanking the rail on a grouping that is not yet known.
    */
   const sidebarGroups = useMemo<SidebarGroup[]>(() => {
     if (groups.length === 0) {
@@ -905,22 +908,36 @@ export function NewUiApp() {
     const bySlug = new Map(apps.map((a) => [a.slug, a]));
     const grouped: SidebarGroup[] = [];
     for (const g of groups) {
-      const members: { app: SidebarApp; vendor: string }[] = [];
+      const members: SidebarApp[] = [];
+      let vendor: string | null = null;
       for (const m of g.members) {
-        if (m.kind !== "config" || !m.tool) continue;
-        const app = bySlug.get(m.key);
-        if (!app) continue;
-        bySlug.delete(m.key);
-        members.push({ app, vendor: m.tool.upstream_provider_name });
+        if (m.kind === "config" && m.tool) {
+          const app = bySlug.get(m.key);
+          if (!app) continue;
+          bySlug.delete(m.key);
+          vendor ??= m.tool.upstream_provider_name;
+          members.push(app);
+        } else if (m.kind === "proxy") {
+          members.push({
+            slug: m.key,
+            name: m.name,
+            status: proxyMemberStatus(m),
+            // Intent, same as the tools: the switch says what the user asked
+            // for, the status line says what is happening.
+            on: m.desired,
+            busy: routingBusy,
+            noPane: true,
+          });
+        }
       }
       if (members.length === 0) continue;
-      if (g.id === MULTI_PROVIDER_ID) {
-        for (const { app } of members) {
-          grouped.push({ id: app.slug, label: app.name, apps: [app] });
-        }
-      } else {
-        grouped.push({ id: g.id, label: members[0].vendor, apps: members.map((m) => m.app) });
-      }
+      grouped.push({
+        // "Other tools" names itself; its members' vendor field is a sentence
+        // fragment ("your existing providers"), not a caption.
+        id: g.id,
+        label: g.id === MULTI_PROVIDER_ID ? g.name : (vendor ?? g.name),
+        apps: members,
+      });
     }
     // A row the catalog did not claim keeps its place rather than vanishing.
     // buildGroups sweeps leftovers into "Other tools", so this only catches a
@@ -929,7 +946,7 @@ export function NewUiApp() {
       grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
     }
     return grouped;
-  }, [groups, apps]);
+  }, [groups, apps, routingBusy]);
 
   /**
    * What the sidebar should say when the app list is empty. `ok` while there are
@@ -1282,8 +1299,12 @@ export function NewUiApp() {
   const drifted = useMemo(() => tools.filter((t) => t.status.kind === "drifted"), [tools]);
   const driftAlert = drifted.length ? (
     <AlertBanner
-      title={`${drifted[0].name} isn't protected`}
-      body="Its config changed outside Gate, so its traffic isn't routed. Reconnect to restore protection."
+      // The drawn drift variant (banner/alert/single-app, read 2026-08-23)
+      // titles the card with the remedy. Its body says "This app's"; the name
+      // goes there instead because this card can page between apps, and two
+      // drifted tools must not read identically. Raised with the designer.
+      title="Reconnect to restore protection"
+      body={`${drifted[0].name}'s config changed outside Gate, so its traffic isn't routed.`}
       on={false}
       switchLabel={drifted[0].name}
       onToggle={() => void routeApp(drifted[0].slug, true)}
@@ -1488,7 +1509,15 @@ export function NewUiApp() {
           />
         ) : undefined
       }
-      onToggleApp={(slug, next) => void routeApp(slug, next)}
+      onToggleApp={(slug, next) => {
+        // The rail mixes tools and proxy domains now. A domain routes through
+        // `setDomainRouted` - no config file, so no drift gate - the same
+        // dispatch the family panel's member switches use.
+        const member = groups.flatMap((g) => g.members).find((m) => m.key === slug);
+        void (member?.kind === "proxy"
+          ? routing.setDomainRouted(slug, next)
+          : routeApp(slug, next));
+      }}
       dialog={
         // A pending quit decision outranks every other overlay: the user asked
         // to leave, and an update prompt or routing notice must not sit on top
@@ -2027,6 +2056,19 @@ function initialsOf(name: string): string {
  * certificate trust plus the master switch - which is exactly what `routed`
  * already folds in.
  */
+/**
+ * The status line for a proxy-routed member, shared by the rail rows and the
+ * family panel so the two cannot phrase one domain two ways. No verdict exists
+ * for these - the sweep is per tool - so observation is the domain's own state:
+ * carrying traffic, switched on but blocked (master off, certificate
+ * untrusted), or off.
+ */
+function proxyMemberStatus(m: GroupMember): AppStatus {
+  return m.routed
+    ? { kind: "protected" }
+    : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
+}
+
 function memberToFamilyMember(
   m: GroupMember,
   verdicts: Map<string, Verdict>,
@@ -2035,9 +2077,7 @@ function memberToFamilyMember(
   const status: AppStatus =
     m.kind === "config"
       ? verdictStatus(verdicts.get(m.key), { writeFailed: writeFailures.has(m.key) })
-      : m.routed
-        ? { kind: "protected" }
-        : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
+      : proxyMemberStatus(m);
   return { key: m.key, name: m.name, kind: m.kind, status, on: m.desired };
 }
 

@@ -47,8 +47,11 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
     case "master-off":
       return {
         id: `master-off:${member.key}`,
-        title: `${name} is switched on but not routing`,
-        body: "Routing is off, so its traffic is going straight to the provider. Turn routing on to protect it.",
+        // The drawn copy (banner/alert/single-app, read 2026-08-23). "Routing"
+        // is the master: the app is switched on and routing is not, which is
+        // exactly the divergence this notice exists to explain.
+        title: `${name} isn't protected`,
+        body: "Routing is set to off. Reconnect to restore protection.",
         switchLabel: "Turn routing on",
         action: { kind: "enable-routing" },
       };
@@ -61,17 +64,20 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
         action: { kind: "trust-certificate" },
       };
     case "drifted":
-      // Copy is the design's own (Figma `banner/alert/single-app`), minus its
-      // "It's config" typo. Carefully worded there for the same reason it is
-      // here: drift is often the user's own doing - a hand-written Gate setup,
-      // or another tool rewriting the file - so it does not claim something
-      // broke. Adopting it overwrites their config, which is why it stays an
+      // The drawn drift variant (read 2026-08-23) titles the card with the
+      // remedy and puts the cause in the body. Carefully worded there for the
+      // same reason it is here: drift is often the user's own doing - a
+      // hand-written Gate setup, or another tool rewriting the file - so it
+      // does not claim something broke. One deviation: the drawing says "This
+      // app's" and names no app anywhere on a card that pages between apps,
+      // so the name goes where that phrase was. Raised with the designer.
+      // Adopting overwrites the user's config, which is why it stays an
       // explicit action rather than something reconciled silently.
       return member.tool
         ? {
             id: `drifted:${member.key}`,
-            title: `${name} isn't protected`,
-            body: "Its config changed outside Gate, so its traffic isn't routed. Reconnect to restore protection.",
+            title: "Reconnect to restore protection",
+            body: `${name}'s config changed outside Gate, so its traffic isn't routed.`,
             switchLabel: `Let Gate Connect manage ${name}`,
             action: { kind: "reconnect", slug: member.key },
           }
@@ -124,7 +130,7 @@ export function buildNotices(groups: Group[]): RoutingNotice[] {
                 id: kind,
                 title:
                   kind === "master-off"
-                    ? `${count} apps are switched on but not routing`
+                    ? `${count} apps aren't protected`
                     : `${count} apps need the Gate certificate`,
               }
             : notice,

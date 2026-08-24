@@ -549,6 +549,122 @@ sight; a group's eyebrow sits 8px above its rows; and `apps-section`
 `AppPane.test.tsx` pins the merged pill column. 514 unit tests and the 114
 new-UI e2e tests pass.
 
+### Sync 2026-08-23: the Sidenav page, and the rail it redraws
+
+Read through the browser (MCP quota still spent). Two structural changes to
+the file itself: the `Comments` page is gone without ever being read, and
+`Components` gained a nested page, **`Sidenav`** (408:15625), carrying the
+ready check. The old `nav/sidebar/*` frames are no longer on the Components
+page - Sidenav replaces them, and it redraws the rail rather than just
+rehousing it. Every flow page's frames already carry the new rail.
+
+What the redrawn rail changes, in order of consequence:
+
+- **Chat domains are rows now.** All three sidebar variants draw nine rows:
+  Claude Desktop and Claude Code under `ANTHROPIC`; Codex, OpenAI apps and
+  ChatGPT under `OPEN AI`; OpenRouter under an eyebrow reading `OPENCODE`
+  (a mislabel - see below); OpenCode and OpenClaw under `OTHER TOOLS`.
+  Claude Desktop, OpenAI apps, ChatGPT and OpenRouter are proxy-routed chat
+  members, which the drawn UI had never shown - the 2026-08-16 note on open
+  question 3 ("the chat domains, which the drawn UI does not show at all")
+  no longer holds. Each carries the same switch and status line as a config
+  tool. The built rail filters them out (`m.kind !== "config"` in
+  `sidebarGroups`), so today it shows only the config tools.
+- **Every group eyebrow carries a counter** - `1 of 2`, right-aligned, mono -
+  counting protected members over members (verified against all four groups'
+  drawn states). `PROTECTED APPS 4/4` stays gone; this is its per-group
+  descendant.
+- **The multi-provider tools share one `OTHER TOOLS` eyebrow.** That reverses
+  the 2026-08-21 reading, where each drew under its own name and
+  `sidebarGroups` was built to split them. One group, labelled Other tools.
+- **The brand marks exist in the file at last.** A `logo` component set draws
+  eight marks (Claude, Claude Code, Codex, OpenAI, ChatGPT, OpenClaw,
+  OpenCode, OpenRouter), and `logo-wrapper` places each in the 32px tile. A
+  separate model `row` component set draws coloured vendor marks (Anthropic,
+  DeepSeek, Qwen, OpenAI) beside `gate/...` ids, with the selected row
+  outlined and check-marked. Open question 2 is resolvable: nothing needs
+  inventing, but the View seat cannot export SVGs, so the marks need either
+  a designer export or a high-DPI browser capture like the onboarding art.
+- The `sidebar-menu-item` selected variant and the `status-label` trio
+  (`Not protected - 2m ago` / `Protected - 25s ago` / `Not routed`) match
+  what was built on 2026-08-21.
+
+**The Families pane on this page is a pasted screenshot, not a drawing.** The
+layer is literally `image 1` - `image.png`, 931x990 - and it shows the built
+`FamiliesPane` (master card, family cards, the Config file / Local proxy
+qualifiers). So the designer has seen the pane and keeps it as reference, but
+the rail still draws no Families nav item and no frame specifies the pane.
+The standing deviation stands.
+
+**One design bug to raise:** the eyebrow above the OpenRouter row reads
+`OPENCODE` in all three variants and in the flow frames' rails. The family
+label here derives from `upstream_provider_name`, which reads OpenRouter, and
+that stays.
+
+**The alert banners moved.** The Components page now draws three states, and
+the flow frames agree:
+
+| Variant | Title | Body |
+| --- | --- | --- |
+| off (single + multiple-apps) | `Codex isn't protected` | Routing is set to **off**. Reconnect to restore protection. |
+| drift (new) | Reconnect to restore protection | This app's config changed outside Gate, so its traffic isn't routed. |
+
+The built `master-off` notice says "switched on but not routing" and the
+built `drifted` notice carries the old single-app copy, so both retitle. One
+question to raise before shipping the drift copy verbatim: the drawn drift
+banner names no app anywhere on the card, and the card pages between apps,
+so two drifted tools would be indistinguishable.
+
+Also confirmed this pass: the Overview pane's `Last 24 hours` header caption
+(already built - `period` in `Overview.tsx`); `Auth / Error states` still
+without its check (fourth read, so the timeout dialog and name validation
+stay unbuilt); Settings, App, Onboarding and Setup otherwise unchanged with
+every recorded deviation standing; and the `Design docs` page holding exactly
+the four frames `docs/new_ui_design/` already imported (`design.md` plus the
+three token files) - nothing new to pull.
+
+### Built 2026-08-23
+
+Items 10 (minus the chat-row pane) and 12 from the queue.
+
+**The rail follows the Sidenav page.** `sidebarGroups` in `NewUiApp.tsx` no
+longer filters proxy members out: the chat domains and a family's app
+surfaces are rows now, with `setDomainRouted` behind their switch (the same
+dispatch the family panel's member switches use - a domain has no config
+file, so no drift gate) and their status derived from the domain's own state
+through `proxyMemberStatus`, extracted so the rail and the family panel
+cannot phrase one domain two ways. `SidebarApp` gained `noPane`: no drawn App
+pane exists for a domain, so the name renders as a label rather than a link,
+with the hover fill suppressed because it is the "this opens something"
+signal. Each group eyebrow carries the drawn protected-over-total counter,
+derived from the rows in `Sidebar.tsx` so it can never disagree with them,
+and not uppercased - the drawing reads "1 of 2". The multi-provider tools
+collapsed back into one "Other tools" group. The routing banner still counts
+tools only; whether domains should join its "N of M Apps" is a designer
+question, not assumed here.
+
+**The alert copy follows the redrawn banners.** `lib/notices.ts`: master-off
+reads "X isn't protected" / "Routing is set to off. Reconnect to restore
+protection." (plural: "N apps aren't protected"); the drift notice and
+`NewUiApp`'s `driftAlert` title with the remedy, "Reconnect to restore
+protection". One deviation, recorded at both sites: the drawn drift body says
+"This app's" and the card names no app while paging between apps, so the
+name goes where that phrase was.
+
+**A selector trap the new rows sprang.** Playwright's `getByRole` name option
+is substring matching, so the always-present "ChatGPT (Codex subscription)"
+row switch now matches every `{ name: "Codex" }` selector - including one
+whose job was to *wait* for a tool to appear, which stopped waiting and raced
+the detection poll. The affected specs use `exact: true` or scope to the row;
+new pins in `new-ui-routing.spec.ts` cover the domain-row dispatch, the
+counter, and the single Other-tools eyebrow. 514 unit tests and the 166-test
+e2e suite pass.
+
+Still open from item 10: where a chat row navigates. Every drawn App frame is
+a proxy member's pane, so the design says they open one; that needs an
+`AppPane` feed with no config file, no drift review and no process staleness,
+and it is its own PR.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a
@@ -1039,9 +1155,11 @@ the same PR.
    sitting above two off switches with "2 of 4 Apps" beside it. Either it means
    something other than protected-count, or it was never bound. The sidebar
    currently computes protected-over-total.
-2. **App brand logos** - no marks in the repo; `AppRow` falls back to an
-   initial. Four SVGs need exporting (`claude-color`, `claudecode`, `codex`,
-   `opencode`).
+2. **App brand logos: RESOLVED 2026-08-23 - drawn, pending export.** The
+   `Components / Sidenav` page carries a `logo` component set with all eight
+   marks, plus coloured vendor marks in the model `row` set. Still no assets
+   in the repo (`AppRow` falls back to an initial, the Model cells render the
+   name alone); see item 11 under "Still to do" for the export route.
 3. **Groups: RESOLVED 2026-08-16 - they keep a home.** The design lists apps
    flat, which cannot express routing's real shape: families (Claude, OpenAI,
    OpenRouter, plus the multi-provider "Other tools" bucket) own a master
@@ -1254,6 +1372,29 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together.
    Item 1 was the blocker and is done, so what remains is repointing the e2e
    suite at the new shell and deleting; the popover's own specs go with it.
+10. **The redrawn rail (Sidenav page, read 2026-08-23): DONE except the chat
+    pane.** Built 2026-08-23 - chat and app-surface members are rail rows
+    (switch on `setDomainRouted`, status from the domain's own state, no
+    pane), each eyebrow carries its protected-over-total counter, and the
+    multi-provider tools share one `Other tools` group. See "Built
+    2026-08-23".
+
+    What remains is where a chat row navigates. Every App-page frame is
+    `App/Claude-desktop/*` and Claude Desktop is a proxy member, so the design
+    says chat rows open the pane too - which needs an `AppPane` feed with no
+    config file, no drift review and no process staleness (stats are
+    install-wide either way). Until that PR lands, the rows are labels with
+    working switches.
+11. **Brand marks.** Export the eight `logo` components and the model vendor
+    marks, then wire `SidebarApp.logo`, the App pane header tile, the
+    activity table's Model cells and the current-model row. Ask the designer
+    for an SVG export first - the View seat cannot use Dev Mode - and fall
+    back to high-DPI browser captures like the onboarding art if none comes.
+12. **Alert banner copy: DONE 2026-08-23.** `master-off` and `drifted` in
+    `lib/notices.ts` (and `NewUiApp`'s `driftAlert`) carry the drawn copy.
+    The drift card names the app in its body where the drawing says "This
+    app's" - the card pages between apps and the drawn card never names one -
+    raised with the designer rather than shipped ambiguous.
 
 Rows the design draws that have no backend command at all: device rename and
 notifications, plus plan upgrade, which has no billing URL to open. They render
