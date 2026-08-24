@@ -179,6 +179,10 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
     let resp = client
         .post("https://api.anthropic.com/v1/messages")
         .header("authorization", "Bearer app-token")
+        .header(
+            "anthropic-beta",
+            "claude-code-20250219,context-1m-2025-08-07",
+        )
         .json(&serde_json::json!({ "model": "claude", "messages": [] }))
         .send()
         .await
@@ -211,6 +215,74 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
         r.header("authorization"),
         Some("Bearer app-token"),
         "the client's own credential must be forwarded untouched"
+    );
+    assert_eq!(
+        r.header("anthropic-beta"),
+        Some("claude-code-20250219,context-1m-2025-08-07"),
+        "the model-selected 1M capability must survive the forward proxy"
+    );
+}
+
+/// Claude Code has its own explicit proxy selector because the Desktop domain
+/// is independently switchable. Even with that catalog entry off, a connected
+/// Claude Code process must still be intercepted instead of silently reaching
+/// Anthropic directly.
+#[tokio::test]
+async fn claude_code_selector_routes_when_desktop_domain_is_off() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let mut domains = default_domains();
+    for domain in &mut domains {
+        domain.enabled = false;
+    }
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains,
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let proxy_url = format!("http://gate-claude-code:route@127.0.0.1:{}", engine.port());
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(proxy_url).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("anthropic-beta", "context-1m-2025-08-07")
+        .json(&serde_json::json!({ "model": "claude-opus-4-1[1m]", "messages": [] }))
+        .send()
+        .await
+        .expect("Claude Code selector must reach Gate with the Desktop domain off");
+    assert!(resp.status().is_success());
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "request must not blind-tunnel around Gate");
+    assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        reqs[0].header("anthropic-beta"),
+        Some("context-1m-2025-08-07"),
+        "Claude Code's model-selected 1M beta must survive the forced route"
+    );
+    assert_eq!(
+        reqs[0].header("proxy-authorization"),
+        None,
+        "the local route selector must not be forwarded"
     );
 }
 

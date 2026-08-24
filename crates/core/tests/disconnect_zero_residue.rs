@@ -139,10 +139,9 @@ fn claude_code_disconnect_leaves_no_gate_residue() {
         &settings,
         r#"{
   "env": {
-    "ANTHROPIC_BASE_URL": "https://gw.example.com",
-    "ANTHROPIC_CUSTOM_HEADERS": "X-Gate-Api-Key: sk-gw-xxx\nX-Gate-Upstream-Url: https://api.anthropic.com"
+      "HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:9977"
   },
-  "_gateConnect": { "previousEnv": {}, "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS"] }
+  "_gateConnect": { "previousEnv": {}, "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "HTTPS_PROXY"] }
 }
 "#,
     )
@@ -156,6 +155,10 @@ fn claude_code_disconnect_leaves_no_gate_residue() {
     assert!(
         !after.contains("ANTHROPIC_BASE_URL"),
         "Gate env must be reverted out of settings.json"
+    );
+    assert!(
+        !after.contains("HTTPS_PROXY"),
+        "Gate proxy must be reverted out of settings.json"
     );
     assert!(
         !after.contains("_gateConnect"),
@@ -172,16 +175,22 @@ fn claude_code_disconnect_restores_previous_env() {
     fs::create_dir_all(settings.parent().unwrap()).unwrap();
     // A connected state where the user had their own ANTHROPIC_BASE_URL
     // before Gate (stashed in previousEnv), no prior custom headers, and
-    // an unrelated env var Gate must not touch.
+    // user-owned context beta and an unrelated env var Gate must not touch.
     fs::write(
         &settings,
         r#"{
   "env": {
-    "ANTHROPIC_BASE_URL": "https://gw.example.com",
-    "ANTHROPIC_CUSTOM_HEADERS": "X-Gate-Api-Key: sk-gw-xxx\nX-Gate-Upstream-Url: https://api.anthropic.com",
+      "HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:9977",
+    "ANTHROPIC_BETAS": "some-user-owned-beta",
     "FOO": "bar"
   },
-  "_gateConnect": { "previousEnv": { "ANTHROPIC_BASE_URL": "https://my-proxy.example.com" }, "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS"] }
+  "_gateConnect": {
+    "previousEnv": {
+      "ANTHROPIC_BASE_URL": "https://my-proxy.example.com",
+      "HTTPS_PROXY": "http://corp.example:3128"
+    },
+    "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "HTTPS_PROXY"]
+  }
 }
 "#,
     )
@@ -202,6 +211,16 @@ fn claude_code_disconnect_restores_previous_env() {
         "a key with no prior value must be removed, not left as Gate's"
     );
     assert_eq!(
+        env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
+        Some("http://corp.example:3128"),
+        "the user's prior HTTPS_PROXY must be restored verbatim"
+    );
+    assert_eq!(
+        env_block.get("ANTHROPIC_BETAS").and_then(|v| v.as_str()),
+        Some("some-user-owned-beta"),
+        "a user-owned ANTHROPIC_BETAS value must survive disconnect unchanged"
+    );
+    assert_eq!(
         env_block.get("FOO").and_then(|v| v.as_str()),
         Some("bar"),
         "unrelated env vars must survive disconnect untouched"
@@ -210,6 +229,65 @@ fn claude_code_disconnect_restores_previous_env() {
         after.get("_gateConnect").is_none(),
         "Gate marker must be removed from settings.json"
     );
+}
+
+#[test]
+fn claude_code_migrates_legacy_relay_and_restores_user_proxy() {
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    let settings = env::claude_code_settings_path().unwrap();
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(
+        &settings,
+        r#"{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8977/anthropic",
+    "HTTPS_PROXY": "http://corp.example:3128"
+  },
+  "_gateConnect": {
+    "previousEnv": {
+      "ANTHROPIC_BASE_URL": "https://user-proxy.example"
+    },
+    "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS"]
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let claude = find(ToolId::ClaudeCode).unwrap();
+    claude.connect(&connect_input(9977)).unwrap();
+
+    let connected: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    let connected_env = connected.get("env").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(
+        connected_env.get("HTTPS_PROXY").and_then(|v| v.as_str()),
+        Some("http://gate-claude-code:route@127.0.0.1:9977")
+    );
+    assert!(
+        !connected_env.contains_key("ANTHROPIC_BASE_URL"),
+        "migration must restore Claude Code's first-party provider classification"
+    );
+
+    claude.disconnect().unwrap();
+
+    let restored: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    let restored_env = restored.get("env").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(
+        restored_env
+            .get("ANTHROPIC_BASE_URL")
+            .and_then(|v| v.as_str()),
+        Some("https://user-proxy.example")
+    );
+    assert_eq!(
+        restored_env.get("HTTPS_PROXY").and_then(|v| v.as_str()),
+        Some("http://corp.example:3128"),
+        "migration must snapshot a proxy value that the legacy marker did not manage"
+    );
+    assert!(restored.get("_gateConnect").is_none());
 }
 
 #[test]

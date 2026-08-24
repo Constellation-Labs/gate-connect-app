@@ -367,11 +367,11 @@ stop_relay() {
 }
 
 # ---------------------------------------------------------------------------
-# Engine host. OpenClaw and Hermes are PROXY-routed: they take a forward proxy
-# (`proxy.proxyUrl` and `HTTPS_PROXY`) rather than a base URL, so `connect`
+# Engine host. Claude Code, OpenClaw, and Hermes are PROXY-routed: they take a
+# forward proxy rather than a provider base URL, so `connect`
 # refuses unless `proxy::engine_proxy_url()` is Some. Only `proxy enable`
 # makes it so - it writes the system-proxy snapshot and the engine port, and
-# `proxy relay` (the relay) writes neither. The other three tools keep using
+# `proxy relay` (the relay) writes neither. The other two tools keep using
 # the relay and are untouched by this: the exported NO_PROXY is
 # `localhost,127.0.0.1,::1`, which exempts both the relay and the mocks.
 #
@@ -1034,7 +1034,8 @@ run_tool() {
     ckpt "[$label/$mode] disconnect"
     "$CLI" disconnect "$slug" >/dev/null 2>&1
     ckpt "[$label/$mode] asserting capture"
-    if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" "$(winpath "$CAPTURE")" "$needle" "$mode"; then
+    if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" \
+      "$(winpath "$CAPTURE")" "$needle" "$mode" "${EXPECTED_CONTEXT:-}"; then
       echo "PASS: $label reached the gateway with the $mode Gate headers"
       PASS=$((PASS + 1))
     else
@@ -1077,15 +1078,6 @@ fi
 run_relay_tools() {
   local mode="$1"
 
-  # --- Claude Code: gate-connect writes the relay base URL + upstream headers
-  #     into the env block of ~/.claude/settings.json; claude POSTs /v1/messages
-  #     to the relay. We run `--bare` (the documented CI mode - it skips the
-  #     OAuth/keychain read that otherwise hangs headless macOS) and feed it that
-  #     exact settings file via `--settings` so the env block applies.
-  mkdir -p "$HOME/.claude"
-  run_tool "claude-code" "claude-code" "/v1/messages" "$mode" -- \
-    claude --bare -p "ping" --settings "$(winpath "$HOME/.claude/settings.json")"
-
   # --- Codex: apikey mode → relay base + /v1, POSTs /v1/responses. Talks to the
   #     relay over plaintext http now, so the old custom-CA problem
   #     (openai/codex#9526) no longer applies. Guarded on install - codex isn't
@@ -1127,6 +1119,31 @@ run_relay_tools() {
 # with both up at once, which is what pinned the cause to the daemon.
 run_engine_tools() {
   local mode="$1"
+
+  # --- Claude Code: Gate Connect writes HTTPS_PROXY but deliberately leaves
+  #     ANTHROPIC_BASE_URL absent. The real Claude CLI therefore keeps its
+  #     first-party model-capability path (including standard vs [1m] context
+  #     selection), while the engine intercepts the canonical
+  #     api.anthropic.com socket and rewrites /v1/messages to the mock gateway.
+  #     --bare avoids an OAuth/keychain read that hangs on headless macOS.
+  if [ -z "$ENGINE_ON" ]; then
+    echo "::notice::skipping claude-code - proxy-routed, and the engine is not up"
+  else
+    mkdir -p "$HOME/.claude"
+    # Prove Claude Code's explicit route is independent from the Desktop app's
+    # domain switch. Without the selector in HTTPS_PROXY this state would
+    # silently blind-tunnel both model variants around Gate.
+    "$CLI" proxy domain anthropic off
+    EXPECTED_CONTEXT=standard run_tool \
+      "claude-code-standard" "claude-code" "/v1/messages" "$mode" -- \
+      claude --bare -p "ping" --model opus \
+        --settings "$(winpath "$HOME/.claude/settings.json")"
+    EXPECTED_CONTEXT=1m run_tool \
+      "claude-code-1m" "claude-code" "/v1/messages" "$mode" -- \
+      claude --bare -p "ping" --model "opus[1m]" \
+        --settings "$(winpath "$HOME/.claude/settings.json")"
+    "$CLI" proxy domain anthropic on
+  fi
 
   # --- OpenClaw: PROXY-routed since the harnesses moved off per-provider
   #     baseUrl edits. gate-connect writes `proxy.proxyUrl` (a process-wide
@@ -1211,9 +1228,9 @@ start_relay || exit 1
 run_relay_tools "api-key"
 stop_relay
 # Best-effort, like the per-tool guards: a runner that cannot bring the engine
-# up should still prove the three relay-routed tools rather than failing the
-# whole phase. The two proxy-routed tools skip with a notice in that case.
-start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
+# up should still prove the two relay-routed tools rather than failing the
+# whole phase. The three proxy-routed tools skip with a notice in that case.
+start_engine || echo "::warning::engine unavailable - claude-code, openclaw and hermes will be skipped"
 os_channel_checks
 run_engine_tools "api-key"
 stop_engine
@@ -1230,7 +1247,7 @@ if oauth_login; then
   start_relay || exit 1
   run_relay_tools "oauth"
   stop_relay
-  start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
+  start_engine || echo "::warning::engine unavailable - claude-code, openclaw and hermes will be skipped"
   run_engine_tools "oauth"
   stop_engine
   "$CLI" logout >/dev/null 2>&1 || true

@@ -344,6 +344,9 @@ struct GateHandler {
     /// while the peer's socket is definitely still in `/proc/net/tcp` - instead
     /// of re-reading it (and risking a TOCTOU miss) on every request.
     peer_verdict: Option<(std::net::SocketAddr, bool)>,
+    /// Set from the explicit proxy selector on Claude Code's CONNECT request.
+    /// The handler is cloned with this value for the decrypted inner requests.
+    claude_code_route: bool,
 }
 
 impl GateHandler {
@@ -434,7 +437,10 @@ impl HttpHandler for GateHandler {
             .map(|a| a.host())
             .or_else(|| req.uri().host());
         let intercept = host
-            .map(|h| should_intercept_host(&rules, h))
+            .map(|h| {
+                should_intercept_host(&rules, h)
+                    || (self.claude_code_route && h.eq_ignore_ascii_case("api.anthropic.com"))
+            })
             .unwrap_or(false);
         if debug_log() {
             // The enabled set is printed alongside the verdict because the two
@@ -470,6 +476,14 @@ impl HttpHandler for GateHandler {
         // rewrite on it. Intercepted inner requests arrive in absolute form
         // (scheme + authority + path), which is what `decide` expects.
         if req.method() == Method::CONNECT {
+            self.claude_code_route = req
+                .headers()
+                .get("proxy-authorization")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == crate::proxy::CLAUDE_CODE_PROXY_AUTH);
+            // A proxy credential is hop-by-hop and must never reach either the
+            // real Anthropic endpoint or Gate.
+            req.headers_mut().remove("proxy-authorization");
             return req.into();
         }
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
@@ -478,7 +492,23 @@ impl HttpHandler for GateHandler {
         // client filter composes with the `enabled` one instead of adding a
         // second kind of veto inside the routing decision.
         let client = classify_client(|name| req.headers().get(name).and_then(|v| v.to_str().ok()));
-        let rules = rules_for_client(&self.rules.borrow(), client);
+        let live_rules = self.rules.borrow().clone();
+        let mut forced_rules;
+        let route_rules =
+            if self.claude_code_route && !should_intercept_host(&live_rules, "api.anthropic.com") {
+                forced_rules = live_rules.as_ref().clone();
+                if let Some(mut anthropic) = crate::proxy::default_domains()
+                    .into_iter()
+                    .find(|domain| domain.slug == "anthropic")
+                {
+                    anthropic.enabled = true;
+                    forced_rules.push(anthropic);
+                }
+                forced_rules.as_slice()
+            } else {
+                live_rules.as_slice()
+            };
+        let rules = rules_for_client(route_rules, client);
         let host = req.uri().host().map(str::to_owned);
         // Path only, never `path_and_query()`: some providers pass the API key
         // as a URL query param (e.g. Google `...?key=...`), and this value is
@@ -1021,6 +1051,7 @@ where
         org: org_rx,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
+        claude_code_route: false,
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

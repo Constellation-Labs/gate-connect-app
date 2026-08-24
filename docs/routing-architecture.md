@@ -36,10 +36,10 @@ proxy integration cannot.** Every "green pill, no routing" bug in
 
 Enabling routing wires two channels, because they reach different populations.
 
-| | Reaches | macOS | Windows | Linux |
+|                  | Reaches                        | macOS              | Windows                                 | Linux                   |
 |---|---|---|---|---|
-| OS proxy setting | GUI apps, platform HTTP stacks | `networksetup` PAC | WinINET `AutoConfigURL` | (same drop-in) |
-| Proxy env vars | CLI tools (Node/Bun/Python) | `launchctl setenv` | `HKCU\Environment` + `WM_SETTINGCHANGE` | `environment.d` drop-in |
+| OS proxy setting | GUI apps, platform HTTP stacks | `networksetup` PAC | WinINET `AutoConfigURL`                 | (same drop-in)          |
+| Proxy env vars   | CLI tools (Node/Bun/Python)    | `launchctl setenv` | `HKCU\Environment` + `WM_SETTINGCHANGE` | `environment.d` drop-in |
 
 Before PR #112 only Linux wired the env channel, so on macOS and Windows the
 command-line tools were never routed by the master switch at all.
@@ -82,14 +82,19 @@ because registry values outlive a reboot where launchd variables do not.
 
 ## 3. Per-tool status
 
-| Tool | Mechanism | What Gate writes | In UI |
+| Tool                                | Mechanism                         | What Gate writes                                                                             | In UI  |
 |---|---|---|---|
-| Claude Code | relay | `settings.json` env block, base URL only | yes |
-| Codex | relay | `[model_providers.gate]` + pointer | yes |
-| OpenCode | relay | `provider.<id>.options.baseURL` | yes |
-| OpenClaw | proxy engine | `proxy.proxyUrl` + `NODE_EXTRA_CA_CERTS` | yes |
-| Hermes | proxy engine | four vars in `~/.hermes/.env` | yes |
-| **Environment proxy** (`env-proxy`) | proxy engine, via the environment | nothing per-tool; the machine-wide export | hidden |
+| Claude Code                         | proxy engine                      | `HTTPS_PROXY` in the `settings.json` env block; canonical Anthropic base URL stays untouched | yes    |
+| Codex                               | relay                             | `[model_providers.gate]` + pointer                                                           | yes    |
+| OpenCode                            | relay                             | `provider.<id>.options.baseURL`                                                              | yes    |
+| OpenClaw                            | proxy engine                      | `proxy.proxyUrl` + `NODE_EXTRA_CA_CERTS`                                                     | yes    |
+| Hermes                              | proxy engine                      | four vars in `~/.hermes/.env`                                                                | yes    |
+| **Environment proxy** (`env-proxy`) | proxy engine, via the environment | nothing per-tool; the machine-wide export                                                    | hidden |
+
+Claude Code's proxy URL includes a fixed, non-secret route selector. That lets
+the engine keep intercepting its canonical Anthropic connection when the user
+independently switches off the Claude Desktop domain; without it, the same
+connected configuration would silently blind-tunnel around Gate.
 
 No tool config anywhere holds a credential. Codex is the one documented
 disconnect exception: a passthrough stub survives so threads started while
@@ -134,22 +139,22 @@ Node/Bun tools. Measured, not assumed.
 
 ## 4. Findings from the validation doc, current state
 
-| Finding | State |
+| Finding                                      | State                                                                                                    |
 |---|---|
-| H1 Hermes `default_headers` OpenAI-wire only | retired - proxy is transport-agnostic |
-| H2 OpenClaw auth-profile discovery | retired - no discovery step remains |
-| H3 OpenClaw Anthropic beta suppression | retired - `baseUrl` is no longer redirected |
-| H4 OpenClaw behaviour deltas | retired for the same reason; still worth knowing if Gate keys off attribution headers |
-| H5 Hermes fresh install `model: ""` | obsolete - `config.yaml` is never read |
-| H6 Hermes only `model.base_url` covered | retired - proxy catches every provider entry |
-| H7 OpenClaw stale module doc | fixed |
-| O1 OpenCode config precedence | **impact** neutralised by the env vars; the underlying "status reads our own write" problem is untouched |
-| O2 `options.headers` undeclared | moot - we no longer write headers to any tool config |
-| O3 Zen provider IDs unverified | open |
+| H1 Hermes `default_headers` OpenAI-wire only | retired - proxy is transport-agnostic                                                                    |
+| H2 OpenClaw auth-profile discovery           | retired - no discovery step remains                                                                      |
+| H3 OpenClaw Anthropic beta suppression       | retired - `baseUrl` is no longer redirected                                                              |
+| H4 OpenClaw behaviour deltas                 | retired for the same reason; still worth knowing if Gate keys off attribution headers                    |
+| H5 Hermes fresh install `model: ""`          | obsolete - `config.yaml` is never read                                                                   |
+| H6 Hermes only `model.base_url` covered      | retired - proxy catches every provider entry                                                             |
+| H7 OpenClaw stale module doc                 | fixed                                                                                                    |
+| O1 OpenCode config precedence                | **impact** neutralised by the env vars; the underlying "status reads our own write" problem is untouched |
+| O2 `options.headers` undeclared              | moot - we no longer write headers to any tool config                                                     |
+| O3 Zen provider IDs unverified               | open                                                                                                     |
 
 The structural problem O1 names - `status()` verifies our own write rather than
-the effective configuration - still applies to every relay integration
-(Claude Code, Codex, OpenCode). It is the main reason a relay tool can show
+the effective configuration - still applies to the relay integrations
+(Codex and OpenCode). It is the main reason a relay tool can show
 Connected while traffic goes elsewhere.
 
 ## 5. What is verified, and how

@@ -1,23 +1,21 @@
 //! Claude Code integration.
 //!
-//! Configures Anthropic's `claude` CLI to route through Constellation
-//! Gate via the loopback reverse-proxy relay ([`crate::proxy::relay`]).
-//! Mechanism: one entry in `~/.claude/settings.json`'s `env` block, which
-//! Claude Code injects into its own process at every invocation:
+//! Configures Anthropic's `claude` CLI to route through Constellation Gate
+//! via the MITM engine's forward proxy. `~/.claude/settings.json` receives
+//! `HTTPS_PROXY=http://gate-claude-code:route@127.0.0.1:<port>`, which Claude Code injects into its
+//! own process at every invocation.
 //!
-//! - `ANTHROPIC_BASE_URL` - the relay's loopback URL with the catalog slug on
-//!   it (`http://127.0.0.1:<port>/anthropic`), *not* the gateway. Claude Code
-//!   appends `/v1/messages`; the relay reads the slug to know the upstream,
-//!   strips it, and injects both the upstream hint and the live Gate credential
-//!   per request. So **neither a credential nor a header is written to this
-//!   file** - `ANTHROPIC_CUSTOM_HEADERS` is no longer ours, and a value an
-//!   older build left there is removed on connect and restored from
-//!   `previousEnv` on disconnect.
+//! Keeping `ANTHROPIC_BASE_URL` unset is essential. Claude Code treats a
+//! custom base URL as non-first-party for capability checks performed before
+//! any request reaches Gate, including its context window and auto-compaction
+//! threshold. With the canonical Anthropic URL intact, model selection behaves
+//! exactly as it does direct: standard variants remain 200K and explicit
+//! `[1m]` variants enable 1M. The forward proxy routes the socket without
+//! changing that capability classification.
 //!
-//! This is the successor to the old scheme that baked `X-Gate-Api-Key`
-//! into this file and pointed the base URL straight at the gateway. It
-//! means the tool only routes while Gate Connect (the relay) is running,
-//! which is why connecting auto-enables the proxy.
+//! Connect removes values written by the older reverse-relay scheme
+//! (`ANTHROPIC_BASE_URL` and `ANTHROPIC_CUSTOM_HEADERS`) and restores every
+//! user-owned value on disconnect. No credential or Anthropic beta is written.
 //!
 //! Unlike Cowork, Claude Code does not need a separate upstream
 //! credential - it already authenticates to Anthropic with its own
@@ -28,6 +26,9 @@
 //! We track our own writes via a sibling `_gateConnect` block so
 //! disconnect cleanly reverses what connect did and any prior
 //! user-set values are restored.
+//! Context-window selection also remains Claude Code-owned: Gate Connect never
+//! writes ANTHROPIC_BETAS. Standard variants therefore stay at 200K, while
+//! Claude Code's [1m] variants add their own 1M beta per selected model.
 //!
 //! [`requires_upstream_credential`]: crate::Integration::requires_upstream_credential
 
@@ -44,6 +45,8 @@ const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
 
 const KEY_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const KEY_CUSTOM_HEADERS: &str = "ANTHROPIC_CUSTOM_HEADERS";
+const KEY_HTTPS_PROXY: &str = "HTTPS_PROXY";
+const MANAGED_KEYS: [&str; 3] = [KEY_BASE_URL, KEY_CUSTOM_HEADERS, KEY_HTTPS_PROXY];
 
 const MARKER_KEY: &str = "_gateConnect";
 
@@ -110,22 +113,25 @@ impl Integration for ClaudeCode {
             return Ok(Status::Detected);
         }
         let env_block = env_block.unwrap();
+        let Some(managed) = marker.and_then(|v| v.as_array()) else {
+            return Ok(Status::Drifted(
+                "Gate's Claude Code management marker is malformed".into(),
+            ));
+        };
 
-        let base_url = env_block.get(KEY_BASE_URL).and_then(|v| v.as_str());
+        if !managed.iter().any(|v| v.as_str() == Some(KEY_HTTPS_PROXY)) {
+            return Ok(Status::Drifted(
+                "Claude Code still uses Gate's legacy custom-base-URL routing".into(),
+            ));
+        }
+        if env_block.contains_key(KEY_BASE_URL) {
+            return Ok(Status::Drifted(format!(
+                "managed {KEY_BASE_URL} must be absent so Claude Code keeps first-party model capabilities"
+            )));
+        }
 
-        // The tool points at the relay's loopback URL, not the gateway; the
-        // relay only exists once the proxy has been enabled. The base URL is the
-        // whole test: it carries the relay origin plus the catalog slug the relay
-        // routes on, and no header or credential is written alongside it.
-        let expected_base = match crate::proxy::relay_base_url() {
-            Some(relay) => match crate::proxy::resolve_endpoint(DEFAULT_UPSTREAM_URL) {
-                Some(r) => r.relay_base_url(&relay),
-                None => {
-                    return Ok(Status::Drifted(format!(
-                        "Gate has no upstream domain for {DEFAULT_UPSTREAM_URL:?}"
-                    )));
-                }
-            },
+        let expected_proxy = match crate::proxy::engine_proxy_url() {
+            Some(proxy) => crate::proxy::claude_code_proxy_url(&proxy)?,
             None => {
                 return Ok(Status::Drifted(
                     "the Gate proxy has not been enabled yet - turn it on to route Claude Code"
@@ -134,13 +140,13 @@ impl Integration for ClaudeCode {
             }
         };
 
-        match base_url {
-            Some(b) if b == expected_base => Ok(Status::Connected),
-            Some(b) => Ok(Status::Drifted(format!(
-                "{KEY_BASE_URL} in settings.json is {b:?}, expected {expected_base:?}"
+        match env_block.get(KEY_HTTPS_PROXY).and_then(|v| v.as_str()) {
+            Some(proxy) if proxy == expected_proxy => Ok(Status::Connected),
+            Some(proxy) => Ok(Status::Drifted(format!(
+                "{KEY_HTTPS_PROXY} in settings.json is {proxy:?}, expected {expected_proxy:?}"
             ))),
             None => Ok(Status::Drifted(format!(
-                "managed {KEY_BASE_URL} missing from settings.json env"
+                "managed {KEY_HTTPS_PROXY} missing from settings.json env"
             ))),
         }
     }
@@ -162,54 +168,67 @@ impl Integration for ClaudeCode {
                 "Claude Code is not installed on this machine - install it from https://claude.com/code first"
             );
         }
-        let relay_base_url = input.relay_base_url.as_deref().context(
-            "the Gate proxy relay is not running - enable the proxy before connecting Claude Code",
+        let engine_proxy_url = input.engine_proxy_url.as_deref().context(
+            "the Gate proxy engine is not running - enable the proxy before connecting Claude Code",
         )?;
+        let claude_proxy_url = crate::proxy::claude_code_proxy_url(engine_proxy_url)?;
         if !input.upstream_url.starts_with("https://") {
             anyhow::bail!("upstream URL must be https://");
         }
-
-        // Resolve the upstream against the catalog: the slug it yields goes into
-        // the base URL, which is how the relay knows where to forward. No
-        // credential and no header is written - the relay injects both.
-        let resolved = crate::proxy::resolve_endpoint(&input.upstream_url)
+        crate::proxy::resolve_endpoint(&input.upstream_url)
             .with_context(|| format!("Gate has no upstream domain for {:?}", input.upstream_url))?;
-        let base_url = resolved.relay_base_url(relay_base_url);
 
         let mut settings = load_settings()?.unwrap_or_default();
         // Refuse to clobber a malformed non-object `env` before ensure_object
         // would silently replace it with `{}` (see reject_non_object_env).
         reject_non_object_env(&settings)?;
+
+        // Preserve the original values across reconnects and migrations. A key
+        // already listed as managed is ours; a newly managed key still belongs
+        // to the user and must be snapshotted before we replace it.
+        let old_managed: Vec<String> = settings
+            .get(MARKER_KEY)
+            .and_then(|v| v.get("managed"))
+            .and_then(|v| v.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut prev = settings
+            .get(MARKER_KEY)
+            .and_then(|v| v.get("previousEnv"))
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+
         let env_block = ensure_object(&mut settings, "env");
-
-        // Save the prior values exactly once so disconnect can restore them.
-        let mut prev = Map::new();
-        if let Some(v) = env_block.get(KEY_BASE_URL) {
-            prev.insert(KEY_BASE_URL.into(), v.clone());
-        }
-        if let Some(v) = env_block.get(KEY_CUSTOM_HEADERS) {
-            prev.insert(KEY_CUSTOM_HEADERS.into(), v.clone());
+        for key in MANAGED_KEYS {
+            if !old_managed.iter().any(|managed| managed == key) && !prev.contains_key(key) {
+                if let Some(value) = env_block.get(key) {
+                    prev.insert(key.into(), value.clone());
+                }
+            }
         }
 
-        env_block.insert(KEY_BASE_URL.into(), Value::String(base_url));
-        // ANTHROPIC_CUSTOM_HEADERS is no longer ours. Remove any value an older
-        // build left so no stale Gate header survives an upgrade; disconnect
-        // restores the user's own value from `previousEnv` either way.
+        // The canonical Anthropic base URL is what keeps Claude Code on its
+        // first-party capability path. Only the transport is redirected.
+        env_block.remove(KEY_BASE_URL);
         env_block.remove(KEY_CUSTOM_HEADERS);
+        env_block.insert(KEY_HTTPS_PROXY.into(), Value::String(claude_proxy_url));
 
         let marker = ensure_object(&mut settings, MARKER_KEY);
-        // Only stash previousEnv on the first connect; preserve it on
-        // subsequent re-connects so disconnect always restores the
-        // user's original state, not our own intermediate one.
-        if !marker.contains_key("previousEnv") {
-            marker.insert("previousEnv".into(), Value::Object(prev));
-        }
+        marker.insert("previousEnv".into(), Value::Object(prev));
         marker.insert(
             "managed".into(),
-            Value::Array(vec![
-                Value::String(KEY_BASE_URL.into()),
-                Value::String(KEY_CUSTOM_HEADERS.into()),
-            ]),
+            Value::Array(
+                MANAGED_KEYS
+                    .iter()
+                    .map(|key| Value::String((*key).into()))
+                    .collect(),
+            ),
         );
 
         write_settings(&settings)
@@ -229,7 +248,7 @@ impl Integration for ClaudeCode {
             .unwrap_or_default();
 
         if let Some(env_block) = settings.get_mut("env").and_then(|v| v.as_object_mut()) {
-            for key in [KEY_BASE_URL, KEY_CUSTOM_HEADERS] {
+            for key in MANAGED_KEYS {
                 match prev.get(key) {
                     Some(v) => {
                         env_block.insert(key.into(), v.clone());
@@ -334,15 +353,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base_url_carries_the_catalog_slug_and_no_header_is_written() {
-        // Everything the relay needs is in one documented env var. Nothing else
-        // is written: no credential, and no ANTHROPIC_CUSTOM_HEADERS - Claude
-        // Code appends `/v1/messages` onto this, and the relay strips the slug.
-        let r = crate::proxy::resolve_endpoint(DEFAULT_UPSTREAM_URL).expect("anthropic resolves");
-        assert_eq!(
-            r.relay_base_url("http://127.0.0.1:9977"),
-            "http://127.0.0.1:9977/anthropic"
-        );
+    fn managed_keys_keep_the_anthropic_base_url_canonical() {
+        assert!(MANAGED_KEYS.contains(&KEY_BASE_URL));
+        assert!(MANAGED_KEYS.contains(&KEY_HTTPS_PROXY));
+        assert!(!MANAGED_KEYS.contains(&"ANTHROPIC_BETAS"));
     }
 
     #[test]
