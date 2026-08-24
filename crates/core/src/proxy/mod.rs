@@ -1583,6 +1583,13 @@ mod tests {
     fn a_snapshot_without_a_listener_is_not_a_hosted_engine() {
         use std::net::TcpListener;
 
+        // `app_support_dir` checks the `GATE_CONNECT_TEST_HOME` env seam before
+        // the mutex override installed below, so a concurrent test holding that
+        // var set would send these writes into *its* temp dir - and take them
+        // down with it when it cleans up. Every path-redirecting test in the
+        // crate serializes on this lock; see `crate::env::path_env_lock`.
+        let _lock = crate::env::path_env_lock();
+
         let home = std::env::temp_dir().join(format!(
             "gate-hosted-elsewhere-{}-{}",
             std::process::id(),
