@@ -859,6 +859,61 @@ fn restore_swept_tools() -> Result<()> {
 mod tests {
     use super::*;
 
+    /// `Applied::NotYet` is private, so the only place that can name it is a
+    /// test in this module - and `restore_all`'s behavioural test cannot
+    /// distinguish it, because after a master-off the provider reads off
+    /// anyway and either half of that guard alone would hold the entry. This
+    /// pins the half the integration test cannot see.
+    ///
+    /// Redirects the per-user paths, so it takes [`crate::env::path_env_lock`]:
+    /// without it a test that depends on the *absence* of the seam can read
+    /// this one's throwaway home instead of the real filesystem. The secrets
+    /// seam goes with it, or `account::save` writes the key into the
+    /// developer's own keyring.
+    #[test]
+    fn an_enable_with_nothing_to_do_yet_says_so() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-notyet-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let applied = (|| {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            // The shape the pre-engine restore pass meets: no engine running,
+            // and `anthropic`'s only config tool skipped because the user had
+            // switched it off before routing stopped. Skipping it also makes
+            // the result independent of whether Claude Code happens to be
+            // installed on the machine running this - `detect` consults real
+            // binary paths, which no test home redirects.
+            enable_skipping("anthropic", &["claude-code".to_string()]).map(|(applied, _)| applied)
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        assert_eq!(
+            applied.expect("a skipped family is not an error"),
+            Applied::NotYet,
+            "reporting this as Enabled is what let the pre-engine pass clear \
+             the snapshot the post-engine pass needed"
+        );
+    }
+
     #[test]
     fn openai_provider_maps_to_codex_and_openai_domain() {
         let p = find("openai").expect("openai provider present");
