@@ -161,7 +161,18 @@ const ANTHROPIC_DOMAIN: DomainFixture = {
 /** Claude Desktop's chat surface. Off, supported, and reached only through its
  *  own row: it carries the user's claude.ai session cookie rather than a
  *  brokered key. In `defaultState`'s domain list because the shipped catalog
- *  always carries it: the row exists on every ledger, switched off. */
+ *  always carries it: the row exists on every ledger, switched off.
+ *
+ *  "Every ledger" means every STAGING ledger, and this fixture and
+ *  `CHATGPT_APPS_DOMAIN` are both the staging shape. `proxy::config`'s
+ *  `STAGING_ONLY_SLUGS` clears `supported` on these two unless the account
+ *  points at the staging gateway, and `defaultState`'s account names the
+ *  production host - the fixture is deliberately inconsistent with it, because
+ *  the gate lives entirely in the backend. What the frontend does with a
+ *  gated-off domain is already covered without a special case: `buildGroups`
+ *  filters on `supported`, so the row is simply absent, which is what an
+ *  unsupported domain has always meant here. Flip `supported` to false in a
+ *  spec's `merge` to render that. */
 export const CLAUDE_WEB_DOMAIN: DomainFixture = {
   slug: "claude-web",
   display_name: "Claude Desktop chat",

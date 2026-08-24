@@ -76,6 +76,13 @@ pub fn providers() -> Vec<Provider> {
             // user's claude.ai session the moment they enabled Claude. It rides
             // `chat_domain_slugs` instead, which shows it on the ledger under
             // Claude and leaves the flipping to its own switch.
+            //
+            // Naming a slug here is necessary but not sufficient for the row:
+            // `claude-web` and `chatgpt-apps` below are gated to the staging
+            // gateway by `proxy::config`'s `STAGING_ONLY_SLUGS`, and a domain
+            // that comes back unsupported has no row at all. So this list is
+            // what the ledger shows WHERE the surface is available, not a
+            // promise that it is.
             proxy_domain_slugs: &["anthropic"],
             chat_domain_slugs: &["claude-web"],
         },
