@@ -726,22 +726,40 @@ test.describe("new UI sidebar rail", () => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
   });
 
-  test("a proxy domain is a rail row: its switch routes it, its name opens nothing", async ({
+  test("a proxy domain is a rail row whose switch routes it", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await app.page
+      .getByRole("switch", { name: "ChatGPT (Codex subscription)" })
+      .first()
+      .click();
+
+    // A domain routes through the engine's flag, never a config write.
+    await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
+      slug: "chatgpt",
+      enabled: true,
+    });
+    expect(await callsFor(app.page, "connect_tool")).toEqual([]);
+  });
+
+  test("a domain row opens a pane that says its activity can't be attributed", async ({
     boot,
   }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    // No pane exists for a domain yet, so the name is a label, not a link.
+    await app.page.getByRole("button", { name: "ChatGPT (Codex subscription)" }).click();
+
     await expect(
-      app.page.getByRole("switch", { name: "ChatGPT (Codex subscription)" }),
+      app.page.getByRole("heading", { name: "ChatGPT (Codex subscription)" }),
     ).toBeVisible();
-    await expect(
-      app.page.getByRole("button", { name: "ChatGPT (Codex subscription)" }),
-    ).toHaveCount(0);
+    // The gateway attributes requests to config tools only, so the pane says
+    // why its sections are empty rather than reporting a quiet day.
+    await expect(app.page.getByText(/aren't attributed to a single app/)).toBeVisible();
 
-    await app.page.getByRole("switch", { name: "ChatGPT (Codex subscription)" }).click();
-
-    // A domain routes through the engine's flag, never a config write.
+    // The pane's own switch routes the domain, same as the rail row's.
+    await app.page
+      .getByRole("switch", { name: "Route ChatGPT (Codex subscription)" })
+      .click();
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
       slug: "chatgpt",
       enabled: true,

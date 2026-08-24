@@ -73,12 +73,6 @@ export interface SidebarApp {
   /** 16px brand mark, rendered inside the tile. Falls back to the app's initial
    * while the marks are still being exported from Figma. */
   logo?: ReactNode;
-  /** No detail pane opens for this row. Proxy-routed members (the chat domains
-   * and a family's app surfaces) are rows now - `Components / Sidenav`, read
-   * 2026-08-23 - but every drawn App pane is a config tool's, and the shell
-   * feeds nothing else, so their name renders as a label rather than a link.
-   * The switch still works. */
-  noPane?: boolean;
   /** A toggle is in flight: the switch ignores clicks but keeps focus. */
   busy?: boolean;
 }
@@ -350,67 +344,49 @@ function AppRow({
   const status = STATUS_TEXT[app.status.kind];
   const suffix = statusSuffix(app.status);
 
-  const body = (
-    <>
-      <span
-        aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
-        style={{
-          backgroundImage:
-            "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
-        }}
-      >
-        {app.logo ?? app.name.charAt(0)}
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span
-          className={`truncate text-base-xs font-medium leading-4 ${
-            selected
-              ? "text-base-primary"
-              : app.noPane
-                ? "text-neutral-900"
-                : "text-neutral-900 group-hover:text-base-primary"
-          }`}
-        >
-          {app.name}
-        </span>
-        <span className="truncate text-base-2xs font-medium leading-4">
-          <span className={status.className}>{status.label}</span>
-          {suffix && <span className="text-neutral-500"> - {suffix}</span>}
-        </span>
-      </span>
-    </>
-  );
-
   return (
     <li
       // Hover and selection share one treatment, read off the component's
       // row-hover variant (121:33421): a `neutral-100` fill inside a 1px
       // `neutral-200` border, with the name in `base/primary`. The border is
       // reserved while at rest so rows do not shift on hover. Drawn radius is
-      // 4px, which the radius scale maps onto `sm`. A row with no pane keeps
-      // its rest treatment: the hover fill is the "this opens something"
-      // signal, and it would be a lie there.
+      // 4px, which the radius scale maps onto `sm`.
       className={`group flex w-full items-center gap-4 rounded-sm border px-1 py-1.5 ${
         selected
           ? "border-neutral-200 bg-neutral-100"
-          : app.noPane
-            ? "border-transparent"
-            : "border-transparent hover:border-neutral-200 hover:bg-neutral-100"
+          : "border-transparent hover:border-neutral-200 hover:bg-neutral-100"
       }`}
     >
-      {app.noPane ? (
-        <span className="flex min-w-0 flex-1 items-center gap-2 text-left">{body}</span>
-      ) : (
-        <button
-          type="button"
-          onClick={() => onSelect(app.slug)}
-          aria-current={selected ? "page" : undefined}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      <button
+        type="button"
+        onClick={() => onSelect(app.slug)}
+        aria-current={selected ? "page" : undefined}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      >
+        <span
+          aria-hidden
+          className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
+          style={{
+            backgroundImage:
+              "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
+          }}
         >
-          {body}
-        </button>
-      )}
+          {app.logo ?? app.name.charAt(0)}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span
+            className={`truncate text-base-xs font-medium leading-4 ${
+              selected ? "text-base-primary" : "text-neutral-900 group-hover:text-base-primary"
+            }`}
+          >
+            {app.name}
+          </span>
+          <span className="truncate text-base-2xs font-medium leading-4">
+            <span className={status.className}>{status.label}</span>
+            {suffix && <span className="text-neutral-500"> - {suffix}</span>}
+          </span>
+        </span>
+      </button>
       <BaseSwitch
         on={app.on}
         label={app.name}

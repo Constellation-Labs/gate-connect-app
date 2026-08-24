@@ -663,7 +663,10 @@ e2e suite pass.
 Still open from item 10: where a chat row navigates. Every drawn App frame is
 a proxy member's pane, so the design says they open one; that needs an
 `AppPane` feed with no config file, no drift review and no process staleness,
-and it is its own PR.
+and it is its own PR. **Closed the same day, second pass** - domain rows open
+the pane, whose activity sections say they cannot be attributed rather than
+claiming a quiet day; see item 10 in "Still to do" for the mechanism and the
+attribution constraint.
 
 ### Both ways in, 2026-08-20
 
@@ -1372,19 +1375,26 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together.
    Item 1 was the blocker and is done, so what remains is repointing the e2e
    suite at the new shell and deleting; the popover's own specs go with it.
-10. **The redrawn rail (Sidenav page, read 2026-08-23): DONE except the chat
-    pane.** Built 2026-08-23 - chat and app-surface members are rail rows
-    (switch on `setDomainRouted`, status from the domain's own state, no
-    pane), each eyebrow carries its protected-over-total counter, and the
-    multi-provider tools share one `Other tools` group. See "Built
-    2026-08-23".
+10. **The redrawn rail (Sidenav page, read 2026-08-23): DONE.** Built
+    2026-08-23 - chat and app-surface members are rail rows (switch on
+    `setDomainRouted`, status from the domain's own state), each eyebrow
+    carries its protected-over-total counter, and the multi-provider tools
+    share one `Other tools` group. See "Built 2026-08-23".
 
-    What remains is where a chat row navigates. Every App-page frame is
-    `App/Claude-desktop/*` and Claude Desktop is a proxy member, so the design
-    says chat rows open the pane too - which needs an `AppPane` feed with no
-    config file, no drift review and no process staleness (stats are
-    install-wide either way). Until that PR lands, the rows are labels with
-    working switches.
+    Domain rows open the App pane too now (same day, second pass): header,
+    status, switch and model card all work, and the activity sections say
+    *why* they cannot be shown instead of reporting a quiet day. The gateway
+    attributes requests to config tools only - `client_tool` is derived from
+    each tool's own user agent, and traffic from these surfaces arrives
+    unattributed on purpose (a guessed slug would file one app's traffic
+    under another's name) - so the per-tool reads never fire for a domain
+    (`openDomain` in `NewUiApp.tsx`): filtering by a domain slug would return
+    an empty reading and the pane would claim a quiet day over traffic it
+    cannot see. The tiles read `N/A`, the chart and feed carry their
+    unavailable notes, and the pane's gap slot names the cause, mirroring the
+    unattributed-machine treatment. Per-surface activity needs real
+    attribution on the gateway; AG-572's contract doc records why the
+    user-agent heuristic cannot provide it.
 11. **Brand marks: STOPGAP SHIPPED 2026-08-23, designer export still wanted.**
     `src/components/gc/BrandMark.tsx` vendors the seven rail marks (Claude,
     Claude Code, Codex, OpenAI, OpenRouter, OpenCode, OpenClaw) from

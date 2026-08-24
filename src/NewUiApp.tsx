@@ -352,11 +352,23 @@ export function NewUiApp() {
     current: currentInstallId,
     resolved: installsResolved,
   } = useInstallations(canRead, credential);
+  /** The open pane belongs to a proxy domain rather than a config tool. The
+   *  gateway attributes requests to config tools only - `client_tool` is
+   *  derived from each tool's own user agent, and traffic from these surfaces
+   *  arrives unattributed on purpose, because a guessed slug would file one
+   *  app's traffic under another's name. So the per-tool reads below must not
+   *  fire for a domain: filtering by its slug would return an empty reading,
+   *  and the pane would report a quiet day over traffic it cannot see. A slug
+   *  carried by an installed tool stays a tool. */
+  const openDomain =
+    view.kind === "app" &&
+    !tools.some((t) => t.slug === view.slug) &&
+    (proxy?.domains.some((d) => d.slug === view.slug) ?? false);
   /** The tool whose pane is open, or null on any other view. Drives both per-tool
    *  reads below, and gating on it keeps them from firing for a pane nobody is
    *  looking at - this endpoint shares an address-keyed rate limit with every
    *  other control-plane route. */
-  const openTool = view.kind === "app" ? view.slug : null;
+  const openTool = view.kind === "app" && !openDomain ? view.slug : null;
   /**
    * Whether the gateway has told us which installation this machine is.
    *
@@ -899,9 +911,9 @@ export function NewUiApp() {
    * under its own name, and the Sidenav page reversed that. Proxy members
    * (the chat domains and a family's app surfaces) are rows too now: no
    * verdict covers them - the sweep is per tool - so their status derives
-   * from the domain's own state, and no pane opens for them yet. Before the
-   * catalog loads, one unlabelled group keeps the rows on screen rather than
-   * blanking the rail on a grouping that is not yet known.
+   * from the domain's own state. Before the catalog loads, one unlabelled
+   * group keeps the rows on screen rather than blanking the rail on a
+   * grouping that is not yet known.
    */
   const sidebarGroups = useMemo<SidebarGroup[]>(() => {
     if (groups.length === 0) {
@@ -929,7 +941,6 @@ export function NewUiApp() {
             on: m.desired,
             logo: brandMarkFor(m.key),
             busy: routingBusy,
-            noPane: true,
           });
         }
       }
@@ -950,6 +961,23 @@ export function NewUiApp() {
     }
     return grouped;
   }, [groups, apps, routingBusy]);
+
+  /** Every rail row flat, tools and domains together, for the pane header's
+   *  name and switch state - `apps` alone covers only the tools. */
+  const railApps = useMemo(() => sidebarGroups.flatMap((g) => g.apps), [sidebarGroups]);
+
+  /** Route or unroute one rail row. The rail mixes tools and proxy domains
+   *  now: a domain routes through `setDomainRouted` - no config file, so no
+   *  drift gate - the same dispatch the family panel's member switches use. */
+  const toggleRailApp = useCallback(
+    (slug: string, next: boolean) => {
+      const member = groups.flatMap((g) => g.members).find((m) => m.key === slug);
+      void (member?.kind === "proxy"
+        ? routing.setDomainRouted(slug, next)
+        : routeApp(slug, next));
+    },
+    [groups, routing.setDomainRouted, routeApp],
+  );
 
   /**
    * What the sidebar should say when the app list is empty. `ok` while there are
@@ -1512,15 +1540,7 @@ export function NewUiApp() {
           />
         ) : undefined
       }
-      onToggleApp={(slug, next) => {
-        // The rail mixes tools and proxy domains now. A domain routes through
-        // `setDomainRouted` - no config file, so no drift gate - the same
-        // dispatch the family panel's member switches use.
-        const member = groups.flatMap((g) => g.members).find((m) => m.key === slug);
-        void (member?.kind === "proxy"
-          ? routing.setDomainRouted(slug, next)
-          : routeApp(slug, next));
-      }}
+      onToggleApp={toggleRailApp}
       dialog={
         // A pending quit decision outranks every other overlay: the user asked
         // to leave, and an update prompt or routing notice must not sit on top
@@ -1767,24 +1787,27 @@ export function NewUiApp() {
         />
       ) : view.kind === "app" ? (
         <AppPane
-          name={appFor(apps, view.slug)?.name ?? view.slug}
+          name={appFor(railApps, view.slug)?.name ?? view.slug}
           logo={brandMarkFor(view.slug)}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug
           // `lib/groups.ts` documents - it renders off, and clicking it turns off
           // the setting the user was trying to turn on.
-          isProtected={appFor(apps, view.slug)?.on ?? false}
+          isProtected={appFor(railApps, view.slug)?.on ?? false}
           busy={routingBusy}
           onToggleProtected={() =>
-            void routeApp(view.slug, !(appFor(apps, view.slug)?.on ?? false))
+            toggleRailApp(view.slug, !(appFor(railApps, view.slug)?.on ?? false))
           }
           stats={toolActivity.view?.stats ?? EMPTY_STATS}
           buckets={toolActivity.view?.buckets ?? []}
           // Pending while the installation list is still open too: until it
           // answers we do not know which machine this is, so there is nothing to
-          // read yet - and a skeleton is the honest account of that.
+          // read yet - and a skeleton is the honest account of that. A domain
+          // pane is never pending: its read will not fire (see `openDomain`),
+          // and a skeleton would promise an answer that is not coming.
           pending={
-            !installsResolved || (toolActivity.view === null && toolActivity.failure === null)
+            !openDomain &&
+            (!installsResolved || (toolActivity.view === null && toolActivity.failure === null))
           }
           modelChoice={modelChoice[view.slug] ?? "app"}
           // Switching to a Gate model spends PAYG credits, so it is confirmed
@@ -1801,7 +1824,8 @@ export function NewUiApp() {
           onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
           activity={toolEvents.view?.entries ?? []}
           eventsPending={
-            !installsResolved || (toolEvents.view === null && toolEvents.failure === null)
+            !openDomain &&
+            (!installsResolved || (toolEvents.view === null && toolEvents.failure === null))
           }
           onLoadMore={toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined}
           // Each half reports its own read. Deriving the feed's flag from the
@@ -1810,13 +1834,28 @@ export function NewUiApp() {
           // precisely the unread-versus-empty confusion these flags exist to
           // prevent. Two endpoints, two answers.
           unavailable={{
-            chart: unattributedMachine || (toolActivity.view ? toolActivity.view.missing.chart : true),
-            events: unattributedMachine || toolEvents.failure !== null,
+            chart:
+              openDomain ||
+              unattributedMachine ||
+              (toolActivity.view ? toolActivity.view.missing.chart : true),
+            events: openDomain || unattributedMachine || toolEvents.failure !== null,
           }}
           alert={
             <>
               {driftAlert}
-              {unattributedMachine ? (
+              {openDomain ? (
+                // The gateway attributes requests to config tools by their own
+                // user agents; traffic from these surfaces arrives unattributed,
+                // on purpose - a guessed slug would file one app's traffic under
+                // another's name. So there is no per-app reading to show here,
+                // and saying so beats a zero.
+                <p className="text-base-xs text-base-muted-foreground">
+                  <span className="font-medium">This app:</span> its requests
+                  aren&apos;t attributed to a single app yet, so its own activity
+                  can&apos;t be shown. The Overview still covers your whole
+                  organisation.
+                </p>
+              ) : unattributedMachine ? (
                 // No numbers can be shown here, and the reason is not a failure:
                 // the gateway answered and does not recognise this machine, so
                 // there is no way to ask "what has this tool done *here*". Said
