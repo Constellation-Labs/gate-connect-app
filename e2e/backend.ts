@@ -33,14 +33,6 @@ export interface ToolFixture {
   upstream_provider_name: string;
   default_upstream_url: string;
   requires_upstream_credential: boolean;
-  /** The gateway's `agent_framework` id, or null when it has none.
-   *
-   *  Optional: `list_tools` defaults it to the slug, which is what the real
-   *  mapping produces for every tool the app currently ships except Hermes. A
-   *  spec that wants the unsupported case sets it to null explicitly - see
-   *  `ToolId::platform_id` for why the two are different namespaces even when
-   *  the strings match. */
-  platform_id?: string | null;
   /** The file Gate rewrites for this tool. Optional: absent and null both mean
       "no single file names it", which is what the real backend reports for the
       environment channel. A spec that cares about the drift review's copy sets
@@ -180,15 +172,15 @@ export interface BackendState {
       at_unix: number;
     }[];
   } | null;
-  /** Per-tool Gate model preferences and the catalogue behind the picker
-   *  (AG-588), as the gateway would report them.
+  /** Per-tool model choices and the catalogue behind the picker (AG-588).
    *
-   *  `preferences` is keyed on platform id, not tool slug, exactly as the
-   *  endpoint is. `firstPaidAckAt` null is an org that has never accepted paid
-   *  use, which is what makes the next switch to a Gate model ask. */
+   *  `choices` is keyed on TOOL SLUG and models `preferences.json` on this
+   *  install, not a gateway response - the choice is local. `paidAckUnix` null is
+   *  an install that has never accepted paid use, which is what makes the next
+   *  switch to a Gate model ask. */
   toolModels: {
-    preferences: { platformId: string; source: "tool" | "gate"; modelIds: string[] }[];
-    firstPaidAckAt: string | null;
+    choices: Record<string, { source: "tool" | "gate"; model_ids: string[] }>;
+    paidAckUnix: number | null;
     /** What `/v1/models` offers. Empty by default: a gateway with no platform
      *  provider accounts has nothing of its own, and that is the state the
      *  picker's own empty copy is written for. */
@@ -371,7 +363,7 @@ export function defaultState(): BackendState {
     pendingRestore: { providers: [], tools: [] },
     pendingResumeKeeps: [],
     restoreJournal: null,
-    toolModels: { preferences: [], firstPaidAckAt: null, catalogue: [] },
+    toolModels: { choices: {}, paidAckUnix: null, catalogue: [] },
     installId: "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f",
     hostName: "e2e-macbook",
     failures: {},

@@ -59,17 +59,6 @@ struct ToolDto {
     /// The file Gate rewrites for this tool, for the copy that says what is
     /// about to change. `None` where no single file names it.
     config_location: Option<String>,
-    /// The gateway's `agent_framework` id for this tool, or `None` when the
-    /// gateway cannot name it on a request.
-    ///
-    /// Carried on the tool list so the front end never has to keep its own copy
-    /// of the mapping: `ToolId::platform_id` is a match on the enum, so adding a
-    /// tool forces the question to be answered once, in Rust, where it can be
-    /// enforced. A second table in TypeScript is how the two would disagree.
-    ///
-    /// `None` is what tells the app pane to withhold the model-selection control
-    /// rather than offer a choice the gateway could never apply.
-    platform_id: Option<String>,
     status: StatusDto,
 }
 
@@ -120,7 +109,6 @@ fn list_tools() -> Vec<ToolDto> {
             default_upstream_url: integ.default_upstream_url().to_string(),
             requires_upstream_credential: integ.requires_upstream_credential(),
             config_location: integ.config_location(),
-            platform_id: integ.id().platform_id().map(str::to_string),
             status: status_for(integ.as_ref()),
         })
         .collect()
@@ -656,50 +644,100 @@ async fn activity_installations() -> Result<String, String> {
         .map_err(envelope)
 }
 
-/// This organization's per-tool model preferences (AG-588).
+/// This install's per-tool model choices (AG-588).
 ///
-/// Not scoped to a tool: one read covers every app in the sidebar, because the
-/// preference is org-wide by design. Same envelope and failure taxonomy as
-/// [`activity_overview`].
+/// A local file read, not a network call: the choice lives in
+/// `preferences.json` beside the other user choices. It was briefly a gateway
+/// endpoint scoped to the organization; keeping it local means the machine whose
+/// traffic it governs is the machine that holds it, and one developer's click no
+/// longer changes what a colleague's requests are answered with.
+///
+/// Returns the whole map plus the acknowledgement stamp, so the pane can decide
+/// whether the next switch to a Gate model needs its confirmation before any
+/// choice exists.
 #[tauri::command]
-async fn tool_model_preferences() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::tool_models::preferences_json)
-        .await
-        .map_err(|e| format!("tool model preferences join error: {e}"))?
-        .map_err(envelope)
+async fn tool_model_preferences() -> Result<ToolModelsDto, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let prefs = gate_connect_core::preferences::load();
+        ToolModelsDto {
+            tools: prefs
+                .tool_models
+                .into_iter()
+                .map(|(slug, choice)| (slug, ToolModelChoiceDto::from(choice)))
+                .collect(),
+            paid_ack_unix: prefs.gate_model_paid_ack_unix,
+        }
+    })
+    .await
+    .map_err(|e| format!("tool model preferences join error: {e}"))
+}
+
+#[derive(Serialize)]
+struct ToolModelsDto {
+    /// Keyed by tool slug. A tool with no entry is on its own default, which is
+    /// why an absent key is not the same as an error and needs no placeholder.
+    tools: std::collections::BTreeMap<String, ToolModelChoiceDto>,
+    /// Unix seconds, or null when this install has never accepted paid use.
+    paid_ack_unix: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct ToolModelChoiceDto {
+    /// `"tool"` or `"gate"`. Only this decides what would be served.
+    source: String,
+    /// Chosen models, which may be non-empty while `source` is `"tool"` - that is
+    /// a remembered choice, not an active one.
+    model_ids: Vec<String>,
+}
+
+impl From<gate_connect_core::preferences::ToolModelChoice> for ToolModelChoiceDto {
+    fn from(c: gate_connect_core::preferences::ToolModelChoice) -> Self {
+        use gate_connect_core::preferences::ModelSource;
+        Self {
+            source: match c.source {
+                ModelSource::Tool => "tool".into(),
+                ModelSource::Gate => "gate".into(),
+            },
+            model_ids: c.model_ids,
+        }
+    }
 }
 
 /// Choose the model one tool runs on.
 ///
-/// `source` is `"tool"` (the app picks) or `"gate"` (Gate serves `model_ids`).
+/// `source` is `"tool"` (the tool picks) or `"gate"` (Gate serves `model_ids`).
 /// An unrecognised value is an error rather than a default, for the reason
 /// [`parse_tool`] gives: a silent fall back would store the opposite of what the
 /// user clicked.
 ///
-/// `acknowledge_paid_use` carries the billing confirmation. The gateway refuses a
-/// first `gate` selection without it and reports `needs_paid_ack`, which the pane
-/// turns into the dialog rather than an error - so passing false is safe, not a
-/// bug.
+/// `acknowledge_paid_use` records that the person accepted billing, and is
+/// honoured only when moving to `"gate"` - remembering a model under the tool's
+/// own default spends nothing and must not record consent to spend.
 #[tauri::command]
 async fn set_tool_model(
     tool: String,
     source: String,
     model_ids: Vec<String>,
     acknowledge_paid_use: bool,
-) -> Result<String, String> {
+) -> Result<(), String> {
+    // Parsed, not trusted: the slug has to be one this app actually configures,
+    // or the pane would store a choice under a key nothing reads.
     let Some(tool) = parse_tool(Some(tool))? else {
         return Err("a tool slug is required to set a model preference".into());
     };
-    let source = gate_connect_core::tool_models::Source::from_wire(&source)
-        .ok_or_else(|| format!("unknown model source {source:?}"))?;
+    let source = match source.as_str() {
+        "tool" => gate_connect_core::preferences::ModelSource::Tool,
+        "gate" => gate_connect_core::preferences::ModelSource::Gate,
+        other => return Err(format!("unknown model source {other:?}")),
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        gate_connect_core::tool_models::set_preference_json(
-            tool,
+        gate_connect_core::preferences::set_tool_model(
+            tool.slug(),
             source,
-            &model_ids,
+            model_ids,
             acknowledge_paid_use,
         )
-        .map_err(envelope)
+        .map_err(|e| format!("{e:#}"))
     })
     .await
     .map_err(|e| format!("set tool model join error: {e}"))?
@@ -712,7 +750,7 @@ async fn set_tool_model(
 /// The picker says so in words rather than drawing an empty list.
 #[tauri::command]
 async fn gate_model_catalogue() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(gate_connect_core::tool_models::catalogue_json)
+    tauri::async_runtime::spawn_blocking(gate_connect_core::gate_models::catalogue_json)
         .await
         .map_err(|e| format!("gate model catalogue join error: {e}"))?
         .map_err(envelope)

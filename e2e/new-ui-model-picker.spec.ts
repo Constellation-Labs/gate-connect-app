@@ -3,17 +3,18 @@ import { test, expect } from "./fixtures";
 /**
  * Choosing which model an app runs on (AG-588).
  *
- * There is a backend now: preferences persist per organization on the gateway,
- * keyed on the platform id it derives per request. What these specs pin is the
+ * The choice persists in `preferences.json` on this install, keyed on tool slug.
+ * It was briefly a gateway endpoint scoped to the organization; local means the
+ * machine whose traffic it governs is the machine that holds it. What these specs pin is the
  * part a unit test cannot - the order of the overlays, and the two states the
  * card must not confuse:
  *
  *  - a model that is *remembered* versus one that is *served*, and
  *  - "we have not read the setting" versus "the setting is App default".
  *
- * The fake backend enforces the gateway's own refusals (a first paid selection
- * needs an acknowledgement; `gate` needs a model), so a flow that stopped asking
- * would fail here rather than quietly start billing.
+ * The fake backend records consent only when moving to `gate`, exactly as the
+ * real setter does, so a flow that stopped asking would fail here rather than
+ * quietly start billing.
  */
 const useNewUi = { gc: "gc.newUi" };
 
@@ -127,15 +128,16 @@ test.describe("new UI model picker", () => {
     await expect(app.page.getByText(/not in use/)).toBeVisible();
   });
 
-  test("a second app does not re-ask once the organization has accepted", async ({ boot }) => {
-    // AG-588 words the confirmation as once per organization, so an org that has
-    // already accepted goes straight through.
+  test("does not re-ask once this install has accepted", async ({ boot }) => {
+    // Once per install now, not once per organization: the acknowledgement is
+    // stored beside the choice, and the choice is local. A second machine will
+    // ask again - the trade recorded in `preferences.rs`.
     const app = await boot({
       ...base,
       toolModels: {
         catalogue,
-        firstPaidAckAt: "2026-01-02T03:04:05.000Z",
-        preferences: [{ platformId: "claude-code", source: "tool", modelIds: [catalogue[1].id] }],
+        paidAckUnix: 1767330245,
+        choices: { "claude-code": { source: "tool", model_ids: [catalogue[1].id] } },
       },
     });
     await openApp(app);
@@ -154,8 +156,8 @@ test.describe("new UI model picker", () => {
       ...base,
       toolModels: {
         catalogue,
-        firstPaidAckAt: "2026-01-02T03:04:05.000Z",
-        preferences: [{ platformId: "claude-code", source: "gate", modelIds: [catalogue[0].id] }],
+        paidAckUnix: 1767330245,
+        choices: { "claude-code": { source: "gate", model_ids: [catalogue[0].id] } },
       },
     });
     await openApp(app);
@@ -177,8 +179,8 @@ test.describe("new UI model picker", () => {
       ...base,
       toolModels: {
         catalogue,
-        firstPaidAckAt: "2026-01-02T03:04:05.000Z",
-        preferences: [{ platformId: "claude-code", source: "gate", modelIds: [catalogue[0].id] }],
+        paidAckUnix: 1767330245,
+        choices: { "claude-code": { source: "gate", model_ids: [catalogue[0].id] } },
       },
     });
     await openApp(app);
@@ -213,18 +215,4 @@ test.describe("new UI model picker", () => {
     await expect(app.page.getByText(/could not read this app's model setting/i)).toBeVisible();
   });
 
-  test("withholds the control for an app the gateway cannot identify", async ({ boot }) => {
-    // Hermes is the real case: nothing in the gateway's registry detects it, so
-    // its requests are unattributed and no preference could ever be applied.
-    const app = await boot({
-      ...base,
-      tools: [{ ...tools[0], platform_id: null }],
-    });
-    await openApp(app);
-
-    await expect(
-      app.page.getByText(/cannot identify Claude Code on a request/i),
-    ).toBeVisible();
-    await expect(app.page.getByRole("radio", { name: /Gate model/ })).toHaveCount(0);
-  });
 });

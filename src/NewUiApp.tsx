@@ -389,27 +389,17 @@ export function NewUiApp() {
    *  hundred rows that nothing else needs. */
   const gateModels = useGateModels(modelOverlay?.kind === "picker");
 
-  /**
-   * The gateway's platform id for the open app, or null when it has none.
-   *
-   * Null is the honest answer for a tool the gateway cannot identify on a
-   * request: no preference stored against it could be applied, so the card
-   * withholds the control rather than offering one that changes nothing. Carried
-   * on the tool list from Rust, where `ToolId::platform_id` is a match on the
-   * enum - see that method for why this is not just the slug.
-   */
-  const openPlatformId = openTool ? (tools.find((t) => t.slug === openTool)?.platform_id ?? null) : null;
-  /** This app's stored preference, or undefined when the org has never set one
-   *  (which is not the same as a failed read - see `openModelChoice`). */
-  const openPref = openPlatformId ? toolModels.view?.byPlatform.get(openPlatformId) : undefined;
+  /** This app's stored choice, or undefined when it has never been set - which
+   *  is not a gap but the true default: the tool picks its own model. */
+  const openPref = openTool ? toolModels.view?.byTool.get(openTool) : undefined;
   /**
    * What the open app is set to, or null when we do not know.
    *
-   * Null while the read is in flight or after it failed, and the card draws no
-   * selection for it. Defaulting to "app" here would be the principle 2 bug in
-   * its purest form: an org that had switched to a Gate model would see App
-   * default selected the moment a read failed, and clicking Gate model would read
-   * as a change when it was a no-op.
+   * Null only while the local read is in flight or after it failed. Rare, since
+   * it is a file read - but defaulting to "app" on a failure would be the
+   * principle 2 bug: an install that had switched to a Gate model would show App
+   * default selected, and clicking Gate model would read as a change when it was
+   * a no-op.
    */
   const openModelChoice: ModelChoice | null =
     toolModels.view === null ? null : openPref?.source === "gate" ? "gate" : "app";
@@ -470,13 +460,13 @@ export function NewUiApp() {
    */
   const activateGateModel = useCallback(
     (modelId: string) => {
-      if (toolModels.view?.firstPaidAckAt) {
+      if (toolModels.view?.paidAckUnix) {
         void saveModel("gate", [modelId]);
       } else {
         setModelOverlay({ kind: "confirm-gate", modelId });
       }
     },
-    [saveModel, toolModels.view?.firstPaidAckAt],
+    [saveModel, toolModels.view?.paidAckUnix],
   );
 
   /**
@@ -1747,7 +1737,6 @@ export function NewUiApp() {
             !installsResolved || (toolActivity.view === null && toolActivity.failure === null)
           }
           modelChoice={openModelChoice}
-          modelSupported={openPlatformId !== null}
           modelBusy={modelBusy}
           // The preference's own read, not the activity pane's: an unattributed
           // machine has nothing to say about a setting.

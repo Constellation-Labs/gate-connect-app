@@ -68,7 +68,6 @@ export function AppPane({
   buckets,
   modelChoice,
   onChooseModel,
-  modelSupported,
   gateModel,
   onChangeModel,
   modelBusy,
@@ -101,10 +100,6 @@ export function AppPane({
    *  So null disables the choice and says why. */
   modelChoice: ModelChoice | null;
   onChooseModel: (choice: ModelChoice) => void;
-  /** False when the gateway cannot identify this app on a request, so no
-   *  preference it stored could ever be applied. The card explains instead of
-   *  offering a control that would do nothing. */
-  modelSupported?: boolean;
   /** The remembered model, or `null` when none has been chosen.
    *
    *  Remembered, not necessarily active: it stays on screen under App default so
@@ -196,7 +191,6 @@ export function AppPane({
       <ModelSelection
         appName={name}
         choice={modelChoice}
-        supported={modelSupported ?? true}
         pending={modelPending}
         busy={modelBusy}
         onChoose={onChooseModel}
@@ -258,15 +252,14 @@ function VendorMark({ provider }: { provider: string | null }) {
  * intent with what is actually served, so under App default the row is dimmed and
  * labelled - `source` is the only thing that decides what Gate serves.
  *
- * **It does not offer a control it cannot honour.** `supported` is false for an
- * app the gateway cannot identify on a request; no preference stored against it
- * could ever apply, so the card says so instead of storing a choice that changes
- * nothing.
+ * There used to be a third: a `supported` flag that withheld the control for an
+ * app the gateway could not identify on a request. It went with the server-side
+ * store - the choice is now a local file keyed on our own tool slug, so every
+ * app this window lists can hold one.
  */
 function ModelSelection({
   appName,
   choice,
-  supported,
   pending,
   busy,
   onChoose,
@@ -277,7 +270,6 @@ function ModelSelection({
 }: {
   appName: string;
   choice: ModelChoice | null;
-  supported: boolean;
   pending?: boolean;
   busy?: boolean;
   onChoose: (choice: ModelChoice) => void;
@@ -297,13 +289,7 @@ function ModelSelection({
         Choose whether {appName} or Gate selects the AI model for requests
       </p>
 
-      {!supported ? (
-        <EmptyNote className="mt-4" icon="cube">
-          Gate cannot identify {appName} on a request, so it cannot serve a
-          different model for it. {appName} keeps using the model it is configured
-          with.
-        </EmptyNote>
-      ) : pending ? (
+      {pending ? (
         <div className="mt-4 grid grid-cols-2 gap-4">
           <Skeleton className="h-[3.75rem]" />
           <Skeleton className="h-[3.75rem]" />
@@ -344,15 +330,12 @@ function ModelSelection({
       <div className="mt-2 flex flex-col gap-2">
         {gateModel === null ? (
           <EmptyNote icon="cube">
-            No Gate model chosen yet.
-            {supported && " Choose one to see what Gate would serve."}
+            No Gate model chosen yet. Choose one to see what Gate would serve.
           </EmptyNote>
         ) : (
           <InfoRow
             icon={gateModel.logo ?? <Icon name="cube" size={16} />}
-            action={
-              supported ? { label: "Change model", onClick: onChangeModel, disabled: busy } : undefined
-            }
+            action={{ label: "Change model", onClick: onChangeModel, disabled: busy }}
             // Dimmed under App default: it is what the user would switch to, not
             // what their requests are being answered with.
             muted={!gateActive}

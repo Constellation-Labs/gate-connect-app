@@ -19,18 +19,6 @@ export interface Tool {
    * channel). Not a secret - it is a path in the user's own home directory, and
    * showing it is the point. */
   config_location: string | null;
-  /** The gateway's `agent_framework` id for this tool, or null when the gateway
-   * cannot name it on a request.
-   *
-   * Not the same namespace as `slug`, even where the strings match: the slug is
-   * ours and names a tool this app configures, the platform id is the gateway's
-   * and is what it derives per request. Supplied by Rust rather than mapped here
-   * so the two cannot disagree - see `ToolId::platform_id`.
-   *
-   * Null withholds the model-selection control: a preference keyed on a platform
-   * the gateway never stamps could not be enforced, and a switch that changes
-   * nothing is worse than no switch. */
-  platform_id: string | null;
   status: Status;
 }
 
@@ -169,30 +157,48 @@ export const activityToolEvents = (tool: string, installId?: string, cursor?: st
     invoke<string>("activity_tool_events", { installId, tool, cursor }),
   );
 
-/** This organization's per-tool model preferences, as raw JSON text (AG-588).
- *
- * Not scoped to a tool. The preference is org-wide by design, so one read serves
- * every app in the sidebar; asking per tool would repeat the same question for
- * the same answer. */
-export const toolModelPreferences = () =>
-  slowNetworkRead().then(() => invoke<string>("tool_model_preferences"));
+/** One tool's stored model choice, as this install holds it. */
+export interface ToolModelChoice {
+  /** Only this decides what would be served. `"tool"` means Gate does not
+   *  intervene. */
+  source: "tool" | "gate";
+  /** Chosen models. May be non-empty while `source` is `"tool"` - that is a
+   *  remembered choice, not an active one. */
+  model_ids: string[];
+}
 
-/** Choose the model one tool runs on, returning the stored row as raw JSON text.
+export interface ToolModels {
+  /** Keyed by tool slug. A tool with no entry is on its own default; an absent
+   *  key is the answer, not a gap. */
+  tools: Record<string, ToolModelChoice>;
+  /** Unix seconds when this install first accepted paid Gate model use, or null
+   *  if it never has. */
+  paid_ack_unix: number | null;
+}
+
+/** This install's per-tool model choices (AG-588).
  *
- * `source` is `"tool"` (the app picks its own) or `"gate"` (Gate serves
- * `modelIds`). `modelIds` must be empty for `"tool"` and hold at least one id for
- * `"gate"` - the gateway refuses either mistake, and its schema refuses the
- * second even if the route were bypassed.
+ * A local file read, not a network call - the choice lives in `preferences.json`
+ * beside the other user choices. It was briefly a gateway endpoint scoped to the
+ * organization; keeping it local means the machine whose traffic it governs is
+ * the machine that holds it. */
+export const toolModelPreferences = () => invoke<ToolModels>("tool_model_preferences");
+
+/** Choose the model one tool runs on.
  *
- * `acknowledgePaidUse` carries the billing confirmation. Passing `false` is safe:
- * a first `"gate"` selection without it fails as `needs_paid_ack`, which is the
- * signal to raise the dialog rather than an error to report. */
+ * `modelIds` may be non-empty with either source: with `"gate"` it is what Gate
+ * would serve, with `"tool"` it is remembered so the pane can show what the user
+ * would be switching to.
+ *
+ * `acknowledgePaidUse` is honoured only when moving to `"gate"` - remembering a
+ * model under the tool's own default spends nothing, so it must not record
+ * consent to spend. */
 export const setToolModel = (
   tool: string,
   source: "tool" | "gate",
   modelIds: string[],
   acknowledgePaidUse = false,
-) => invoke<string>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
+) => invoke<void>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
 
 /** The models this gateway offers, as raw JSON text (Vercel AI Gateway shape).
  *

@@ -20,13 +20,8 @@ import { setToolModel, toolModelPreferences } from "./api";
 const readCall = toolModelPreferences as unknown as ReturnType<typeof vi.fn>;
 const writeCall = setToolModel as unknown as ReturnType<typeof vi.fn>;
 
-function payload(source: "tool" | "gate", modelIds: string[], firstPaidAckAt: string | null = null) {
-  return JSON.stringify({
-    generatedAt: "2026-08-22T10:00:00.000Z",
-    org: { orgId: "org-1", name: "Acme" },
-    preferences: [{ platformId: "codex", source, modelIds, updatedAt: "2026-08-22T10:00:00.000Z" }],
-    firstPaidAckAt,
-  });
+function payload(source: "tool" | "gate", modelIds: string[], paidAckUnix: number | null = null) {
+  return { tools: { codex: { source, model_ids: modelIds } }, paid_ack_unix: paidAckUnix };
 }
 
 function harness() {
@@ -51,13 +46,13 @@ type SaveResult = Awaited<ReturnType<ReturnType<typeof useToolModels>["save"]>>;
 
 describe("useToolModels", () => {
   it("reads once and exposes the preferences by platform", async () => {
-    readCall.mockResolvedValue(payload("gate", ["openai/gpt-5"], "2026-01-01T00:00:00.000Z"));
+    readCall.mockResolvedValue(payload("gate", ["openai/gpt-5"], 1767225600));
     const h = harness();
     await flush();
 
     expect(readCall).toHaveBeenCalledTimes(1);
-    expect(h.latest().view?.byPlatform.get("codex")?.source).toBe("gate");
-    expect(h.latest().view?.firstPaidAckAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(h.latest().view?.byTool.get("codex")?.source).toBe("gate");
+    expect(h.latest().view?.paidAckUnix).toBe(1767225600);
   });
 
   it("drops the previous reading when a re-read fails", async () => {
@@ -83,24 +78,24 @@ describe("useToolModels", () => {
     // acknowledgement - and another machine may have changed a different platform
     // since this view was taken. Only a re-read can be trusted.
     readCall.mockResolvedValue(payload("tool", []));
-    writeCall.mockResolvedValue("{}");
+    writeCall.mockResolvedValue(undefined);
     const h = harness();
     await flush();
     expect(readCall).toHaveBeenCalledTimes(1);
 
-    readCall.mockResolvedValue(payload("gate", ["openai/gpt-5"], "2026-08-22T10:00:01.000Z"));
+    readCall.mockResolvedValue(payload("gate", ["openai/gpt-5"], 1787740801));
     await act(async () => {
       await h.latest().save("codex", "gate", ["openai/gpt-5"], true);
     });
 
     expect(readCall).toHaveBeenCalledTimes(2);
-    expect(h.latest().view?.byPlatform.get("codex")?.source).toBe("gate");
-    expect(h.latest().view?.firstPaidAckAt).toBe("2026-08-22T10:00:01.000Z");
+    expect(h.latest().view?.byTool.get("codex")?.source).toBe("gate");
+    expect(h.latest().view?.paidAckUnix).toBe(1787740801);
   });
 
   it("passes the acknowledgement through, and defaults it to withheld", async () => {
     readCall.mockResolvedValue(payload("tool", []));
-    writeCall.mockResolvedValue("{}");
+    writeCall.mockResolvedValue(undefined);
     const h = harness();
     await flush();
 
@@ -111,10 +106,10 @@ describe("useToolModels", () => {
   });
 
   it("returns a write failure rather than throwing, so the caller can branch", async () => {
-    // `needs_paid_ack` is the case this exists for: it is not an error to report
-    // but the signal to raise the billing dialog.
+    // A local write can still fail - a read-only home, a full disk - and the
+    // caller has to be able to say so rather than silently show the old value.
     readCall.mockResolvedValue(payload("tool", []));
-    writeCall.mockRejectedValue('{"code":"needs_paid_ack","message":"show the confirmation"}');
+    writeCall.mockRejectedValue("writing preferences.json: permission denied");
     const h = harness();
     await flush();
 
@@ -125,16 +120,14 @@ describe("useToolModels", () => {
       got.failure = await h.latest().save("codex", "gate", ["openai/gpt-5"]);
     });
 
-    expect(got.failure?.code).toBe("needs_paid_ack");
+    expect(got.failure?.message).toContain("permission denied");
     // No re-read: nothing was stored, so the held view is still current.
     expect(readCall).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a role refusal's own sentence, which no code carries", async () => {
+  it("keeps the failure's own sentence, which no code carries", async () => {
     readCall.mockResolvedValue(payload("tool", []));
-    writeCall.mockRejectedValue(
-      '{"code":"rejected","message":"Your role can view this organization\'s model settings but not change them."}',
-    );
+    writeCall.mockRejectedValue("unknown tool slug \"hermes-2\"");
     const h = harness();
     await flush();
 
@@ -145,6 +138,6 @@ describe("useToolModels", () => {
       got.failure = await h.latest().save("codex", "gate", ["openai/gpt-5"]);
     });
 
-    expect(got.failure?.message).toContain("not change them");
+    expect(got.failure?.message).toContain("unknown tool slug");
   });
 });

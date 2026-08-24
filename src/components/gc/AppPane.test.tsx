@@ -221,17 +221,6 @@ describe("AppPane model selection", () => {
     expect(card_.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
   });
 
-  it("withholds the choice for an app the gateway cannot identify", () => {
-    // A preference keyed on a platform the gateway never stamps could not be
-    // applied, so offering the control would be offering a switch that changes
-    // nothing.
-    render(pane({ modelSupported: false, modelChoice: "app" }));
-    const card_ = card("Model selection");
-
-    expect(within(card_).queryByRole("radio")).toBeNull();
-    expect(within(card_).getByText(/cannot identify Claude Code on a request/i)).toBeTruthy();
-  });
-
   it("marks a remembered model as not in use under App default", () => {
     render(pane({ modelChoice: "app", gateModel: model }));
     const card_ = card("Model selection");
@@ -251,11 +240,6 @@ describe("AppPane model selection", () => {
   it("says no model is chosen rather than drawing an empty row", () => {
     render(pane({ modelChoice: "app", gateModel: null }));
     expect(within(card("Model selection")).getByText(/No Gate model chosen yet/i)).toBeTruthy();
-  });
-
-  it("offers no Change model button for an app that cannot have one", () => {
-    render(pane({ modelSupported: false, gateModel: model }));
-    expect(within(card("Model selection")).queryByRole("button", { name: "Change model" })).toBeNull();
   });
 
   it("refuses a second click while a write is in flight", () => {
