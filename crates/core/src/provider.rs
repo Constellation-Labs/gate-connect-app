@@ -76,14 +76,15 @@ pub fn providers() -> Vec<Provider> {
             // user's claude.ai session the moment they enabled Claude. It rides
             // `chat_domain_slugs` instead, which shows it on the ledger under
             // Claude and leaves the flipping to its own switch.
+            //
+            // Naming a slug here is necessary but not sufficient for the row:
+            // `claude-web` and `chatgpt-apps` below are gated to the staging
+            // gateway by `proxy::config`'s `STAGING_ONLY_SLUGS`, and a domain
+            // that comes back unsupported has no row at all. So this list is
+            // what the ledger shows WHERE the surface is available, not a
+            // promise that it is.
             proxy_domain_slugs: &["anthropic"],
-            // Empty for now, deliberately. The field and the row it drives ship
-            // here because OpenClaw needs one below, but the two chat surfaces
-            // that motivated the mechanism (`claude-web` here, `chatgpt-apps`
-            // under OpenAI) are still being validated, and a row is an
-            // invitation to flip it. They stay CLI-only until the branch
-            // validating them lands, which re-adds exactly these two slugs.
-            chat_domain_slugs: &[],
+            chat_domain_slugs: &["claude-web"],
         },
         Provider {
             slug: "openai",
@@ -102,9 +103,9 @@ pub fn providers() -> Vec<Provider> {
             // thing that lets Gate see them - `integrations/openclaw.rs` used to
             // flip the domain itself, which is what this row replaces.
             //
-            // `chatgpt-apps` is deliberately not here yet, for the reason given
-            // on Claude's entry above.
-            chat_domain_slugs: &["chatgpt"],
+            // `chatgpt-apps` covers the ChatGPT app's own chat turn (a
+            // session-cookie surface) alongside Codex's tool plane.
+            chat_domain_slugs: &["chatgpt", "chatgpt-apps"],
         },
         Provider {
             slug: "openrouter",
@@ -1025,23 +1026,19 @@ mod tests {
     #[test]
     fn chat_domains_reach_the_ledger_without_reaching_the_cascade() {
         // The other half of the test above, and the half that keeps the fix in
-        // place: excluding a slug from `proxy_domain_slugs` is also what used to
-        // hide it from Home, so the exclusion alone is indistinguishable from
-        // having dropped it. `chat_domain_slugs` is what `buildGroups` reads to
-        // give one a row and a switch of its own; if this went empty, the domain
-        // would silently become CLI-only again - which is the state OpenClaw's
-        // connect used to paper over by flipping it unasked.
-        let openai = find("openai").expect("openai provider present");
-        assert_eq!(openai.chat_domain_slugs, &["chatgpt"]);
-        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt"));
-
-        // Still deferred, both of them: the surfaces under validation get their
-        // rows when that branch lands, and this asserts they are not exposed
-        // ahead of it rather than merely forgotten.
+        // place: excluding these slugs from `proxy_domain_slugs` is also what
+        // used to hide them from Home, so the exclusion alone is indistinguishable
+        // from having dropped them. `chat_domain_slugs` is what `buildGroups`
+        // reads to give each one a row and a switch of its own; if it ever went
+        // empty, the domains would silently become CLI-only again - which is the
+        // state OpenClaw's connect used to paper over by flipping `chatgpt`
+        // unasked.
         let anthropic = find("anthropic").expect("anthropic provider present");
-        assert!(anthropic.chat_domain_slugs.is_empty());
-        assert!(!openai.chat_domain_slugs.contains(&"chatgpt-apps"));
-
+        assert_eq!(anthropic.chat_domain_slugs, &["claude-web"]);
+        let openai = find("openai").expect("openai provider present");
+        assert_eq!(openai.chat_domain_slugs, &["chatgpt", "chatgpt-apps"]);
+        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt"));
+        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt-apps"));
         // Every slug named must exist in the domain catalog, or the row is
         // promised and never rendered.
         let catalog = crate::proxy::default_domains();

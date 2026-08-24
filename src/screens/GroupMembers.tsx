@@ -6,6 +6,7 @@ import { trackError } from "../lib/analytics";
 import { Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
 import { MemberPill, memberPillLabel } from "../components/GroupPill";
 import {
+  browserScopeNote,
   secretStoreName,
   trustPromptHint,
   trustPromptWaiting,
@@ -48,10 +49,40 @@ function explain(member: GroupMember, platform: Platform): string {
     // which is a different promise from "Gate holds your key in the keychain".
     // Deliberately not the word "conversations": one of these rows carries the
     // Codex subscription endpoint, whose traffic is model calls, not chat.
+    //
+    // The host is named because the row's name is an app and the switch is not
+    // scoped to one: `decide` matches on host (`proxy::ProxyDomain::matches_host`,
+    // exact, no subdomains), so every proxy-honouring client of that host is
+    // covered. That is the one thing a user cannot infer from a row reading
+    // "Claude Desktop chat", and it is the reason `integrations/openclaw.rs`
+    // stopped flipping these slugs on the user's behalf. Naming it is the whole
+    // reassurance: these rows are the ones where transparency about the
+    // mechanism IS the product.
+    //
+    // Which clients that covers is the platform's answer, not ours, so the
+    // browser half goes through `browserScopeNote`, which is empty wherever
+    // there is nothing to claim - on Linux the proxy is wired through
+    // environment variables a browser never reads, and the host sentence has
+    // already bounded the scope without it. Sentences, not clauses, so dropping
+    // one leaves the rest reading normally.
     if (member.chat) {
-      return member.routed
-        ? `${member.name} goes through Gate on the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it. The family switch above leaves this row alone.`
-        : `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers. Switch it on and Gate records and inspects that traffic; the family switch above leaves this row alone either way.`;
+      const hosts = member.domain?.hosts.join(", ") ?? "";
+      const scope = browserScopeNote(platform);
+      const covers = member.routed
+        ? `That covers everything on ${hosts}.`
+        : `Switch it on and Gate records and inspects that traffic - everything on ${hosts}.`;
+      return [
+        member.routed
+          ? `${member.name} goes through Gate on the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it.`
+          : `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers.`,
+        covers,
+        scope,
+        member.routed
+          ? "The family switch above leaves this row alone."
+          : "The family switch above leaves this row alone either way.",
+      ]
+        .filter(Boolean)
+        .join(" ");
     }
     return member.routed
       ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
