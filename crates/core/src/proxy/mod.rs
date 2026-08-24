@@ -82,10 +82,15 @@ pub mod system_proxy;
 #[path = "system_proxy_linux.rs"]
 pub mod system_proxy;
 
-#[cfg(target_os = "macos")]
-mod manager;
-#[cfg(target_os = "windows")]
-#[path = "manager_windows.rs"]
+// The desktop (macOS/Windows) manager sequencing, generic over the
+// `DesktopOps` platform seam so one implementation serves both OSes and the
+// tests inside it can drive the real engine against a fake platform. Also
+// compiled under `test` on other platforms so those tests run everywhere.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+mod manager_core;
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[path = "manager_desktop.rs"]
 mod manager;
 #[cfg(target_os = "linux")]
 #[path = "manager_linux.rs"]
@@ -114,21 +119,23 @@ pub use manager::{manager, ProxyManager};
 /// already flowed direct: the one pixel the product calls most important,
 /// showing a state that stopped being true. macOS/Windows only in practice
 /// (the in-process engine); the Linux engine lives in the helper daemon,
-/// whose death the GUI notices through its normal status reads.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// whose death the GUI notices through its normal status reads. Compiled
+/// under `test` elsewhere too, because the generic manager sequencing
+/// (`manager_core`) calls the notify below and its tests run on every OS.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 static ENGINE_CRASH_OBSERVER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> =
     std::sync::OnceLock::new();
 
 /// Register the crash observer. First registration wins; later calls are
 /// ignored (the shell registers exactly once at setup).
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub fn set_engine_crash_observer(observer: impl Fn() + Send + Sync + 'static) {
     let _ = ENGINE_CRASH_OBSERVER.set(Box::new(observer));
 }
 
 /// Invoke the registered crash observer, if any. Called by the manager's
 /// crash fail-safe once the revert is done and the engine lock is released.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) fn notify_engine_crash_observer() {
     if let Some(observer) = ENGINE_CRASH_OBSERVER.get() {
         observer();

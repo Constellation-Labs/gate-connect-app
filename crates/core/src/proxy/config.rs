@@ -35,7 +35,9 @@ fn config_path() -> Result<PathBuf> {
 /// second `gate-connect` invocation toggling a domain writes this file, and
 /// whoever is hosting the engine has no other way to learn of it. Deliberately
 /// a stat rather than a full parse, so polling it costs nothing.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// `test` included so the generic desktop manager (`manager_core`) and its
+/// tests compile on every platform.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) fn domains_file_mtime() -> Option<std::time::SystemTime> {
     fs::metadata(config_path().ok()?).ok()?.modified().ok()
 }

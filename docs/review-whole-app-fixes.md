@@ -103,11 +103,17 @@ from the three reports is listed with what was done. Verification at the end.
   startup thread is genuinely shell-coupled (silent-launch `exit`, autostart
   plugin, tray, events) and stays.
 - **H3 (manager.rs / manager_windows.rs ~85% duplicated, ProxyManager
-  untested)** - DEFERRED. Unifying them is a cross-platform refactor that
-  cannot even be compile-checked off-platform locally (cross `cargo check`
-  fails on ring/aws-lc build scripts) and deserves its own change with real
-  per-OS verification. This round kept the pair in lockstep (all three
-  manager fixes applied to both, same wording) rather than half-merging them.
+  untested)** - FIXED (this branch, `unify-desktop-manager`). The sequencing
+  lives once in `proxy/manager_core.rs`, generic over the `DesktopOps` seam
+  that holds every OS-touching call; `manager_desktop.rs` is the thin shared
+  wiring whose only platform `cfg`s are macOS's `active_services` plumbing;
+  `manager_linux.rs` stays (structurally different daemon manager). The seam
+  is what finally made the sequencing testable: twelve tests drive the real
+  engine against a fake platform on every OS, pinning snapshot-before-point,
+  the exact-restore/force-off contract, hosted-elsewhere refusal, crash
+  revert + observer notification, enable rollback on a failed system-proxy
+  write, port persistence across a cycle, cross-process status, and the
+  reconcile layers.
 - **M1 (upstream-credential feature dead but wired)** - FIXED. Trait default
   flipped to `false` (the trap the review called out), the six redundant
   overrides deleted, the three renderer commands + registrations and the
@@ -129,8 +135,8 @@ from the three reports is listed with what was done. Verification at the end.
   `resyncLedger` helper; a transient `listTools` failure now keeps the
   previous list everywhere (stale beats blank; popover reopen heals it).
 - **M5 (test gaps)** - PARTIAL. The highest-value gap (analytics scrubbing, a
-  privacy promise) is now unit-tested. Still open, in rough priority order:
-  ProxyManager sequencing (blocked on H3's seam), `ca_windows.rs`,
+  privacy promise) is now unit-tested, and ProxyManager sequencing is covered
+  via H3's seam (`manager_core` tests). Still open: `ca_windows.rs`,
   the Linux helper protocol, `FirstRun.tsx` / `OrgPicker.tsx` units.
 - **L1 (stale `account` dep in toggleProxy)** - FIXED.
 - **L2 (core logging is eprintln-only)** - DEFERRED as the "one decision" the
