@@ -97,24 +97,6 @@ fn raw_first_message(line: &str) -> (Response, bool) {
     (hello, closed)
 }
 
-/// A syntactically valid `SetIntercept` around the given domains. Dummy
-/// credentials are fine: domain validation happens before the engine (and
-/// with tampered domains, instead of it).
-fn set_intercept(domains: Vec<gate_connect_core::proxy::ProxyDomain>) -> Request {
-    Request::SetIntercept {
-        gateway_base_url: "https://gw.example.com".into(),
-        api_key: "sk-gw-testkey123".into(),
-        oauth_token: String::new(),
-        org_id: String::new(),
-        ca_cert_pem: String::new(),
-        ca_key_pem: String::new(),
-        domains,
-        detached: false,
-        preferred_port: None,
-        preferred_relay_port: None,
-    }
-}
-
 /// Drive one tampered `SetIntercept` through an authenticated [`HelperClient`]
 /// and return the daemon's refusal message.
 fn rejected_intercept(domains: Vec<gate_connect_core::proxy::ProxyDomain>) -> String {
