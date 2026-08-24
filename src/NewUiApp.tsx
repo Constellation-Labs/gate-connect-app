@@ -131,7 +131,7 @@ import type {
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
 import { analyticsId, setAnalyticsConsent, track, trackError } from "./lib/analytics";
-import { secretStoreName, usePlatform } from "./lib/platform";
+import { secretStoreName, trustPromptHint, usePlatform } from "./lib/platform";
 
 /**
  * How often the window re-reads what is installed.
@@ -1587,8 +1587,17 @@ export function NewUiApp() {
             onDismiss={() => routing.resolvePrompt(false)}
           >
             <p className="text-sm leading-5 text-neutral-600">
-              Your operating system will ask for permission. The certificate stays on this
-              machine, and you can remove it from Settings at any time.
+              The certificate stays on this machine, and you can remove it from Settings
+              at any time.
+            </p>
+            {/* Naming the system dialog is the whole of AG-534, and "your
+                operating system will ask for permission" is not that: on Windows
+                what arrives is a red "Security Warning" quoting a certificate
+                name, which reads as something having gone wrong. Same sentence
+                the popover's `CertificateNotice` uses, from the same helper, so
+                the two shells do not prepare the user two different ways. */}
+            <p className="text-sm font-medium leading-5 text-neutral-900">
+              {trustPromptHint(platform)}
             </p>
           </Modal>
         ) : routing.prompt?.kind === "untrust" ? (
