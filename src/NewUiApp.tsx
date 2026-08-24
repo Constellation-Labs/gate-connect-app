@@ -67,6 +67,7 @@ import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
+import { brandMarkFor } from "./components/gc/BrandMark";
 import { FamiliesPane } from "./components/gc/FamiliesPane";
 import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
@@ -882,6 +883,7 @@ export function NewUiApp() {
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
           on: t.status.kind === "connected" || t.status.kind === "drifted",
+          logo: brandMarkFor(t.slug),
           busy: routingBusy,
         })),
     [tools, verdicts, routing.writeFailures, routingBusy],
@@ -925,6 +927,7 @@ export function NewUiApp() {
             // Intent, same as the tools: the switch says what the user asked
             // for, the status line says what is happening.
             on: m.desired,
+            logo: brandMarkFor(m.key),
             busy: routingBusy,
             noPane: true,
           });
@@ -1765,6 +1768,7 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(apps, view.slug)?.name ?? view.slug}
+          logo={brandMarkFor(view.slug)}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug
           // `lib/groups.ts` documents - it renders off, and clicking it turns off

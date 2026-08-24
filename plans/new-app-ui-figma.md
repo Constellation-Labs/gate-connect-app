@@ -1385,11 +1385,18 @@ The queue downstream PRs draw from, in the order that unblocks the most.
     config file, no drift review and no process staleness (stats are
     install-wide either way). Until that PR lands, the rows are labels with
     working switches.
-11. **Brand marks.** Export the eight `logo` components and the model vendor
-    marks, then wire `SidebarApp.logo`, the App pane header tile, the
-    activity table's Model cells and the current-model row. Ask the designer
-    for an SVG export first - the View seat cannot use Dev Mode - and fall
-    back to high-DPI browser captures like the onboarding art if none comes.
+11. **Brand marks: STOPGAP SHIPPED 2026-08-23, designer export still wanted.**
+    `src/components/gc/BrandMark.tsx` vendors the seven rail marks (Claude,
+    Claude Code, Codex, OpenAI, OpenRouter, OpenCode, OpenClaw) from
+    lobehub/lobe-icons (MIT), all `currentColor` so the tile's white text
+    colours them, and `brandMarkFor(slug)` maps both tool and domain slugs
+    onto them - Hermes has no mark and keeps the initial fallback. Wired into
+    the rail rows and the App pane header tile through the `logo` props that
+    already existed. These are the same official logos the Figma draws, so
+    when the designer's export lands only `BrandMark.tsx` changes. Still
+    pending with the model backend: the coloured vendor marks for the model
+    picker rows and activity Model cells (`anthropic`, `deepseek-color`,
+    `qwen-color`, `kimi-color` in the same set).
 12. **Alert banner copy: DONE 2026-08-23.** `master-off` and `drifted` in
     `lib/notices.ts` (and `NewUiApp`'s `driftAlert`) carry the drawn copy.
     The drift card names the app in its body where the drawing says "This
