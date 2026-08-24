@@ -330,29 +330,6 @@ pub fn clear_stranded_loopback() -> Result<Vec<String>> {
     Ok(cleared)
 }
 
-#[cfg(test)]
-mod stranded_tests {
-    use super::*;
-
-    #[test]
-    fn autoproxy_loopback_port_only_matches_loopback_pacs() {
-        assert_eq!(
-            autoproxy_loopback_port("http://127.0.0.1:8123/proxy.pac"),
-            Some("8123".to_string())
-        );
-        assert_eq!(
-            autoproxy_loopback_port("http://localhost:47110/proxy.pac"),
-            Some("47110".to_string())
-        );
-        // A corporate PAC on a real host is never ours to clear.
-        assert_eq!(
-            autoproxy_loopback_port("http://proxy.corp.example/pac"),
-            None
-        );
-        assert_eq!(autoproxy_loopback_port(""), None);
-    }
-}
-
 // --- Proxy environment variables -----------------------------------------
 //
 // WinINET's PAC above only reaches clients that go through WinINET. The
@@ -510,4 +487,34 @@ pub fn disable_env() -> Result<()> {
         anyhow::bail!("could not revert proxy environment ({})", failed.join("; "));
     }
     Ok(())
+}
+
+// --- Tests ----------------------------------------------------------------
+//
+// At the file's end, not beside `clear_stranded_loopback` where these were
+// written: `clippy::items_after_test_module` (denied through `-D warnings`)
+// rejects a test module with real items after it, and the proxy-environment
+// half above is exactly that.
+
+#[cfg(test)]
+mod stranded_tests {
+    use super::*;
+
+    #[test]
+    fn autoproxy_loopback_port_only_matches_loopback_pacs() {
+        assert_eq!(
+            autoproxy_loopback_port("http://127.0.0.1:8123/proxy.pac"),
+            Some("8123".to_string())
+        );
+        assert_eq!(
+            autoproxy_loopback_port("http://localhost:47110/proxy.pac"),
+            Some("47110".to_string())
+        );
+        // A corporate PAC on a real host is never ours to clear.
+        assert_eq!(
+            autoproxy_loopback_port("http://proxy.corp.example/pac"),
+            None
+        );
+        assert_eq!(autoproxy_loopback_port(""), None);
+    }
 }
