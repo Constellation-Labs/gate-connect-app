@@ -78,6 +78,14 @@ fn set_relay_port(port: u16) {
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+    fs::write(dir.join("port"), port.to_string()).unwrap();
+    #[cfg(target_os = "macos")]
+    let snapshot = "[]";
+    #[cfg(target_os = "linux")]
+    let snapshot = r#"{ "block_present": false }"#;
+    #[cfg(target_os = "windows")]
+    let snapshot = r#"{ "enable": 0, "server": "", "bypass": "", "auto_config_url": "" }"#;
+    fs::write(dir.join("system-proxy.snapshot.json"), snapshot).unwrap();
 }
 
 fn install_claude_unconfigured() {

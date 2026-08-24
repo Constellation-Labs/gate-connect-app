@@ -545,6 +545,40 @@ pub(crate) fn should_intercept_host(domains: &[ProxyDomain], host: &str) -> bool
     domains.iter().any(|d| d.enabled && d.matches_host(host))
 }
 
+/// Route selector carried only by Claude Code's explicit proxy URL. It is not
+/// a credential: the proxy is already restricted to the local owner. The
+/// selector lets the engine distinguish Claude Code from desktop applications
+/// that reach the same `api.anthropic.com` host through the system proxy, so
+/// the Desktop domain switch can remain independent without letting a connected
+/// Claude Code session blind-tunnel around Gate.
+pub(crate) const CLAUDE_CODE_PROXY_AUTH: &str = "Basic Z2F0ZS1jbGF1ZGUtY29kZTpyb3V0ZQ==";
+
+/// The catalog entry Claude Code's selector forces on, already `enabled`.
+///
+/// Built once: the forced path would otherwise rebuild the whole catalog per
+/// request. It is also the single place the forced route's host is named, so
+/// the CONNECT-stage check and the rule the engine pushes cannot drift from
+/// each other, or from the catalog, if `hosts` ever changes.
+pub(crate) fn claude_code_route_domain() -> &'static ProxyDomain {
+    static ENTRY: std::sync::OnceLock<ProxyDomain> = std::sync::OnceLock::new();
+    ENTRY.get_or_init(|| {
+        let mut domain = default_domains()
+            .into_iter()
+            .find(|domain| domain.slug == "anthropic")
+            .expect("the built-in catalog always carries the anthropic entry");
+        domain.enabled = true;
+        domain
+    })
+}
+
+/// Add the Claude Code route selector to an engine URL.
+pub(crate) fn claude_code_proxy_url(engine_url: &str) -> Result<String> {
+    let authority = engine_url
+        .strip_prefix("http://")
+        .context("Claude Code proxy URL must use http://")?;
+    Ok(format!("http://gate-claude-code:route@{authority}"))
+}
+
 /// The catalog entry that would MITM `host`, whether or not it is switched on.
 /// The question [`should_intercept_host`] cannot answer: a caller that wants to
 /// *report* on a host's coverage needs the entry precisely when it is off.
@@ -913,10 +947,14 @@ pub fn default_domains() -> Vec<ProxyDomain> {
     vec![
         ProxyDomain {
             slug: "anthropic".into(),
-            // Named for what it covers (the apps whose traffic this
-            // intercepts), not the vendor: on the UI ledger a vendor name
-            // here would read as if it included Claude Code, which routes by
-            // config instead. The host line carries api.anthropic.com.
+            // Named for what its SWITCH covers, not for the vendor: the
+            // entry is the system-proxy route for the desktop apps, and its
+            // switch is theirs alone. Claude Code reaches the same host, but
+            // through its own configured proxy URL, whose route selector makes
+            // the engine apply this entry whatever the switch says (see
+            // `claude_code_route_domain`) - so a vendor name here would read as
+            // a promise this switch does not make. The host line carries
+            // api.anthropic.com.
             display_name: "Claude Desktop / Cowork".into(),
             // Inference for Claude Code, Claude Desktop, and Cowork all goes
             // to api.anthropic.com /v1/messages (OAuth bearer or API key),

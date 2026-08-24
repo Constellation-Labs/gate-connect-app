@@ -25,13 +25,39 @@ function hostOf(url: string | undefined): string {
   }
 }
 
+/** A routing tool in the same family that reaches this proxy member's host
+ * through its own config, so the member's switch is not the whole story for
+ * that host. Claude Code is the case that made this necessary: it carries a
+ * route selector in its own proxy URL, so Gate keeps routing
+ * `api.anthropic.com` for it whatever the `Claude Desktop / Cowork` switch
+ * says. Relay-routed tools were always in the same position - their base URL
+ * never consulted the domain switch either - so this matches on the host, not
+ * on a slug, and holds for Codex under the OpenAI row too.
+ *
+ * `coversAllProviders` members are skipped: their `default_upstream_url` is a
+ * placeholder constant (api.anthropic.com), which is why the host slot prints
+ * prose for them instead. Matching on it would have OpenCode claim it reaches
+ * a host it may never touch. */
+function configSiblingOnHost(group: Group, member: GroupMember): GroupMember | undefined {
+  const hosts = member.domain?.hosts ?? [];
+  return group.members.find(
+    (sibling) =>
+      sibling.kind === "config" &&
+      sibling.routed &&
+      !sibling.coversAllProviders &&
+      hosts.includes(hostOf(sibling.tool?.default_upstream_url)),
+  );
+}
+
 /** What a member's current state means, in plain language. This is the copy
  * that used to live on a separate tool screen; it belongs next to the row it
  * describes, not a level deeper.
  *
  * Takes the platform because two of these branches name the secret store, and
- * naming the wrong vault undoes the reassurance they exist to give. */
-function explain(member: GroupMember, platform: Platform): string {
+ * naming the wrong vault undoes the reassurance they exist to give. Takes the
+ * group because one branch has to look sideways at its siblings: see
+ * `configSiblingOnHost`. */
+function explain(member: GroupMember, platform: Platform, group: Group): string {
   if (member.attention === "master-off") {
     return member.kind === "proxy"
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
@@ -84,9 +110,24 @@ function explain(member: GroupMember, platform: Platform): string {
         .filter(Boolean)
         .join(" ");
     }
-    return member.routed
-      ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
-      : `${member.name} routes through Gate’s local proxy once you switch it on.`;
+    if (member.routed) {
+      return `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`;
+    }
+    // Sentences, not clauses, by the same rule as the chat branch above.
+    const sibling = configSiblingOnHost(group, member);
+    return [
+      `${member.name} routes through Gate’s local proxy once you switch it on.`,
+      // This row prints the host right beside its own switch, so an off switch
+      // over `api.anthropic.com` reads as "nothing on that host reaches Gate".
+      // With a config-routed tool on the same host that is not true - Claude
+      // Code's proxy URL carries a route selector the engine honours whatever
+      // this switch says - and saying nothing lets the row promise something
+      // the engine does not do.
+      sibling &&
+        `${sibling.name} reaches ${member.domain?.hosts.join(", ") ?? ""} through its own config, so this switch covers ${member.name} rather than everything on that host.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
   }
   switch (member.tool?.status.kind) {
     case "connected":
@@ -590,7 +631,7 @@ export function GroupMembers({
                 // open row and its body read as one tinted block.
                 <div className="bg-gc-subtle px-3.5 pb-3">
                   <p className="text-gc-caption leading-snug text-gc-ink-2">
-                    {explain(member, platform)}
+                    {explain(member, platform, group)}
                   </p>
 
                   {/* No per-member Trust button. There is one machine-wide
