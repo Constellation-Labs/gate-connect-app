@@ -245,7 +245,7 @@ fn upstream_tls_config(provider: CryptoProvider) -> Result<ClientConfig> {
         .with_safe_default_protocol_versions()
         .context("selecting TLS protocol versions for the upstream connector")?;
 
-    let Some(path) = std::env::var_os("GATE_CONNECT_TEST_CA") else {
+    let Some(path) = crate::env::test_seam("GATE_CONNECT_TEST_CA") else {
         return Ok(builder.with_webpki_roots().with_no_client_auth());
     };
 
@@ -790,6 +790,20 @@ fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) 
     s
 }
 
+/// The `Host` header value of a raw HTTP request head, if one is present in
+/// `buf`. Tolerant by design: the PAC responder reads a single buffer and
+/// never parses the request beyond this.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn request_host(buf: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(buf).ok()?;
+    text.split("\r\n").skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("host")
+            .then(|| value.trim().to_string())
+    })
+}
+
 /// Serve the PAC script on a dedicated loopback listener. WinINET fetches the
 /// `AutoConfigURL` *directly* (not through the proxy), so this must be a plain
 /// HTTP responder, separate from the hudsucker proxy on `proxy_port`. The body
@@ -805,14 +819,33 @@ async fn serve_pac(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     loop {
         let Ok((mut stream, _)) = listener.accept().await else {
+            // Transient accept errors resolve on their own; the pause keeps a
+            // permanently failing listener from spinning this loop at 100%
+            // CPU for the engine's lifetime.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             continue;
         };
         let rules = rules.clone();
         let upstream = upstream.clone();
         tokio::spawn(async move {
-            // Consume the request (a small GET we don't parse) before replying.
+            // Consume the request before replying. Parsed only far enough to
+            // read `Host`: the system PAC fetcher addresses us as loopback,
+            // while a DNS-rebound browser request arrives under the attacker's
+            // hostname - refuse it rather than disclose the engine port the
+            // PAC body carries. A request with no Host line (not a browser)
+            // stays served. Same rule as the relay's, shared in the parent
+            // module.
             let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf).await;
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            let foreign_host =
+                request_host(&buf[..n]).is_some_and(|h| !crate::proxy::authority_is_loopback(&h));
+            if foreign_host {
+                let resp =
+                    "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.shutdown().await;
+                return;
+            }
             let body = pac_script(&rules.borrow(), proxy_port, upstream.as_deref());
             let resp = format!(
                 "HTTP/1.1 200 OK\r\n\

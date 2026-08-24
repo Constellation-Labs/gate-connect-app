@@ -12,7 +12,6 @@ export interface Tool {
   name: string;
   upstream_provider_name: string;
   default_upstream_url: string;
-  requires_upstream_credential: boolean;
   status: Status;
 }
 
@@ -56,13 +55,6 @@ export const connectTool = (slug: string, upstreamUrl: string) =>
 
 /** Revert one tool's config to its pre-Gate state. */
 export const disconnectTool = (slug: string) => invoke<Status>("disconnect_tool", { slug });
-
-export const hasUpstreamCredential = (slug: string) => invoke<boolean>("has_upstream_credential", { slug });
-
-export const saveUpstreamApiKey = (slug: string, apiKey: string) =>
-  invoke<void>("save_upstream_api_key", { slug, apiKey });
-
-export const clearUpstreamCredential = (slug: string) => invoke<void>("clear_upstream_credential", { slug });
 
 export const getAccount = () => invoke<Account | null>("get_account");
 
@@ -166,8 +158,6 @@ export interface ProxyState {
 
 export const proxyStatus = () => invoke<ProxyState>("proxy_status");
 
-export const proxyListDomains = () => invoke<ProxyDomain[]>("proxy_list_domains");
-
 /** Turn the proxy on: starts the loopback engine, trusts the CA (the one
  * step that prompts, and only when not already trusted), and points the
  * system proxy at it. */
@@ -222,15 +212,6 @@ export interface ProviderState {
 }
 
 export const listProviders = () => invoke<ProviderState[]>("list_providers");
-
-/** Turn a provider on: configures installed tools and, if the proxy is already
- * running, enables its proxy domain(s) (macOS / Windows / Linux). Never
- * triggers an admin prompt. */
-export const providerEnable = (slug: string) => invoke<ProviderState>("provider_enable", { slug });
-
-/** Turn a provider off: reverts the tool config and disables its proxy
- * domain(s) if the proxy is running. */
-export const providerDisable = (slug: string) => invoke<ProviderState>("provider_disable", { slug });
 
 // ---- Launch at login ----
 //

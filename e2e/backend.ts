@@ -32,7 +32,6 @@ export interface ToolFixture {
   name: string;
   upstream_provider_name: string;
   default_upstream_url: string;
-  requires_upstream_credential: boolean;
   status: ToolStatus;
 }
 
@@ -125,7 +124,6 @@ const CLAUDE_CODE: ToolFixture = {
   name: "Claude Code",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",
-  requires_upstream_credential: false,
   status: { kind: "detected" },
 };
 
@@ -134,7 +132,6 @@ const CODEX: ToolFixture = {
   name: "Codex",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://api.openai.com/v1",
-  requires_upstream_credential: false,
   status: { kind: "detected" },
 };
 
@@ -143,7 +140,6 @@ const OPENCODE: ToolFixture = {
   name: "OpenCode",
   upstream_provider_name: "your existing providers",
   default_upstream_url: "https://api.anthropic.com",
-  requires_upstream_credential: false,
   status: { kind: "detected" },
 };
 

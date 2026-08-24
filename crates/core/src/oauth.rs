@@ -162,7 +162,7 @@ impl OAuthConfig {
     fn token_endpoint(&self) -> String {
         // Test seam mirroring `GATE_CONNECT_TEST_*` elsewhere: point the token
         // exchange at a loopback mock. Unset in real builds.
-        if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_TOKEN_ENDPOINT") {
+        if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_TOKEN_ENDPOINT") {
             return o.to_string_lossy().into_owned();
         }
         format!("https://{}/oauth2/token", self.hosted_domain)

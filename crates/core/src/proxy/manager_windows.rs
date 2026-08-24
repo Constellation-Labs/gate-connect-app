@@ -81,14 +81,19 @@ fn spawn_domain_watcher() {
             // Never hold the lock across the sleep above: enable/disable take
             // it for whole sequences, and this thread must not be what makes
             // a user-facing toggle wait.
-            let engine_gone = mgr
-                .engine
-                .lock()
-                .expect("proxy engine mutex poisoned")
-                .is_none();
-            if engine_gone {
-                WATCHER_ALIVE.store(false, Ordering::SeqCst);
-                return;
+            {
+                let guard = mgr.engine.lock().expect("proxy engine mutex poisoned");
+                if guard.is_none() {
+                    // Retire *under the same lock acquisition* that observed
+                    // the engine gone. `enable` installs the new engine and
+                    // calls `spawn_domain_watcher` while holding this lock, so
+                    // storing the flag here cannot interleave with a fresh
+                    // enable's `swap(true)` - a load-then-store outside the
+                    // lock could, leaving a running engine with no watcher
+                    // when a disable/enable flip landed inside one tick.
+                    WATCHER_ALIVE.store(false, Ordering::SeqCst);
+                    return;
+                }
             }
             let current = config::domains_file_mtime();
             if current == seen {
@@ -380,11 +385,18 @@ impl ProxyManager {
     /// [`disable_quiet`](Self::disable_quiet): revert the system proxy and stop
     /// the engine, without computing status.
     fn disable_inner(&self) -> Result<()> {
-        let running = self
-            .engine
-            .lock()
-            .expect("proxy engine mutex poisoned")
-            .take();
+        // Hold the lock for the whole teardown, mirroring `enable`. Taking the
+        // handle and releasing early left two windows for a concurrent enable:
+        // before `stop()` it was falsely refused as "hosted by another
+        // process" (the old engine still accepted and the snapshot still
+        // existed), and between `stop()` and `clear_snapshot()` it proceeded
+        // and then had its fresh snapshot deleted - routing on with no
+        // snapshot, so cross-process status read "stopped" and the exit-time
+        // disable fell to force_off. A crash callback that fires meanwhile
+        // gives up its try_lock and defers to us - correct, since this IS the
+        // revert it wanted to run.
+        let mut guard = self.engine.lock().expect("proxy engine mutex poisoned");
+        let running = guard.take();
 
         // Revert the exported variables first, and unconditionally: the PAC
         // restore below can fail with `?`, and of the two channels this is the
@@ -523,11 +535,12 @@ impl ProxyManager {
     pub(crate) fn handle_engine_crash(&self) {
         eprintln!("gate proxy engine exited unexpectedly; reverting system proxy");
         // Briefly retry the lock: short holders (status) clear in ms. If
-        // enable still holds it after that, defer - enable re-checks the
-        // engine before returning and runs this same revert itself, whereas
-        // restoring + clearing the snapshot from here mid-enable would erase
-        // the state enable relies on. (A deliberate stop sets `stopping`
-        // before signaling, so this isn't reached on that path.)
+        // enable or disable still holds it after that, defer - enable
+        // re-checks the engine before returning and runs this same revert
+        // itself, disable IS this revert, and restoring + clearing the
+        // snapshot from here mid-sequence would erase the state they rely
+        // on. (A deliberate stop sets `stopping` before signaling, so this
+        // isn't reached on that path.)
         let mut guard = None;
         for _ in 0..20 {
             match self.engine.try_lock() {
@@ -549,39 +562,56 @@ impl ProxyManager {
             _ => system_proxy::force_off(),
         };
         let _ = system_proxy::clear_snapshot();
+        drop(guard);
+        // Traffic is safe again; now let the shell repaint. After the lock
+        // drops, so the observer's own status read can't deadlock here.
+        crate::proxy::notify_engine_crash_observer();
     }
 
-    /// Called once at app startup. A leftover snapshot means a previous session
-    /// left the system proxy pointed at an engine that no longer exists (unclean
-    /// quit / crash) - restore it. Promptless, so it always succeeds; a clean
-    /// disable clears the snapshot, making this a no-op.
+    /// Called once at app startup to undo a system proxy left pointing at an
+    /// engine that no longer exists (unclean quit / crash / OS shutdown).
+    ///
+    /// Two layers, mirroring macOS: (1) a leftover snapshot restores the exact
+    /// pre-Gate state; (2) a belt-and-suspenders sweep clears any slot still
+    /// pointed at a dead loopback listener even when no (or a partial)
+    /// snapshot survives - in that case the PAC fetch fails and WinINET
+    /// silently falls back to DIRECT, bypassing Gate while it shows "off",
+    /// with the stale `AutoConfigURL` persisting indefinitely. Both are
+    /// promptless, so this always succeeds; a clean disable makes it a near
+    /// no-op.
     pub fn reconcile_on_startup(&self) -> Result<()> {
-        // Before anything else, and above the early return below: unlike the
-        // WinINET snapshot, the exported variables live in the persistent
-        // per-user environment and survive a reboot, so a crashed session
-        // leaves them aimed at a port nothing listens on. Clearing them is
-        // unconditional - the system-proxy snapshot says nothing about whether
-        // they are set. If routing is meant to be on, `enable` runs straight
-        // after this and re-exports them at the new engine port.
+        // Before anything else: unlike the WinINET snapshot, the exported
+        // variables live in the persistent per-user environment and survive a
+        // reboot, so a crashed session leaves them aimed at a port nothing
+        // listens on. Clearing them is unconditional - the system-proxy
+        // snapshot says nothing about whether they are set. If routing is
+        // meant to be on, `enable` runs straight after this and re-exports
+        // them at the new engine port.
         if let Err(e) = system_proxy::disable_env() {
             eprintln!("gate proxy: {e}");
         }
         // As in disable: an unreadable snapshot still means an unclean prior
         // session, so force the proxy off rather than bailing and leaving
         // HTTPS routed at a port nothing listens on.
-        let snapshot = match system_proxy::load_snapshot() {
-            Ok(None) => return Ok(()),
-            Ok(Some(s)) => Some(s),
+        match system_proxy::load_snapshot() {
+            Ok(Some(snapshot)) => {
+                system_proxy::restore(&snapshot)?;
+                system_proxy::clear_snapshot()?;
+            }
+            Ok(None) => {}
             Err(e) => {
                 eprintln!("gate proxy: unreadable system-proxy snapshot ({e}); forcing proxy off");
-                None
+                system_proxy::force_off()?;
+                system_proxy::clear_snapshot()?;
             }
-        };
-        match snapshot {
-            Some(snapshot) => system_proxy::restore(&snapshot)?,
-            None => system_proxy::force_off()?,
         }
-        system_proxy::clear_snapshot()?;
+        let cleared = system_proxy::clear_stranded_loopback()?;
+        if !cleared.is_empty() {
+            eprintln!(
+                "[gate-proxy] startup: cleared stranded loopback proxy in {}",
+                cleared.join(", ")
+            );
+        }
         Ok(())
     }
 }

@@ -75,11 +75,17 @@ fn sign_in() {
 /// Persist a stable relay port so [`proxy::relay_base_url`] resolves. CLI tool
 /// configs point at the loopback relay, so connecting/reconciling a tool needs
 /// a bound relay port; in these tests no engine runs, so we seed the persisted
-/// port file directly (the same file the manager writes after `enable`).
-fn set_relay_port(port: u16) {
+/// port file directly (the same file the manager writes after `enable`) and
+/// bind a real listener on it (kept alive by the caller): Claude Code's status
+/// check probes relay liveness, so a dead seeded port would read as the honest
+/// "proxy is not running" drift instead of Connected.
+fn set_relay_port() -> std::net::TcpListener {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("relay-port"), port.to_string()).unwrap();
+    listener
 }
 
 /// Make Claude Code look installed-but-unconfigured: its config dir exists
@@ -98,7 +104,7 @@ fn tool_installed_after_enable_is_configured() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _relay = set_relay_port();
     install_claude_unconfigured();
     // Precondition: Anthropic is on by default, and Claude is present but not
     // yet routed through Gate.
@@ -142,7 +148,7 @@ fn already_connected_tool_is_left_untouched() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _relay = set_relay_port();
     install_claude_unconfigured();
 
     // First sweep connects it.
@@ -169,7 +175,7 @@ fn enable_while_proxy_off_persists_intent_for_reconcile() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _relay = set_relay_port();
     install_claude_unconfigured();
 
     // Off then on with the proxy stopped. `disable` persists the off-intent;
@@ -221,7 +227,7 @@ fn stale_managed_config_is_reapplied() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _relay = set_relay_port();
     install_claude_with_stale_managed_config();
     // Precondition: the old scheme reads as drift, not as connected.
     assert!(matches!(claude_status(), Status::Drifted(_)));
@@ -231,7 +237,8 @@ fn stale_managed_config_is_reapplied() {
     // The sweep reasserted the managed keys: relay base URL, no baked key.
     assert_eq!(claude_status(), Status::Connected);
     let raw = fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap();
-    assert!(raw.contains("http://127.0.0.1:9977"));
+    let relay_port = _relay.local_addr().unwrap().port();
+    assert!(raw.contains(&format!("http://127.0.0.1:{relay_port}")));
     assert!(!raw.contains("X-Gate-Api-Key"));
 }
 
