@@ -565,6 +565,18 @@ pub struct ProxyDomain {
     /// Path prefixes that are inference calls and should be rewritten to
     /// the gateway (e.g. `/v1/`).
     pub rewrite_prefixes: Vec<String>,
+    /// Extra constraint: when non-empty, a path matched by `rewrite_prefixes`
+    /// must ALSO end with one of these to be rewritten. Anything else abstains.
+    ///
+    /// The catalog never sets this and config cannot supply it (`serde(default)`,
+    /// so an older persisted file still loads). It exists for one job:
+    /// [`rules_for_client`] uses it to hand a BROWSER just the chat turn on an
+    /// entry whose turn cannot be isolated by prefix - claude.ai's completion
+    /// path carries the conversation id BEFORE the distinguishing final segment,
+    /// so `/organizations/` is the only prefix available and it covers 27
+    /// endpoints.
+    #[serde(default)]
+    pub rewrite_suffixes: Vec<String>,
     /// Path prefixes on an intercepted host that must NOT be rewritten -
     /// they pass through to the real upstream (e.g. an app's
     /// `/api/desktop/` auto-updater channel).
@@ -685,6 +697,207 @@ pub(crate) fn strip_upstream_path<'a>(path: &'a str, upstream_path: &str) -> Opt
     }
 }
 
+/// Which front-end sent an intercepted request.
+///
+/// The app and the browser share `chatgpt.com` and even share endpoints - both
+/// POST `/backend-api/f/conversation` - so the host+path pair that drives
+/// [`decide`] cannot tell them apart. This can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientClass {
+    /// A first-party desktop app: the ChatGPT app shell, Codex, or Codex's MCP
+    /// client.
+    App,
+    /// A browser tab on the vendor's website.
+    Web,
+    /// Neither signature matched. Every third-party client that honours the
+    /// system proxy lands here - OpenClaw, Hermes, an in-house script - and all
+    /// of them are routed. Only [`Web`](Self::Web) is held back.
+    Unknown,
+}
+
+/// `anthropic-client-platform` values that name the client for us. The web value
+/// is the one routing keys on; the desktop value is here so the debug log can
+/// tell them apart, and Gate matches the same string for its `claude-desktop`
+/// platform.
+const ANTHROPIC_WEB_PLATFORM: &str = "web_claude_ai";
+const ANTHROPIC_DESKTOP_PLATFORM: &str = "desktop_app";
+
+/// One entry's browser scope. See [`BROWSER_ROUTED`].
+pub(crate) struct BrowserScope {
+    slug: &'static str,
+    /// Retained from the entry's own `rewrite_prefixes`, by exact match.
+    prefixes: &'static [&'static str],
+    /// Additionally required, when non-empty. See `ProxyDomain::rewrite_suffixes`.
+    suffixes: &'static [&'static str],
+}
+
+/// What a BROWSER may route on entries whose host it shares with a first-party
+/// app. Everything else on those entries is withheld from it; every other entry,
+/// and every other client class, is untouched.
+///
+/// The rows are named after apps but matched on HOST, so flipping one also
+/// intercepts the same site in a browser. Capturing the browser's CONVERSATION is
+/// wanted - that is a chat turn like any other, and the whole point of the row.
+/// Proxying the rest of the site's plumbing through Gate is not: it carries the
+/// browsing session's own cookie and a run of model-less requests that no part of
+/// the pipeline was built for. So the browser is narrowed to the turn.
+///
+/// Only what is POSITIVELY identified as the website is narrowed, so OpenClaw,
+/// Hermes and anything else proxy-honouring keeps the entry in full. That sets the
+/// failure direction: if a vendor stops sending the markers [`classify_client`]
+/// reads, its browser traffic classifies as `Unknown` and routes the whole entry
+/// again. The alternative - narrow everything that is not a positively-identified
+/// app - fails the other way and would silently drop every third-party client,
+/// which is the larger loss.
+///
+/// A code-level policy rather than a `ProxyDomain` field on purpose: a
+/// serialized field would imply a per-domain switch the UI does not have. When
+/// it grows one, this becomes that field and the constant goes away.
+const BROWSER_ROUTED: &[BrowserScope] = &[
+    // The chat turn, and nothing else. The browser also hits
+    // `/backend-api/wham/*` on this entry, which is task and settings plumbing
+    // rather than a conversation, so a prefix alone is enough here.
+    BrowserScope {
+        slug: "chatgpt-apps",
+        prefixes: &["/backend-api/f/conversation"],
+        suffixes: &[],
+    },
+    // claude.ai needs the suffix. Its only prefix is `/organizations/`, and the
+    // completion path carries the conversation id BEFORE the distinguishing final
+    // segment, so no prefix can separate the chat turn from the other 26
+    // endpoints under that tree - memory, projects, skills, plugins, MCP servers,
+    // member invites, subscription status. Requiring `/completion` isolates
+    // exactly the turn.
+    //
+    // `.../chat_conversations/{id}/title` is excluded by the same rule, which is
+    // right: that is the vendor's own title generator, not a user turn.
+    BrowserScope {
+        slug: "claude-web",
+        prefixes: &["/organizations/"],
+        suffixes: &["/completion"],
+    },
+];
+
+/// Classify a request from its headers.
+///
+/// `originator` is the primary signal: it is the vendor's own "which front-end
+/// is this" field, it was present on EVERY app request to a routed path in the
+/// captures, and on none of the web ones. The user-agent prefix is the fallback,
+/// because a build that drops `originator` but still says `ChatGPTBrowser`
+/// should keep routing.
+///
+/// The web markers are what routing actually keys on, so they are matched
+/// POSITIVELY: `Web` means "this is the website", never "no app signal found".
+/// Anything unrecognised is [`ClientClass::Unknown`] and gets routed.
+///
+/// The app check runs FIRST and is load-bearing even though `App` and `Unknown`
+/// route alike today. If a future app build starts sending one of the web
+/// markers, that check is what stops it being mistaken for the browser and
+/// losing its route.
+///
+/// A bare browser-shaped user-agent is deliberately NOT a web signal. Plenty of
+/// agents copy a Chrome user-agent verbatim, so treating it as one would exclude
+/// exactly the third-party clients this is meant to keep.
+///
+/// Both signals are trivially spoofable, which is fine: this decides whose
+/// traffic Gate is allowed to *see*, not what it is allowed to do. Forging it
+/// only affects the forger's own requests.
+pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientClass {
+    // ── Anthropic states the client outright ────────────────────────────────
+    // One header, two values, on the very endpoint the app and the browser
+    // share. Gate already matches `desktop_app` for its `claude-desktop`
+    // platform (gateway: utils/platform-registry.ts); `web_claude_ai` is the
+    // value nothing had been told about, captured 2026-08-17 from claude.ai in
+    // Chrome. Checked before the OpenAI signals only because it is decisive:
+    // no inference, no prefix matching, the vendor simply says which it is.
+    if let Some(platform) = header("anthropic-client-platform").map(str::trim) {
+        if platform.eq_ignore_ascii_case(ANTHROPIC_WEB_PLATFORM) {
+            return ClientClass::Web;
+        }
+        if platform.eq_ignore_ascii_case(ANTHROPIC_DESKTOP_PLATFORM) {
+            return ClientClass::App;
+        }
+        // Any OTHER value falls through deliberately rather than being read as
+        // App. Claude Code and future first-party clients may spell themselves
+        // differently, and `Unknown` routes anyway - guessing App here would buy
+        // nothing and could mislabel a client we have never seen.
+    }
+    // The app sends this too, and the browser never does. Kept as a second
+    // app signal so a build that drops the platform header still classifies.
+    if header("anthropic-client-app").is_some_and(|v| !v.trim().is_empty()) {
+        return ClientClass::App;
+    }
+
+    if header("originator").is_some_and(|v| !v.trim().is_empty()) {
+        return ClientClass::App;
+    }
+    let ua = header("user-agent").unwrap_or_default();
+    // `ChatGPTBrowser` prefixes the app shell's otherwise browser-shaped UA;
+    // the other two are Codex's native agent and its MCP client.
+    if ua.starts_with("ChatGPTBrowser")
+        || ua.starts_with("Codex Desktop/")
+        || ua.starts_with("codex-mcp-client/")
+    {
+        return ClientClass::App;
+    }
+    // Emitted by the website and never by the app in any capture.
+    if [
+        "oai-device-id",
+        "oai-client-version",
+        "x-openai-target-route",
+    ]
+    .iter()
+    .any(|h| header(h).is_some())
+    {
+        return ClientClass::Web;
+    }
+    ClientClass::Unknown
+}
+
+/// Narrow what each entry CLAIMS for this client, before [`decide`] reads them.
+///
+/// A browser-excluding entry facing a [`ClientClass::Web`] request keeps its
+/// hosts and loses its rewrite prefixes. It therefore still matches the host,
+/// claims no path, and falls through to `decide`'s existing unclaimed-path
+/// `Passthrough` - no new branch inside the routing decision, which stays a pure
+/// function of the entries it is handed. Every other client class passes through
+/// untouched.
+///
+/// Removing the entry outright is the obvious implementation and is wrong.
+/// `decide` reports `Tunnel` when NO enabled entry names the host, meaning "not
+/// a host we intercept" - and by the time this runs the CONNECT has already been
+/// intercepted and the bytes decrypted, because `should_intercept_host` matches
+/// on host alone and cannot see these headers. Reporting `Tunnel` there would
+/// state something untrue about a connection we are already inside. Declining to
+/// rewrite is what actually happened, and `Passthrough` is the word for it.
+pub fn rules_for_client(domains: &[ProxyDomain], client: ClientClass) -> Vec<ProxyDomain> {
+    domains
+        .iter()
+        .map(|d| {
+            if client != ClientClass::Web {
+                return d.clone();
+            }
+            let Some(scope) = BROWSER_ROUTED.iter().find(|s| s.slug == d.slug.as_str()) else {
+                return d.clone();
+            };
+            // Prefixes are retained by exact match against the entry's OWN list,
+            // so a scope that drifts out of the catalog narrows to nothing rather
+            // than silently widening what a browser may route. Suffixes are
+            // additive and need no such check - they only ever remove paths.
+            ProxyDomain {
+                rewrite_prefixes: d
+                    .rewrite_prefixes
+                    .iter()
+                    .filter(|p| scope.prefixes.contains(&p.as_str()))
+                    .cloned()
+                    .collect(),
+                rewrite_suffixes: scope.suffixes.iter().map(|s| (*s).to_string()).collect(),
+                ..d.clone()
+            }
+        })
+        .collect()
+}
+
 /// Decide what to do with a request given its host + path. Passthrough
 /// prefixes win over rewrite prefixes; an intercepted host whose path no entry
 /// claims is left alone (passthrough) rather than rewritten.
@@ -704,6 +917,46 @@ pub(crate) fn strip_upstream_path<'a>(path: &'a str, upstream_path: &str) -> Opt
 /// combination has to behave. A host-matching entry that claims neither the path
 /// nor its subtree simply abstains; only if nobody claims it does the request
 /// fall through to `Passthrough`.
+/// The Responses endpoint's final segment. Matched as a SUFFIX so this does not
+/// hard-code one of the two URL splits that reach the endpoint (the app's real
+/// `/backend-api/codex/responses` and Codex's relayed `/codex/responses`);
+/// which of them is actually routed is `decide`'s business, not this
+/// constant's.
+const RESPONSES_PATH_SUFFIX: &str = "/responses";
+
+/// True when an upgrade on this host+path should be DECLINED rather than passed
+/// through, so the client falls back to HTTP and the turn becomes visible.
+///
+/// ChatGPT desktop work mode sends its entire turn as WebSocket frame 0 on the
+/// Responses endpoint, so passing the upgrade through means Gate sees none of
+/// it. The app carries an HTTP fallback for exactly this situation - its bundled
+/// Codex binary logs "falling back to HTTP" and diagnoses
+/// `network.websocket_reachability` with "Check proxy, VPN, firewall, DNS,
+/// custom CA, and WebSocket policy support" - so declining uses a path the
+/// vendor built for proxies rather than a trick. See
+/// `docs/responses-websocket-downgrade.md`.
+///
+/// Two conditions, both required:
+///
+/// - [`decide`] would REWRITE this path. That is the point: declining only helps
+///   where the fallback request would then be routed to Gate, and it also means
+///   a disabled row - or a client narrowed away from the path by
+///   [`rules_for_client`] - is never touched. Reusing `decide` rather than
+///   re-deriving the match keeps the two from drifting apart.
+/// - the path is a Responses endpoint. The fallback evidence is specific to that
+///   endpoint, so an upgrade on any other routed path is passed through as
+///   before rather than broken on the assumption it recovers the same way.
+///
+/// Deliberately NOT keyed on `openai-beta: responses_websockets=<date>`. The
+/// same binary also carries `responses_websockets_v2`, so the negotiation string
+/// is still moving, and a matcher pinned to it would silently stop firing on a
+/// version bump - a failure that reads as "work mode went dark again" rather
+/// than as a stale constant.
+pub(crate) fn should_decline_upgrade(domains: &[ProxyDomain], host: &str, path: &str) -> bool {
+    path.ends_with(RESPONSES_PATH_SUFFIX)
+        && matches!(decide(domains, host, path), Decision::Rewrite { .. })
+}
+
 pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decision {
     let mut host_matched = false;
     for d in domains.iter().filter(|d| d.enabled) {
@@ -723,10 +976,18 @@ pub(crate) fn decide(domains: &[ProxyDomain], host: &str, path: &str) -> Decisio
         {
             return Decision::Passthrough;
         }
-        if d.rewrite_prefixes
+        let prefix_hit = d
+            .rewrite_prefixes
             .iter()
-            .any(|p| path.starts_with(p.as_str()))
-        {
+            .any(|p| path.starts_with(p.as_str()));
+        // An empty suffix list means "no extra constraint"; a non-empty one must
+        // also match, and a miss ABSTAINS rather than deciding, so a later entry
+        // still gets its look and an unclaimed path falls through to Passthrough.
+        let suffix_ok = d.rewrite_suffixes.is_empty()
+            || d.rewrite_suffixes
+                .iter()
+                .any(|sfx| path.ends_with(sfx.as_str()));
+        if prefix_hit && suffix_ok {
             return Decision::Rewrite {
                 upstream_url: d.upstream_url.clone(),
             };
@@ -1112,6 +1373,242 @@ mod tests {
         );
     }
 
+    /// Header lookup over a fixed list, in the shape `classify_client` wants.
+    fn hdrs<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<&'a str> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, v)| *v)
+        }
+    }
+
+    const WEB_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                          (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+
+    #[test]
+    fn anthropic_names_the_client_in_one_header_with_two_values() {
+        // Unlike OpenAI's presence/absence split, Anthropic sends ONE header and
+        // spells out which client it is. Captured from claude.ai in Chrome
+        // 2026-08-17; the desktop value is the one Gate already matches for its
+        // `claude-desktop` platform.
+        assert_eq!(
+            classify_client(hdrs(&[
+                ("anthropic-client-platform", "web_claude_ai"),
+                ("user-agent", WEB_UA)
+            ])),
+            ClientClass::Web
+        );
+        assert_eq!(
+            classify_client(hdrs(&[("anthropic-client-platform", "desktop_app")])),
+            ClientClass::App
+        );
+        // Case-insensitive, like every other header value read here.
+        assert_eq!(
+            classify_client(hdrs(&[("Anthropic-Client-Platform", "WEB_CLAUDE_AI")])),
+            ClientClass::Web
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_anthropic_platform_is_not_assumed_to_be_the_app() {
+        // Claude Code and future first-party clients may spell themselves
+        // differently. Unknown routes anyway, so guessing App buys nothing and
+        // could mislabel a client nobody has seen.
+        assert_eq!(
+            classify_client(hdrs(&[("anthropic-client-platform", "cli")])),
+            ClientClass::Unknown
+        );
+        // The app's other header still classifies on its own, so a build that
+        // drops the platform header keeps its route.
+        assert_eq!(
+            classify_client(hdrs(&[(
+                "anthropic-client-app",
+                "com.anthropic.claudefordesktop"
+            )])),
+            ClientClass::App
+        );
+    }
+
+    #[test]
+    fn the_browser_gets_only_claude_ais_completion_call() {
+        // `claude-web`'s only prefix is `/organizations/`, and a claude.ai capture
+        // found 27 distinct endpoints under it of which exactly ONE is the chat
+        // turn. The conversation id sits BEFORE the distinguishing final segment,
+        // so no prefix can separate them - hence the suffix requirement.
+        //
+        // The browser gets its conversation captured, which is the point of the
+        // row. It does not get memory, projects, skills, plugins, MCP servers or
+        // the vendor's own title generator.
+        let d = claude_web();
+        let org = "/api/organizations/b44129f9-a8ea-4f96-a137-b14a560e58d3";
+        let browser = rules_for_client(&d, ClientClass::Web);
+
+        assert_eq!(
+            decide(&browser, "claude.ai", CLAUDE_COMPLETION),
+            Decision::Rewrite {
+                upstream_url: "https://claude.ai/api".into()
+            },
+            "the browser's chat turn IS captured"
+        );
+
+        for path in [
+            format!("{org}/memory"),
+            format!("{org}/skills/list-skills"),
+            format!("{org}/mcp/remote_servers"),
+            format!("{org}/projects"),
+            // The vendor's title generator, excluded by the same rule.
+            format!("{org}/chat_conversations/2f261f16-2b31-41f8-b441-6067464c6504/title"),
+        ] {
+            assert_eq!(
+                decide(&browser, "claude.ai", &path),
+                Decision::Passthrough,
+                "browser must not send {path} to Gate"
+            );
+        }
+
+        // The desktop app keeps the whole tree: it is a first-party client on a
+        // host the user deliberately routed.
+        let app = rules_for_client(&d, ClientClass::App);
+        for path in [CLAUDE_COMPLETION, &format!("{org}/memory")] {
+            assert_eq!(
+                decide(&app, "claude.ai", path),
+                Decision::Rewrite {
+                    upstream_url: "https://claude.ai/api".into()
+                },
+                "the app keeps {path}"
+            );
+        }
+    }
+    #[test]
+    fn the_originator_header_identifies_the_app() {
+        // Present on every app request to a routed path in the captures, and on
+        // none of the web ones.
+        assert_eq!(
+            classify_client(hdrs(&[
+                ("originator", "Codex Desktop"),
+                ("user-agent", WEB_UA)
+            ])),
+            ClientClass::App,
+            "originator outranks a browser-shaped user-agent"
+        );
+        assert_eq!(
+            classify_client(hdrs(&[("originator", "   ")])),
+            ClientClass::Unknown,
+            "a blank originator is not a claim"
+        );
+    }
+
+    #[test]
+    fn the_user_agent_prefix_is_the_fallback_signal() {
+        // A build that drops `originator` but still names itself should keep
+        // routing, so each app UA family is matched on its own.
+        for ua in [
+            "ChatGPTBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/151.0.0.0",
+            "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)",
+            "codex-mcp-client/0.148.0-alpha.9",
+        ] {
+            assert_eq!(
+                classify_client(hdrs(&[("user-agent", ua)])),
+                ClientClass::App,
+                "{ua}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_website_is_identified_positively_not_by_absence() {
+        // "Definitely the browser" is its own finding; otherwise every unknown
+        // client would read as web and silently lose routing it should keep.
+        assert_eq!(
+            classify_client(hdrs(&[("user-agent", WEB_UA), ("oai-device-id", "abc")])),
+            ClientClass::Web
+        );
+        assert_eq!(
+            classify_client(hdrs(&[("user-agent", WEB_UA)])),
+            ClientClass::Unknown,
+            "a bare browser UA on its own is not enough to call it the website"
+        );
+        assert_eq!(classify_client(hdrs(&[])), ClientClass::Unknown);
+    }
+
+    #[test]
+    fn the_browser_routes_its_chat_turn_but_not_the_app_plumbing() {
+        // The app and the website POST the same endpoint on the same host, and
+        // BOTH are routed: capturing the browser's conversation is the point of
+        // the row. What the browser does not get is the rest of the entry -
+        // `/wham/*` is task and settings plumbing, not a conversation, and the
+        // browser hits it too.
+        const TURN: &str = "/backend-api/f/conversation";
+        const PLUMBING: &str = "/backend-api/wham/usage";
+        let all: Vec<ProxyDomain> = default_domains()
+            .into_iter()
+            .map(|mut d| {
+                d.enabled = d.slug == "chatgpt-apps";
+                d
+            })
+            .collect();
+
+        for class in [ClientClass::App, ClientClass::Web, ClientClass::Unknown] {
+            assert_eq!(
+                decide(&rules_for_client(&all, class), "chatgpt.com", TURN),
+                Decision::Rewrite {
+                    upstream_url: "https://chatgpt.com".into()
+                },
+                "{class:?} must have its chat turn captured"
+            );
+        }
+
+        assert_eq!(
+            decide(
+                &rules_for_client(&all, ClientClass::Web),
+                "chatgpt.com",
+                PLUMBING
+            ),
+            Decision::Passthrough,
+            "the browser's task plumbing is not ours"
+        );
+        assert_eq!(
+            decide(
+                &rules_for_client(&all, ClientClass::App),
+                "chatgpt.com",
+                PLUMBING
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com".into()
+            },
+            "the app keeps it"
+        );
+    }
+
+    #[test]
+    fn an_unidentified_client_still_routes_every_entry() {
+        // OpenClaw reaches the `chatgpt` entry through the MITM engine and sends
+        // neither an originator nor an app user-agent, so it classifies as
+        // Unknown. It must keep its route on every entry, browser-excluding or
+        // not, or this change silently breaks subscription-mode OpenClaw.
+        let mut relay: Vec<ProxyDomain> = default_domains()
+            .into_iter()
+            .filter(|d| d.slug == "chatgpt")
+            .collect();
+        relay[0].enabled = true;
+        assert_eq!(
+            decide(
+                &rules_for_client(&relay, ClientClass::Unknown),
+                "chatgpt.com",
+                "/backend-api/codex/responses"
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com/backend-api".into()
+            }
+        );
+        // And an entry that is not browser-excluding keeps every prefix even for
+        // the website, so this cannot quietly become a global browser ban.
+        let anth = rules_for_client(&anthropic(), ClientClass::Web);
+        assert_eq!(anth.len(), anthropic().len());
+        assert_eq!(anth[0].rewrite_prefixes, anthropic()[0].rewrite_prefixes);
+    }
+
     #[test]
     fn rewrites_inference_path() {
         let d = anthropic();
@@ -1495,6 +1992,102 @@ mod tests {
             decide(&relay_only, "chatgpt.com", "/backend-api/ps/mcp"),
             Decision::Passthrough
         );
+    }
+
+    fn chatgpt_relay_entry() -> Vec<ProxyDomain> {
+        let mut d: ProxyDomain = default_domains()
+            .into_iter()
+            .find(|d| d.slug == "chatgpt")
+            .expect("chatgpt is in the catalog");
+        d.enabled = true;
+        vec![d]
+    }
+
+    #[test]
+    fn declines_the_upgrade_on_the_responses_path_it_would_route() {
+        // The whole point: work mode sends its turn as WS frame 0 here, so
+        // passing the upgrade through means Gate sees none of it.
+        let d = chatgpt_relay_entry();
+        assert!(should_decline_upgrade(
+            &d,
+            "chatgpt.com",
+            "/backend-api/codex/responses"
+        ));
+    }
+
+    #[test]
+    fn leaves_the_relay_url_split_alone() {
+        // Codex's short `/codex/responses` is NOT routed by `decide`: this
+        // entry's upstream carries `/backend-api`, so `strip_upstream_path`
+        // finds the path outside its subtree and abstains. That entry serves
+        // the relay, which matches it on `upstream_url` and never consults
+        // `decide` at all. So the MITM engine declines only the app's real wire
+        // path, which is the only one observed upgrading anyway.
+        let d = chatgpt_relay_entry();
+        assert!(!should_decline_upgrade(
+            &d,
+            "chatgpt.com",
+            "/codex/responses"
+        ));
+    }
+
+    #[test]
+    fn leaves_an_upgrade_alone_when_the_row_is_off() {
+        // Declining is only useful where the fallback would then be routed. A
+        // disabled row routes nothing, so breaking its upgrade buys nothing and
+        // costs the user a working feature.
+        let mut d = chatgpt_relay_entry();
+        d[0].enabled = false;
+        assert!(!should_decline_upgrade(
+            &d,
+            "chatgpt.com",
+            "/backend-api/codex/responses"
+        ));
+    }
+
+    #[test]
+    fn leaves_upgrades_on_other_routed_paths_alone() {
+        // The fallback evidence is specific to Responses. Any other path that
+        // happens to upgrade is passed through as before rather than broken on
+        // the assumption it recovers the same way.
+        let d = chatgpt_apps();
+        for path in [
+            "/backend-api/f/conversation",
+            "/backend-api/wham/tasks/list",
+            "/backend-api/ps/mcp",
+        ] {
+            assert!(!should_decline_upgrade(&d, "chatgpt.com", path), "{path}");
+        }
+    }
+
+    #[test]
+    fn leaves_a_responses_lookalike_on_an_unrouted_host_alone() {
+        // The suffix alone must not decide: `decide` has to agree the path is
+        // one Gate would route, or an unrelated host exposing `/responses` would
+        // have its upgrades broken for nothing.
+        let d = chatgpt_relay_entry();
+        assert!(!should_decline_upgrade(
+            &d,
+            "example.com",
+            "/backend-api/codex/responses"
+        ));
+    }
+
+    #[test]
+    fn declining_stops_wherever_routing_stops() {
+        // Declining rides entirely on `decide`, so anything that stops the path
+        // being routed also stops it being declined - narrowing a client's
+        // prefixes included. Pinned directly rather than through
+        // `rules_for_client`, which today narrows only the `BROWSER_ROUTED`
+        // slugs and leaves this entry untouched (the website never requests this
+        // path). If that ever changes, this coupling still has to hold.
+        let mut narrowed = chatgpt_relay_entry();
+        narrowed[0].rewrite_prefixes.clear();
+        assert!(!should_decline_upgrade(
+            &narrowed,
+            "chatgpt.com",
+            "/backend-api/codex/responses"
+        ));
     }
 
     #[test]

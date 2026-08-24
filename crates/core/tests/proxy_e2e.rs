@@ -790,7 +790,7 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
 /// proxy once at their own launch): an engine restarted with the
 /// previously-bound port as `preferred_port` must come back on the same
 /// address and still rewrite to the gateway, and a taken preferred port must
-/// fall back to an ephemeral one instead of failing the start.
+/// fall back to another port instead of failing the start.
 #[tokio::test]
 async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     let _serial = SERIAL.lock().await;
@@ -862,9 +862,11 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
 ///
 /// They cannot let the engine pick its own: a fresh pick comes from
 /// `engine::bind_fresh`'s 100-port band, and a band port freed between the stop
-/// and the restart is fair game for anything else scanning that band - notably
-/// `relay_e2e`, which also brings engines up while cargo runs the two binaries
-/// concurrently. Seeding from the ephemeral range instead keeps these tests out
+/// and the restart is fair game for anything else scanning that band - a live
+/// Gate Connect install on the same machine, or another engine-starting test
+/// binary under a runner that executes binaries in parallel (plain `cargo
+/// test` runs them one at a time, but nothing pins the project to that).
+/// Seeding from the ephemeral range instead keeps these tests out
 /// of that shared namespace while still exercising the real reclaim path
 /// (`bind_preferred`, including the `SO_REUSEADDR` rebind over the first run's
 /// TIME_WAIT remnants).

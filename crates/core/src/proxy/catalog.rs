@@ -47,6 +47,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // (claude_code, event_logging, bootstrap) also reach the real host
             // unrewritten.
             passthrough_prefixes: vec!["/api/desktop/".into()],
+            rewrite_suffixes: Vec::new(),
             enabled: true,
             supported: true,
         },
@@ -108,6 +109,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // it a ledger row without joining that cascade; it is not listed
             // there yet, so for now this entry stays CLI-only (`proxy domain
             // claude-web on`), pending the branch validating this surface.
+            rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
         },
@@ -137,6 +139,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
                 "/v1/embeddings".into(),
             ],
             passthrough_prefixes: vec![],
+            rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
         },
@@ -207,6 +210,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // cascade property: the chat half here
             // (`/backend-api/f/conversation`) carries a session cookie, so no
             // family switch may ever reach it.
+            rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
         },
@@ -248,6 +252,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             upstream_url: "https://chatgpt.com/backend-api".into(),
             rewrite_prefixes: vec!["/codex/responses".into()],
             passthrough_prefixes: vec![],
+            rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
         },
@@ -269,6 +274,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             upstream_url: "https://openrouter.ai/api".into(),
             rewrite_prefixes: vec!["/v1/".into()],
             passthrough_prefixes: vec![],
+            rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
         },
@@ -293,6 +299,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
                 "/zen/go/v1/messages".into(),
             ],
             passthrough_prefixes: vec![],
+            rewrite_suffixes: Vec::new(),
             enabled: false,
             supported: true,
         },

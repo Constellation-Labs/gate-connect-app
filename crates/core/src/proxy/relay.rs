@@ -52,8 +52,8 @@ use crate::proxy::{default_domains, ProxyDomain};
 /// Where the stable relay port is persisted. CLI tool configs bake
 /// `http://127.0.0.1:<port>`, so the port must survive restarts: the manager
 /// reuses it as the engine's `preferred_relay_port` and only falls back to a
-/// fresh ephemeral port if it's taken. Cross-platform (unlike the MITM port,
-/// which only Linux persists), since every platform's CLI configs need it.
+/// fresh band port if it's taken. All three platforms persist it, since every
+/// platform's CLI configs need it.
 pub(crate) fn port_path() -> Result<std::path::PathBuf> {
     Ok(crate::env::app_support_dir()?
         .join("proxy")
@@ -110,6 +110,7 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
         upstream_url: url,
         rewrite_prefixes: vec!["/v1/".into()],
         passthrough_prefixes: Vec::new(),
+        rewrite_suffixes: Vec::new(),
         enabled: true,
         supported: true,
     })
@@ -118,7 +119,7 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
 /// Bind the relay's loopback port, reusing `preferred` (the persisted port) when
 /// there is one.
 ///
-/// A taken preferred port is an error rather than a fall back to an ephemeral
+/// A taken preferred port is an error rather than a fall back to a fresh
 /// one. The fallback looks harmless and is not: the caller persists whatever
 /// port it ends up with, so a second host started while the first is live
 /// repoints the persisted port at itself, and the next `connect` bakes that
