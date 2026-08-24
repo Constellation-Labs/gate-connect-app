@@ -166,6 +166,34 @@ fn claude_code_connect_then_disconnect() {
     assert!(!after.contains(RELAY_URL), "relay URL left behind: {after}");
 }
 
+/// `--upstream-url` cannot retarget a tool whose routing depends on the
+/// destination staying canonical. It used to be resolved and then discarded,
+/// which accepted the flag and routed Anthropic anyway.
+#[test]
+fn claude_code_refuses_a_foreign_upstream() {
+    let h = Harness::new();
+    fs::create_dir_all(h.home().join(".claude")).unwrap();
+    h.login();
+    h.seed_engine_proxy();
+
+    // A URL Gate does route, so the refusal comes from this integration rather
+    // than from `resolve_endpoint` not knowing the host.
+    let err = h.run_err(&[
+        "connect",
+        "claude-code",
+        "--upstream-url",
+        "https://api.openai.com",
+    ]);
+    assert!(
+        err.contains("can only route to https://api.anthropic.com"),
+        "the refusal must name what Claude Code can route: {err}"
+    );
+    assert!(
+        !h.home().join(".claude").join("settings.json").exists(),
+        "a refused connect must write nothing"
+    );
+}
+
 #[test]
 fn codex_connect_then_disconnect() {
     let h = Harness::new();

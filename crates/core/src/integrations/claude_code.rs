@@ -2,8 +2,9 @@
 //!
 //! Configures Anthropic's `claude` CLI to route through Constellation Gate
 //! via the MITM engine's forward proxy. `~/.claude/settings.json` receives
-//! `HTTPS_PROXY=http://gate-claude-code:route@127.0.0.1:<port>`, which Claude Code injects into its
-//! own process at every invocation.
+//! `HTTPS_PROXY=http://gate-claude-code:route@127.0.0.1:<port>` plus a loopback
+//! `NO_PROXY`, which Claude Code injects into its own process at every
+//! invocation.
 //!
 //! Keeping `ANTHROPIC_BASE_URL` unset is essential. Claude Code treats a
 //! custom base URL as non-first-party for capability checks performed before
@@ -46,7 +47,23 @@ const DEFAULT_UPSTREAM_URL: &str = "https://api.anthropic.com";
 const KEY_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const KEY_CUSTOM_HEADERS: &str = "ANTHROPIC_CUSTOM_HEADERS";
 const KEY_HTTPS_PROXY: &str = "HTTPS_PROXY";
-const MANAGED_KEYS: [&str; 3] = [KEY_BASE_URL, KEY_CUSTOM_HEADERS, KEY_HTTPS_PROXY];
+const KEY_NO_PROXY: &str = "NO_PROXY";
+const MANAGED_KEYS: [&str; 4] = [
+    KEY_BASE_URL,
+    KEY_CUSTOM_HEADERS,
+    KEY_HTTPS_PROXY,
+    KEY_NO_PROXY,
+];
+
+/// Keep loopback off the proxy, the same pairing every other proxy-routed
+/// integration writes (`hermes`, `env_proxy`, `dotenv`). It matters more here
+/// than there: this variable is injected into `claude`'s own process and
+/// inherited by everything it spawns - the Bash tool, stdio MCP servers - so
+/// without the bypass a local `https://127.0.0.1` MCP server or dev service
+/// would be dialled through the engine, and an engine that is down would take
+/// every HTTPS request from `claude` and its children with it rather than just
+/// the Anthropic ones.
+const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
 
 const MARKER_KEY: &str = "_gateConnect";
 
@@ -175,8 +192,23 @@ impl Integration for ClaudeCode {
         if !input.upstream_url.starts_with("https://") {
             anyhow::bail!("upstream URL must be https://");
         }
-        crate::proxy::resolve_endpoint(&input.upstream_url)
+        // Unlike a config-editing integration, this one cannot be retargeted:
+        // what makes it work is that the destination stays canonical, and the
+        // route the engine forces for our selector is Anthropic's entry alone
+        // (`proxy::claude_code_route_domain`). So a different `--upstream-url`
+        // has nowhere to go, and accepting it would write a Claude Code that
+        // routes Anthropic traffic anyway - a silent no-op. Refuse instead.
+        let endpoint = crate::proxy::resolve_endpoint(&input.upstream_url)
             .with_context(|| format!("Gate has no upstream domain for {:?}", input.upstream_url))?;
+        let route = crate::proxy::claude_code_route_domain();
+        if endpoint.slug != route.slug {
+            anyhow::bail!(
+                "Claude Code can only route to {DEFAULT_UPSTREAM_URL}, not {:?} - it reaches Gate \
+                 through the local forward proxy, which keeps Anthropic's address canonical so \
+                 Claude Code keeps its first-party model capabilities",
+                input.upstream_url
+            );
+        }
 
         let mut settings = load_settings()?.unwrap_or_default();
         // Refuse to clobber a malformed non-object `env` before ensure_object
@@ -218,6 +250,7 @@ impl Integration for ClaudeCode {
         env_block.remove(KEY_BASE_URL);
         env_block.remove(KEY_CUSTOM_HEADERS);
         env_block.insert(KEY_HTTPS_PROXY.into(), Value::String(claude_proxy_url));
+        env_block.insert(KEY_NO_PROXY.into(), Value::String(NO_PROXY_VALUE.into()));
 
         let marker = ensure_object(&mut settings, MARKER_KEY);
         marker.insert("previousEnv".into(), Value::Object(prev));
@@ -356,6 +389,8 @@ mod tests {
     fn managed_keys_keep_the_anthropic_base_url_canonical() {
         assert!(MANAGED_KEYS.contains(&KEY_BASE_URL));
         assert!(MANAGED_KEYS.contains(&KEY_HTTPS_PROXY));
+        // The proxy variable never travels without its loopback bypass.
+        assert!(MANAGED_KEYS.contains(&KEY_NO_PROXY));
         assert!(!MANAGED_KEYS.contains(&"ANTHROPIC_BETAS"));
     }
 

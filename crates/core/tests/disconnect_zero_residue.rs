@@ -139,9 +139,13 @@ fn claude_code_disconnect_leaves_no_gate_residue() {
         &settings,
         r#"{
   "env": {
-      "HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:9977"
+    "HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:9977",
+    "NO_PROXY": "localhost,127.0.0.1,::1"
   },
-  "_gateConnect": { "previousEnv": {}, "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "HTTPS_PROXY"] }
+  "_gateConnect": {
+    "previousEnv": {},
+    "managed": ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "HTTPS_PROXY", "NO_PROXY"]
+  }
 }
 "#,
     )
@@ -159,6 +163,10 @@ fn claude_code_disconnect_leaves_no_gate_residue() {
     assert!(
         !after.contains("HTTPS_PROXY"),
         "Gate proxy must be reverted out of settings.json"
+    );
+    assert!(
+        !after.contains("NO_PROXY"),
+        "the loopback bypass Gate wrote alongside the proxy must go with it"
     );
     assert!(
         !after.contains("_gateConnect"),

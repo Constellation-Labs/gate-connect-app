@@ -94,7 +94,10 @@ because registry values outlive a reboot where launchd variables do not.
 Claude Code's proxy URL includes a fixed, non-secret route selector. That lets
 the engine keep intercepting its canonical Anthropic connection when the user
 independently switches off the Claude Desktop domain; without it, the same
-connected configuration would silently blind-tunnel around Gate.
+connected configuration would silently blind-tunnel around Gate. It is scoped
+to that one destination: a selected connection to any other host is decided by
+the catalog alone. What it does not do is make a bypass detectable from the
+config file - see O1 below.
 
 No tool config anywhere holds a credential. Codex is the one documented
 disconnect exception: a passthrough stub survives so threads started while
@@ -153,9 +156,19 @@ Node/Bun tools. Measured, not assumed.
 | O3 Zen provider IDs unverified               | open                                                                                                     |
 
 The structural problem O1 names - `status()` verifies our own write rather than
-the effective configuration - still applies to the relay integrations
-(Codex and OpenCode). It is the main reason a relay tool can show
-Connected while traffic goes elsewhere.
+the effective configuration - still applies to every integration, including
+Claude Code. It is the main reason a tool can show Connected while traffic goes
+elsewhere.
+
+Claude Code's route selector narrows what that costs rather than fixing it. The
+selector is what makes the engine route a connected session regardless of the
+Desktop switch, so the switch alone can no longer strand it - but `status()`
+still only reads `settings.json` and never learns whether the engine actually
+received the selector. A Claude Code release that stopped deriving
+`Proxy-Authorization` from the proxy URL's userinfo would blind-tunnel behind a
+green pill. The one witness is the engine: it emits a single line per run when a
+CONNECT to Claude Code's own destination arrives without the selector
+(`engine::GateHandler::warn_if_anthropic_is_unselected`).
 
 ## 5. What is verified, and how
 

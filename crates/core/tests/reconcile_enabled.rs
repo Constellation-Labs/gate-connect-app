@@ -125,6 +125,13 @@ fn tool_installed_after_enable_is_configured() {
         env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
         Some("http://gate-claude-code:route@127.0.0.1:9977")
     );
+    // The proxy variable is inherited by everything `claude` spawns, so the
+    // loopback bypass travels with it or a local MCP server goes through the
+    // engine.
+    assert_eq!(
+        env_block.get("NO_PROXY").and_then(|v| v.as_str()),
+        Some("localhost,127.0.0.1,::1")
+    );
     assert!(
         !env_block.contains_key("ANTHROPIC_BASE_URL"),
         "the canonical Anthropic base URL must remain implicit"
