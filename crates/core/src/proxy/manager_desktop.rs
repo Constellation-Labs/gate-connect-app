@@ -23,6 +23,11 @@ pub fn manager() -> &'static ProxyManager {
 pub struct OsOps;
 
 impl DesktopOps for OsOps {
+    /// macOS keeps the saved state as the per-service list `networksetup`
+    /// reads and writes; Windows has a single named registry snapshot.
+    #[cfg(target_os = "macos")]
+    type Snapshot = Vec<system_proxy::ServiceProxy>;
+    #[cfg(target_os = "windows")]
     type Snapshot = system_proxy::ProxySnapshot;
 
     /// macOS: refuse before the CA prompt when there is nothing to route -
