@@ -259,7 +259,27 @@ pub fn list() -> Vec<ProviderState> {
 /// running, enables the provider's proxy domains. Requires a signed-in
 /// account. Idempotent - re-running re-applies the same config.
 pub fn enable(slug: &str) -> Result<ProviderState> {
-    enable_inner(slug, &[], true)
+    enable_inner(slug, &[], true).map(|(_, state)| state)
+}
+
+/// What an enable actually did, as distinct from whether it went wrong.
+///
+/// The awkward case is the third one: nothing was configured, and nothing is
+/// broken. It used to be reported as `Ok` or as an error depending only on
+/// whether the skip list happened to be non-empty, which made "did nothing"
+/// indistinguishable from "done" for the restore path - and clearing the
+/// restore snapshot on that reading is what left domain-only providers off for
+/// a whole session. Saying which of the two happened is this enum's only job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Applied {
+    /// A route was configured: a tool's config, a proxy domain, or both.
+    Enabled,
+    /// No route to configure *yet*. With no detected tool and no running
+    /// engine there is nothing this call can do; a later call, once the engine
+    /// is up, can. Only the restore path sees this - a user who asked for a
+    /// provider by name gets an error, because for them nothing happening is a
+    /// result that needs explaining.
+    NotYet,
 }
 
 /// [`enable`] with members to leave alone: the restore path's flavour, so a
@@ -269,11 +289,11 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
 /// one `proxy_enabled`, and `provider_enabled` is reserved for the operator
 /// toggling that provider by hand (see the one-event-per-action rule in
 /// [`crate::audit`]).
-fn enable_skipping(slug: &str, skip: &[String]) -> Result<ProviderState> {
+fn enable_skipping(slug: &str, skip: &[String]) -> Result<(Applied, ProviderState)> {
     enable_inner(slug, skip, false)
 }
 
-fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderState> {
+fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, ProviderState)> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
     let account = account::load()?
         .context("no Gate account configured - sign in before enabling a provider")?;
@@ -288,7 +308,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderStat
         // nothing to do, and nothing to complain about. Only a user who asked
         // for this provider by name gets the explanation.
         if !skip.is_empty() {
-            return Ok(state(&p));
+            return Ok((Applied::NotYet, state(&p)));
         }
         anyhow::bail!(
             "nothing to configure for {}: install its app, or turn on \
@@ -353,7 +373,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderStat
         );
     }
 
-    Ok(state)
+    Ok((Applied::Enabled, state))
 }
 
 /// Turn a provider off. Reverts the config integration(s) and, if the proxy is
@@ -747,17 +767,22 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
 /// engine's "at least one provider" precondition) and once after (domain-only
 /// providers, which have nothing to configure until the proxy is running).
 ///
-/// **"Back" is read off the provider, not off the call's return.** The two
-/// passes exist because the first one *cannot* finish the job: a domain-only
-/// provider (OpenRouter, or Anthropic on a machine with no Claude app) has no
-/// tool to configure and no running engine to flip its domain in, so
-/// `enable_inner` takes its `plan.nothing` path and returns `Ok` having done
-/// nothing. Treating that `Ok` as a completed restore cleared the snapshot
-/// between the passes, so the post-enable pass - the one that could actually
-/// do the work - found nothing to restore and every domain-only provider
-/// silently stayed off for the rest of the session. It went unnoticed because
-/// the same path *bails* when the skip list is empty, which does keep the
-/// snapshot: only a cycle that recorded a switched-off family member lost it.
+/// **An entry leaves the snapshot only once it is actually routing again.**
+/// The two passes exist because the first one *cannot* finish the job: a
+/// domain-only provider (OpenRouter, or Anthropic on a machine with no Claude
+/// app) has no tool to configure and no running engine to flip its domain in,
+/// so the pre-enable pass gets [`Applied::NotYet`]. That used to arrive as a
+/// bare `Ok`, indistinguishable from a completed restore, and clearing the
+/// snapshot on it left the post-enable pass - the one that could actually do
+/// the work - with nothing to restore, so every domain-only provider silently
+/// stayed off for the rest of the session.
+///
+/// The [`Applied`] verdict is the primary test; the provider's own `enabled`
+/// is checked too, so a call that believes it configured a route but did not
+/// produce one is also held for retry. Belt and braces on purpose: this dance
+/// is hand-copied across `routing::enable` and the Linux manager's startup
+/// re-honor, and an invariant that reads the world protects those call sites
+/// from each other in a way a "this is the final pass" flag could not.
 pub fn restore_all() -> Result<()> {
     let _guard = master_flow_guard();
     // Members that were off before routing stopped stay off; the family around
@@ -766,10 +791,10 @@ pub fn restore_all() -> Result<()> {
     let mut pending = Vec::new();
     for slug in load_snapshot(PROVIDER_SNAPSHOT)? {
         match enable_skipping(&slug, &skip) {
-            // Genuinely on again: the provider's own state says so.
-            Ok(state) if state.enabled => {}
-            // Ran too early to do anything. Not a failure - nothing is wrong,
-            // the engine just is not up yet - and not a completion either.
+            Ok((Applied::Enabled, state)) if state.enabled => {}
+            // Nothing to do yet, or a route that did not take. Neither is a
+            // failure worth reporting - the engine simply is not up - and
+            // neither is a completion.
             Ok(_) => pending.push(slug),
             Err(e) => {
                 eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
