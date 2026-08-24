@@ -553,7 +553,17 @@ impl<O: DesktopOps> DesktopManager<O> {
             eprintln!("gate proxy: engine lock busy; deferring revert to the operation holding it");
             return;
         };
-        let _ = guard.take();
+        // Join the engine instead of dropping it. `RunningEngine::drop` only
+        // signals shutdown and returns - deliberately, to avoid blocking - so a
+        // dropped engine's listeners stay bound for an unbounded moment after
+        // we return here. Because the next enable prefers the persisted ports,
+        // that is exactly the window in which it finds its own address still
+        // live and moves off it. A genuinely crashed engine joins instantly,
+        // its thread having already exited. The dead-engine reap in `enable`
+        // calls `stop()` for the same reason.
+        if let Some(running) = guard.take() {
+            running.stop();
+        }
         let _ = self.ops.disable_env();
         let _ = match self.ops.load_snapshot() {
             Ok(Some(snapshot)) => self.ops.restore(&snapshot),
