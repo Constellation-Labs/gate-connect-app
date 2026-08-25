@@ -318,7 +318,10 @@ async fn proxy_accepts_oversized_h2_request_headers() {
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new("curl")
             .arg("-sS")
-            .arg("--ssl-no-revoke") // (schannel) same reason as the test above
+            // Deliberately NOT --ssl-no-revoke. The engine's leaves now carry a
+            // CRL distribution point served off its own loopback listener, so
+            // schannel can complete a revocation check on its own; leaving the
+            // opt-out in would hide a regression in exactly that mechanism.
             .arg("--http2") // the whole point: h1 does not exercise the limit
             // No `--fail`: the refusal we are guarding against IS an HTTP
             // status, so it has to be read rather than turned into an exit code.
@@ -432,10 +435,12 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new("curl")
             .arg("-sS")
-            // (schannel/Windows) the MITM leaf has no CRL/OCSP endpoint, so
-            // schannel returns CERT_TRUST_REVOCATION_STATUS_UNKNOWN and fails
-            // verification (exit 60). No-op on OpenSSL/SecureTransport builds.
-            .arg("--ssl-no-revoke")
+            // No --ssl-no-revoke: on Windows this is the regression test for
+            // the CRL distribution point. Without one, schannel fails the
+            // handshake with CRYPT_E_NO_REVOCATION_CHECK (exit 35) before the
+            // request is ever sent, so a green run here means the CDP resolved
+            // and the CRL was served. A no-op on OpenSSL builds, which never
+            // check revocation.
             .arg("--fail") // nonzero exit unless the gateway answers 2xx
             .arg("--cacert")
             .arg(&ca_arg)
@@ -617,8 +622,8 @@ async fn exported_proxy_env_routes_an_external_process() {
             cmd.env(name, value);
         }
         cmd.arg("-sS")
-            // (schannel/Windows) the MITM leaf has no CRL/OCSP endpoint.
-            .arg("--ssl-no-revoke")
+            // No --ssl-no-revoke, same reason as above: on Windows the leaf's
+            // CRL distribution point has to resolve for this to pass.
             .arg("--fail")
             // curl has no NODE_EXTRA_CA_CERTS; feed it the exported value.
             .arg("--cacert")
@@ -913,4 +918,80 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
     );
     engine.stop();
     drop(blocker);
+}
+
+/// The loopback listener must serve a real CRL at the path the engine's leaves
+/// advertise as their distribution point.
+///
+/// Windows-only because that is the only platform where leaves carry the
+/// extension at all - and the only one where getting this wrong is fatal rather
+/// than unnoticed. schannel fetches this URL *during* the TLS handshake, so if
+/// it 404s or returns the PAC script instead, every intercepted connection dies
+/// with CRYPT_E_REVOCATION_OFFLINE. The other tests in this file would catch
+/// that too, but only as "curl failed"; this one names the cause.
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn crl_endpoint_serves_a_der_crl() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem,
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let url = format!("http://127.0.0.1:{}/gate-ca.crl", engine.pac_port());
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .expect("CRL endpoint should answer");
+    assert!(
+        resp.status().is_success(),
+        "CRL endpoint returned {:?}",
+        resp.status()
+    );
+    let ctype = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        ctype, "application/pkix-crl",
+        "CryptoAPI is fed this as a CRL, so it must not be served as the PAC script"
+    );
+    let body = resp.bytes().await.expect("CRL body");
+    assert!(!body.is_empty(), "CRL body should not be empty");
+    // DER SEQUENCE tag: proves we served the signed structure and not, say, an
+    // error page that happened to have the right content type.
+    assert_eq!(body[0], 0x30, "CRL should be a DER SEQUENCE");
+
+    // The PAC route must still work on the same listener.
+    let pac = reqwest::get(format!("http://127.0.0.1:{}/proxy.pac", engine.pac_port()))
+        .await
+        .expect("PAC endpoint should answer")
+        .text()
+        .await
+        .expect("PAC body");
+    assert!(
+        pac.contains("FindProxyForURL"),
+        "PAC route regressed while adding the CRL route: {pac}"
+    );
+
+    engine.stop();
 }
