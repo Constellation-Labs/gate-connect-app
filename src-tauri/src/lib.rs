@@ -756,6 +756,19 @@ async fn gate_model_catalogue() -> Result<String, String> {
         .map_err(envelope)
 }
 
+/// This organization's Gate credit balance and plan (AG-588/590/592).
+///
+/// Its own read rather than part of the catalogue: the balance is small and
+/// changes as requests are served, the catalogue is large and does not. Same
+/// envelope and failure taxonomy as [`activity_overview`].
+#[tauri::command]
+async fn gate_credits() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::gate_models::credits_json)
+        .await
+        .map_err(|e| format!("gate credits join error: {e}"))?
+        .map_err(envelope)
+}
+
 /// Serialize an activity failure for the IPC boundary.
 fn envelope(f: gate_connect_core::activity::Failure) -> String {
     serde_json::to_string(&f).unwrap_or_else(|_| {
@@ -2050,6 +2063,7 @@ pub fn run() {
                     tool_model_preferences,
                     set_tool_model,
                     gate_model_catalogue,
+                    gate_credits,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -2119,6 +2133,7 @@ pub fn run() {
                     tool_model_preferences,
                     set_tool_model,
                     gate_model_catalogue,
+                    gate_credits,
                     set_org,
                     app_platform,
                     diagnostics,

@@ -200,6 +200,13 @@ export const setToolModel = (
   acknowledgePaidUse = false,
 ) => invoke<void>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
 
+/** This organization's Gate credit balance and plan, as raw JSON text
+ * (AG-588/590/592).
+ *
+ * Its own read rather than a field on the catalogue: the balance is small and
+ * changes as requests are served, the catalogue is large and does not. */
+export const gateCredits = () => invoke<string>("gate_credits");
+
 /** The models this gateway offers, as raw JSON text (Vercel AI Gateway shape).
  *
  * An empty `data` array is a real answer, not a failed read: the catalogue is

@@ -132,6 +132,12 @@ export function installFakeTauri(state: BackendState): void {
       };
       return null;
     },
+    gate_credits: () =>
+      JSON.stringify({
+        generatedAt: "2026-08-25T10:00:00.000Z",
+        org: { orgId: "org-e2e", name: state.account?.org_name ?? null },
+        ...state.toolModels.credits,
+      }),
     gate_model_catalogue: () =>
       JSON.stringify({ object: "list", data: state.toolModels.catalogue }),
 

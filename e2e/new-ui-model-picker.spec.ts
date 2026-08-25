@@ -338,3 +338,63 @@ test.describe("new UI model picker search and set", () => {
     await expect(only).not.toHaveAttribute("aria-disabled", "true");
   });
 });
+
+/**
+ * The credits line on the model card (Figma 228:89517).
+ *
+ * The number sits beside the control that starts spending it, so the three
+ * states it can be in have to stay apart: a real balance, a balance nobody
+ * reported, and PAYG being switched off entirely.
+ */
+test.describe("new UI model card credits", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("shows the balance the way the design words it", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        credits: {
+          plan: "pro",
+          paygEnabled: true,
+          balanceCents: 1025,
+          lowBalanceThresholdCents: 500,
+          autoTopupArmed: false,
+        },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText("$10.25 available")).toBeVisible();
+  });
+
+  test("reads N/A when no balance was reported, not $0.00", async ({ boot }) => {
+    // The default fixture reports none. Printing zero here would tell a funded
+    // org their tools are about to stop.
+    const app = await boot(base);
+    await openApp(app);
+
+    await expect(app.page.getByText("N/A")).toBeVisible();
+    await expect(app.page.getByText("$0.00 available")).toHaveCount(0);
+  });
+
+  test("says PAYG is off rather than showing money that cannot be spent here", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        credits: {
+          plan: "pro",
+          paygEnabled: false,
+          balanceCents: 4200,
+          lowBalanceThresholdCents: 500,
+          autoTopupArmed: false,
+        },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText("Not enabled")).toBeVisible();
+    await expect(app.page.getByText("$42.00 available")).toHaveCount(0);
+  });
+});

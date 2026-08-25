@@ -75,7 +75,7 @@ import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
 import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
-import { useGateModels, useToolModels } from "./lib/toolModels";
+import { formatCredits, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
 import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
@@ -388,6 +388,10 @@ export function NewUiApp() {
   /** The catalogue, deferred until the picker is actually raised. It is a few
    *  hundred rows that nothing else needs. */
   const gateModels = useGateModels(modelOverlay?.kind === "picker");
+  /** The org's Gate credit balance, for the card and the billing confirmation.
+   *  Read whenever an app pane is open - it is what a switch to a Gate model
+   *  starts spending. */
+  const credits = useCredits(canRead && openTool !== null, credential);
 
   /** This app's stored choice, or undefined when it has never been set - which
    *  is not a gap but the true default: the tool picks its own model. */
@@ -1570,9 +1574,10 @@ export function NewUiApp() {
             // Names the rest rather than hiding them: AG-590 requires the set be
             // listed before the charge is accepted.
             alsoEnabled={modelOverlay.modelIds.slice(1)}
-            // No endpoint reports a balance; N/A rather than a dash, which would
-            // read as one. The sentence above it already says credits are spent.
-            credits="N/A"
+            // The real balance now. This dialog is where someone agrees to spend
+            // it, so showing what there is to spend belongs here more than
+            // anywhere.
+            credits={formatCredits(credits.credits) ?? "N/A"}
             onKeepAppDefault={() => {
               const ids = modelOverlay.modelIds;
               setModelOverlay(null);
@@ -1779,10 +1784,9 @@ export function NewUiApp() {
               then: openModelChoice === "gate" ? "activate" : "remember",
             })
           }
-          // No endpoint reports a Gate credit balance - the gateway has a PAYG
-          // service but no controller over it - so this is null and reads N/A.
-          // A dash would read as a value. See principle 6.
-          credits={null}
+          // Null when it could not be read, which the card draws as N/A rather
+          // than $0.00 - a balance nobody reported is not a balance of nothing.
+          credits={formatCredits(credits.credits)}
           // No billing endpoint, but the row's own glyph promises an external
           // link, and the dashboard is where credits are actually bought.
           onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
