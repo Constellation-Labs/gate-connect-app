@@ -76,26 +76,36 @@ fn write_auth_json(mode: &str) {
     fs::write(&path, format!(r#"{{"auth_mode":"{mode}"}}"#)).unwrap();
 }
 
-/// Persist the relay port `status()` expects the config to point at. Without
-/// it, status stops at "the proxy has not been enabled yet" before it ever
-/// looks at the block.
-fn seed_relay_port() {
+/// Persist the relay port `status()` expects the config to point at, and bind
+/// it for real: `status()` probes the port (`relay_listening()`), so a seeded
+/// file over a dead port describes a crashed proxy and reads as Drifted before
+/// status ever looks at the block. Without the file, status stops at "the
+/// proxy has not been enabled yet". The listener is returned so it stays alive
+/// for the test's lifetime, alongside the port the config must point at.
+fn seed_relay_port() -> (std::net::TcpListener, u16) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
     let path = env::app_support_dir()
         .unwrap()
         .join("proxy")
         .join("relay-port");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, RELAY_PORT.to_string()).unwrap();
+    fs::write(&path, port.to_string()).unwrap();
+    (listener, port)
 }
 
 const RELAY_PORT: u16 = 45981;
 
 fn connect_input(billing_mode: BillingMode) -> ConnectInput {
+    connect_input_at(billing_mode, RELAY_PORT)
+}
+
+fn connect_input_at(billing_mode: BillingMode, relay_port: u16) -> ConnectInput {
     ConnectInput {
         gateway_base_url: "https://gw.example.com".to_string(),
         upstream_url: "https://api.openai.com".to_string(),
         billing_mode,
-        relay_base_url: Some(format!("http://127.0.0.1:{RELAY_PORT}")),
+        relay_base_url: Some(format!("http://127.0.0.1:{relay_port}")),
         engine_proxy_url: Some("http://127.0.0.1:45999".to_string()),
     }
 }
@@ -202,10 +212,12 @@ fn each_mode_reports_the_others_block_as_drift() {
     fake_codex_install();
     write_auth_json("apikey");
     sign_in(BillingMode::Byok);
-    seed_relay_port();
+    let (_proxy, relay_port) = seed_relay_port();
 
     let integ = find(ToolId::Codex).unwrap();
-    integ.connect(&connect_input(BillingMode::Byok)).unwrap();
+    integ
+        .connect(&connect_input_at(BillingMode::Byok, relay_port))
+        .unwrap();
 
     // Flip who pays without reconnecting: the BYOK block on disk now carries a
     // flag PAYG cannot use.
@@ -219,7 +231,9 @@ fn each_mode_reports_the_others_block_as_drift() {
     }
 
     // Reconnecting into the new mode settles it.
-    integ.connect(&connect_input(BillingMode::Payg)).unwrap();
+    integ
+        .connect(&connect_input_at(BillingMode::Payg, relay_port))
+        .unwrap();
     assert_eq!(integ.status().unwrap(), Status::Connected);
 
     // And the reverse: a PAYG block under a BYOK account is drift too.
