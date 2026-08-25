@@ -140,7 +140,7 @@ impl RunningEngine {
     }
 
     /// Loopback port serving the PAC script, and on Windows the CA's CRL (see
-    /// [`super::cert_authority::CRL_PATH`]).
+    /// `cert_authority::CRL_PATH`).
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub fn pac_port(&self) -> u16 {
         self.pac_port
@@ -1125,34 +1125,36 @@ async fn serve_pac(
             let wants_crl = std::str::from_utf8(&buf[..n])
                 .ok()
                 .and_then(|req| req.split_whitespace().nth(1))
-                .is_some_and(|target| target == cert_authority::CRL_PATH);
+                .is_some_and(|target| target == crate::proxy::cert_authority::CRL_PATH);
 
             let resp: Vec<u8> = match (wants_crl, crl_issuer.as_deref()) {
-                (true, Some(issuer)) => match cert_authority::sign_empty_crl(issuer) {
-                    // Signed per request, not once at startup: a CRL is only
-                    // valid until its `nextUpdate`, and this listener outlives
-                    // that window on any long-running engine. One ECDSA
-                    // signature on a path Windows caches for a week is cheaper
-                    // than the alternative failure, which is silent.
-                    Ok(der) => {
-                        let mut r = format!(
-                            "HTTP/1.1 200 OK\r\n\
+                (true, Some(issuer)) => {
+                    match crate::proxy::cert_authority::sign_empty_crl(issuer) {
+                        // Signed per request, not once at startup: a CRL is only
+                        // valid until its `nextUpdate`, and this listener outlives
+                        // that window on any long-running engine. One ECDSA
+                        // signature on a path Windows caches for a week is cheaper
+                        // than the alternative failure, which is silent.
+                        Ok(der) => {
+                            let mut r = format!(
+                                "HTTP/1.1 200 OK\r\n\
                              Content-Type: application/pkix-crl\r\n\
                              Content-Length: {}\r\n\
                              Connection: close\r\n\r\n",
-                            der.len(),
-                        )
-                        .into_bytes();
-                        r.extend_from_slice(&der);
-                        r
-                    }
-                    Err(e) => {
-                        eprintln!("gate proxy failed to sign CRL: {e}");
-                        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\
+                                der.len(),
+                            )
+                            .into_bytes();
+                            r.extend_from_slice(&der);
+                            r
+                        }
+                        Err(e) => {
+                            eprintln!("gate proxy failed to sign CRL: {e}");
+                            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\
                           Connection: close\r\n\r\n"
-                            .to_vec()
+                                .to_vec()
+                        }
                     }
-                },
+                }
                 _ => {
                     let body = pac_script(&rules.borrow(), proxy_port, upstream.as_deref());
                     format!(
@@ -1214,7 +1216,7 @@ where
     #[cfg(target_os = "windows")]
     let crl_url = Some(format!(
         "http://127.0.0.1:{pac_port}{}",
-        cert_authority::CRL_PATH
+        crate::proxy::cert_authority::CRL_PATH
     ));
     #[cfg(not(target_os = "windows"))]
     let crl_url: Option<String> = None;
