@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  browserScopeNote,
   secretStoreName,
   trustPromptHint,
   trustPromptWaiting,
@@ -109,6 +110,37 @@ describe("trustPromptWaiting", () => {
   it("differs from the pre-click hint everywhere, so the swap is visible", () => {
     for (const p of PLATFORMS) {
       expect(trustPromptWaiting(p)).not.toBe(trustPromptHint(p));
+    }
+  });
+});
+
+describe("browserScopeNote", () => {
+  it("includes the browser where the system proxy is the browser's proxy", () => {
+    // macOS wires a PAC through `networksetup` and trusts the CA in the system
+    // keychain; Windows sets the WinINET proxy and trusts it in the Windows
+    // certificate store. Both are what a browser reads, so a host-matched row
+    // genuinely covers the browser and the copy has to say so.
+    expect(browserScopeNote("macos")).toContain("browser");
+    expect(browserScopeNote("windows")).toContain("browser");
+  });
+
+  it("says nothing at all where the browser is not covered", () => {
+    // Not a shorter sentence: no sentence. `system_proxy_linux.rs` wires only
+    // environment variables, which a browser never reads, so there is no
+    // browser claim to make - and the mechanism behind that is three clauses
+    // the user cannot act on. The host sentence this appends to has already
+    // bounded the scope. `unknown` is empty for the same reason plus one: it is
+    // the first async tick, which is no time to guess at interception.
+    expect(browserScopeNote("linux")).toBe("");
+    expect(browserScopeNote("unknown")).toBe("");
+  });
+
+  it("is a whole sentence wherever it says anything, so it can be appended", () => {
+    for (const p of PLATFORMS) {
+      const note = browserScopeNote(p);
+      if (note === "") continue;
+      expect(note.endsWith(".")).toBe(true);
+      expect(note).toContain("browser");
     }
   });
 });

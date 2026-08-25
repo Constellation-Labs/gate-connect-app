@@ -16,7 +16,6 @@ const tools = [
     name: "Claude Code",
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://gw.example/claude-code",
-    requires_upstream_credential: false,
     status: { kind: "connected" as const },
   },
 ];

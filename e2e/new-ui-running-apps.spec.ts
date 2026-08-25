@@ -14,7 +14,6 @@ const CLAUDE_CODE = {
   name: "Claude Code",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://gw.example/claude-code",
-  requires_upstream_credential: false,
   status: { kind: "detected" as const },
 };
 
@@ -121,7 +120,6 @@ test.describe("new UI running apps", () => {
           name: "Codex",
           upstream_provider_name: "OpenAI",
           default_upstream_url: "https://gw.example/codex",
-          requires_upstream_credential: false,
           status: { kind: "drifted" as const, reason: "API base URL: https://api.openai.com/v1" },
         },
       ],

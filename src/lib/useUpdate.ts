@@ -92,9 +92,8 @@ export function useUpdate(): UpdateState {
    *
    * The two phases are separate so the updater-relaunch mark brackets only the
    * install. Quitting during the (long) download is a genuine user exit, and a
-   * mark set there would make the exit handler skip clearing the routing intent
-   * and completing a deferred launch-at-login opt-out, with no relaunch coming
-   * to redo them.
+   * mark set there would make the exit handler skip completing a deferred
+   * launch-at-login opt-out, with no relaunch coming to redo it.
    *
    * The mark goes on *before* `install()`, not after: on Windows the installer
    * exits the app from inside that call, so marking afterwards would never run.

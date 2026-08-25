@@ -9,6 +9,7 @@
 //! needs to push new rules - no engine restart, no system-proxy change, no
 //! extra admin prompt.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
@@ -26,11 +27,15 @@ use hudsucker::{
     Body, HttpContext, HttpHandler, Proxy, RequestOrResponse,
 };
 use hyper_rustls::ConfigBuilderExt;
+use rand::Rng;
 use tokio::sync::{oneshot, watch};
 
 use crate::account::BillingMode;
 use crate::proxy::cert_authority::GateCa;
-use crate::proxy::{decide, effective_billing_mode, should_intercept_host, Decision, ProxyDomain};
+use crate::proxy::{
+    classify_client, decide, effective_billing_mode, rules_for_client, should_decline_upgrade,
+    should_intercept_host, Decision, ProxyDomain,
+};
 
 /// Everything the engine needs to run one session. The account + CA are
 /// fixed for the engine's lifetime; the domain set can be updated live via
@@ -66,8 +71,9 @@ pub struct EngineConfig {
     /// previously-chosen port so a restart keeps the same address - the system
     /// proxy pointer baked into a login session (Linux) or a client that
     /// resolved the proxy once at its own launch (macOS/Windows) stays valid
-    /// across app restarts instead of dangling at a dead ephemeral port. Falls
-    /// back to an ephemeral port if `p` is taken (or `None`). All three
+    /// across app restarts instead of dangling at a dead port. Falls back to
+    /// a fresh pick from the stable band ([`bind_fresh`]) if `p` is taken (or
+    /// `None`). All three
     /// platforms persist and pass the last-bound port.
     pub preferred_port: Option<u16>,
     /// Preferred loopback port for the PAC listener, same contract as
@@ -259,7 +265,7 @@ fn upstream_tls_config(provider: CryptoProvider) -> Result<ClientConfig> {
         .with_safe_default_protocol_versions()
         .context("selecting TLS protocol versions for the upstream connector")?;
 
-    let Some(path) = std::env::var_os("GATE_CONNECT_TEST_CA") else {
+    let Some(path) = crate::env::test_seam("GATE_CONNECT_TEST_CA") else {
         return Ok(builder.with_webpki_roots().with_no_client_auth());
     };
 
@@ -290,6 +296,26 @@ fn upstream_tls_config(provider: CryptoProvider) -> Result<ClientConfig> {
 pub(crate) fn debug_log() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_DEBUG").is_some())
+}
+
+/// Whether to decline a Responses WebSocket upgrade so the client falls back to
+/// HTTP and its turn becomes visible. Off unless `GATE_PROXY_WS_DOWNGRADE` is
+/// set; see [`should_decline_upgrade`] for what it then applies to.
+///
+/// Default-OFF is the important half. The failure mode if the fallback does not
+/// fire is not "work mode stays uncaptured", which is the status quo, but "work
+/// mode does not work at all" - strictly worse than doing nothing. So this stays
+/// opt-in until measured on a real client.
+///
+/// An env var, matching [`debug_log`], because that is the right shape for the
+/// measurement stages this is for: a single machine, deliberately switched on.
+/// Before any broader rollout it wants promoting to a real setting, since
+/// `OnceLock` fixes the value for the process and a user cannot turn it off
+/// without relaunching the app - too slow for a kill switch if a vendor update
+/// ever removes the fallback.
+pub(crate) fn responses_ws_downgrade() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_WS_DOWNGRADE").is_some())
 }
 
 /// Wire hudsucker's internal `tracing` events (TLS handshake / HTTP2 errors)
@@ -337,6 +363,13 @@ struct GateHandler {
     /// while the peer's socket is definitely still in `/proc/net/tcp` - instead
     /// of re-reading it (and risking a TOCTOU miss) on every request.
     peer_verdict: Option<(std::net::SocketAddr, bool)>,
+    /// Set from the explicit proxy selector on Claude Code's CONNECT request.
+    /// The handler is cloned with this value for the decrypted inner requests.
+    claude_code_route: bool,
+    /// One-shot latch for the "Anthropic without the selector" line in
+    /// `should_intercept`. Shared across handler clones, so an engine run
+    /// reports it once instead of once per connection.
+    anthropic_unselected_logged: Arc<AtomicBool>,
 }
 
 impl GateHandler {
@@ -359,6 +392,67 @@ impl GateHandler {
         self.peer_verdict = Some((ctx.client_addr, verdict));
         verdict
     }
+
+    /// Report a tunnelled CONNECT to Claude Code's own destination that carried
+    /// no route selector.
+    ///
+    /// Outside `debug_log`, unlike every other line here, because this is the
+    /// only place in the app that can observe the regression it names: Claude
+    /// Code's `status()` compares `settings.json` against our own write and
+    /// never learns whether the engine actually received the selector, so a
+    /// future release that stopped deriving `Proxy-Authorization` from the
+    /// proxy URL's userinfo would blind-tunnel behind a green pill - the O1
+    /// failure class in `docs/routing-architecture.md`. The wire is the only
+    /// witness.
+    ///
+    /// Latched to one line per engine run. The same state is the ordinary,
+    /// harmless one for any other Anthropic client while the Desktop switch is
+    /// off, so this cannot be a per-CONNECT warning without becoming noise -
+    /// and noise is what stops a real regression being read.
+    fn warn_if_anthropic_is_unselected(&self, intercept: bool, host: Option<&str>) {
+        if intercept
+            || self.claude_code_route
+            || !host.is_some_and(|h| crate::proxy::claude_code_route_domain().matches_host(h))
+            || self
+                .anthropic_unselected_logged
+                .swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        eprintln!(
+            "[gate-proxy] CONNECT {} carried no Claude Code route selector -> tunnel. \
+             Expected for other Anthropic clients while their domain is off; if this \
+             is a connected Claude Code, it is bypassing Gate.",
+            host.unwrap_or("?")
+        );
+    }
+}
+
+/// The rule set a connection's requests must be decided against: the live
+/// catalog, plus Claude Code's own entry force-enabled when the CONNECT carried
+/// the route selector and the user has that entry switched off.
+///
+/// Shared by both stages - the CONNECT verdict and the per-request routing - so
+/// the two can never disagree about what the selector routes.
+///
+/// Scoped to that entry's own host, which is what keeps the selector from
+/// widening anything: a selected connection to any other host sees the live
+/// catalog untouched. It also means only Claude Code's host pays for the clone;
+/// everything else borrows.
+fn route_rules<'a>(
+    live: &'a [ProxyDomain],
+    claude_code_route: bool,
+    host: Option<&str>,
+) -> Cow<'a, [ProxyDomain]> {
+    let forced = crate::proxy::claude_code_route_domain();
+    let needed = claude_code_route
+        && host.is_some_and(|h| forced.matches_host(h) && !should_intercept_host(live, h));
+    if !needed {
+        return Cow::Borrowed(live);
+    }
+    let mut rules = live.to_vec();
+    rules.push(forced.clone());
+    Cow::Owned(rules)
 }
 
 /// Resolve the local UID that owns the socket whose *local* address is `addr`
@@ -420,15 +514,17 @@ impl HttpHandler for GateHandler {
             }
             return false;
         }
-        let rules = self.rules.borrow().clone();
+        let live_rules = self.rules.borrow().clone();
         let host = req
             .uri()
             .authority()
             .map(|a| a.host())
             .or_else(|| req.uri().host());
+        let rules = route_rules(&live_rules, self.claude_code_route, host);
         let intercept = host
             .map(|h| should_intercept_host(&rules, h))
             .unwrap_or(false);
+        self.warn_if_anthropic_is_unselected(intercept, host);
         if debug_log() {
             // The enabled set is printed alongside the verdict because the two
             // have been observed to disagree with what `proxy enable` reports:
@@ -436,7 +532,10 @@ impl HttpHandler for GateHandler {
             // tunnelled both. Without this the log cannot distinguish "the host
             // is not in the catalog" from "the engine is holding a different
             // catalog than the one just configured".
-            let enabled: Vec<&str> = rules
+            // `live_rules`, not the possibly-forced set: the disagreement this
+            // is here to catch is between the catalog the engine holds and the
+            // one that was configured, so the line must report what it holds.
+            let enabled: Vec<&str> = live_rules
                 .iter()
                 .filter(|d| d.enabled)
                 .map(|d| d.slug.as_str())
@@ -447,7 +546,7 @@ impl HttpHandler for GateHandler {
                 "[gate-proxy] CONNECT {} -> {} (engine has {} enabled: [{}])",
                 host.unwrap_or("?"),
                 if intercept { "intercept" } else { "tunnel" },
-                rules.len(),
+                live_rules.len(),
                 enabled.join(",")
             );
         }
@@ -463,17 +562,80 @@ impl HttpHandler for GateHandler {
         // rewrite on it. Intercepted inner requests arrive in absolute form
         // (scheme + authority + path), which is what `decide` expects.
         if req.method() == Method::CONNECT {
+            self.claude_code_route = req
+                .headers()
+                .get("proxy-authorization")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == crate::proxy::CLAUDE_CODE_PROXY_AUTH);
+            // A proxy credential is hop-by-hop and must never reach either the
+            // real Anthropic endpoint or Gate.
+            req.headers_mut().remove("proxy-authorization");
             return req.into();
         }
-        let rules = self.rules.borrow().clone();
+        // Some entries route every proxy-honouring client EXCEPT the vendor's own
+        // website, which shares their host (see `BROWSER_EXCLUDED_SLUGS`).
+        // Classify before `decide` and hand it a narrowed rule set, so the
+        // client filter composes with the `enabled` one instead of adding a
+        // second kind of veto inside the routing decision.
+        let client = classify_client(|name| req.headers().get(name).and_then(|v| v.to_str().ok()));
         let host = req.uri().host().map(str::to_owned);
+        let live_rules = self.rules.borrow().clone();
+        let rules = rules_for_client(
+            &route_rules(&live_rules, self.claude_code_route, host.as_deref()),
+            client,
+        );
         // Path only, never `path_and_query()`: some providers pass the API key
         // as a URL query param (e.g. Google `...?key=...`), and this value is
         // written to the debug log below. `Uri::path()` excludes the query, so
         // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
         let mut action = "passthrough";
-        if let Some(host) = host.as_deref() {
+        // A protocol upgrade is never rewritten to the gateway. This is the end
+        // state, not a holding position: Gate does not carry upgraded protocols,
+        // by decision. It has no WebSocket transport, and `buildForwardHeaders`
+        // strips `upgrade` and `connection` outright
+        // (gate: utils/proxy-helpers.ts), so a handshake forwarded there can only
+        // come back as a plain response and the client's 101 never arrives.
+        //
+        // The combination is reachable rather than theoretical. ChatGPT's app
+        // work mode NEGOTIATES its transport on `/backend-api/codex/responses`:
+        // it offers `openai-beta: responses_websockets=<date>` and, when the
+        // server accepts, runs the entire turn over a WebSocket. That path is
+        // claimed by the `chatgpt` entry's rewrite prefix, so without this guard
+        // enabling that row would break the upgraded half outright.
+        //
+        // What passing them through costs is therefore narrower than "all
+        // visibility". The HTTP half of that same negotiation IS captured
+        // normally, which means a session that upgrades is a session that
+        // silently left coverage - no error, nothing to notice. `originator:
+        // codex_work_desktop` on an upgrade is the signature of one, and is what
+        // to grep for if work-mode turns stop appearing in Gate.
+        if is_upgrade_request(&req) {
+            // ...unless declining it is what makes the turn visible. The client
+            // that negotiates this transport carries its own HTTP fallback, so a
+            // refusal costs one extra round trip and buys the whole turn; see
+            // `should_decline_upgrade`. Gated on `peer_allowed` like the rewrite
+            // below, so a non-owner peer's traffic is never interfered with.
+            if responses_ws_downgrade()
+                && self.peer_allowed(ctx)
+                && host
+                    .as_deref()
+                    .is_some_and(|h| should_decline_upgrade(&rules, h, &path))
+            {
+                if debug_log() {
+                    eprintln!("[gate-proxy] {path} is a protocol upgrade -> declined (client should retry over HTTP)");
+                }
+                // 400, never a drop or a stall. The client distinguishes a failed
+                // handshake from a timed-out one and only the first falls back
+                // immediately; a black-holed connection would add the full
+                // handshake timeout to EVERY turn and be indistinguishable, from
+                // the user's side, from Gate being broken.
+                return RequestOrResponse::Response(decline_upgrade_response());
+            }
+            if debug_log() {
+                eprintln!("[gate-proxy] {path} is a protocol upgrade -> passthrough (gate has no websocket transport)");
+            }
+        } else if let Some(host) = host.as_deref() {
             // Rewrite matched inference paths to the gateway, forwarding to
             // the domain's configured upstream - for Anthropic that's the same
             // api.anthropic.com the request came from , validated
@@ -523,8 +685,14 @@ impl HttpHandler for GateHandler {
                 "none"
             };
             let ver = format!("{:?}", req.version());
+            // `client` is in here because an app-only entry declining a request
+            // and the host not being routed at all both surface as
+            // `passthrough`. Without it the log cannot tell "we chose not to
+            // take the browser's traffic" from "this domain is off", which is
+            // the same class of ambiguity the CONNECT line above prints the
+            // enabled set to resolve. Neither signal it reads is a credential.
             eprintln!(
-                "[gate-proxy] {} {}{} [{ver}] auth={auth} -> {action}",
+                "[gate-proxy] {} {}{} [{ver}] auth={auth} client={client:?} -> {action}",
                 req.method(),
                 host.as_deref().unwrap_or("?"),
                 path,
@@ -566,6 +734,46 @@ impl HttpHandler for GateHandler {
         }
         res
     }
+}
+
+/// The response sent in place of a declined upgrade.
+///
+/// Shaped like the provider's own error envelope so a client that surfaces the
+/// body shows something coherent, and typed distinctly (`gate_ws_downgrade`) so
+/// this is greppable in a client log and cannot be mistaken for an upstream 400.
+fn decline_upgrade_response() -> hudsucker::hyper::Response<Body> {
+    hudsucker::hyper::Response::builder()
+        .status(hudsucker::hyper::StatusCode::BAD_REQUEST)
+        .header(
+            hudsucker::hyper::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )
+        .body(Body::from(
+            r#"{"error":{"message":"websocket transport unavailable through this proxy; retry over HTTP","type":"gate_ws_downgrade"}}"#,
+        ))
+        // Infallible: every part is a static, pre-validated value.
+        .expect("static decline response builds")
+}
+
+/// True when the request is asking to leave HTTP for another protocol.
+///
+/// Reads `Connection: upgrade` AND an `Upgrade` header, which is what RFC 9110
+/// requires a real upgrade to carry, rather than keying on the WebSocket-specific
+/// `Sec-WebSocket-*` set: the reason we bail applies to any upgrade, not just
+/// WebSocket. `Connection` is a comma-separated list and its tokens are
+/// case-insensitive.
+pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
+    let headers = req.headers();
+    if !headers.contains_key(hudsucker::hyper::header::UPGRADE) {
+        return false;
+    }
+    headers
+        .get(hudsucker::hyper::header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.split(',')
+                .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
+        })
 }
 
 /// Repoint a request at the gateway: swap scheme + authority for the
@@ -638,7 +846,7 @@ pub(crate) fn apply_rewrite<T>(
 /// Bind a loopback listener and return it together with the port it landed on.
 /// Tries `preferred` first (so a restart can reuse the same port and keep a
 /// frozen system-proxy pointer valid); if that's unavailable - taken, or
-/// `None` - falls back to an ephemeral port. Returning the *live* listener -
+/// `None` - falls back to a fresh pick from the stable band ([`bind_fresh`]). Returning the *live* listener -
 /// rather than probing a port and dropping it before hudsucker binds - closes
 /// the TOCTOU window where another process could grab the port in the gap. The
 /// socket stays held from here until it's handed to the proxy. Set non-blocking
@@ -646,11 +854,9 @@ pub(crate) fn apply_rewrite<T>(
 fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
     let listener = match preferred {
         Some(p) => bind_preferred(p)
-            .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
-            .with_context(|| format!("binding loopback (preferred {p}, then ephemeral)"))?,
-        None => {
-            std::net::TcpListener::bind(("127.0.0.1", 0)).context("binding a free loopback port")?
-        }
+            .or_else(|_| bind_fresh())
+            .with_context(|| format!("binding loopback (preferred {p}, then a fresh port)"))?,
+        None => bind_fresh().context("binding a free loopback port")?,
     };
     let port = listener
         .local_addr()
@@ -677,12 +883,91 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
     Ok((listener, port))
 }
 
+/// Port band a *fresh* listener is picked from, first free port wins. Sits
+/// inside IANA's registered range and below Windows' default dynamic range
+/// (49152-65535), clear of assigned neighbours like 47001 (WinRM). One engine
+/// brings up three listeners (MITM, relay, PAC), so the band is sized well
+/// past what a few concurrent hosts need.
+const STABLE_PORT_RANGE: std::ops::Range<u16> = 47100..47200;
+
+/// Bind a fresh loopback listener for a port the caller intends to *persist*
+/// and rebind on later runs. Takes the first free port in
+/// [`candidate_ports`]'s order, falling back to an OS-assigned ephemeral port
+/// only if the whole band is busy.
+///
+/// Why not `:0` directly: a port the OS hands out as ephemeral is one it also
+/// hands out to everything else, and nothing holds it while Gate is stopped -
+/// so the next run's rebind races every local process that opened an outbound
+/// socket in the meantime. On Windows it is worse than a race: Hyper-V, WSL2
+/// and Docker Desktop reserve whole blocks of the dynamic range at boot, and a
+/// persisted port inside a reserved block fails to bind on *every* start, so
+/// the port silently moves each time. Either way the clients that captured the
+/// old port are stranded - `HTTPS_PROXY` is read once per process, and CLI tool
+/// configs bake the relay URL - and the user has to restart them. Picking from
+/// a quiet band below the dynamic range means the port we persist is one
+/// nothing else is handing out.
+pub(super) fn bind_fresh() -> std::io::Result<std::net::TcpListener> {
+    for port in candidate_ports(&persisted_ports()) {
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+            return Ok(listener);
+        }
+    }
+    // Whole band unavailable (exhaustion, or something blanket-bound it): an
+    // ephemeral port keeps this session alive, but the next run may not get
+    // it back - the moving-port symptom is back, so name the reason here.
+    eprintln!(
+        "gate proxy: no free port in {STABLE_PORT_RANGE:?}; binding an ephemeral port instead. \
+         It may not survive a restart."
+    );
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+}
+
+/// Every port in [`STABLE_PORT_RANGE`], in the order a fresh bind should try
+/// them: a random rotation of the band, with the ports this install already
+/// remembers for its own listeners (`ours`) moved to the back.
+///
+/// The rotation is random rather than scanning from the band's start, because a
+/// fixed start makes the lowest free port a contended resource: two Gate
+/// processes coming up together (the app and a standalone `proxy relay`) would
+/// both reach for it, and - worse - a port freed a moment ago is the first one
+/// the next scan hands out, so a neighbour can snatch the port a restarting
+/// listener is about to reclaim. Every port in the band satisfies the point of
+/// the band, so there is nothing to gain by preferring one end of it.
+///
+/// Deferring `ours` keeps this install from stealing from itself. The three
+/// listeners bind in sequence, so without it the MITM listener falling back to
+/// a fresh port could take the very port the PAC or relay listener is about to
+/// reclaim two lines later, and a standalone `proxy relay` starting while the
+/// app is stopped could take the app's remembered port. They are deferred
+/// rather than dropped: one of our own free ports still beats leaving the band
+/// for an ephemeral port that the next run may not get back.
+fn candidate_ports(ours: &[u16]) -> Vec<u16> {
+    let span = STABLE_PORT_RANGE.len() as u16;
+    let offset = rand::thread_rng().gen_range(0..span);
+    let rotated = (0..span).map(|i| STABLE_PORT_RANGE.start + (offset + i) % span);
+    let (deferred, first): (Vec<u16>, Vec<u16>) = rotated.partition(|p| ours.contains(p));
+    first.into_iter().chain(deferred).collect()
+}
+
+/// The ports this install has remembered for its own listeners: the MITM and
+/// PAC ports (`proxy/port`, `proxy/pac-port`) and the relay port
+/// (`proxy/relay-port`). Best-effort - anything missing or unreadable simply
+/// isn't deferred.
+fn persisted_ports() -> Vec<u16> {
+    let mut ports: Vec<u16> = ["port", "pac-port"]
+        .iter()
+        .filter_map(|name| super::port_persist::load(name).ok().flatten())
+        .collect();
+    ports.extend(super::relay::load_persisted_port());
+    ports
+}
+
 /// Bind `127.0.0.1:port` for the preferred-port reuse path. On unix a plain
 /// bind is tried first; when it fails with the port "in use", the previous
 /// engine session's connections may just be lingering as server-side
 /// TIME_WAIT sockets (they stay for minutes), and without `SO_REUSEADDR` the
-/// restart's rebind fails and silently falls back to an ephemeral port -
-/// defeating the address stability the preferred port exists for. But BSD /
+/// restart's rebind fails and the port silently moves - defeating the address
+/// stability the preferred port exists for. But BSD /
 /// macOS `SO_REUSEADDR` also permits a `127.0.0.1:P` bind while another
 /// process holds a *live* `0.0.0.0:P` listener, which would silently shadow
 /// that app's loopback traffic. A connect probe tells the two apart: a port
@@ -697,14 +982,15 @@ fn bind_loopback(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)>
 /// agree on what "the port is taken" means - a live listener, not a TIME_WAIT
 /// remnant of the host that just exited.
 #[cfg(unix)]
-pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+fn bind_preferred_once(port: u16) -> std::io::Result<std::net::TcpListener> {
     if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
         return Ok(listener);
     }
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250)).is_ok() {
         // Someone is live on this port (loopback or wildcard) - don't shadow
-        // it; let the caller fall back to an ephemeral port.
+        // it; let the caller handle the taken port (the engine falls back to
+        // a fresh band port, the standalone relay host refuses to start).
         return Err(std::io::Error::from(std::io::ErrorKind::AddrInUse));
     }
     let socket = socket2::Socket::new(
@@ -720,8 +1006,43 @@ pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener
 }
 
 #[cfg(not(unix))]
-pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+fn bind_preferred_once(port: u16) -> std::io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(("127.0.0.1", port))
+}
+
+/// How long a preferred-port bind keeps retrying before conceding the port.
+///
+/// Sized for a previous session still letting go, not for waiting out another
+/// application: the engine's own listeners close as its runtime winds down, and
+/// on macOS that was measured taking anywhere from microseconds to a few
+/// milliseconds after `disable()` returned.
+const PREFERRED_BIND_GRACE: Duration = Duration::from_millis(250);
+
+/// Bind the preferred port, retrying briefly before falling back.
+///
+/// The single attempt below answers "is the port free *right now*", and for a
+/// port we are trying to *re*claim that is the wrong question: our own previous
+/// session may still be releasing it. Conceding on the first refusal is what
+/// makes a quick disable/enable land on a fresh port - precisely what the
+/// preferred port exists to prevent, and what CLI tools baking the relay port
+/// into their configs cannot survive.
+///
+/// The engine's own teardown is ordered now (see the detached-listener join in
+/// `start`), so this is the belt to that braces: it also covers a port held by
+/// a `TIME_WAIT` remnant that has not yet expired, or by anything else
+/// transient, without needing to know which. Bounded, so a port a *foreign*
+/// application genuinely owns costs one short delay at enable time and then
+/// falls back exactly as before - the live-listener probe inside still refuses
+/// to shadow it.
+pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+    let deadline = std::time::Instant::now() + PREFERRED_BIND_GRACE;
+    loop {
+        match bind_preferred_once(port) {
+            Ok(listener) => return Ok(listener),
+            Err(e) if std::time::Instant::now() >= deadline => return Err(e),
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
 }
 
 /// Build the PAC (proxy auto-config) script WinINET runs for every connection.
@@ -752,6 +1073,20 @@ fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) 
     s
 }
 
+/// The `Host` header value of a raw HTTP request head, if one is present in
+/// `buf`. Tolerant by design: the PAC responder reads a single buffer and
+/// never parses the request beyond this.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn request_host(buf: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(buf).ok()?;
+    text.split("\r\n").skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("host")
+            .then(|| value.trim().to_string())
+    })
+}
+
 /// Serve the PAC script on a dedicated loopback listener. WinINET fetches the
 /// `AutoConfigURL` *directly* (not through the proxy), so this must be a plain
 /// HTTP responder, separate from the hudsucker proxy on `proxy_port`. The body
@@ -767,14 +1102,33 @@ async fn serve_pac(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     loop {
         let Ok((mut stream, _)) = listener.accept().await else {
+            // Transient accept errors resolve on their own; the pause keeps a
+            // permanently failing listener from spinning this loop at 100%
+            // CPU for the engine's lifetime.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             continue;
         };
         let rules = rules.clone();
         let upstream = upstream.clone();
         tokio::spawn(async move {
-            // Consume the request (a small GET we don't parse) before replying.
+            // Consume the request before replying. Parsed only far enough to
+            // read `Host`: the system PAC fetcher addresses us as loopback,
+            // while a DNS-rebound browser request arrives under the attacker's
+            // hostname - refuse it rather than disclose the engine port the
+            // PAC body carries. A request with no Host line (not a browser)
+            // stays served. Same rule as the relay's, shared in the parent
+            // module.
             let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf).await;
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            let foreign_host =
+                request_host(&buf[..n]).is_some_and(|h| !crate::proxy::authority_is_loopback(&h));
+            if foreign_host {
+                let resp =
+                    "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.shutdown().await;
+                return;
+            }
             let body = pac_script(&rules.borrow(), proxy_port, upstream.as_deref());
             let resp = format!(
                 "HTTP/1.1 200 OK\r\n\
@@ -789,7 +1143,8 @@ async fn serve_pac(
     }
 }
 
-/// Start the engine on an ephemeral loopback port. Blocks until the proxy
+/// Start the engine on a loopback port - the preferred one when the config
+/// carries it, else a fresh pick from the stable band. Blocks until the proxy
 /// has built and bound (or fails), then returns a handle. The tokio runtime
 /// lives on the spawned thread and is torn down when the handle is stopped
 /// or dropped.
@@ -857,6 +1212,8 @@ where
         mode: mode_rx,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
+        claude_code_route: false,
+        anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -965,25 +1322,35 @@ where
                 };
 
                 let _ = ready_tx.send(Ok(()));
-                // Bring up the PAC responder on the engine runtime; it dies with
-                // the runtime when the engine stops. Non-fatal if it can't start
-                // - the proxy still runs, WinINET just fails the PAC fetch and
-                // falls back to DIRECT (no interception) rather than stranding
-                // traffic.
+                // The PAC responder and the relay run as detached tasks on this
+                // runtime, and neither watches the shutdown channel - they are
+                // accept loops with no exit condition. Their handles are kept so
+                // the teardown below can close their listeners *before* this
+                // future returns; see the note there.
+                let mut detached: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+                // Bring up the PAC responder on the engine runtime. Non-fatal if
+                // it can't start - the proxy still runs, WinINET just fails the
+                // PAC fetch and falls back to DIRECT (no interception) rather
+                // than stranding traffic.
                 #[cfg(any(target_os = "windows", target_os = "macos"))]
                 {
                     match tokio::net::TcpListener::from_std(pac_listener) {
                         Ok(pac) => {
-                            tokio::spawn(serve_pac(pac, pac_rules_rx, port, upstream_proxy));
+                            detached.push(tokio::spawn(serve_pac(
+                                pac,
+                                pac_rules_rx,
+                                port,
+                                upstream_proxy,
+                            )));
                         }
                         Err(e) => eprintln!("gate proxy PAC listener failed to start: {e}"),
                     }
                 }
-                // Bring up the CLI reverse-proxy relay on the same runtime;
-                // like the PAC responder it dies with the runtime on stop.
+                // Bring up the CLI reverse-proxy relay on the same runtime.
                 // Non-fatal: if it can't adopt its listener the MITM proxy
                 // still runs, only CLI tools pointed at the relay fail.
-                if let Err(e) = super::relay::spawn(
+                match super::relay::spawn(
                     relay_listener,
                     relay_gateway,
                     relay_key_rx,
@@ -993,10 +1360,26 @@ where
                     relay_intercept_rx,
                     relay_owner_uid,
                 ) {
-                    eprintln!("gate proxy relay failed to start: {e}");
+                    Ok(handle) => detached.push(handle),
+                    Err(e) => eprintln!("gate proxy relay failed to start: {e}"),
                 }
                 if let Err(e) = proxy.start().await {
                     eprintln!("gate proxy engine stopped with error: {e}");
+                }
+
+                // Close the detached listeners here, rather than leaving them to
+                // the runtime drop. `stop()` joins this thread, so a caller is
+                // entitled to read a returned `disable()` as "the ports are
+                // free": the persisted-port reuse on the next enable depends on
+                // exactly that, and the relay port is baked into CLI tool
+                // configs, so losing it points those tools at a dead address.
+                // Runtime drop does eventually cancel these tasks, but it is not
+                // ordered against this future returning - measured on macOS,
+                // both listeners were still accepting after `disable()` returned
+                // in a few percent of enable/disable cycles.
+                for handle in detached {
+                    handle.abort();
+                    let _ = handle.await;
                 }
             });
 
@@ -1031,6 +1414,231 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests name this type; the handler infers it from `classify_client`.
+    use crate::proxy::ClientClass;
+
+    /// Cowork's turn, as captured: a GET on a path the `chatgpt` entry claims,
+    /// upgraded to a WebSocket.
+    fn cowork_upgrade() -> Request<()> {
+        Request::builder()
+            .method("GET")
+            .uri("https://chatgpt.com/backend-api/codex/responses")
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .body(())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_websocket_upgrade_is_recognised_whatever_the_casing() {
+        assert!(is_upgrade_request(&cowork_upgrade()));
+        // Real clients send `Connection: keep-alive, Upgrade`; the tokens are a
+        // comma-separated, case-insensitive list.
+        let multi = Request::builder()
+            .uri("https://chatgpt.com/backend-api/codex/responses")
+            .header("connection", "keep-alive, UPGRADE")
+            .header("upgrade", "WebSocket")
+            .body(())
+            .unwrap();
+        assert!(is_upgrade_request(&multi));
+    }
+
+    #[test]
+    fn an_ordinary_request_is_not_an_upgrade() {
+        let plain = Request::builder()
+            .method("POST")
+            .uri("https://chatgpt.com/backend-api/codex/responses")
+            .header("connection", "keep-alive")
+            .body(())
+            .unwrap();
+        assert!(!is_upgrade_request(&plain));
+        // `Upgrade` alone, without the `Connection` token, is not a real upgrade
+        // per RFC 9110 and must not cost the request its route.
+        let dangling = Request::builder()
+            .uri("https://chatgpt.com/backend-api/codex/responses")
+            .header("upgrade", "websocket")
+            .body(())
+            .unwrap();
+        assert!(!is_upgrade_request(&dangling));
+    }
+
+    #[test]
+    fn the_path_that_carries_the_upgrade_is_one_we_would_otherwise_rewrite() {
+        // The guard only earns its place if the router would have claimed this
+        // path. If this assertion ever fails the upgrade was passing through
+        // anyway and the guard is dead code.
+        let mut relay: Vec<ProxyDomain> = crate::proxy::default_domains()
+            .into_iter()
+            .filter(|d| d.slug == "chatgpt")
+            .collect();
+        relay[0].enabled = true;
+        let req = cowork_upgrade();
+        assert_eq!(
+            decide(
+                &rules_for_client(&relay, ClientClass::App),
+                req.uri().host().unwrap(),
+                req.uri().path()
+            ),
+            Decision::Rewrite {
+                upstream_url: "https://chatgpt.com/backend-api".into(),
+                slug: "chatgpt".into()
+            },
+        );
+    }
+
+    /// Serialize the tests that bind real listeners in [`STABLE_PORT_RANGE`].
+    ///
+    /// [`bind_fresh`] reads the persisted ports through the path seams to know
+    /// what to *skip*, which already puts these tests under the rule
+    /// `path_env_lock` states: anything reading those paths that would be wrong
+    /// to see another test's must take the lock. Skipping it also let them race
+    /// the real-engine tests in `manager_core`, which hold the same lock: this
+    /// band is 100 ports wide, an engine holds three of them, and a fresh bind
+    /// here could take the very port an enable/disable cycle there was about to
+    /// reclaim. That surfaced as a ~7%-per-run failure of
+    /// `engine_port_persists_across_an_enable_cycle` on macOS, which binds one
+    /// more listener per engine than Linux does.
+    fn band_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::env::path_env_lock()
+    }
+
+    /// Everything switched off, as the forced-route tests want it.
+    fn all_off() -> Vec<ProxyDomain> {
+        crate::proxy::default_domains()
+            .into_iter()
+            .map(|mut d| {
+                d.enabled = false;
+                d
+            })
+            .collect()
+    }
+
+    /// The forced route must not become the default route. Without the
+    /// selector, Claude Code's own host is decided by the catalog like any
+    /// other - so a switched-off Anthropic entry stays switched off, and the
+    /// `claude_code_selector_routes_when_desktop_domain_is_off` e2e proves a
+    /// property of the selector rather than of the host.
+    #[test]
+    fn anthropic_without_the_selector_keeps_the_live_catalog() {
+        let live = all_off();
+        let rules = route_rules(&live, false, Some("api.anthropic.com"));
+        assert!(matches!(rules, Cow::Borrowed(_)), "nothing to force");
+        assert!(
+            !should_intercept_host(&rules, "api.anthropic.com"),
+            "an unselected connection must be tunnelled while the entry is off"
+        );
+        // And the selector is what changes that, on this same input.
+        assert!(should_intercept_host(
+            &route_rules(&live, true, Some("api.anthropic.com")),
+            "api.anthropic.com"
+        ));
+    }
+
+    /// The forced entry is pushed with `enabled: true`, so the one thing that
+    /// keeps it from routing every host is that it is scoped to its own. A
+    /// selected connection to anything else must see the catalog untouched.
+    #[test]
+    fn the_selector_forces_nothing_for_another_host() {
+        let live = all_off();
+        for host in ["api.openai.com", "openrouter.ai", "claude.ai"] {
+            let rules = route_rules(&live, true, Some(host));
+            assert!(
+                matches!(rules, Cow::Borrowed(_)),
+                "{host} is not Claude Code's destination"
+            );
+            assert!(
+                !should_intercept_host(&rules, host),
+                "{host} must still tunnel with every domain off"
+            );
+        }
+    }
+
+    /// A fresh listener must land in the band we can actually rebind next run,
+    /// not on an OS-assigned ephemeral port.
+    #[test]
+    fn bind_fresh_picks_from_the_stable_band() {
+        let _lock = band_lock();
+        let listener = bind_fresh().expect("a free port in the band");
+        let port = listener.local_addr().unwrap().port();
+        assert!(
+            STABLE_PORT_RANGE.contains(&port),
+            "{port} is outside {STABLE_PORT_RANGE:?}"
+        );
+    }
+
+    /// Successive binds skip what the previous one holds, so the three
+    /// listeners one engine brings up never collide.
+    #[test]
+    fn bind_fresh_skips_ports_already_held() {
+        let _lock = band_lock();
+        let first = bind_fresh().expect("first port");
+        let second = bind_fresh().expect("second port");
+        let (a, b) = (
+            first.local_addr().unwrap().port(),
+            second.local_addr().unwrap().port(),
+        );
+        assert_ne!(a, b);
+        assert!(STABLE_PORT_RANGE.contains(&a) && STABLE_PORT_RANGE.contains(&b));
+    }
+
+    /// The band is offered in full, so a fresh bind never runs out of it while
+    /// a port is still free.
+    #[test]
+    fn candidate_ports_covers_the_band_exactly_once() {
+        let mut ports = candidate_ports(&[]);
+        ports.sort_unstable();
+        assert_eq!(ports, STABLE_PORT_RANGE.collect::<Vec<_>>());
+    }
+
+    /// Ports this install remembers go to the back: the PAC and relay
+    /// listeners bind after the MITM one and reclaim theirs by preference, so a
+    /// fresh pick must not take a port that is about to be wanted.
+    #[test]
+    fn candidate_ports_defers_the_ports_we_remember() {
+        let ours = vec![
+            STABLE_PORT_RANGE.start + 7,
+            STABLE_PORT_RANGE.start + 42,
+            STABLE_PORT_RANGE.start + 91,
+        ];
+        let ports = candidate_ports(&ours);
+        let tail = &ports[ports.len() - ours.len()..];
+        for port in &ours {
+            assert!(tail.contains(port), "{port} should be deferred to the tail");
+        }
+        // Deferred, not dropped: still every port in the band.
+        let mut sorted = ports.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, STABLE_PORT_RANGE.collect::<Vec<_>>());
+    }
+
+    /// The rotation is random, so concurrent hosts don't converge on one port.
+    #[test]
+    fn candidate_ports_starts_somewhere_different() {
+        let firsts: std::collections::HashSet<u16> =
+            (0..8).map(|_| candidate_ports(&[])[0]).collect();
+        assert!(
+            firsts.len() > 1,
+            "eight draws all starting at the same port is not a rotation: {firsts:?}"
+        );
+    }
+
+    /// Losing the persisted port must fall back into the band too - falling
+    /// back to an ephemeral port is what made the next restart move again.
+    #[test]
+    fn bind_loopback_falls_into_the_band_when_the_preferred_port_is_taken() {
+        let _lock = band_lock();
+        // A *live* listener on an ephemeral port: `bind_preferred` treats this
+        // as taken (as opposed to a TIME_WAIT remnant, which it reclaims).
+        let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("squatter");
+        let taken = squatter.local_addr().unwrap().port();
+        let (_listener, port) = bind_loopback(Some(taken)).expect("fallback binds");
+        assert_ne!(port, taken);
+        assert!(
+            STABLE_PORT_RANGE.contains(&port),
+            "{port} is outside {STABLE_PORT_RANGE:?}"
+        );
+    }
 
     #[test]
     fn rewrite_swaps_authority_keeps_path_and_injects_headers() {
@@ -1221,6 +1829,7 @@ mod tests {
             upstream_url: "https://api.anthropic.com".into(),
             rewrite_prefixes: vec!["/v1/".into()],
             passthrough_prefixes: vec![],
+            rewrite_suffixes: Vec::new(),
             enabled: true,
             supported: true,
         }];

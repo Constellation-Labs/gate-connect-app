@@ -257,6 +257,79 @@ pub fn force_off() -> Result<()> {
     set_auto_config("")
 }
 
+/// True if `host` is a loopback address - what our engine binds to. Used to
+/// distinguish a stranded Gate proxy from a user's real (remote) proxy.
+fn is_loopback(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "::1" | "localhost" | "0.0.0.0")
+}
+
+/// The port of a loopback PAC URL (e.g. `http://127.0.0.1:8123/proxy.pac`), or
+/// `None` when the URL is empty or not a loopback address we served. Used to
+/// spot a stranded PAC pointing at a dead engine.
+fn autoproxy_loopback_port(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
+    let authority = rest.split('/').next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    is_loopback(host).then(|| port.to_string())
+}
+
+/// True if something is accepting connections on 127.0.0.1:`port` right now.
+/// A refused/timed-out connect means the listener is gone.
+fn loopback_port_alive(port: &str) -> bool {
+    let Ok(p) = port.parse::<u16>() else {
+        return false;
+    };
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], p));
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300)).is_ok()
+}
+
+/// Startup fail-safe for when the snapshot can't save us, mirroring the macOS
+/// `clear_stranded_loopback`: a hard kill bypasses the graceful disable, and
+/// any path that loses the snapshot without unwinding WinINET (a crash between
+/// the registry write and the snapshot reaching disk, manual file deletion)
+/// used to leave `AutoConfigURL` pointing at our dead loopback PAC *forever* -
+/// the PAC fetch fails, WinINET silently falls back to DIRECT (fail-open,
+/// bypassing Gate while it shows "off"), and because the reconcile early-
+/// returned on a missing snapshot, no later startup repaired the value. Clear
+/// any slot that points at a loopback address with no listener; leave real
+/// (remote) proxies untouched. Returns the registry slots cleared. Promptless
+/// (HKCU).
+pub fn clear_stranded_loopback() -> Result<Vec<String>> {
+    let current = snapshot()?;
+    let mut cleared = Vec::new();
+
+    // PAC slot: stranded if the auto-config URL points at a dead loopback PAC.
+    if let Some(port) = autoproxy_loopback_port(&current.auto_config_url) {
+        if !loopback_port_alive(&port) {
+            set_auto_config("")?;
+            cleared.push("AutoConfigURL".to_string());
+        }
+    }
+
+    // Static slot: Gate never writes it (`enable_pac` clears `ProxyEnable`),
+    // so a stranded value here is not ours - but the check costs one connect
+    // probe and the failure mode (HTTPS pointed at a dead loopback port) is
+    // exactly what this sweep exists to rule out, so it mirrors the macOS
+    // sweep's coverage of the static slots. Only the plain `host:port` form
+    // is considered; the per-protocol `http=..;https=..` form is a user or
+    // admin config this never touches.
+    if current.enable != 0 && !current.server.contains('=') {
+        if let Some((host, port)) = current.server.trim().rsplit_once(':') {
+            if is_loopback(host) && !loopback_port_alive(port) {
+                let key = settings_key(true)?;
+                key.set_value("ProxyEnable", &0u32)
+                    .context("clearing stranded ProxyEnable")?;
+                notify_wininet();
+                cleared.push("ProxyServer".to_string());
+            }
+        }
+    }
+
+    Ok(cleared)
+}
+
 // --- Proxy environment variables -----------------------------------------
 //
 // WinINET's PAC above only reaches clients that go through WinINET. The
@@ -414,4 +487,34 @@ pub fn disable_env() -> Result<()> {
         anyhow::bail!("could not revert proxy environment ({})", failed.join("; "));
     }
     Ok(())
+}
+
+// --- Tests ----------------------------------------------------------------
+//
+// At the file's end, not beside `clear_stranded_loopback` where these were
+// written: `clippy::items_after_test_module` (denied through `-D warnings`)
+// rejects a test module with real items after it, and the proxy-environment
+// half above is exactly that.
+
+#[cfg(test)]
+mod stranded_tests {
+    use super::*;
+
+    #[test]
+    fn autoproxy_loopback_port_only_matches_loopback_pacs() {
+        assert_eq!(
+            autoproxy_loopback_port("http://127.0.0.1:8123/proxy.pac"),
+            Some("8123".to_string())
+        );
+        assert_eq!(
+            autoproxy_loopback_port("http://localhost:47110/proxy.pac"),
+            Some("47110".to_string())
+        );
+        // A corporate PAC on a real host is never ours to clear.
+        assert_eq!(
+            autoproxy_loopback_port("http://proxy.corp.example/pac"),
+            None
+        );
+        assert_eq!(autoproxy_loopback_port(""), None);
+    }
 }

@@ -28,7 +28,6 @@ test.describe("new UI routing", () => {
         name: "Codex",
         upstream_provider_name: "OpenAI",
         default_upstream_url: "https://gw.example/codex",
-        requires_upstream_credential: false,
         status: { kind: "drifted" as const, reason: "API base URL: https://api.openai.com/v1" },
       },
     ],
@@ -99,7 +98,6 @@ test.describe("new UI routing", () => {
           name: "Claude Code",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
       ],
@@ -135,7 +133,6 @@ test.describe("new UI routing", () => {
           name: "Claude Code",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
       ],
@@ -157,7 +154,6 @@ test.describe("new UI routing", () => {
           name: "Claude Code",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
-          requires_upstream_credential: false,
           status: { kind: "connected" },
         },
       ],
@@ -179,7 +175,6 @@ test.describe("new UI routing", () => {
           name: "Claude Code",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
       ],
@@ -221,7 +216,6 @@ test.describe("new UI drift repair", () => {
     name: "Codex",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://gw.example/codex",
-    requires_upstream_credential: false,
   };
   const drifted = {
     proxy: { running: true, ca_trusted: true },
@@ -364,7 +358,6 @@ test.describe("new UI: refreshing the inventory", () => {
           name: "Codex",
           upstream_provider_name: "OpenAI",
           default_upstream_url: "https://gw.example/codex",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
       ],
@@ -706,7 +699,6 @@ test.describe("new UI: the review names the file it will change", () => {
         name: "Codex",
         upstream_provider_name: "OpenAI",
         default_upstream_url: "https://gw.example/codex",
-        requires_upstream_credential: false,
         config_location: "/Users/someone/.codex/config.toml",
         status: {
           kind: "drifted" as const,
@@ -798,14 +790,19 @@ test.describe("new UI sidebar rail", () => {
   test("a group's eyebrow counts protected rows over rows", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    // OPEN AI holds Codex (detected, off), OpenAI apps and ChatGPT (both off).
-    // `exact`, because the routing banner's "0 of 3 Apps" contains the phrase.
-    await expect(app.page.getByText("0 of 3", { exact: true })).toBeVisible();
+    // OPEN AI holds Codex (detected, off) plus the OpenAI apps, ChatGPT and
+    // ChatGPT-app-chat domains (all off). Read off this group's own eyebrow
+    // rather than by text: every group draws one, and the Anthropic group's
+    // happens to carry the same count.
+    const openAiEyebrow = app.page
+      .getByRole("heading", { name: "OpenAI", exact: true })
+      .locator("xpath=following-sibling::span");
+    await expect(openAiEyebrow).toHaveText("0 of 4");
 
     // Routing the OpenAI apps domain with the engine up and the certificate
     // trusted makes it the group's one protected row.
     await app.page.getByRole("switch", { name: "OpenAI apps" }).click();
-    await expect(app.page.getByText("1 of 3", { exact: true })).toBeVisible();
+    await expect(openAiEyebrow).toHaveText("1 of 4");
   });
 
   test("the multi-provider tools share one Other tools eyebrow", async ({ boot }) => {

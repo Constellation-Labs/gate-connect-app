@@ -367,6 +367,79 @@ async fn relay_rejects_unknown_upstream() {
     );
 }
 
+/// The browser boundary: a DNS-rebound request arrives carrying the
+/// attacker's hostname in `Host`, and a cross-site fetch carries the page's
+/// `Origin`. Both must be refused before any credential is injected - CORS
+/// does not stop a "simple" cross-origin POST from being *delivered*, so the
+/// relay itself is the only thing standing between a web page and billed
+/// inference on the owner's credential.
+#[tokio::test]
+async fn relay_refuses_rebound_host_and_cross_site_origin() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
+    let client = reqwest::Client::builder().build().unwrap();
+
+    // DNS rebinding: the TCP connection reaches our loopback listener, but
+    // the Host header still names the attacker's domain.
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("host", "attacker.example")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("relay request should return a response");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Cross-site fetch: loopback Host (the browser resolved 127.0.0.1
+    // directly) but a foreign Origin stamped by the page.
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("origin", "https://attacker.example")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("relay request should return a response");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // A loopback Origin (a local web UI talking to its own machine) stays
+    // served - the boundary is site, not browser-ness.
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("origin", "http://127.0.0.1:5173")
+        .header("x-gate-upstream-url", "https://api.anthropic.com")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("relay request should return a response");
+    assert!(
+        resp.status().is_success(),
+        "loopback origin should be served, got {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "only the loopback-origin request may reach the gateway"
+    );
+}
+
 /// A non-owner peer can't spend the host credential: with an `owner_uid` that
 /// can't match our connection, the relay drops the socket before serving, so
 /// the client sees a closed connection and nothing reaches the gateway. UID

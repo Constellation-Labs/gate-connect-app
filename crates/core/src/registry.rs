@@ -107,14 +107,16 @@ pub trait Integration: Send + Sync {
     fn default_upstream_url(&self) -> &'static str;
 
     /// Does this tool need Gate Connect to store an upstream provider
-    /// credential separately? Claude Code, Codex, and OpenCode all bring
-    /// their own creds (OAuth token, `ANTHROPIC_API_KEY`, `codex login`,
-    /// per-provider `opencode auth`, etc.) and Gate forwards whatever they
-    /// send, so they return false. The `true` default is kept for any
-    /// future tool that can't authenticate upstream on its own; UI / CLI
-    /// use this to decide whether to show the credential-picker step.
+    /// credential separately? No shipped integration does - Claude Code,
+    /// Codex, and OpenCode all bring their own creds (OAuth token,
+    /// `ANTHROPIC_API_KEY`, `codex login`, per-provider `opencode auth`,
+    /// etc.) and Gate forwards whatever they send. Defaulting `false` keeps
+    /// the method from being a trap: a `true` default silently blocked a new
+    /// integration's `connect` behind a credential there is no UI to enter.
+    /// An integration that opts in must also bring a way to collect the
+    /// credential - today that is the CLI's `set-upstream` only.
     fn requires_upstream_credential(&self) -> bool {
-        true
+        false
     }
 
     /// Does the tool's current on-disk config carry Gate Connect's own

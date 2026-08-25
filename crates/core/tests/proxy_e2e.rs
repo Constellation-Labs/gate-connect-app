@@ -180,6 +180,10 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
     let resp = client
         .post("https://api.anthropic.com/v1/messages")
         .header("authorization", "Bearer app-token")
+        .header(
+            "anthropic-beta",
+            "claude-code-20250219,context-1m-2025-08-07",
+        )
         .json(&serde_json::json!({ "model": "claude", "messages": [] }))
         .send()
         .await
@@ -212,6 +216,75 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
         r.header("authorization"),
         Some("Bearer app-token"),
         "the client's own credential must be forwarded untouched"
+    );
+    assert_eq!(
+        r.header("anthropic-beta"),
+        Some("claude-code-20250219,context-1m-2025-08-07"),
+        "the model-selected 1M capability must survive the forward proxy"
+    );
+}
+
+/// Claude Code has its own explicit proxy selector because the Desktop domain
+/// is independently switchable. Even with that catalog entry off, a connected
+/// Claude Code process must still be intercepted instead of silently reaching
+/// Anthropic directly.
+#[tokio::test]
+async fn claude_code_selector_routes_when_desktop_domain_is_off() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let mut domains = default_domains();
+    for domain in &mut domains {
+        domain.enabled = false;
+    }
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            billing_mode: Default::default(),
+            domains,
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let proxy_url = format!("http://gate-claude-code:route@127.0.0.1:{}", engine.port());
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(proxy_url).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("anthropic-beta", "context-1m-2025-08-07")
+        .json(&serde_json::json!({ "model": "claude-opus-4-1[1m]", "messages": [] }))
+        .send()
+        .await
+        .expect("Claude Code selector must reach Gate with the Desktop domain off");
+    assert!(resp.status().is_success());
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "request must not blind-tunnel around Gate");
+    assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        reqs[0].header("anthropic-beta"),
+        Some("context-1m-2025-08-07"),
+        "Claude Code's model-selected 1M beta must survive the forced route"
+    );
+    assert_eq!(
+        reqs[0].header("proxy-authorization"),
+        None,
+        "the local route selector must not be forwarded"
     );
 }
 
@@ -795,7 +868,7 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
 /// proxy once at their own launch): an engine restarted with the
 /// previously-bound port as `preferred_port` must come back on the same
 /// address and still rewrite to the gateway, and a taken preferred port must
-/// fall back to an ephemeral one instead of failing the start.
+/// fall back to another port instead of failing the start.
 #[tokio::test]
 async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     let _serial = SERIAL.lock().await;
@@ -817,9 +890,10 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
         upstream_proxy: None,
     };
 
-    // First run: ephemeral bind, note where it landed.
-    let engine = engine::start(config(None), || {}).expect("first engine start");
-    let port = engine.port();
+    // First run on a port of our own choosing (see `seed_preferred_port`).
+    let port = seed_preferred_port();
+    let engine = engine::start(config(Some(port)), || {}).expect("first engine start");
+    assert_eq!(engine.port(), port, "first run must take the seeded port");
     engine.stop();
 
     // Restart preferring that port: same address, and it still routes.
@@ -845,17 +919,39 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     );
     engine.stop();
 
-    // Preferred port taken by someone else: fall back to an ephemeral port
-    // rather than failing the start.
-    let blocker = std::net::TcpListener::bind(("127.0.0.1", port)).expect("occupying the port");
-    let engine = engine::start(config(Some(port)), || {}).expect("fallback engine start");
+    // Preferred port taken by someone else: fall back to another port rather
+    // than failing the start. The blocker holds a port of its own instead of
+    // the one just freed above: a freed port can be picked up by anything else
+    // on the machine (including this suite's other test binaries) between the
+    // stop and the rebind, which would make this bind flaky.
+    let blocker = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupying a port");
+    let taken = blocker.local_addr().unwrap().port();
+    let engine = engine::start(config(Some(taken)), || {}).expect("fallback engine start");
     assert_ne!(
         engine.port(),
-        port,
-        "a taken preferred port must fall back to an ephemeral one"
+        taken,
+        "a taken preferred port must fall back to another one"
     );
     engine.stop();
     drop(blocker);
+}
+
+/// A port from the OS's ephemeral range, released before it is returned, for
+/// the restart tests to hand back as a *preferred* port.
+///
+/// They cannot let the engine pick its own: a fresh pick comes from
+/// `engine::bind_fresh`'s 100-port band, and a band port freed between the stop
+/// and the restart is fair game for anything else scanning that band - a live
+/// Gate Connect install on the same machine, or another engine-starting test
+/// binary under a runner that executes binaries in parallel (plain `cargo
+/// test` runs them one at a time, but nothing pins the project to that).
+/// Seeding from the ephemeral range instead keeps these tests out
+/// of that shared namespace while still exercising the real reclaim path
+/// (`bind_preferred`, including the `SO_REUSEADDR` rebind over the first run's
+/// TIME_WAIT remnants).
+fn seed_preferred_port() -> u16 {
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("seeding a preferred port");
+    probe.local_addr().unwrap().port()
 }
 
 /// Same restart contract for the PAC listener (PAC-driven platforms only):
@@ -884,9 +980,14 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
         upstream_proxy: None,
     };
 
-    // First run: note the PAC port.
-    let engine = engine::start(config(None), || {}).expect("first engine start");
-    let pac_port = engine.pac_port();
+    // First run on a PAC port of our own choosing (see `seed_preferred_port`).
+    let pac_port = seed_preferred_port();
+    let engine = engine::start(config(Some(pac_port)), || {}).expect("first engine start");
+    assert_eq!(
+        engine.pac_port(),
+        pac_port,
+        "first run must take the seeded PAC port"
+    );
     engine.stop();
 
     // Restart preferring it: same address, and the served PAC points at the
@@ -909,14 +1010,16 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
     );
     engine.stop();
 
-    // Taken PAC port: fall back rather than failing the start.
-    let blocker =
-        std::net::TcpListener::bind(("127.0.0.1", pac_port)).expect("occupying the PAC port");
-    let engine = engine::start(config(Some(pac_port)), || {}).expect("fallback engine start");
+    // Taken PAC port: fall back rather than failing the start. As above, the
+    // blocker holds a port of its own rather than racing to reclaim the one
+    // just freed.
+    let blocker = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupying a port");
+    let taken = blocker.local_addr().unwrap().port();
+    let engine = engine::start(config(Some(taken)), || {}).expect("fallback engine start");
     assert_ne!(
         engine.pac_port(),
-        pac_port,
-        "a taken preferred PAC port must fall back to an ephemeral one"
+        taken,
+        "a taken preferred PAC port must fall back to another one"
     );
     engine.stop();
     drop(blocker);

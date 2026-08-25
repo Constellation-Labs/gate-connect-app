@@ -68,10 +68,6 @@ impl Integration for EnvProxy {
         DEFAULT_UPSTREAM_URL
     }
 
-    fn requires_upstream_credential(&self) -> bool {
-        false
-    }
-
     /// "Installed" means the platform can export at all. There is no binary to
     /// look for: the capability is the OS, not a tool.
     fn detect(&self) -> Result<bool> {
