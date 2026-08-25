@@ -362,12 +362,48 @@ fn engine_port() -> Option<u16> {
 /// can rebind the same address - hence the [`engine_likely_running`] gate. Use
 /// [`persisted_engine_proxy_url`] where the question is "is this address ours"
 /// rather than "may I route through it now".
+///
+/// Both halves of the liveness question are required, for the reason
+/// [`engine_hosted_elsewhere`] already spells out: the snapshot proves *Gate*
+/// turned routing on, and the probe proves someone is still serving it. The
+/// snapshot outlives a process that died without running its revert (SIGKILL,
+/// OOM, power loss) - `reconcile_on_startup` clears it, but not until the app
+/// is launched again. In that window the snapshot alone reports every
+/// proxy-routed tool as Connected while its egress is a dead port, and the
+/// process best placed to notice is the CLI, which reads these same files
+/// beside a menubar app that is no longer there.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn engine_proxy_url() -> Option<String> {
-    if !engine_likely_running() {
+    if !engine_likely_running() || !engine_listening() {
         return None;
     }
     persisted_engine_proxy_url()
+}
+
+/// Whether something is accepting on the persisted engine port right now.
+///
+/// Ordered so the common case is free. The process hosting the engine holds a
+/// handle that already answers this ([`ProxyManager::hosts_live_engine`]), and
+/// it is also the process that polls tool status on a timer, so it never
+/// reaches the probe. A process with no handle - the CLI, or a second app
+/// instance - pays one loopback connect, which a dead port refuses immediately;
+/// the timeout only bounds pathological states, matching
+/// [`engine_hosted_elsewhere`].
+///
+/// Callers gate on [`engine_likely_running`] first, so a machine with routing
+/// off costs nothing at all: no snapshot, no probe.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub fn engine_listening() -> bool {
+    if manager().hosts_live_engine() {
+        return true;
+    }
+    engine_port().is_some_and(|port| {
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            std::time::Duration::from_millis(250),
+        )
+        .is_ok()
+    })
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]

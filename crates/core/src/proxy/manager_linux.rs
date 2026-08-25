@@ -53,6 +53,21 @@ pub fn manager() -> &'static ProxyManager {
 }
 
 impl ProxyManager {
+    /// Whether *this* process is holding routing open on the helper daemon.
+    ///
+    /// The free half of [`crate::proxy::engine_listening`], and here the handle
+    /// is the control connection rather than an engine: it is `Some` for
+    /// exactly as long as this process has the daemon intercepting, so the GUI
+    /// answers without a syscall and only a handle-less caller (the CLI) probes
+    /// the port. `try_lock` for the same reason as the other platforms - a
+    /// missed lock means "ask the port", not "nothing is running".
+    pub(crate) fn hosts_live_engine(&self) -> bool {
+        self.client
+            .try_lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
+    }
+
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");

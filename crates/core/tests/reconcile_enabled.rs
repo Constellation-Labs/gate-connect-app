@@ -72,11 +72,18 @@ fn sign_in() {
     account::save("https://gw.example.com", Some("sk-gw-testkey123")).unwrap();
 }
 
-/// Seed the persisted ports and routing snapshot that a running proxy owns.
-/// Claude Code now uses the forward-proxy port so its Anthropic base URL stays
-/// canonical; the relay port remains seeded because provider reconciliation
-/// uses it as its general liveness prerequisite.
-fn set_relay_port(port: u16) {
+/// Seed the persisted ports and routing snapshot that a running proxy owns,
+/// and bind the forward-proxy port for real. Claude Code uses that port so its
+/// Anthropic base URL stays canonical; the relay port remains seeded because
+/// provider reconciliation uses it as its general liveness prerequisite.///
+/// The listener is returned rather than dropped because the seeded files are
+/// only half of what a live proxy looks like: `engine_proxy_url()` probes the
+/// port before handing it out, so a caller that lets this fall out of scope is
+/// describing a crashed engine, not a running one. Bound on an ephemeral port
+/// so concurrent test binaries cannot collide.
+fn bind_proxy_ports() -> std::net::TcpListener {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("relay-port"), port.to_string()).unwrap();
@@ -88,6 +95,7 @@ fn set_relay_port(port: u16) {
     #[cfg(target_os = "windows")]
     let snapshot = r#"{ "enable": 0, "server": "", "bypass": "", "auto_config_url": "" }"#;
     fs::write(dir.join("system-proxy.snapshot.json"), snapshot).unwrap();
+    listener
 }
 
 /// Make Claude Code look installed-but-unconfigured: its config dir exists
@@ -106,7 +114,7 @@ fn tool_installed_after_enable_is_configured() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let proxy = bind_proxy_ports();
     install_claude_unconfigured();
     // Precondition: Anthropic is on by default, and Claude is present but not
     // yet routed through Gate.
@@ -121,9 +129,13 @@ fn tool_installed_after_enable_is_configured() {
     )
     .unwrap();
     let env_block = settings.get("env").and_then(|v| v.as_object()).unwrap();
+    let expected_proxy = format!(
+        "http://gate-claude-code:route@127.0.0.1:{}",
+        proxy.local_addr().unwrap().port()
+    );
     assert_eq!(
         env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
-        Some("http://gate-claude-code:route@127.0.0.1:9977")
+        Some(expected_proxy.as_str())
     );
     // The proxy variable is inherited by everything `claude` spawns, so the
     // loopback bypass travels with it or a local MCP server goes through the
@@ -142,12 +154,45 @@ fn tool_installed_after_enable_is_configured() {
     );
 }
 
+/// An engine that died without running its revert must not read as Connected.
+///
+/// The snapshot outlives the process that wrote it - that is the whole point
+/// of `reconcile_on_startup`, which clears it at the *next* launch - so between
+/// a SIGKILL and that launch the on-disk state is indistinguishable from a
+/// healthy one: snapshot present, port persisted, tool config pointing at it.
+/// Only the port itself can tell the two apart, which is why
+/// `engine_proxy_url()` probes it rather than trusting the snapshot alone.
+///
+/// Reported by whoever asks first, and that is usually not the app: the GUI
+/// heals this on launch, so the process that sees the stale window is the CLI
+/// running beside a menubar app that is no longer there.
+#[test]
+fn a_crashed_engine_reads_as_drift_not_connected() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    let proxy = bind_proxy_ports();
+    install_claude_unconfigured();
+    provider::reconcile_enabled().unwrap();
+    assert_eq!(claude_status(), Status::Connected);
+
+    // The engine goes away without reverting anything: the port stops
+    // accepting, while the snapshot and the tool's config stay exactly as it
+    // left them.
+    drop(proxy);
+
+    assert!(
+        matches!(claude_status(), Status::Drifted(_)),
+        "a tool pointed at a dead proxy port is drifted, not connected"
+    );
+}
+
 #[test]
 fn user_owned_anthropic_betas_are_preserved_on_connect() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _proxy = bind_proxy_ports();
     install_claude_unconfigured();
     fs::write(
         env::claude_code_settings_path().unwrap(),
@@ -204,7 +249,7 @@ fn already_connected_tool_is_left_untouched() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _proxy = bind_proxy_ports();
     install_claude_unconfigured();
 
     // First sweep connects it.
@@ -231,7 +276,7 @@ fn enable_while_proxy_off_persists_intent_for_reconcile() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _proxy = bind_proxy_ports();
     install_claude_unconfigured();
 
     // Off then on with the proxy stopped. `disable` persists the off-intent;
@@ -283,7 +328,7 @@ fn stale_managed_config_is_reapplied() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let proxy = bind_proxy_ports();
     install_claude_with_stale_managed_config();
     // Precondition: the old scheme reads as drift, not as connected.
     assert!(matches!(claude_status(), Status::Drifted(_)));
@@ -295,9 +340,13 @@ fn stale_managed_config_is_reapplied() {
     let raw = fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap();
     let settings: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let env_block = settings.get("env").and_then(|v| v.as_object()).unwrap();
+    let expected_proxy = format!(
+        "http://gate-claude-code:route@127.0.0.1:{}",
+        proxy.local_addr().unwrap().port()
+    );
     assert_eq!(
         env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
-        Some("http://gate-claude-code:route@127.0.0.1:9977")
+        Some(expected_proxy.as_str())
     );
     assert!(!env_block.contains_key("ANTHROPIC_BASE_URL"));
     assert!(!raw.contains("X-Gate-Api-Key"));
