@@ -33,7 +33,7 @@ export interface RunningApps {
   stage: RunningAppsStage | null;
   busy: boolean;
   /** Probe, and open the sequence only if something is actually running. */
-  offerAfterChange: () => Promise<void>;
+  offerAfterChange: (tools?: string[]) => Promise<void>;
   goToConfirm: () => void;
   goBack: () => void;
   closeApps: () => Promise<void>;
@@ -45,17 +45,22 @@ export function useRunningApps({ onError }: { onError?: (err: unknown) => void }
   const [busy, setBusy] = useState(false);
 
   /**
-   * Called after a config write that succeeded. Nothing running means nothing to
-   * close, and a dialog saying so would be a dialog about nothing.
+   * Called after a config write that succeeded, with the tools it changed.
+   * Nothing running means nothing to close, and a dialog saying so would be a
+   * dialog about nothing.
    *
    * A failed probe stays silent rather than defaulting to showing: the popover
    * defaults the other way, but it is choosing whether to show *advice*, and
    * this sequence offers to kill processes. Guessing wrong here means offering
    * to close apps that may not be open.
    */
-  const offerAfterChange = useCallback(async () => {
+  const offerAfterChange = useCallback(async (tools?: string[]) => {
     try {
-      const { agents } = await runningAgents();
+      // Narrowed to what actually changed. A master toggle passes nothing and
+      // still offers everything, because it moved every tool's route; a single
+      // app's toggle moved only its own, and naming the others would ask to
+      // kill work for no reason.
+      const { agents } = await runningAgents(tools);
       if (agents.length === 0) return;
       // Process names, deduplicated: two `claude` processes are one app to the
       // person reading this, and the pid is not something they can act on.

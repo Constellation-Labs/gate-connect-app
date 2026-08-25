@@ -456,7 +456,15 @@ export interface RunningAgents {
 /** The running agents themselves rather than a count: name, pid, start time,
  * and whether each predates routing. Same process set and staleness rule as
  * the two count probes above. */
-export const runningAgents = () => invoke<RunningAgents>("running_agents");
+/** Running agent processes, optionally narrowed to the ones belonging to
+ *  `tools`.
+ *
+ *  Omitting `tools` scans for every agent, which is right after a master toggle
+ *  - it changed the route for all of them. After a single app's toggle it is
+ *  wrong: offering to close Claude because someone switched Codex names
+ *  processes the change never touched. */
+export const runningAgents = (tools?: string[]) =>
+  invoke<RunningAgents>("running_agents", { tools });
 
 /** Terminate running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up

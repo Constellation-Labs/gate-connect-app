@@ -1752,12 +1752,36 @@ struct RunningAgentsDto {
 /// `(async)` for the same reason as [`diagnostics`]: this walks the whole
 /// process table, and a sync command would do that on the main thread - the
 /// GTK loop on Linux - with the popover frozen until it returns.
+/// `tools` narrows the scan to the processes belonging to those tool slugs.
+///
+/// Omitted means every agent, which is right for a master toggle: it changed
+/// the route for all of them, and all of them are stale until they restart. It
+/// is wrong for a single tool - offering to close Claude because someone
+/// switched Codex names processes the change did not touch, and asks to kill
+/// work for no reason.
+///
+/// A slug with no process to look for contributes nothing rather than widening
+/// the scan back to everything. `agent_process_name` covers the three tools this
+/// scan knows; OpenClaw and Hermes have none, and a filter that silently fell
+/// back to "all" for them would reintroduce exactly this bug for the tools it
+/// least applies to.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
-fn running_agents() -> RunningAgentsDto {
+fn running_agents(tools: Option<Vec<String>>) -> RunningAgentsDto {
+    let wanted: Option<Vec<&'static str>> = tools.map(|slugs| {
+        slugs
+            .iter()
+            .filter_map(|slug| agent_process_name(slug))
+            .collect()
+    });
     let bound = routing_bound_unix();
     let mut agents = Vec::new();
     for_each_agent_process(|process| {
+        if let Some(wanted) = &wanted {
+            if !wanted.contains(&agent_name_of(process).as_str()) {
+                return;
+            }
+        }
         let started_at_unix = process.start_time();
         agents.push(RunningAgent {
             name: process.name().to_string_lossy().to_string(),

@@ -100,7 +100,10 @@ fn a_key_in_a_message_is_scrubbed() {
     );
 
     let body = tmp.contents();
-    assert!(!body.contains("sk-gw-abcdef0123456789"), "the key must not land");
+    assert!(
+        !body.contains("sk-gw-abcdef0123456789"),
+        "the key must not land"
+    );
     assert!(body.contains("<redacted>"));
     // The rest of the sentence survives, or the line would say nothing useful.
     assert!(body.contains("gateway refused"));

@@ -189,3 +189,35 @@ describe("useRunningApps: closing takes two answers", () => {
     expect(api.current!.busy).toBe(false);
   });
 });
+
+/**
+ * Which processes the offer names.
+ *
+ * Offering to close Claude because someone switched Codex asks to kill work the
+ * change never touched - and it is the kind of thing a user reads as the app not
+ * understanding what it just did.
+ */
+describe("offerAfterChange scope", () => {
+  it("asks only for the tools that changed", async () => {
+    const { api } = harness();
+    (runningAgents as Mock).mockResolvedValue({ scanned_names: [], agents: [] });
+
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"]);
+    });
+
+    expect(runningAgents as Mock).toHaveBeenCalledWith(["codex"]);
+  });
+
+  it("asks for everything when nothing is named, which is the master toggle", async () => {
+    // A master toggle moved every tool's route, so every running tool is stale.
+    const { api } = harness();
+    (runningAgents as Mock).mockResolvedValue({ scanned_names: [], agents: [] });
+
+    await act(async () => {
+      await api.current!.offerAfterChange();
+    });
+
+    expect(runningAgents as Mock).toHaveBeenCalledWith(undefined);
+  });
+});

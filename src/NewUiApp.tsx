@@ -51,7 +51,7 @@ import { classifyError } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
-import { buildGroups } from "./lib/groups";
+import { buildGroups, cascadeTargets } from "./lib/groups";
 import { verdictStatus, verdictsBySlug } from "./lib/verdict";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
@@ -861,8 +861,12 @@ export function NewUiApp() {
   const routeFamily = useCallback(
     async (group: Group, next: boolean) => {
       setActionError(null);
+      // The members the cascade would actually touch, computed the same way the
+      // write does - a chat member or an already-correct one is skipped there,
+      // and naming it here would offer to close an app nothing rewrote.
+      const touched = cascadeTargets(group, next).map((m) => m.key);
       if (await routing.setFamilyRouted(group, next)) {
-        await runningApps.offerAfterChange();
+        await runningApps.offerAfterChange(touched);
       }
     },
     [routing, runningApps],
@@ -877,7 +881,8 @@ export function NewUiApp() {
     async (slug: string, next: boolean, force = false) => {
       setActionError(null);
       if (await routing.setAppRouted(slug, next, force)) {
-        await runningApps.offerAfterChange();
+        // Only this tool's processes: its route is the only one that moved.
+        await runningApps.offerAfterChange([slug]);
       }
     },
     [routing, runningApps],
