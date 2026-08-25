@@ -486,6 +486,12 @@ async fn proxy(
                 // there instead of resolving a provider of its own - which is
                 // why a chosen model had no effect until this branch existed.
                 //
+                // REMOVED, not merely skipped. The other branch overwrites this
+                // header precisely so a caller-supplied value can never reach the
+                // gateway; skipping the write here would let one through, which
+                // would both escape the serve routing and aim the gateway at a
+                // host of the caller's choosing.
+                headers.remove(UPSTREAM_URL_HEADER);
                 // The tool's own key goes with it. On a served request the
                 // model, the provider and the bill are all Gate's.
                 super::strip_tool_credential(&mut headers);

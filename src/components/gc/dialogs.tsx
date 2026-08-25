@@ -530,8 +530,13 @@ export function ModelPickerDialog({
    */
   const missing = useMemo(() => {
     const servable = new Set(models.map((m) => m.id));
-    return selectedIds.filter((id) => !servable.has(id));
-  }, [models, selectedIds]);
+    // Derived from the DRAFT, not from what is stored: clearing one has to make
+    // the row go, and deriving from the stored set left it on screen still
+    // marked enabled while the footer count disagreed. Its absence afterwards is
+    // also what satisfies "an unavailable model cannot be selected" - there is no
+    // row left to re-check.
+    return draft.filter((id) => !servable.has(id));
+  }, [models, draft]);
 
   const vendors = useMemo(
     () => [...new Set(models.map((m) => m.vendor))].sort((a, b) => (a < b ? -1 : 1)),

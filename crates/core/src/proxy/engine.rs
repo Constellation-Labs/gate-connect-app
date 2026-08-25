@@ -597,7 +597,9 @@ pub(crate) fn apply_rewrite<T>(
         // Gate serves this one: no upstream hint, so the gateway resolves a
         // provider itself and bills credits rather than forwarding to the tool's
         // own. See the relay's copy of this branch for the full reasoning; the
-        // two paths must agree, because a tool can reach Gate through either.
+        // two paths must agree, because a tool can reach Gate through either -
+        // including why the header is REMOVED rather than left unwritten.
+        headers.remove(super::UPSTREAM_URL_HEADER);
         super::strip_tool_credential(headers);
     } else {
         headers.insert(

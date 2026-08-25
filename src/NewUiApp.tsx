@@ -386,12 +386,9 @@ export function NewUiApp() {
    *  sidebar: the preference is org-wide, so asking per pane would repeat the
    *  same question. */
   const toolModels = useToolModels(canRead, credential);
-  /** The catalogue, deferred until the picker is actually raised. It is a few
-   *  hundred rows that nothing else needs. */
-  /** Whether the open tool is actually running on a Gate model. Derived here
-   *  because the catalogue hook below needs it. */
-  const openPrefIsGate =
-    openTool !== null && toolModels.view?.byTool.get(openTool)?.source === "gate";
+  /** This app's stored choice, or undefined when it has never been set - which
+   *  is not a gap but the true default: the tool picks its own model. */
+  const openPref = openTool ? toolModels.view?.byTool.get(openTool) : undefined;
   /**
    * The catalogue, read when the picker needs it OR when a tool is running on a
    * Gate model.
@@ -402,16 +399,13 @@ export function NewUiApp() {
    * selection could have gone stale.
    */
   const gateModels = useGateModels(
-    modelOverlay?.kind === "picker" || (canRead && openPrefIsGate),
+    modelOverlay?.kind === "picker" || (canRead && openPref?.source === "gate"),
   );
   /** The org's Gate credit balance, for the card and the billing confirmation.
    *  Read whenever an app pane is open - it is what a switch to a Gate model
    *  starts spending. */
   const credits = useCredits(canRead && openTool !== null, credential);
 
-  /** This app's stored choice, or undefined when it has never been set - which
-   *  is not a gap but the true default: the tool picks its own model. */
-  const openPref = openTool ? toolModels.view?.byTool.get(openTool) : undefined;
   /**
    * What the open app is set to, or null when we do not know.
    *
