@@ -96,17 +96,28 @@ impl Harness {
         fs::write(proxy_dir.join("relay-port"), RELAY_PORT.to_string()).unwrap();
     }
 
-    /// Simulate the extra persisted state written by a running forward proxy.
-    /// Kept out of `login`: relay-only integrations must not make the
-    /// proxy-routed OpenClaw/Hermes tests believe an engine is active.
-    fn seed_engine_proxy(&self) {
+    /// Simulate the persisted state *and* the bound port that a running forward
+    /// proxy owns. Kept out of `login`: relay-only integrations must not make
+    /// the proxy-routed OpenClaw/Hermes tests believe an engine is active.
+    ///
+    /// The listener is returned rather than dropped because `engine_proxy_url()`
+    /// probes the port before handing it out, so the files alone describe a
+    /// crashed engine rather than a live one. It binds an ephemeral port rather
+    /// than reusing [`RELAY_PORT`] deliberately: that constant is 8977, which is
+    /// also the first of `oauth::REDIRECT_PORTS`, so the OAuth login test's
+    /// redirect listener was answering this probe and letting these tests pass
+    /// on a socket belonging to another test - in parallel runs only, which is
+    /// the worst way to find out.
+    fn seed_engine_proxy(&self) -> TcpListener {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
         let proxy_dir = self
             .home()
             .join("app-support")
             .join("Gate Connect")
             .join("proxy");
         fs::create_dir_all(&proxy_dir).unwrap();
-        fs::write(proxy_dir.join("port"), RELAY_PORT.to_string()).unwrap();
+        fs::write(proxy_dir.join("port"), port.to_string()).unwrap();
         #[cfg(target_os = "macos")]
         let snapshot = "[]";
         #[cfg(target_os = "linux")]
@@ -114,6 +125,7 @@ impl Harness {
         #[cfg(target_os = "windows")]
         let snapshot = r#"{ "enable": 0, "server": "", "bypass": "", "auto_config_url": "" }"#;
         fs::write(proxy_dir.join("system-proxy.snapshot.json"), snapshot).unwrap();
+        listener
     }
 }
 
@@ -127,14 +139,17 @@ fn claude_code_connect_then_disconnect() {
     // detect() falls back to the config dir existing.
     fs::create_dir_all(h.home().join(".claude")).unwrap();
     h.login();
-    h.seed_engine_proxy();
+    let engine = h.seed_engine_proxy();
+    let engine_port = engine.local_addr().unwrap().port();
 
     h.run_ok(&["connect", "claude-code"]);
 
     let settings: PathBuf = h.home().join(".claude").join("settings.json");
     let body = read(&settings);
     assert!(
-        body.contains(r#""HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:8977""#),
+        body.contains(&format!(
+            r#""HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:{engine_port}""#
+        )),
         "forward proxy URL missing: {body}"
     );
     assert!(
@@ -174,7 +189,7 @@ fn claude_code_refuses_a_foreign_upstream() {
     let h = Harness::new();
     fs::create_dir_all(h.home().join(".claude")).unwrap();
     h.login();
-    h.seed_engine_proxy();
+    let _engine = h.seed_engine_proxy();
 
     // A URL Gate does route, so the refusal comes from this integration rather
     // than from `resolve_endpoint` not knowing the host.

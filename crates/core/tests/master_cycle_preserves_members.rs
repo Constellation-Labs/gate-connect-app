@@ -74,11 +74,19 @@ fn sign_in() {
     account::save("https://gw.example.com", Some("sk-gw-testkey123")).unwrap();
 }
 
-/// Seed the persisted ports and routing snapshot that a running proxy owns.
-/// `relay_base_url()` answers `Some` so `connect()` has a loopback base to
-/// write, and Claude Code's status check reads the forward-proxy port from the
-/// same directory.
-fn set_relay_port(port: u16) {
+/// Seed the persisted ports and routing snapshot that a running proxy owns,
+/// and bind the forward-proxy port for real. `relay_base_url()` answers `Some`
+/// so `connect()` has a loopback base to write, and Claude Code's status check
+/// reads the forward-proxy port from the same directory.
+///
+/// The listener is returned rather than dropped because the seeded files are
+/// only half of what a live proxy looks like: `engine_proxy_url()` probes the
+/// port before handing it out, so a caller that lets this fall out of scope is
+/// describing a crashed engine, not a running one. Bound on an ephemeral port
+/// so concurrent test binaries cannot collide.
+fn bind_proxy_ports() -> std::net::TcpListener {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("relay-port"), port.to_string()).unwrap();
@@ -90,6 +98,7 @@ fn set_relay_port(port: u16) {
     #[cfg(target_os = "windows")]
     let snapshot = r#"{ "enable": 0, "server": "", "bypass": "", "auto_config_url": "" }"#;
     fs::write(dir.join("system-proxy.snapshot.json"), snapshot).unwrap();
+    listener
 }
 
 fn install_claude_unconfigured() {
@@ -134,7 +143,7 @@ fn a_member_switched_off_stays_off_across_a_master_cycle() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _proxy = bind_proxy_ports();
     install_claude_unconfigured();
 
     // Claude Code on, Claude Desktop (the `anthropic` proxy domain, which ships
@@ -161,7 +170,7 @@ fn a_member_that_was_on_comes_back_on() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _proxy = bind_proxy_ports();
     install_claude_unconfigured();
 
     provider::enable("anthropic").unwrap();
@@ -189,7 +198,7 @@ fn a_second_off_flow_does_not_poison_the_restore() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _proxy = bind_proxy_ports();
     install_claude_unconfigured();
     provider::enable("anthropic").unwrap();
 
@@ -210,7 +219,7 @@ fn the_skip_list_does_not_outlive_its_cycle() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    set_relay_port(9977);
+    let _proxy = bind_proxy_ports();
     install_claude_unconfigured();
     provider::enable("anthropic").unwrap();
     config::set_enabled("anthropic", false).unwrap();

@@ -117,6 +117,32 @@ impl<O: DesktopOps> DesktopManager<O> {
         }
     }
 
+    /// Whether *this* process is hosting an engine that is still serving.
+    ///
+    /// The free half of [`crate::proxy::engine_listening`]: the host holds the
+    /// handle, so it can answer without dialing its own port. Only a process
+    /// that holds no handle has to probe, which keeps the cost off the menubar
+    /// app - the one process that both hosts the engine and polls tool status
+    /// on a timer.
+    ///
+    /// `try_lock`, never `lock`: this is called from status paths, and the
+    /// holder it would otherwise wait on is an enable/disable running the whole
+    /// sequence under the mutex. A missed lock is not "not running", it is "ask
+    /// the port instead", which is what the caller does with `false`.
+    ///
+    /// Allowed to be dead code off the desktop platforms: this module also
+    /// compiles under `test` on Linux so its own tests run everywhere, but
+    /// there `manager()` is `manager_linux`, which carries its own version of
+    /// this method, so nothing calls this one.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn hosts_live_engine(&self) -> bool {
+        self.engine
+            .try_lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|e| !e.is_finished()))
+            .unwrap_or(false)
+    }
+
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
         let (port, pac_port) = self
