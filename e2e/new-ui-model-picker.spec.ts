@@ -459,3 +459,112 @@ test.describe("new UI Gate model confirmation", () => {
     ).toBeVisible();
   });
 });
+
+/**
+ * AG-592: a Gate model that stops working says so, and can be recovered from.
+ *
+ * The catalogue is the definition of "available" - `/v1/models` returns only
+ * what the gateway will actually serve - so a chosen id missing from it is
+ * precisely a model Gate can no longer serve.
+ */
+test.describe("new UI model needs attention", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  const funded = {
+    plan: "pro",
+    paygEnabled: true,
+    balanceCents: 1025,
+    lowBalanceThresholdCents: 500,
+    autoTopupArmed: false,
+  };
+
+  test("highlights a chosen model the catalogue no longer offers", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: funded,
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "gate", model_ids: ["anthropic/retired-model"] } },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText(/no longer available from Gate/)).toBeVisible();
+    // The rule the ticket is emphatic about.
+    await expect(app.page.getByText(/will not pick a replacement/)).toBeVisible();
+  });
+
+  test("stays quiet when one chosen model is still servable", async ({ boot }) => {
+    // Gate uses a model the user chose, which is not a substitution.
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: funded,
+        paidAckUnix: 1787740800,
+        choices: {
+          "claude-code": { source: "gate", model_ids: ["anthropic/retired-model", catalogue[0].id] },
+        },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText(/no longer available from Gate/)).toHaveCount(0);
+  });
+
+  test("says nothing about a model remembered under App default", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: funded,
+        choices: { "claude-code": { source: "tool", model_ids: ["anthropic/retired-model"] } },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText(/no longer available/)).toHaveCount(0);
+  });
+
+  test("highlights an empty balance", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: { ...funded, balanceCents: 0 },
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "gate", model_ids: [catalogue[0].id] } },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText(/no Gate credits left/)).toBeVisible();
+  });
+
+  test("lets an unavailable model be removed, which nothing else could", async ({ boot }) => {
+    // A model absent from the catalogue renders no row, so without listing it
+    // there is no checkbox to clear and no way out of the selection.
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: funded,
+        paidAckUnix: 1787740800,
+        choices: {
+          "claude-code": { source: "gate", model_ids: ["anthropic/retired-model", catalogue[0].id] },
+        },
+      },
+    });
+    await openApp(app);
+
+    await app.page.getByRole("button", { name: "Change model" }).click();
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("Unavailable")).toBeVisible();
+
+    await dialog.getByRole("checkbox", { name: /retired-model/ }).click();
+    await expect(dialog.getByText("1 model enabled")).toBeVisible();
+  });
+});

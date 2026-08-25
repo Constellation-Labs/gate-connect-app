@@ -76,6 +76,7 @@ import type { UsageStats } from "./components/gc/metrics";
 import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
 import { formatCredits, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
+import { modelAttention } from "./lib/modelAttention";
 import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
@@ -387,7 +388,22 @@ export function NewUiApp() {
   const toolModels = useToolModels(canRead, credential);
   /** The catalogue, deferred until the picker is actually raised. It is a few
    *  hundred rows that nothing else needs. */
-  const gateModels = useGateModels(modelOverlay?.kind === "picker");
+  /** Whether the open tool is actually running on a Gate model. Derived here
+   *  because the catalogue hook below needs it. */
+  const openPrefIsGate =
+    openTool !== null && toolModels.view?.byTool.get(openTool)?.source === "gate";
+  /**
+   * The catalogue, read when the picker needs it OR when a tool is running on a
+   * Gate model.
+   *
+   * The second case is AG-592: the catalogue is the definition of "available",
+   * so checking whether a chosen model still exists means having it. It is a few
+   * hundred rows, which is why this is not read on every pane - only where a
+   * selection could have gone stale.
+   */
+  const gateModels = useGateModels(
+    modelOverlay?.kind === "picker" || (canRead && openPrefIsGate),
+  );
   /** The org's Gate credit balance, for the card and the billing confirmation.
    *  Read whenever an app pane is open - it is what a switch to a Gate model
    *  starts spending. */
@@ -1748,6 +1764,15 @@ export function NewUiApp() {
           // The preference's own read, not the activity pane's: an unattributed
           // machine has nothing to say about a setting.
           modelPending={toolModels.view === null && toolModels.failure === null}
+          // AG-592. Null while anything it depends on is unread - an unchecked
+          // model is not a healthy one, and saying nothing is the honest state.
+          modelAttention={
+            modelAttention({
+              choice: openPref,
+              catalogue: gateModels.models,
+              credits: credits.credits,
+            })?.message ?? null
+          }
           // Switching to a Gate model spends PAYG credits, so it is confirmed
           // rather than taken on a radio click. Switching back is not - and it
           // keeps the chosen model, which is the whole reason a preference may

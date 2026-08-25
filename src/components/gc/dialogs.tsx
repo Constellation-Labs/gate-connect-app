@@ -480,13 +480,11 @@ export interface GateModelOption {
  * a fabricated catalogue in front of the user, which is the same argument the
  * zeroed metrics make.
  *
- * **`multi` is an extension, not a drawn state.** The frame shows radios, so
- * single-select is the designed behaviour and is what `"single"` reproduces.
- * AG-590 asks for a set, and AG-589 - the design task that would specify how that
- * looks - is still open, so `"multi"` swaps the radios for checkboxes and adds a
- * footer that states the count. Deliberately the smallest departure that answers
- * the ticket: if AG-589 lands on something else, one branch changes rather than a
- * second dialog being deleted.
+ * **Multi-select is the design** (AG-589, settled): a checkbox per model, with a
+ * footer stating how many are enabled. 139:66117 draws the radios of the
+ * single-model era, so a reader diffing against that frame is looking at the
+ * older state rather than a divergence - everything around the control still
+ * comes from it.
  */
 export function ModelPickerDialog({
   appName,
@@ -521,6 +519,19 @@ export function ModelPickerDialog({
   const [vendor, setVendor] = useState("all");
   /** Seeded from the stored set so Cancel is a real cancel. */
   const [draft, setDraft] = useState<string[]>(selectedIds);
+
+  /**
+   * Chosen models the catalogue no longer offers (AG-592).
+   *
+   * They have to be listed, or the set contains something the user cannot reach:
+   * a model absent from the catalogue renders no row, so there is no checkbox to
+   * clear and no way out except abandoning the whole selection. Shown at the top,
+   * marked, and removable - which is the recovery the ticket asks for.
+   */
+  const missing = useMemo(() => {
+    const servable = new Set(models.map((m) => m.id));
+    return selectedIds.filter((id) => !servable.has(id));
+  }, [models, selectedIds]);
 
   const vendors = useMemo(
     () => [...new Set(models.map((m) => m.vendor))].sort((a, b) => (a < b ? -1 : 1)),
@@ -629,6 +640,48 @@ export function ModelPickerDialog({
           <p className="text-base-xs leading-4 text-base-muted-foreground">
             Showing {shown.length} of {models.length} models
           </p>
+
+          {missing.length > 0 && (
+            <ul className="flex flex-col gap-px">
+              {missing.map((id) => {
+                const locked = wouldEmpty(id);
+                return (
+                  <li key={id}>
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked
+                      aria-disabled={locked || undefined}
+                      title={
+                        locked
+                          ? "Gate needs at least one model. Choose another first, or switch this app back to App default."
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (locked) return;
+                        setDraft((d) => d.filter((x) => x !== id));
+                      }}
+                      className={`flex w-full items-center gap-3 rounded-base border border-amber-300 bg-amber-50 px-3 py-2 text-left ${
+                        locked ? "cursor-not-allowed" : ""
+                      }`}
+                    >
+                      <Icon
+                        name="triangleAlert"
+                        size={16}
+                        className="shrink-0 text-amber-700"
+                      />
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-amber-900">
+                        {id}
+                      </span>
+                      <span className="shrink-0 text-base-2xs uppercase leading-4 tracking-label text-amber-800">
+                        Unavailable
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
 
           {shown.length === 0 ? (
             <ModalNote>

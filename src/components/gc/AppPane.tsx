@@ -79,6 +79,7 @@ export function AppPane({
   gateModel,
   onChangeModel,
   modelBusy,
+  modelAttention,
   modelPending,
   credits,
   onAddCredits,
@@ -117,6 +118,13 @@ export function AppPane({
   onChangeModel: () => void;
   /** A model write is in flight, so the controls refuse a second click. */
   modelBusy?: boolean;
+  /** Why this app's Gate model needs attention, if it does (AG-592).
+   *
+   *  Highlighted in place rather than raised as a banner: the cause is about
+   *  this one control, and the recovery is the control itself. Null means
+   *  nothing to say - which is not the same as "all clear", since an unread
+   *  catalogue or balance also yields null. See `modelAttention`. */
+  modelAttention?: string | null;
   /** The model *preference* read has not landed.
    *
    *  Its own flag rather than the pane's `pending`, which tracks the activity
@@ -201,6 +209,7 @@ export function AppPane({
         choice={modelChoice}
         pending={modelPending}
         busy={modelBusy}
+        attention={modelAttention}
         onChoose={onChooseModel}
         gateModel={gateModel}
         onChangeModel={onChangeModel}
@@ -270,6 +279,7 @@ function ModelSelection({
   choice,
   pending,
   busy,
+  attention,
   onChoose,
   gateModel,
   onChangeModel,
@@ -280,6 +290,7 @@ function ModelSelection({
   choice: ModelChoice | null;
   pending?: boolean;
   busy?: boolean;
+  attention?: string | null;
   onChoose: (choice: ModelChoice) => void;
   gateModel: GateModel | null;
   onChangeModel: () => void;
@@ -329,6 +340,20 @@ function ModelSelection({
             </EmptyNote>
           )}
         </>
+      )}
+
+      {attention && (
+        // AG-592's Needs attention, as a highlight rather than a dialog: the
+        // cause concerns this one control and the recovery is the control
+        // itself, so interrupting the pane would put the explanation further
+        // from the fix.
+        <p
+          role="status"
+          className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm leading-5 text-amber-900"
+        >
+          <Icon name="triangleAlert" size={16} className="mt-0.5 shrink-0" />
+          <span>{attention}</span>
+        </p>
       )}
 
       {/* Visible under either choice - the design's point is that you can see
