@@ -106,6 +106,7 @@ fn rejected_intercept(domains: Vec<gate_connect_core::proxy::ProxyDomain>) -> St
         "sk-gw-testkey123",
         "",
         "",
+        gate_connect_core::account::BillingMode::Byok,
         "",
         "",
         &domains,

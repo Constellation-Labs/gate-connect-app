@@ -63,13 +63,13 @@ test.describe("new UI running apps", () => {
     });
 
     await app.page.getByRole("switch", { name: "Claude Code" }).click();
-    await app.page.getByRole("button", { name: "Close affected apps" }).click();
+    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
 
     // Still nothing closed: this is the confirmation, not the action.
     await expect(app.page.getByRole("heading", { name: "Close affected apps now?" })).toBeVisible();
     expect(await app.lastCall("close_running_agents")).toBeNull();
 
-    await app.page.getByRole("button", { name: /^Close claude$/ }).click();
+    await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
 
     await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
     await expect(app.page.getByRole("heading", { name: "Change is ready" })).toBeVisible();
@@ -83,8 +83,8 @@ test.describe("new UI running apps", () => {
     });
 
     await app.page.getByRole("switch", { name: "Claude Code" }).click();
-    await app.page.getByRole("button", { name: "Close affected apps" }).click();
-    await app.page.getByRole("button", { name: "Go back" }).click();
+    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
+    await app.page.getByRole("button", { name: "No, I will close later" }).click();
 
     await expect(
       app.page.getByRole("heading", { name: "Apply changes to running apps" }),
@@ -102,7 +102,7 @@ test.describe("new UI running apps", () => {
     });
 
     await app.page.getByRole("switch", { name: "Claude Code" }).click();
-    await app.page.getByRole("button", { name: "I will reopen later" }).click();
+    await app.page.getByRole("button", { name: "No, I will reopen later" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
     expect(await app.lastCall("close_running_agents")).toBeNull();

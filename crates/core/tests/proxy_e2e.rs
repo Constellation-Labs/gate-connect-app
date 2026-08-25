@@ -154,7 +154,8 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(), // legacy API-key path
-            org_id: String::new(),      // no org on the legacy path
+            billing_mode: Default::default(),
+            org_id: String::new(), // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -242,6 +243,7 @@ async fn claude_code_selector_routes_when_desktop_domain_is_off() {
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
             org_id: String::new(),
+            billing_mode: Default::default(),
             domains,
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -359,6 +361,7 @@ async fn proxy_accepts_oversized_h2_request_headers() {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
+            billing_mode: Default::default(),
             org_id: String::new(),
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
@@ -473,7 +476,8 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(), // legacy API-key path
-            org_id: String::new(),      // no org on the legacy path
+            billing_mode: Default::default(),
+            org_id: String::new(), // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -611,6 +615,7 @@ async fn exported_proxy_env_routes_an_external_process() {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
+            billing_mode: Default::default(),
             org_id: String::new(),
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
@@ -775,6 +780,7 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
             // as x-gate-authorization instead of the API key, with the selected
             // org on x-gate-org-id.
             oauth_token: "cognito-access-token".into(),
+            billing_mode: Default::default(),
             org_id: "org-uuid-1".into(),
             domains,
             ca_cert_pem: ca_cert_pem.clone(),
@@ -873,6 +879,7 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
         api_key: "sk-gw-test".into(),
         oauth_token: String::new(), // legacy API-key path
         org_id: String::new(),      // no org on the legacy path
+        billing_mode: Default::default(),
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
@@ -962,6 +969,7 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
         api_key: "sk-gw-test".into(),
         oauth_token: String::new(), // legacy API-key path
         org_id: String::new(),      // no org on the legacy path
+        billing_mode: Default::default(),
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),

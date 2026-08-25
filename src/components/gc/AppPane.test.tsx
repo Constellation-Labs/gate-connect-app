@@ -108,16 +108,41 @@ describe("AppPane recent activity", () => {
     expect(within(card("Recent activity")).getByText("redacted")).toBeTruthy();
   });
 
+  it("wears one pill per row, with no column left for a status", () => {
+    render(
+      pane({
+        activity: [
+          { ...entry, id: "req-flagged", status: "error", security: "flagged" },
+          { ...entry, id: "req-error", status: "error", security: null },
+        ],
+      }),
+    );
+    const feed = card("Recent activity");
+
+    // The design merged the old Status column into Security, so there is no
+    // second cell to put a transport outcome in and no SUCCESS pill at all.
+    // Which of the two facts a row shows when it has both is the precedence
+    // question, pinned above; what this pins is that it only ever shows one.
+    expect(within(feed).queryByRole("columnheader", { name: "Status" })).toBeNull();
+    expect(within(feed).queryByText("success")).toBeNull();
+    // Both rows failed, so under the precedence above both wear ERROR: the
+    // first displaced its `flagged` into the tooltip, the second never had a
+    // verdict to displace.
+    expect(within(feed).getAllByText("error")).toHaveLength(2);
+  });
+
   it("marks a row whose security detail is absent, without inventing a verdict", () => {
     render(pane({ activity: [{ ...entry, security: null }] }));
     const feed = card("Recent activity");
 
     // Absence of a verdict is not enough: a cell that rendered nothing at all
-    // would satisfy that, and the point is that the row says so.
+    // would satisfy that, and the point is that the row says so. `status` is
+    // "success" here, so no ERROR pill stands in either.
     const cell = within(feed).getByTitle("No security action recorded, or not your request");
     expect(cell.textContent).toBe("\u2014");
     expect(within(feed).queryByText("allow")).toBeNull();
     expect(within(feed).queryByText("flagged")).toBeNull();
+    expect(within(feed).queryByText("error")).toBeNull();
   });
 
   it("offers a per-row action when the surface supplies a destination", () => {

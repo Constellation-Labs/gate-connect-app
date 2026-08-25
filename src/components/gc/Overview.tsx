@@ -46,13 +46,18 @@ export interface Saving {
 }
 
 /**
- * Action pills. Text sits at the palette's 900 level; the 100 backgrounds are
- * inferred from that pairing rather than sampled from Figma.
+ * Action pills. Every fill was read off the pixels of `Overview-partly-routed-1`
+ * on 2026-08-20: `red/200`, `amber/200`, `violet/200`, at a 2px radius with 8/4
+ * padding and an 8px gap. Text sits at the matching 900.
+ *
+ * **Violet, not purple.** The drawn REDACT fill is `#ddd6fe`, which is violet/200;
+ * purple/200 is `#e9d5ff`. The same mistake was in `chart.redacted`. Nothing else
+ * in this palette is violet, so it is easy to "correct" back by eye - don't.
  */
 const ACTION_STYLES: Record<PolicyAction, string> = {
-  block: "bg-red-100 text-red-900",
-  flag: "bg-amber-100 text-amber-900",
-  redact: "bg-purple-100 text-purple-900",
+  block: "bg-red-200 text-red-900",
+  flag: "bg-amber-200 text-amber-900",
+  redact: "bg-violet-200 text-violet-900",
   // Not in the Figma, which draws only the three enforcing actions. Neutral
   // rather than a fourth colour: `allow` is the one that does nothing, and
   // giving it a hue would read as a severity it does not have.
@@ -95,7 +100,7 @@ export function Overview({
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
       <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-medium leading-6 tracking-heading text-neutral-900">
+        <h1 className="text-xl font-medium tracking-heading text-neutral-900">
           Overview
         </h1>
         <div className="flex items-center gap-3">
@@ -189,7 +194,7 @@ function PolicyTable({
               <td className="py-3 text-right">
                 {policy.action ? (
                   <span
-                    className={`inline-block rounded-base px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
+                    className={`inline-block rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${ACTION_STYLES[policy.action]}`}
                   >
                     {policy.action}
                   </span>
@@ -300,24 +305,27 @@ function PendingRows({ columns }: { columns: 2 | 3 }) {
 function StatusPill({ on }: { on: boolean }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-base px-1.5 py-0.5 text-base-xs font-medium leading-4 ${
-        on ? "bg-green-100 text-green-900" : "bg-neutral-100 text-neutral-600"
+      className={`inline-flex items-center gap-1 rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${
+        on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-neutral-600"
       }`}
     >
-      {on && <Icon name="check" size={12} />}
+      {/* The drawn glyph is circleCheck at 12px in green/800, one step lighter
+        * than the label (sampled from `Overview/routed-1` on 2026-08-21). */}
+      {on && <Icon name="circleCheck" size={12} className="text-green-800" />}
       {on ? "On" : "Off"}
     </span>
   );
 }
 
-/** Right-aligned footer link. Both destinations open the web dashboard. */
+/** Right-aligned footer action under a full-width rule, per the drawn cards.
+ *  Both destinations open the web dashboard. */
 function ManageLink({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <div className="mt-4 flex justify-end">
+    <div className="mt-3 flex justify-end border-t border-base-border pt-3">
       <button
         type="button"
         onClick={onClick}
-        className="flex items-center gap-1.5 rounded-base px-1.5 py-1 text-base-xs font-medium text-base-primary transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex items-center gap-1.5 rounded-sm border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {label}
         <Icon name="squareArrowOutUpRight" size={12} />

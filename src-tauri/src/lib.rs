@@ -156,6 +156,7 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
         let input = ConnectInput {
             gateway_base_url: account.gateway_base_url,
             upstream_url,
+            billing_mode: account.billing_mode,
             relay_base_url: gate_connect_core::proxy::relay_base_url(),
             engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
         };
@@ -199,6 +200,10 @@ struct AccountDto {
     /// the legacy key controls only in API-key mode. Serialized snake_case
     /// (`"api_key"` / `"oauth"`).
     auth_mode: gate_connect_core::account::AuthMode,
+    /// Who pays the upstream provider, so a UI can show it once one is
+    /// designed. Read-only here; `set_billing_mode` is the setter. Serialized
+    /// lowercase (`"byok"` / `"payg"`).
+    billing_mode: gate_connect_core::account::BillingMode,
     /// Selected org (OAuth mode), so the UI can show it and route to the picker
     /// when an OAuth session has no org yet. Both `None` until the user picks.
     org_id: Option<String>,
@@ -235,6 +240,7 @@ fn get_account() -> Result<Option<AccountDto>, String> {
     };
     let has_api_key = account::has_api_key().map_err(|e| format!("{e:#}"))?;
     let auth_mode = account::auth_mode().map_err(|e| format!("{e:#}"))?;
+    let billing_mode = account::billing_mode().map_err(|e| format!("{e:#}"))?;
     let (org_id, org_name) = match account::selected_org().map_err(|e| format!("{e:#}"))? {
         Some((id, name)) => (Some(id), Some(name)),
         None => (None, None),
@@ -243,6 +249,7 @@ fn get_account() -> Result<Option<AccountDto>, String> {
         gateway_base_url,
         has_api_key,
         auth_mode,
+        billing_mode,
         org_id,
         org_name,
     }))
@@ -523,6 +530,62 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("set auth mode join error: {e}"))?
+}
+
+/// Switch who pays the upstream provider.
+///
+/// The relay and the MITM engine read the mode per request, so `refresh_mode`
+/// is all that in-flight routing needs. Codex is the exception: its provider
+/// block encodes whether Codex authenticates at all, so a connected Codex is
+/// re-applied here. Every other integration writes a base URL and no
+/// credential, and needs nothing.
+///
+/// Re-applying Codex is best-effort: the mode is already persisted by then, and
+/// failing the whole call would leave the UI unable to say what happened. A
+/// Codex left on the old shape reports `Drifted` on the next status read, which
+/// is the path back.
+#[tauri::command]
+async fn set_billing_mode(payg: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mode = if payg {
+            gate_connect_core::account::BillingMode::Payg
+        } else {
+            gate_connect_core::account::BillingMode::Byok
+        };
+        gate_connect_core::account::set_billing_mode(mode).map_err(|e| format!("{e:#}"))?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        gate_connect_core::proxy::manager().refresh_mode();
+        reapply_codex_for_mode(mode);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("set billing mode join error: {e}"))?
+}
+
+/// Rewrite Codex's provider block for `mode`, if Codex is currently routed
+/// through Gate. Silent when Codex isn't installed or isn't connected - there
+/// is nothing to rewrite, and a mode switch is not the place to start routing a
+/// tool the user never connected.
+fn reapply_codex_for_mode(mode: gate_connect_core::account::BillingMode) {
+    let Some(integ) = registry::find(ToolId::Codex) else {
+        return;
+    };
+    if !matches!(integ.status(), Ok(gate_connect_core::Status::Connected)) {
+        return;
+    }
+    let Ok(Some(account)) = account::load() else {
+        return;
+    };
+    let input = ConnectInput {
+        gateway_base_url: account.gateway_base_url,
+        upstream_url: integ.default_upstream_url().to_string(),
+        billing_mode: mode,
+        relay_base_url: gate_connect_core::proxy::relay_base_url(),
+        engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
+    };
+    if let Err(e) = integ.connect(&input) {
+        eprintln!("re-applying Codex for the new billing mode failed: {e:#}");
+    }
 }
 
 /// Fetch the 24-hour activity overview for the Overview pane (AG-572).
@@ -1164,6 +1227,170 @@ static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 /// site so the next open reconciles again. Starts false (window not yet shown).
 static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
+/// Set while a reveal is waiting for the compositor to acknowledge the state
+/// change below, so the restore knows there is work to do.
+#[cfg(target_os = "linux")]
+static DECOR_RESTORE_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// The state the window should end up in: what it was in before the reveal.
+#[cfg(target_os = "linux")]
+static DECOR_WANT_MAXIMIZED: AtomicBool = AtomicBool::new(false);
+
+/// The window's own size, captured before the state change so the restore can
+/// put it back without trusting GTK to have remembered it. Physical pixels;
+/// zero means nothing usable was captured. Only written while the window is
+/// un-maximised, since a maximised `inner_size` is the screen.
+#[cfg(target_os = "linux")]
+static DECOR_SAVED_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(target_os = "linux")]
+static DECOR_SAVED_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Give the window's first map a compositor configure, so its native title-bar
+/// buttons work, then put it back in the state the user left it in.
+///
+/// **A window has to be born with negotiated geometry.** Anything whose first
+/// map comes from `show()` on a hidden window comes up with dead decoration
+/// input regions - close, minimise and maximise all swallow their clicks, while
+/// a double-click on the bar still works because the WM handles that at frame
+/// level. Four cases established it: `visible: false` plus `show()` is broken;
+/// `visible: true` on a normal launch works; `visible: true` hidden before the
+/// map and revealed from the tray is broken again; and the onboarding window,
+/// built visible at runtime, needs none of this. The config flag was never the
+/// variable - whether the first map carries a compositor configure is.
+///
+/// A maximise/un-maximise is how that configure gets forced: the compositor owns
+/// the bounds of a maximised window, so a change either into or out of that
+/// state must be configured. **Which direction depends on where the window
+/// starts**, and that is the part this got wrong twice. Maximising an
+/// already-maximised window is a no-op, so a window closed while maximised was
+/// skipped entirely and reopened with dead buttons. So: apply the *opposite* of
+/// the wanted state before the show, and the wanted state after it.
+///
+/// Mechanisms that do **not** work, recorded so they are not retried: a 1px
+/// `set_size` (a client-side request GTK satisfies with no round trip, and a
+/// delta small enough to coalesce away), and toggling `set_decorations`
+/// (rebuilds the title-bar widgets, renegotiates no geometry).
+///
+/// Runs on every reveal of a hidden window, not once per process: every map of a
+/// hidden window is broken, so a one-shot let the bug back on the second open.
+///
+/// The principled repair is still to build this window at runtime the way
+/// `open_onboarding_window` does, so it is never shown-after-hidden and none of
+/// this exists. That is larger because a `--silent` session keeps the hidden
+/// webview alive on purpose - detection polling, the `quit-requested` listener
+/// and the backend-error drain all live in it - so it cannot simply be created
+/// on demand.
+#[cfg(target_os = "linux")]
+fn map_maximized_for_decorations(window: &tauri::WebviewWindow) {
+    // A reveal of a window that is already up needs nothing, and toggling its
+    // state would be destructive.
+    if window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let want_maximized = window.is_maximized().unwrap_or(false);
+    // Only meaningful un-maximised: maximised, `inner_size` is the screen.
+    if !want_maximized {
+        if let Ok(size) = window.inner_size() {
+            if size.width > 0 && size.height > 0 {
+                DECOR_SAVED_W.store(size.width, Ordering::Release);
+                DECOR_SAVED_H.store(size.height, Ordering::Release);
+            }
+        }
+    }
+    DECOR_WANT_MAXIMIZED.store(want_maximized, Ordering::Release);
+    DECOR_RESTORE_PENDING.store(true, Ordering::Release);
+    // The opposite state, so the map itself has to be configured.
+    let asked = if want_maximized {
+        window.unmaximize()
+    } else {
+        window.maximize()
+    };
+    if asked.is_err() {
+        DECOR_RESTORE_PENDING.store(false, Ordering::Release);
+        return;
+    }
+    poll_restore_after_repair(&window.app_handle().clone());
+}
+
+/// Put the window back into the state [`map_maximized_for_decorations`] recorded,
+/// once the opposite state is observably in effect.
+///
+/// **Gated on `is_maximized()`, not on which event arrived.** Three attempts
+/// failed by trusting an event to mean "the configure landed": a queued
+/// event-loop turn, then `Resized`, then `Resized`-or-`Focused(true)`. The last
+/// lost because `Focused(true)` fires during `show()`, *before* the configure
+/// comes back, so the flag was consumed early and the restore raced as before.
+/// Window state cannot be fooled that way: until the pre-state is really in
+/// effect the request stays armed and a later event tries again.
+///
+/// Backed by a short poll too, because if no further event arrives after the
+/// configure there is nothing left to re-trigger this.
+///
+/// Queued rather than called inline so GTK is not re-entered mid dispatch.
+/// Takes `&Window`, not `&WebviewWindow`: that is what `on_window_event` hands
+/// out, and the state calls live on both.
+#[cfg(target_os = "linux")]
+fn restore_after_repair(window: &tauri::Window) {
+    if !DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
+        return;
+    }
+    let want_maximized = DECOR_WANT_MAXIMIZED.load(Ordering::Acquire);
+    // Wait until the opposite state is actually in effect.
+    if window.is_maximized().unwrap_or(false) == want_maximized {
+        return;
+    }
+    if !DECOR_RESTORE_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let w = window.clone();
+    let _ = window.app_handle().clone().run_on_main_thread(move || {
+        if want_maximized {
+            let _ = w.maximize();
+            return;
+        }
+        let _ = w.unmaximize();
+        // Then set the size ourselves, on the next turn so the un-maximise has
+        // been applied first. GTK's own restore geometry is not trustworthy: by
+        // the second reveal it has been overwritten with the maximised bounds,
+        // so `unmaximize` alone reopened the window at screen size.
+        let width = DECOR_SAVED_W.load(Ordering::Acquire);
+        let height = DECOR_SAVED_H.load(Ordering::Acquire);
+        if width == 0 || height == 0 {
+            return;
+        }
+        let w2 = w.clone();
+        let _ = w.app_handle().clone().run_on_main_thread(move || {
+            let _ = w2.set_size(tauri::PhysicalSize::new(width, height));
+            let _ = w2.center();
+        });
+    });
+}
+
+/// Re-check [`restore_after_repair`] on a timer, for the case where the
+/// configure is the last event the window sees.
+///
+/// Off-thread sleeps, main-thread checks: window APIs are only touched inside
+/// `run_on_main_thread`. Bounded, so a window whose state never changes stops
+/// being polled rather than being watched forever.
+#[cfg(target_os = "linux")]
+fn poll_restore_after_repair(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if !DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
+                return;
+            }
+            let inner = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                if let Some(w) = inner.get_webview_window("main") {
+                    restore_after_repair(&w.as_ref().window_ref().clone());
+                }
+            });
+        }
+    });
+}
+
 /// Whether the coming exit is an updater-driven relaunch rather than a user
 /// quit. The exit handler completes a pending launch-at-login opt-out on a
 /// plain quit, but an update install relaunches us immediately, and the
@@ -1536,11 +1763,28 @@ struct VerdictDto {
 /// per-tool calls would be the same answer at N times the cost, and would let
 /// two rows in one refresh disagree about whether the session is alive.
 ///
-/// `(async)` for the reason on [`running_agents_count`]: the process walk on
-/// Linux would otherwise run on the GTK loop.
+/// Off the main thread for the reason on [`running_agents_count`] - but as a
+/// real `async fn` handing the work to `spawn_blocking`, not as
+/// `#[tauri::command(async)]` on a sync fn. That attribute does not move a sync
+/// body to the blocking pool: the macro inlines it into `async_runtime::spawn`,
+/// so it runs on a tokio *worker*, with the runtime entered. Both probes below
+/// are blocking HTTP, and reqwest's blocking client asserts against being
+/// called from an entered worker in debug builds - it builds and immediately
+/// drops a throwaway runtime purely to detect the case. The resulting panic
+/// took the task with it, so the webview's `invoke` promise never settled and
+/// the refresh hung.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command(async)]
-fn routing_verdicts() -> Vec<VerdictDto> {
+#[tauri::command]
+async fn routing_verdicts() -> Vec<VerdictDto> {
+    // A join error means the probe itself panicked. An empty sweep is what this
+    // command already returns when it can tell nothing about any tool.
+    tauri::async_runtime::spawn_blocking(routing_verdicts_now)
+        .await
+        .unwrap_or_default()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn routing_verdicts_now() -> Vec<VerdictDto> {
     use gate_connect_core::routing_health::{self, ConfigState, Evidence};
 
     let route = gate_connect_core::proxy::probe_relay_route();
@@ -1829,6 +2073,9 @@ fn reveal_popover_window(app: &tauri::AppHandle) {
     };
     #[cfg(target_os = "linux")]
     let _ = window.unminimize();
+    // Before the show, for the reason in `map_maximized_for_decorations`.
+    #[cfg(target_os = "linux")]
+    map_maximized_for_decorations(&window);
     let _ = window.show();
     let _ = window.set_focus();
     #[cfg(target_os = "macos")]
@@ -2015,6 +2262,7 @@ pub fn run() {
                     oauth_status,
                     oauth_sign_out,
                     set_auth_mode,
+                    set_billing_mode,
                     oauth_list_orgs,
                     activity_overview,
                     activity_installations,
@@ -2078,6 +2326,7 @@ pub fn run() {
                     oauth_status,
                     oauth_sign_out,
                     set_auth_mode,
+                    set_billing_mode,
                     oauth_list_orgs,
                     activity_overview,
                     activity_installations,
@@ -2128,6 +2377,15 @@ pub fn run() {
                     reveal_popover_window(window.app_handle());
                 }
                 return;
+            }
+            // First post-map event after a maximised map: geometry is settled,
+            // so put the window back to its configured size.
+            #[cfg(target_os = "linux")]
+            match event {
+                WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
+                    restore_after_repair(window);
+                }
+                _ => {}
             }
             // X-button on the popover should hide it, not quit the app.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -2489,17 +2747,18 @@ pub fn run() {
                 .show_menu_on_left_click(false) // left-click toggles window; right-click shows menu
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            // On Linux the SNI/AppIndicator tray hands us no
-                            // click rect and GNOME often never fires the
-                            // left-click path, so the right-click menu is how
-                            // users reach this. Either way it only reveals the
-                            // window; it does not place it.
-                            #[cfg(target_os = "linux")]
-                            let _ = window.unminimize();
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        // On Linux the SNI/AppIndicator tray hands us no click
+                        // rect and GNOME often never fires the left-click path,
+                        // so the right-click menu is how users reach this.
+                        // Either way it only reveals the window; it does not
+                        // place it.
+                        //
+                        // Goes through `reveal_popover_window` rather than
+                        // repeating show/focus inline. Three copies of this
+                        // existed and only one of them carried the Linux
+                        // decoration repair, so a `--silent` launch revealed
+                        // from the tray came up with dead title-bar buttons.
+                        reveal_popover_window(app);
                     }
                     "quit" => request_quit(app),
                     _ => {}
@@ -2532,12 +2791,7 @@ pub fn run() {
                                 // tray click would lose wherever the user had
                                 // put it - which is why the click rect is no
                                 // longer even read.
-                                #[cfg(target_os = "linux")]
-                                let _ = window.unminimize();
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                                #[cfg(target_os = "macos")]
-                                order_front_regardless(&window);
+                                reveal_popover_window(app);
                             }
                         }
                     }
@@ -2574,6 +2828,10 @@ pub fn run() {
                 // 1024x720 window. Within a session, hide/show keeps whatever
                 // position the user chose.
                 let _ = window.center();
+                // Before the show, not after: the point is for the *first* map
+                // to be the maximised one.
+                #[cfg(target_os = "linux")]
+                map_maximized_for_decorations(&window);
                 let _ = window.show();
                 let _ = window.set_focus();
             }

@@ -60,8 +60,13 @@ test.describe("new UI engine controls", () => {
 
     await app.page.getByRole("button", { name: "Families" }).click();
     // A chat surface, which is where this matters most: it has no config file to
-    // write, so the engine is the only thing that could route it.
-    await app.page.getByRole("switch", { name: "ChatGPT (Codex subscription)" }).click();
+    // write, so the engine is the only thing that could route it. `.last()`
+    // picks the family panel's switch - the rail draws a row for the same
+    // domain now, and it comes first in the DOM.
+    await app.page
+      .getByRole("switch", { name: "ChatGPT (Codex subscription)" })
+      .last()
+      .click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
       slug: "chatgpt",

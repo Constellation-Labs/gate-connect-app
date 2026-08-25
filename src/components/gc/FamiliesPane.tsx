@@ -97,7 +97,7 @@ export function FamiliesPane({
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
       <header>
-        <h1 className="text-xl font-medium leading-6 tracking-heading text-neutral-900">
+        <h1 className="text-xl font-medium tracking-heading text-neutral-900">
           Families
         </h1>
         <p className="mt-1 text-sm leading-5 text-neutral-600">

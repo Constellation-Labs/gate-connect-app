@@ -193,6 +193,7 @@ impl ProxyManager {
             &account.api_key,
             &crate::oauth::access_token_for_injection(),
             &crate::account::org_id_for_injection(),
+            account.billing_mode,
             ca.cert_pem(),
             ca.key_pem(),
             &domains,
@@ -385,6 +386,7 @@ impl ProxyManager {
                     api_key,
                     &crate::oauth::access_token_for_injection(),
                     &crate::account::org_id_for_injection(),
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -416,6 +418,7 @@ impl ProxyManager {
                     &account.api_key,
                     oauth_token,
                     &crate::account::org_id_for_injection(),
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -447,6 +450,7 @@ impl ProxyManager {
                     &account.api_key,
                     &crate::oauth::access_token_for_injection(),
                     org_id,
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -455,6 +459,27 @@ impl ProxyManager {
                     crate::proxy::relay::load_persisted_port(),
                 );
             }
+        }
+    }
+
+    /// Push a changed billing mode into the running daemon, if any. There is no
+    /// separate update message on Linux: `SetIntercept` carries the mode, and
+    /// the daemon applies it live to an already-running engine, so this folds
+    /// into the same re-send the other refreshers use. Reads the mode from disk
+    /// rather than taking it as an argument, so the daemon can never be told a
+    /// mode the account does not actually hold.
+    pub fn refresh_mode(&self) {
+        if let Some(client) = self
+            .client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
+        {
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            self.push_intercept(client, &domains);
         }
     }
 
@@ -474,6 +499,7 @@ impl ProxyManager {
             &account.api_key,
             &crate::oauth::access_token_for_injection(),
             &crate::account::org_id_for_injection(),
+            account.billing_mode,
             ca.cert_pem(),
             ca.key_pem(),
             domains,

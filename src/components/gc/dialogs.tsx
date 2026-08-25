@@ -54,12 +54,17 @@ export interface DialogOrganization {
 export function SwitchOrganizationDialog({
   organizations,
   selectedId,
+  currentId,
   onSelect,
   onCancel,
   onConfirm,
 }: {
   organizations: DialogOrganization[];
   selectedId: string;
+  /** The org this device already uses. While it is the one selected the primary
+   * is refused - the drawn dialog mutes it - because confirming a no-op switch
+   * would fire the whole switch sequence to change nothing. */
+  currentId?: string;
   onSelect: (id: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -68,9 +73,13 @@ export function SwitchOrganizationDialog({
     <Modal
       icon="usersRound"
       title="Switch organization"
-      subtitle="Choose where this device sends activity and uses Gate credits"
+      subtitle="Select where this device sends activity and uses Gate credits"
       secondary={{ label: "Cancel", onClick: onCancel }}
-      primary={{ label: "Switch organization", onClick: onConfirm }}
+      primary={{
+        label: "Switch organization",
+        onClick: onConfirm,
+        disabled: currentId !== undefined && selectedId === currentId,
+      }}
       onDismiss={onCancel}
     >
       <div role="radiogroup" aria-label="Organization" className="flex flex-col gap-3">
@@ -222,9 +231,10 @@ export function OrganizationSwitchedDialog({
       tone="success"
       icon="circleCheck"
       title="Organization switched"
-      subtitle={`Gate Connect is now using ${organizationName}.`}
+      subtitle={`Gate Connect is now using ${organizationName}`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
+      narrow
     >
       <ModalNote>
         <p className="font-medium text-neutral-900">Your local routing is unchanged.</p>
@@ -329,10 +339,10 @@ export function ApplyChangesDialog({
     <Modal
       tone="warning"
       icon="triangleAlert"
-      title="Apply changes to running apps"
-      subtitle="Your configuration is now saved. One final step makes the new route active"
-      secondary={{ label: "Close affected apps", onClick: onCloseApps }}
-      primary={{ label: "I will reopen later", onClick: onReopenLater }}
+      title="Apply changes to running apps?"
+      subtitle="Your configuration is saved. One final step makes the new route active"
+      secondary={{ label: "Yes, close affected apps", onClick: onCloseApps }}
+      primary={{ label: "No, I will reopen later", onClick: onReopenLater }}
       onDismiss={onReopenLater}
     >
       {apps.map((app) => (
@@ -368,8 +378,8 @@ export function CloseAppsDialog({
       icon="triangleAlert"
       title="Close affected apps now?"
       subtitle="Unsaved work or active sessions in these apps may be interrupted"
-      secondary={{ label: "Go back", onClick: onGoBack }}
-      primary={{ label: `Close ${label}`, onClick: onCloseApps, destructive: true }}
+      secondary={{ label: "No, I will close later", onClick: onGoBack }}
+      primary={{ label: "Yes, close apps", onClick: onCloseApps, destructive: true }}
       onDismiss={onGoBack}
     >
       {apps.map((app) => (
@@ -404,6 +414,7 @@ export function ChangeReadyDialog({
       subtitle={`${app.name} closed successfully`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
+      narrow
     >
       <ModalNote>
         <p className="font-medium text-neutral-900">The new Gate route is active</p>
@@ -437,13 +448,14 @@ export function DiagnosticsDialog({
   return (
     <Modal
       icon="info"
-      title="Diagnostics"
+      title="Diagnostics report"
+      // The drawn subtitle reads "this installed" - a typo, kept corrected.
       subtitle="The state of this install, as text you can hand to someone else"
       secondary={{ label: "Close", onClick: onClose }}
       primary={{ label: copied ? "Copied" : "Copy report", onClick: onCopy }}
       onDismiss={onClose}
     >
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-base-border bg-gray-50 p-4 font-mono text-base-xs leading-4 text-neutral-700">
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-base-xs leading-4 text-neutral-700">
         {report}
       </pre>
     </Modal>
@@ -528,6 +540,10 @@ export function ModelPickerDialog({
 }) {
   const [query, setQuery] = useState("");
   const [vendor, setVendor] = useState("all");
+  /** The dialog opens on its search field: with a catalogue this long, typing is
+   *  the first thing to do. */
+  const searchRef = useRef<HTMLInputElement>(null);
+
   /** Draft set, only used in `"multi"`. Seeded from the stored set so Cancel is
    *  a real cancel. */
   const [draft, setDraft] = useState<string[]>(selectedIds);
@@ -574,6 +590,7 @@ export function ModelPickerDialog({
           : undefined
       }
       onDismiss={onDismiss}
+      initialFocus={searchRef}
     >
       {loading ? (
         <div className="flex flex-col gap-1" aria-busy>
@@ -611,6 +628,7 @@ export function ModelPickerDialog({
                 className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-base-muted-foreground"
               />
               <input
+                ref={searchRef}
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -758,6 +776,7 @@ export function UseGateModelDialog({
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}
+      narrow
     >
       <ModalSubject
         icon={vendorLogo ?? <Icon name="cube" size={16} />}
@@ -788,10 +807,10 @@ export function UseGateModelDialog({
 
       {/* Label left, balance right - the one row in the dialogs that reads
        * across rather than stacking, so it is not a `ModalSubject`. */}
-      <div className="flex items-center gap-3 rounded-lg border border-base-border p-3">
+      <div className="flex items-center gap-3 rounded-md border border-base-border p-3">
         <span
           aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
         >
           <Icon name="creditCard" size={16} />
         </span>

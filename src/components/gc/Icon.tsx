@@ -39,6 +39,8 @@ export type IconName =
   | "headset"
   | "bookOpenText"
   | "monitorSmartphone"
+  | "monitor"
+  | "chartColumn"
   | "idCard"
   | "user"
   | "receipt"
@@ -50,6 +52,7 @@ export type IconName =
   | "circleCheck"
   | "circleX"
   | "messageCircleX"
+  | "share2"
   | "creditCard";
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -250,6 +253,24 @@ const PATHS: Record<IconName, JSX.Element> = {
       <rect width="6" height="10" x="16" y="12" rx="2" />
     </>
   ),
+  // Lucide `ChartColumn`. The Messages card's empty state.
+  chartColumn: (
+    <>
+      <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+      <path d="M18 17V9" />
+      <path d="M13 17V5" />
+      <path d="M8 17v-3" />
+    </>
+  ),
+  // Lucide `Monitor`. The Auth flow's "Name this device" pane is drawn with a
+  // plain display, not the monitor-plus-phone pair `monitorSmartphone` draws.
+  monitor: (
+    <>
+      <rect width="20" height="14" x="2" y="3" rx="2" />
+      <path d="M8 21h8" />
+      <path d="M12 17v4" />
+    </>
+  ),
   idCard: (
     <>
       <path d="M16 10h2" />
@@ -302,6 +323,15 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="m18 16 4-4-4-4" />
       <path d="m6 8-4 4 4 4" />
       <path d="m14.5 4-5 16" />
+    </>
+  ),
+  share2: (
+    <>
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <path d="m8.59 13.51 6.83 3.98" />
+      <path d="m15.41 6.51-6.82 3.98" />
     </>
   ),
   circleCheck: (

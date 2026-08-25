@@ -51,7 +51,7 @@ import { classifyError } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
-import { buildGroups } from "./lib/groups";
+import { MULTI_PROVIDER_ID, buildGroups } from "./lib/groups";
 import { verdictStatus, verdictsBySlug } from "./lib/verdict";
 import type { Group, GroupMember } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
@@ -67,6 +67,7 @@ import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
+import { brandMarkFor } from "./components/gc/BrandMark";
 import { FamiliesPane } from "./components/gc/FamiliesPane";
 import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
@@ -94,9 +95,11 @@ import {
   UseGateModelDialog,
 } from "./components/gc/dialogs";
 import {
+  ApiKeyPane,
   ConnectedPane,
   DiagnosticsPane,
   GatewayPicker,
+  NameDevicePane,
   OrgPickerPane,
   SetupLayout,
   WelcomePane,
@@ -116,18 +119,19 @@ import {
   SwitchGatewayDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
-import { AlertBanner, ErrorBanner, RecoveryBanner } from "./components/gc/banners";
+import { AlertBanner, ErrorBanner, ErrorDetails, RecoveryBanner } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type {
   AppStatus,
   InventoryState,
   SidebarApp,
+  SidebarGroup,
   SidebarView,
 } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
-import { analyticsId, setAnalyticsConsent, track } from "./lib/analytics";
-import { secretStoreName, usePlatform } from "./lib/platform";
+import { analyticsId, setAnalyticsConsent, track, trackError } from "./lib/analytics";
+import { secretStoreName, trustPromptHint, usePlatform } from "./lib/platform";
 
 /**
  * How often the window re-reads what is installed.
@@ -228,6 +232,19 @@ export function NewUiApp() {
    * already been drawn.
    */
   const rendered = useRef({ tools: "", proxy: "" });
+  /**
+   * Whether a poll is still in flight, so a tick can drop itself rather than
+   * stack on the one before it.
+   *
+   * The interval fires on a clock, not on the previous read finishing, and
+   * `redetect` is not always cheap: on Windows `proxy_status` shells out to
+   * `certutil` for the CA-trust reading. On a host where that call hangs until
+   * it is killed, every tick used to add another one, so the machine ended up
+   * hosting a growing pile of doomed children. Dropping the tick is right rather
+   * than queueing it: the next one is only seconds away, and it wants a fresh
+   * reading, not this stale one's turn.
+   */
+  const redetecting = useRef(false);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
@@ -354,11 +371,23 @@ export function NewUiApp() {
     current: currentInstallId,
     resolved: installsResolved,
   } = useInstallations(canRead, credential);
+  /** The open pane belongs to a proxy domain rather than a config tool. The
+   *  gateway attributes requests to config tools only - `client_tool` is
+   *  derived from each tool's own user agent, and traffic from these surfaces
+   *  arrives unattributed on purpose, because a guessed slug would file one
+   *  app's traffic under another's name. So the per-tool reads below must not
+   *  fire for a domain: filtering by its slug would return an empty reading,
+   *  and the pane would report a quiet day over traffic it cannot see. A slug
+   *  carried by an installed tool stays a tool. */
+  const openDomain =
+    view.kind === "app" &&
+    !tools.some((t) => t.slug === view.slug) &&
+    (proxy?.domains.some((d) => d.slug === view.slug) ?? false);
   /** The tool whose pane is open, or null on any other view. Drives both per-tool
    *  reads below, and gating on it keeps them from firing for a pane nobody is
    *  looking at - this endpoint shares an address-keyed rate limit with every
    *  other control-plane route. */
-  const openTool = view.kind === "app" ? view.slug : null;
+  const openTool = view.kind === "app" && !openDomain ? view.slug : null;
   /**
    * Whether the gateway has told us which installation this machine is.
    *
@@ -571,29 +600,35 @@ export function NewUiApp() {
    * routing callbacks for no change at all.
    */
   const redetect = useCallback(async () => {
-    const [t, px] = await Promise.all([
-      listTools().catch(() => null),
-      proxyStatus().catch(() => null),
-    ]);
-    // Written on every poll, not only on a change: this timestamp is the empty
-    // card's evidence that something is still looking, and letting it go stale
-    // while the polling continued would misdate a scan that did happen.
-    setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
-    let changed = false;
-    // A failed read commits nothing, so it also reports nothing as changed - the
-    // last good list stays on screen and the card says the scan failed.
-    if (t && detectionSignature(t) !== rendered.current.tools) {
-      setTools(t);
-      changed = true;
+    if (redetecting.current) return;
+    redetecting.current = true;
+    try {
+      const [t, px] = await Promise.all([
+        listTools().catch(() => null),
+        proxyStatus().catch(() => null),
+      ]);
+      // Written on every poll, not only on a change: this timestamp is the empty
+      // card's evidence that something is still looking, and letting it go stale
+      // while the polling continued would misdate a scan that did happen.
+      setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
+      let changed = false;
+      // A failed read commits nothing, so it also reports nothing as changed -
+      // the last good list stays on screen and the card says the scan failed.
+      if (t && detectionSignature(t) !== rendered.current.tools) {
+        setTools(t);
+        changed = true;
+      }
+      if (px && detectionSignature(px) !== rendered.current.proxy) {
+        setProxy(px);
+        changed = true;
+      }
+      // Either one moving invalidates every verdict: a tool that just appeared
+      // has none yet, and the engine coming up or going down changes all of
+      // them, because the relay health check behind them is shared.
+      if (changed) void refreshVerdicts();
+    } finally {
+      redetecting.current = false;
     }
-    if (px && detectionSignature(px) !== rendered.current.proxy) {
-      setProxy(px);
-      changed = true;
-    }
-    // Either one moving invalidates every verdict: a tool that just appeared has
-    // none yet, and the engine coming up or going down changes all of them,
-    // because the relay health check behind them is shared.
-    if (changed) void refreshVerdicts();
   }, [refreshVerdicts]);
 
   /** Re-run detection because the user asked - the inventory card's control, for
@@ -977,9 +1012,88 @@ export function NewUiApp() {
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
           on: t.status.kind === "connected" || t.status.kind === "drifted",
+          logo: brandMarkFor(t.slug),
           busy: routingBusy,
         })),
     [tools, verdicts, routing.writeFailures, routingBusy],
+  );
+
+  /**
+   * The rail's rows under their family eyebrows (`Components / Sidenav`, read
+   * 2026-08-23). Labels are the drawn vendor captions - "Anthropic" over the
+   * Claude apps, "OpenAI" over Codex - taken from each family's
+   * `upstream_provider_name`, falling back to the family's own name for a
+   * family with no config tool to read it from. The multi-provider tools sit
+   * under one "Other tools" eyebrow, as drawn - the 2026-08-21 read had each
+   * under its own name, and the Sidenav page reversed that. Proxy members
+   * (the chat domains and a family's app surfaces) are rows too now: no
+   * verdict covers them - the sweep is per tool - so their status derives
+   * from the domain's own state. Before the catalog loads, one unlabelled
+   * group keeps the rows on screen rather than blanking the rail on a
+   * grouping that is not yet known.
+   */
+  const sidebarGroups = useMemo<SidebarGroup[]>(() => {
+    if (groups.length === 0) {
+      return apps.length > 0 ? [{ id: "all", label: "", apps }] : [];
+    }
+    const bySlug = new Map(apps.map((a) => [a.slug, a]));
+    const grouped: SidebarGroup[] = [];
+    for (const g of groups) {
+      const members: SidebarApp[] = [];
+      let vendor: string | null = null;
+      for (const m of g.members) {
+        if (m.kind === "config" && m.tool) {
+          const app = bySlug.get(m.key);
+          if (!app) continue;
+          bySlug.delete(m.key);
+          vendor ??= m.tool.upstream_provider_name;
+          members.push(app);
+        } else if (m.kind === "proxy") {
+          members.push({
+            slug: m.key,
+            name: m.name,
+            status: proxyMemberStatus(m),
+            // Intent, same as the tools: the switch says what the user asked
+            // for, the status line says what is happening.
+            on: m.desired,
+            logo: brandMarkFor(m.key),
+            busy: routingBusy,
+          });
+        }
+      }
+      if (members.length === 0) continue;
+      grouped.push({
+        // "Other tools" names itself; its members' vendor field is a sentence
+        // fragment ("your existing providers"), not a caption.
+        id: g.id,
+        label: g.id === MULTI_PROVIDER_ID ? g.name : (vendor ?? g.name),
+        apps: members,
+      });
+    }
+    // A row the catalog did not claim keeps its place rather than vanishing.
+    // buildGroups sweeps leftovers into "Other tools", so this only catches a
+    // tool list and a catalog momentarily out of step with each other.
+    if (bySlug.size > 0) {
+      grouped.push({ id: "unclaimed", label: "", apps: [...bySlug.values()] });
+    }
+    return grouped;
+  }, [groups, apps, routingBusy]);
+
+  /** Every rail row flat, tools and domains together, for the pane header's
+   *  name and switch state - `apps` alone covers only the tools. */
+  const railApps = useMemo(() => sidebarGroups.flatMap((g) => g.apps), [sidebarGroups]);
+
+  /** Route or unroute one rail row. The rail mixes tools and proxy domains
+   *  now: a domain routes through `setDomainRouted` - no config file, so no
+   *  drift gate - the same dispatch the family panel's member switches use. */
+  const toggleRailApp = useCallback(
+    (slug: string, next: boolean) => {
+      const member = groups.flatMap((g) => g.members).find((m) => m.key === slug);
+      void (member?.kind === "proxy"
+        ? routing.setDomainRouted(slug, next)
+        : routeApp(slug, next));
+    },
+    [groups, routing.setDomainRouted, routeApp],
   );
 
   /**
@@ -1055,6 +1169,9 @@ export function NewUiApp() {
     // `undefined` while the preference read is in flight, which is not the same as
     // unanswered - see the note on the hook's argument.
     diagnosticsAnswered: prefs?.share_diagnostics_recorded,
+    // Same `undefined` distinction: null means the name follows the hostname,
+    // and no preferences at all means the read has not landed.
+    deviceNamed: prefs ? prefs.device_name !== null : undefined,
   });
 
   const settings = useSettingsActions({
@@ -1097,6 +1214,26 @@ export function NewUiApp() {
       setOfferError(classifyError(e, "sign_in"));
     } finally {
       setOfferBusy(false);
+    }
+  }, [settings]);
+
+  /**
+   * Settings' "Use a Gate account".
+   *
+   * `upgradeToOAuth` throws on a browser flow that fails, times out or is
+   * abandoned, and the row called it through `void` - so the rejection became an
+   * unhandled promise, the busy flag cleared in `finally`, and the pane went
+   * quiet. That is indistinguishable from a button that does nothing, which is
+   * exactly how it was reported. The offer dialog beside it has always caught;
+   * this now does too, onto the shell's own error banner.
+   */
+  const switchToGateAccount = useCallback(async () => {
+    setActionError(null);
+    try {
+      await settings.upgradeToOAuth();
+    } catch (e) {
+      trackError(e, "sign_in");
+      setActionError(classifyError(e, "sign_in"));
     }
   }, [settings]);
 
@@ -1175,6 +1312,10 @@ export function NewUiApp() {
         plan: "-",
         gateway: account?.gateway_base_url ?? "-",
         apiKeyMasked: maskedKey(keyPrefix, account?.has_api_key ?? false),
+        // Decides whether the key row is drawn at all: an upgraded account still
+        // has its old key in the keychain, so `has_api_key` alone would keep
+        // naming a credential that no longer authenticates anything.
+        authMode: account?.auth_mode,
         launchAtLogin,
         launchAtLoginUnavailable,
         routingHealthNotifications: prefs?.routing_health_notifications,
@@ -1194,6 +1335,15 @@ export function NewUiApp() {
         // with a key would flip auth_mode to api_key, quietly converting the
         // account behind a button that says "replace".
         onReplaceKey: account?.auth_mode === "api_key" ? settings.openReplaceKey : undefined,
+        // Same gate as Replace key, and the counterpart to it: a key account can
+        // move to a Gate account whenever it likes, not only in the one-time
+        // offer it may already have dismissed. An OAuth account is not offered
+        // the reverse, matching the popover.
+        onSwitchToGateAccount:
+          account?.auth_mode === "api_key" ? () => void switchToGateAccount() : undefined,
+        signInNote: settings.busy
+          ? "Finish signing in on the page that opened in your browser."
+          : undefined,
         // Only where there is a session to end. An API-key account never had one;
         // reset is its way out.
         onDisconnect: account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
@@ -1262,6 +1412,10 @@ export function NewUiApp() {
       settings.copyText,
       settings.openRenameDevice,
       settings.openReplaceKey,
+      // `busy` drives the sign-in row's waiting note, so the memo has to see it
+      // change or the note never appears.
+      settings.busy,
+      switchToGateAccount,
       settings.openDisconnect,
       settings.openReset,
       settings.openSwitchGateway,
@@ -1293,8 +1447,12 @@ export function NewUiApp() {
   const drifted = useMemo(() => tools.filter((t) => t.status.kind === "drifted"), [tools]);
   const driftAlert = drifted.length ? (
     <AlertBanner
-      title={`${drifted[0].name} isn't protected`}
-      body="Its config changed outside Gate, so its traffic isn't routed. Reconnect to restore protection."
+      // The drawn drift variant (banner/alert/single-app, read 2026-08-23)
+      // titles the card with the remedy. Its body says "This app's"; the name
+      // goes there instead because this card can page between apps, and two
+      // drifted tools must not read identically. Raised with the designer.
+      title="Reconnect to restore protection"
+      body={`${drifted[0].name}'s config changed outside Gate, so its traffic isn't routed.`}
       on={false}
       switchLabel={drifted[0].name}
       onToggle={() => void routeApp(drifted[0].slug, true)}
@@ -1331,33 +1489,56 @@ export function NewUiApp() {
   }
   if (setup.stage.kind !== "ready") {
     const stage = setup.stage;
+    const gatewayPicker = (
+      <GatewayPicker
+        value={setup.gateway}
+        servers={GATEWAY_SERVERS}
+        open={gatewayOpen}
+        onOpenChange={setGatewayOpen}
+        onSelect={setup.setGateway}
+      />
+    );
     return (
       <SetupLayout
         menuOpen={menuOpen}
         onMenuToggle={() => setMenuOpen((v) => !v)}
         onMenuSelect={onMenuSelect}
+        // Positional: how far along the drawn flow this pane sits. Every Setup
+        // frame carries the rail; the exact fractions are the flow's own order
+        // rather than sampled stops.
+        progress={
+          stage.kind === "welcome"
+            ? 0.1
+            : stage.kind === "api-key"
+              ? 0.25
+              : stage.kind === "org-picker"
+                ? 0.4
+                : stage.kind === "name-device"
+                  ? 0.6
+                  : stage.kind === "diagnostics"
+                    ? 0.8
+                    : 1
+        }
       >
         {stage.kind === "welcome" ? (
           <WelcomePane
             reauth={stage.reauth}
             onSignIn={() => void setup.signIn()}
-            apiKeyOpen={setup.apiKeyOpen}
-            onToggleApiKey={setup.toggleApiKey}
-            apiKey={setup.apiKey}
-            onApiKeyChange={setup.setApiKey}
-            onConnectWithApiKey={() => void setup.connectWithApiKey()}
+            onUseApiKey={setup.openApiKey}
             // The card had no way to name the gateway it was about to sign in
             // against, so the new shell could only ever reach the build's
             // default - the popover has offered this since first run existed.
-            gateway={
-              <GatewayPicker
-                value={setup.gateway}
-                servers={GATEWAY_SERVERS}
-                open={gatewayOpen}
-                onOpenChange={setGatewayOpen}
-                onSelect={setup.setGateway}
-              />
-            }
+            gateway={gatewayPicker}
+            busy={setup.busy}
+            error={setupError && <SetupNote error={setupError} />}
+          />
+        ) : stage.kind === "api-key" ? (
+          <ApiKeyPane
+            apiKey={setup.apiKey}
+            onApiKeyChange={setup.setApiKey}
+            onConnect={() => void setup.connectWithApiKey()}
+            onGoBack={setup.closeApiKey}
+            gateway={gatewayPicker}
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
           />
@@ -1367,7 +1548,20 @@ export function NewUiApp() {
             selectedId={setup.selectedOrgId}
             onSelect={setup.selectOrg}
             onContinue={() => void setup.confirmOrg()}
-            onUseApiKey={setup.useApiKeyInstead}
+            // The design draws both affordances on the dead end and both mean
+            // the same thing here: the session is already spent, so the only
+            // way back to the sign-in choice is to drop it.
+            onGoBack={() => void setup.signOut()}
+            onUseDifferentAccount={() => void setup.signOut()}
+            busy={setup.busy}
+            error={setupError && <SetupNote error={setupError} />}
+          />
+        ) : stage.kind === "name-device" ? (
+          <NameDevicePane
+            value={setup.deviceNameDraft}
+            onChange={setup.setDeviceNameDraft}
+            onContinue={() => void setup.nameDevice()}
+            onSkip={setup.skipNaming}
             busy={setup.busy}
             error={setupError && <SetupNote error={setupError} />}
           />
@@ -1388,6 +1582,15 @@ export function NewUiApp() {
               const share = prefs?.share_diagnostics ?? true;
               setAnalyticsConsent(share);
               void setShareDiagnostics(share)
+                .catch((e) => setActionError(classifyError(e, "generic")))
+                .finally(() => void loadPreferences());
+            }}
+            onSkip={() => {
+              // The drawn escape. Skipping consent is declining it: recorded as
+              // off, not left unanswered, or the step would ask again next
+              // launch and a skipped default-on would keep collecting.
+              setAnalyticsConsent(false);
+              void setShareDiagnostics(false)
                 .catch((e) => setActionError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());
             }}
@@ -1429,7 +1632,7 @@ export function NewUiApp() {
       }}
       view={view}
       onNavigate={setView}
-      apps={apps}
+      appGroups={sidebarGroups}
       onSelectApp={(slug) => setView({ kind: "app", slug })}
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
@@ -1439,6 +1642,7 @@ export function NewUiApp() {
           <ErrorBanner
             title={actionError.title}
             hint={actionError.hint}
+            raw={actionError.raw}
             onDismiss={() => setActionError(null)}
           />
         ) : recoveryNames.length > 0 && !recoveryHidden ? (
@@ -1453,7 +1657,7 @@ export function NewUiApp() {
           />
         ) : undefined
       }
-      onToggleApp={(slug, next) => void routeApp(slug, next)}
+      onToggleApp={toggleRailApp}
       dialog={
         // A pending quit decision outranks every other overlay: the user asked
         // to leave, and an update prompt or routing notice must not sit on top
@@ -1500,8 +1704,17 @@ export function NewUiApp() {
             onDismiss={() => routing.resolvePrompt(false)}
           >
             <p className="text-sm leading-5 text-neutral-600">
-              Your operating system will ask for permission. The certificate stays on this
-              machine, and you can remove it from Settings at any time.
+              The certificate stays on this machine, and you can remove it from Settings
+              at any time.
+            </p>
+            {/* Naming the system dialog is the whole of AG-534, and "your
+                operating system will ask for permission" is not that: on Windows
+                what arrives is a red "Security Warning" quoting a certificate
+                name, which reads as something having gone wrong. Same sentence
+                the popover's `CertificateNotice` uses, from the same helper, so
+                the two shells do not prepare the user two different ways. */}
+            <p className="text-sm font-medium leading-5 text-neutral-900">
+              {trustPromptHint(platform)}
             </p>
           </Modal>
         ) : routing.prompt?.kind === "untrust" ? (
@@ -1624,6 +1837,7 @@ export function NewUiApp() {
           <SwitchOrganizationDialog
             organizations={settings.prompt.orgs.map(toDialogOrg)}
             selectedId={settings.prompt.selectedId}
+            currentId={account?.org_id ?? undefined}
             onSelect={settings.selectOrg}
             onCancel={settings.dismissPrompt}
             onConfirm={() => void settings.confirmSwitchOrg()}
@@ -1673,7 +1887,7 @@ export function NewUiApp() {
               offerError && (
                 <p
                   role="alert"
-                  className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
+                  className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
                 >
                   <span className="font-medium">{offerError.title}</span> {offerError.hint}
                 </p>
@@ -1732,23 +1946,27 @@ export function NewUiApp() {
         />
       ) : view.kind === "app" ? (
         <AppPane
-          name={appFor(apps, view.slug)?.name ?? view.slug}
+          name={appFor(railApps, view.slug)?.name ?? view.slug}
+          logo={brandMarkFor(view.slug)}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug
           // `lib/groups.ts` documents - it renders off, and clicking it turns off
           // the setting the user was trying to turn on.
-          isProtected={appFor(apps, view.slug)?.on ?? false}
+          isProtected={appFor(railApps, view.slug)?.on ?? false}
           busy={routingBusy}
           onToggleProtected={() =>
-            void routeApp(view.slug, !(appFor(apps, view.slug)?.on ?? false))
+            toggleRailApp(view.slug, !(appFor(railApps, view.slug)?.on ?? false))
           }
           stats={toolActivity.view?.stats ?? EMPTY_STATS}
           buckets={toolActivity.view?.buckets ?? []}
           // Pending while the installation list is still open too: until it
           // answers we do not know which machine this is, so there is nothing to
-          // read yet - and a skeleton is the honest account of that.
+          // read yet - and a skeleton is the honest account of that. A domain
+          // pane is never pending: its read will not fire (see `openDomain`),
+          // and a skeleton would promise an answer that is not coming.
           pending={
-            !installsResolved || (toolActivity.view === null && toolActivity.failure === null)
+            !openDomain &&
+            (!installsResolved || (toolActivity.view === null && toolActivity.failure === null))
           }
           modelChoice={openModelChoice}
           modelBusy={modelBusy}
@@ -1812,7 +2030,8 @@ export function NewUiApp() {
           onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
           activity={toolEventRows}
           eventsPending={
-            !installsResolved || (toolEvents.view === null && toolEvents.failure === null)
+            !openDomain &&
+            (!installsResolved || (toolEvents.view === null && toolEvents.failure === null))
           }
           onLoadMore={toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined}
           // Each half reports its own read. Deriving the feed's flag from the
@@ -1821,8 +2040,11 @@ export function NewUiApp() {
           // precisely the unread-versus-empty confusion these flags exist to
           // prevent. Two endpoints, two answers.
           unavailable={{
-            chart: unattributedMachine || (toolActivity.view ? toolActivity.view.missing.chart : true),
-            events: unattributedMachine || toolEvents.failure !== null,
+            chart:
+              openDomain ||
+              unattributedMachine ||
+              (toolActivity.view ? toolActivity.view.missing.chart : true),
+            events: openDomain || unattributedMachine || toolEvents.failure !== null,
           }}
           alert={
             <>
@@ -1835,7 +2057,19 @@ export function NewUiApp() {
                   <span className="font-medium">Model not changed:</span> {modelError}
                 </p>
               )}
-              {unattributedMachine ? (
+              {openDomain ? (
+                // The gateway attributes requests to config tools by their own
+                // user agents; traffic from these surfaces arrives unattributed,
+                // on purpose - a guessed slug would file one app's traffic under
+                // another's name. So there is no per-app reading to show here,
+                // and saying so beats a zero.
+                <p className="text-base-xs text-base-muted-foreground">
+                  <span className="font-medium">This app:</span> its requests
+                  aren&apos;t attributed to a single app yet, so its own activity
+                  can&apos;t be shown. The Overview still covers your whole
+                  organisation.
+                </p>
+              ) : unattributedMachine ? (
                 // No numbers can be shown here, and the reason is not a failure:
                 // the gateway answered and does not recognise this machine, so
                 // there is no way to ask "what has this tool done *here*". Said
@@ -2040,10 +2274,21 @@ function toSetupOrg(org: Org): SetupOrganization {
 }
 
 /** Title plus remedy, the same two lines the popover's `ErrorNote` shows. */
+/**
+ * A classified failure on a setup pane.
+ *
+ * Carries `ErrorDetails` for the same reason `ErrorBanner` does: the fallback
+ * hint promises "the details below", and this is the surface with no other way
+ * to see them - a first-run or re-sign-in failure has no shell behind it. An
+ * unclassified `oauth_begin_login` failure ("OAuth is not configured in this
+ * build", a refused loopback port) landed here as a bare "Couldn't complete
+ * sign-in" with nothing under it, which is a dead end rather than a report.
+ */
 function SetupNote({ error }: { error: ClassifiedError }) {
   return (
     <>
       <span className="font-medium">{error.title}</span> {error.hint}
+      <ErrorDetails raw={error.raw} title={error.title} />
     </>
   );
 }
@@ -2065,6 +2310,19 @@ function initialsOf(name: string): string {
  * certificate trust plus the master switch - which is exactly what `routed`
  * already folds in.
  */
+/**
+ * The status line for a proxy-routed member, shared by the rail rows and the
+ * family panel so the two cannot phrase one domain two ways. No verdict exists
+ * for these - the sweep is per tool - so observation is the domain's own state:
+ * carrying traffic, switched on but blocked (master off, certificate
+ * untrusted), or off.
+ */
+function proxyMemberStatus(m: GroupMember): AppStatus {
+  return m.routed
+    ? { kind: "protected" }
+    : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
+}
+
 function memberToFamilyMember(
   m: GroupMember,
   verdicts: Map<string, Verdict>,
@@ -2073,9 +2331,7 @@ function memberToFamilyMember(
   const status: AppStatus =
     m.kind === "config"
       ? verdictStatus(verdicts.get(m.key), { writeFailed: writeFailures.has(m.key) })
-      : m.routed
-        ? { kind: "protected" }
-        : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
+      : proxyMemberStatus(m);
   return { key: m.key, name: m.name, kind: m.kind, status, on: m.desired };
 }
 
@@ -2177,7 +2433,7 @@ function ActivityGaps({
               // again": three buttons, one name, three different jobs. Naming the
               // subject fixes the ambiguity without touching the visible copy.
               aria-label={`${a.label}: ${n.subject}`}
-              className="ml-2 rounded-base font-medium text-base-primary underline decoration-transparent underline-offset-2 transition hover:decoration-inherit focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:text-base-muted-foreground"
+              className="ml-2 rounded-sm font-medium text-base-primary underline decoration-transparent underline-offset-2 transition hover:decoration-inherit focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:text-base-muted-foreground"
             >
               {a.kind === "retry" && loading ? "Trying…" : a.label}
             </button>

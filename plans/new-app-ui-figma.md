@@ -113,6 +113,624 @@ Still unbuilt: the App page's **choose model** dialog. It is only known from a
 frame caption; nothing about its contents has been read, so building it would be
 invention.
 
+## Re-verification of the Flows pages, 2026-08-19
+
+MCP allowed exactly one read this month before the View-seat cap cut in. That
+call confirmed the document still reports a single top-level page, `Components`
+(113:16762): **MCP never sees the `Flows` pages**, so everything below was read
+through the browser using the Layers-panel + `shift+2` method.
+
+### Two new flow pages, both marked ready
+
+The Pages list now reads `Components`, `Flows` (**Onboarding**, **Auth**,
+`Overview`, `App`, `Settings`), `Sandbox`, `Icons`. Onboarding and Auth did not
+exist on 2026-08-17, and both carry the designer's green check.
+
+This flips **open question 6**. Setup and onboarding were built provisionally
+*because* they were "not in the Figma". They now are, and what was built does
+not match them.
+
+#### Auth (177:79238) - four sections
+
+`Auth / Connect with Gate` ✅, `Auth / Connect with API key` ✅,
+`Auth / Organizations` ✅, and `Auth / Error states` with **no check**, so that
+last one is still moving and should not be chased yet.
+
+The drawn flow is auth, then **name this device**, then choose apps. The API-key
+path skips the org picker entirely and goes straight to naming; the copy states
+the order outright: "After it connects, you will name this device before
+choosing which apps are protected."
+
+| Step | Drawn | Built in `setup.tsx` |
+| --- | --- | --- |
+| Sign in | `Gate Connect` lockup, "Continue with Gate account", `or`, outline "Use an API key" | `WelcomePane`, "Sign in with Constellation" over a disclosure toggle "Use a Gate API key instead" |
+| API key | its own pane: "Use an API key", field, "Connect and continue", "Go back" | inline disclosure under the welcome pane, not a destination |
+| Organization | "Choose an organization", radio rows with initials tile, name, `12 members · Free plan` | `OrgPickerPane`, same shape |
+| **Name this device** | own pane, field, `Continue`, `Skip naming` link | **not built** |
+
+Copy that differs verbatim:
+
+- Sign-in body is "Sign in once, then choose which AI apps route through Gate.
+  Claude, Codex, OpenCode, and supported apps keep working normally while Gate
+  handles protection underneath." The built pane says "Point your AI tools at
+  Gate once, and stop thinking about credentials."
+- Org-picker subtitle is "Gate Connect will use the selected organization for
+  routing, activity, and PAYG credits on this device." The built pane says
+  "This decides where your activity is recorded and whose Gate credits you use."
+- Every pane carries a `Use a different account` link, which nothing builds.
+
+`Auth / Organizations` draws the cardinality states explicitly: none, one, two,
+three, and a scrollable many. **The empty state's escape is `Go back` plus
+`Use a different account`**, inside an amber note reading "No organizations
+found. You will need to setup your first organization through Gate AI before
+continuing to setup Gate Connect." The built `OrgPickerPane` escapes to the key
+form instead, which its own comment calls "the only way forward". The design
+disagrees.
+
+`Auth / Error states` (not ready, recorded only so it is not read as missing):
+a **Setup timeout** dialog ("Go back" / "Retry") over the org picker, and a
+device-name field failing validation with "Incorrect characters or symbols used".
+
+#### Onboarding (177:79237)
+
+A welcome frame plus a three-step tutorial, all in the window shell with a
+progress bar under the topbar and a persistent `Do not show this intro again`
+checkbox in the footer.
+
+| # | Drawn | `screens/Onboarding.tsx` |
+| --- | --- | --- |
+| - | "Welcome to Gate Connect" / "Created by Constellation Network" | same, subtitle reads "Created by Constellation Gate AI" |
+| 1 of 3 | "What is Gate Connect?" | "How to turn it on" |
+| 2 of 3 | "Where is Gate Connect?" + `Show me where Gate Connect lives` | same title, and `step.locate` already builds that button |
+| 3 of 3 | "See what Gate is doing" | **no counterpart** |
+
+Step 3 is about the dashboard: "Once requests pass through Gate, the desktop app
+shows recent activity, security actions, and compression savings without
+exposing prompt or response content", over a note "Notifications will alert you
+when a request has been blocked or flagged."
+
+**Step 2 is worth a decision.** Its copy is "Gate Connect stays open in your menu
+bar ... Click the Gate Connect icon to open the compact popover for a quick
+status check, or expand it to the full desktop app for more details, alerts, and
+controls." The onboarding therefore *teaches* popover and window as two states of
+one product with an expand/collapse between them. **Open question 5 removed
+Minimize2 on the grounds that it duplicated an OS control**, and the Auth frames
+still draw both an ellipsis and a collapse button at top right. Either the
+tutorial copy is stale or dropping Minimize2 was wrong; the designer should say
+which.
+
+### The action pills were sampled at last, and the inference was wrong
+
+`Overview.tsx` still carries the comment that the `100` backgrounds "are inferred
+from that pairing rather than sampled from Figma". Deep-selecting the FLAG pill
+on `Overview-partly-routed-1` (116:26405) settles it:
+
+| Property | Figma | Built |
+| --- | --- | --- |
+| Background | `tailwind colors/amber/200` `#FDE68A` | `bg-amber-100` |
+| Text | `tailwind-colors/amber/900` `#78350F` | `text-amber-900` ✓ |
+| Radius | 2px | `rounded-base`, 4px |
+| Padding | 8px horizontal, 4px vertical | `px-1.5 py-0.5`, 6px / 2px |
+| Type | `mono/label-12`, Geist Mono Medium 12/16, 6% | `font-mono text-base-xs font-medium tracking-label` ✓ |
+
+Only FLAG was sampled. BLOCK, REDACT and the green `ON` pill were left alone, but
+the 200 stop is consistent with the status tile's own 50 -> 200 gradient, so
+expect all four to move one step and check them before shipping the change.
+
+### Unchanged
+
+Token layer still matches every value sampled on 2026-08-17: `base.*`,
+`blue-ribbon` 700/800/900, the four Settings labels, the window frame's 8px
+radius, and the Overview stat trio (`MESSAGES` / `BLOCKED/FLAGGED` /
+`TOKENS SAVED`, the last with a green `+$3.10` delta).
+
+
+### Built 2026-08-19
+
+**Action pills.** `Overview.tsx` and `AppPane.tsx` move to the 200 stop at a 2px
+radius with 8/4 padding, and the comments that called the backgrounds inferred
+are gone. `StatusPill` picks up the pill's mono/uppercase treatment; its `Off`
+fill stays neutral-100 because no frame draws an off pill. BLOCK, REDACT and the green ON fill went unsampled that
+day - the renderer froze first - and were read on 2026-08-20; see below.
+
+**The Auth flow.** `setup.tsx` gained `ApiKeyPane` and `NameDevicePane`, and
+`WelcomePane` lost the inline key form: the key is a destination now, reached
+through `Use an API key` under an `or` divider, with `Go back` returning. Copy
+throughout is the drawn copy. `SetupHeader` takes a `ReactNode` title so the
+sign-in card can show the two-tone wordmark, `PrimaryButton` gained `disabled`
+so the drawn muted primaries refuse an empty field or an unselected org, and
+`SetupLink` / `OrDivider` are the small pieces those panes needed.
+
+`useSetup` gained the `api-key` and `name-device` stages and a `signOut`.
+Naming derives from `device_name === null`, guarded on `sawSignedOut` for the
+reason the confirmation is: null is what every never-renamed install carries, so
+deriving from it alone would meet returning users with the pane on every launch.
+`namingDone` covers both skipping and saving, since the preference re-read that
+flips `deviceNamed` lands a beat after the save.
+
+`signOut` drops the OAuth session **and** rewrites the account with the gateway
+and no key, so the key path leaves too. It deliberately does not call
+`clear_account`, which would take the chosen gateway with it and quietly repoint
+a staging install at production.
+
+`keyFormForced` and `useApiKeyInstead` are gone. **The window and the popover now
+disagree about the org-picker dead end**: the window signs out, the popover still
+offers the key form (`screens/OrgPicker.tsx`, pinned by
+`signin.spec.ts` "the key form is reachable from the org picker's dead end").
+That is the design's call, taken knowingly, and it is a real divergence until the
+popover retires.
+
+**Onboarding.** Four steps now, matching the drawn flow: the welcome, "What is
+Gate Connect?", "Where is Gate Connect?" and "See what Gate is doing". `Step`
+gained an optional `note` for the bordered strip each tutorial step carries, and
+`hero` became optional. Step 2 keeps its platform-aware sub-heading rather than
+the design's macOS-only "menu bar", and step 1 keeps the config-versus-proxy
+mechanism sentence the design drops, because neither is expressible in the drawn
+copy and both are true.
+
+Both tutorial illustrations are now the Figma's own art, captured 2026-08-20:
+`onboarding-what-is-gate-connect.png` (the apps-to-Gate flow diagram) and
+`onboarding-see-what-gate-is-doing.png` (the Overview dashboard). Each is the
+590x220 panel inside its step's card, taken through the browser at roughly 1.7x
+so it holds up on a retina panel - MCP has no quota to export with and the View
+seat cannot use Dev Mode. The dashboard one is cropped mid-chart in the design,
+so it carries the same bottom fade the platform mockups use; the diagram is whole
+and does not. `RoutingHero` and its `app-integrations.png` import are gone, and
+the PNG went with them: it was the popover's Routing screen, the last caller of it
+disappeared with the hero, and nothing else in the repo referenced it.
+
+`new-ui-firstrun.spec.ts` follows, with a new test pinning that the device is
+named between connecting and the confirmation, and that Continue refuses an empty
+field. 428 unit tests and 156 e2e pass.
+
+### Built 2026-08-20
+
+**The pill fills, read off the pixels.** Rather than fight the properties panel a
+second time, the Policies table was captured as a PNG and the fills counted
+directly. Three matched Tailwind exactly, at distance 0.0, which is what makes
+the fourth trustworthy: `red/200 #FECACA`, `amber/200 #FDE68A`, `green/200
+#BBF7D0` - and REDACT at **`#DDD6FE`, which is `violet/200`, not `purple/200`
+(`#E9D5FF`)**.
+
+So the redaction hue was wrong in two places, and had been since the tokens
+landed. `chart.redacted` was `#A855F7` (purple/500) against a drawn `#8B5CF6`
+(violet/500), and the REDACT / `redacted` pills were `purple-200/900`. Both now
+say violet. The other three chart series were confirmed correct in the same pass
+(`#60A5FA`, `#F87171`, `#FBBF24`), so only the one hue moved. Nothing else in the
+palette is violet, which makes this easy to "correct" back by eye - the comments
+in `Overview.tsx` and `AppPane.tsx` say so explicitly.
+
+**The onboarding window moved to the new shell.** `screens/Onboarding.tsx` was
+the last thing still rendering on the popover-era `gc/` ink system. It now draws
+what the design draws: a 48px topbar with the brand lockup centred, a progress
+rail directly beneath it, one card per tutorial step carrying a `TUTORIAL`
+eyebrow and an `N of 3` counter, and a footer holding the opt-out checkbox and
+Previous / Next. Private `IntroTopbar`, `IntroProgress` and `IntroButton` are
+local to the file - `gc/Topbar` owns an overflow menu the intro has no use for,
+and the setup panes' buttons are private to theirs.
+
+Two things fell out of it. The step dots are gone, replaced by the rail, which
+takes over their `Step N of M` announcement through `role="progressbar"` rather
+than the dots' `role="img"`. And the tutorial art is **not** wrapped in a panel:
+the captures already *are* the design's 590x220 panel, border and gray field
+included, so the first attempt drew two nested boxes.
+
+The welcome frame keeps its own shape - centred mark, title, rule, copy, no card -
+because that is how the design draws it.
+
+### Sync, 2026-08-20 (second pass)
+
+Re-read on the report that every flow is now green. Most of it is, and one
+thing that was said to be green is not.
+
+**`Auth / Error states` still carries no check.** Verified twice, the second
+time after a hard reload, in both the layers panel and the canvas section label,
+while the three sections beside it (`Connect with Gate`, `Connect with API key`,
+`Organizations`) all show theirs. So the setup-timeout dialog and the
+device-name validation rule stay unbuilt. Both frames were read on 2026-08-19
+and are described above, so if the designer has signed them off verbally and the
+file simply has not caught up, this is short work - but the file is the signal
+this plan follows, and it says not yet.
+
+**Settings is green throughout** - `Reset Gate Connect`, `Disconnect Gate
+session`, `Update device name` (twice), `Main screens`, `Dimensions` - and every
+one of those flows is built.
+
+**The App page carries a section nothing here had ever read: `App / No data
+1+ day state` ✅.** It holds two states that the panes did not have:
+
+- **No data.** Stat tiles read `0`, `0`, **`N/A`** - not `0%`. The Messages card
+  drops its axis and legend for a centred column-chart mark over "No messages
+  sent in the last 24hrs", and Recent activity drops its header row for "No
+  recent activity in the last 24hrs".
+- **Loading.** The same cards with their labels in place and their values
+  replaced by grey skeleton bars, including 24 uniform full-height bars where
+  the chart goes.
+
+The no-data half is now built, and it matters more than it looks: **both panes
+already pass `EMPTY_STATS` and `buckets={[]}`**, because the 24-hour endpoint does
+not exist, so this is the state the app is in every time anyone opens it. What
+shipped before drew a labelled 24-column axis under 24 invisible bars and a table
+header over no rows, which reads as a chart that failed rather than a quiet day.
+
+`UsageStats.tokensSavedPercent` became `number | null` to carry it. `0%` is a
+claim about traffic that was never measured; `N/A` is the design's own answer and
+is the honest one. `tokensSavedAmount` follows it, since there is no amount to put
+beside a figure that does not exist.
+
+`EmptyNote` lives in `metrics.tsx` because the chart is shared by both panes, so
+the Overview inherits the same treatment without a second implementation.
+`metrics.test.tsx` pins all of it, including that one bucket carrying traffic is
+enough to bring the chart back.
+
+**The loading half is deliberately not built.** Nothing can be loading until
+there is an endpoint to load from, and a skeleton no code path can reach is dead
+code. Its appearance is recorded above for whoever lands that endpoint.
+
+**Not re-read this pass:** the Overview page. Three page-switch attempts failed -
+Figma's Pages list needs a click to select and another to navigate, and it stopped
+taking the second one - so its own `overview-loading` frame was not opened. The
+shared components mean the Overview picks up the empty treatment regardless; what
+is unverified is whether its no-data copy differs from the App page's.
+
+### Sync 2026-08-21: Settings, Setup, Onboarding, and the rest of the file
+
+The remaining flows, read the same day. All Settings and Setup sections carry
+the check except **`Auth / Error states`, which still has none** - the
+setup-timeout dialog and the device-name validation stay unbuilt, third read
+running.
+
+**Settings caught up with the build, and the build moved twice.** The drawn
+screen now includes the Change server action and a full Diagnostics section
+(Share diagnostic data + Diagnostics report / View report) - both previously
+built as undrawn deviations, now canon. What moved to match the drawing: the
+Notifications switch is a **row under Startup** again (AG-594's separate
+section is not drawn; the row keeps the honest "session expires / cannot be
+put back" description because the drawn "blocked or flagged" copy still
+promises events AG-578 has not built); the share-diagnostics description
+drops ", responses," to read exactly as drawn; and the report dialog is
+titled **"Diagnostics report"**. Kept deviations: the Help section and the
+Sign-in method / certificate / What-is-collected rows (not drawn, all
+previously recorded), and the drawn report subtitle's "this installed" typo,
+shipped corrected. Rename, Replace key, Disconnect and Reset all match their
+frames verbatim.
+
+**Setup gained two drawn things.** Every frame carries a **progress rail**
+under the topbar - `SetupLayout` takes `progress` now, fed positionally per
+stage. And the diagnostics step is finally drawn ("Share diagnostic data"):
+rebuilt to match - share2 tile (glyph added), the drawn one-line copy, a
+"Diagnostic data sharing" switch row, **Finish setup** as the primary and a
+**Skip data sharing** link that records the refusal rather than leaving the
+question unanswered. The itemised sent / never-sent lists moved out of the
+step with the redraw; they remain in Settings under "What is collected". The
+sign-in, API-key, org-picker and name-device frames all match what was built
+on 2026-08-19, including the busy states.
+
+**Onboarding matches as built** (welcome + three steps, rail, footer). No
+changes.
+
+**The rest of the file.** The Components page still carries the older
+`banner/routing` copy (`Routing · 2 of 4 Apps` beside an all-protected
+message); the flow frames' `Routed · N of N` wins, being both newer and
+internally consistent. `topnav/menu` still draws Contact support, which stays
+omitted for want of an address. Icons is a glyph library. The **Design docs
+and Comments pages could not be opened** - Figma's page switching refused
+across a dozen attempts in two sessions of this pass - so whatever they hold
+is unread; they are documentation pages, not flow drawings, but worth a look
+when the canvas cooperates.
+
+514 unit tests and the full 163-test e2e suite pass.
+
+### Sync 2026-08-21: the Overview flow, read at last
+
+`Flows / Overview` (116:26381) had not been re-read since the failed page
+switches of 2026-08-20. Every section carries the check: Dimensions, Main
+screens, two Turn-routing-ON dialog sections, and Switching an organization.
+What moved, and what was confirmed:
+
+**The action pills did not change.** BLOCK sampled `red/200` `#FECACA` over
+`red/900` at a 2px radius - exactly what shipped on 2026-08-20 - so the
+Overview's action pills and the App table's 100/700 status badges really are
+two different components, not one drifting spec. **The ON pill gained a
+glyph**: `circleCheck` at 12px in `green/800`, a 4px gap ahead of the
+`green/200`/`green/900` label. `StatusPill` moved from a bare `check` at an
+8px gap. **The Manage footers are bordered buttons now**, sitting under a
+full-width rule; `ManageLink` moved from a borderless text link.
+
+**`overview-loading` (228:85602) was finally read**, and the built silhouette
+was wrong in three ways: the drawn placeholder is 24 *uniform full-height*
+columns, the numbered ticks render as numbers (1..24) rather than skeleton
+bars, and the legend stays on screen while loading. `PendingChart` follows.
+The legend is also **left-aligned** in every frame; the built one was centred.
+One discrepancy left alone: the loading frame draws a rule above the legend
+and the loaded frames do not, so the shared markup follows the loaded state.
+
+**The routed banner says "Routed"**, not the "Routing" the earlier read
+recorded (`Routed · 4 of 4 Apps` in every routed frame). `RoutingBanner`
+updated.
+
+**The dialogs moved, mostly in copy.** Apply changes gained its question mark
+and Yes/No button prefixes ("Yes, close affected apps" / "No, I will reopen
+later"); Close apps' escape is "No, I will close later" and its destructive
+primary is the generic "Yes, close apps" rather than naming the app; Switch
+organization's subtitle starts "Select", and its drawn primary is muted while
+the selected org is the current one - `SwitchOrganizationDialog` gained
+`currentId` and refuses the no-op, which the shell feeds from the account.
+The Organization-switched copy, flagged on 2026-08-17 as the least certain of
+the seven, is confirmed verbatim. And the three short confirmations - Change
+is ready, Organization switched, Use a Gate model - are drawn at **520px**,
+not the template's 600: `Modal` gained `narrow`.
+
+Review config, Change is ready, the alert banner, the stat trio, the tooltip
+and the chart's loaded anatomy all match as built; the extra transparency the
+review dialog carries (the Gate route and the file path) stays. e2e:
+`new-ui-running-apps.spec.ts` follows the new button labels.
+
+### Sync 2026-08-21: the App page moved, and the build follows it
+
+Read through the browser (MCP quota still spent). The Pages list itself has
+changed: `Comments` and `Design docs` are new top-level pages, and the Flows
+page formerly named `Auth` is now `Setup`. Only `Flows / App` (116:30199) was
+read this pass; every section on it carries the ready check, including two new
+ones: **`App / Table guide`** and the reworked **`App / Select a model`**.
+
+**Recent activity is a different table** (`table/recent-activity`, 272:3150).
+Columns are now Time / Security / Model / Message / Action. The old Status
+column is gone - ERROR joined the Security pill set - and the pills were
+sampled from the properties panel: **the 100 stop with 700 text**, at a 4px
+radius with 8/4 padding, not the Overview pills' 200/900 at 2px. ERROR and
+BLOCKED sample identically (`red/100` / `red/700`); FLAGGED is
+`amber/100`/`amber/700`; REDACTED is `violet/100` with its text at the **800**;
+ALLOW is `gray/100` over `base/muted-foreground` - a grey non-verdict, not a
+green badge. Built in `AppPane.tsx`: one pill per row, the recorded verdict
+outranking the transport error because a blocked request usually also errors
+client-side, with ERROR reserved for rows where the gateway recorded no
+action. The Model cell is the model name alone (the drawn vendor mark waits on
+open question 2), and the Message cell carries the mono session reference -
+the drawn title over it could only come from prompt text, which AG-574
+excludes. **The Action column is drawn but not wired** (decision, 2026-08-21):
+each row carries the design's View button with the external-link glyph, and
+`AppPane` exposes `onViewEntry` for the destination, but the shell passes no
+handler yet because nothing in `dashboard-web` filters by tool, machine or
+time. The deep link is the remaining work, not the column.
+
+**The model picker is a centred dialog now, not a dropdown.** The earlier
+read's cut-off top edge turns out to have hidden a real header: X dismiss,
+a "Search models" field, an "All providers" filter, and a count line reading
+"Showing 10 of 14 models · 400+ in Gate AI". `ModelPickerDialog` rebuilt to
+match: search filters on the id, the provider select is derived from the model
+list, the count line reports the filter's own numbers, and rows carry trailing
+radio circles with the selected one outlined. `Modal` gained an opt-in
+`onClose` X for it. The count line ships the drawn "· 400+ in Gate AI" tail
+verbatim (decision, 2026-08-21). One deviation, recorded at the component: the
+drawn subtitle "Claude Desktop uses on Gate model" is not a sentence, shipped
+as "What {app} uses on Gate model" and raised as a copy question. The list is
+still empty until a gateway endpoint reports models; the empty note keeps the
+search chrome off screen rather than drawing dead controls.
+
+**The sidebar is grouped now.** Every frame on the page draws the rail's apps
+under mono eyebrows - `ANTHROPIC` over the two Claude apps, `OPEN AI` over
+Codex, `OPENCODE` over OpenCode - and the `PROTECTED APPS 4/4` counter is
+gone, which retires open question 1. Built as `SidebarGroup`: the shell groups
+rows by the routing families `buildGroups` already computes, labelled with the
+drawn vendor captions via each family's `upstream_provider_name` (decision,
+2026-08-21). The multi-provider tools carry a sentence fragment in that field
+("your existing providers"), and the design draws each under its own name, so
+the leftover family splits into one group per tool. Before the catalog loads,
+one unlabelled group keeps the rows on screen. The drawn rail also shows no
+Families nav item; ours stays, per the standing deviation.
+
+**Small pieces.** The Model selection card gained the drawn divider above
+"Current Gate model". `UseGateModelDialog`, the alert banners, the stat trio,
+the chart and the no-data states all still match their frames; none were
+touched.
+
+**`nav/sidebar/overview` (113:16794) was pulled from the Components page**, and
+it confirms the grouped rail is canonical, not an App-page quirk: all three
+sidebar variants there draw the vendor eyebrows and none draw the old
+`PROTECTED APPS` counter. Sampled values, and what moved to match them:
+container is 250px with 16px padding, a **20px** stack rhythm (was 16) and a
+1px right edge at **5%** black (was 8%); nav labels and row names are
+`label/12` (Geist Medium 12/16), active nav in `base/primary`, row names in
+`base/foreground`; the app tile is 32x32, r4, black under the white-to-black
+gradient with a 1px white border at 24%; rows are 44px, padding 6/4, gap 16,
+**radius 4px** - which the radius scale maps onto `sm`, so the row moved from
+`rounded-md`. The row-hover variant (121:33421) draws the treatment the rail
+lacked: a `neutral-100` fill inside a 1px `neutral-200` border with the name
+in `base/primary`. Built as one treatment for hover and selection, with the
+border reserved at rest so rows do not shift. A second read on a fresh tab
+(the first ended in the recurring renderer freeze) closed the gaps the freeze
+had left: the group eyebrow is `mono/eyebrow` (Geist Mono Medium 12/16, 10%
+tracking, uppercase, `base/muted-foreground`), matching what was built on
+sight; a group's eyebrow sits 8px above its rows; and `apps-section`
+(113:16814) spaces the groups at **12px**, so the rail moved from 16.
+
+`new-ui-model-picker.spec.ts` follows the picker (X instead of Cancel), and
+`AppPane.test.tsx` pins the merged pill column. 514 unit tests and the 114
+new-UI e2e tests pass.
+
+### Sync 2026-08-23: the Sidenav page, and the rail it redraws
+
+Read through the browser (MCP quota still spent). Two structural changes to
+the file itself: the `Comments` page is gone without ever being read, and
+`Components` gained a nested page, **`Sidenav`** (408:15625), carrying the
+ready check. The old `nav/sidebar/*` frames are no longer on the Components
+page - Sidenav replaces them, and it redraws the rail rather than just
+rehousing it. Every flow page's frames already carry the new rail.
+
+What the redrawn rail changes, in order of consequence:
+
+- **Chat domains are rows now.** All three sidebar variants draw nine rows:
+  Claude Desktop and Claude Code under `ANTHROPIC`; Codex, OpenAI apps and
+  ChatGPT under `OPEN AI`; OpenRouter under an eyebrow reading `OPENCODE`
+  (a mislabel - see below); OpenCode and OpenClaw under `OTHER TOOLS`.
+  Claude Desktop, OpenAI apps, ChatGPT and OpenRouter are proxy-routed chat
+  members, which the drawn UI had never shown - the 2026-08-16 note on open
+  question 3 ("the chat domains, which the drawn UI does not show at all")
+  no longer holds. Each carries the same switch and status line as a config
+  tool. The built rail filters them out (`m.kind !== "config"` in
+  `sidebarGroups`), so today it shows only the config tools.
+- **Every group eyebrow carries a counter** - `1 of 2`, right-aligned, mono -
+  counting protected members over members (verified against all four groups'
+  drawn states). `PROTECTED APPS 4/4` stays gone; this is its per-group
+  descendant.
+- **The multi-provider tools share one `OTHER TOOLS` eyebrow.** That reverses
+  the 2026-08-21 reading, where each drew under its own name and
+  `sidebarGroups` was built to split them. One group, labelled Other tools.
+- **The brand marks exist in the file at last.** A `logo` component set draws
+  eight marks (Claude, Claude Code, Codex, OpenAI, ChatGPT, OpenClaw,
+  OpenCode, OpenRouter), and `logo-wrapper` places each in the 32px tile. A
+  separate model `row` component set draws coloured vendor marks (Anthropic,
+  DeepSeek, Qwen, OpenAI) beside `gate/...` ids, with the selected row
+  outlined and check-marked. Open question 2 is resolvable: nothing needs
+  inventing, but the View seat cannot export SVGs, so the marks need either
+  a designer export or a high-DPI browser capture like the onboarding art.
+- The `sidebar-menu-item` selected variant and the `status-label` trio
+  (`Not protected - 2m ago` / `Protected - 25s ago` / `Not routed`) match
+  what was built on 2026-08-21.
+
+**The Families pane on this page is a pasted screenshot, not a drawing.** The
+layer is literally `image 1` - `image.png`, 931x990 - and it shows the built
+`FamiliesPane` (master card, family cards, the Config file / Local proxy
+qualifiers). So the designer has seen the pane and keeps it as reference, but
+the rail still draws no Families nav item and no frame specifies the pane.
+The standing deviation stands.
+
+**One design bug to raise:** the eyebrow above the OpenRouter row reads
+`OPENCODE` in all three variants and in the flow frames' rails. The family
+label here derives from `upstream_provider_name`, which reads OpenRouter, and
+that stays.
+
+**The alert banners moved.** The Components page now draws three states, and
+the flow frames agree:
+
+| Variant | Title | Body |
+| --- | --- | --- |
+| off (single + multiple-apps) | `Codex isn't protected` | Routing is set to **off**. Reconnect to restore protection. |
+| drift (new) | Reconnect to restore protection | This app's config changed outside Gate, so its traffic isn't routed. |
+
+The built `master-off` notice says "switched on but not routing" and the
+built `drifted` notice carries the old single-app copy, so both retitle. One
+question to raise before shipping the drift copy verbatim: the drawn drift
+banner names no app anywhere on the card, and the card pages between apps,
+so two drifted tools would be indistinguishable.
+
+Also confirmed this pass: the Overview pane's `Last 24 hours` header caption
+(already built - `period` in `Overview.tsx`); `Auth / Error states` still
+without its check (fourth read, so the timeout dialog and name validation
+stay unbuilt); Settings, App, Onboarding and Setup otherwise unchanged with
+every recorded deviation standing; and the `Design docs` page holding exactly
+the four frames `docs/new_ui_design/` already imported (`design.md` plus the
+three token files) - nothing new to pull.
+
+### Built 2026-08-23
+
+Items 10 (minus the chat-row pane) and 12 from the queue.
+
+**The rail follows the Sidenav page.** `sidebarGroups` in `NewUiApp.tsx` no
+longer filters proxy members out: the chat domains and a family's app
+surfaces are rows now, with `setDomainRouted` behind their switch (the same
+dispatch the family panel's member switches use - a domain has no config
+file, so no drift gate) and their status derived from the domain's own state
+through `proxyMemberStatus`, extracted so the rail and the family panel
+cannot phrase one domain two ways. `SidebarApp` gained `noPane`: no drawn App
+pane exists for a domain, so the name renders as a label rather than a link,
+with the hover fill suppressed because it is the "this opens something"
+signal. Each group eyebrow carries the drawn protected-over-total counter,
+derived from the rows in `Sidebar.tsx` so it can never disagree with them,
+and not uppercased - the drawing reads "1 of 2". The multi-provider tools
+collapsed back into one "Other tools" group. The routing banner still counts
+tools only; whether domains should join its "N of M Apps" is a designer
+question, not assumed here.
+
+**The alert copy follows the redrawn banners.** `lib/notices.ts`: master-off
+reads "X isn't protected" / "Routing is set to off. Reconnect to restore
+protection." (plural: "N apps aren't protected"); the drift notice and
+`NewUiApp`'s `driftAlert` title with the remedy, "Reconnect to restore
+protection". One deviation, recorded at both sites: the drawn drift body says
+"This app's" and the card names no app while paging between apps, so the
+name goes where that phrase was.
+
+**A selector trap the new rows sprang.** Playwright's `getByRole` name option
+is substring matching, so the always-present "ChatGPT (Codex subscription)"
+row switch now matches every `{ name: "Codex" }` selector - including one
+whose job was to *wait* for a tool to appear, which stopped waiting and raced
+the detection poll. The affected specs use `exact: true` or scope to the row;
+new pins in `new-ui-routing.spec.ts` cover the domain-row dispatch, the
+counter, and the single Other-tools eyebrow. 514 unit tests and the 166-test
+e2e suite pass.
+
+Still open from item 10: where a chat row navigates. Every drawn App frame is
+a proxy member's pane, so the design says they open one; that needs an
+`AppPane` feed with no config file, no drift review and no process staleness,
+and it is its own PR. **Closed the same day, second pass** - domain rows open
+the pane, whose activity sections say they cannot be attributed rather than
+claiming a quiet day; see item 10 in "Still to do" for the mechanism and the
+attribution constraint.
+
+### Both ways in, 2026-08-20
+
+The popover lets an account be either a pasted key or a Gate sign-in, and lets a
+key account move to the second whenever it likes: `screens/Settings.tsx` carries
+a permanent **"Switch to Constellation sign-in"** row under the key.
+
+The window shell had the choice at **first run only**. `WelcomePane` offers both
+routes and both are wired, but after setup the sole path from a key account to a
+Gate account was the one-time `OAuthOfferDialog` - and `markOAuthOfferSeen()`
+means dismissing it once removed the route permanently. An install that said "not
+now" could never say yes.
+
+`SettingsPane` now carries a **Sign-in method** row directly under the API key,
+valued `API key`, whose action is **Use a Gate account**. It is gated exactly as
+Replace key is, on `auth_mode === "api_key"`, so an OAuth account is not offered a
+switch to what it already is - matching the popover, which offers no reverse
+either. While the browser flow is open the row's description says where the user
+should be looking, reusing the `updateNote` mechanism rather than inventing a
+busy state for `SettingsAction`.
+
+It calls the existing `useSettingsActions.upgradeToOAuth`, **not**
+`useSetup.signIn`. That distinction was already documented in the hook and is the
+whole reason the action exists: `signIn` saves the account first, with the default
+gateway and no key, which is right for a machine with no account and wrong here -
+it would repoint a staging install at production and drop the key the user still
+has. The e2e test pins it by asserting `oauth_begin_login` fired and
+`save_account` did not.
+
+**Not in the Figma.** The drawn Settings screen has no such row; this is parity
+with the shipping app, not a design instruction. Expect it to be redrawn, and
+treat it the way the diagnostics row is treated.
+
+**A trap this row fell into first.** `upgradeToOAuth` throws on a browser flow
+that fails, times out or is abandoned, and the row was calling it through `void`.
+The rejection became an unhandled promise, `finally` cleared the busy flag, and
+the pane went silent - which is indistinguishable from a button that does
+nothing, and is exactly how it was reported. Any call site for one of these
+actions needs a `catch` onto `setActionError`, the way `acceptOffer` beside it
+always had. The e2e that pins it fails without the fix on *uncaught page errors*,
+because the fixture treats an unhandled rejection as a crash.
+
+`settings.busy` also has to be in the `settingsSections` memo's dependency list.
+That array names individual callbacks on purpose - the hook returns a fresh
+object each render - so a value read inside the memo and missing from the array
+simply never updates, which is what kept the waiting note from ever appearing.
+
+### Left undone, deliberately
+
+- **`Auth / Error states` carries no ready mark**, so the setup-timeout dialog and
+  the device-name validation rule are unbuilt. The field accepts anything the
+  backend accepts.
+- **Minimize2 is still a question for the designer.** Onboarding step 2 teaches
+  expand/collapse between popover and window; open question 5 removed the control.
+  Nothing was changed either way pending an answer.
+- **The onboarding window is still on the old `gc/` ink system.** The design draws
+  these four steps inside the new window shell - topbar, progress bar, card - and
+  what ships is the popover-era layout with new words in it. Retheming it is its
+  own piece of work and was not attempted here.
+- **"Go back" and "Use a different account" do the same thing** on the org dead
+  end, because by then the session is already spent and dropping it is the only
+  move. Both are drawn; worth asking whether one was meant to do something else.
+
+
 ## Branching model
 
 `feat/new-app-ui` is the **integration base** for the design work, not a branch
@@ -540,9 +1158,11 @@ the same PR.
    sitting above two off switches with "2 of 4 Apps" beside it. Either it means
    something other than protected-count, or it was never bound. The sidebar
    currently computes protected-over-total.
-2. **App brand logos** - no marks in the repo; `AppRow` falls back to an
-   initial. Four SVGs need exporting (`claude-color`, `claudecode`, `codex`,
-   `opencode`).
+2. **App brand logos: RESOLVED 2026-08-23 - drawn, pending export.** The
+   `Components / Sidenav` page carries a `logo` component set with all eight
+   marks, plus coloured vendor marks in the model `row` set. Still no assets
+   in the repo (`AppRow` falls back to an initial, the Model cells render the
+   name alone); see item 11 under "Still to do" for the export route.
 3. **Groups: RESOLVED 2026-08-16 - they keep a home.** The design lists apps
    flat, which cannot express routing's real shape: families (Claude, OpenAI,
    OpenRouter, plus the multi-provider "Other tools" bucket) own a master
@@ -559,11 +1179,14 @@ the same PR.
    carries only the overflow menu, and the brand lockup is genuinely centred
    rather than sitting at the design's 504px, an offset that existed only
    because a second button balanced it.
-6. **Onboarding / FirstRun / OrgPicker / Success: RESOLVED 2026-08-16 - built
-   provisionally.** `setup.tsx` gives them `SetupLayout` (chrome plus one
-   centred card, no sidebar) and `WelcomePane`, `OrgPickerPane`,
-   `ConnectedPane`. Built from the design's own vocabulary rather than invented
-   wholesale, but **not in the Figma** and expected to be redrawn.
+6. **Onboarding / FirstRun / OrgPicker / Success: RESOLVED 2026-08-19 - drawn,
+   and rebuilt against the drawing.** Built provisionally on 2026-08-16 because
+   the design had nothing to say about first run; `Flows / Onboarding` and
+   `Flows / Auth` landed on 2026-08-19 and both are marked ready. `setup.tsx`
+   now follows them - see "Built 2026-08-19". What remains open is the
+   `Auth / Error states` section, which carries no ready mark, and the fact that
+   the onboarding tutorial still renders in the popover-era `gc/` ink system
+   rather than the window shell the design draws it in.
 7. **Does the chart's `total` series double-count? RESOLVED 2026-08-17 - no,
    the four are additive.** Settled by the Figma's own `chart/tooltip`
    (`191:79768`), added to the file after this question was written. It lists
@@ -574,7 +1197,6 @@ the same PR.
    and the endpoint keeps sending `requests` plus the three security counts with
    the client subtracting. The sr-only table now names the sum "All messages" so
    two different figures no longer share one column name.
-
 8. **Sidebar app states: RESOLVED 2026-08-16.** `SidebarApp` now carries an
    `AppStatus` union (`protected` / `not-protected` / `drifted` /
    `not-routed`), and separately an `on` boolean. The split is deliberate and
@@ -753,6 +1375,43 @@ The queue downstream PRs draw from, in the order that unblocks the most.
    palette, `pinPopover` / `unpinPopover`, and `VITE_NEW_UI=0` all go together.
    Item 1 was the blocker and is done, so what remains is repointing the e2e
    suite at the new shell and deleting; the popover's own specs go with it.
+10. **The redrawn rail (Sidenav page, read 2026-08-23): DONE.** Built
+    2026-08-23 - chat and app-surface members are rail rows (switch on
+    `setDomainRouted`, status from the domain's own state), each eyebrow
+    carries its protected-over-total counter, and the multi-provider tools
+    share one `Other tools` group. See "Built 2026-08-23".
+
+    Domain rows open the App pane too now (same day, second pass): header,
+    status, switch and model card all work, and the activity sections say
+    *why* they cannot be shown instead of reporting a quiet day. The gateway
+    attributes requests to config tools only - `client_tool` is derived from
+    each tool's own user agent, and traffic from these surfaces arrives
+    unattributed on purpose (a guessed slug would file one app's traffic
+    under another's name) - so the per-tool reads never fire for a domain
+    (`openDomain` in `NewUiApp.tsx`): filtering by a domain slug would return
+    an empty reading and the pane would claim a quiet day over traffic it
+    cannot see. The tiles read `N/A`, the chart and feed carry their
+    unavailable notes, and the pane's gap slot names the cause, mirroring the
+    unattributed-machine treatment. Per-surface activity needs real
+    attribution on the gateway; AG-572's contract doc records why the
+    user-agent heuristic cannot provide it.
+11. **Brand marks: STOPGAP SHIPPED 2026-08-23, designer export still wanted.**
+    `src/components/gc/BrandMark.tsx` vendors the seven rail marks (Claude,
+    Claude Code, Codex, OpenAI, OpenRouter, OpenCode, OpenClaw) from
+    lobehub/lobe-icons (MIT), all `currentColor` so the tile's white text
+    colours them, and `brandMarkFor(slug)` maps both tool and domain slugs
+    onto them - Hermes has no mark and keeps the initial fallback. Wired into
+    the rail rows and the App pane header tile through the `logo` props that
+    already existed. These are the same official logos the Figma draws, so
+    when the designer's export lands only `BrandMark.tsx` changes. Still
+    pending with the model backend: the coloured vendor marks for the model
+    picker rows and activity Model cells (`anthropic`, `deepseek-color`,
+    `qwen-color`, `kimi-color` in the same set).
+12. **Alert banner copy: DONE 2026-08-23.** `master-off` and `drifted` in
+    `lib/notices.ts` (and `NewUiApp`'s `driftAlert`) carry the drawn copy.
+    The drift card names the app in its body where the drawing says "This
+    app's" - the card pages between apps and the drawn card never names one -
+    raised with the designer rather than shipped ambiguous.
 
 Rows the design draws that have no backend command at all: device rename and
 notifications, plus plan upgrade, which has no billing URL to open. They render

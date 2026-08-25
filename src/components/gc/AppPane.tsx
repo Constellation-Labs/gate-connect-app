@@ -161,7 +161,7 @@ export function AppPane({
       <header className="flex items-center gap-3">
         <span
           aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-base border border-white/[0.24] bg-black text-sm font-medium text-white"
+          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-sm font-medium text-white"
           style={{
             backgroundImage:
               "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
@@ -170,7 +170,7 @@ export function AppPane({
           {logo ?? name.charAt(0)}
         </span>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-xl font-medium leading-6 tracking-heading text-neutral-900">
+          <h1 className="truncate text-xl font-medium tracking-heading text-neutral-900">
             {name}
           </h1>
           <p className="text-base-xs font-medium leading-4">
@@ -422,7 +422,7 @@ function ModelOption({
     >
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
       >
         {icon}
       </span>
@@ -465,7 +465,7 @@ function InfoRow({
     >
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
       >
         {icon}
       </span>
@@ -508,6 +508,7 @@ function RecentActivity({
   unavailable?: boolean;
   /** Absent when there is no next page. */
   onLoadMore?: () => void;
+  /** See `AppPane`. */
 }) {
   return (
     <Card className="p-4" busy={pending}>
@@ -626,7 +627,7 @@ function RecentActivity({
           <button
             type="button"
             onClick={onLoadMore}
-            className="rounded-base border border-base-border bg-base-card px-3 py-1.5 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            className="rounded-sm border border-base-border bg-base-card px-3 py-1.5 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Load more
           </button>
@@ -653,7 +654,7 @@ function PendingRows() {
         >
           <Skeleton className="h-4 w-16" />
           <Skeleton className="h-4 w-14" />
-          <Skeleton className="h-4 w-14" />
+          <Skeleton className="h-4 w-24" />
           <Skeleton className="h-4 w-32" />
           <Skeleton className="h-4 w-12" />
         </div>

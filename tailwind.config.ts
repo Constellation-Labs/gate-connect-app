@@ -147,17 +147,32 @@ export default {
           border: "#e5e7eb",
           input: "#d1d5db",
           primary: "#203de2",
+          // From the token export (`docs/new_ui_design/tokens.json`), which
+          // names it but had no call site until the update banner's dismiss
+          // glyph. Same hex as `background` and as `gray-50`; kept under the
+          // export's own name so the value stays traceable.
+          "primary-foreground": "#f9fafb",
           "muted-foreground": "#6b7280",
         },
 
-        // Primary ramp. Only the stops the design actually specifies:
-        // 700 backs switches, active nav and links; 800 is the "Gate" wordmark
-        // and the update banner's gradient start; 900 is its gradient end.
-        // Fill in the rest from Figma rather than interpolating.
+        // Primary ramp, all eleven stops as exported from the Figma variables
+        // (`docs/new_ui_design/tailwind.tokens.js`). 700 backs switches, active
+        // nav and links; 800 is the "Gate" wordmark and the update banner's
+        // gradient start; 900 is its gradient end. The export reproduced those
+        // three exactly, which is what makes the other eight trustworthy: they
+        // are design's own values rather than interpolations.
         "blue-ribbon": {
+          50: "#ebf6ff",
+          100: "#dbecff",
+          200: "#bedcff",
+          300: "#97c3ff",
+          400: "#6e9dff",
+          500: "#4c79ff",
+          600: "#294dff",
           700: "#203de2",
           800: "#1d37b6",
           900: "#172563",
+          950: "#101738",
         },
 
         // Messages chart series (Figma legend swatches, sampled individually).
@@ -165,12 +180,12 @@ export default {
         // is what call sites care about, and three of the four are Tailwind
         // defaults while `blue` is REDEFINED as an OKLCH ramp further up this
         // file - so `bg-blue-400` would silently render the wrong colour.
-        // Levels are the design's own and are not uniform: 400, 400, 400, 500.
+        // Levels are the design's own and are not uniform: 400, 500, 400, 500.
         chart: {
           messages: "#60a5fa", // tailwind blue/400
-          blocked: "#f87171", // tailwind red/400
+          blocked: "#ef4444", // tailwind red/500
           flagged: "#fbbf24", // tailwind amber/400
-          redacted: "#a855f7", // tailwind purple/500
+          redacted: "#8b5cf6", // tailwind violet/500
         },
 
         // ── Gate Connect popover palette (Claude Design handoff). ──
@@ -248,7 +263,10 @@ export default {
         // Spelled out here so the mapping does not have to be re-derived.
         "base-2xs": "0 1px 0 0 rgba(0,0,0,0.05)",
         "base-xs": "0 1px 2px 0 rgba(0,0,0,0.05)",
-        "base-sm": "0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)",
+        // Figma `shadow/sm`. The design's alpha is 8%, not v3's default 10%;
+        // corrected from the token export, which is where `base-md` below got
+        // its 8% too. Cards carry this one, so 10% read heavy on all of them.
+        "base-sm": "0 1px 3px 0 rgba(0,0,0,0.08), 0 1px 2px -1px rgba(0,0,0,0.08)",
         // Figma `shadow/md`, on the chart tooltip. Same one-step shift as the
         // rest of this group: v4 `shadow-md` is v3's `shadow-md` offsets at the
         // design's 8% alpha.
@@ -257,15 +275,33 @@ export default {
           "0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.08)",
       },
       borderRadius: {
-        // Map default to cg-sm (6px) since most surfaces want the cg
-        // everyday radius. Modal sits on 12px (`rounded-xl`).
+        // The popover's own radii. `DEFAULT` is cg-sm (6px); it is what a bare
+        // `rounded` renders, and the popover screens still rely on it.
         DEFAULT: "0.375rem",
         // Gate Connect popover radii (prototype --r-lg / --r-pill).
         "gc-lg": "12px",
         "gc-pill": "48px",
-        // New app UI: 4px on inputs, nav items and icon tiles. 8px rows use
-        // Tailwind's `rounded-lg`, which is already 8px.
-        base: "4px",
+
+        // New app UI, from the token export (`docs/new_ui_design`). This is a
+        // shadcn scale derived from `--radius: 10px`, hence sm/md/lg/xl at
+        // radius-4 / radius-2 / radius / radius+4. It REDEFINES Tailwind's own
+        // sm (2px), lg (8px) and xl (12px), which is why adopting it had to be
+        // all-at-once rather than per component.
+        //
+        // Assignments, decided with design where the export was silent: pills
+        // and legend swatches `xs`, controls and nav items `sm`, cards and rows
+        // `md`, dialogs `xl`. The export names no 4px or 12px stop, so the old
+        // 4px control radius became 6px and the 12px dialog became 14px.
+        none: "0px",
+        xs: "2px",
+        sm: "6px",
+        md: "8px",
+        lg: "10px",
+        xl: "14px",
+        "2xl": "16px",
+        "3xl": "24px",
+        "4xl": "32px",
+        full: "9999px",
       },
       letterSpacing: {
         // New app UI `mono/eyebrow`: Geist Mono Medium 12/16 at 10% tracking.
@@ -276,7 +312,9 @@ export default {
         "eyebrow-14": "1.4px",
         // `mono/label-12`: same face at 6% - the action pills (BLOCK/FLAG/REDACT).
         label: "0.72px",
-        // `heading/20`: Geist Medium 20/24 at -1% - pane titles and captions.
+        // `heading/20`: Geist Medium 20/28 at -1% - pane titles and captions.
+        // The 28px line-height is the token export's `xl`, which is also
+        // Tailwind's own default, so call sites must not override it.
         heading: "-0.2px",
       },
       fontSize: {

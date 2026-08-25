@@ -88,7 +88,12 @@ test.describe("new UI routing verdict", () => {
       tools: [{ ...connectedCodex, status: { kind: "detected" as const } }],
     });
 
-    await expect(app.page.getByText("Not routed")).toBeVisible();
+    // Scoped to the Codex row: the catalog's proxy domains are rail rows too
+    // now, and while disabled they read "Not routed" as well.
+    const row = app.page
+      .getByRole("listitem")
+      .filter({ has: app.page.getByRole("switch", { name: "Codex", exact: true }) });
+    await expect(row.getByText("Not routed")).toBeVisible();
   });
 
   test("a drifted config keeps the design's own phrase", async ({ boot }) => {

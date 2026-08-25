@@ -47,6 +47,7 @@ const ACCOUNT: Account = {
   gateway_base_url: "https://gw.example",
   has_api_key: true,
   auth_mode: "api_key",
+  billing_mode: "byok",
   org_id: "org-1",
   org_name: "Constellation Labs",
 };

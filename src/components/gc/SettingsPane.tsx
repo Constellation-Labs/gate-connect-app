@@ -1,6 +1,7 @@
 import { BaseSwitch, Card } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
+import type { AuthMode } from "../../lib/api";
 
 /**
  * The Settings pane (Figma `Flows / Settings`). Named `SettingsPane` rather
@@ -78,6 +79,7 @@ export function buildSettingsSections({
   plan,
   gateway,
   apiKeyMasked,
+  authMode,
   launchAtLogin,
   launchAtLoginUnavailable,
   routingHealthNotifications,
@@ -92,6 +94,8 @@ export function buildSettingsSections({
   onCopyInstallId,
   onUpgradePlan,
   onReplaceKey,
+  onSwitchToGateAccount,
+  signInNote,
   onDisconnect,
   onToggleLaunchAtLogin,
   onRetryLaunchAtLogin,
@@ -113,6 +117,21 @@ export function buildSettingsSections({
   gateway: string;
   /** Already masked upstream - this pane never sees the key. */
   apiKeyMasked: string;
+  /**
+   * How the account actually authenticates, which decides whether the API key
+   * row belongs on screen at all.
+   *
+   * An OAuth account keeps whatever key it had before the upgrade: the keychain
+   * item is not deleted, so `has_api_key` stays true and this pane used to draw
+   * a masked key under "API key" for a session authenticated by a Cognito
+   * bearer. On the screen whose whole job is to say where the credential lives,
+   * that named the wrong one - and the key it named cannot be replaced from
+   * here either, because `onReplaceKey` is withheld for OAuth.
+   *
+   * Undefined leaves the key row in place: it is the state before the account
+   * read lands, and the key row is the older default.
+   */
+  authMode?: AuthMode;
   launchAtLogin: boolean;
   /** The launch-at-login read failed. Drives the Unavailable row; the boolean
    * above is then meaningless and must not reach a switch. */
@@ -137,6 +156,14 @@ export function buildSettingsSections({
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
   onReplaceKey?: () => void;
+  /** Offered only to an account still on a pasted key. The popover has carried
+   * this since it shipped (`screens/Settings.tsx`); the new shell had only the
+   * one-time `OAuthOfferDialog`, and `markOAuthOfferSeen` meant that dismissing
+   * it once left no route to a Gate account at all. */
+  onSwitchToGateAccount?: () => void;
+  /** Replaces that row's description while the browser flow is open, the same
+   * way `updateNote` speaks for the version row. */
+  signInNote?: string;
   onDisconnect?: () => void;
   onToggleLaunchAtLogin: () => void;
   /** Present only when the launch-at-login read failed, so the row can offer a
@@ -209,14 +236,54 @@ export function buildSettingsSections({
             ? { label: "Change server", onClick: onChangeGateway }
             : undefined,
         },
-        {
-          id: "api-key",
-          icon: "key",
-          label: "API key",
-          value: apiKeyMasked,
-          mono: true,
-          action: onReplaceKey ? { label: "Replace key", onClick: onReplaceKey } : undefined,
-        },
+        // Only for an account a key actually authenticates. See `authMode`.
+        ...(authMode === "oauth"
+          ? []
+          : [
+              {
+                id: "api-key",
+                icon: "key" as IconName,
+                label: "API key",
+                value: apiKeyMasked,
+                mono: true,
+                action: onReplaceKey
+                  ? { label: "Replace key", onClick: onReplaceKey }
+                  : undefined,
+              } as SettingsRow,
+            ]),
+        // Takes the key row's place for a Gate account, so the section still
+        // says what signs the user in rather than going quiet about it. The
+        // switch action stays gated on the handler, which the shell withholds
+        // for an account already on OAuth - there is nowhere to switch to.
+        ...(authMode === "oauth"
+          ? [
+              {
+                id: "sign-in-method",
+                icon: "shieldCheck" as IconName,
+                label: "Sign-in method",
+                description:
+                  signInNote ??
+                  "Your Gate account keeps its session in the OS secret store and refreshes on its own, so there is no key to paste or rotate.",
+                value: "Gate account",
+              } as SettingsRow,
+            ]
+          : onSwitchToGateAccount
+            ? [
+                {
+                  id: "sign-in-method",
+                  icon: "shieldCheck" as IconName,
+                  label: "Sign-in method",
+                  description:
+                    signInNote ??
+                    "A Gate account keeps its session in the OS secret store and refreshes on its own, so there is nothing to paste or rotate.",
+                  value: "API key",
+                  action: {
+                    label: "Use a Gate account",
+                    onClick: onSwitchToGateAccount,
+                  },
+                } as SettingsRow,
+              ]
+            : []),
         ...(certificate
           ? [
               {
@@ -271,26 +338,21 @@ export function buildSettingsSections({
             ? { unavailable: { onRetry: onRetryLaunchAtLogin } }
             : { toggle: { on: launchAtLogin, onToggle: onToggleLaunchAtLogin } }),
         },
-      ],
-    },
-    // Its own section rather than a row under Startup: these are choices about
-    // what interrupts the user, not about what happens at boot.
-    //
-    // One switch, not the four the criteria list. Blocked-event, flagged-event
-    // and sound notifications are specified alongside the live security-event
-    // feed, and there is no feed - the only notifications this app fires are
-    // about routing itself. A switch for an event that cannot arrive would tell
-    // the user they had turned something off.
-    ...(onToggleRoutingHealthNotifications
-      ? [
-          {
-            id: "notifications",
-            title: "Notifications",
-            rows: [
+        // A row under Startup, where the drawn screen keeps it ("Settings /
+        // Main screens", read 2026-08-21) - an earlier build gave it a section
+        // of its own because AG-594 names one.
+        //
+        // One switch, not the four the criteria list, and not the drawn
+        // description either: the drawing promises alerts when a request is
+        // blocked or flagged, and those events need the live security feed
+        // (AG-578), which does not exist. The only notifications this app fires
+        // are about routing itself, so that is what the row claims to control.
+        ...(onToggleRoutingHealthNotifications
+          ? [
               {
                 id: "routing-health",
                 icon: "bell" as IconName,
-                label: "Routing health",
+                label: "Notifications",
                 description:
                   "Tell me when a session expires or a tool cannot be put back",
                 ...(preferencesUnavailable && onRetryPreferences
@@ -301,11 +363,11 @@ export function buildSettingsSections({
                         onToggle: onToggleRoutingHealthNotifications,
                       },
                     }),
-              },
-            ],
-          },
-        ]
-      : []),
+              } as SettingsRow,
+            ]
+          : []),
+      ],
+    },
     // Diagnostics gets its own section, out of About: sharing data is a privacy
     // choice, and the report is the evidence of what would be shared. Sending a
     // report on demand, and the reference it returns, belong with the collection
@@ -321,7 +383,7 @@ export function buildSettingsSections({
                 icon: "shieldCheck" as IconName,
                 label: "Share diagnostic data",
                 description:
-                  "Send Gate errors and routing state to help fix problems. Never prompts, responses, or credentials.",
+                  "Send Gate errors and routing state to help fix problems. Never prompts or credentials.",
                 ...(preferencesUnavailable && onRetryPreferences
                   ? { unavailable: { onRetry: onRetryPreferences } }
                   : {
@@ -445,7 +507,7 @@ export function buildSettingsSections({
 export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
-      <h1 className="text-xl font-medium leading-6 tracking-heading text-neutral-900">
+      <h1 className="text-xl font-medium tracking-heading text-neutral-900">
         Settings
       </h1>
 
@@ -547,7 +609,7 @@ function ActionButton({ action }: { action: SettingsAction }) {
     <button
       type="button"
       onClick={action.onClick}
-      className={`flex shrink-0 items-center gap-1.5 rounded-base px-2 py-1 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+      className={`flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
         action.destructive
           ? "bg-red-600 text-white hover:bg-red-700 focus-visible:outline-red-600"
           : "border border-base-border bg-base-card text-base-primary shadow-base-2xs hover:bg-gray-50 focus-visible:outline-base-primary"

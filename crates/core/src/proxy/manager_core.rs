@@ -263,6 +263,10 @@ impl<O: DesktopOps> DesktopManager<O> {
                 oauth_token: crate::oauth::access_token_for_injection(),
                 // Selected org, injected as X-Gate-Org-Id alongside the token.
                 org_id: crate::account::org_id_for_injection(),
+                // Who pays: `Payg` drops the upstream hint and the tool's own
+                // credential on the rewrite path. A later switch pushes an
+                // update via `refresh_mode`.
+                billing_mode: account.billing_mode,
                 domains: domains.clone(),
                 ca_cert_pem: ca.cert_pem,
                 ca_key_pem: ca.key_pem,
@@ -511,6 +515,22 @@ impl<O: DesktopOps> DesktopManager<O> {
             .as_ref()
         {
             running.update_org(org_id);
+        }
+    }
+
+    /// Push a changed billing mode into the running engine (and the relay it
+    /// hosts), if any. Used when the user switches BYOK/PAYG so the new request
+    /// shape reaches in-flight routing without a restart. Reads the mode from
+    /// disk rather than taking it as an argument, so a live engine can never be
+    /// routing under a mode the account does not hold.
+    pub fn refresh_mode(&self) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_mode(crate::account::billing_mode_for_injection());
         }
     }
 
@@ -1202,6 +1222,7 @@ mod tests {
         mgr.refresh_api_key("sk-gw-rotated");
         mgr.refresh_token("fresh-token");
         mgr.refresh_org("org-uuid-2");
+        mgr.refresh_mode();
         assert!(mgr.status().expect("status").running);
 
         mgr.shutdown_engine().expect("shutdown");
