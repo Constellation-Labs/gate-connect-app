@@ -62,10 +62,7 @@ impl ProxyManager {
     /// the port. `try_lock` for the same reason as the other platforms - a
     /// missed lock means "ask the port", not "nothing is running".
     pub(crate) fn hosts_live_engine(&self) -> bool {
-        self.client
-            .try_lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
+        self.client.try_lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
     /// Current subsystem snapshot for the UI.
