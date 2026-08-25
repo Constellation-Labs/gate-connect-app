@@ -214,3 +214,40 @@ fn a_change_takes_effect_without_a_restart() {
         Some("anthropic/claude-opus-5")
     );
 }
+
+#[test]
+fn a_choice_written_by_another_process_is_served_without_a_restart() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = TempHome::set();
+    preferences::set_tool_model(
+        "claude-code",
+        ModelSource::Gate,
+        vec!["anthropic/claude-opus-5".into()],
+        true,
+    )
+    .expect("save");
+
+    let mut h = headers("claude-cli/1.2.3 (darwin)");
+    inject_attribution_for_tests(&mut h);
+    assert_eq!(model_header(&h).as_deref(), Some("anthropic/claude-opus-5"));
+
+    // What the window's write looks like from inside the Linux helper daemon:
+    // the file changes and this process's `save` was never called, so nothing
+    // in here had a chance to refresh a cache. The daemon owns the engine and
+    // outlives the GUI, so a cache only `save` could invalidate would keep
+    // serving the old model until logout.
+    let path = tmp.dir.join("preferences.json");
+    let raw = std::fs::read_to_string(&path).expect("read preferences");
+    std::fs::write(
+        &path,
+        raw.replace("anthropic/claude-opus-5", "anthropic/claude-sonnet-5"),
+    )
+    .expect("write preferences behind the cache's back");
+
+    let mut h = headers("claude-cli/1.2.3 (darwin)");
+    inject_attribution_for_tests(&mut h);
+    assert_eq!(
+        model_header(&h).as_deref(),
+        Some("anthropic/claude-sonnet-5")
+    );
+}

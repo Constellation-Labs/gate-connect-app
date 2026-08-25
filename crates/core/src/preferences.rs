@@ -164,18 +164,48 @@ fn config_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("preferences.json"))
 }
 
-/// Hot-path cache for [`gate_models_for`].
+/// Hot-path cache for [`gate_models_for`], stamped with the file it was read
+/// from.
 ///
-/// The model choice is consulted on **every proxied request**, and a file read
-/// per request is not a cost the user's actual work should pay. Unlike
+/// The model choice is consulted on **every proxied request**, and a parse per
+/// request is not a cost the user's actual work should pay. Unlike
 /// [`crate::primitives::install_id_cached`] this cannot be a `OnceLock`: the
 /// value changes whenever someone picks a model, and a choice that only took
 /// effect after a restart would be its own bug report.
 ///
-/// [`save`] refreshes it, so an in-process write is visible immediately. A write
-/// from the CLI is not, which is the one staleness this accepts: the proxy and
-/// the window are the same process, and the CLI does not currently set models.
-static CACHE: RwLock<Option<Preferences>> = RwLock::new(None);
+/// **The stamp is why this is not just a memo.** On Linux the engine does not
+/// run in the window's process at all - it is the detached helper daemon
+/// (`proxy::helper`, Linux only), spawned once and outliving the GUI. A cache
+/// that only [`save`] could refresh would be refreshed in the wrong process
+/// there:
+/// the daemon would answer every request from whatever the file held when its
+/// first request arrived, and every later pick would change what the pane shows
+/// and nothing about what is served, until logout. The same applies to a write
+/// from the CLI on any platform.
+///
+/// So the entry carries the file's modified time and length, and a `stat` per
+/// request decides whether the parse can be skipped. A `stat` is what the
+/// Windows domain watcher already spends once a second for the same reason; it
+/// is far cheaper than the read-and-parse it replaces, and unlike a memo it
+/// cannot be wrong.
+static CACHE: RwLock<Option<(Stamp, Preferences)>> = RwLock::new(None);
+
+/// What the preferences file looked like when the cached copy was parsed.
+///
+/// `None` is a legitimate stamp - the file does not exist yet, which is the
+/// normal first-run state and a perfectly cacheable answer (the defaults). It
+/// still differs from any `Some`, so the first write is picked up.
+///
+/// Length as well as modified time because mtime granularity is a filesystem's
+/// choice, not ours: two saves inside one tick are unlikely but they are exactly
+/// the case where being wrong means serving a model the user just switched away
+/// from.
+type Stamp = Option<(std::time::SystemTime, u64)>;
+
+fn stamp() -> Stamp {
+    let meta = config_path().ok().and_then(|p| std::fs::metadata(p).ok())?;
+    Some((meta.modified().ok()?, meta.len()))
+}
 
 /// The models Gate should serve for one tool, or `None` to leave the request
 /// alone.
@@ -189,16 +219,19 @@ static CACHE: RwLock<Option<Preferences>> = RwLock::new(None);
 /// called while forwarding the user's real work, and a preferences file that
 /// cannot be read must degrade to "the tool picks", never to a failed request.
 pub fn gate_models_for(slug: &str) -> Option<Vec<String>> {
+    let current = stamp();
     {
         let cache = CACHE.read().ok()?;
-        if let Some(prefs) = cache.as_ref() {
-            return servable(prefs, slug);
+        if let Some((cached, prefs)) = cache.as_ref() {
+            if *cached == current {
+                return servable(prefs, slug);
+            }
         }
     }
     let prefs = load();
     let answer = servable(&prefs, slug);
     if let Ok(mut cache) = CACHE.write() {
-        *cache = Some(prefs);
+        *cache = Some((current, prefs));
     }
     answer
 }
@@ -235,11 +268,11 @@ pub fn save(prefs: &Preferences) -> Result<()> {
     primitives::write_file(&path, &body, 0o644)
         .with_context(|| format!("writing {}", path.display()))?;
     // Refresh rather than clear: the next reader is on the request path, and
-    // handing it a miss would put the file read back where this cache exists to
-    // keep it out of. Written after the file so a failed write leaves the cache
-    // agreeing with what is on disk.
+    // handing it a miss would put the parse back where this cache exists to keep
+    // it out of. Written after the file, and re-stamped from what actually
+    // landed, so a failed write leaves the cache agreeing with what is on disk.
     if let Ok(mut cache) = CACHE.write() {
-        *cache = Some(prefs.clone());
+        *cache = Some((stamp(), prefs.clone()));
     }
     Ok(())
 }
