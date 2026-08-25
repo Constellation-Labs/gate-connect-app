@@ -260,7 +260,27 @@ pub fn list() -> Vec<ProviderState> {
 /// running, enables the provider's proxy domains. Requires a signed-in
 /// account. Idempotent - re-running re-applies the same config.
 pub fn enable(slug: &str) -> Result<ProviderState> {
-    enable_inner(slug, &[], true)
+    enable_inner(slug, &[], true).map(|(_, state)| state)
+}
+
+/// What an enable actually did, as distinct from whether it went wrong.
+///
+/// The awkward case is the third one: nothing was configured, and nothing is
+/// broken. It used to be reported as `Ok` or as an error depending only on
+/// whether the skip list happened to be non-empty, which made "did nothing"
+/// indistinguishable from "done" for the restore path - and clearing the
+/// restore snapshot on that reading is what left domain-only providers off for
+/// a whole session. Saying which of the two happened is this enum's only job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Applied {
+    /// A route was configured: a tool's config, a proxy domain, or both.
+    Enabled,
+    /// No route to configure *yet*. With no detected tool and no running
+    /// engine there is nothing this call can do; a later call, once the engine
+    /// is up, can. Only the restore path sees this - a user who asked for a
+    /// provider by name gets an error, because for them nothing happening is a
+    /// result that needs explaining.
+    NotYet,
 }
 
 /// [`enable`] with members to leave alone: the restore path's flavour, so a
@@ -270,11 +290,11 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
 /// one `proxy_enabled`, and `provider_enabled` is reserved for the operator
 /// toggling that provider by hand (see the one-event-per-action rule in
 /// [`crate::audit`]).
-fn enable_skipping(slug: &str, skip: &[String]) -> Result<ProviderState> {
+fn enable_skipping(slug: &str, skip: &[String]) -> Result<(Applied, ProviderState)> {
     enable_inner(slug, skip, false)
 }
 
-fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderState> {
+fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, ProviderState)> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
     let account = account::load()?
         .context("no Gate account configured - sign in before enabling a provider")?;
@@ -289,7 +309,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderStat
         // nothing to do, and nothing to complain about. Only a user who asked
         // for this provider by name gets the explanation.
         if !skip.is_empty() {
-            return Ok(state(&p));
+            return Ok((Applied::NotYet, state(&p)));
         }
         anyhow::bail!(
             "nothing to configure for {}: install its app, or turn on \
@@ -354,7 +374,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderStat
         );
     }
 
-    Ok(state)
+    Ok((Applied::Enabled, state))
 }
 
 /// Turn a provider off. Reverts the config integration(s) and, if the proxy is
@@ -741,32 +761,56 @@ pub fn snapshot_and_disable_everything() -> Result<()> {
 
 /// Master ON: re-enable every provider that was on when routing was last
 /// turned off, then reconnect any standalone tools the master-off sweep
-/// disconnected. Entries that fail to restore stay in their snapshot so a
+/// disconnected. Entries that are not back yet stay in their snapshot so a
 /// later call can retry them; each snapshot is cleared once everything in it
 /// is back. Idempotent; a missing snapshot is a no-op. Callers run this twice
 /// per master-on: once before the proxy comes up (config-based tools, and the
 /// engine's "at least one provider" precondition) and once after (domain-only
 /// providers, which have nothing to configure until the proxy is running).
+///
+/// **An entry leaves the snapshot only once it is actually routing again.**
+/// The two passes exist because the first one *cannot* finish the job: a
+/// domain-only provider (OpenRouter, or Anthropic on a machine with no Claude
+/// app) has no tool to configure and no running engine to flip its domain in,
+/// so the pre-enable pass gets [`Applied::NotYet`]. That used to arrive as a
+/// bare `Ok`, indistinguishable from a completed restore, and clearing the
+/// snapshot on it left the post-enable pass - the one that could actually do
+/// the work - with nothing to restore, so every domain-only provider silently
+/// stayed off for the rest of the session.
+///
+/// The [`Applied`] verdict is the primary test; the provider's own `enabled`
+/// is checked too, so a call that believes it configured a route but did not
+/// produce one is also held for retry. Belt and braces on purpose: this dance
+/// is hand-copied across `routing::enable` and the Linux manager's startup
+/// re-honor, and an invariant that reads the world protects those call sites
+/// from each other in a way a "this is the final pass" flag could not.
 pub fn restore_all() -> Result<()> {
     let _guard = master_flow_guard();
     // Members that were off before routing stopped stay off; the family around
     // them comes back. See [`RESTORE_SKIP_MEMBERS`].
     let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
-    let mut failed = Vec::new();
+    let mut pending = Vec::new();
     for slug in load_snapshot(PROVIDER_SNAPSHOT)? {
-        if let Err(e) = enable_skipping(&slug, &skip) {
-            eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
-            failed.push(slug);
+        match enable_skipping(&slug, &skip) {
+            Ok((Applied::Enabled, state)) if state.enabled => {}
+            // Nothing to do yet, or a route that did not take. Neither is a
+            // failure worth reporting - the engine simply is not up - and
+            // neither is a completion.
+            Ok(_) => pending.push(slug),
+            Err(e) => {
+                eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
+                pending.push(slug);
+            }
         }
     }
-    if failed.is_empty() {
+    if pending.is_empty() {
         clear_snapshot(PROVIDER_SNAPSHOT)?;
         // The cycle is complete, so the skip list has done its job. Held until
         // now for the same reason the provider snapshot is: a partial restore
         // gets retried, and the retry needs to know what to leave alone.
         clear_snapshot(RESTORE_SKIP_MEMBERS)?;
     } else {
-        save_snapshot(PROVIDER_SNAPSHOT, &failed)?;
+        save_snapshot(PROVIDER_SNAPSHOT, &pending)?;
     }
     restore_swept_tools()
 }
@@ -815,6 +859,61 @@ fn restore_swept_tools() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Applied::NotYet` is private, so the only place that can name it is a
+    /// test in this module - and `restore_all`'s behavioural test cannot
+    /// distinguish it, because after a master-off the provider reads off
+    /// anyway and either half of that guard alone would hold the entry. This
+    /// pins the half the integration test cannot see.
+    ///
+    /// Redirects the per-user paths, so it takes [`crate::env::path_env_lock`]:
+    /// without it a test that depends on the *absence* of the seam can read
+    /// this one's throwaway home instead of the real filesystem. The secrets
+    /// seam goes with it, or `account::save` writes the key into the
+    /// developer's own keyring.
+    #[test]
+    fn an_enable_with_nothing_to_do_yet_says_so() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-notyet-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let applied = (|| {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            // The shape the pre-engine restore pass meets: no engine running,
+            // and `anthropic`'s only config tool skipped because the user had
+            // switched it off before routing stopped. Skipping it also makes
+            // the result independent of whether Claude Code happens to be
+            // installed on the machine running this - `detect` consults real
+            // binary paths, which no test home redirects.
+            enable_skipping("anthropic", &["claude-code".to_string()]).map(|(applied, _)| applied)
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        assert_eq!(
+            applied.expect("a skipped family is not an error"),
+            Applied::NotYet,
+            "reporting this as Enabled is what let the pre-engine pass clear \
+             the snapshot the post-engine pass needed"
+        );
+    }
 
     #[test]
     fn openai_provider_maps_to_codex_and_openai_domain() {

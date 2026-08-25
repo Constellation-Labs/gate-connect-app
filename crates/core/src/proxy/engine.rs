@@ -250,7 +250,7 @@ fn upstream_tls_config(provider: CryptoProvider) -> Result<ClientConfig> {
         .with_safe_default_protocol_versions()
         .context("selecting TLS protocol versions for the upstream connector")?;
 
-    let Some(path) = std::env::var_os("GATE_CONNECT_TEST_CA") else {
+    let Some(path) = crate::env::test_seam("GATE_CONNECT_TEST_CA") else {
         return Ok(builder.with_webpki_roots().with_no_client_auth());
     };
 
@@ -948,7 +948,7 @@ fn persisted_ports() -> Vec<u16> {
 /// agree on what "the port is taken" means - a live listener, not a TIME_WAIT
 /// remnant of the host that just exited.
 #[cfg(unix)]
-pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+fn bind_preferred_once(port: u16) -> std::io::Result<std::net::TcpListener> {
     if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
         return Ok(listener);
     }
@@ -972,8 +972,43 @@ pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener
 }
 
 #[cfg(not(unix))]
-pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+fn bind_preferred_once(port: u16) -> std::io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(("127.0.0.1", port))
+}
+
+/// How long a preferred-port bind keeps retrying before conceding the port.
+///
+/// Sized for a previous session still letting go, not for waiting out another
+/// application: the engine's own listeners close as its runtime winds down, and
+/// on macOS that was measured taking anywhere from microseconds to a few
+/// milliseconds after `disable()` returned.
+const PREFERRED_BIND_GRACE: Duration = Duration::from_millis(250);
+
+/// Bind the preferred port, retrying briefly before falling back.
+///
+/// The single attempt below answers "is the port free *right now*", and for a
+/// port we are trying to *re*claim that is the wrong question: our own previous
+/// session may still be releasing it. Conceding on the first refusal is what
+/// makes a quick disable/enable land on a fresh port - precisely what the
+/// preferred port exists to prevent, and what CLI tools baking the relay port
+/// into their configs cannot survive.
+///
+/// The engine's own teardown is ordered now (see the detached-listener join in
+/// `start`), so this is the belt to that braces: it also covers a port held by
+/// a `TIME_WAIT` remnant that has not yet expired, or by anything else
+/// transient, without needing to know which. Bounded, so a port a *foreign*
+/// application genuinely owns costs one short delay at enable time and then
+/// falls back exactly as before - the live-listener probe inside still refuses
+/// to shadow it.
+pub(super) fn bind_preferred(port: u16) -> std::io::Result<std::net::TcpListener> {
+    let deadline = std::time::Instant::now() + PREFERRED_BIND_GRACE;
+    loop {
+        match bind_preferred_once(port) {
+            Ok(listener) => return Ok(listener),
+            Err(e) if std::time::Instant::now() >= deadline => return Err(e),
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
 }
 
 /// Build the PAC (proxy auto-config) script WinINET runs for every connection.
@@ -1004,6 +1039,20 @@ fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) 
     s
 }
 
+/// The `Host` header value of a raw HTTP request head, if one is present in
+/// `buf`. Tolerant by design: the PAC responder reads a single buffer and
+/// never parses the request beyond this.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn request_host(buf: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(buf).ok()?;
+    text.split("\r\n").skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("host")
+            .then(|| value.trim().to_string())
+    })
+}
+
 /// Serve the PAC script on a dedicated loopback listener. WinINET fetches the
 /// `AutoConfigURL` *directly* (not through the proxy), so this must be a plain
 /// HTTP responder, separate from the hudsucker proxy on `proxy_port`. The body
@@ -1019,14 +1068,33 @@ async fn serve_pac(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     loop {
         let Ok((mut stream, _)) = listener.accept().await else {
+            // Transient accept errors resolve on their own; the pause keeps a
+            // permanently failing listener from spinning this loop at 100%
+            // CPU for the engine's lifetime.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             continue;
         };
         let rules = rules.clone();
         let upstream = upstream.clone();
         tokio::spawn(async move {
-            // Consume the request (a small GET we don't parse) before replying.
+            // Consume the request before replying. Parsed only far enough to
+            // read `Host`: the system PAC fetcher addresses us as loopback,
+            // while a DNS-rebound browser request arrives under the attacker's
+            // hostname - refuse it rather than disclose the engine port the
+            // PAC body carries. A request with no Host line (not a browser)
+            // stays served. Same rule as the relay's, shared in the parent
+            // module.
             let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf).await;
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            let foreign_host =
+                request_host(&buf[..n]).is_some_and(|h| !crate::proxy::authority_is_loopback(&h));
+            if foreign_host {
+                let resp =
+                    "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.shutdown().await;
+                return;
+            }
             let body = pac_script(&rules.borrow(), proxy_port, upstream.as_deref());
             let resp = format!(
                 "HTTP/1.1 200 OK\r\n\
@@ -1217,25 +1285,35 @@ where
                 };
 
                 let _ = ready_tx.send(Ok(()));
-                // Bring up the PAC responder on the engine runtime; it dies with
-                // the runtime when the engine stops. Non-fatal if it can't start
-                // - the proxy still runs, WinINET just fails the PAC fetch and
-                // falls back to DIRECT (no interception) rather than stranding
-                // traffic.
+                // The PAC responder and the relay run as detached tasks on this
+                // runtime, and neither watches the shutdown channel - they are
+                // accept loops with no exit condition. Their handles are kept so
+                // the teardown below can close their listeners *before* this
+                // future returns; see the note there.
+                let mut detached: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+                // Bring up the PAC responder on the engine runtime. Non-fatal if
+                // it can't start - the proxy still runs, WinINET just fails the
+                // PAC fetch and falls back to DIRECT (no interception) rather
+                // than stranding traffic.
                 #[cfg(any(target_os = "windows", target_os = "macos"))]
                 {
                     match tokio::net::TcpListener::from_std(pac_listener) {
                         Ok(pac) => {
-                            tokio::spawn(serve_pac(pac, pac_rules_rx, port, upstream_proxy));
+                            detached.push(tokio::spawn(serve_pac(
+                                pac,
+                                pac_rules_rx,
+                                port,
+                                upstream_proxy,
+                            )));
                         }
                         Err(e) => eprintln!("gate proxy PAC listener failed to start: {e}"),
                     }
                 }
-                // Bring up the CLI reverse-proxy relay on the same runtime;
-                // like the PAC responder it dies with the runtime on stop.
+                // Bring up the CLI reverse-proxy relay on the same runtime.
                 // Non-fatal: if it can't adopt its listener the MITM proxy
                 // still runs, only CLI tools pointed at the relay fail.
-                if let Err(e) = super::relay::spawn(
+                match super::relay::spawn(
                     relay_listener,
                     relay_gateway,
                     relay_key_rx,
@@ -1244,10 +1322,26 @@ where
                     relay_intercept_rx,
                     relay_owner_uid,
                 ) {
-                    eprintln!("gate proxy relay failed to start: {e}");
+                    Ok(handle) => detached.push(handle),
+                    Err(e) => eprintln!("gate proxy relay failed to start: {e}"),
                 }
                 if let Err(e) = proxy.start().await {
                     eprintln!("gate proxy engine stopped with error: {e}");
+                }
+
+                // Close the detached listeners here, rather than leaving them to
+                // the runtime drop. `stop()` joins this thread, so a caller is
+                // entitled to read a returned `disable()` as "the ports are
+                // free": the persisted-port reuse on the next enable depends on
+                // exactly that, and the relay port is baked into CLI tool
+                // configs, so losing it points those tools at a dead address.
+                // Runtime drop does eventually cancel these tasks, but it is not
+                // ordered against this future returning - measured on macOS,
+                // both listeners were still accepting after `disable()` returned
+                // in a few percent of enable/disable cycles.
+                for handle in detached {
+                    handle.abort();
+                    let _ = handle.await;
                 }
             });
 
@@ -1353,6 +1447,22 @@ mod tests {
         );
     }
 
+    /// Serialize the tests that bind real listeners in [`STABLE_PORT_RANGE`].
+    ///
+    /// [`bind_fresh`] reads the persisted ports through the path seams to know
+    /// what to *skip*, which already puts these tests under the rule
+    /// `path_env_lock` states: anything reading those paths that would be wrong
+    /// to see another test's must take the lock. Skipping it also let them race
+    /// the real-engine tests in `manager_core`, which hold the same lock: this
+    /// band is 100 ports wide, an engine holds three of them, and a fresh bind
+    /// here could take the very port an enable/disable cycle there was about to
+    /// reclaim. That surfaced as a ~7%-per-run failure of
+    /// `engine_port_persists_across_an_enable_cycle` on macOS, which binds one
+    /// more listener per engine than Linux does.
+    fn band_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::env::path_env_lock()
+    }
+
     /// Everything switched off, as the forced-route tests want it.
     fn all_off() -> Vec<ProxyDomain> {
         crate::proxy::default_domains()
@@ -1408,6 +1518,7 @@ mod tests {
     /// not on an OS-assigned ephemeral port.
     #[test]
     fn bind_fresh_picks_from_the_stable_band() {
+        let _lock = band_lock();
         let listener = bind_fresh().expect("a free port in the band");
         let port = listener.local_addr().unwrap().port();
         assert!(
@@ -1420,6 +1531,7 @@ mod tests {
     /// listeners one engine brings up never collide.
     #[test]
     fn bind_fresh_skips_ports_already_held() {
+        let _lock = band_lock();
         let first = bind_fresh().expect("first port");
         let second = bind_fresh().expect("second port");
         let (a, b) = (
@@ -1475,6 +1587,7 @@ mod tests {
     /// back to an ephemeral port is what made the next restart move again.
     #[test]
     fn bind_loopback_falls_into_the_band_when_the_preferred_port_is_taken() {
+        let _lock = band_lock();
         // A *live* listener on an ephemeral port: `bind_preferred` treats this
         // as taken (as opposed to a TIME_WAIT remnant, which it reclaims).
         let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("squatter");

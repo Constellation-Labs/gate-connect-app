@@ -21,6 +21,9 @@ pub mod primitives;
 pub mod provider;
 pub mod proxy;
 pub mod registry;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub mod routing;
+pub mod startup;
 
 pub mod integrations {
     pub mod claude_code;
@@ -30,6 +33,9 @@ pub mod integrations {
     /// Not a tool: the environment channel itself, as a thing users can decline.
     pub mod env_proxy;
     pub mod hermes;
+    /// Shared load/atomic-write/ensure-object plumbing for the JSON-config
+    /// integrations (Claude Code, OpenCode, OpenClaw).
+    pub(crate) mod json_config;
     pub mod openclaw;
     pub mod opencode;
 }
