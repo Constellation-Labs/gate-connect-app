@@ -95,6 +95,26 @@ impl Harness {
         fs::create_dir_all(&proxy_dir).unwrap();
         fs::write(proxy_dir.join("relay-port"), RELAY_PORT.to_string()).unwrap();
     }
+
+    /// Simulate the extra persisted state written by a running forward proxy.
+    /// Kept out of `login`: relay-only integrations must not make the
+    /// proxy-routed OpenClaw/Hermes tests believe an engine is active.
+    fn seed_engine_proxy(&self) {
+        let proxy_dir = self
+            .home()
+            .join("app-support")
+            .join("Gate Connect")
+            .join("proxy");
+        fs::create_dir_all(&proxy_dir).unwrap();
+        fs::write(proxy_dir.join("port"), RELAY_PORT.to_string()).unwrap();
+        #[cfg(target_os = "macos")]
+        let snapshot = "[]";
+        #[cfg(target_os = "linux")]
+        let snapshot = r#"{ "block_present": false }"#;
+        #[cfg(target_os = "windows")]
+        let snapshot = r#"{ "enable": 0, "server": "", "bypass": "", "auto_config_url": "" }"#;
+        fs::write(proxy_dir.join("system-proxy.snapshot.json"), snapshot).unwrap();
+    }
 }
 
 fn read(path: &Path) -> String {
@@ -107,16 +127,24 @@ fn claude_code_connect_then_disconnect() {
     // detect() falls back to the config dir existing.
     fs::create_dir_all(h.home().join(".claude")).unwrap();
     h.login();
+    h.seed_engine_proxy();
 
     h.run_ok(&["connect", "claude-code"]);
 
     let settings: PathBuf = h.home().join(".claude").join("settings.json");
     let body = read(&settings);
-    assert!(body.contains(RELAY_URL), "relay base URL missing: {body}");
+    assert!(
+        body.contains(r#""HTTPS_PROXY": "http://gate-claude-code:route@127.0.0.1:8977""#),
+        "forward proxy URL missing: {body}"
+    );
+    assert!(
+        !body.contains(r#""ANTHROPIC_BASE_URL":"#),
+        "a custom Anthropic base URL would disable first-party capabilities: {body}"
+    );
     assert!(
         !body.contains("X-Gate-Upstream-Url"),
-        "no Gate header may be written - the relay derives the upstream from \
-         the slug in the base URL: {body}"
+        "no Gate header may be written - the engine derives the upstream from \
+         the canonical destination: {body}"
     );
     // No credential is ever written - the relay injects it live.
     assert!(
@@ -136,6 +164,34 @@ fn claude_code_connect_then_disconnect() {
         "gate residue left behind: {after}"
     );
     assert!(!after.contains(RELAY_URL), "relay URL left behind: {after}");
+}
+
+/// `--upstream-url` cannot retarget a tool whose routing depends on the
+/// destination staying canonical. It used to be resolved and then discarded,
+/// which accepted the flag and routed Anthropic anyway.
+#[test]
+fn claude_code_refuses_a_foreign_upstream() {
+    let h = Harness::new();
+    fs::create_dir_all(h.home().join(".claude")).unwrap();
+    h.login();
+    h.seed_engine_proxy();
+
+    // A URL Gate does route, so the refusal comes from this integration rather
+    // than from `resolve_endpoint` not knowing the host.
+    let err = h.run_err(&[
+        "connect",
+        "claude-code",
+        "--upstream-url",
+        "https://api.openai.com",
+    ]);
+    assert!(
+        err.contains("can only route to https://api.anthropic.com"),
+        "the refusal must name what Claude Code can route: {err}"
+    );
+    assert!(
+        !h.home().join(".claude").join("settings.json").exists(),
+        "a refused connect must write nothing"
+    );
 }
 
 #[test]

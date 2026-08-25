@@ -15,10 +15,14 @@ pub fn default_domains() -> Vec<ProxyDomain> {
     vec![
         ProxyDomain {
             slug: "anthropic".into(),
-            // Named for what it covers (the apps whose traffic this
-            // intercepts), not the vendor: on the UI ledger a vendor name
-            // here would read as if it included Claude Code, which routes by
-            // config instead. The host line carries api.anthropic.com.
+            // Named for what its SWITCH covers, not for the vendor: the
+            // entry is the system-proxy route for the desktop apps, and its
+            // switch is theirs alone. Claude Code reaches the same host, but
+            // through its own configured proxy URL, whose route selector makes
+            // the engine apply this entry whatever the switch says (see
+            // `claude_code_route_domain`) - so a vendor name here would read as
+            // a promise this switch does not make. The host line carries
+            // api.anthropic.com.
             display_name: "Claude Desktop / Cowork".into(),
             // Inference for Claude Code, Claude Desktop, and Cowork all goes
             // to api.anthropic.com /v1/messages (OAuth bearer or API key),
@@ -97,6 +101,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
                 "/event_logging/".into(),
                 "/bootstrap/".into(),
             ],
+            rewrite_suffixes: Vec::new(),
             // Opt-in. This surface carries the user's Claude SESSION cookie
             // rather than an API key, so it should never start intercepting
             // without a deliberate toggle.
@@ -105,11 +110,19 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // `proxy_domain_slugs` (see `provider.rs`): `provider::enable` turns
             // on every domain a provider lists, so attaching it would route the
             // session surface the moment someone enabled "Claude" - defeating
-            // the opt-in above. `chat_domain_slugs` is the field that will give
-            // it a ledger row without joining that cascade; it is not listed
-            // there yet, so for now this entry stays CLI-only (`proxy domain
-            // claude-web on`), pending the branch validating this surface.
-            rewrite_suffixes: Vec::new(),
+            // the opt-in above. It rides that provider's `chat_domain_slugs`
+            // instead, which is how it reaches the Home ledger: `buildGroups`
+            // (src/lib/groups.ts) gives it a row and a switch under Claude, and
+            // `setGroupRouted` filters it out of the family cascade, so the only
+            // thing that can enable it is that row's own switch (or
+            // `proxy domain claude-web on` from the CLI).
+            //
+            // `supported: true` is the catalog's answer, not the app's:
+            // `proxy::config::gated_catalog` flips it to false unless the
+            // account points at the staging gateway, which is where the
+            // gateway-side classification for this surface lands first. That
+            // gate is the only thing standing between this entry and a row, so
+            // read it before assuming the row is live in production.
             enabled: false,
             supported: true,
         },
@@ -155,14 +168,31 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // matched by `decide` on HOST - which is why the two can share a
             // host without colliding, and why the split below differs.
             //
-            // What this can and cannot capture: Codex's embedded Rust agent
-            // ignores the system proxy, so its MODEL calls stay invisible to the
-            // engine (they route via the relay instead - see below). The Electron
-            // shell DOES honour the system proxy, and the tool-plane calls
-            // observed in a capture came from it: `/backend-api/wham/*` carried a
-            // Chromium user-agent. `/backend-api/ps/mcp` sends no user-agent at
-            // all, so whether the engine sees it is genuinely unverified - this
-            // entry is how we find out.
+            // What this can and cannot capture. The Electron shell honours the
+            // system proxy, and the tool-plane calls observed in a capture came
+            // from it: `/backend-api/wham/*` carried a Chromium user-agent.
+            // `/backend-api/ps/mcp` sends no user-agent at all, so which
+            // component emits it is still unverified, though the engine does see
+            // it.
+            //
+            // The desktop app's MODEL call is visible too, and is NOT served by
+            // this entry - it is served by the `chatgpt` entry below, whose
+            // upstream path absorbs `/backend-api` and leaves
+            // `/codex/responses` for its rewrite prefix. Confirmed 2026-08-14
+            // from a captured Gate row whose body carried
+            // `<app-context># Codex desktop context`, `workspace_kind:
+            // "projectless"` and Windows paths under `Documents\Codex`.
+            //
+            // This comment previously said the opposite - that Codex's embedded
+            // Rust agent ignores the system proxy, so its model calls stay
+            // invisible to the engine. That holds for the standalone CLI, whose
+            // agent routes via the relay, and it is why the exclusion below is
+            // still correct. It does NOT hold for the desktop app, and stating it
+            // unconditionally cost two debugging sessions: the traffic was
+            // assumed unreachable when it was merely on the other row. Which row
+            // is the whole point, because `chatgpt-apps` and `chatgpt` are
+            // separate switches and this one's NAME implies it carries Codex's
+            // prompts. It does not.
             hosts: vec!["chatgpt.com".into()],
             // MITM convention: `engine::apply_rewrite` preserves the request path
             // and query VERBATIM and swaps only scheme + authority, so the
@@ -174,9 +204,15 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // Only the two path families Gate classifies as native surfaces:
             // the MCP tool plane (`codex-mcp`, scanned for indirect injection)
             // and the task/settings reads (`codex-tasks`). Deliberately NOT
-            // `/backend-api/codex/responses` - the model call belongs to the
-            // relay route, and rewriting it here would send it upstream with the
-            // wrong split. Plugin-store listings are left out as pure noise.
+            // `/backend-api/codex/responses` - that path belongs to the `chatgpt`
+            // entry, which serves it on BOTH routes, and claiming it here would
+            // send it upstream under this entry's bare-host split. The URL would
+            // still resolve; what breaks is that one endpoint would then carry two
+            // different `X-Gate-Upstream-Url` values depending on how it arrived,
+            // which is the split-mismatch class that once left MITM traffic
+            // classified as plain `api`. Excluding it is not a coverage gap: this
+            // entry sits FIRST in catalog order, so claiming it would shadow the
+            // other. Plugin-store listings are left out as pure noise.
             // `/backend-api/f/conversation` is the ChatGPT app's own chat turn
             // (Gate's `chatgpt-web-chat` surface): one message per request, reply
             // as a `delta_encoding: v1` SSE stream. It lives in THIS entry rather
@@ -195,6 +231,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // above, so it needs an explicit passthrough to stay unrouted -
             // passthrough prefixes are checked first in `decide`.
             passthrough_prefixes: vec!["/backend-api/f/conversation/prepare".into()],
+            rewrite_suffixes: Vec::new(),
             // Opt-in, and no longer order-sensitive against the `chatgpt` entry
             // below: `decide` consults every enabled entry claiming the host, so
             // each of the two serves its own paths whether one, the other, or
@@ -204,13 +241,16 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // without reading this file.
             //
             // Like `claude-web` above, this slug is in no provider's
-            // `proxy_domain_slugs`, and not in `chat_domain_slugs` yet either, so
-            // it stays CLI-only (`proxy domain chatgpt-apps on`) pending the
-            // branch validating this surface. Whatever exposes it must keep the
-            // cascade property: the chat half here
-            // (`/backend-api/f/conversation`) carries a session cookie, so no
-            // family switch may ever reach it.
-            rewrite_suffixes: Vec::new(),
+            // `proxy_domain_slugs` and rides `chat_domain_slugs` instead: it
+            // gets a Home ledger row and a switch under OpenAI, and the family
+            // switch's cascade skips it, so the chat half of this entry
+            // (`/backend-api/f/conversation`, a session-cookie surface) can only
+            // be enabled from its own row or from `proxy domain chatgpt-apps
+            // on`. Whatever else exposes this entry must keep that property.
+            //
+            // And, like `claude-web`, staging-gated: `proxy::config`'s
+            // `STAGING_ONLY_SLUGS` clears `supported` on a production account,
+            // so this entry has no row and cannot route there.
             enabled: false,
             supported: true,
         },

@@ -9,6 +9,7 @@
 //! needs to push new rules - no engine restart, no system-proxy change, no
 //! extra admin prompt.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
@@ -344,6 +345,13 @@ struct GateHandler {
     /// while the peer's socket is definitely still in `/proc/net/tcp` - instead
     /// of re-reading it (and risking a TOCTOU miss) on every request.
     peer_verdict: Option<(std::net::SocketAddr, bool)>,
+    /// Set from the explicit proxy selector on Claude Code's CONNECT request.
+    /// The handler is cloned with this value for the decrypted inner requests.
+    claude_code_route: bool,
+    /// One-shot latch for the "Anthropic without the selector" line in
+    /// `should_intercept`. Shared across handler clones, so an engine run
+    /// reports it once instead of once per connection.
+    anthropic_unselected_logged: Arc<AtomicBool>,
 }
 
 impl GateHandler {
@@ -366,6 +374,67 @@ impl GateHandler {
         self.peer_verdict = Some((ctx.client_addr, verdict));
         verdict
     }
+
+    /// Report a tunnelled CONNECT to Claude Code's own destination that carried
+    /// no route selector.
+    ///
+    /// Outside `debug_log`, unlike every other line here, because this is the
+    /// only place in the app that can observe the regression it names: Claude
+    /// Code's `status()` compares `settings.json` against our own write and
+    /// never learns whether the engine actually received the selector, so a
+    /// future release that stopped deriving `Proxy-Authorization` from the
+    /// proxy URL's userinfo would blind-tunnel behind a green pill - the O1
+    /// failure class in `docs/routing-architecture.md`. The wire is the only
+    /// witness.
+    ///
+    /// Latched to one line per engine run. The same state is the ordinary,
+    /// harmless one for any other Anthropic client while the Desktop switch is
+    /// off, so this cannot be a per-CONNECT warning without becoming noise -
+    /// and noise is what stops a real regression being read.
+    fn warn_if_anthropic_is_unselected(&self, intercept: bool, host: Option<&str>) {
+        if intercept
+            || self.claude_code_route
+            || !host.is_some_and(|h| crate::proxy::claude_code_route_domain().matches_host(h))
+            || self
+                .anthropic_unselected_logged
+                .swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        eprintln!(
+            "[gate-proxy] CONNECT {} carried no Claude Code route selector -> tunnel. \
+             Expected for other Anthropic clients while their domain is off; if this \
+             is a connected Claude Code, it is bypassing Gate.",
+            host.unwrap_or("?")
+        );
+    }
+}
+
+/// The rule set a connection's requests must be decided against: the live
+/// catalog, plus Claude Code's own entry force-enabled when the CONNECT carried
+/// the route selector and the user has that entry switched off.
+///
+/// Shared by both stages - the CONNECT verdict and the per-request routing - so
+/// the two can never disagree about what the selector routes.
+///
+/// Scoped to that entry's own host, which is what keeps the selector from
+/// widening anything: a selected connection to any other host sees the live
+/// catalog untouched. It also means only Claude Code's host pays for the clone;
+/// everything else borrows.
+fn route_rules<'a>(
+    live: &'a [ProxyDomain],
+    claude_code_route: bool,
+    host: Option<&str>,
+) -> Cow<'a, [ProxyDomain]> {
+    let forced = crate::proxy::claude_code_route_domain();
+    let needed = claude_code_route
+        && host.is_some_and(|h| forced.matches_host(h) && !should_intercept_host(live, h));
+    if !needed {
+        return Cow::Borrowed(live);
+    }
+    let mut rules = live.to_vec();
+    rules.push(forced.clone());
+    Cow::Owned(rules)
 }
 
 /// Resolve the local UID that owns the socket whose *local* address is `addr`
@@ -427,15 +496,17 @@ impl HttpHandler for GateHandler {
             }
             return false;
         }
-        let rules = self.rules.borrow().clone();
+        let live_rules = self.rules.borrow().clone();
         let host = req
             .uri()
             .authority()
             .map(|a| a.host())
             .or_else(|| req.uri().host());
+        let rules = route_rules(&live_rules, self.claude_code_route, host);
         let intercept = host
             .map(|h| should_intercept_host(&rules, h))
             .unwrap_or(false);
+        self.warn_if_anthropic_is_unselected(intercept, host);
         if debug_log() {
             // The enabled set is printed alongside the verdict because the two
             // have been observed to disagree with what `proxy enable` reports:
@@ -443,7 +514,10 @@ impl HttpHandler for GateHandler {
             // tunnelled both. Without this the log cannot distinguish "the host
             // is not in the catalog" from "the engine is holding a different
             // catalog than the one just configured".
-            let enabled: Vec<&str> = rules
+            // `live_rules`, not the possibly-forced set: the disagreement this
+            // is here to catch is between the catalog the engine holds and the
+            // one that was configured, so the line must report what it holds.
+            let enabled: Vec<&str> = live_rules
                 .iter()
                 .filter(|d| d.enabled)
                 .map(|d| d.slug.as_str())
@@ -454,7 +528,7 @@ impl HttpHandler for GateHandler {
                 "[gate-proxy] CONNECT {} -> {} (engine has {} enabled: [{}])",
                 host.unwrap_or("?"),
                 if intercept { "intercept" } else { "tunnel" },
-                rules.len(),
+                live_rules.len(),
                 enabled.join(",")
             );
         }
@@ -470,6 +544,14 @@ impl HttpHandler for GateHandler {
         // rewrite on it. Intercepted inner requests arrive in absolute form
         // (scheme + authority + path), which is what `decide` expects.
         if req.method() == Method::CONNECT {
+            self.claude_code_route = req
+                .headers()
+                .get("proxy-authorization")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == crate::proxy::CLAUDE_CODE_PROXY_AUTH);
+            // A proxy credential is hop-by-hop and must never reach either the
+            // real Anthropic endpoint or Gate.
+            req.headers_mut().remove("proxy-authorization");
             return req.into();
         }
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
@@ -478,8 +560,12 @@ impl HttpHandler for GateHandler {
         // client filter composes with the `enabled` one instead of adding a
         // second kind of veto inside the routing decision.
         let client = classify_client(|name| req.headers().get(name).and_then(|v| v.to_str().ok()));
-        let rules = rules_for_client(&self.rules.borrow(), client);
         let host = req.uri().host().map(str::to_owned);
+        let live_rules = self.rules.borrow().clone();
+        let rules = rules_for_client(
+            &route_rules(&live_rules, self.claude_code_route, host.as_deref()),
+            client,
+        );
         // Path only, never `path_and_query()`: some providers pass the API key
         // as a URL query param (e.g. Google `...?key=...`), and this value is
         // written to the debug log below. `Uri::path()` excludes the query, so
@@ -1089,6 +1175,8 @@ where
         org: org_rx,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
+        claude_code_route: false,
+        anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -1373,6 +1461,57 @@ mod tests {
     /// more listener per engine than Linux does.
     fn band_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::env::path_env_lock()
+    }
+
+    /// Everything switched off, as the forced-route tests want it.
+    fn all_off() -> Vec<ProxyDomain> {
+        crate::proxy::default_domains()
+            .into_iter()
+            .map(|mut d| {
+                d.enabled = false;
+                d
+            })
+            .collect()
+    }
+
+    /// The forced route must not become the default route. Without the
+    /// selector, Claude Code's own host is decided by the catalog like any
+    /// other - so a switched-off Anthropic entry stays switched off, and the
+    /// `claude_code_selector_routes_when_desktop_domain_is_off` e2e proves a
+    /// property of the selector rather than of the host.
+    #[test]
+    fn anthropic_without_the_selector_keeps_the_live_catalog() {
+        let live = all_off();
+        let rules = route_rules(&live, false, Some("api.anthropic.com"));
+        assert!(matches!(rules, Cow::Borrowed(_)), "nothing to force");
+        assert!(
+            !should_intercept_host(&rules, "api.anthropic.com"),
+            "an unselected connection must be tunnelled while the entry is off"
+        );
+        // And the selector is what changes that, on this same input.
+        assert!(should_intercept_host(
+            &route_rules(&live, true, Some("api.anthropic.com")),
+            "api.anthropic.com"
+        ));
+    }
+
+    /// The forced entry is pushed with `enabled: true`, so the one thing that
+    /// keeps it from routing every host is that it is scoped to its own. A
+    /// selected connection to anything else must see the catalog untouched.
+    #[test]
+    fn the_selector_forces_nothing_for_another_host() {
+        let live = all_off();
+        for host in ["api.openai.com", "openrouter.ai", "claude.ai"] {
+            let rules = route_rules(&live, true, Some(host));
+            assert!(
+                matches!(rules, Cow::Borrowed(_)),
+                "{host} is not Claude Code's destination"
+            );
+            assert!(
+                !should_intercept_host(&rules, host),
+                "{host} must still tunnel with every domain off"
+            );
+        }
     }
 
     /// A fresh listener must land in the band we can actually rebind next run,

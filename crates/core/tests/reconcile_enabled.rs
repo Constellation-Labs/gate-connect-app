@@ -72,20 +72,22 @@ fn sign_in() {
     account::save("https://gw.example.com", Some("sk-gw-testkey123")).unwrap();
 }
 
-/// Persist a stable relay port so [`proxy::relay_base_url`] resolves. CLI tool
-/// configs point at the loopback relay, so connecting/reconciling a tool needs
-/// a bound relay port; in these tests no engine runs, so we seed the persisted
-/// port file directly (the same file the manager writes after `enable`) and
-/// bind a real listener on it (kept alive by the caller): Claude Code's status
-/// check probes relay liveness, so a dead seeded port would read as the honest
-/// "proxy is not running" drift instead of Connected.
-fn set_relay_port() -> std::net::TcpListener {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+/// Seed the persisted ports and routing snapshot that a running proxy owns.
+/// Claude Code now uses the forward-proxy port so its Anthropic base URL stays
+/// canonical; the relay port remains seeded because provider reconciliation
+/// uses it as its general liveness prerequisite.
+fn set_relay_port(port: u16) {
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("relay-port"), port.to_string()).unwrap();
-    listener
+    fs::write(dir.join("port"), port.to_string()).unwrap();
+    #[cfg(target_os = "macos")]
+    let snapshot = "[]";
+    #[cfg(target_os = "linux")]
+    let snapshot = r#"{ "block_present": false }"#;
+    #[cfg(target_os = "windows")]
+    let snapshot = r#"{ "enable": 0, "server": "", "bypass": "", "auto_config_url": "" }"#;
+    fs::write(dir.join("system-proxy.snapshot.json"), snapshot).unwrap();
 }
 
 /// Make Claude Code look installed-but-unconfigured: its config dir exists
@@ -104,7 +106,7 @@ fn tool_installed_after_enable_is_configured() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    let _relay = set_relay_port();
+    set_relay_port(9977);
     install_claude_unconfigured();
     // Precondition: Anthropic is on by default, and Claude is present but not
     // yet routed through Gate.
@@ -114,6 +116,60 @@ fn tool_installed_after_enable_is_configured() {
 
     // The sweep wired it up without any explicit toggle.
     assert_eq!(claude_status(), Status::Connected);
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let env_block = settings.get("env").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(
+        env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
+        Some("http://gate-claude-code:route@127.0.0.1:9977")
+    );
+    // The proxy variable is inherited by everything `claude` spawns, so the
+    // loopback bypass travels with it or a local MCP server goes through the
+    // engine.
+    assert_eq!(
+        env_block.get("NO_PROXY").and_then(|v| v.as_str()),
+        Some("localhost,127.0.0.1,::1")
+    );
+    assert!(
+        !env_block.contains_key("ANTHROPIC_BASE_URL"),
+        "the canonical Anthropic base URL must remain implicit"
+    );
+    assert!(
+        !env_block.contains_key("ANTHROPIC_BETAS"),
+        "Gate Connect must leave context-window selection to Claude Code's selected model variant"
+    );
+}
+
+#[test]
+fn user_owned_anthropic_betas_are_preserved_on_connect() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    set_relay_port(9977);
+    install_claude_unconfigured();
+    fs::write(
+        env::claude_code_settings_path().unwrap(),
+        r#"{ "env": { "ANTHROPIC_BETAS": "user-owned-beta" } }"#,
+    )
+    .unwrap();
+    assert_eq!(claude_status(), Status::Detected);
+
+    provider::reconcile_enabled().unwrap();
+
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settings
+            .get("env")
+            .and_then(|v| v.get("ANTHROPIC_BETAS"))
+            .and_then(|v| v.as_str()),
+        Some("user-owned-beta"),
+        "Gate Connect must not overwrite or manage user-owned Anthropic betas"
+    );
 }
 
 #[test]
@@ -148,7 +204,7 @@ fn already_connected_tool_is_left_untouched() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    let _relay = set_relay_port();
+    set_relay_port(9977);
     install_claude_unconfigured();
 
     // First sweep connects it.
@@ -175,7 +231,7 @@ fn enable_while_proxy_off_persists_intent_for_reconcile() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    let _relay = set_relay_port();
+    set_relay_port(9977);
     install_claude_unconfigured();
 
     // Off then on with the proxy stopped. `disable` persists the off-intent;
@@ -227,18 +283,23 @@ fn stale_managed_config_is_reapplied() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    let _relay = set_relay_port();
+    set_relay_port(9977);
     install_claude_with_stale_managed_config();
     // Precondition: the old scheme reads as drift, not as connected.
     assert!(matches!(claude_status(), Status::Drifted(_)));
 
     provider::reconcile_enabled().unwrap();
 
-    // The sweep reasserted the managed keys: relay base URL, no baked key.
+    // The sweep migrated the legacy custom base URL to transparent proxying.
     assert_eq!(claude_status(), Status::Connected);
     let raw = fs::read_to_string(env::claude_code_settings_path().unwrap()).unwrap();
-    let relay_port = _relay.local_addr().unwrap().port();
-    assert!(raw.contains(&format!("http://127.0.0.1:{relay_port}")));
+    let settings: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let env_block = settings.get("env").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(
+        env_block.get("HTTPS_PROXY").and_then(|v| v.as_str()),
+        Some("http://gate-claude-code:route@127.0.0.1:9977")
+    );
+    assert!(!env_block.contains_key("ANTHROPIC_BASE_URL"));
     assert!(!raw.contains("X-Gate-Api-Key"));
 }
 
@@ -247,8 +308,7 @@ fn managed_drift_without_relay_is_left_alone() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = TestEnv::set();
     sign_in();
-    // No relay port persisted: connect() has no base URL to point the tool
-    // at, and the drift reason may *be* "relay not enabled yet".
+    // No proxy ports persisted: connect() has no live forward proxy to use.
     install_claude_with_stale_managed_config();
     let before = fs::read(env::claude_code_settings_path().unwrap()).unwrap();
 

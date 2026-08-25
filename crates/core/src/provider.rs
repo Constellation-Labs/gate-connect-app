@@ -56,13 +56,13 @@ pub struct Provider {
 /// Built-in provider catalog. Claude leads, then OpenAI/Codex; both follow the
 /// same one-switch model and others can be added the same way.
 ///
-/// Mapping note: each provider lists only the tools that need *config* editing
-/// to route (a CLI that ignores the system proxy - Claude Code, Codex). Desktop
-/// apps that honor the system proxy (Cowork / Claude Desktop) ride the proxy
-/// domain instead, so they're covered by `proxy_domain_slugs` without a
-/// credential or sudo prompt. That's why Cowork isn't in `tool_ids`. A provider
-/// with no native CLI integration (OpenRouter) is proxy-only: empty `tool_ids`,
-/// routed entirely through its proxy domain.
+/// Mapping note: each provider lists only the tools that need per-tool config
+/// editing for reliable routing (Claude Code gets `HTTPS_PROXY`; Codex gets a
+/// model provider). Desktop apps that honor the system proxy (Cowork / Claude
+/// Desktop) ride the proxy domain instead, so they're covered by
+/// `proxy_domain_slugs` without per-tool config. That's why Cowork isn't in
+/// `tool_ids`. A provider with no native CLI integration (OpenRouter) is
+/// proxy-only: empty `tool_ids`, routed entirely through its proxy domain.
 pub fn providers() -> Vec<Provider> {
     vec![
         Provider {

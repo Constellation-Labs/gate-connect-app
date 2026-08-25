@@ -447,9 +447,9 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
                 "  1. Quit any running `claude` sessions (they cache settings.json at launch)."
             );
             println!(
-                "  2. Re-run `claude` - it picks up ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS from ~/.claude/settings.json."
+                "  2. Re-run `claude` - it picks up HTTPS_PROXY from ~/.claude/settings.json while keeping Anthropic's canonical base URL."
             );
-            println!("  3. Verify with `claude /status` (look for the gateway URL).");
+            println!("  3. Select models normally: standard variants stay 200K and (1M) variants keep their 1M context through Gate.");
         }
         ToolId::Codex => {
             println!("  1. Quit any running `codex` sessions.");
