@@ -593,10 +593,18 @@ pub(crate) fn apply_rewrite<T>(
 
     let headers = req.headers_mut();
     super::inject_gate_credential(headers, api_key, oauth_token, org_id)?;
-    headers.insert(
-        super::UPSTREAM_URL_HEADER,
-        HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
-    );
+    if super::serves_gate_model(headers) {
+        // Gate serves this one: no upstream hint, so the gateway resolves a
+        // provider itself and bills credits rather than forwarding to the tool's
+        // own. See the relay's copy of this branch for the full reasoning; the
+        // two paths must agree, because a tool can reach Gate through either.
+        super::strip_tool_credential(headers);
+    } else {
+        headers.insert(
+            super::UPSTREAM_URL_HEADER,
+            HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
+        );
+    }
     Ok(())
 }
 

@@ -526,6 +526,37 @@ fn inject_model_choice(headers: &mut HeaderMap, tool: Option<&'static str>) {
     }
 }
 
+/// Is this request one Gate itself will serve, rather than one it forwards to
+/// the tool's own provider?
+///
+/// Answered by the presence of [`GATE_MODEL_HEADER`], which
+/// [`inject_model_choice`] has just decided: it is set only when the user put
+/// this tool on a Gate model. Reading it back rather than re-deriving the choice
+/// keeps one decision in one place - two computations of "is this served?" could
+/// disagree, and the disagreement would be a request billed one way and routed
+/// the other.
+pub(crate) fn serves_gate_model(headers: &HeaderMap) -> bool {
+    headers.contains_key(GATE_MODEL_HEADER)
+}
+
+/// Drop the tool's own provider credential from a request Gate is paying for.
+///
+/// On a served request the model, the provider and the bill are all Gate's, so
+/// the tool's key is not needed and is not sent. The gateway would strip it
+/// before forwarding upstream anyway - `buildForwardHeaders` removes
+/// `authorization` and `x-api-key` and re-injects the right credential - so this
+/// is not what stands between the user's key and a third party. It is narrower
+/// and still worth doing: there is no reason for Gate to *receive* a credential
+/// it will not use, and not sending it is cheaper than trusting every future
+/// code path on the far side to keep discarding it.
+///
+/// Both slots, because the two providers this routes to disagree: OpenAI-shaped
+/// APIs authenticate on `Authorization`, Anthropic on `x-api-key`.
+fn strip_tool_credential(headers: &mut HeaderMap) {
+    headers.remove(hyper::header::AUTHORIZATION);
+    headers.remove(HeaderName::from_static("x-api-key"));
+}
+
 /// Test seam for the attribution + model-choice injection.
 ///
 /// The injection itself is `pub(crate)` because nothing outside the proxy should
@@ -541,6 +572,15 @@ pub mod testing {
 
     pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
         super::inject_attribution(headers);
+    }
+
+    /// Whether the injection decided Gate serves this request.
+    pub fn serves_gate_model(headers: &HeaderMap) -> bool {
+        super::serves_gate_model(headers)
+    }
+
+    pub fn strip_tool_credential_for_tests(headers: &mut HeaderMap) {
+        super::strip_tool_credential(headers);
     }
 }
 

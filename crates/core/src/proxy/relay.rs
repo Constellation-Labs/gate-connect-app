@@ -478,15 +478,28 @@ async fn proxy(
                     format!("injecting Gate credential: {e:#}"),
                 )
             })?;
-            // We set the upstream hint, overwriting anything the caller sent.
-            // The value comes from the catalog entry we resolved, so a local
-            // process can't aim the gateway at a host of its choosing.
-            set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
-                )
-            })?;
+            if super::serves_gate_model(&headers) {
+                // The user put this tool on a Gate model, so Gate picks the
+                // provider and pays for it. Withholding the upstream hint is
+                // what asks for that: the gateway treats the hint as "the caller
+                // brought their own upstream" and, with it present, forwards
+                // there instead of resolving a provider of its own - which is
+                // why a chosen model had no effect until this branch existed.
+                //
+                // The tool's own key goes with it. On a served request the
+                // model, the provider and the bill are all Gate's.
+                super::strip_tool_credential(&mut headers);
+            } else {
+                // We set the upstream hint, overwriting anything the caller sent.
+                // The value comes from the catalog entry we resolved, so a local
+                // process can't aim the gateway at a host of its choosing.
+                set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
+                    )
+                })?;
+            }
             format!("{}{}", state.gateway_base, routed.path_and_query)
         }
         Route::Passthrough => {
