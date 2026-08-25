@@ -464,9 +464,6 @@ export interface GateModelOption {
   logo?: ReactNode;
 }
 
-/** What the picker is choosing: one model, or a set (AG-590). */
-export type ModelPickerMode = "single" | "multi";
-
 /**
  * Choosing which Gate model an app runs on (Figma 139:66117, `card/choose-model`).
  *
@@ -493,18 +490,15 @@ export type ModelPickerMode = "single" | "multi";
  */
 export function ModelPickerDialog({
   appName,
-  mode = "single",
   models,
   loading,
   failure,
   selectedIds,
-  onSelect,
   onSave,
   onDismiss,
 }: {
   /** Named in the subtitle, as the frame does. */
   appName: string;
-  mode?: ModelPickerMode;
   models: GateModelOption[];
   /** The catalogue has not landed. Distinct from an empty one, which is a real
    *  answer: a gateway with no platform provider accounts offers nothing, and
@@ -514,22 +508,18 @@ export function ModelPickerDialog({
   /** The catalogue could not be read, in the gateway's own words. Distinct again
    *  from empty: "we could not ask" is not "there are none". */
   failure?: string | null;
-  /** Already-chosen ids. One entry in `"single"`, any number in `"multi"`. */
+  /** Already-chosen ids, in the user's order. */
   selectedIds: string[];
-  /** `"single"`: the chosen model, applied immediately - the frame has no footer,
-   *  so a click is the decision. */
-  onSelect: (id: string) => void;
-  /** `"multi"`: the whole set, applied on Save. A set is not a sequence of
-   *  independent clicks - AG-590 requires the final model not be removable
-   *  without choosing another - so it is confirmed once rather than written per
-   *  toggle. */
-  onSave?: (ids: string[]) => void;
+  /** The whole set, applied on Save. A set is not a sequence of independent
+   *  clicks - AG-590 requires the final model not be removable without choosing
+   *  another - so it is confirmed once rather than written per toggle, and
+   *  Cancel is a real cancel. */
+  onSave: (ids: string[]) => void;
   onDismiss: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [vendor, setVendor] = useState("all");
-  /** Draft set, only used in `"multi"`. Seeded from the stored set so Cancel is
-   *  a real cancel. */
+  /** Seeded from the stored set so Cancel is a real cancel. */
   const [draft, setDraft] = useState<string[]>(selectedIds);
 
   const vendors = useMemo(
@@ -546,7 +536,7 @@ export function ModelPickerDialog({
     );
   }, [models, query, vendor]);
 
-  const chosen = mode === "multi" ? draft : selectedIds;
+  const chosen = draft;
   /** AG-590: the last model cannot be removed without choosing another. The
    *  remedy the ticket names is "or return to Tool default", which is the pane's
    *  radio, not this dialog - so here the last one simply refuses to clear, and
@@ -557,22 +547,18 @@ export function ModelPickerDialog({
     <Modal
       icon="layers"
       title="Choose a Gate model"
-      subtitle={
-        mode === "multi"
-          ? `${appName} may use any model you enable here`
-          : `${appName} uses one Gate model`
-      }
+      subtitle={`${appName} may use any model you enable here`}
       closeButton
-      secondary={mode === "multi" ? { label: "Cancel", onClick: onDismiss } : undefined}
-      primary={
-        mode === "multi" && onSave
-          ? {
-              label: "Save models",
-              onClick: () => onSave(draft),
-              disabled: draft.length === 0,
-            }
-          : undefined
-      }
+      secondary={{ label: "Cancel", onClick: onDismiss }}
+      primary={{
+        label: "Save models",
+        onClick: () => onSave(draft),
+        // Gate cannot serve a model nobody enabled, so an empty set is not a
+        // saveable state. AG-590's "the final model cannot be removed" is
+        // enforced on the row itself; this is the backstop for a set that
+        // started empty.
+        disabled: draft.length === 0,
+      }}
       onDismiss={onDismiss}
     >
       {loading ? (
@@ -650,18 +636,18 @@ export function ModelPickerDialog({
             </ModalNote>
           ) : (
             <div
-              role={mode === "multi" ? "group" : "radiogroup"}
+              role="group"
               aria-label="Gate model"
               className="-mr-1 flex max-h-[26rem] flex-col gap-px overflow-y-auto pr-1"
             >
               {shown.map((model) => {
                 const selected = chosen.includes(model.id);
-                const locked = mode === "multi" && selected && wouldEmpty(model.id);
+                const locked = selected && wouldEmpty(model.id);
                 return (
                   <button
                     key={model.id}
                     type="button"
-                    role={mode === "multi" ? "checkbox" : "radio"}
+                    role="checkbox"
                     aria-checked={selected}
                     aria-disabled={locked || undefined}
                     title={
@@ -670,7 +656,6 @@ export function ModelPickerDialog({
                         : undefined
                     }
                     onClick={() => {
-                      if (mode === "single") return onSelect(model.id);
                       if (locked) return;
                       setDraft((d) =>
                         d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
@@ -702,10 +687,9 @@ export function ModelPickerDialog({
             </div>
           )}
 
-          {mode === "multi" && (
-            // AG-590 asks that the set be stated before confirmation, and that
-            // the cost consequence be stated with it.
-            <ModalNote>
+          {/* AG-590 asks that the set be stated before confirmation, and that
+           *  the cost consequence be stated with it. */}
+          <ModalNote>
               <p className="font-medium text-neutral-900">
                 {draft.length === 1
                   ? "1 model enabled"
@@ -715,8 +699,7 @@ export function ModelPickerDialog({
                 Eligible requests may use any of them and consume Gate credits. Gate never
                 uses a model you have not enabled.
               </p>
-            </ModalNote>
-          )}
+          </ModalNote>
         </>
       )}
     </Modal>

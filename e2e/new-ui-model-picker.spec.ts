@@ -67,7 +67,7 @@ test.describe("new UI model picker", () => {
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
 
     await expect(app.page.getByText("No models to choose from yet")).toBeVisible();
-    await expect(app.page.getByRole("dialog").getByRole("radio")).toHaveCount(0);
+    await expect(app.page.getByRole("dialog").getByRole("checkbox")).toHaveCount(0);
 
     // The X, not a Cancel button: single-select applies on click, so the Figma
     // gives the dialog no footer and the close control is the only exit.
@@ -84,7 +84,7 @@ test.describe("new UI model picker", () => {
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
 
     await expect(app.page.getByRole("heading", { name: "Choose a Gate model" })).toBeVisible();
-    await expect(app.page.getByRole("dialog").getByRole("radio")).toHaveCount(2);
+    await expect(app.page.getByRole("dialog").getByRole("checkbox")).toHaveCount(2);
   });
 
   test("picking a model then confirming hands routing to Gate", async ({ boot }) => {
@@ -92,7 +92,8 @@ test.describe("new UI model picker", () => {
     await openApp(app);
 
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
-    await app.page.getByRole("dialog").getByRole("radio", { name: catalogue[0].id }).click();
+    await app.page.getByRole("dialog").getByRole("checkbox", { name: catalogue[0].id }).click();
+    await app.page.getByRole("button", { name: "Save models" }).click();
 
     // The billing confirmation, because this organization has never accepted it.
     await expect(
@@ -117,7 +118,8 @@ test.describe("new UI model picker", () => {
     await openApp(app);
 
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
-    await app.page.getByRole("dialog").getByRole("radio", { name: catalogue[0].id }).click();
+    await app.page.getByRole("dialog").getByRole("checkbox", { name: catalogue[0].id }).click();
+    await app.page.getByRole("button", { name: "Save models" }).click();
     await app.page.getByRole("button", { name: "Keep App default" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -165,7 +167,10 @@ test.describe("new UI model picker", () => {
     await openApp(app);
 
     await app.page.getByRole("button", { name: "Change model" }).click();
-    await app.page.getByRole("dialog").getByRole("radio", { name: catalogue[1].id }).click();
+    const swap = app.page.getByRole("dialog");
+    await swap.getByRole("checkbox", { name: catalogue[1].id }).click();
+    await swap.getByRole("checkbox", { name: catalogue[0].id }).click();
+    await swap.getByRole("button", { name: "Save models" }).click();
 
     // No second confirmation: billing was accepted when the switch was made.
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -248,7 +253,7 @@ test.describe("new UI model picker search and set", () => {
 
     await dialog.getByRole("searchbox").fill("opus");
     await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
-    await expect(dialog.getByRole("radio")).toHaveCount(1);
+    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
   });
 
   test("says so when a search matches nothing, rather than showing an empty list", async ({
@@ -262,7 +267,7 @@ test.describe("new UI model picker search and set", () => {
     await dialog.getByRole("searchbox").fill("nothing-matches-this");
 
     await expect(dialog.getByText("No model matches that search.")).toBeVisible();
-    await expect(dialog.getByRole("radio")).toHaveCount(0);
+    await expect(dialog.getByRole("checkbox")).toHaveCount(0);
   });
 
   test("the provider filter narrows to one vendor", async ({ boot }) => {
@@ -276,7 +281,7 @@ test.describe("new UI model picker search and set", () => {
     await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
   });
 
-  test("Edit set enables several models at once and states the count", async ({ boot }) => {
+  test("Change model enables several models at once and states the count", async ({ boot }) => {
     const app = await boot({
       ...base,
       toolModels: {
@@ -287,7 +292,7 @@ test.describe("new UI model picker search and set", () => {
     });
     await openApp(app);
 
-    await app.page.getByRole("button", { name: "Edit set" }).click();
+    await app.page.getByRole("button", { name: "Change model" }).click();
     const dialog = app.page.getByRole("dialog");
     await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
 
@@ -295,8 +300,10 @@ test.describe("new UI model picker search and set", () => {
     await dialog.getByRole("button", { name: "Save models" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
-    // The card keeps one row and says how many more, so the pane does not grow.
-    await expect(app.page.getByText(/\+ 1 more enabled/)).toBeVisible();
+    // The card keeps the single row Figma 228:89517 draws; only the heading
+    // turns plural, which is the minimum that stops it naming one model when
+    // two are enabled.
+    await expect(app.page.getByText("Current Gate models")).toBeVisible();
   });
 
   test("refuses to remove the last enabled model", async ({ boot }) => {
@@ -313,7 +320,7 @@ test.describe("new UI model picker search and set", () => {
     });
     await openApp(app);
 
-    await app.page.getByRole("button", { name: "Edit set" }).click();
+    await app.page.getByRole("button", { name: "Change model" }).click();
     const dialog = app.page.getByRole("dialog");
     const only = dialog.getByRole("checkbox", { name: catalogue[0].id });
 

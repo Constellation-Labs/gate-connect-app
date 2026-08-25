@@ -288,7 +288,7 @@ export function NewUiApp() {
    * asked for.
    */
   const [modelOverlay, setModelOverlay] = useState<
-    | { kind: "picker"; then: "activate" | "remember"; mode: "single" | "multi" }
+    | { kind: "picker"; then: "activate" | "remember" }
     | { kind: "confirm-gate"; modelIds: string[] }
     | null
   >(null);
@@ -1550,23 +1550,10 @@ export function NewUiApp() {
             // shipping those as though they were real would put a fabricated
             // catalogue in front of the user.
             appName={appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "This app"}
-            // Multi-select once more than one model is already enabled, or when
-            // the user asked to edit the set. Single otherwise, which is the
-            // state the Figma draws and the common case.
-            mode={modelOverlay.mode}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
             failure={gateModels.failure?.message ?? null}
             selectedIds={openModelIds}
-            onSelect={(id) => {
-              const then = modelOverlay.then;
-              setModelOverlay(null);
-              // "Remember" keeps the current source, which is App default here:
-              // the user browsed and picked, and nothing starts being billed for
-              // it. "Activate" continues into the billing confirmation.
-              if (then === "activate") activateGateModel([id]);
-              else void saveModel("tool", [id]);
-            }}
             onSave={(ids) => {
               const then = modelOverlay.then;
               setModelOverlay(null);
@@ -1764,7 +1751,7 @@ export function NewUiApp() {
               if (openModelIds.length > 0) activateGateModel(openModelIds);
               // Nothing to switch *to* yet, so the picker comes first: Gate
               // cannot serve a model nobody enabled.
-              else setModelOverlay({ kind: "picker", then: "activate", mode: "single" });
+              else setModelOverlay({ kind: "picker", then: "activate" });
             } else {
               void saveModel("tool", openModelId ? [openModelId] : []);
             }
@@ -1790,17 +1777,6 @@ export function NewUiApp() {
               // billing was accepted when the switch was made. On App default it
               // is a browse, and picking must not start spending.
               then: openModelChoice === "gate" ? "activate" : "remember",
-              mode: "single",
-            })
-          }
-          // AG-590's entry point: edit the whole enabled set rather than swap
-          // the one model. Separate control because they are different
-          // questions - "use this instead" and "also allow these".
-          onEditModelSet={() =>
-            setModelOverlay({
-              kind: "picker",
-              then: openModelChoice === "gate" ? "activate" : "remember",
-              mode: "multi",
             })
           }
           // No endpoint reports a Gate credit balance - the gateway has a PAYG
