@@ -398,3 +398,64 @@ test.describe("new UI model card credits", () => {
     await expect(app.page.getByText("$42.00 available")).toHaveCount(0);
   });
 });
+
+/**
+ * The confirmation dialog (Figma 130:48278), and what it does with a set.
+ *
+ * This is where someone agrees to be billed, so what it lists is the whole
+ * commitment - not the first model with the rest summarised somewhere else.
+ */
+test.describe("new UI Gate model confirmation", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("names the single model with its vendor, as the frame draws it", async ({ boot }) => {
+    const app = await boot({ ...base, toolModels: { catalogue } });
+    await openApp(app);
+
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: catalogue[0].id }).click();
+    await dialog.getByRole("button", { name: "Save models" }).click();
+
+    const confirm = app.page.getByRole("dialog");
+    await expect(confirm.getByText("anthropic", { exact: true })).toBeVisible();
+    await expect(confirm.getByText(catalogue[0].id)).toBeVisible();
+    // Exact: the subtitle also says "PAYG", and this is asserting the pill.
+    await expect(confirm.getByText("PAYG", { exact: true })).toBeVisible();
+  });
+
+  test("lists every model when several are enabled", async ({ boot }) => {
+    // The charge covers all of them, so all of them are stated before it is
+    // accepted - AG-590. An "and 2 others" would not be stating them.
+    const app = await boot({ ...base, toolModels: { catalogue } });
+    await openApp(app);
+
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: catalogue[0].id }).click();
+    await dialog.getByRole("checkbox", { name: catalogue[1].id }).click();
+    await dialog.getByRole("button", { name: "Save models" }).click();
+
+    const confirm = app.page.getByRole("dialog");
+    await expect(confirm.getByText(catalogue[0].id)).toBeVisible();
+    await expect(confirm.getByText(catalogue[1].id)).toBeVisible();
+    // The set replaced the old split presentation entirely.
+    await expect(confirm.getByText(/Also enabled/)).toHaveCount(0);
+  });
+
+  test("says the tool's own preference is untouched", async ({ boot }) => {
+    const app = await boot({ ...base, toolModels: { catalogue } });
+    await openApp(app);
+
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: catalogue[0].id }).click();
+    await dialog.getByRole("button", { name: "Save models" }).click();
+
+    await expect(
+      app.page.getByText(/own model preference is not changed/),
+    ).toBeVisible();
+  });
+});

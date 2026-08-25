@@ -1569,11 +1569,12 @@ export function NewUiApp() {
         ) : modelOverlay?.kind === "confirm-gate" ? (
           <UseGateModelDialog
             app={{ name: appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "this app" }}
+            // Only meaningful when there is one model to attribute; the dialog
+            // drops it for a set.
             vendor={modelOverlay.modelIds[0].split("/")[0]}
-            modelId={modelOverlay.modelIds[0]}
-            // Names the rest rather than hiding them: AG-590 requires the set be
-            // listed before the charge is accepted.
-            alsoEnabled={modelOverlay.modelIds.slice(1)}
+            // The whole set, so the dialog can list what the charge covers.
+            // AG-590 requires the enabled models be stated before it is accepted.
+            modelIds={modelOverlay.modelIds}
             // The real balance now. This dialog is where someone agrees to spend
             // it, so showing what there is to spend belongs here more than
             // anywhere.

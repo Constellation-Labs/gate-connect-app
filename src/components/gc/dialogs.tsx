@@ -709,8 +709,7 @@ export function ModelPickerDialog({
 export function UseGateModelDialog({
   app,
   vendor,
-  modelId,
-  alsoEnabled = [],
+  modelIds,
   /** Pre-formatted balance, e.g. "$10.25 available". */
   credits,
   vendorLogo,
@@ -718,75 +717,81 @@ export function UseGateModelDialog({
   onUseGateCredits,
 }: {
   app: DialogApp;
+  /** Who makes the model, shown only when there is one to attribute (Figma
+   *  130:48278 draws "Anthropic" above the id). */
   vendor: string;
-  modelId: string;
-  /** The rest of the enabled set, beyond the one named above (AG-590).
+  /**
+   * Every model this switch enables, in the user's order (AG-590).
    *
-   *  Listed rather than counted: the ticket requires the flow to state which
-   *  models may be used before the charge is accepted, and "and 4 others" is not
-   *  that. Empty for a single-model switch, which is the common case and draws
-   *  exactly as the Figma does. */
-  alsoEnabled?: string[];
+   * One entry draws the frame exactly: vendor mark, vendor, id, PAYG pill.
+   * Several stack the ids in the same row with the mark dropped - a column of
+   * marks would imply each id belongs to the one beside it, which is only true
+   * by accident, and the row is where the reader is already looking for what
+   * they are about to pay for. It replaces an "Also enabled" note that put half
+   * the set in one place and half in another.
+   */
+  modelIds: string[];
   credits: string;
   vendorLogo?: ReactNode;
   onKeepAppDefault: () => void;
   onUseGateCredits: () => void;
 }) {
+  const single = modelIds.length === 1;
   return (
     <Modal
       icon="layers"
       title={`Use a Gate model for ${app.name}?`}
       subtitle="Your next requests will use Constellation Gate PAYG credits"
-      subtitleTone="primary"
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}
     >
-      <ModalSubject
-        icon={vendorLogo ?? <Icon name="cube" size={16} />}
-        title={vendor}
-        description={modelId}
-        variant="identity"
-        pill={{ label: "PAYG", tone: "neutral" }}
-      />
-
-      {alsoEnabled.length > 0 && (
-        <ModalNote>
-          <p className="font-medium text-neutral-900">
-            {alsoEnabled.length === 1 ? "Also enabled" : `Also enabled (${alsoEnabled.length})`}
-          </p>
-          <ul className="mt-1 flex flex-col gap-0.5">
-            {alsoEnabled.map((id) => (
-              <li key={id} className="font-mono text-base-xs leading-4">
+      {single ? (
+        <ModalSubject
+          icon={vendorLogo ?? <Icon name="cube" size={16} />}
+          title={vendor}
+          description={modelIds[0]}
+          variant="identity"
+          pill={{ label: "PAYG", tone: "neutral" }}
+        />
+      ) : (
+        // The same row, holding a set. No mark: one glyph cannot stand for
+        // several vendors, and repeating it per line would say each id is that
+        // vendor's when the set is usually mixed.
+        <div className="flex items-start gap-3 rounded-lg border border-base-border p-3">
+          <ul className="min-w-0 flex-1 flex flex-col gap-1">
+            {modelIds.map((id) => (
+              <li key={id} className="truncate font-mono text-sm leading-5 text-neutral-900">
                 {id}
               </li>
             ))}
           </ul>
-          <p className="mt-2">
-            Eligible requests may use any of these and consume Gate credits. Gate never uses
-            a model you have not enabled.
-          </p>
-        </ModalNote>
+          <span className="shrink-0 rounded-base border border-base-border px-2 py-1 font-mono text-base-2xs leading-4 text-neutral-700">
+            PAYG
+          </span>
+        </div>
       )}
 
-      {/* Label left, balance right - the one row in the dialogs that reads
-       * across rather than stacking, so it is not a `ModalSubject`. */}
-      <div className="flex items-center gap-3 rounded-lg border border-base-border p-3">
-        <span
-          aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
-        >
-          <Icon name="creditCard" size={16} />
-        </span>
-        <p className="flex-1 text-sm leading-5 text-neutral-600">Gate credits:</p>
-        <p className="shrink-0 text-sm font-medium leading-5 text-neutral-900">
-          {credits}
+      {/* Credits and the reassurance are one block, as the frame draws them
+       * (130:48302): the balance is the thing being spent and the sentence is
+       * what limits the commitment, so they belong to each other rather than
+       * reading as two unrelated notes. */}
+      <div className="rounded-lg bg-gray-50 p-3">
+        <div className="flex items-center gap-3">
+          <span
+            aria-hidden
+            className="flex size-9 shrink-0 items-center justify-center rounded-base border border-base-border bg-base-card text-neutral-700"
+          >
+            <Icon name="creditCard" size={20} />
+          </span>
+          <p className="flex-1 text-sm leading-5 text-neutral-600">Gate credits:</p>
+          <p className="shrink-0 text-sm leading-5 text-neutral-900">{credits}</p>
+        </div>
+        <p className="mt-3 text-sm leading-5 text-neutral-600">
+          {app.name}&apos;s own model preference is not changed. You can return to App
+          default at any time.
         </p>
       </div>
-      <ModalNote>
-        {app.name}'s own model preference is not changed. You can return to App default at
-        any time.
-      </ModalNote>
     </Modal>
   );
 }
