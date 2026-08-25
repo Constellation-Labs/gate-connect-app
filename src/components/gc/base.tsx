@@ -172,13 +172,17 @@ export function Skeleton({
 export function EmptyNote({
   children,
   icon = "messageCircleX",
+  className = "",
 }: {
   children: ReactNode;
   /** The glyph above the sentence. Defaults to the design's own. */
   icon?: IconName;
+  /** Spacing from whatever sits above it. The note owns its own padding; this is
+   *  for the caller's layout, not its internals. */
+  className?: string;
 }) {
   return (
-    <div className="flex flex-col items-center gap-3 py-6">
+    <div className={`flex flex-col items-center gap-3 py-6 ${className}`}>
       <span
         aria-hidden
         className="flex size-9 items-center justify-center rounded-base border border-base-border text-base-muted-foreground"

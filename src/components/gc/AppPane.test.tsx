@@ -49,9 +49,9 @@ function pane(props: Partial<Parameters<typeof AppPane>[0]> = {}) {
       buckets={[]}
       modelChoice="app"
       onChooseModel={() => {}}
-      gateModel={{ vendor: "-", id: "-" }}
+      gateModel={null}
       onChangeModel={() => {}}
-      credits="-"
+      credits={null}
       onAddCredits={() => {}}
       activity={[]}
       {...props}
@@ -182,5 +182,86 @@ describe("AppPane counters and chart", () => {
     expect(within(card("Messages")).getByText("Messages couldn't be read")).toBeTruthy();
     // The feed is a separate read and still reports its own empty state.
     expect(within(card("Recent activity")).getByText("No recent messages")).toBeTruthy();
+  });
+});
+
+/**
+ * The model card, whose whole job is to not overstate what it knows.
+ *
+ * Three separate states get confused if the card is careless, and each is a
+ * different sentence to the user: "we have not read this yet", "this app cannot
+ * have one", and "a model is chosen but not in use". Collapsing any pair of them
+ * produces a control that lies about what it does.
+ */
+describe("AppPane model selection", () => {
+  const model = { vendor: "anthropic", id: "anthropic/claude-opus-5" };
+
+  it("selects neither option when no reading landed", () => {
+    // Principle 2, in its purest form: an org that HAD switched to a Gate model
+    // would see App default selected the instant a read failed, and clicking
+    // Gate model would look like a change when it was a no-op.
+    render(pane({ modelChoice: null }));
+    const card_ = card("Model selection");
+
+    for (const radio of within(card_).getAllByRole("radio")) {
+      expect(radio.getAttribute("aria-checked")).toBe("false");
+      expect((radio as HTMLButtonElement).disabled).toBe(true);
+    }
+    expect(within(card_).getByText(/could not read this app's model setting/i)).toBeTruthy();
+  });
+
+  it("draws skeletons rather than a default while the reading is in flight", () => {
+    // `modelPending`, not the pane's `pending`: the latter tracks the activity
+    // reading, and an unattributed machine has nothing to say about a setting.
+    // Sharing one flag made this card draw skeletons forever on such a machine.
+    render(pane({ modelChoice: null, modelPending: true }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).queryByRole("radio")).toBeNull();
+    expect(card_.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
+  });
+
+  it("marks a remembered model as not in use under App default", () => {
+    render(pane({ modelChoice: "app", gateModel: model }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).getByText(model.id)).toBeTruthy();
+    expect(within(card_).getByText(/not in use/i)).toBeTruthy();
+  });
+
+  it("drops the qualifier once Gate is actually serving it", () => {
+    render(pane({ modelChoice: "gate", gateModel: model }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).getByText(model.id)).toBeTruthy();
+    expect(within(card_).queryByText(/not in use/i)).toBeNull();
+  });
+
+  it("says no model is chosen rather than drawing an empty row", () => {
+    render(pane({ modelChoice: "app", gateModel: null }));
+    expect(within(card("Model selection")).getByText(/No Gate model chosen yet/i)).toBeTruthy();
+  });
+
+  it("refuses a second click while a write is in flight", () => {
+    render(pane({ modelChoice: "app", gateModel: model, modelBusy: true }));
+    const card_ = card("Model selection");
+
+    for (const radio of within(card_).getAllByRole("radio")) expect((radio as HTMLButtonElement).disabled).toBe(true);
+    expect((within(card_).getByRole("button", { name: "Change model" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("reads N/A for a credit balance nothing reports", () => {
+    // Not a dash: a dash reads as a value. No endpoint returns a Gate balance.
+    render(pane({ credits: null }));
+    expect(within(card("Model selection")).getByText("N/A")).toBeTruthy();
+  });
+
+  it("chooses through the callback rather than deciding locally", async () => {
+    const onChooseModel = vi.fn();
+    render(pane({ modelChoice: "app", gateModel: model, onChooseModel }));
+    const card_ = card("Model selection");
+
+    within(card_).getByRole("radio", { name: /Gate model/ }).click();
+    expect(onChooseModel).toHaveBeenCalledWith("gate");
   });
 });

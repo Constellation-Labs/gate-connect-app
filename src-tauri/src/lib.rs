@@ -644,6 +644,118 @@ async fn activity_installations() -> Result<String, String> {
         .map_err(envelope)
 }
 
+/// This install's per-tool model choices (AG-588).
+///
+/// A local file read, not a network call: the choice lives in
+/// `preferences.json` beside the other user choices. It was briefly a gateway
+/// endpoint scoped to the organization; keeping it local means the machine whose
+/// traffic it governs is the machine that holds it, and one developer's click no
+/// longer changes what a colleague's requests are answered with.
+///
+/// Returns the whole map plus the acknowledgement stamp, so the pane can decide
+/// whether the next switch to a Gate model needs its confirmation before any
+/// choice exists.
+#[tauri::command]
+async fn tool_model_preferences() -> Result<ToolModelsDto, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let prefs = gate_connect_core::preferences::load();
+        ToolModelsDto {
+            tools: prefs
+                .tool_models
+                .into_iter()
+                .map(|(slug, choice)| (slug, ToolModelChoiceDto::from(choice)))
+                .collect(),
+            paid_ack_unix: prefs.gate_model_paid_ack_unix,
+        }
+    })
+    .await
+    .map_err(|e| format!("tool model preferences join error: {e}"))
+}
+
+#[derive(Serialize)]
+struct ToolModelsDto {
+    /// Keyed by tool slug. A tool with no entry is on its own default, which is
+    /// why an absent key is not the same as an error and needs no placeholder.
+    tools: std::collections::BTreeMap<String, ToolModelChoiceDto>,
+    /// Unix seconds, or null when this install has never accepted paid use.
+    paid_ack_unix: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct ToolModelChoiceDto {
+    /// `"tool"` or `"gate"`. Only this decides what would be served.
+    source: String,
+    /// Chosen models, which may be non-empty while `source` is `"tool"` - that is
+    /// a remembered choice, not an active one.
+    model_ids: Vec<String>,
+}
+
+impl From<gate_connect_core::preferences::ToolModelChoice> for ToolModelChoiceDto {
+    fn from(c: gate_connect_core::preferences::ToolModelChoice) -> Self {
+        use gate_connect_core::preferences::ModelSource;
+        Self {
+            source: match c.source {
+                ModelSource::Tool => "tool".into(),
+                ModelSource::Gate => "gate".into(),
+            },
+            model_ids: c.model_ids,
+        }
+    }
+}
+
+/// Choose the model one tool runs on.
+///
+/// `source` is `"tool"` (the tool picks) or `"gate"` (Gate serves `model_ids`).
+/// An unrecognised value is an error rather than a default, for the reason
+/// [`parse_tool`] gives: a silent fall back would store the opposite of what the
+/// user clicked.
+///
+/// `acknowledge_paid_use` records that the person accepted billing, and is
+/// honoured only when moving to `"gate"` - remembering a model under the tool's
+/// own default spends nothing and must not record consent to spend.
+#[tauri::command]
+async fn set_tool_model(
+    tool: String,
+    source: String,
+    model_ids: Vec<String>,
+    acknowledge_paid_use: bool,
+) -> Result<(), String> {
+    // Parsed, not trusted: the slug has to be one this app actually configures,
+    // or the pane would store a choice under a key nothing reads.
+    let Some(tool) = parse_tool(Some(tool))? else {
+        return Err("a tool slug is required to set a model preference".into());
+    };
+    let source = match source.as_str() {
+        "tool" => gate_connect_core::preferences::ModelSource::Tool,
+        "gate" => gate_connect_core::preferences::ModelSource::Gate,
+        other => return Err(format!("unknown model source {other:?}")),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::preferences::set_tool_model(
+            tool.slug(),
+            source,
+            model_ids,
+            acknowledge_paid_use,
+        )
+        .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("set tool model join error: {e}"))?
+}
+
+/// The models this gateway offers, for the picker.
+///
+/// An empty catalogue is a successful answer, not a failure: it is built from
+/// platform provider accounts, and a deployment with none has nothing to offer.
+/// The picker says so in words rather than drawing an empty list.
+#[tauri::command]
+async fn gate_model_catalogue() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::gate_models::catalogue_json)
+        .await
+        .map_err(|e| format!("gate model catalogue join error: {e}"))?
+        .map_err(envelope)
+}
+
 /// Serialize an activity failure for the IPC boundary.
 fn envelope(f: gate_connect_core::activity::Failure) -> String {
     serde_json::to_string(&f).unwrap_or_else(|_| {
@@ -1935,6 +2047,9 @@ pub fn run() {
                     activity_installations,
                     activity_cached_overview,
                     activity_tool_events,
+                    tool_model_preferences,
+                    set_tool_model,
+                    gate_model_catalogue,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -2001,6 +2116,9 @@ pub fn run() {
                     activity_installations,
                     activity_cached_overview,
                     activity_tool_events,
+                    tool_model_preferences,
+                    set_tool_model,
+                    gate_model_catalogue,
                     set_org,
                     app_platform,
                     diagnostics,

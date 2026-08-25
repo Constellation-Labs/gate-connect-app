@@ -49,6 +49,7 @@ export function Modal({
   secondary,
   middle,
   primary,
+  closeButton,
   onDismiss,
   initialFocus,
 }: {
@@ -69,6 +70,13 @@ export function Modal({
    * safe → middle → primary left to right. */
   middle?: ModalButton;
   primary?: ModalButton;
+  /** Draw a close X in the top-right corner (Figma 139:66759).
+   *
+   *  Opt-in because most dialogs here end in a button row, and a second way out
+   *  would be a second thing to explain. The model picker has no footer - a
+   *  selection applies on click - so without this its only exits would be Escape
+   *  and a scrim click, neither of which is visible. */
+  closeButton?: boolean;
   /** Escape and scrim clicks. Omit to make the dialog unskippable. */
   onDismiss?: () => void;
   /** Where focus opens. The form dialogs point this at the field being edited;
@@ -99,6 +107,16 @@ export function Modal({
         aria-labelledby={titleId}
         className="w-[600px] max-w-full rounded-xl bg-base-card p-6 shadow-base-lg"
       >
+        {closeButton && onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Close"
+            className="float-right -mr-1 -mt-1 flex size-6 items-center justify-center rounded-base text-base-muted-foreground transition-colors hover:bg-gray-50 hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            <Icon name="x" size={24} />
+          </button>
+        )}
         <div className="flex items-start gap-4">
           <span
             aria-hidden
