@@ -324,8 +324,11 @@ jobs:
   verify:
     needs: [release, manifest]
     runs-on: ubuntu-latest
+    # contents: write, not read: a draft release is invisible to GITHUB_TOKEN
+    # without push access, so the release list comes back with the draft
+    # filtered out and the tag looks like it has no release at all.
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Verify draft release assets
