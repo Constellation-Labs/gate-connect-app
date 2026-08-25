@@ -49,8 +49,14 @@ export interface GateModel {
  * `allow` is grey, not green, which is the change worth noticing: green reads as
  * "good", and the useful signal in this column is when something was *acted on*.
  * A wall of green ticks is what makes the one amber row easy to miss. It is the
- * one entry that is not a verdict, so it takes `base/muted-foreground` over
- * `gray/100` rather than a coloured pair.
+ * one entry that is not a verdict, so it takes a neutral over `gray/100` rather
+ * than a coloured pair.
+ *
+ * That neutral is `gray/600`, not the design's `base/muted-foreground`. The
+ * sampled pair is 4.39:1 on `gray/100` and this text is 12px medium, so it misses
+ * AA by a hair - on the badge that will sit in almost every row. `gray/600` is
+ * 6.87:1 and reads as the same grey. The same call the `gc` switch track made
+ * when 2.98:1 turned up on a hovered row.
  *
  * The 100 stop with 700 text, deliberately quieter than `Overview`'s 200/900
  * action pills: those name a policy, these report what happened to one request,
@@ -60,7 +66,7 @@ export interface GateModel {
  * slip, and this was the app's last use of it.
  */
 const BADGE_STYLES: Record<ActivitySecurity | ActivityStatus, string> = {
-  allow: "bg-gray-100 text-base-muted-foreground",
+  allow: "bg-gray-100 text-gray-600",
   flagged: "bg-amber-100 text-amber-700",
   redacted: "bg-violet-100 text-violet-800",
   blocked: "bg-red-100 text-red-700",
@@ -68,7 +74,7 @@ const BADGE_STYLES: Record<ActivitySecurity | ActivityStatus, string> = {
   // Never rendered: a successful request shows its security action instead. Here
   // so the map stays exhaustive over both unions and a new status cannot be added
   // without deciding what it looks like. Matches `allow`, the other non-verdict.
-  success: "bg-gray-100 text-base-muted-foreground",
+  success: "bg-gray-100 text-gray-600",
 };
 
 export function AppPane({
@@ -243,17 +249,26 @@ export function AppPane({
  * Renders nothing when the provider is unknown, rather than a question mark: the
  * model name beside it already carries the row, and an empty slot keeps the column
  * aligned.
+ *
+ * The glyph is decorative, so it is `aria-hidden` and the name is carried by an
+ * `sr-only` sibling rather than by `title` alone. A `title` on an `aria-hidden`
+ * element is reachable by mouse and by nothing else, which for a one-letter
+ * monogram means the provider is the one thing on the row a screen reader could
+ * not get at. The tooltip stays for pointer users.
  */
 function VendorMark({ provider }: { provider: string | null }) {
   if (!provider) return <span aria-hidden className="size-4 shrink-0" />;
   return (
-    <span
-      aria-hidden
-      title={provider}
-      className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-neutral-200 font-mono text-[0.5rem] font-semibold uppercase leading-none text-neutral-700"
-    >
-      {provider.charAt(0)}
-    </span>
+    <>
+      <span
+        aria-hidden
+        title={provider}
+        className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-neutral-200 font-mono text-[0.5rem] font-semibold uppercase leading-none text-neutral-700"
+      >
+        {provider.charAt(0)}
+      </span>
+      <span className="sr-only">{provider}</span>
+    </>
   );
 }
 
@@ -546,7 +561,7 @@ function RecentActivity({
             <th scope="col" className="pb-2 text-left font-normal">
               Security
             </th>
-            <th scope="col" className="pb-2 text-left font-normal">
+            <th scope="col" className="w-1/4 pb-2 text-left font-normal">
               Model
             </th>
             <th scope="col" className="pb-2 text-left font-normal">
@@ -568,19 +583,26 @@ function RecentActivity({
                     call and the defensible one: a request that did not complete
                     is the thing the reader needs first. It does cost information -
                     a failed request that was also flagged now shows only ERROR -
-                    so the row keeps both facts in its tooltip rather than losing
-                    the quieter one entirely. */}
+                    so the row keeps the quieter fact rather than dropping it.
+                    In the tooltip for pointer users, and in `sr-only` text beside
+                    the badge for everyone else: a `title` is the whole mitigation
+                    here, and a mitigation only a mouse can reach is not one. */}
                 {entry.status === "error" ? (
-                  <Pill
-                    className={BADGE_STYLES.error}
-                    title={
-                      entry.security
-                        ? `Request failed. Guardrails: ${entry.security}.`
-                        : "Request failed."
-                    }
-                  >
-                    error
-                  </Pill>
+                  <>
+                    <Pill
+                      className={BADGE_STYLES.error}
+                      title={
+                        entry.security
+                          ? `Request failed. Guardrails: ${entry.security}.`
+                          : "Request failed."
+                      }
+                    >
+                      error
+                    </Pill>
+                    {entry.security && (
+                      <span className="sr-only">Guardrails: {entry.security}.</span>
+                    )}
+                  </>
                 ) : entry.security ? (
                   <Pill className={BADGE_STYLES[entry.security]}>{entry.security}</Pill>
                 ) : (
@@ -593,10 +615,20 @@ function RecentActivity({
                   </span>
                 )}
               </td>
-              <td className="whitespace-nowrap py-3 pr-4">
+              <td className="py-3 pr-4">
+                {/* Truncated, not `nowrap`. A model id is unbounded - the
+                    canonical ones run to `anthropic/claude-opus-4-5-20260514` -
+                    and an un-truncated cell makes that string the table's minimum
+                    width. Time and Action are already fixed and Message is
+                    collapsed to `max-w-0`, so Model was the only column left that
+                    could push the floor past the card; at the window's 760px
+                    minimum the table would overflow and scroll the whole pane
+                    body sideways, chart and header with it. The width cap lives on
+                    the `th` as a share of the table rather than a pixel count, so
+                    it holds at both window sizes. */}
                 <span className="flex items-center gap-2">
                   <VendorMark provider={entry.provider} />
-                  <span className="text-sm leading-5 text-neutral-900">{entry.model}</span>
+                  <span className="truncate text-sm leading-5 text-neutral-900">{entry.model}</span>
                 </span>
               </td>
               <td className="min-w-0 max-w-0 py-3 pr-4">

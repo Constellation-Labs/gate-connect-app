@@ -95,11 +95,22 @@ describe("AppPane recent activity", () => {
     const feed = card("Recent activity");
 
     // Status and security share a column now, so the row cannot show both. The
-    // failure wins, and the verdict it displaced stays reachable on hover rather
-    // than being dropped.
+    // failure wins, and the verdict it displaced stays reachable rather than being
+    // dropped - on hover for pointer users, and as `sr-only` text for everyone
+    // else, since a tooltip alone would leave keyboard and screen reader users
+    // with no route to it at all.
     expect(within(feed).getByText("error")).toBeTruthy();
     expect(within(feed).queryByText("flagged")).toBeNull();
     expect(within(feed).getByTitle("Request failed. Guardrails: flagged.")).toBeTruthy();
+    expect(within(feed).getByText("Guardrails: flagged.")).toBeTruthy();
+  });
+
+  it("adds no displaced verdict when a failed row had none", () => {
+    render(pane({ activity: [{ ...entry, status: "error", security: null }] }));
+    const feed = card("Recent activity");
+
+    expect(within(feed).getByTitle("Request failed.")).toBeTruthy();
+    expect(within(feed).queryByText(/Guardrails:/)).toBeNull();
   });
 
   it("shows the guardrail verdict when the request succeeded", () => {
@@ -169,6 +180,9 @@ describe("AppPane recent activity", () => {
     expect(within(feed).getByText("824bd2c0-4123")).toBeTruthy();
     expect(within(feed).getByText("claude-opus-4")).toBeTruthy();
     expect(within(feed).getByTitle("anthropic")).toBeTruthy();
+    // The monogram is decorative, so the provider has to be named in text too -
+    // otherwise the one-letter glyph is all a screen reader gets.
+    expect(within(feed).getByText("anthropic")).toBeTruthy();
     expect(within(feed).getByRole("columnheader", { name: "Message" })).toBeTruthy();
   });
 
