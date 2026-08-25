@@ -38,30 +38,37 @@ export interface GateModel {
 }
 
 /**
- * One badge per row, under a single Security column (Figma 272:3266).
+ * One badge per row, under a single Security column (`table/recent-activity`,
+ * 272:3150, sampled from the properties panel 2026-08-21).
  *
  * Status and security used to be two columns; the design merged them, so a row
  * that failed reads ERROR and every other row reads what the guardrails did.
  * `error` is in this map rather than a second one because they now compete for one
  * cell and the precedence has to live somewhere the reader can see it.
  *
- * `allow` is neutral grey, not green, which is the change worth noticing: green
- * reads as "good", and the useful signal in this column is when something was
- * *acted on*. A wall of green ticks is what makes the one amber row easy to miss.
+ * `allow` is grey, not green, which is the change worth noticing: green reads as
+ * "good", and the useful signal in this column is when something was *acted on*.
+ * A wall of green ticks is what makes the one amber row easy to miss. It is the
+ * one entry that is not a verdict, so it takes `base/muted-foreground` over
+ * `gray/100` rather than a coloured pair.
  *
- * Text sits at the palette's 900 level; the 100 backgrounds are inferred from that
- * pairing rather than sampled.
+ * The 100 stop with 700 text, deliberately quieter than `Overview`'s 200/900
+ * action pills: those name a policy, these report what happened to one request,
+ * and a table of them should not shout. REDACTED's text sits at the 800 - the
+ * design's own exception, not a rounding of ours - and ERROR and BLOCKED sample
+ * identically. Redacted is violet, matching `chart.redacted`; purple here was a
+ * slip, and this was the app's last use of it.
  */
 const BADGE_STYLES: Record<ActivitySecurity | ActivityStatus, string> = {
-  allow: "bg-neutral-100 text-neutral-600",
-  flagged: "bg-amber-100 text-amber-900",
-  redacted: "bg-purple-100 text-purple-900",
-  blocked: "bg-red-100 text-red-900",
-  error: "bg-red-100 text-red-900",
+  allow: "bg-gray-100 text-base-muted-foreground",
+  flagged: "bg-amber-100 text-amber-700",
+  redacted: "bg-violet-100 text-violet-800",
+  blocked: "bg-red-100 text-red-700",
+  error: "bg-red-100 text-red-700",
   // Never rendered: a successful request shows its security action instead. Here
   // so the map stays exhaustive over both unions and a new status cannot be added
-  // without deciding what it looks like.
-  success: "bg-neutral-100 text-neutral-600",
+  // without deciding what it looks like. Matches `allow`, the other non-verdict.
+  success: "bg-gray-100 text-base-muted-foreground",
 };
 
 export function AppPane({
