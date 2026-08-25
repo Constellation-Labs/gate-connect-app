@@ -98,10 +98,6 @@ impl Integration for ClaudeCode {
         DEFAULT_UPSTREAM_URL
     }
 
-    fn requires_upstream_credential(&self) -> bool {
-        false
-    }
-
     fn detect(&self) -> Result<bool> {
         if CLAUDE_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);
@@ -330,41 +326,14 @@ fn settings_path() -> Result<PathBuf> {
 }
 
 fn load_settings() -> Result<Option<Map<String, Value>>> {
-    let path = settings_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-    let value: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing {} as JSON", path.display()))?;
-    match value {
-        Value::Object(m) => Ok(Some(m)),
-        _ => anyhow::bail!("{} top level must be a JSON object", path.display()),
-    }
+    super::json_config::load_object(&settings_path()?)
 }
 
 fn write_settings(settings: &Map<String, Value>) -> Result<()> {
-    let path = settings_path()?;
-    let mut body = serde_json::to_string_pretty(settings).context("serializing settings.json")?;
-    body.push('\n');
-    // 0o600: settings.json may carry the Gate API key via apiKeyHelper
-    // env vars / headers. Atomic-write protects against partial writes.
-    crate::primitives::write_file(&path, body.as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))
+    super::json_config::write_object(&settings_path()?, settings)
 }
 
-fn ensure_object<'a>(parent: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {
-    if !matches!(parent.get(key), Some(Value::Object(_))) {
-        parent.insert(key.into(), Value::Object(Map::new()));
-    }
-    parent
-        .get_mut(key)
-        .and_then(|v| v.as_object_mut())
-        .expect("just inserted an object")
-}
+use super::json_config::ensure_object;
 
 /// Guard against silently destroying a hand-edited, malformed `env`.
 /// `ensure_object` would replace a non-object `env` with an empty object,

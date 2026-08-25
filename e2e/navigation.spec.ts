@@ -53,7 +53,6 @@ test.describe("navigation", () => {
           name: "Claude Code",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://api.anthropic.com",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
         {
@@ -61,7 +60,6 @@ test.describe("navigation", () => {
           name: "Codex",
           upstream_provider_name: "OpenAI",
           default_upstream_url: "https://api.openai.com/v1",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
         {
@@ -69,7 +67,6 @@ test.describe("navigation", () => {
           name: "OpenCode",
           upstream_provider_name: "your existing providers",
           default_upstream_url: "https://api.anthropic.com",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
       ],

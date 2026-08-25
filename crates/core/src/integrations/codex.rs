@@ -219,10 +219,6 @@ impl Integration for Codex {
         DEFAULT_UPSTREAM_URL
     }
 
-    fn requires_upstream_credential(&self) -> bool {
-        false
-    }
-
     fn detect(&self) -> Result<bool> {
         if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);
@@ -315,6 +311,20 @@ impl Integration for Codex {
         // or credential is written alongside it. An `http_headers` table left by
         // an older build is not drift - the next connect rewrites the block
         // wholesale, and disconnect drops it either way.
+
+        // Identity matched; now liveness, the way Hermes does it. The
+        // persisted relay port survives restarts precisely so configs stay
+        // valid, which means the identity check alone reads Connected while
+        // Codex dials a dead loopback port (engine crash-reverted, or routing
+        // never restored). Drift rather than Connected also keeps the
+        // master-off sweep repairing it.
+        if !crate::proxy::relay_listening() {
+            return Ok(Status::Drifted(format!(
+                "the Gate proxy is not running, so Codex cannot reach its provider \
+                 ({expected_base:?} is a dead address) - turn the proxy on, or disconnect Codex \
+                 to restore it"
+            )));
+        }
 
         Ok(Status::Connected)
     }

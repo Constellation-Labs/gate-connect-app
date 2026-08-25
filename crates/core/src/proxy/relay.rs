@@ -40,7 +40,7 @@ use futures_util::TryStreamExt;
 use http::Uri;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
-use hyper::header::{HeaderMap, HeaderName, HOST};
+use hyper::header::{HeaderMap, HeaderName, HOST, ORIGIN};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -87,7 +87,7 @@ pub(crate) fn base_url(port: u16) -> String {
 /// file path). Test seam for the e2e's self-signed mock gateway; unset in real
 /// builds, where the default roots cover the gateway's public cert.
 fn test_extra_ca() -> Option<reqwest::Certificate> {
-    let path = std::env::var_os("GATE_CONNECT_TEST_CA")?;
+    let path = crate::env::test_seam("GATE_CONNECT_TEST_CA")?;
     let pem = std::fs::read(path).ok()?;
     reqwest::Certificate::from_pem(&pem).ok()
 }
@@ -100,7 +100,9 @@ fn test_extra_ca() -> Option<reqwest::Certificate> {
 /// inference prefix so the same request rewrites to the gateway when
 /// intercepting and forwards direct when not.
 fn test_extra_upstream() -> Option<ProxyDomain> {
-    let url = std::env::var("GATE_CONNECT_TEST_UPSTREAM").ok()?;
+    let url = crate::env::test_seam("GATE_CONNECT_TEST_UPSTREAM")?
+        .to_string_lossy()
+        .into_owned();
     Some(ProxyDomain {
         slug: "test-upstream".into(),
         display_name: "Test upstream".into(),
@@ -266,14 +268,13 @@ pub(crate) fn spawn(
     org: watch::Receiver<Arc<str>>,
     intercept: watch::Receiver<bool>,
     owner_uid: Option<u32>,
-) -> Result<()> {
+) -> Result<tokio::task::JoinHandle<()>> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
     let state = Arc::new(RelayState::new(
         &gateway, api_key, token, org, intercept, owner_uid,
     ));
-    tokio::spawn(accept_loop(listener, state));
-    Ok(())
+    Ok(tokio::spawn(accept_loop(listener, state)))
 }
 
 /// Accept connections forever, serving each on the relay handler. Shared by the
@@ -282,7 +283,14 @@ async fn accept_loop(listener: TcpListener, state: Arc<RelayState>) {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
-            Err(_) => continue,
+            // Transient accept errors (ECONNABORTED, fd exhaustion) resolve
+            // on their own; the pause keeps a *permanently* failing listener
+            // from turning this loop into a silent 100% CPU spin for the
+            // engine's lifetime.
+            Err(_) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
         };
         // Only the owner may spend the host's Gate credential. Drop a non-owner
         // (or UID-unresolvable) peer before serving it - unlike the MITM engine,
@@ -430,6 +438,41 @@ async fn proxy(
     req: Request<Incoming>,
     state: &RelayState,
 ) -> Result<Response<BoxBody<Bytes, std::io::Error>>, (StatusCode, String)> {
+    // Browser boundary, before anything is resolved or injected: the relay is
+    // a plain-HTTP loopback responder, so a web page can drive it with no
+    // local foothold - a "simple" cross-origin fetch to
+    // `http://127.0.0.1:<port>` is delivered without a preflight (CORS only
+    // blocks the *read*), and DNS rebinding delivers the same request under
+    // an attacker hostname. Either way billed inference would run on the
+    // owner's credential. A browser always names its target in `Host` and
+    // stamps cross-site requests with `Origin`; the CLI tools this relay
+    // serves dial 127.0.0.1 directly and send no `Origin`. See
+    // `authority_is_loopback` / `origin_is_loopback` in the parent module.
+    if let Some(host) = req.headers().get(HOST) {
+        let ok = host
+            .to_str()
+            .map(super::authority_is_loopback)
+            .unwrap_or(false);
+        if !ok {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "the Gate relay only serves requests addressed to 127.0.0.1/localhost".into(),
+            ));
+        }
+    }
+    if let Some(origin) = req.headers().get(ORIGIN) {
+        let ok = origin
+            .to_str()
+            .map(super::origin_is_loopback)
+            .unwrap_or(false);
+        if !ok {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "the Gate relay does not serve cross-origin browser requests".into(),
+            ));
+        }
+    }
+
     let method = req.method().clone();
     let path_and_query = req
         .uri()

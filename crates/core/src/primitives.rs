@@ -277,10 +277,10 @@ pub fn install_id() -> Result<String> {
         }
     }
     let id = simple_uuid_v4()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
-    fs::write(&path, &id).with_context(|| format!("writing {}", path.display()))?;
+    // Not a secret (an anonymous attribution id), written 0600 via
+    // `write_file` anyway so every state file here follows one convention.
+    write_file(&path, id.as_bytes(), 0o600)
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(id)
 }
 

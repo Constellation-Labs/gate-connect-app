@@ -35,7 +35,9 @@ fn config_path() -> Result<PathBuf> {
 /// second `gate-connect` invocation toggling a domain writes this file, and
 /// whoever is hosting the engine has no other way to learn of it. Deliberately
 /// a stat rather than a full parse, so polling it costs nothing.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// `test` included so the generic desktop manager (`manager_core`) and its
+/// tests compile on every platform.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) fn domains_file_mtime() -> Option<std::time::SystemTime> {
     fs::metadata(config_path().ok()?).ok()?.modified().ok()
 }
@@ -151,4 +153,119 @@ pub fn set_enabled(slug: &str, enabled: bool) -> Result<Vec<ProxyDomain>> {
     file.enabled.insert(slug.to_string(), enabled);
     write_file(&file)?;
     load_domains()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Root every per-user path at a throwaway dir for the closure's duration.
+    /// `config_path` resolves through `app_support_dir`, whose test seam is the
+    /// process-global `GATE_CONNECT_TEST_HOME` env var, so these serialize
+    /// against every other path-redirecting test via `path_env_lock` - see the
+    /// twin helper in `system_proxy_linux.rs` for the full rationale.
+    ///
+    /// The unsupported-forced-off arm of `load_domains` / `set_enabled` is not
+    /// driven here: the built-in catalog ships every entry `supported:true`,
+    /// and the module reads `default_domains()` directly (no catalog seam), so
+    /// there is no unsupported entry to persist against.
+    fn with_temp_env<T>(f: impl FnOnce() -> T) -> T {
+        let _lock = crate::env::path_env_lock();
+        let tmp =
+            std::env::temp_dir().join(format!("gate-proxy-config-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &tmp);
+        let out = f();
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+        out
+    }
+
+    #[test]
+    fn missing_file_yields_the_catalog_defaults() {
+        with_temp_env(|| {
+            // First run: no domains file on disk is not an error, it is the
+            // shipped catalog verbatim (anthropic on, the rest opt-in).
+            let domains = load_domains().unwrap();
+            let defaults = default_domains();
+            assert_eq!(domains.len(), defaults.len());
+            for (got, want) in domains.iter().zip(&defaults) {
+                assert_eq!(got.slug, want.slug);
+                assert_eq!(got.enabled, want.enabled, "default for {:?}", got.slug);
+            }
+        });
+    }
+
+    #[test]
+    fn set_enabled_persists_across_a_fresh_load() {
+        with_temp_env(|| {
+            // The returned catalog reflects the flip immediately...
+            let returned = set_enabled("openai", true).unwrap();
+            assert!(
+                returned
+                    .iter()
+                    .find(|d| d.slug == "openai")
+                    .unwrap()
+                    .enabled
+            );
+            // ...and so does a re-read from disk, including turning the
+            // default-on entry off durably.
+            set_enabled("anthropic", false).unwrap();
+            let domains = load_domains().unwrap();
+            assert!(domains.iter().find(|d| d.slug == "openai").unwrap().enabled);
+            assert!(
+                !domains
+                    .iter()
+                    .find(|d| d.slug == "anthropic")
+                    .unwrap()
+                    .enabled
+            );
+        });
+    }
+
+    #[test]
+    fn unknown_slug_is_refused_either_way() {
+        with_temp_env(|| {
+            // The catalog is the source of truth for the domain set; a slug it
+            // doesn't know can be neither enabled nor disabled.
+            let err = set_enabled("no-such-provider", true).unwrap_err();
+            assert!(err.to_string().contains("no-such-provider"), "{err}");
+            assert!(set_enabled("no-such-provider", false).is_err());
+        });
+    }
+
+    #[test]
+    fn stale_persisted_slug_is_ignored() {
+        with_temp_env(|| {
+            // A flag persisted by a build whose catalog had (or will have) a
+            // slug this one doesn't: it must neither error nor surface a
+            // phantom domain, and the flags for known slugs still apply.
+            let path = config_path().unwrap();
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, r#"{"enabled":{"ghost":true,"openai":true}}"#).unwrap();
+            let domains = load_domains().unwrap();
+            assert!(domains.iter().all(|d| d.slug != "ghost"));
+            assert!(domains.iter().find(|d| d.slug == "openai").unwrap().enabled);
+        });
+    }
+
+    #[test]
+    fn torn_file_errors_rather_than_resetting() {
+        with_temp_env(|| {
+            // Writes are atomic, so a half-written file means something else
+            // went wrong; surfacing an error beats silently reverting the
+            // user's toggles to defaults. And `set_enabled` must not "fix" it
+            // by clobbering the evidence.
+            let path = config_path().unwrap();
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, r#"{"enabled":{"open"#).unwrap();
+            assert!(load_domains().is_err());
+            assert!(set_enabled("openai", true).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"enabled":{"open"#);
+        });
+    }
 }

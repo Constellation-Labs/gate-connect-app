@@ -74,6 +74,10 @@ fn sign_in() {
     account::save("https://gw.example.com", Some("sk-gw-testkey123")).unwrap();
 }
 
+/// Seed the persisted ports and routing snapshot that a running proxy owns.
+/// `relay_base_url()` answers `Some` so `connect()` has a loopback base to
+/// write, and Claude Code's status check reads the forward-proxy port from the
+/// same directory.
 fn set_relay_port(port: u16) {
     let dir = env::app_support_dir().unwrap().join("proxy");
     fs::create_dir_all(&dir).unwrap();
@@ -103,6 +107,24 @@ fn domain_enabled(slug: &str) -> bool {
         .find(|d| d.slug == slug)
         .map(|d| d.enabled)
         .unwrap_or(false)
+}
+
+/// The restore snapshots live beside the proxy's own state, and `provider`
+/// keeps their paths private. Seeded and read here directly so a test can stage
+/// the on-disk state a master-off leaves behind.
+fn snapshot_file(name: &str) -> PathBuf {
+    env::app_support_dir().unwrap().join("provider").join(name)
+}
+
+fn seed_snapshot(name: &str, slugs: &[&str]) {
+    let path = snapshot_file(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, serde_json::to_string(slugs).unwrap()).unwrap();
+}
+
+fn read_snapshot(name: &str) -> Option<Vec<String>> {
+    let raw = fs::read_to_string(snapshot_file(name)).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 /// The bug, directly: Claude Code routing, Claude Desktop switched off, one
@@ -206,5 +228,49 @@ fn the_skip_list_does_not_outlive_its_cycle() {
     assert!(
         domain_enabled("anthropic"),
         "a stale skip list outlived its master cycle"
+    );
+}
+
+/// The two restore passes, and the one that runs too early.
+///
+/// `routing::enable` calls `restore_all` twice: once before the engine is up
+/// (config-file tools) and once after (domain-only providers, which have no
+/// tool to configure and need a running engine to flip their domain in). The
+/// first pass therefore *cannot* finish a domain-only provider - `enable_inner`
+/// takes its `plan.nothing` path and returns `Ok` having done nothing - and
+/// counting that `Ok` as a completed restore cleared the snapshot before the
+/// second pass could read it. Every domain-only provider then stayed off for
+/// the rest of the session with nothing reporting a failure.
+///
+/// Seeded on disk rather than arranged through the API on purpose: the shape
+/// only occurs with a live engine at master-off and none at restore, which this
+/// harness has no way to stage.
+#[test]
+fn a_restore_that_could_not_run_yet_keeps_its_snapshot() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = TestEnv::set();
+    sign_in();
+    // Claude Code deliberately not installed and no engine running, so
+    // `anthropic` is the domain-only shape: nothing to do until the engine is
+    // up. The domain is off because the master-off sweep just turned it off -
+    // arranging that is what makes this the state a restore actually starts
+    // from, rather than one where the provider already reads on. The skip list
+    // is non-empty because that is the case that lost the snapshot: with it
+    // empty, `enable_inner` bails and the error already kept the entry.
+    config::set_enabled("anthropic", false).unwrap();
+    seed_snapshot("restore-snapshot.json", &["anthropic"]);
+    seed_snapshot("restore-skip-members.json", &["claude-code"]);
+
+    provider::restore_all().unwrap();
+
+    assert_eq!(
+        read_snapshot("restore-snapshot.json").as_deref(),
+        Some(["anthropic".to_string()].as_slice()),
+        "the pre-engine pass consumed the snapshot the post-engine pass needs"
+    );
+    assert!(
+        read_snapshot("restore-skip-members.json").is_some(),
+        "the skip list has to outlive an unfinished restore too, or the retry \
+         turns on the members the user had switched off"
     );
 }
