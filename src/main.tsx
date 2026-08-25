@@ -7,6 +7,7 @@ import { newUiEnabled } from "./lib/newUi";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./screens/Onboarding";
 import { initAnalytics, captureException } from "./lib/analytics";
+import { describe, logError } from "./lib/log";
 import { applyTextScale, readStoredScale } from "./lib/useTextScale";
 import "./index.css";
 
@@ -23,8 +24,23 @@ applyTextScale(readStoredScale());
 // would trade a visible delay for a few milliseconds of telemetry. The handlers
 // below no-op until the client exists, which is the safe direction.
 void initAnalytics();
-window.addEventListener("error", (e) => captureException(e.error ?? e.message));
-window.addEventListener("unhandledrejection", (e) => captureException(e.reason));
+
+// Both sinks, because they answer different questions. PostHog aggregates across
+// installs but needs a build-time key and the user's consent, so on a developer
+// or staging machine it is usually silent - which is how an unhandled rejection
+// that killed every switch in the window left no trace anyone could read. The
+// local log is the one you can open, and it is off in production.
+//
+// `unhandledrejection` is the load-bearing one here: every routing write is
+// called as `void routing.…`, so a throw from one arrives nowhere else.
+window.addEventListener("error", (e) => {
+  captureException(e.error ?? e.message);
+  logError(`uncaught: ${e.message} (${e.filename}:${e.lineno}:${e.colno})`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  captureException(e.reason);
+  logError(`unhandled rejection: ${describe(e.reason)}`);
+});
 
 // The same bundle backs both windows: the tray popover ("main") renders the
 // app, the full-size intro window ("onboarding") renders only the intro.

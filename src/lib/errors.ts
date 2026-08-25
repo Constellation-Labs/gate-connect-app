@@ -27,6 +27,11 @@ export type ErrorContext =
   | "startup"
   | "account_reconcile"
   | "provider_restore"
+  /** The re-read that follows a routing write. Its own context because a failed
+   *  resync is not a failed write - the write landed, and only the view of it is
+   *  stale. It used to be invisible: thrown from a `finally` into a `void` call
+   *  site, where it took every switch in the app down with it. */
+  | "resync"
   | "provider_disable"
   | "provider_reconcile"
   | "routing_intent"
@@ -250,6 +255,9 @@ export function classifyError(
 
   // Fallback - tell the user *what* failed at least.
   const titles: Record<ErrorContext, string> = {
+    // The write already succeeded; only the re-read of it failed, so this says
+    // the rows may be stale rather than implying the change did not land.
+    resync: "Couldn’t refresh what’s on screen",
     sign_in: "Couldn’t save your account",
     sign_out: "Couldn’t sign out",
     connect: "Couldn’t connect this tool",

@@ -24,6 +24,8 @@ pub mod gate_models;
 /// on. Shared by [`activity`] and [`gate_models`].
 pub mod gateway_api;
 pub mod keychain;
+/// A diagnostic log for local and staging builds. Off in production.
+pub mod logging;
 pub mod oauth;
 pub mod org;
 /// Non-secret user choices from Settings, defaulting to on.
