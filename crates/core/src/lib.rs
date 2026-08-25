@@ -21,7 +21,7 @@ pub mod env;
 /// The models this gateway offers, for the model picker.
 pub mod gate_models;
 /// One authenticated control-plane call, and the failure codes the UI branches
-/// on. Shared by [`activity`] and [`tool_models`].
+/// on. Shared by [`activity`] and [`gate_models`].
 pub mod gateway_api;
 pub mod keychain;
 pub mod oauth;

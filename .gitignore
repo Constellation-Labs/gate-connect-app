@@ -17,3 +17,6 @@
 /test-results/
 /playwright-report/
 /blob-report/
+
+# TypeScript incremental build stamp (tsc -b). Machine-local, never reviewable.
+/*.tsbuildinfo

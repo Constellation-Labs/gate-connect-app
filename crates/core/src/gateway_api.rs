@@ -2,7 +2,7 @@
 //! taxonomy every caller branches on.
 //!
 //! Lifted out of [`crate::activity`] when a second feature needed the same call
-//! (AG-588's model preferences). The two rules in that module's doc are the
+//! (AG-588's model catalogue). The two rules in that module's doc are the
 //! reason this is shared code rather than a second copy:
 //!
 //! 1. **Talk straight to the gateway, never through our own data-plane proxy.**
@@ -52,15 +52,6 @@ pub enum FailureCode {
     NoOrg,
     /// A credential was sent and the gateway refused it (401 or 403).
     Rejected,
-    /// This org has never accepted paid Gate model use, and the write needed it
-    /// (428 from `PUT /v1/me/tool-models`).
-    ///
-    /// Its own code because it is the one failure here that is not a failure of
-    /// the *call*: the credential is entitled, a step has not happened yet, and
-    /// the remedy is to show the confirmation and retry rather than to retry, to
-    /// sign in, or to contact anybody. Distinguishing it is what lets the pane
-    /// raise the dialog instead of reporting an error the user cannot act on.
-    NeedsPaidAck,
     /// The gateway answered, unhappily. Any other non-2xx.
     Gateway,
     /// Anything else, including a response body we could not read.
@@ -101,7 +92,7 @@ pub enum Method {
 /// One authenticated control-plane call.
 ///
 /// `url` is already resolved by the caller, which owns its own test seam (see
-/// [`crate::activity`] and [`crate::tool_models`]) - this function deliberately
+/// [`crate::activity`] and [`crate::gate_models`]) - this function deliberately
 /// does not know the route names, so adding an endpoint does not mean editing
 /// shared code.
 ///
@@ -227,8 +218,6 @@ pub fn call_json(
             || status == reqwest::StatusCode::FORBIDDEN
         {
             FailureCode::Rejected
-        } else if status == reqwest::StatusCode::PRECONDITION_REQUIRED {
-            FailureCode::NeedsPaidAck
         } else {
             FailureCode::Gateway
         };
