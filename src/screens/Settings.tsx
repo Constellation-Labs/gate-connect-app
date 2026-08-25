@@ -593,7 +593,8 @@ export function Settings({
         <div className="min-w-0 flex-1">
           <div className="text-gc-body-md font-medium text-gc-ink">Launch at login</div>
           <div className="mt-0.5 text-gc-caption leading-snug text-gc-ink-3">
-            Open Gate Connect automatically when you log in. Keeps routing on after a restart.
+            Open Gate Connect automatically when you log in. Routing comes
+            back at login instead of waiting for you to open the app.
           </div>
         </div>
         <Switch

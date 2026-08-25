@@ -19,7 +19,6 @@ const connectedTools = [
     name: "Claude Code",
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
-    requires_upstream_credential: false,
     status: { kind: "connected" as const },
   },
   {
@@ -27,7 +26,6 @@ const connectedTools = [
     name: "Codex",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://api.openai.com",
-    requires_upstream_credential: false,
     status: { kind: "connected" as const },
   },
 ];

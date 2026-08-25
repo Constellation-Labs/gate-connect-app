@@ -6,6 +6,7 @@ import { trackError } from "../lib/analytics";
 import { Switch, ErrorNote, IconButton, Button } from "../components/gc/ui";
 import { MemberPill, memberPillLabel } from "../components/GroupPill";
 import {
+  browserScopeNote,
   secretStoreName,
   trustPromptHint,
   trustPromptWaiting,
@@ -24,13 +25,39 @@ function hostOf(url: string | undefined): string {
   }
 }
 
+/** A routing tool in the same family that reaches this proxy member's host
+ * through its own config, so the member's switch is not the whole story for
+ * that host. Claude Code is the case that made this necessary: it carries a
+ * route selector in its own proxy URL, so Gate keeps routing
+ * `api.anthropic.com` for it whatever the `Claude Desktop / Cowork` switch
+ * says. Relay-routed tools were always in the same position - their base URL
+ * never consulted the domain switch either - so this matches on the host, not
+ * on a slug, and holds for Codex under the OpenAI row too.
+ *
+ * `coversAllProviders` members are skipped: their `default_upstream_url` is a
+ * placeholder constant (api.anthropic.com), which is why the host slot prints
+ * prose for them instead. Matching on it would have OpenCode claim it reaches
+ * a host it may never touch. */
+function configSiblingOnHost(group: Group, member: GroupMember): GroupMember | undefined {
+  const hosts = member.domain?.hosts ?? [];
+  return group.members.find(
+    (sibling) =>
+      sibling.kind === "config" &&
+      sibling.routed &&
+      !sibling.coversAllProviders &&
+      hosts.includes(hostOf(sibling.tool?.default_upstream_url)),
+  );
+}
+
 /** What a member's current state means, in plain language. This is the copy
  * that used to live on a separate tool screen; it belongs next to the row it
  * describes, not a level deeper.
  *
  * Takes the platform because two of these branches name the secret store, and
- * naming the wrong vault undoes the reassurance they exist to give. */
-function explain(member: GroupMember, platform: Platform): string {
+ * naming the wrong vault undoes the reassurance they exist to give. Takes the
+ * group because one branch has to look sideways at its siblings: see
+ * `configSiblingOnHost`. */
+function explain(member: GroupMember, platform: Platform, group: Group): string {
   if (member.attention === "master-off") {
     return member.kind === "proxy"
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
@@ -48,14 +75,59 @@ function explain(member: GroupMember, platform: Platform): string {
     // which is a different promise from "Gate holds your key in the keychain".
     // Deliberately not the word "conversations": one of these rows carries the
     // Codex subscription endpoint, whose traffic is model calls, not chat.
+    //
+    // The host is named because the row's name is an app and the switch is not
+    // scoped to one: `decide` matches on host (`proxy::ProxyDomain::matches_host`,
+    // exact, no subdomains), so every proxy-honouring client of that host is
+    // covered. That is the one thing a user cannot infer from a row reading
+    // "Claude Desktop chat", and it is the reason `integrations/openclaw.rs`
+    // stopped flipping these slugs on the user's behalf. Naming it is the whole
+    // reassurance: these rows are the ones where transparency about the
+    // mechanism IS the product.
+    //
+    // Which clients that covers is the platform's answer, not ours, so the
+    // browser half goes through `browserScopeNote`, which is empty wherever
+    // there is nothing to claim - on Linux the proxy is wired through
+    // environment variables a browser never reads, and the host sentence has
+    // already bounded the scope without it. Sentences, not clauses, so dropping
+    // one leaves the rest reading normally.
     if (member.chat) {
-      return member.routed
-        ? `${member.name} goes through Gate on the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it. The family switch above leaves this row alone.`
-        : `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers. Switch it on and Gate records and inspects that traffic; the family switch above leaves this row alone either way.`;
+      const hosts = member.domain?.hosts.join(", ") ?? "";
+      const scope = browserScopeNote(platform);
+      const covers = member.routed
+        ? `That covers everything on ${hosts}.`
+        : `Switch it on and Gate records and inspects that traffic - everything on ${hosts}.`;
+      return [
+        member.routed
+          ? `${member.name} goes through Gate on the credential you’re already signed in with, not an API key Gate brokers, so Gate records and inspects this traffic rather than supplying a key for it.`
+          : `${member.name} carries the credential you’re already signed in with, not an API key Gate brokers.`,
+        covers,
+        scope,
+        member.routed
+          ? "The family switch above leaves this row alone."
+          : "The family switch above leaves this row alone either way.",
+      ]
+        .filter(Boolean)
+        .join(" ");
     }
-    return member.routed
-      ? `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`
-      : `${member.name} routes through Gate’s local proxy once you switch it on.`;
+    if (member.routed) {
+      return `${member.name} has no gateway setting of its own, so Gate routes it through the local proxy.`;
+    }
+    // Sentences, not clauses, by the same rule as the chat branch above.
+    const sibling = configSiblingOnHost(group, member);
+    return [
+      `${member.name} routes through Gate’s local proxy once you switch it on.`,
+      // This row prints the host right beside its own switch, so an off switch
+      // over `api.anthropic.com` reads as "nothing on that host reaches Gate".
+      // With a config-routed tool on the same host that is not true - Claude
+      // Code's proxy URL carries a route selector the engine honours whatever
+      // this switch says - and saying nothing lets the row promise something
+      // the engine does not do.
+      sibling &&
+        `${sibling.name} reaches ${member.domain?.hosts.join(", ") ?? ""} through its own config, so this switch covers ${member.name} rather than everything on that host.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
   }
   switch (member.tool?.status.kind) {
     case "connected":
@@ -559,7 +631,7 @@ export function GroupMembers({
                 // open row and its body read as one tinted block.
                 <div className="bg-gc-subtle px-3.5 pb-3">
                   <p className="text-gc-caption leading-snug text-gc-ink-2">
-                    {explain(member, platform)}
+                    {explain(member, platform, group)}
                   </p>
 
                   {/* No per-member Trust button. There is one machine-wide

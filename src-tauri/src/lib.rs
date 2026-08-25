@@ -55,7 +55,6 @@ struct ToolDto {
     name: String,
     upstream_provider_name: String,
     default_upstream_url: String,
-    requires_upstream_credential: bool,
     /// The file Gate rewrites for this tool, for the copy that says what is
     /// about to change. `None` where no single file names it.
     config_location: Option<String>,
@@ -107,7 +106,6 @@ fn list_tools() -> Vec<ToolDto> {
             name: integ.display_name().to_string(),
             upstream_provider_name: integ.upstream_provider_name().to_string(),
             default_upstream_url: integ.default_upstream_url().to_string(),
-            requires_upstream_credential: integ.requires_upstream_credential(),
             config_location: integ.config_location(),
             status: status_for(integ.as_ref()),
         })
@@ -131,20 +129,25 @@ async fn connect_tool(slug: String, upstream_url: String) -> Result<StatusDto, S
         let account = account::load()
             .map_err(|e| format!("{e:#}"))?
             .ok_or_else(|| "Sign in to Gate AI first".to_string())?;
-        if integ.requires_upstream_credential()
-            && !integ
-                .has_upstream_credential()
-                .map_err(|e| format!("{e:#}"))?
-        {
-            return Err(
-                "No upstream Anthropic credential saved. Add one before connecting.".into(),
-            );
-        }
         // Auto-enable the proxy so the reverse-proxy relay is live: relay-routed
         // tool configs point at the loopback relay, which only exists while the
         // engine runs. Idempotent if the proxy is already on.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         {
+            // Persist the routing intent too, and before the engine comes up
+            // (see `routing::enable` for the ordering): connecting a tool is
+            // as deliberate a "route through Gate" as the master switch, and
+            // this engine start must survive a restart - the tool's config
+            // keeps pointing at the relay across a quit, so a launch that
+            // doesn't bring the relay back leaves the tool dialing a dead
+            // loopback port while its ledger row still reads connected.
+            // Deliberately not the full `routing::enable` ceremony: a connect
+            // is scoped to one tool, so it must not also restore providers a
+            // master-off swept.
+            if let Err(e) = gate_connect_core::proxy::intent::set_intent(true) {
+                eprintln!("[gate] persisting routing intent on connect failed: {e}");
+                report_backend_error("routing_intent", format!("{e:#}"));
+            }
             gate_connect_core::proxy::manager()
                 .enable()
                 .map_err(|e| format!("{e:#}"))?;
@@ -176,34 +179,11 @@ async fn disconnect_tool(slug: String) -> Result<StatusDto, String> {
     .map_err(|e| format!("disconnect join error: {e}"))?
 }
 
-#[tauri::command]
-fn has_upstream_credential(slug: String) -> Result<bool, String> {
-    let integ = resolve_integration(&slug)?;
-    integ
-        .has_upstream_credential()
-        .map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
-fn save_upstream_api_key(slug: String, api_key: String) -> Result<(), String> {
-    let integ = resolve_integration(&slug)?;
-    // Enforce the integration's expected credential prefix in addition to
-    // the empty/control-char/oversize checks, so a compromised renderer
-    // can't write arbitrary bytes to a tool's keychain entry under a
-    // mismatched slug.
-    validate_api_key(api_key.trim(), integ.upstream_credential_prefix())?;
-    integ
-        .save_upstream_credential(&api_key)
-        .map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
-fn clear_upstream_credential(slug: String) -> Result<(), String> {
-    let integ = resolve_integration(&slug)?;
-    integ
-        .clear_upstream_credential()
-        .map_err(|e| format!("{e:#}"))
-}
+// The upstream-credential trait surface (`has_upstream_credential` /
+// `save_upstream_credential` / `clear_upstream_credential`) is CLI-only
+// (`gate-connect set-upstream` / `clear-upstream`): no shipped integration
+// requires an upstream credential, so the renderer has no commands for it
+// and no UI to collect one.
 
 fn resolve_integration(slug: &str) -> Result<Box<dyn gate_connect_core::Integration>, String> {
     let id = ToolId::from_slug(slug).ok_or_else(|| format!("unknown tool {slug:?}"))?;
@@ -836,15 +816,11 @@ fn list_providers() -> Vec<gate_connect_core::provider::ProviderState> {
     gate_connect_core::provider::list()
 }
 
-#[tauri::command]
-fn provider_enable(slug: String) -> Result<gate_connect_core::provider::ProviderState, String> {
-    gate_connect_core::provider::enable(&slug).map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
-fn provider_disable(slug: String) -> Result<gate_connect_core::provider::ProviderState, String> {
-    gate_connect_core::provider::disable(&slug).map_err(|e| format!("{e:#}"))
-}
+// No `provider_enable` / `provider_disable` commands: the popover drives
+// per-tool routing through `connect_tool` / `disconnect_tool` and the master
+// switch through `proxy_enable` / `proxy_disable`; the provider layer is
+// CLI/core-only (`provider::enable` / `disable`), so the renderer gets no
+// handle on it.
 
 // ---- Built-in MITM proxy (macOS + Windows + Linux) ----
 //
@@ -855,20 +831,23 @@ fn provider_disable(slug: String) -> Result<gate_connect_core::provider::Provide
 // handler block below. Each build refreshes the tray status dot from
 // enable/disable so the routing state shows in the menu bar / taskbar.
 
+/// Async so the body lands on the blocking pool rather than the main thread. On
+/// Windows `status()` shells out to `certutil` for the CA-trust reading, and a
+/// sync command runs on the thread driving the event loop - so a `certutil` that
+/// hangs (a crash on the host keeps the process alive while Windows Error
+/// Reporting collects its dump) froze the window and left the app unquittable.
+/// `ca_windows::certutil_bounded` caps that wait; this keeps even the capped
+/// wait off the UI thread.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> {
-    gate_connect_core::proxy::manager()
-        .status()
-        .map_err(|e| format!("{e:#}"))
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-#[tauri::command]
-fn proxy_list_domains() -> Result<Vec<gate_connect_core::proxy::ProxyDomain>, String> {
-    gate_connect_core::proxy::manager()
-        .list_domains()
-        .map_err(|e| format!("{e:#}"))
+async fn proxy_status() -> Result<gate_connect_core::proxy::ProxyState, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        gate_connect_core::proxy::manager()
+            .status()
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("proxy status join error: {e}"))?
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -879,27 +858,20 @@ async fn proxy_enable(
     // Off the main thread: enable can block on the CA-trust admin prompt
     // and waits up to 10s for engine readiness.
     let state = tauri::async_runtime::spawn_blocking(|| {
-        // Global ON: restore every provider that was on when routing was last
-        // turned off - *before* enabling - so the engine comes back up routing
-        // the user's prior selection rather than bare. A no-op (no snapshot) on
-        // a first enable, where the engine simply starts with zero domains and
-        // passes through until a provider is enabled. Best-effort so a restore
-        // hiccup never blocks the proxy from coming up.
-        if let Err(e) = gate_connect_core::provider::restore_all() {
-            eprintln!("[gate] restoring providers on proxy enable failed: {e}");
-            report_backend_error("provider_restore", format!("{e:#}"));
+        // Master ON is one policy shared with the CLI and the startup
+        // auto-enable: persist the intent (so the startup auto-enable
+        // re-routes after a restart - whether the app relaunches at boot is
+        // governed separately by "Launch at login"), restore the provider
+        // selection around the engine start, and surface best-effort hiccups
+        // without blocking the proxy from coming up.
+        let (_, warnings) = gate_connect_core::routing::enable().map_err(|e| format!("{e:#}"))?;
+        for w in warnings {
+            eprintln!("[gate] proxy enable: {} failed: {:#}", w.component, w.error);
+            report_backend_error(w.component, format!("{:#}", w.error));
         }
-        gate_connect_core::proxy::manager()
-            .enable()
-            .map_err(|e| format!("{e:#}"))?;
         mark_routing_enabled();
-        // Second restore pass now that the proxy is up: domain-only providers
-        // (no installed tool) have nothing to configure before the engine is
-        // running, so the pre-enable pass leaves them in the snapshot.
-        if let Err(e) = gate_connect_core::provider::restore_all() {
-            eprintln!("[gate] restoring providers after proxy enable failed: {e}");
-            report_backend_error("provider_restore", format!("{e:#}"));
-        }
+        // Status re-read rather than enable's own state: the post-enable
+        // restore pass can flip domains, and the UI wants the settled set.
         gate_connect_core::proxy::manager()
             .status()
             .map_err(|e| format!("{e:#}"))
@@ -910,71 +882,82 @@ async fn proxy_enable(
     // mark, recolor the status dot (green on / gray off), and update the
     // tooltip where supported (macOS + Windows).
     update_tray_status(&app, state.running);
-    // Persist the user's intent so the startup auto-enable in `setup` re-routes
-    // after a restart. Whether the app actually relaunches at boot is governed
-    // separately by the "Launch at login" setting (see `set_launch_at_login`).
-    // Best-effort: routing is already on, so a persistence hiccup must not fail
-    // the command.
-    if let Err(e) = gate_connect_core::proxy::intent::set_intent(true) {
-        eprintln!("[gate] persisting routing intent failed: {e}");
-        report_backend_error("routing_intent", format!("{e:#}"));
-    }
     // Crash safety net: routing is now on, but with no login item registered a
     // crash would strand the system proxy at a dead port with nothing
-    // relaunching at boot to run the startup self-heal. Register the login
-    // item and arm the pending-disable marker (the deferred-opt-out mechanism,
-    // see autostart_optout's module docs), so every existing safe point
-    // deregisters it and the Settings toggle keeps reporting the user's
-    // choice. Skipped when the user opted in themselves - arming would make
-    // the status lie and a later safe point would remove a registration they
-    // want. Marker before registration: a crash between the two steps must
-    // not leave a registration that reads as the user's choice. Best-effort:
-    // routing is already on, so failures only lose the net, not the command.
-    //
-    // Known (accepted) race: this read-then-write pair and the one in
-    // `set_launch_at_login` share no lock, so a Settings toggle landing
-    // between this `is_enabled()` check and the arm+enable below can end up
-    // marked pending (a fresh opt-in reported as off) until the next safe
-    // point clears it. The window is milliseconds wide and both sites are
-    // driven by one user in one popover; not worth a lock.
-    {
-        use gate_connect_core::proxy::autostart_optout;
-        use tauri_plugin_autostart::ManagerExt;
-        let mgr = app.autolaunch();
-        match mgr.is_enabled() {
-            Ok(false) => {
-                match autostart_optout::record_safety_net_registration() {
-                    Ok(()) => {
-                        if let Err(e) = mgr.enable() {
-                            eprintln!("[gate] registering launch-at-login safety net failed: {e}");
-                            report_backend_error("launch_at_login", format!("{e:#}"));
-                            // Nothing got registered, so there is nothing for the
-                            // marker to defer; leaving it armed would only make a
-                            // real opt-in later read as pending.
-                            if let Err(e) = autostart_optout::set_pending(false) {
-                                eprintln!("[gate] clearing safety-net marker failed: {e}");
-                            }
+    // relaunching at boot to run the startup self-heal. (macOS/Windows only;
+    // see the function's doc for why Linux is excluded.)
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    arm_crash_safety_net(&app);
+    Ok(state)
+}
+
+/// Crash safety net for a session with routing on but no login item: register
+/// launch-at-login and arm the pending-disable marker (the deferred-opt-out
+/// mechanism, see autostart_optout's module docs), so every existing safe
+/// point deregisters the item and the Settings toggle keeps reporting the
+/// user's choice. Skipped when the user opted in themselves - arming would
+/// make the status lie and a later safe point would remove a registration
+/// they want. Marker before registration: a crash between the two steps must
+/// not leave a registration that reads as the user's choice. Best-effort:
+/// routing is already on when this runs, so failures only lose the net.
+///
+/// macOS/Windows only. On Linux the engine lives in a detached helper daemon
+/// that owns the port and falls back to pass-through when the GUI dies, so a
+/// crash cannot strand the system proxy at a dead port - the net has nothing
+/// to heal. And Linux has no exit-time safe point (the RunEvent::Exit
+/// handler is macOS/Windows-only), so an armed marker would survive every
+/// clean quit and turn each boot into a silent teardown launch.
+///
+/// Accepted trade for launch-at-login decliners: with routing restored on
+/// any launch, this arms once per routed session instead of once per manual
+/// routing toggle. The registration cadence matches the old behavior - with
+/// the intent cleared at exit, a decliner re-toggled routing (and re-armed
+/// the net) every session anyway - and a clean quit still deregisters, so
+/// their "off" keeps meaning the app does not run at boot.
+///
+/// Known (accepted) race: this read-then-write pair and the one in
+/// `set_launch_at_login` share no lock, so a Settings toggle landing
+/// between the `is_enabled()` check and the arm+enable below can end up
+/// marked pending (a fresh opt-in reported as off) until the next safe
+/// point clears it. The window is milliseconds wide and both sites are
+/// driven by one user in one popover; not worth a lock.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn arm_crash_safety_net(app: &tauri::AppHandle) {
+    use gate_connect_core::proxy::autostart_optout;
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    match mgr.is_enabled() {
+        Ok(false) => {
+            match autostart_optout::record_safety_net_registration() {
+                Ok(()) => {
+                    if let Err(e) = mgr.enable() {
+                        eprintln!("[gate] registering launch-at-login safety net failed: {e}");
+                        report_backend_error("launch_at_login", format!("{e:#}"));
+                        // Nothing got registered, so there is nothing for the
+                        // marker to defer; leaving it armed would only make a
+                        // real opt-in later read as pending.
+                        if let Err(e) = autostart_optout::set_pending(false) {
+                            eprintln!("[gate] clearing safety-net marker failed: {e}");
                         }
                     }
-                    Err(e) => {
-                        eprintln!("[gate] arming launch-at-login safety-net marker failed: {e}");
-                        report_backend_error("launch_at_login", format!("{e:#}"));
-                    }
+                }
+                Err(e) => {
+                    eprintln!("[gate] arming launch-at-login safety-net marker failed: {e}");
+                    report_backend_error("launch_at_login", format!("{e:#}"));
                 }
             }
-            // Already registered (the user's own opt-in, or a still-pending
-            // marker from an earlier session): nothing to arm.
-            Ok(true) => {}
-            // Can't tell whether a login item exists: don't risk arming the
-            // marker over a real opt-in. Losing the net is the lesser harm,
-            // but it should be visible.
-            Err(e) => {
-                eprintln!("[gate] probing launch-at-login for the safety net failed: {e}");
-                report_backend_error("launch_at_login", format!("{e:#}"));
-            }
+        }
+        // Already registered (the user's own opt-in, or a still-pending
+        // marker from an earlier session): nothing to arm.
+        Ok(true) => {}
+        // Can't tell whether a login item exists: don't risk arming the
+        // marker over a real opt-in. Losing the net is the lesser harm,
+        // but it should be visible.
+        Err(e) => {
+            eprintln!("[gate] probing launch-at-login for the safety net failed: {e}");
+            report_backend_error("launch_at_login", format!("{e:#}"));
         }
     }
-    Ok(state)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -985,20 +968,22 @@ async fn proxy_disable(
     // Off the main thread: disable runs system-proxy subprocesses and joins
     // the engine thread.
     let state = tauri::async_runtime::spawn_blocking(|| {
-        // Global OFF: snapshot + disconnect everything managed BEFORE the
-        // proxy stops, so config-based tools (Codex) also stop and their
-        // domains are still flippable. The full sweep, not the provider-only
-        // pass: the catalog maps no provider to OpenCode and friends, and
-        // leaving them pointed at the relay we are about to kill would strand
-        // them while the UI reports "not routing". Best-effort so it never
-        // blocks the kill switch.
-        if let Err(e) = gate_connect_core::provider::snapshot_and_disable_everything() {
-            eprintln!("[gate] disabling providers on proxy disable failed: {e}");
-            report_backend_error("provider_disable", format!("{e:#}"));
+        // Master OFF is one policy shared with the CLI: sweep + disconnect
+        // everything managed before the proxy stops, then clear the routing
+        // intent so explicit "off" is sticky across restarts (whether the app
+        // relaunches at boot is governed separately by "Launch at login").
+        // Best-effort hiccups surface as warnings and never block the kill
+        // switch.
+        let (state, warnings) =
+            gate_connect_core::routing::disable().map_err(|e| format!("{e:#}"))?;
+        for w in warnings {
+            eprintln!(
+                "[gate] proxy disable: {} failed: {:#}",
+                w.component, w.error
+            );
+            report_backend_error(w.component, format!("{:#}", w.error));
         }
-        gate_connect_core::proxy::manager()
-            .disable()
-            .map_err(|e| format!("{e:#}"))
+        Ok::<_, String>(state)
     })
     .await
     .map_err(|e| format!("proxy disable join error: {e}"))??;
@@ -1006,15 +991,6 @@ async fn proxy_disable(
     // mark, recolor the status dot (green on / gray off), and update the
     // tooltip where supported (macOS + Windows).
     update_tray_status(&app, state.running);
-    // Explicit "off" is sticky across restarts: clear the routing intent so the
-    // startup auto-enable in `setup` leaves the app in passthrough. Whether the
-    // app relaunches at boot is governed separately by the "Launch at login"
-    // setting. Best-effort - routing is already off, so a cleanup failure
-    // doesn't matter to this command's result.
-    if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
-        eprintln!("[gate] clearing routing intent failed: {e}");
-        report_backend_error("routing_intent", format!("{e:#}"));
-    }
     // A deferred launch-at-login opt-out can complete now: with routing off,
     // deregistering can no longer strand the system proxy across a restart.
     complete_pending_autostart_disable(&app);
@@ -1086,8 +1062,8 @@ fn launch_at_login_status(app: tauri::AppHandle) -> Result<LaunchAtLoginStatus, 
 fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     use gate_connect_core::proxy::autostart_optout;
     use tauri_plugin_autostart::ManagerExt;
-    // This marker/login-item read-then-write and the safety-net block in
-    // `proxy_enable` share no lock; see the accepted-race note there.
+    // This marker/login-item read-then-write and `arm_crash_safety_net`
+    // share no lock; see the accepted-race note on that function.
     let mgr = app.autolaunch();
     if enabled {
         autostart_optout::set_pending(false).map_err(|e| format!("{e:#}"))?;
@@ -1189,16 +1165,16 @@ static POPOVER_PINNED: AtomicBool = AtomicBool::new(false);
 static POPOVER_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 /// Whether the coming exit is an updater-driven relaunch rather than a user
-/// quit. The exit handler clears the routing intent on a plain quit when
-/// launch-at-login is off (no login item means nothing would re-route after a
-/// reboot), but an update install relaunches us immediately - clearing the
-/// intent there would leave routing off after every upgrade. Set by the
-/// frontend after the update download completes, right before it kicks off
-/// the install (not around the whole download: a quit while the download is
-/// still running is a genuine user exit and must keep the exit-time intent
-/// clear and deferred opt-out completion); reset if the install fails. If the
-/// relaunch itself fails after a successful install the flag stays set, which
-/// at worst preserves an intent that matched the pre-update state anyway.
+/// quit. The exit handler completes a pending launch-at-login opt-out on a
+/// plain quit, but an update install relaunches us immediately, and the
+/// relaunched session would just re-arm the safety net it lost - so the
+/// pending marker and login item ride through the relaunch untouched. Set by
+/// the frontend after the update download completes, right before it kicks
+/// off the install (not around the whole download: a quit while the download
+/// is still running is a genuine user exit and must complete the opt-out as
+/// usual); reset if the install fails. If the relaunch itself fails after a
+/// successful install the flag stays set, which at worst defers the opt-out
+/// completion to the next safe point.
 static UPDATER_RELAUNCHING: AtomicBool = AtomicBool::new(false);
 
 /// Whether the startup auto-enable brought the engine back on a *different*
@@ -2029,9 +2005,6 @@ pub fn run() {
                     tool_status,
                     connect_tool,
                     disconnect_tool,
-                    has_upstream_credential,
-                    save_upstream_api_key,
-                    clear_upstream_credential,
                     get_account,
                     get_account_key_prefix,
                     backfill_account_key_prefix,
@@ -2061,10 +2034,7 @@ pub fn run() {
                     pending_quit_tools,
                     disconnect_tools_for_quit,
                     list_providers,
-                    provider_enable,
-                    provider_disable,
                     proxy_status,
-                    proxy_list_domains,
                     proxy_enable,
                     proxy_disable,
                     proxy_set_domain,
@@ -2099,9 +2069,6 @@ pub fn run() {
                     tool_status,
                     connect_tool,
                     disconnect_tool,
-                    has_upstream_credential,
-                    save_upstream_api_key,
-                    clear_upstream_credential,
                     get_account,
                     get_account_key_prefix,
                     backfill_account_key_prefix,
@@ -2130,8 +2097,6 @@ pub fn run() {
                     pending_quit_tools,
                     disconnect_tools_for_quit,
                     list_providers,
-                    provider_enable,
-                    provider_disable,
                     set_updater_relaunching,
                     get_preferences,
                     set_routing_health_notifications,
@@ -2195,6 +2160,29 @@ pub fn run() {
             // popover to drain buffered analytics errors.
             let _ = APP_HANDLE.set(app.handle().clone());
 
+            // Engine crash fail-safe UI: the manager reverts the system proxy
+            // on its own, but it has no window handle - without this observer
+            // the tray kept its green "routing on" dot and an open popover
+            // kept rendering On until the user happened to reopen it, while
+            // traffic already flowed direct. Repaint the tray and nudge the
+            // popover with the post-crash state (mirrors the startup
+            // auto-enable's emit; the frontend has no status poll by design).
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            {
+                let crash_handle = app.handle().clone();
+                gate_connect_core::proxy::set_engine_crash_observer(move || {
+                    update_tray_status(&crash_handle, false);
+                    match gate_connect_core::proxy::manager().status() {
+                        Ok(state) => {
+                            let _ = crash_handle.emit("proxy-state-changed", &state);
+                        }
+                        Err(e) => {
+                            eprintln!("[gate] status after engine crash failed: {e}");
+                            report_backend_error("restore_routing", format!("{e:#}"));
+                        }
+                    }
+                });
+            }
 
             // Launch at login defaults ON: arm the login item the first time
             // we run so routing persists across a restart out of the box. A
@@ -2243,83 +2231,21 @@ pub fn run() {
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    // OAuth: refresh a stale Cognito access token before the
-                    // engine seeds itself below, so re-honor / auto-enable
-                    // inject a live token (enable() re-reads the stored token
-                    // via access_token_for_injection). Never opens the browser
-                    // - a failed refresh just leaves the popover in the "sign
-                    // in" state the UI derives from oauth_status. Best-effort.
-                    if gate_connect_core::account::auth_mode().unwrap_or_default()
-                        == gate_connect_core::account::AuthMode::OAuth
-                    {
-                        if let Some(cfg) = gate_connect_core::oauth::OAuthConfig::from_build_env() {
-                        // Seed the tray attention flag from the result so the
-                        // first tray paint in the auto-enable below is already
-                        // correct, instead of showing a misleading routing dot
-                        // for up to one refresh interval. Only a refresh
-                        // *failure* (Err: a stored session that can't refresh)
-                        // is an alarm; `Ok(None)` is a signed-out / never
-                        // signed-in state and must stay quiet.
-                        match gate_connect_core::oauth::ensure_fresh(&cfg) {
-                            Ok(session) => {
-                                SESSION_NEEDS_SIGNIN.store(false, Ordering::Relaxed);
-                                // A locally-fresh session can still be dead at
-                                // the gateway (upgrade / server-side drift:
-                                // revoked user, reseeded org data) - the token
-                                // looks fine here, so only the gateway can say.
-                                // Ask it once, before the engine below seeds
-                                // itself from this session. Offline starts get
-                                // no verdict and change nothing.
-                                if let (Some(tokens), Ok(Some(gateway))) = (
-                                    session,
-                                    gate_connect_core::account::load_base_url(),
-                                ) {
-                                    use gate_connect_core::org::SessionProbe;
-                                    match gate_connect_core::org::probe_session(
-                                        &gateway,
-                                        &tokens.access_token,
-                                    ) {
-                                        SessionProbe::Rejected => {
-                                            eprintln!(
-                                                "[gate] gateway rejected the stored OAuth session; prompting sign-in"
-                                            );
-                                            gate_connect_core::oauth::mark_session_rejected();
-                                            SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
-                                        }
-                                        SessionProbe::Accepted(orgs) => {
-                                            // Session is live, but a stored org that
-                                            // dropped out of the membership list would
-                                            // doom every request; clear it so the UI
-                                            // routes to the org picker (`needsOrg`).
-                                            let stale = gate_connect_core::account::selected_org()
-                                                .ok()
-                                                .flatten()
-                                                .is_some_and(|(id, _)| {
-                                                    !orgs.iter().any(|o| o.org_id == id)
-                                                });
-                                            if stale {
-                                                eprintln!(
-                                                    "[gate] stored org is no longer a membership; clearing it for re-pick"
-                                                );
-                                                if let Err(e) =
-                                                    gate_connect_core::account::clear_org()
-                                                {
-                                                    eprintln!(
-                                                        "[gate] clearing the stale org failed: {e:#}"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        SessionProbe::Unavailable => {}
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("[gate] startup OAuth token refresh failed: {e}");
-                                SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
-                            }
+                    // OAuth: refresh a stale token and probe the session at
+                    // the gateway before the engine seeds itself below (the
+                    // policy lives in `gate_connect_core::startup`). Seed the
+                    // tray attention flag from the verdict so the first tray
+                    // paint in the auto-enable below is already correct,
+                    // instead of showing a misleading routing dot for up to
+                    // one refresh interval.
+                    match gate_connect_core::startup::refresh_session() {
+                        gate_connect_core::startup::SessionVerdict::Healthy => {
+                            SESSION_NEEDS_SIGNIN.store(false, Ordering::Relaxed);
                         }
-                    }
+                        gate_connect_core::startup::SessionVerdict::NeedsSignIn => {
+                            SESSION_NEEDS_SIGNIN.store(true, Ordering::Relaxed);
+                        }
+                        gate_connect_core::startup::SessionVerdict::NotOauth => {}
                     }
 
                     // If a previous session left the system proxy on (unclean
@@ -2334,19 +2260,19 @@ pub fn run() {
                     // launch means the previous session never hit a clean stop
                     // (crash / hard restart; on Linux even a clean quit, since
                     // the exit handler below is macOS/Windows-only). Make sure
-                    // routing is actually off, then finish the job: deregister,
-                    // drop the routing intent so a later manual launch stays
-                    // passthrough, and exit - the user asked us not to run at
-                    // startup. On macOS/Windows the reconcile above has already
-                    // *reverted* any stranded system proxy; on Linux it does
-                    // the opposite - it re-honors (re-enables) a leftover
-                    // snapshot - so without an explicit disable here the daemon
-                    // would keep intercepting headless after we exit, and the
-                    // re-written snapshot would make every later manual launch
-                    // re-honor routing again with the intent cleared. A manual
-                    // or updater-driven launch (not --silent) skips this and
-                    // restores routing as the user left it; the still-pending
-                    // opt-out completes at the next safe point instead.
+                    // routing is actually off, then finish the job: deregister
+                    // and exit - the user asked us not to run at startup. The
+                    // routing intent stays put: the opt-out governs autostart,
+                    // not routing, so the next manual launch restores routing
+                    // as the user left it. On macOS/Windows the reconcile
+                    // above has already *reverted* any stranded system proxy;
+                    // on Linux it does the opposite - it re-honors
+                    // (re-enables) a leftover snapshot - so without an
+                    // explicit disable here the daemon would keep intercepting
+                    // headless after we exit. A manual or updater-driven
+                    // launch (not --silent) skips this and restores routing as
+                    // the user left it; the still-pending opt-out completes at
+                    // the next safe point instead.
                     if silent_launch && gate_connect_core::proxy::autostart_optout::pending() {
                         // Linux-only: macOS/Windows reconciled to "off" above,
                         // and running disable there would force_off proxy
@@ -2362,32 +2288,19 @@ pub fn run() {
                             report_backend_error("restore_routing", format!("{e:#}"));
                         }
                         complete_pending_autostart_disable(&handle);
-                        if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
-                            eprintln!("[gate] clearing routing intent failed: {e}");
-                            report_backend_error("routing_intent", format!("{e:#}"));
-                        }
                         handle.exit(0);
                         return;
                     }
 
                     // Restart persistence: bring routing back if the user last
                     // left it on. The exit-time disable reverts the *system
-                    // proxy* only and keeps the routing intent when "Launch at
-                    // login" is on, so this is what re-routes after a reboot.
-                    // (With launch-at-login off, exit clears the intent, so we
-                    // stay passthrough.) No intent recorded means first run, or
-                    // the user left routing off - stay passthrough.
+                    // proxy* only and never touches the routing intent, so
+                    // every launch - login item, manual, updater relaunch -
+                    // restores routing as the user left it. No intent recorded
+                    // means first run, or the user last turned routing off -
+                    // stay passthrough.
                     if !gate_connect_core::proxy::intent::load_intent() {
                         return;
-                    }
-                    // Mirror proxy_enable: restore any snapshotted providers
-                    // before the engine comes up so it routes the prior
-                    // selection. A no-op in the common restart case (routed
-                    // domains persist in config and the engine reloads them on
-                    // enable); harmless and idempotent otherwise.
-                    if let Err(e) = gate_connect_core::provider::restore_all() {
-                        eprintln!("[gate] restoring providers on startup auto-enable failed: {e}");
-                        report_backend_error("provider_restore", format!("{e:#}"));
                     }
                     // Snapshot the persisted ports before enable overwrites
                     // them; comparing them against the state enable returns
@@ -2399,9 +2312,26 @@ pub fn run() {
                     let prior_port = gate_connect_core::proxy::system_proxy::load_port();
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
                     let prior_pac_port = gate_connect_core::proxy::system_proxy::load_pac_port();
-                    match gate_connect_core::proxy::manager().enable() {
-                        Ok(state) => {
+                    // The same master-ON ceremony as the routing toggle and the
+                    // CLI (`routing::enable`): restore the provider selection
+                    // around the engine start. Re-persisting the intent it just
+                    // loaded is a harmless no-op.
+                    match gate_connect_core::routing::enable() {
+                        Ok((state, warnings)) => {
+                            for w in warnings {
+                                eprintln!(
+                                    "[gate] startup auto-enable: {} failed: {:#}",
+                                    w.component, w.error
+                                );
+                                report_backend_error(w.component, format!("{:#}", w.error));
+                            }
                             mark_routing_enabled();
+                            // Restore-on-any-launch means this can be the
+                            // first thing to route on a machine with no login
+                            // item, so it needs the same crash safety net as
+                            // the routing toggle.
+                            #[cfg(any(target_os = "macos", target_os = "windows"))]
+                            arm_crash_safety_net(&handle);
                             // Engine port changed (or none was persisted - the
                             // first launch after upgrading from a build without
                             // port persistence): clients that resolved the
@@ -2425,15 +2355,6 @@ pub fn run() {
                             let pac_moved = false;
                             if engine_moved || pac_moved {
                                 ROUTED_CLIENTS_MAY_BE_STALE.store(true, Ordering::Release);
-                            }
-                            // Second restore pass for domain-only providers the
-                            // pre-enable pass left in the snapshot (nothing to
-                            // configure until the proxy is running).
-                            if let Err(e) = gate_connect_core::provider::restore_all() {
-                                eprintln!(
-                                    "[gate] restoring providers after startup auto-enable failed: {e}"
-                                );
-                                report_backend_error("provider_restore", format!("{e:#}"));
                             }
                             // Reflect the auto-enabled routing in the tray:
                             // retint the mark, turn the status dot green, and
@@ -2698,25 +2619,14 @@ pub fn run() {
                 // strand it. An updater-driven relaunch is exempt - the app
                 // comes right back, so the pending opt-out stays armed and
                 // routing is restored exactly as the user left it.
-                use tauri_plugin_autostart::ManagerExt;
                 if !UPDATER_RELAUNCHING.load(Ordering::Acquire) {
                     complete_pending_autostart_disable(app_handle);
                 }
-                // If the user hasn't asked Gate to launch at login, it won't
-                // relaunch to re-route after a restart - so clear the routing
-                // intent too, otherwise a later manual launch would silently
-                // re-enable routing. Launch-at-login on keeps the intent, so
-                // opting in is what persists routing across a restart. A
-                // still-pending opt-out counts as off: it's the user's choice,
-                // even if the deregistration above couldn't complete.
-                if !UPDATER_RELAUNCHING.load(Ordering::Acquire)
-                    && (!app_handle.autolaunch().is_enabled().unwrap_or(false)
-                        || gate_connect_core::proxy::autostart_optout::pending())
-                {
-                    if let Err(e) = gate_connect_core::proxy::intent::set_intent(false) {
-                        eprintln!("[gate] clearing routing intent on exit failed: {e}");
-                    }
-                }
+                // Exit reverts the *system proxy* only. The routing intent is
+                // the user's last explicit toggle and survives every quit: the
+                // next launch, however it happens, restores routing as it was
+                // left. The only durable "off" is the routing switch itself
+                // (proxy_disable clears the intent).
             }
             let _ = &event;
             let _ = &app_handle;

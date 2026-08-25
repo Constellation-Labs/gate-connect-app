@@ -447,9 +447,9 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
                 "  1. Quit any running `claude` sessions (they cache settings.json at launch)."
             );
             println!(
-                "  2. Re-run `claude` - it picks up ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS from ~/.claude/settings.json."
+                "  2. Re-run `claude` - it picks up HTTPS_PROXY from ~/.claude/settings.json while keeping Anthropic's canonical base URL."
             );
-            println!("  3. Verify with `claude /status` (look for the gateway URL).");
+            println!("  3. Select models normally: standard variants stay 200K and (1M) variants keep their 1M context through Gate.");
         }
         ToolId::Codex => {
             println!("  1. Quit any running `codex` sessions.");
@@ -569,18 +569,14 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
         ProxyCmd::Enable { foreground } => {
-            // Restore providers a prior master-off disabled, before enabling -
-            // otherwise the all-off state trips `enable`'s "at least one
-            // provider" precondition (mirrors the app's proxy_enable flow).
-            if let Err(e) = gate_connect_core::provider::restore_all() {
-                eprintln!("note: restoring providers failed: {e}");
-            }
-            let state = mgr.enable()?;
-            // Second restore pass: domain-only providers have nothing to
-            // configure until the proxy is running, so the pre-enable pass
-            // leaves them in the snapshot.
-            if let Err(e) = gate_connect_core::provider::restore_all() {
-                eprintln!("note: restoring providers after enable failed: {e}");
+            // The same master-ON ceremony as the app (`routing::enable`):
+            // persist the intent, restore providers around the engine start
+            // (the all-off state would otherwise trip `enable`'s "at least
+            // one provider" precondition), and keep best-effort hiccups as
+            // notes.
+            let (state, warnings) = gate_connect_core::routing::enable()?;
+            for w in warnings {
+                eprintln!("note: {} failed: {:#}", w.component, w.error);
             }
             println!("Proxy enabled.");
             print_proxy_state(&state);
@@ -594,12 +590,23 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 // sends SIGTERM, and an engine that vanished without reverting
                 // would leave the machine pointed at a dead loopback port.
                 println!();
-                mgr.disable()?;
+                let (_, warnings) = gate_connect_core::routing::disable()?;
+                for w in warnings {
+                    eprintln!("note: {} failed: {:#}", w.component, w.error);
+                }
                 println!("Proxy disabled; prior system-proxy state restored.");
             }
         }
         ProxyCmd::Disable => {
-            mgr.disable()?;
+            // The app's master-OFF ceremony (`routing::disable`), not a bare
+            // engine stop: the sweep unpoints managed tool configs from the
+            // relay this kills (they would otherwise dial a dead loopback
+            // port), and clearing the intent keeps a later app launch from
+            // silently re-routing what the operator just turned off.
+            let (_, warnings) = gate_connect_core::routing::disable()?;
+            for w in warnings {
+                eprintln!("note: {} failed: {:#}", w.component, w.error);
+            }
             println!("Proxy disabled; prior system-proxy state restored.");
         }
         ProxyCmd::Relay => {

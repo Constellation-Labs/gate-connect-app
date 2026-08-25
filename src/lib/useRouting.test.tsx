@@ -37,7 +37,6 @@ const tool = (slug: string, status: Status): Tool => ({
   name: slug,
   upstream_provider_name: "Anthropic",
   default_upstream_url: `https://gw.example/${slug}`,
-  requires_upstream_credential: false,
   config_location: null,
   status,
 });

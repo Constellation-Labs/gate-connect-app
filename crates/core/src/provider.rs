@@ -57,13 +57,13 @@ pub struct Provider {
 /// Built-in provider catalog. Claude leads, then OpenAI/Codex; both follow the
 /// same one-switch model and others can be added the same way.
 ///
-/// Mapping note: each provider lists only the tools that need *config* editing
-/// to route (a CLI that ignores the system proxy - Claude Code, Codex). Desktop
-/// apps that honor the system proxy (Cowork / Claude Desktop) ride the proxy
-/// domain instead, so they're covered by `proxy_domain_slugs` without a
-/// credential or sudo prompt. That's why Cowork isn't in `tool_ids`. A provider
-/// with no native CLI integration (OpenRouter) is proxy-only: empty `tool_ids`,
-/// routed entirely through its proxy domain.
+/// Mapping note: each provider lists only the tools that need per-tool config
+/// editing for reliable routing (Claude Code gets `HTTPS_PROXY`; Codex gets a
+/// model provider). Desktop apps that honor the system proxy (Cowork / Claude
+/// Desktop) ride the proxy domain instead, so they're covered by
+/// `proxy_domain_slugs` without per-tool config. That's why Cowork isn't in
+/// `tool_ids`. A provider with no native CLI integration (OpenRouter) is
+/// proxy-only: empty `tool_ids`, routed entirely through its proxy domain.
 pub fn providers() -> Vec<Provider> {
     vec![
         Provider {
@@ -77,14 +77,15 @@ pub fn providers() -> Vec<Provider> {
             // user's claude.ai session the moment they enabled Claude. It rides
             // `chat_domain_slugs` instead, which shows it on the ledger under
             // Claude and leaves the flipping to its own switch.
+            //
+            // Naming a slug here is necessary but not sufficient for the row:
+            // `claude-web` and `chatgpt-apps` below are gated to the staging
+            // gateway by `proxy::config`'s `STAGING_ONLY_SLUGS`, and a domain
+            // that comes back unsupported has no row at all. So this list is
+            // what the ledger shows WHERE the surface is available, not a
+            // promise that it is.
             proxy_domain_slugs: &["anthropic"],
-            // Empty for now, deliberately. The field and the row it drives ship
-            // here because OpenClaw needs one below, but the two chat surfaces
-            // that motivated the mechanism (`claude-web` here, `chatgpt-apps`
-            // under OpenAI) are still being validated, and a row is an
-            // invitation to flip it. They stay CLI-only until the branch
-            // validating them lands, which re-adds exactly these two slugs.
-            chat_domain_slugs: &[],
+            chat_domain_slugs: &["claude-web"],
         },
         Provider {
             slug: "openai",
@@ -103,9 +104,9 @@ pub fn providers() -> Vec<Provider> {
             // thing that lets Gate see them - `integrations/openclaw.rs` used to
             // flip the domain itself, which is what this row replaces.
             //
-            // `chatgpt-apps` is deliberately not here yet, for the reason given
-            // on Claude's entry above.
-            chat_domain_slugs: &["chatgpt"],
+            // `chatgpt-apps` covers the ChatGPT app's own chat turn (a
+            // session-cookie surface) alongside Codex's tool plane.
+            chat_domain_slugs: &["chatgpt", "chatgpt-apps"],
         },
         Provider {
             slug: "openrouter",
@@ -260,7 +261,27 @@ pub fn list() -> Vec<ProviderState> {
 /// running, enables the provider's proxy domains. Requires a signed-in
 /// account. Idempotent - re-running re-applies the same config.
 pub fn enable(slug: &str) -> Result<ProviderState> {
-    enable_inner(slug, &[], true)
+    enable_inner(slug, &[], true).map(|(_, state)| state)
+}
+
+/// What an enable actually did, as distinct from whether it went wrong.
+///
+/// The awkward case is the third one: nothing was configured, and nothing is
+/// broken. It used to be reported as `Ok` or as an error depending only on
+/// whether the skip list happened to be non-empty, which made "did nothing"
+/// indistinguishable from "done" for the restore path - and clearing the
+/// restore snapshot on that reading is what left domain-only providers off for
+/// a whole session. Saying which of the two happened is this enum's only job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Applied {
+    /// A route was configured: a tool's config, a proxy domain, or both.
+    Enabled,
+    /// No route to configure *yet*. With no detected tool and no running
+    /// engine there is nothing this call can do; a later call, once the engine
+    /// is up, can. Only the restore path sees this - a user who asked for a
+    /// provider by name gets an error, because for them nothing happening is a
+    /// result that needs explaining.
+    NotYet,
 }
 
 /// [`enable`] with members to leave alone: the restore path's flavour, so a
@@ -270,11 +291,11 @@ pub fn enable(slug: &str) -> Result<ProviderState> {
 /// one `proxy_enabled`, and `provider_enabled` is reserved for the operator
 /// toggling that provider by hand (see the one-event-per-action rule in
 /// [`crate::audit`]).
-fn enable_skipping(slug: &str, skip: &[String]) -> Result<ProviderState> {
+fn enable_skipping(slug: &str, skip: &[String]) -> Result<(Applied, ProviderState)> {
     enable_inner(slug, skip, false)
 }
 
-fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderState> {
+fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<(Applied, ProviderState)> {
     let p = find(slug).with_context(|| format!("unknown provider {slug:?}"))?;
     let account = account::load()?
         .context("no Gate account configured - sign in before enabling a provider")?;
@@ -289,7 +310,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderStat
         // nothing to do, and nothing to complain about. Only a user who asked
         // for this provider by name gets the explanation.
         if !skip.is_empty() {
-            return Ok(state(&p));
+            return Ok((Applied::NotYet, state(&p)));
         }
         anyhow::bail!(
             "nothing to configure for {}: install its app, or turn on \
@@ -354,7 +375,7 @@ fn enable_inner(slug: &str, skip: &[String], audit: bool) -> Result<ProviderStat
         );
     }
 
-    Ok(state)
+    Ok((Applied::Enabled, state))
 }
 
 /// Turn a provider off. Reverts the config integration(s) and, if the proxy is
@@ -818,18 +839,35 @@ pub fn pending_restore() -> Result<PendingRestore> {
 
 /// Master ON: re-enable every provider that was on when routing was last
 /// turned off, then reconnect any standalone tools the master-off sweep
-/// disconnected. Entries that fail to restore stay in their snapshot so a
+/// disconnected. Entries that are not back yet stay in their snapshot so a
 /// later call can retry them; each snapshot is cleared once everything in it
 /// is back. Idempotent; a missing snapshot is a no-op. Callers run this twice
 /// per master-on: once before the proxy comes up (config-based tools, and the
 /// engine's "at least one provider" precondition) and once after (domain-only
 /// providers, which have nothing to configure until the proxy is running).
+///
+/// **An entry leaves the snapshot only once it is actually routing again.**
+/// The two passes exist because the first one *cannot* finish the job: a
+/// domain-only provider (OpenRouter, or Anthropic on a machine with no Claude
+/// app) has no tool to configure and no running engine to flip its domain in,
+/// so the pre-enable pass gets [`Applied::NotYet`]. That used to arrive as a
+/// bare `Ok`, indistinguishable from a completed restore, and clearing the
+/// snapshot on it left the post-enable pass - the one that could actually do
+/// the work - with nothing to restore, so every domain-only provider silently
+/// stayed off for the rest of the session.
+///
+/// The [`Applied`] verdict is the primary test; the provider's own `enabled`
+/// is checked too, so a call that believes it configured a route but did not
+/// produce one is also held for retry. Belt and braces on purpose: this dance
+/// is hand-copied across `routing::enable` and the Linux manager's startup
+/// re-honor, and an invariant that reads the world protects those call sites
+/// from each other in a way a "this is the final pass" flag could not.
 pub fn restore_all() -> Result<()> {
     let _guard = master_flow_guard();
     // Members that were off before routing stopped stay off; the family around
     // them comes back. See [`RESTORE_SKIP_MEMBERS`].
     let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
-    let mut failed = Vec::new();
+    let mut pending = Vec::new();
     let queued = load_snapshot(PROVIDER_SNAPSHOT)?;
     // One journal for the whole restore, seeded with BOTH passes before the first
     // attempt. Both, because a restore is one operation from the user's side and
@@ -861,22 +899,31 @@ pub fn restore_all() -> Result<()> {
             .collect(),
     );
     for slug in queued {
-        if let Err(e) = enable_skipping(&slug, &skip) {
-            eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
-            journal.record(&slug, recovery::Outcome::WriteFailed);
-            failed.push(slug);
-        } else {
-            journal.record(&slug, recovery::Outcome::Restored);
+        match enable_skipping(&slug, &skip) {
+            Ok((Applied::Enabled, state)) if state.enabled => {
+                journal.record(&slug, recovery::Outcome::Restored);
+            }
+            // Nothing to do yet, or a route that did not take. Neither is a
+            // failure worth reporting - the engine simply is not up - and
+            // neither is a completion. The seeded `Pending` is already the
+            // right entry, so the journal is left alone rather than told a
+            // story about an attempt that has not happened yet.
+            Ok(_) => pending.push(slug),
+            Err(e) => {
+                eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");
+                journal.record(&slug, recovery::Outcome::WriteFailed);
+                pending.push(slug);
+            }
         }
     }
-    if failed.is_empty() {
+    if pending.is_empty() {
         clear_snapshot(PROVIDER_SNAPSHOT)?;
         // The cycle is complete, so the skip list has done its job. Held until
         // now for the same reason the provider snapshot is: a partial restore
         // gets retried, and the retry needs to know what to leave alone.
         clear_snapshot(RESTORE_SKIP_MEMBERS)?;
     } else {
-        save_snapshot(PROVIDER_SNAPSHOT, &failed)?;
+        save_snapshot(PROVIDER_SNAPSHOT, &pending)?;
     }
     // The same journal continues into the tool pass. Finished here rather than
     // there, and finished even when that pass errors: the journal is the record of
@@ -985,6 +1032,61 @@ mod tests {
             }],
         }
         .is_empty());
+    }
+
+    /// `Applied::NotYet` is private, so the only place that can name it is a
+    /// test in this module - and `restore_all`'s behavioural test cannot
+    /// distinguish it, because after a master-off the provider reads off
+    /// anyway and either half of that guard alone would hold the entry. This
+    /// pins the half the integration test cannot see.
+    ///
+    /// Redirects the per-user paths, so it takes [`crate::env::path_env_lock`]:
+    /// without it a test that depends on the *absence* of the seam can read
+    /// this one's throwaway home instead of the real filesystem. The secrets
+    /// seam goes with it, or `account::save` writes the key into the
+    /// developer's own keyring.
+    #[test]
+    fn an_enable_with_nothing_to_do_yet_says_so() {
+        let _lock = crate::env::path_env_lock();
+        let home = std::env::temp_dir().join(format!(
+            "gate-provider-notyet-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(home.join("secrets")).unwrap();
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+        std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
+
+        let applied = (|| {
+            account::save("https://gw.example.com", Some("sk-gw-testkey123"))?;
+            // The shape the pre-engine restore pass meets: no engine running,
+            // and `anthropic`'s only config tool skipped because the user had
+            // switched it off before routing stopped. Skipping it also makes
+            // the result independent of whether Claude Code happens to be
+            // installed on the machine running this - `detect` consults real
+            // binary paths, which no test home redirects.
+            enable_skipping("anthropic", &["claude-code".to_string()]).map(|(applied, _)| applied)
+        })();
+
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        match prev_secrets {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_SECRETS", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_SECRETS"),
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        assert_eq!(
+            applied.expect("a skipped family is not an error"),
+            Applied::NotYet,
+            "reporting this as Enabled is what let the pre-engine pass clear \
+             the snapshot the post-engine pass needed"
+        );
     }
 
     #[test]
@@ -1098,23 +1200,19 @@ mod tests {
     #[test]
     fn chat_domains_reach_the_ledger_without_reaching_the_cascade() {
         // The other half of the test above, and the half that keeps the fix in
-        // place: excluding a slug from `proxy_domain_slugs` is also what used to
-        // hide it from Home, so the exclusion alone is indistinguishable from
-        // having dropped it. `chat_domain_slugs` is what `buildGroups` reads to
-        // give one a row and a switch of its own; if this went empty, the domain
-        // would silently become CLI-only again - which is the state OpenClaw's
-        // connect used to paper over by flipping it unasked.
-        let openai = find("openai").expect("openai provider present");
-        assert_eq!(openai.chat_domain_slugs, &["chatgpt"]);
-        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt"));
-
-        // Still deferred, both of them: the surfaces under validation get their
-        // rows when that branch lands, and this asserts they are not exposed
-        // ahead of it rather than merely forgotten.
+        // place: excluding these slugs from `proxy_domain_slugs` is also what
+        // used to hide them from Home, so the exclusion alone is indistinguishable
+        // from having dropped them. `chat_domain_slugs` is what `buildGroups`
+        // reads to give each one a row and a switch of its own; if it ever went
+        // empty, the domains would silently become CLI-only again - which is the
+        // state OpenClaw's connect used to paper over by flipping `chatgpt`
+        // unasked.
         let anthropic = find("anthropic").expect("anthropic provider present");
-        assert!(anthropic.chat_domain_slugs.is_empty());
-        assert!(!openai.chat_domain_slugs.contains(&"chatgpt-apps"));
-
+        assert_eq!(anthropic.chat_domain_slugs, &["claude-web"]);
+        let openai = find("openai").expect("openai provider present");
+        assert_eq!(openai.chat_domain_slugs, &["chatgpt", "chatgpt-apps"]);
+        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt"));
+        assert!(!openai.proxy_domain_slugs.contains(&"chatgpt-apps"));
         // Every slug named must exist in the domain catalog, or the row is
         // promised and never rendered.
         let catalog = crate::proxy::default_domains();

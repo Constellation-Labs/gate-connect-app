@@ -122,10 +122,6 @@ impl Integration for Hermes {
         DEFAULT_UPSTREAM_URL
     }
 
-    fn requires_upstream_credential(&self) -> bool {
-        false
-    }
-
     fn config_location(&self) -> Option<String> {
         env_file_path().ok().map(|p| p.display().to_string())
     }

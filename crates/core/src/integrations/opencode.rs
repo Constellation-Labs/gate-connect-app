@@ -225,13 +225,6 @@ impl Integration for OpenCode {
         DEFAULT_UPSTREAM_URL
     }
 
-    fn requires_upstream_credential(&self) -> bool {
-        // OpenCode already has the user's upstream credentials
-        // (`opencode auth login <provider>`). Gate is a pure passthrough
-        // on `Authorization` / `x-api-key`, so no separate key here.
-        false
-    }
-
     fn config_location(&self) -> Option<String> {
         settings_path().ok().map(|p| p.display().to_string())
     }
@@ -641,31 +634,11 @@ fn state_path() -> Result<PathBuf> {
 }
 
 fn load_settings() -> Result<Option<Map<String, Value>>> {
-    let path = settings_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-    let value: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing {} as JSON", path.display()))?;
-    match value {
-        Value::Object(m) => Ok(Some(m)),
-        _ => anyhow::bail!("{} top level must be a JSON object", path.display()),
-    }
+    super::json_config::load_object(&settings_path()?)
 }
 
 fn write_settings(settings: &Map<String, Value>) -> Result<()> {
-    let path = settings_path()?;
-    let mut body = serde_json::to_string_pretty(settings).context("serializing opencode.json")?;
-    body.push('\n');
-    // 0o600 defensively (the file no longer holds the Gate key - the relay
-    // injects it - but may carry other user config). Atomic-write protects
-    // against partial writes corrupting JSON on crash.
-    crate::primitives::write_file(&path, body.as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))
+    super::json_config::write_object(&settings_path()?, settings)
 }
 
 fn load_state() -> Result<Option<State>> {
@@ -695,31 +668,10 @@ fn remove_state() -> Result<()> {
 }
 
 fn load_opencode_auth() -> Result<Map<String, Value>> {
-    let path = env::opencode_auth_path()?;
-    if !path.exists() {
-        return Ok(Map::new());
-    }
-    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    if raw.trim().is_empty() {
-        return Ok(Map::new());
-    }
-    let value: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing {} as JSON", path.display()))?;
-    match value {
-        Value::Object(m) => Ok(m),
-        _ => anyhow::bail!("{} top level must be a JSON object", path.display()),
-    }
+    Ok(super::json_config::load_object(&env::opencode_auth_path()?)?.unwrap_or_default())
 }
 
-fn ensure_object<'a>(parent: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {
-    if !matches!(parent.get(key), Some(Value::Object(_))) {
-        parent.insert(key.into(), Value::Object(Map::new()));
-    }
-    parent
-        .get_mut(key)
-        .and_then(|v| v.as_object_mut())
-        .expect("inserted an object")
-}
+use super::json_config::ensure_object;
 
 #[cfg(test)]
 mod tests {

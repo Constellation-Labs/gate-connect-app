@@ -172,12 +172,6 @@ impl Integration for OpenClaw {
         DEFAULT_UPSTREAM_URL
     }
 
-    fn requires_upstream_credential(&self) -> bool {
-        // OpenClaw already has the user's upstream credentials. Gate is a pure
-        // passthrough on `Authorization` / `x-api-key`, so no separate key.
-        false
-    }
-
     fn config_location(&self) -> Option<String> {
         settings_path().ok().map(|p| p.display().to_string())
     }
@@ -597,32 +591,12 @@ fn state_path() -> Result<PathBuf> {
 }
 
 fn load_settings() -> Result<Option<Map<String, Value>>> {
-    let path = settings_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
     // openclaw.json is JSON5 (comments + trailing commas allowed).
-    let value: Value =
-        json5::from_str(&raw).with_context(|| format!("parsing {} as JSON5", path.display()))?;
-    match value {
-        Value::Object(m) => Ok(Some(m)),
-        _ => anyhow::bail!("{} top level must be a JSON object", path.display()),
-    }
+    super::json_config::load_object_json5(&settings_path()?)
 }
 
 fn write_settings(settings: &Map<String, Value>) -> Result<()> {
-    let path = settings_path()?;
-    let mut body = serde_json::to_string_pretty(settings).context("serializing openclaw.json")?;
-    body.push('\n');
-    // 0o600 defensively - the file holds no Gate credential, but may carry
-    // other user config. Atomic-write protects against a crash mid-write
-    // corrupting the config.
-    crate::primitives::write_file(&path, body.as_bytes(), 0o600)
-        .with_context(|| format!("writing {}", path.display()))
+    super::json_config::write_object(&settings_path()?, settings)
 }
 
 fn load_state() -> Result<Option<State>> {
@@ -651,15 +625,7 @@ fn remove_state() -> Result<()> {
     Ok(())
 }
 
-fn ensure_object<'a>(parent: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {
-    if !matches!(parent.get(key), Some(Value::Object(_))) {
-        parent.insert(key.into(), Value::Object(Map::new()));
-    }
-    parent
-        .get_mut(key)
-        .and_then(|v| v.as_object_mut())
-        .expect("inserted an object")
-}
+use super::json_config::ensure_object;
 
 #[cfg(test)]
 mod tests {
@@ -795,8 +761,27 @@ mod tests {
             "a healthy config is Connected regardless of the domain catalog"
         );
 
-        let note = coverage_note(OpenAiAuthMode::Bearer)
-            .expect("no domains file in a bare test env, so the note applies");
+        // `coverage_note` reads the domain catalog through `app_support_dir()`, so
+        // with no redirect in place it reads the *developer's* real one. Anyone who
+        // has run Gate Connect with the chatgpt domain on had the note suppressed
+        // and failed here, for reasons the code under test has nothing to do with.
+        // The bare env this wants has to be built, not assumed.
+        let note = {
+            let _lock = crate::env::path_env_lock();
+            let home =
+                std::env::temp_dir().join(format!("gate-openclaw-note-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&home);
+            let prev = std::env::var_os("GATE_CONNECT_TEST_HOME");
+            std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
+            let note = coverage_note(OpenAiAuthMode::Bearer);
+            match prev {
+                Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+                None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&home);
+            note
+        }
+        .expect("an empty home has no domains file, so the note applies");
         assert!(note.contains("chatgpt"), "must name the domain: {note}");
         assert!(
             note.contains("proxy domain chatgpt on"),

@@ -19,7 +19,6 @@ const connectedCodex = {
   name: "Codex",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://gw.example/codex",
-  requires_upstream_credential: false,
   status: { kind: "connected" as const },
 };
 

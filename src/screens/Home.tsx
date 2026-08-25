@@ -155,15 +155,12 @@ export function Home({
   // reason nothing is routing, so a change notice stacked under it would just
   // be a second thing to read first.
   //
-  // Both render above the ledger, with the trust card. This comment used to say
-  // "transient chrome must never bury the ledger (the pills are the point of
-  // the screen)", which contradicted DESIGN.md's "Blockers outrank inventory"
-  // written the same round, and the banners obeyed this half while the trust
-  // card obeyed the other. A banner that explains why traffic is not flowing
-  // and carries the fix is not chrome; it is the most important sentence on the
-  // screen. The rule survives, scoped to what is actually transient: the launch
-  // tip, which is the one element here that speaks only in a quiet room and
-  // correctly sits below the list.
+  // Both render above the ledger, with the trust card - DESIGN.md's "Blockers
+  // outrank inventory". A banner that explains why traffic is not flowing and
+  // carries the fix is not chrome; it is the most important sentence on the
+  // screen. "Transient chrome must never bury the ledger" still holds, scoped
+  // to what is actually transient: the launch tip, the one element here that
+  // speaks only in a quiet room and correctly sits below the list.
   const banner: "stale" | "change" | null =
     // Nothing installed means nothing can be routing, so an offer to close
     // running apps is an offer to close nothing.
