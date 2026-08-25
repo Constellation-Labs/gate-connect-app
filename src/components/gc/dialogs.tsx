@@ -742,6 +742,10 @@ export function UseGateModelDialog({
       icon="layers"
       title={`Use a Gate model for ${app.name}?`}
       subtitle="Your next requests will use Constellation Gate PAYG credits"
+      // 130:48278 draws this one narrower than the picker. The design uses two
+      // dialog widths, so the shared Modal takes the width rather than every
+      // dialog being forced to the wider frame's shape.
+      width={512}
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}

@@ -39,6 +39,22 @@ const TONE_STYLES: Record<ModalTone, string> = {
   neutral: "bg-gray-100 text-neutral-700",
 };
 
+/**
+ * The two widths the design actually uses for dialogs.
+ *
+ * A union rather than a number, so a third cannot appear without someone
+ * deciding it should. 600 is the default and what CLAUDE.md documents
+ * (`139:66117`, the model picker); 512 is the narrower frame used where the
+ * dialog is a short confirmation rather than a working surface (`130:48278`).
+ *
+ * Spelled out rather than interpolated - Tailwind only sees literal class names
+ * at build time.
+ */
+const WIDTHS = {
+  512: "w-[512px]",
+  600: "w-[600px]",
+} as const;
+
 export function Modal({
   tone = "neutral",
   icon,
@@ -49,6 +65,7 @@ export function Modal({
   middle,
   primary,
   closeButton,
+  width = 600,
   onDismiss,
   initialFocus,
 }: {
@@ -73,6 +90,8 @@ export function Modal({
    *  selection applies on click - so without this its only exits would be Escape
    *  and a scrim click, neither of which is visible. */
   closeButton?: boolean;
+  /** Panel width in px. Defaults to 600; see {@link WIDTHS}. */
+  width?: keyof typeof WIDTHS;
   /** Escape and scrim clicks. Omit to make the dialog unskippable. */
   onDismiss?: () => void;
   /** Where focus opens. The form dialogs point this at the field being edited;
@@ -101,7 +120,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="w-[600px] max-w-full rounded-xl bg-base-card p-6 shadow-base-lg"
+        className={`${WIDTHS[width]} max-w-full rounded-xl bg-base-card p-6 shadow-base-lg`}
       >
         {closeButton && onDismiss && (
           <button
