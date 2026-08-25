@@ -93,10 +93,10 @@ pub fn flush() {
 /// each one a DNS lookup and, behind a wildcard resolver, a 5s timeout. So in a
 /// test home the rule is: emit only where the test said where to.
 fn audit_endpoint(gateway_base_url: &str) -> Option<String> {
-    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_AUDIT_ENDPOINT") {
+    if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_AUDIT_ENDPOINT") {
         return Some(o.to_string_lossy().into_owned());
     }
-    if std::env::var_os("GATE_CONNECT_TEST_HOME").is_some_and(|v| !v.is_empty()) {
+    if crate::env::test_seam("GATE_CONNECT_TEST_HOME").is_some_and(|v| !v.is_empty()) {
         return None;
     }
     Some(format!(

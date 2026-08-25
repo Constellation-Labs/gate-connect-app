@@ -19,7 +19,6 @@ function tool(slug: string, name: string, status: Tool["status"]): Tool {
     name,
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
-    requires_upstream_credential: false,
     status,
   };
 }
@@ -131,6 +130,32 @@ describe("GroupMembers inline expansion", () => {
     fireEvent.click(row);
     expect(row.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText(/never lands in the config file/)).toBeTruthy();
+  });
+
+  it("does not let an off proxy row promise the whole host a tool routes by config", () => {
+    // The row prints api.anthropic.com beside its own switch, so an off switch
+    // reads as "nothing on that host reaches Gate". Claude Code carries a route
+    // selector in its own proxy URL, which the engine honours whatever this
+    // switch says, so the row has to say what the switch actually covers.
+    renderDetail(
+      [tool("claude-code", "Claude Code", { kind: "connected" })],
+      [{ ...domain, enabled: false }],
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
+    expect(
+      screen.getByText(/Claude Code reaches api\.anthropic\.com through its own config/),
+    ).toBeTruthy();
+  });
+
+  it("claims no such sibling when nothing else routes the host", () => {
+    // Claude Code installed but not connected: the switch really is the whole
+    // story for this host, and the extra sentence would be noise.
+    renderDetail(
+      [tool("claude-code", "Claude Code", { kind: "detected" })],
+      [{ ...domain, enabled: false }],
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude Desktop / Cowork details" }));
+    expect(screen.queryByText(/through its own config/)).toBeNull();
   });
 
   it("shows a failure's whole message inline", () => {

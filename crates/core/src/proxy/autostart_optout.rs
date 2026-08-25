@@ -17,6 +17,11 @@
 //!   launch-at-login is already off ([`record_safety_net_registration`]);
 //!   the shell registers the login item just for the crash window.
 //!
+//! macOS/Windows only in practice: on Linux the engine lives in a detached
+//! helper daemon that owns the port and falls back to pass-through when the
+//! GUI dies, so there is no dead-port stranding to heal, and the shell never
+//! arms the net there.
+//!
 //! Only the marker persistence and the defer-vs-deregister decision live
 //! here; the OS login item itself is owned by the desktop shell (the
 //! tauri-plugin-autostart calls in `src-tauri`).

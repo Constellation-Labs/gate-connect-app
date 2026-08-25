@@ -40,7 +40,7 @@ struct OrgsResponse {
 /// (http) so it's hermetically testable without a real https gateway. Unset in
 /// real builds, where it's `<gateway_base_url>/v1/me/orgs`.
 fn orgs_endpoint(gateway_base_url: &str) -> String {
-    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_ORGS_ENDPOINT") {
+    if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_ORGS_ENDPOINT") {
         return o.to_string_lossy().into_owned();
     }
     format!("{}/v1/me/orgs", gateway_base_url.trim_end_matches('/'))

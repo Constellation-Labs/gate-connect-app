@@ -6,13 +6,31 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+/// Read a `GATE_CONNECT_TEST_*` seam variable. Honored only in debug builds:
+/// the seams redirect trust roots (`GATE_CONNECT_TEST_CA`), secret storage
+/// (`GATE_CONNECT_TEST_SECRETS`), and control-plane endpoints, so a release
+/// binary must never obey them - an attacker who can set a production
+/// process's environment could otherwise swap those out wholesale. Tests and
+/// the e2e harness build debug (`cargo test` / plain `cargo build`), where
+/// the seams work unchanged; a seam set against a release binary is ignored
+/// loudly rather than silently, so a mis-built harness fails diagnosably
+/// instead of appearing to pass against redirected state.
+pub(crate) fn test_seam(name: &str) -> Option<std::ffi::OsString> {
+    let value = std::env::var_os(name)?;
+    if cfg!(debug_assertions) {
+        return Some(value);
+    }
+    eprintln!("[gate] ignoring {name}: test seams are disabled in release builds");
+    None
+}
+
 /// Test seam: when `GATE_CONNECT_TEST_HOME` is set, root every per-user path
 /// under it instead of the real OS home / data dir. This is the only portable
 /// way to redirect the filesystem on Windows too (`dirs` reads Known Folders,
 /// not `$HOME`), so the CLI flow tests can run hermetically on all three OSes.
 /// Unset in production, so it never affects real runs.
 fn test_home_override() -> Option<PathBuf> {
-    std::env::var_os("GATE_CONNECT_TEST_HOME")
+    test_seam("GATE_CONNECT_TEST_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
 }
@@ -56,7 +74,9 @@ fn env_path(var: &str) -> Option<PathBuf> {
 /// it is.
 #[cfg(target_os = "macos")]
 pub fn test_login_keychain() -> Option<PathBuf> {
-    env_path("GATE_CONNECT_TEST_LOGIN_KEYCHAIN")
+    test_seam("GATE_CONNECT_TEST_LOGIN_KEYCHAIN")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
 }
 
 pub fn home() -> Result<PathBuf> {

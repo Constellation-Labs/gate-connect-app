@@ -43,7 +43,7 @@ const CHUNK_MARKER: &str = "\u{0}gck-chunks\u{0}";
 /// need. Unset in production, so the real Keychain / Credential Manager /
 /// Secret Service path is always used there.
 fn test_secrets_dir() -> Option<PathBuf> {
-    std::env::var_os("GATE_CONNECT_TEST_SECRETS")
+    crate::env::test_seam("GATE_CONNECT_TEST_SECRETS")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
 }
