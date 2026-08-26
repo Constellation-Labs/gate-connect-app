@@ -38,28 +38,9 @@ ones.
 **The card.** 496px wide, radius **16**, `shadow/lg`, 1px `base/border`. The
 build has `max-w-[520px]`, `rounded-md` (8) and `shadow-base-sm`.
 
-**There are two header archetypes, not one.** Read after the first draft of
-this review, which had over-generalised from the two stepped panes:
-
-- **Centred** - a 48px tile at radius 8 over a centred title and subtitle, with
-  stacked full-width buttons below. Sign-in, the key form, the diagnostics step.
-- **Row** - a 32px tile beside the title, subtitle left-aligned beneath, paired
-  with the action footer. The stepped panes: org picker, name this device.
-
-Both stack at 12px. `SetupHeader` centred everything and drew a bare 40px hex
-mark with no tile at all.
-
-**The panes have a bordered action footer.** A row with `padding: 16` and a 1px
-top border, outside the padded body:
-
-| Pane | Left | Right |
-| --- | --- | --- |
-| Org picker | `Use a different account` (Link variant, underlined) | `Back` + ArrowLeft, `Continue` + ArrowRight |
-| Name this device | `Skip naming` (Link variant) | `Continue` + ArrowRight |
-
-The build stacks full-width buttons inside the card body and has no `Back` and
-no `Use a different account` anywhere. Note the drawn footer buttons are **hug
-width**, radius 4 - unlike the sign-in card's.
+**One header archetype - see the correction below.** A 48px tile at radius 8
+over a centred title and subtitle, with stacked full-width buttons under it.
+`SetupHeader` drew a bare 40px hex mark with no tile at all.
 
 **The sign-in card keeps stacked full-width buttons**, but at **44px tall and
 radius 8**, primary carrying a 20px ArrowRight, and the `or` divider at a 19px
@@ -90,6 +71,51 @@ Minimize2** as 32px icon buttons - open question 5 (Minimize2 removed as an OS
 duplicate) is contradicted for the fifth read running. And `Auth / Error
 states` still carries **no check**, fifth read, so the setup-timeout dialog and
 the device-name validation stay unbuilt.
+
+---
+
+## Correction: the bordered-footer redraw was read off unready frames
+
+**Found by validating all 25 Setup frames**, after the first pass had read five.
+
+The org picker and name-device panes were rebuilt with a left-aligned header and
+a bordered action footer carrying `Back` and `Use a different account`. That was
+read off `451:7795` and `451:7906` - the two highest-numbered frames on the page.
+They do draw that treatment.
+
+**But they sit above the page's first section rule.** The section labels and
+their rules run:
+
+| Section | Label y | Rule y |
+| --- | --- | --- |
+| `Auth / Connect with Gate ✅` | -219 | **-163** |
+| `Auth / Connect with API key ✅` | 786 | 841 |
+| `Auth / Organizations ✅` | 1813 | 1869 |
+| `Auth / Error states` (no check) | 2895 | 2951 |
+
+`451:7795` is at y=-1063 and `451:7906` at y=-1125. Both are **above -163**, so
+neither falls under any section heading - and the file's convention is that the
+check on a section heading is what marks a flow ready. Two frames floating above
+every heading are the shape of work in progress, not of a spec.
+
+Every frame *inside* a checked section draws the older, simpler treatment, and
+all nine org-picker states agree with each other: centred header, stacked
+full-width buttons, `Use a different account` as a link under the primary, and
+**no `Back` button anywhere**. `231:2102` (empty), `229:90709` (one org),
+`229:90782` (two), `229:90855` (three), `229:90928` (scrollable), `231:2271`
+(timeout) - all the same shape. The name-device and API-key frames likewise.
+
+**So the build before the redraw was right, and the redraw was wrong.** Both
+panes are back to centred-and-stacked; `SetupFooter`, `FooterButton`, the
+header's `row` mode and the `arrowLeft` glyph are gone with it.
+
+**What survives, because the in-section frames do confirm it:** the 496px card
+at radius 16 under `shadow/lg`, the 48px header tile, 44px buttons at radius 8
+with the drawn right arrow, the `CircleX`-clearable 44px field, the 8px progress
+rail, the org-row treatment, the 19px `or` divider, and the diagnostics copy.
+
+**The lesson for next time:** on this file, position relative to the section
+rules is part of the spec. A high node id means recent, not ready.
 
 ---
 
@@ -171,15 +197,15 @@ Items 1-3 of the original order, plus the App sort rule. Verified by
 screenshotting the built panes and diffing them against `get_screenshot` of the
 same frames.
 
-**Setup.** The rail is the intro's rail. The card is 496 / r16 / `shadow-base-lg`
-and unpadded, so a footer can span it. `SetupHeader` grew the two archetypes
-above and a `HeaderTile`. New `SetupBody`, `SetupFooter` and `FooterButton`
-primitives; `PrimaryButton` and `SecondaryButton` moved to 44px at radius 8, the
+**Setup.** The rail is the intro's rail. The card is 496 / r16 /
+`shadow-base-lg`. `SetupHeader` gained a `HeaderTile`; `SetupBody` is the padded
+region. `PrimaryButton` and `SecondaryButton` moved to 44px at radius 8, the
 primary taking the drawn right arrow; `TextField` to a 44px r8 input on
 `base/background` with a `CircleX` clear button; `OrDivider` to the drawn 19px
 gap. Org rows tightened to 8px padding, a 36px tile, 16px marks and the drawn
 two-tier elevation. Diagnostics copy now reads "Opt-in" and "routing stats",
-with the never-shared sentence in Medium as drawn.
+with the never-shared sentence in Medium as drawn. The footer treatment was
+reverted - see the correction above.
 
 **Sidenav.** 256px rail, 24px content rhythm, 4px row padding, and the selected
 row moved from `neutral-100`/`neutral-200` to `base/background` on `base/border`
@@ -188,11 +214,6 @@ off track - within a hair of the `base/input` it replaced, so no contrast change
 
 **App.** The model list sorts by provider then id, per the rule written on the
 new section. The provider filter sorts too.
-
-**One judgement recorded at the call site:** the org picker draws 44px footer
-buttons and the name-device pane draws 36px, on the same bar. Both are explicit,
-so `FooterButton` takes a `tall` flag and follows each frame rather than
-averaging them.
 
 ## Still open
 
@@ -212,8 +233,12 @@ averaging them.
    the designer, when the endpoint lands, is whether the picker's confirm
    subsumes the PAYG cost confirmation or precedes it.
 2. **Overview at value level** - never read this pass, only its section list.
-3. **The rest of Setup's frames** - 26 exist; five were read. The connected pane
-   and the many state variants are inferred from the archetypes, not read.
+3. ~~The rest of Setup's frames~~ - **all 25 validated**, by pulling every frame
+   through `GET /v1/images` in one call and reading them as contact sheets. That
+   is what caught the correction above. The `Auth / Error states` frames draw a
+   **Setup timeout** dialog ("Gate Connect timed out will trying to process your
+   request. Would you like to try your request again, or go back to the setup
+   start?", `Go back` / `Retry`) - still unbuilt, still unchecked.
 4. **`Auth / Error states`** - still no check, fifth read. Stays unbuilt.
 5. **Minimize2** - drawn in every Setup topbar, removed from the build under
    open question 5. Sixth read; the designer should settle it.

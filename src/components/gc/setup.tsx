@@ -90,62 +90,6 @@ function SetupBody({ children, gap = 6 }: { children: ReactNode; gap?: 5 | 6 }) 
   );
 }
 
-/**
- * The bordered action bar the stepped panes carry: a quiet link on the left,
- * the real actions on the right.
- *
- * Only the panes the design draws one on. Sign-in and the diagnostics step keep
- * stacked full-width buttons inside the body instead - the file draws two pane
- * archetypes, and this is the one that has somewhere to go back to.
- *
- * The two frames disagree on button height - 44px on the org picker, 36px on
- * the name-device pane - and both are explicit, so `tall` follows each rather
- * than averaging them.
- */
-function SetupFooter({ left, children }: { left?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-3 border-t border-base-border p-4">
-      <span className="min-w-0">{left}</span>
-      <span className="flex shrink-0 items-center gap-2">{children}</span>
-    </div>
-  );
-}
-
-/** Hug-width footer action. Outline unless `primary`. */
-function FooterButton({
-  children,
-  onClick,
-  primary,
-  busy,
-  disabled,
-  tall,
-}: {
-  children: ReactNode;
-  onClick: () => void;
-  primary?: boolean;
-  busy?: boolean;
-  disabled?: boolean;
-  /** 44px rather than 36 - see `SetupFooter`. */
-  tall?: boolean;
-}) {
-  const inert = busy || disabled;
-  return (
-    <button
-      type="button"
-      onClick={inert ? undefined : onClick}
-      aria-busy={busy || undefined}
-      aria-disabled={inert || undefined}
-      className={`flex ${tall ? "h-11 px-4" : "h-9 px-3"} shrink-0 items-center justify-center gap-2 rounded-sm text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-        primary
-          ? "bg-blue-ribbon-700 text-white hover:bg-blue-ribbon-800"
-          : "border border-base-border bg-base-card text-base-primary shadow-base-2xs hover:bg-gray-50"
-      } ${inert ? "opacity-70" : ""} ${disabled && !busy ? "cursor-not-allowed" : ""}`}
-    >
-      {children}
-    </button>
-  );
-}
-
 /** The tile every setup header fronts itself with: white, a hairline, and the
  *  design's inset pair - a glow up from the bottom edge, white down from the
  *  top. `brand` swaps the hairline for `blue-ribbon-300` and tints the glow,
@@ -585,17 +529,16 @@ export function NameDevicePane({
   error?: ReactNode;
 }) {
   return (
-    <>
-      <SetupBody gap={5}>
-        <SetupHeader
-          row
-          mark={<Icon name="monitor" size={20} />}
-          title="Name this device"
-          subtitle="Naming will help you tell this device apart from the others connected to your Gate account."
-        />
+    <SetupBody>
+      <SetupHeader
+        mark={<Icon name="monitor" size={24} />}
+        title="Name this device"
+        subtitle="Naming will help you tell this device apart from the others connected to your Gate account."
+      />
 
-        {error && <SetupError>{error}</SetupError>}
+      {error && <SetupError>{error}</SetupError>}
 
+      <div className="flex flex-col gap-3">
         <TextField
           label="Device name"
           value={value}
@@ -603,15 +546,12 @@ export function NameDevicePane({
           placeholder="Enter a device name"
           clearable
         />
-      </SetupBody>
-
-      <SetupFooter left={<SetupLink onClick={onSkip}>Skip naming</SetupLink>}>
-        <FooterButton onClick={onContinue} busy={busy} disabled={!value.trim()} primary>
+        <PrimaryButton onClick={onContinue} busy={busy} disabled={!value.trim()} arrow>
           Continue
-          <Icon name="arrowRight" size={16} />
-        </FooterButton>
-      </SetupFooter>
-    </>
+        </PrimaryButton>
+        <SetupLink onClick={onSkip}>Skip naming</SetupLink>
+      </div>
+    </SetupBody>
   );
 }
 
@@ -649,18 +589,17 @@ export function OrgPickerPane({
   error?: ReactNode;
 }) {
   return (
-    <>
-      <SetupBody gap={5}>
-        <SetupHeader
-          row
-          mark={<Icon name="usersRound" size={20} />}
-          title="Choose an organization"
-          subtitle="Gate Connect will use the selected organization for routing, activity, and PAYG credits on this device."
-        />
+    <SetupBody>
+      <SetupHeader
+        mark={<Icon name="usersRound" size={24} />}
+        title="Choose an organization"
+        subtitle="Gate Connect will use the selected organization for routing, activity, and PAYG credits on this device."
+      />
 
-        {error && <SetupError>{error}</SetupError>}
+      {error && <SetupError>{error}</SetupError>}
 
-        {organizations.length === 0 ? (
+      {organizations.length === 0 ? (
+        <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1 rounded-md border border-amber-300 bg-amber-50 p-3 text-center">
             <p className="flex items-center justify-center gap-1.5 text-sm font-medium leading-5 text-amber-900">
               <Icon name="triangleAlert" size={16} />
@@ -671,7 +610,11 @@ export function OrgPickerPane({
               continuing to setup Gate Connect.
             </p>
           </div>
-        ) : (
+          <PrimaryButton onClick={onGoBack}>Go back</PrimaryButton>
+          <SetupLink onClick={onUseDifferentAccount}>Use a different account</SetupLink>
+        </div>
+      ) : (
+        <>
           <div role="radiogroup" aria-label="Organization" className="flex flex-col gap-3">
             {organizations.map((org) => (
               <ModalOption
@@ -684,35 +627,15 @@ export function OrgPickerPane({
               />
             ))}
           </div>
-        )}
-      </SetupBody>
-
-      {/* The drawn footer, and the empty state keeps it: the frame's escape
-       * from the dead end is Go back beside Use a different account, which is
-       * the same bar with a different primary. */}
-      <SetupFooter
-        left={
-          <SetupLink onClick={onUseDifferentAccount}>Use a different account</SetupLink>
-        }
-      >
-        <FooterButton onClick={onGoBack} tall>
-          <Icon name="arrowLeft" size={20} />
-          Back
-        </FooterButton>
-        {organizations.length > 0 && (
-          <FooterButton
-            onClick={onContinue}
-            busy={busy}
-            disabled={!selectedId}
-            primary
-            tall
-          >
-            Continue
-            <Icon name="arrowRight" size={20} />
-          </FooterButton>
-        )}
-      </SetupFooter>
-    </>
+          <div className="flex flex-col gap-3">
+            <PrimaryButton onClick={onContinue} busy={busy} disabled={!selectedId} arrow>
+              Continue
+            </PrimaryButton>
+            <SetupLink onClick={onUseDifferentAccount}>Use a different account</SetupLink>
+          </div>
+        </>
+      )}
+    </SetupBody>
   );
 }
 
