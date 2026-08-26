@@ -727,6 +727,71 @@ the Help section and the Sign-in method / certificate / What-is-collected rows
 remain the standing undrawn deviations. 548 unit tests and the 169-test e2e
 suite pass.
 
+### Sync 2026-08-26: Onboarding, and a page that had moved more than it looked
+
+Read the same way as Settings that day: `Flows / Onboarding` (177:79237) at
+depth 4, then the step-2 card (212:84769) and the welcome content column
+(240:4500) in full. The page carries the check and still holds four frames -
+a welcome and three tutorial steps - but almost every measurement under them
+had changed since the 2026-08-20 build, and the page gained a second section,
+`Onboarding / Images`, holding the three illustrations as vectors.
+
+**The eyebrow reads `Introduction`, not `Tutorial`.** The counter beside it is
+unchanged (`1 of 3` .. `3 of 3`, uppercased by `mono/eyebrow`).
+
+**The welcome frame is a different drawing.** It is no longer the app icon
+over a title: it is a 96px white tile on a `blue-ribbon-300` hairline at a 16px
+radius, carrying the hex mark at 56px, with the design's own inset pair - a
+blue glow up from the bottom edge, a white one down from the top. Under it the
+title is `heading/32` (Geist Medium 32/36 at -4%) and **two-tone**: "Welcome
+to" in foreground, "Gate Connect" in `base/primary`, the wordmark's own split.
+The sub is Geist Medium 14/20 muted, the rule under it is `base/input` rather
+than `base/border`, and the body is `copy/16` at full foreground weight - not
+14px muted - with its closing sentence, "Click Next to get started.", set in
+Medium because it is the only instruction on the frame. The column is 540px.
+`ConstellationHexMark` replaces `app-icon.png`, which now has no caller.
+
+**The tutorial card is 640px at a 16px radius under `shadow/lg`**, where the
+build had 680px, 8px and `shadow/sm`. Inside it: eyebrow row, 12px, title
+(Geist SemiBold 20/**24**), 8px, subtitle - and the subtitle is full
+foreground, not muted, as is every paragraph under it. Then 24px to the media
+block, which stacks the 220px illustration and the note at 16px. The note is
+**transparent** with a 1px border at 12/16 padding, and its text is full
+foreground too. The build had a white fill, 8/12 padding and muted text
+throughout.
+
+**The locate button is not inside the card.** The frame puts "Show me where
+Gate Connect lives" between the card and the footer, centred, as a `Size=sm`
+outline button with a **left `Focus` glyph**. Moved out, and the glyph added.
+
+**The progress rail is 8px, not 4**, on a `base/background` track with a
+bottom hairline. Its fill is `#7195FF` under a left-to-right black-to-white
+64% wash, which composites from a deep navy to a pale blue; the build
+approximated it with two blue-ribbon stops. The literal is spelled out at the
+call site because `#7195FF` sits between ramp stops and is not a token.
+
+**The footer** pads 12/24 rather than standing at a fixed 56px, and its
+buttons are a fixed 220px pair at a 12px gap, each filling half - so Next does
+not shift when its label becomes Get started. Next carries the Button
+component's right arrow; Get started does not. On the welcome frame the design
+draws Previous at **zero opacity** rather than dropping it, which is what
+holds that alignment, so it is `invisible` now instead of dimmed.
+
+`Icon.tsx` gained `arrowRight` and `focus`; `tailwind.config.ts` gained
+`base-3xl` (32px) and `tracking-heading-32` for `heading/32`, which sits
+between Tailwind's own 3xl and 4xl and had no stop.
+
+**Not changed.** Step 1 keeps the config-versus-proxy mechanism paragraph the
+design drops and step 2 keeps its platform-aware sub-heading, both for the
+reasons recorded on 2026-08-19. The design runs its step-1 subtitle and first
+body paragraph together as one text node; ours keeps them as two paragraphs of
+the same words at the card's own 8px rhythm. The welcome frame's ground is a
+white-to-gray-50 gradient where the other three are flat gray-50, left flat.
+The primary button's `blue-ribbon-500` hairline and the Button component's
+inset highlights are shell-wide treatments nothing in the new UI reproduces,
+same call as on the Settings pane. 548 unit tests and the 169-test e2e suite
+pass.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a

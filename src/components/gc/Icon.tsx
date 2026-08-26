@@ -58,6 +58,8 @@ export type IconName =
   | "circlePower"
   | "clipboardList"
   | "squareCode"
+  | "arrowRight"
+  | "focus"
   | "creditCard";
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -403,6 +405,24 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="m10 9-3 3 3 3" />
       <path d="m14 15 3-3-3-3" />
       <rect x="3" y="3" width="18" height="18" rx="2" />
+    </>
+  ),
+  // Lucide `ArrowRight` and `Focus` - the intro's Next button carries the
+  // Button component's right arrow, and its "Show me where Gate Connect lives"
+  // carries Focus as a left icon (Figma `Flows / Onboarding`).
+  arrowRight: (
+    <>
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </>
+  ),
+  focus: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+      <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+      <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+      <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
     </>
   ),
   creditCard: (

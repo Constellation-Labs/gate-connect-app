@@ -312,6 +312,10 @@ export default {
         "eyebrow-14": "1.4px",
         // `mono/label-12`: same face at 6% - the action pills (BLOCK/FLAG/REDACT).
         label: "0.72px",
+        // `heading/32`: Geist Medium 32/36 at -4% - the intro's welcome title,
+        // the only place the design uses this step. Absolute in Figma, so it
+        // is spelled in px like the rest of this group.
+        "heading-32": "-1.28px",
         // `heading/20`: Geist Medium 20/28 at -1% - pane titles and captions.
         // The 28px line-height is the token export's `xl`, which is also
         // Tailwind's own default, so call sites must not override it.
@@ -357,6 +361,9 @@ export default {
         // opt these out of `useTextScale` entirely.
         "base-2xs": "0.625rem", // 10px - app row status line
         "base-xs": "0.75rem", // 12px - label/12 and the mono eyebrow
+        // `heading/32`, the intro's welcome title. Between Tailwind's own 3xl
+        // (30px) and 4xl (36px), so it needs a stop of its own.
+        "base-3xl": "2rem", // 32px - heading/32
       },
     },
   },
