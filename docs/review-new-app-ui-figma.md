@@ -197,9 +197,20 @@ averaging them.
 ## Still open
 
 1. **App multi-select** - the OpenCode picker that stays open until confirmed.
-   Deferred deliberately: it needs the designer on what confirms, what a partial
-   selection does on dismiss, and whether "multiple" is OpenCode-only or
-   capability-driven.
+   **Resolved for now by matching `main`: a multi-provider tool gets no model
+   card at all.** `main` has no model UI whatsoever - OpenCode appears there
+   only as a routing target, and `lib/groups.ts` has called it a tool that talks
+   to "several providers, not one model family" since before this branch. So the
+   question the new pane was asking had no answer it could record: `ModelChoice`
+   is `"app" | "gate"`, a binary, and `GATE_MODELS` is `[]` because no gateway
+   endpoint reports models yet. Withholding the card is the honest state until
+   both exist. Keyed on `buildGroups`' own "Other tools" membership, so it
+   cannot disagree with the rail; pinned in `AppPane.test.tsx`.
+
+   The "OpenCode-only or capability-driven" question answered itself in the
+   code: **capability-driven**, on the multi-provider family. What still needs
+   the designer, when the endpoint lands, is whether the picker's confirm
+   subsumes the PAYG cost confirmation or precedes it.
 2. **Overview at value level** - never read this pass, only its section list.
 3. **The rest of Setup's frames** - 26 exist; five were read. The connected pane
    and the many state variants are inferred from the archetypes, not read.

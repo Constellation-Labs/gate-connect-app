@@ -827,6 +827,24 @@ export function NewUiApp() {
     [providers, tools, proxy],
   );
 
+  /**
+   * The tools with no single model family, taken from `buildGroups`' own
+   * "Other tools" membership rather than a slug list of our own - so the pane
+   * and the rail can never disagree about which tools those are.
+   *
+   * Today that is OpenCode, OpenClaw and Hermes. They get no model card; see
+   * `AppPane`'s `modelChoice`.
+   */
+  const multiProviderSlugs = useMemo(
+    () =>
+      new Set(
+        groups
+          .filter((g) => g.id === MULTI_PROVIDER_ID)
+          .flatMap((g) => g.members.map((m) => m.key)),
+      ),
+    [groups],
+  );
+
   // Re-read the routing facts the notices are built from. Their whole point is
   // that they disappear once acted on, which only works if the state behind them
   // is refetched rather than assumed.
@@ -1831,19 +1849,28 @@ export function NewUiApp() {
             !openDomain &&
             (!installsResolved || (toolActivity.view === null && toolActivity.failure === null))
           }
-          modelChoice={modelChoice[view.slug] ?? "app"}
-          // Switching to a Gate model spends PAYG credits, so it is confirmed
-          // rather than taken on a radio click. Switching back is not.
-          onChooseModel={(choice) => {
-            if (choice === "gate") setModelOverlay("confirm-gate");
-            else setModelChoice((m) => ({ ...m, [view.slug]: "app" }));
-          }}
-          gateModel={{ vendor: "-", id: "-" }}
-          onChangeModel={() => setModelOverlay("picker")}
-          credits="-"
-          // No billing endpoint, but the row's own glyph promises an external
-          // link, and the dashboard is where credits are actually bought.
-          onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
+          // A multi-provider tool gets no model card: see `AppPane`'s
+          // `modelChoice`. `multiProviderSlugs` is `buildGroups`' own
+          // membership, so this can never disagree with the rail about which
+          // tools those are.
+          {...(multiProviderSlugs.has(view.slug)
+            ? {}
+            : {
+                modelChoice: modelChoice[view.slug] ?? "app",
+                // Switching to a Gate model spends PAYG credits, so it is
+                // confirmed rather than taken on a radio click. Switching back
+                // is not.
+                onChooseModel: (choice: ModelChoice) => {
+                  if (choice === "gate") setModelOverlay("confirm-gate");
+                  else setModelChoice((m) => ({ ...m, [view.slug]: "app" }));
+                },
+                gateModel: { vendor: "-", id: "-" },
+                onChangeModel: () => setModelOverlay("picker"),
+                credits: "-",
+                // No billing endpoint, but the row's own glyph promises an
+                // external link, and the dashboard is where credits are bought.
+                onAddCredits: () => void openExternal(GATE_DASHBOARD_URL),
+              })}
           activity={toolEvents.view?.entries ?? []}
           eventsPending={
             !openDomain &&

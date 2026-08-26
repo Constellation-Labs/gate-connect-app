@@ -57,6 +57,33 @@ function pane(props: Partial<Parameters<typeof AppPane>[0]> = {}) {
   );
 }
 
+describe("AppPane model card", () => {
+  it("draws the model card when the app has one model family", () => {
+    render(pane());
+    expect(screen.getByRole("heading", { name: "Model selection" })).toBeTruthy();
+  });
+
+  /**
+   * The multi-provider tools - OpenCode, OpenClaw, Hermes - route whichever of
+   * their configured providers Gate covers, so "what does this app use on Gate
+   * model" has no single answer for them. `main` never asks it: it has no model
+   * UI at all and these appear only as routing targets.
+   *
+   * The Figma's answer is a multi-select picker, which needs a model list no
+   * endpoint reports yet and a selection shape `ModelChoice` cannot hold. Until
+   * then the card is withheld, which is a decision and not an oversight -
+   * regressing it looks like "the model card is missing on OpenCode".
+   */
+  it("omits it entirely when there is no single model family", () => {
+    render(pane({ onChooseModel: undefined }));
+    expect(screen.queryByRole("heading", { name: "Model selection" })).toBeNull();
+    expect(screen.queryByText("Change model")).toBeNull();
+    expect(screen.queryByText("App default")).toBeNull();
+    // The rest of the pane is untouched: it still routes, and still reports.
+    expect(screen.getByRole("heading", { name: "Recent activity" })).toBeTruthy();
+  });
+});
+
 /**
  * The three states AG-576 established, now on the per-tool feed. The middle one
  * is the whole point: an unattributed tool is not an idle tool, and this pane is

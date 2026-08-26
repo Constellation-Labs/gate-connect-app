@@ -92,13 +92,32 @@ export function AppPane({
   onToggleProtected: () => void;
   stats: UsageStats;
   buckets: MessagesBucket[];
-  modelChoice: ModelChoice;
-  onChooseModel: (choice: ModelChoice) => void;
-  gateModel: GateModel;
-  onChangeModel: () => void;
+  /**
+   * The model card, or nothing.
+   *
+   * Withheld for a multi-provider tool. OpenCode, OpenClaw and Hermes route
+   * whichever of their configured providers Gate covers - `lib/groups.ts` calls
+   * them "tools that talk to several providers, not one model family" - so
+   * "what does this app use on Gate model" has no single answer for them. `main`
+   * never poses the question at all: it has no model UI, and these tools appear
+   * only as routing targets.
+   *
+   * The Figma's answer is a multi-select picker
+   * (`App / Select multiple models (Opencode)`), which needs a model list no
+   * gateway endpoint reports yet and a selection shape `ModelChoice` cannot
+   * hold. Until that exists, matching `main` and asking nothing beats asking a
+   * question whose answer the app cannot record.
+   *
+   * Per the house rule the Settings pane states: an omitted handler omits its
+   * control. No `onChooseModel`, no card.
+   */
+  modelChoice?: ModelChoice;
+  onChooseModel?: (choice: ModelChoice) => void;
+  gateModel?: GateModel;
+  onChangeModel?: () => void;
   /** Pre-formatted balance, e.g. "$10.25 available". */
-  credits: string;
-  onAddCredits: () => void;
+  credits?: string;
+  onAddCredits?: () => void;
   activity: ActivityEntry[];
   /** The first reading for this tool has not landed. Draws skeletons rather than
    *  answers, per AG-576. */
@@ -171,15 +190,17 @@ export function AppPane({
       <StatTiles stats={stats} pending={pending} />
       <MessagesChart buckets={buckets} pending={pending} unavailable={unavailable?.chart} />
 
-      <ModelSelection
-        appName={name}
-        choice={modelChoice}
-        onChoose={onChooseModel}
-        gateModel={gateModel}
-        onChangeModel={onChangeModel}
-        credits={credits}
-        onAddCredits={onAddCredits}
-      />
+      {onChooseModel && (
+        <ModelSelection
+          appName={name}
+          choice={modelChoice ?? "app"}
+          onChoose={onChooseModel}
+          gateModel={gateModel ?? { vendor: "-", id: "-" }}
+          onChangeModel={onChangeModel ?? (() => {})}
+          credits={credits ?? "-"}
+          onAddCredits={onAddCredits ?? (() => {})}
+        />
+      )}
 
       <RecentActivity
         activity={activity}
