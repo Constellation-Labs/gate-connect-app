@@ -27,6 +27,11 @@ export type ErrorContext =
   | "startup"
   | "account_reconcile"
   | "provider_restore"
+  /** Opening a link in the user's browser failed: an opener-ACL miss, no
+   *  browser, a sandbox refusal. Its own context because the remedy is nothing
+   *  to do with Gate - the user can still copy the address - and because it used
+   *  to vanish into a console nobody reads. */
+  | "open_external"
   /** The re-read that follows a routing write. Its own context because a failed
    *  resync is not a failed write - the write landed, and only the view of it is
    *  stale. It used to be invisible: thrown from a `finally` into a `void` call
@@ -258,6 +263,7 @@ export function classifyError(
     // The write already succeeded; only the re-read of it failed, so this says
     // the rows may be stale rather than implying the change did not land.
     resync: "Couldn’t refresh what’s on screen",
+    open_external: "Couldn’t open that link",
     sign_in: "Couldn’t save your account",
     sign_out: "Couldn’t sign out",
     connect: "Couldn’t connect this tool",

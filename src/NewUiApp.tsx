@@ -495,7 +495,7 @@ export function NewUiApp() {
     () =>
       (toolEvents.view?.entries ?? []).map((e) => ({
         ...e,
-        onView: () => void openExternal(`${GATE_DASHBOARD_URL}messages/${e.id}`),
+        onView: () => openLink(`${GATE_DASHBOARD_URL}messages/${e.id}`),
       })),
     [toolEvents.view],
   );
@@ -877,6 +877,21 @@ export function NewUiApp() {
    * route until it restarts, so offer to close it - but only when something was
    * actually written, which is why `setAppRouted` reports back.
    */
+  /**
+   * Open a link, and show it in the existing error banner if it fails.
+   *
+   * Ten call sites open external URLs, and a rejected `openUrl` used to be
+   * invisible - an opener-ACL miss looked exactly like a dead button. Routed
+   * into `actionError` rather than a new surface: that banner is dismissible and
+   * navigates nowhere, which is what AG-598 asks for (the failure must not
+   * discard what the user was doing).
+   */
+  const openLink = useCallback((url: string) => {
+    void openExternal(url).then((err) => {
+      if (err) setActionError(err);
+    });
+  }, []);
+
   const routeApp = useCallback(
     async (slug: string, next: boolean, force = false) => {
       setActionError(null);
@@ -1242,11 +1257,12 @@ export function NewUiApp() {
             .finally(() => void loadPreferences());
         },
         onRetryPreferences: () => void loadPreferences(),
-        onOpenDocs: () => void openExternal(GATE_DOCS_URL),
-        // No `onContactSupport`, so the row is omitted: there is no support URL
-        // anywhere in the app to open, and a button that opens an invented
-        // address is worse than an absent one. The topnav's Contact support
-        // entry is dead for the same reason.
+        onOpenDocs: () => openLink(GATE_DOCS_URL),
+        // No `onContactSupport`, so the row is omitted. `GATE_SUPPORT_URL` does
+        // exist in `lib/config.ts` - but it 404s, so there is still nothing to
+        // open, and a button that opens a broken page is worse than an absent
+        // one. The topnav's Contact support entry is dark for the same reason.
+        // See that constant for what has to change first (AG-598).
 
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
@@ -1331,10 +1347,10 @@ export function NewUiApp() {
 
   const onMenuSelect = useCallback((action: TopnavAction) => {
     setMenuOpen(false);
-    if (action === "dashboard") void openExternal(GATE_DASHBOARD_URL);
+    if (action === "dashboard") openLink(GATE_DASHBOARD_URL);
     // The docs entry was drawn, listed and dead: `GATE_DOCS_URL` is the same one
     // the Settings row opens.
-    else if (action === "docs") void openExternal(GATE_DOCS_URL);
+    else if (action === "docs") openLink(GATE_DOCS_URL);
   }, []);
 
   const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;
@@ -1814,7 +1830,7 @@ export function NewUiApp() {
           credits={formatCredits(credits.credits)}
           // No billing endpoint, but the row's own glyph promises an external
           // link, and the dashboard is where credits are actually bought.
-          onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
+          onAddCredits={() => openLink(GATE_DASHBOARD_URL)}
           activity={toolEventRows}
           eventsPending={
             !installsResolved || (toolEvents.view === null && toolEvents.failure === null)
@@ -1868,6 +1884,7 @@ export function NewUiApp() {
                       toolEvents.reload();
                     }}
                     onDiagnostics={() => void openDiagnostics()}
+                    onOpenLink={openLink}
                   />
                   <ActivityGaps
                     view={null}
@@ -1875,6 +1892,7 @@ export function NewUiApp() {
                     loading={toolEvents.loading}
                     onRetry={toolEvents.reload}
                     onDiagnostics={() => void openDiagnostics()}
+                    onOpenLink={openLink}
                     subject="Recent activity"
                   />
                 </>
@@ -1888,8 +1906,8 @@ export function NewUiApp() {
           buckets={activity.view?.buckets ?? []}
           policies={activity.view?.policies ?? []}
           savings={activity.view?.savings ?? []}
-          onManagePolicies={() => void openExternal(GATE_POLICIES_URL)}
-          onManageSavings={() => void openExternal(GATE_SAVINGS_URL)}
+          onManagePolicies={() => openLink(GATE_POLICIES_URL)}
+          onManageSavings={() => openLink(GATE_SAVINGS_URL)}
           // Skeletons until there is something real to draw: a zero is a
           // reading and would claim the user had no traffic, and a dash says we
           // asked and were refused. Neither is true while the answer is on its
@@ -1955,6 +1973,7 @@ export function NewUiApp() {
                 view={activity.view}
                 failure={activity.failure}
                 loading={activity.loading}
+                onOpenLink={openLink}
                 onRetry={activity.reload}
                 onDiagnostics={() => void openDiagnostics()}
               />
@@ -2124,6 +2143,7 @@ function ActivityGaps({
   loading,
   onRetry,
   onDiagnostics,
+  onOpenLink,
   subject,
 }: {
   view: ActivityView | null;
@@ -2131,6 +2151,10 @@ function ActivityGaps({
   loading: boolean;
   onRetry: () => void;
   onDiagnostics: () => void;
+  /** Opens an external link and surfaces a failure. Passed in rather than
+   *  imported: this component sits at module scope and cannot reach the shell's
+   *  error banner, and a link that silently fails is what AG-598 is about. */
+  onOpenLink: (url: string) => void;
   /** Overrides the notice's subject, for a caller that owns one read rather than
    *  the whole pane. The app pane mounts this twice - once for the counters and
    *  chart, once for the event feed - and two notices both headed "Activity"
@@ -2140,9 +2164,9 @@ function ActivityGaps({
   const run = (kind: GapActionKind) => {
     if (kind === "retry") onRetry();
     else if (kind === "diagnostics") onDiagnostics();
-    else if (kind === "dashboard") void openExternal(GATE_DASHBOARD_URL);
-    else if (kind === "api-keys") void openExternal(GATE_API_KEYS_URL);
-    else void openExternal(GATE_DOCS_URL);
+    else if (kind === "dashboard") onOpenLink(GATE_DASHBOARD_URL);
+    else if (kind === "api-keys") onOpenLink(GATE_API_KEYS_URL);
+    else onOpenLink(GATE_DOCS_URL);
   };
 
   // A failed fetch outranks per-section gaps: if nothing landed there is nothing
