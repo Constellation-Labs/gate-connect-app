@@ -126,7 +126,9 @@ function buildSteps(platform: Platform): Step[] {
         "Click the Gate Connect icon to open the compact popover for a quick status check, or expand it to the full desktop app for more details, alerts, and controls.",
       ],
       note: "Open the desktop app for detail. Collapse to a popover for a fast status check.",
-      noteIcon: "monitor",
+      // The frame's own glyph (read 2026-08-26): the monitor-plus-phone pair,
+      // not the plain display the welcome pane uses.
+      noteIcon: "monitorSmartphone",
       locate: true,
     },
     {

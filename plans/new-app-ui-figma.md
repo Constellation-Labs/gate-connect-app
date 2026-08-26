@@ -781,6 +781,34 @@ holds that alignment, so it is `invisible` now instead of dimmed.
 `base-3xl` (32px) and `tracking-heading-32` for `heading/32`, which sits
 between Tailwind's own 3xl and 4xl and had no stop.
 
+### Sync 2026-08-26, second pass: step 3 read, step 4 still not
+
+Both quotas ran out inside this pass, which is worth recording as a working
+constraint rather than a footnote. The step-3 card (212:85210) came back; the
+next call, for step 4 (212:85407), hit Framelink's **429 with a 398,582-second
+retry** - about 4.6 days - and the official MCP answered the same request with
+the View-seat tool-call cap. So the PAT bucket and the OAuth bucket are both
+empty, and the browser method in [[reading-figma-via-browser]] is the only
+route left this month.
+
+**Step 3 confirmed the card anatomy a second time** - 640px, r16, shadow/lg,
+eyebrow `Introduction` / `2 of 3`, title Geist SemiBold 20/24, subtitle
+`copy/14` at full foreground - and turned up one miss: **the note's glyph is
+`MonitorSmartphone`, not `Monitor`**. Fixed. Its note text and the second
+sentence of its subtitle match the build verbatim.
+
+Two things left alone. The drawn subtitle opens "Gate Connect stays open in
+your menu bar, so it is always easy to access while you work", which is the
+macOS-only phrasing the 2026-08-19 deviation already covers; the build keeps
+`whereItLives(platform)`. And **the two notes disagree with each other**: step
+2's icon-to-text gap is 8px, step 3's is 12px, on what is otherwise the same
+component. The build stays at 8px for both rather than reproducing the
+difference - worth a designer question, not a build.
+
+**Step 4's card was not re-read.** Its title, subtitle, note copy and note
+glyph are still the 2026-08-19 browser read. Given step 3's glyph had drifted,
+assume step 4's `bell` may have too, and check it first when a quota returns.
+
 **Not changed.** Step 1 keeps the config-versus-proxy mechanism paragraph the
 design drops and step 2 keeps its platform-aware sub-heading, both for the
 reasons recorded on 2026-08-19. The design runs its step-1 subtitle and first
