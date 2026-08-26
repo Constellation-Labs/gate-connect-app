@@ -392,14 +392,26 @@ export interface RunningAgents {
 
 /** The running agents themselves rather than a count: name, pid, start time,
  * and whether each predates routing. Same process set and staleness rule as
- * the two count probes above. */
-export const runningAgents = () => invoke<RunningAgents>("running_agents");
+ * the two count probes above.
+ *
+ * `only` narrows the scan to the tools whose configs were just rewritten - a
+ * per-app switch passes its own slug, a family cascade the slugs it touched.
+ * Omitting it asks about every tool, which is what diagnostics and the master
+ * toggle mean. Slugs with no process name of their own (`hermes`, `openclaw`,
+ * `env-proxy`, a proxy domain key) match nothing rather than everything. */
+export const runningAgents = (only?: string[]) =>
+  invoke<RunningAgents>("running_agents", { only: only ?? null });
 
 /** Terminate running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up
  * the routing change. Resolves to how many processes were signalled; 0 means
- * none were running. */
-export const closeRunningAgents = () => invoke<number>("close_running_agents");
+ * none were running.
+ *
+ * `only` is the same filter {@link runningAgents} takes, and the caller is
+ * expected to pass back exactly what it offered: this signals processes, so the
+ * set it kills has to be the set the user was shown and agreed to. */
+export const closeRunningAgents = (only?: string[]) =>
+  invoke<number>("close_running_agents", { only: only ?? null });
 
 /** Finish a quit the tray deferred to the popover: the backend buffers the
  * connected tool names and emits a `quit-requested` nudge instead of exiting

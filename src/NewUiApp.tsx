@@ -761,12 +761,19 @@ export function NewUiApp() {
     onError: (e) => setActionError(classifyError(e, "close_agents")),
   });
 
-  /** Same follow-up as a single app: a family cascade rewrites configs too. */
+  /**
+   * Same follow-up as a single app: a family cascade rewrites configs too - so
+   * the offer is scoped to the family's config members. Its proxy members route
+   * through the engine rather than a config file, and nothing in the scanned set
+   * reads their settings at launch, so they contribute no slugs.
+   */
   const routeFamily = useCallback(
     async (group: Group, next: boolean) => {
       setActionError(null);
       if (await routing.setFamilyRouted(group, next)) {
-        await runningApps.offerAfterChange();
+        await runningApps.offerAfterChange(
+          group.members.filter((m) => m.kind === "config").map((m) => m.key),
+        );
       }
     },
     [routing, runningApps],
@@ -776,12 +783,16 @@ export function NewUiApp() {
    * A tool's config was rewritten. If that app is open it is still on its old
    * route until it restarts, so offer to close it - but only when something was
    * actually written, which is why `setAppRouted` reports back.
+   *
+   * Scoped to `slug`, and it has to be: the probe used to ask about every tool,
+   * so flipping Codex offered to close a running `claude` that nothing had
+   * reconfigured, and the confirm behind that offer would have killed it.
    */
   const routeApp = useCallback(
     async (slug: string, next: boolean, force = false) => {
       setActionError(null);
       if (await routing.setAppRouted(slug, next, force)) {
-        await runningApps.offerAfterChange();
+        await runningApps.offerAfterChange([slug]);
       }
     },
     [routing, runningApps],
@@ -792,6 +803,8 @@ export function NewUiApp() {
    *
    * Same follow-up as a config write: every routed tool is on its old route until
    * it restarts, so a master toggle that actually moved offers to close them.
+   *
+   * The one caller that genuinely means every tool, so it passes no filter.
    */
   const toggleMaster = useCallback(
     async (next: boolean) => {

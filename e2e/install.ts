@@ -86,6 +86,21 @@ export function installFakeTauri(state: BackendState): void {
     return p;
   }
 
+  /** Rust's `AGENT_PROCESSES`: tool slug to the process name it runs under. */
+  const AGENT_PROCESSES: [string, string][] = [
+    ["claude-code", "claude"],
+    ["codex", "codex"],
+    ["opencode", "opencode"],
+  ];
+
+  /** Rust's `agent_names_for`: null/undefined asks about every tool, a list
+      narrows to those slugs, and an unknown slug narrows to nothing. */
+  function agentNamesFor(only: string[] | null | undefined): string[] {
+    return AGENT_PROCESSES.filter(([slug]) => only == null || only.includes(slug)).map(
+      ([, name]) => name,
+    );
+  }
+
   const commands: Record<string, (args: Record<string, any>) => unknown> = {
     // ---- platform / app
     app_platform: () => state.platform,
@@ -310,15 +325,24 @@ export function installFakeTauri(state: BackendState): void {
     },
     routed_clients_stale: () => state.routedClientsStale,
     running_agents_count: () => state.runningAgents,
-    running_agents: () => ({
-      scanned_names: ["claude", "codex", "opencode"],
-      agents: state.runningAgentNames.map((name, i) => ({
-        name,
-        pid: 100 + i,
-        started_at_unix: 1_700_000_000,
-        predates_routing: true,
-      })),
-    }),
+    // `only` is a list of tool slugs, or null for "every tool". Mirrors the
+    // Rust `AGENT_PROCESSES` table: a slug with no process name of its own
+    // (`hermes`, `openclaw`, `env-proxy`, a proxy domain key) matches nothing
+    // rather than everything, which is the whole point of the filter.
+    running_agents: ({ only }) => {
+      const names = agentNamesFor(only as string[] | null | undefined);
+      return {
+        scanned_names: names,
+        agents: state.runningAgentNames
+          .map((name, i) => ({
+            name,
+            pid: 100 + i,
+            started_at_unix: 1_700_000_000,
+            predates_routing: true,
+          }))
+          .filter((a) => names.includes(a.name.toLowerCase())),
+      };
+    },
     stale_agents_count: () => state.staleAgents,
     // Mirrors `routing_health::verdict_for`'s precedence over the state a spec
     // can actually set. The relay is hosted by the engine, so `proxy.running`
@@ -347,11 +371,19 @@ export function installFakeTauri(state: BackendState): void {
         if (state.staleAgents > 0) return attention("reopen_required", "reopen_tool");
         return { slug: t.slug, state: "on", reason: null, next_action: null };
       }),
-    close_running_agents: () => {
-      const n = state.runningAgents || state.runningAgentNames.length;
-      state.runningAgents = 0;
-      state.staleAgents = 0;
-      state.runningAgentNames = [];
+    close_running_agents: ({ only }) => {
+      const names = agentNamesFor(only as string[] | null | undefined);
+      const doomed = state.runningAgentNames.filter((n) => names.includes(n.toLowerCase()));
+      state.runningAgentNames = state.runningAgentNames.filter(
+        (n) => !names.includes(n.toLowerCase()),
+      );
+      // The unfiltered count probe has no per-name breakdown to subtract from,
+      // so a scoped close leaves it alone; only a close-everything zeroes it.
+      const n = doomed.length || (only == null ? state.runningAgents : 0);
+      if (only == null) {
+        state.runningAgents = 0;
+        state.staleAgents = 0;
+      }
       return n;
     },
     quit_app: () => null,

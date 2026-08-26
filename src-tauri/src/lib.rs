@@ -1351,18 +1351,43 @@ fn drain_backend_errors() -> Vec<BackendError> {
         .unwrap_or_default()
 }
 
-/// Process names of the AI tools we're willing to close - deliberately both
-/// the agent CLIs *and* the desktop apps that share the binary name: on macOS
-/// Claude Desktop / Cowork's main process is literally `Claude`, and it is a
-/// routed tool that resolves the proxy at its own launch, so closing it is
+/// Process names of the AI tools we're willing to close, each paired with the
+/// registry slug whose config rewrite makes that process stale - deliberately
+/// both the agent CLIs *and* the desktop apps that share the binary name: on
+/// macOS Claude Desktop / Cowork's main process is literally `Claude`, and it
+/// is a routed tool that resolves the proxy at its own launch, so closing it is
 /// the point. A subset of the registry tools: `hermes` and `openclaw` are
 /// excluded - their names are too generic / their processes shouldn't be
 /// killed from here. (An unrelated user binary that happens to be named
 /// `claude`/`codex`/`opencode` is accepted collateral; the action sits behind
 /// an explicit in-popover confirm.) Matched against the process name with any
 /// `.exe` suffix stripped, so one list serves all three desktop OSes.
+///
+/// The slug is what makes the per-tool offer honest. Without it a Codex config
+/// write offered to close - and then SIGTERMed - a running `claude`, because
+/// the probe and the kill both walked the whole list. A tool that isn't here
+/// contributes no names, so asking about it finds nothing rather than falling
+/// back to everything.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const AGENT_PROCESS_NAMES: [&str; 3] = ["claude", "codex", "opencode"];
+const AGENT_PROCESSES: [(&str, &str); 3] = [
+    ("claude-code", "claude"),
+    ("codex", "codex"),
+    ("opencode", "opencode"),
+];
+
+/// The process names to scan for. `None` means every tool - the master toggle,
+/// the popover's routing takeover and the diagnostics listing all genuinely
+/// mean all of them. `Some(slugs)` narrows to the tools whose configs were
+/// just rewritten; slugs with no process of their own (`hermes`, `openclaw`,
+/// `env-proxy`, a proxy domain key) drop out, and `Some(&[])` scans nothing.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_names_for(only: Option<&[String]>) -> Vec<&'static str> {
+    AGENT_PROCESSES
+        .iter()
+        .filter(|(slug, _)| only.is_none_or(|slugs| slugs.iter().any(|s| s == slug)))
+        .map(|(_, name)| *name)
+        .collect()
+}
 
 /// Unix seconds of the most recent successful engine enable in this process
 /// (user toggle, startup restore, or a connect_tool auto-enable). 0 = never;
@@ -1381,9 +1406,9 @@ fn mark_routing_enabled() {
     ROUTING_ENABLED_AT_UNIX.store(now, Ordering::Release);
 }
 
-/// Visit every running agent process (see [`AGENT_PROCESS_NAMES`]), skipping
-/// our own pid. Shared by the close command and the count probe so both match
-/// the exact same process set.
+/// Visit every running agent process whose name is in `names` (see
+/// [`agent_names_for`]), skipping our own pid. Shared by the close command and
+/// the count probes so all of them match the exact same process set.
 ///
 /// Processes only, and only the fields `/proc/<pid>/stat` already carries.
 /// sysinfo counts *threads* as processes and leaves that on by default -
@@ -1396,8 +1421,11 @@ fn mark_routing_enabled() {
 /// were a second copy of the tool. Name, pid and start time - all this needs -
 /// come from `stat`, which is read either way.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
+fn for_each_agent_process(names: &[&str], mut f: impl FnMut(&sysinfo::Process)) {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    if names.is_empty() {
+        return;
+    }
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -1409,13 +1437,13 @@ fn for_each_agent_process(mut f: impl FnMut(&sysinfo::Process)) {
         if Some(*pid) == own_pid {
             continue;
         }
-        if AGENT_PROCESS_NAMES.contains(&agent_name_of(process).as_str()) {
+        if names.contains(&agent_name_of(process).as_str()) {
             f(process);
         }
     }
 }
 
-/// A process's name as [`AGENT_PROCESS_NAMES`] spells it: lowercased, with any
+/// A process's name as [`AGENT_PROCESSES`] spells it: lowercased, with any
 /// `.exe` stripped, so one list serves all three desktop OSes. Extracted so the
 /// per-tool staleness check below matches on exactly the same normalisation the
 /// walk itself filtered by, rather than a second copy that could drift from it.
@@ -1437,7 +1465,7 @@ fn agent_name_of(process: &sysinfo::Process) -> String {
 #[tauri::command(async)]
 fn running_agents_count() -> u32 {
     let mut count = 0u32;
-    for_each_agent_process(|_| count += 1);
+    for_each_agent_process(&agent_names_for(None), |_| count += 1);
     count
 }
 
@@ -1495,7 +1523,7 @@ fn stale_agents_count() -> u32 {
         return running_agents_count();
     };
     let mut count = 0u32;
-    for_each_agent_process(|process| {
+    for_each_agent_process(&agent_names_for(None), |process| {
         if process.start_time() < bound {
             count += 1;
         }
@@ -1575,14 +1603,16 @@ fn set_share_diagnostics(enabled: bool) -> Result<(), String> {
 /// OpenClaw and Hermes ship no fixed process name, and `env-proxy` is not a
 /// process at all. For those, staleness is *unobservable* rather than false -
 /// see [`reopen_pending_for`], which says what that costs.
+///
+/// Reads [`AGENT_PROCESSES`] rather than repeating it: the per-tool verdict and
+/// the per-tool close offer have to name the same process for a slug, or one of
+/// them is talking about a tool the other is not.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn agent_process_name(slug: &str) -> Option<&'static str> {
-    match slug {
-        "claude-code" => Some("claude"),
-        "codex" => Some("codex"),
-        "opencode" => Some("opencode"),
-        _ => None,
-    }
+    AGENT_PROCESSES
+        .iter()
+        .find(|(s, _)| *s == slug)
+        .map(|(_, name)| *name)
 }
 
 /// Is a process for this one tool running that predates the last routing change,
@@ -1607,10 +1637,7 @@ fn reopen_pending_for(slug: &str) -> bool {
     };
     let bound = routing_bound_unix();
     let mut pending = false;
-    for_each_agent_process(|process| {
-        if agent_name_of(process) != wanted {
-            return;
-        }
+    for_each_agent_process(&[wanted], |process| {
         match bound {
             Some(bound) => {
                 if process.start_time() < bound {
@@ -1799,10 +1826,12 @@ struct RunningAgent {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[derive(Serialize)]
 struct RunningAgentsDto {
-    /// The names this scan looks for ([`AGENT_PROCESS_NAMES`]). Reported so an
-    /// empty list reads as "none of these three were running" rather than "no
-    /// AI tools are running" - the scan does not cover Hermes or OpenClaw, and
-    /// a report that hid that would be read as evidence they were stopped.
+    /// The names this scan looked for (see [`agent_names_for`]). Reported so an
+    /// empty list reads as "none of these were running" rather than "no AI
+    /// tools are running" - the scan does not cover Hermes or OpenClaw, and a
+    /// report that hid that would be read as evidence they were stopped. With
+    /// an `only` filter it also names which tool the question was about, so a
+    /// caller cannot mistake a narrow answer for a whole-machine one.
     scanned_names: Vec<String>,
     agents: Vec<RunningAgent>,
 }
@@ -1811,6 +1840,13 @@ struct RunningAgentsDto {
 /// each started, and whether it predates routing. Same process set and the
 /// same staleness rule as the two count probes, so the diagnostics report and
 /// the routing takeover can never disagree about what is running.
+///
+/// `only` narrows the scan to the tools whose configs were just rewritten - a
+/// per-app switch passes its own slug, a family cascade the slugs it touched.
+/// `None` asks about every tool, which is what diagnostics and the master
+/// toggle mean. Without it, flipping one tool listed the others: the offer
+/// named a `claude` that nothing had reconfigured, and the confirm behind it
+/// would have killed it.
 ///
 /// Deliberately carries no command line: argv on these tools routinely holds
 /// prompts, file paths and occasionally a key, and this list is built to be
@@ -1821,10 +1857,11 @@ struct RunningAgentsDto {
 /// GTK loop on Linux - with the popover frozen until it returns.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
-fn running_agents() -> RunningAgentsDto {
+fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
+    let names = agent_names_for(only.as_deref());
     let bound = routing_bound_unix();
     let mut agents = Vec::new();
-    for_each_agent_process(|process| {
+    for_each_agent_process(&names, |process| {
         let started_at_unix = process.start_time();
         agents.push(RunningAgent {
             name: process.name().to_string_lossy().to_string(),
@@ -1840,27 +1877,31 @@ fn running_agents() -> RunningAgentsDto {
     // diffable.
     agents.sort_by_key(|agent| agent.started_at_unix);
     RunningAgentsDto {
-        scanned_names: AGENT_PROCESS_NAMES.iter().map(|n| n.to_string()).collect(),
+        scanned_names: names.iter().map(|n| n.to_string()).collect(),
         agents,
     }
 }
 
 /// Terminate running agent processes (CLIs and desktop apps, see
-/// [`AGENT_PROCESS_NAMES`]) so their next launch picks up the routing change.
+/// [`AGENT_PROCESSES`]) so their next launch picks up the routing change.
 /// Graceful where the platform allows it (SIGTERM on
 /// macOS/Linux, so agents can flush state; Windows only has TerminateProcess).
 /// Returns how many processes were signalled - 0 means none were running.
 /// Best-effort: processes we can't signal (another user's, already gone) are
 /// skipped, not errors.
 ///
+/// `only` carries the same tool-slug filter as [`running_agents`], and callers
+/// are expected to pass back exactly what they offered: this signals processes,
+/// so the set it kills must be the set the user was shown and agreed to.
+///
 /// `(async)` on top of the walk's own reason: this one also blocks on
 /// signalling every match, and it runs from a button the user is watching.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
-fn close_running_agents() -> u32 {
+fn close_running_agents(only: Option<Vec<String>>) -> u32 {
     use sysinfo::Signal;
     let mut closed = 0u32;
-    for_each_agent_process(|process| {
+    for_each_agent_process(&agent_names_for(only.as_deref()), |process| {
         // kill_with(Term) is None on platforms without signal support
         // (Windows); fall back to the hard kill there.
         let signalled = process

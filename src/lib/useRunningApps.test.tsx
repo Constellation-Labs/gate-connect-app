@@ -189,3 +189,61 @@ describe("useRunningApps: closing takes two answers", () => {
     expect(api.current!.busy).toBe(false);
   });
 });
+
+describe("useRunningApps: which tool it is talking about", () => {
+  it("asks only about the tools whose configs were written", async () => {
+    const { api } = harness();
+
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"]);
+    });
+
+    expect(runningAgents).toHaveBeenCalledWith(["codex"]);
+  });
+
+  it("asks about every tool when the caller names none", async () => {
+    // The master toggle: every routed tool is on its old route, so all of them
+    // are fair game.
+    const { api } = harness();
+
+    await act(async () => {
+      await api.current!.offerAfterChange();
+    });
+
+    expect(runningAgents).toHaveBeenCalledWith(undefined);
+  });
+
+  it("closes exactly the set it offered", async () => {
+    // The regression this guards: the offer was scoped to one tool and the
+    // close was not, so confirming a Codex change SIGTERMed a running `claude`
+    // that nothing had reconfigured and the user was never shown.
+    const { api } = harness();
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"]);
+    });
+    act(() => api.current!.goToConfirm());
+
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(closeRunningAgents).toHaveBeenCalledWith(["codex"]);
+  });
+
+  it("keeps the filter across a trip back to the offer", async () => {
+    // Backing out and confirming again must not widen the set.
+    const { api } = harness();
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"]);
+    });
+    act(() => api.current!.goToConfirm());
+    act(() => api.current!.goBack());
+    act(() => api.current!.goToConfirm());
+
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(closeRunningAgents).toHaveBeenCalledWith(["codex"]);
+  });
+});
