@@ -668,6 +668,65 @@ the pane, whose activity sections say they cannot be attributed rather than
 claiming a quiet day; see item 10 in "Still to do" for the mechanism and the
 attribution constraint.
 
+### Sync 2026-08-26: Settings read from the node data, not the canvas
+
+Read through the Framelink PAT rather than the browser: `Flows / Settings`
+(116:28963) at depth 4 to map it, then the Main-screens `scroll-content`
+(116:28972) in full. Two calls of the PAT's own Tier-1 allowance; see
+[[project-figma-mcp-view-seat-rate-limit]] for the budget. Every section on
+the page still carries the check, and the section list, row order, labels and
+button copy all match what was built on 2026-08-21. What the node data
+settles is everything the browser reads had to eyeball.
+
+**The value column is Geist, not Geist Mono.** Install ID, Gateway, API key
+and Version are all `copy/14` (Geist Regular 14/20), and so is every other
+value on the screen. The earlier read recorded them as mono and the build
+followed, with a test citing CLAUDE.md's mono-for-identifiers rule as the one
+the design did not overturn. It does overturn it here, and deliberately: the
+same file reaches for `mono/body-14` in the diagnostics report dialog a screen
+away, so the designer had the style to hand and chose the sans one. `mono` is
+gone from `SettingsRow`; `SettingsPane.test.tsx` now pins the absence.
+
+**Nine glyphs were near-misses.** The frame names its icons, and seven rows
+were drawing something else: Device is `Monitor` (not `MonitorSmartphone`),
+Install ID `SquareUser` (not `IdCard`), Gate plan `FileBadge2` (not
+`Receipt`), Launch at login `CirclePower` (not `Power`), Share diagnostic data
+`Share2` (not `ShieldCheck`), Diagnostics report `ClipboardList` (not `Info`),
+Version `SquareCode` (not `CodeXml`). API key's `key` was already lucide
+`KeyRound` and Reset's `refresh` already `RefreshCw`, so those two stood.
+`Icon.tsx` gained the five missing glyphs, geometry taken from
+`lucide-static@1.34.0` rather than drawn by hand.
+
+**The rules sit inside the card's padding.** The card pads 16px and stacks its
+rows at a 16px gap with a 1px `base/border` rule between them; the build had
+per-row `px-4 py-3` with a `border-t`, which bled each rule to the card's
+edges and set the rhythm at 12px. Restructured to the drawn shape.
+
+**Spacing and type, measured:** section-to-section gap 24px (was 16),
+heading-to-card gap 12px (was 8), section headings `heading/16` - Geist Medium
+16/24 - rather than 14/20. Row descriptions are `copy/12` at `#6B7280`, which
+is the `base/muted-foreground` token, not `neutral-600`. The On/Off word
+beside a switch is `copy/14` at full foreground weight, not a 12px muted
+label. Action buttons are `Size=sm`: 32px tall at 8/12 padding with a 16px
+trailing glyph, where the build had `px-2 py-1` and a 12px glyph. The Danger
+zone card's border is `red-600` at 40%, not `red-200` - that one had been
+marked inferred at the call site since it was written.
+
+**Two copy fixes**, both verbatim from the frame: the share-diagnostics
+description reads "routing stats", not "routing state", and the diagnostics
+report description ends in a full stop.
+
+**Not changed, and why.** Foreground text stays `neutral-900` where the frame
+says `#030712` (gray-950): that is the whole shell's convention, not this
+screen's, and moving one pane would split it. The outline button's inset
+highlight pair is likewise a Button-component treatment nothing in the new UI
+reproduces yet. The destructive button's `#FEF2F2` label stays white, matching
+`Modal`. The Notifications description keeps the honest routing-health copy
+over the drawn "blocked or flagged" for the reason recorded on 2026-08-21, and
+the Help section and the Sign-in method / certificate / What-is-collected rows
+remain the standing undrawn deviations. 548 unit tests and the 169-test e2e
+suite pass.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a

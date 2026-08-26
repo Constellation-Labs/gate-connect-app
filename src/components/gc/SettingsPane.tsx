@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { BaseSwitch, Card } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
@@ -30,8 +31,6 @@ export interface SettingsRow {
   description?: string;
   /** Middle column, e.g. "MacBook Pro". */
   value?: string;
-  /** Set the value in Geist Mono: install IDs, API keys, versions. */
-  mono?: boolean;
   action?: SettingsAction;
   toggle?: { on: boolean; onToggle: () => void };
   /**
@@ -189,7 +188,7 @@ export function buildSettingsSections({
       rows: [
         {
           id: "device",
-          icon: "monitorSmartphone",
+          icon: "monitor",
           label: "Device",
           value: deviceName,
           action: onRenameDevice
@@ -198,10 +197,9 @@ export function buildSettingsSections({
         },
         {
           id: "install-id",
-          icon: "idCard",
+          icon: "squareUser",
           label: "Install ID",
           value: installId,
-          mono: true,
           action: { label: "Copy ID", onClick: onCopyInstallId },
         },
       ],
@@ -213,7 +211,7 @@ export function buildSettingsSections({
         { id: "login", icon: "user", label: "Login ID", value: loginId },
         {
           id: "plan",
-          icon: "receipt",
+          icon: "fileBadge2",
           label: "Gate plan",
           value: plan,
           action: onUpgradePlan
@@ -231,7 +229,6 @@ export function buildSettingsSections({
           icon: "globe",
           label: "Gateway",
           value: gateway,
-          mono: true,
           action: onChangeGateway
             ? { label: "Change server", onClick: onChangeGateway }
             : undefined,
@@ -245,7 +242,6 @@ export function buildSettingsSections({
                 icon: "key" as IconName,
                 label: "API key",
                 value: apiKeyMasked,
-                mono: true,
                 action: onReplaceKey
                   ? { label: "Replace key", onClick: onReplaceKey }
                   : undefined,
@@ -331,7 +327,7 @@ export function buildSettingsSections({
       rows: [
         {
           id: "launch",
-          icon: "power",
+          icon: "circlePower",
           label: "Launch at login",
           description: "Keeps routing on after restart",
           ...(launchAtLoginUnavailable && onRetryLaunchAtLogin
@@ -380,10 +376,10 @@ export function buildSettingsSections({
           ? [
               {
                 id: "share-diagnostics",
-                icon: "shieldCheck" as IconName,
+                icon: "share2" as IconName,
                 label: "Share diagnostic data",
                 description:
-                  "Send Gate errors and routing state to help fix problems. Never prompts or credentials.",
+                  "Send Gate errors and routing stats to help fix problems. Never prompts or credentials.",
                 ...(preferencesUnavailable && onRetryPreferences
                   ? { unavailable: { onRetry: onRetryPreferences } }
                   : {
@@ -408,9 +404,9 @@ export function buildSettingsSections({
           : []),
         {
           id: "diagnostics-report",
-          icon: "info",
+          icon: "clipboardList",
           label: "Diagnostics report",
-          description: "Everything Gate knows about this install, as shareable text",
+          description: "Everything Gate knows about this install, as shareable text.",
           action: { label: "View report", onClick: onViewDiagnostics },
         },
       ],
@@ -427,11 +423,10 @@ export function buildSettingsSections({
         },
         {
           id: "version",
-          icon: "codeXml",
+          icon: "squareCode",
           label: "Version",
           description: updateNote,
           value: version,
-          mono: true,
           action: onCheckForUpdates
             ? { label: "Check for updates", onClick: onCheckForUpdates }
             : undefined,
@@ -506,28 +501,41 @@ export function buildSettingsSections({
 
 export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
+    <div className="flex flex-1 flex-col gap-6 overflow-auto bg-gray-100 p-6">
       <h1 className="text-xl font-medium tracking-heading text-neutral-900">
         Settings
       </h1>
 
       {sections.map((section) => (
-        <section key={section.id} className="flex flex-col gap-2">
+        <section key={section.id} className="flex flex-col gap-3">
           <h2
-            className={`text-sm font-medium leading-5 ${
+            className={`text-base font-medium leading-6 tracking-heading ${
               section.danger ? "text-red-600" : "text-neutral-900"
             }`}
           >
             {section.title}
           </h2>
 
-          {/* The danger card tints rather than sitting on plain white. Its
-           * red-50 / red-200 pairing is inferred from the heading colour, not
-           * sampled from Figma. */}
-          <Card className={section.danger ? "border-red-200 bg-red-50" : ""}>
-            {section.rows.map((row, i) => (
-              <Row key={row.id} row={row} first={i === 0} danger={section.danger} />
-            ))}
+          {/* The card pads 16px and the rules sit inside that padding rather
+           * than bleeding to its edges, which is what the frame draws: rows
+           * are stacked at a 16px gap with a 1px rule between them. */}
+          <Card
+            className={`p-4 ${section.danger ? "border-red-600/40 bg-red-50" : ""}`}
+          >
+            <div className="flex flex-col gap-4">
+              {section.rows.map((row, i) => (
+                <Fragment key={row.id}>
+                  {i > 0 && (
+                    <div
+                      className={`h-px ${
+                        section.danger ? "bg-red-600/40" : "bg-base-border"
+                      }`}
+                    />
+                  )}
+                  <Row row={row} />
+                </Fragment>
+              ))}
+            </div>
           </Card>
         </section>
       ))}
@@ -535,22 +543,10 @@ export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   );
 }
 
-function Row({
-  row,
-  first,
-  danger,
-}: {
-  row: SettingsRow;
-  first: boolean;
-  danger?: boolean;
-}) {
+function Row({ row }: { row: SettingsRow }) {
   return (
-    <div
-      className={`flex items-center gap-3 px-4 py-3 ${
-        first ? "" : danger ? "border-t border-red-200" : "border-t border-base-border"
-      }`}
-    >
-      <Icon name={row.icon} size={16} className="shrink-0 text-neutral-500" />
+    <div className="flex items-center gap-3">
+      <Icon name={row.icon} size={20} className="shrink-0 text-neutral-500" />
 
       <div
         className={`min-w-0 ${
@@ -561,13 +557,15 @@ function Row({
           {row.label}
         </p>
         {row.description && (
-          <p className="text-base-xs leading-4 text-neutral-600">{row.description}</p>
+          <p className="text-base-xs leading-4 text-base-muted-foreground">
+            {row.description}
+          </p>
         )}
       </div>
 
       {row.unavailable ? (
         <>
-          <p className="min-w-0 flex-1 truncate text-sm leading-5 text-neutral-600">
+          <p className="min-w-0 flex-1 truncate text-sm leading-5 text-base-muted-foreground">
             Unavailable
           </p>
           <ActionButton action={{ label: "Retry", onClick: row.unavailable.onRetry }} />
@@ -575,18 +573,14 @@ function Row({
       ) : (
         <>
           {row.value !== undefined && (
-            <p
-              className={`min-w-0 flex-1 truncate text-sm leading-5 text-neutral-900 ${
-                row.mono ? "font-mono" : ""
-              }`}
-            >
+            <p className="min-w-0 flex-1 truncate text-sm leading-5 text-neutral-900">
               {row.value}
             </p>
           )}
 
-              {row.toggle && (
+          {row.toggle && (
             <span className="flex shrink-0 items-center gap-2">
-              <span className="text-base-xs font-medium text-neutral-600">
+              <span className="text-sm leading-5 text-neutral-900">
                 {row.toggle.on ? "On" : "Off"}
               </span>
               <BaseSwitch
@@ -609,14 +603,14 @@ function ActionButton({ action }: { action: SettingsAction }) {
     <button
       type="button"
       onClick={action.onClick}
-      className={`flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+      className={`flex h-8 shrink-0 items-center gap-1.5 rounded-sm px-3 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
         action.destructive
           ? "bg-red-600 text-white hover:bg-red-700 focus-visible:outline-red-600"
           : "border border-base-border bg-base-card text-base-primary shadow-base-2xs hover:bg-gray-50 focus-visible:outline-base-primary"
       }`}
     >
       {action.label}
-      {action.external && <Icon name="squareArrowOutUpRight" size={12} />}
+      {action.external && <Icon name="squareArrowOutUpRight" size={16} />}
     </button>
   );
 }

@@ -53,6 +53,11 @@ export type IconName =
   | "circleX"
   | "messageCircleX"
   | "share2"
+  | "squareUser"
+  | "fileBadge2"
+  | "circlePower"
+  | "clipboardList"
+  | "squareCode"
   | "creditCard";
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -355,6 +360,49 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" />
       <path d="m15 9-6 6" />
       <path d="m9 9 6 6" />
+    </>
+  ),
+  // Lucide `SquareUser`, `FileBadge2`, `CirclePower`, `ClipboardList` and
+  // `SquareCode` - the Settings rows for Install ID, Gate plan, Launch at
+  // login, Diagnostics report and Version (Figma `Flows / Settings`, read
+  // 2026-08-26). Each replaced a near-miss already in this set.
+  squareUser: (
+    <>
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <circle cx="12" cy="10" r="3" />
+      <path d="M7 21v-2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2" />
+    </>
+  ),
+  fileBadge2: (
+    <>
+      <path d="M13 22h5a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v3.3" />
+      <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+      <path d="m7.69 16.479 1.29 4.88a.5.5 0 0 1-.698.591l-1.843-.849a1 1 0 0 0-.879.001l-1.846.85a.5.5 0 0 1-.692-.593l1.29-4.88" />
+      <circle cx="6" cy="14" r="3" />
+    </>
+  ),
+  circlePower: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 7v4" />
+      <path d="M7.998 9.003a5 5 0 1 0 8-.005" />
+    </>
+  ),
+  clipboardList: (
+    <>
+      <rect width="8" height="4" x="8" y="2" rx="1" ry="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <path d="M12 11h4" />
+      <path d="M12 16h4" />
+      <path d="M8 11h.01" />
+      <path d="M8 16h.01" />
+    </>
+  ),
+  squareCode: (
+    <>
+      <path d="m10 9-3 3 3 3" />
+      <path d="m14 15 3-3-3-3" />
+      <rect x="3" y="3" width="18" height="18" rx="2" />
     </>
   ),
   creditCard: (
