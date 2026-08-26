@@ -10,15 +10,21 @@
 //! extra admin prompt.
 
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
+use futures_util::TryStreamExt;
+use http_body_util::BodyExt;
 use hudsucker::{
-    hyper::{header::HeaderValue, Method, Request, Uri},
+    hyper::{
+        header::{HeaderMap, HeaderValue, CONTENT_TYPE},
+        Method, Request, Response, StatusCode, Uri,
+    },
     hyper_util::{rt::TokioExecutor, server::conn::auto::Builder as ServerBuilder},
     rcgen::{Issuer, KeyPair},
     rustls::crypto::{aws_lc_rs, CryptoProvider},
@@ -304,6 +310,36 @@ pub(crate) fn responses_ws_downgrade() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_WS_DOWNGRADE").is_some())
 }
 
+/// Whether a native chat turn that comes back a Cloudflare challenge is RESENT
+/// direct from this machine. Off unless `GATE_PROXY_CF_FALLBACK` is set.
+///
+/// Detection and counting are unconditional - they are the measurement this is
+/// built on and they change no behaviour. Only the resend is gated, for two
+/// reasons that both want it opt-in for now:
+///
+/// - It moves the reply off Gate. A turn recovered this way returns straight to
+///   the client, so Gate cannot scan or block the model's OUTPUT on it. Input
+///   enforcement is untouched - Gate's scan stage runs BEFORE it forwards, so a
+///   turn that got far enough to be challenged had already passed scan, and a
+///   scan-block is a JSON envelope this never matches (see
+///   [`body_confirms_challenge`]). But losing output-blocking on the challenged
+///   fraction is a real trade and wants a deliberate switch.
+/// - It rests on an unverified assumption: that a Cloudflare-blocked forward does
+///   not burn the turn's sentinel/conduit token, because Cloudflare refused at
+///   its edge and the vendor's backend never saw the turn. If that is wrong the
+///   resend needs a re-run of the direct `*/prepare` sequence first, which is not
+///   built. This flag is what makes a dev build that can answer that question
+///   against a real challenge.
+///
+/// An env var, matching [`debug_log`] and [`responses_ws_downgrade`], because
+/// that is the right shape for a single deliberately-switched-on measurement
+/// machine. `OnceLock` fixes the value for the process, so this is not a kill
+/// switch; promote it to a real setting before any broader rollout.
+pub(crate) fn cf_fallback_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_CF_FALLBACK").is_some())
+}
+
 /// Wire hudsucker's internal `tracing` events (TLS handshake / HTTP2 errors)
 /// to stderr once, when debug logging is on. Without this, MITM failures
 /// inside hudsucker are silent. Overridable via `RUST_LOG`. Idempotent.
@@ -353,6 +389,84 @@ struct GateHandler {
     /// `should_intercept`. Shared across handler clones, so an engine run
     /// reports it once instead of once per connection.
     anthropic_unselected_logged: Arc<AtomicBool>,
+    /// Set in `handle_request` when this request is a native chat turn being
+    /// rewritten to Gate, and read back in `handle_response` to decide whether a
+    /// Cloudflare challenge is worth recognising. `None` for every other request,
+    /// which is what keeps the challenge check off the hot path.
+    ///
+    /// Per-REQUEST state on an otherwise per-connection struct, which is only
+    /// sound because hudsucker clones the handler per request as well
+    /// (`self.clone().proxy(req)` in its `serve_stream`) and runs both hooks on
+    /// that clone. It is also the one-resend cap: a turn gets exactly one
+    /// `chat_turn`, and `handle_response` `take()`s it.
+    chat_turn: Option<ChatTurn>,
+    /// Native-chat-turn and challenge counts, shared across handler clones (like
+    /// `anthropic_unselected_logged`) so the log line can report a RATE rather
+    /// than an uncorrelated count.
+    challenges: Arc<ChallengeStats>,
+}
+
+/// A native chat turn in flight, carried from `handle_request` to
+/// `handle_response`.
+///
+/// `Clone` only to satisfy the handler's derive; it is always `None` on the
+/// handler being cloned, so no turn is ever copied.
+#[derive(Clone)]
+struct ChatTurn {
+    host: String,
+    path: String,
+    /// The original request, buffered so it can be replayed direct. `None`
+    /// unless [`cf_fallback_enabled`] - detection and counting need no body, so
+    /// the default build never buffers one.
+    replay: Option<Replay>,
+}
+
+/// Everything needed to re-issue the turn from this machine, captured BEFORE
+/// [`apply_rewrite`] touches the request - so it carries the client's own URL,
+/// cookies and anti-abuse tokens, and none of Gate's headers.
+#[derive(Clone)]
+struct Replay {
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+}
+
+/// Native-chat-turn and challenge counts for one engine run.
+#[derive(Default)]
+struct ChallengeStats {
+    turns: AtomicU64,
+    challenges: AtomicU64,
+    structural_warned: AtomicBool,
+}
+
+impl ChallengeStats {
+    /// Say once when a surface looks structurally challenged rather than
+    /// intermittently, which is the signal that routing it through Gate at all is
+    /// the wrong design for it - always-local egress would sidestep both the
+    /// challenge and the token edge.
+    ///
+    /// Deliberately only a log line. The rate is intermittent by nature and one
+    /// bad window must not exile a surface, so nothing here auto-flips.
+    ///
+    /// Counted across all native chat surfaces rather than per host. Only two can
+    /// reach this engine and an install is realistically using one, so a per-host
+    /// map would buy precision nothing acts on; the line names the host that
+    /// tripped it, so a mixed install stays diagnosable.
+    fn warn_if_structural(&self, host: &str, challenges: u64, turns: u64) {
+        // Enough of a sample that a couple of early challenges cannot trip it.
+        if challenges < 10 || challenges * 10 < turns * 9 {
+            return;
+        }
+        if self.structural_warned.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        eprintln!(
+            "[gate-proxy] {host} has challenged {challenges} of {turns} native chat turns this \
+             run. At that rate the surface is structurally unroutable through Gate rather than \
+             intermittently challenged - routing it locally is the better design for it."
+        );
+    }
 }
 
 impl GateHandler {
@@ -629,6 +743,31 @@ impl HttpHandler for GateHandler {
             if let (Decision::Rewrite { upstream_url }, true) =
                 (decide(&rules, host, &path), self.peer_allowed(ctx))
             {
+                // Before the rewrite, so the buffer holds the CLIENT's request -
+                // its URL, cookies and anti-abuse tokens - and none of Gate's
+                // headers. Only native chat turns are eligible, which is also
+                // what keeps this off every other request's path.
+                if is_native_chat_turn(host, &path) {
+                    let replay = if cf_fallback_enabled() {
+                        match buffer_replay(&mut req).await {
+                            Ok(replay) => Some(replay),
+                            // The body is gone and the request can no longer be
+                            // forwarded, so there is nothing to do but say so.
+                            // Reachable only with the fallback switched on.
+                            Err(e) => {
+                                eprintln!("[gate-proxy] buffering the chat turn failed: {e:#}");
+                                return RequestOrResponse::Response(buffer_failed_response());
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    self.chat_turn = Some(ChatTurn {
+                        host: host.to_string(),
+                        path: path.clone(),
+                        replay,
+                    });
+                }
                 let api_key = self.api_key.borrow().clone();
                 let token = self.token.borrow().clone();
                 let oauth_token = (!token.is_empty()).then(|| token.as_ref());
@@ -713,7 +852,73 @@ impl HttpHandler for GateHandler {
                     .unwrap_or("")
             );
         }
-        res
+        // Not a native chat turn: nothing to recognise, and - the part that
+        // matters - nothing is ever read off the body. `take()` is also the
+        // one-resend cap.
+        let Some(turn) = self.chat_turn.take() else {
+            return res;
+        };
+        let turns = self.challenges.turns.fetch_add(1, Ordering::Relaxed) + 1;
+        // A turn that cleared is an SSE stream and must reach the client frame by
+        // frame, so it leaves here untouched.
+        if !challenge_shape(res.status(), res.headers()) {
+            return res;
+        }
+        // Challenge-SHAPED, so the body is small HTML and safe to collect. This
+        // is the only path that ever buffers a response.
+        let (parts, body) = res.into_parts();
+        let bytes = match body.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            // The body is consumed and unrecoverable either way; say so rather
+            // than hand back a silently truncated reply.
+            Err(e) => {
+                eprintln!("[gate-proxy] reading a suspected challenge body failed: {e}");
+                return buffer_failed_response();
+            }
+        };
+        if !body_confirms_challenge(&parts.headers, &bytes) {
+            // A plain HTML 403 from the provider, or Gate's own block envelope.
+            // Surface it; never resend it.
+            return Response::from_parts(parts, Body::from(bytes));
+        }
+
+        let challenges = self.challenges.challenges.fetch_add(1, Ordering::Relaxed) + 1;
+        let cray = extract_cray(&bytes);
+        // Outside `debug_log`, unlike most lines here, because this count IS the
+        // deliverable. The rate decides whether routing this surface through Gate
+        // is viable at all, and it cannot be measured from a build that only
+        // reports it when someone thought to switch logging on.
+        eprintln!(
+            "[gate-proxy] cloudflare challenged {} {} ({}){} - {challenges} of {turns} native \
+             chat turns this run",
+            turn.host,
+            turn.path,
+            parts.status,
+            cray.map(|r| format!(" cRay={r}")).unwrap_or_default(),
+        );
+        self.challenges
+            .warn_if_structural(&turn.host, challenges, turns);
+
+        // Detection and counting are unconditional; the resend is not.
+        let Some(replay) = turn.replay else {
+            return Response::from_parts(parts, Body::from(bytes));
+        };
+        match resend_direct(replay).await {
+            Ok(recovered) => {
+                eprintln!(
+                    "[gate-proxy] resent the challenged turn direct -> {}",
+                    recovered.status()
+                );
+                recovered
+            }
+            // The fallback is a recovery path, so its own failure must cost
+            // nothing beyond the recovery: hand back the challenge the turn
+            // would have received anyway.
+            Err(e) => {
+                eprintln!("[gate-proxy] direct resend failed, surfacing the challenge: {e:#}");
+                Response::from_parts(parts, Body::from(bytes))
+            }
+        }
     }
 }
 
@@ -768,6 +973,253 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
             v.split(',')
                 .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
         })
+}
+
+// --- Cloudflare-challenge fallback for native chat surfaces ------------------
+//
+// Native chat turns route through Gate so the whole inline pipeline (scan,
+// grouping, audit, output scan) runs on them. But Gate forwards from a
+// datacenter egress IP while the turn carries anti-abuse tokens minted on the
+// USER's machine during the `*/prepare` calls, which are already direct - and
+// Cloudflare's managed challenge exists to catch exactly that client mismatch.
+// Measured on staging, roughly one turn in five came back an HTML 403 where the
+// SSE reply should have been.
+//
+// So: recognise the challenge, and - opt-in, see [`cf_fallback_enabled`] - resend
+// the same turn direct from this machine, where the user's own IP, TLS stack and
+// tokens clear it. What that keeps and what it costs is written up on
+// `cf_fallback_enabled`. The short version: INPUT enforcement survives untouched
+// because Gate scans before it forwards, so only already-allowed turns can reach
+// the fallback; only output-blocking is lost, and only on the challenged
+// fraction.
+
+/// Cloudflare markers in a challenge body, lowercased for a case-folded search.
+///
+/// `_cf_chl_opt` is covered by `cf_chl_opt`. Deliberately NOT the challenge
+/// tokens themselves - those are challenge-solving material and are never read
+/// out or logged.
+const CF_BODY_MARKERS: &[&str] = &["cf_chl_opt", "challenge-platform", "czone"];
+
+/// Whether this host+path is a native chat turn - the only shape a direct resend
+/// makes sense for, and the only one counted.
+///
+/// Mirrors Gate's own `isSubscriptionChatSurface` (gateway-proxy:
+/// `utils/proxy-helpers.ts`), which is `claude-web-chat` + `chatgpt-web-chat` +
+/// `copilot-ws-chat`, and the path anchors beside it. Kept deliberately in step
+/// with those: Gate's surface classification is what decided the turn got the
+/// native-surface treatment on the way out, so a predicate disagreeing here would
+/// fall back on turns Gate never treated as chat.
+///
+/// `copilot-ws-chat` has no counterpart because no catalog entry names
+/// copilot.microsoft.com, so no such turn can reach this engine.
+///
+/// Both of Gate's URL splits are accepted for the same reason its own anchors
+/// tolerate them, though only the provider's real path can arrive here: the MITM
+/// engine matches before any rewrite, so it always sees the real one.
+fn is_native_chat_turn(host: &str, path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    if host.eq_ignore_ascii_case("chatgpt.com") {
+        // `/f/conversation` WITHOUT `/prepare` is the turn; the prepare sibling
+        // only mints a conduit token, and is a catalog passthrough anyway.
+        return matches!(
+            path.as_str(),
+            "/backend-api/f/conversation" | "/f/conversation"
+        );
+    }
+    if host.eq_ignore_ascii_case("claude.ai") {
+        // `/organizations/{org}/chat_conversations/{conv}/completion`. The ids
+        // vary, so this is a segment match rather than a prefix - the 26 sibling
+        // endpoints under that tree (memory, projects, skills, titles) are not
+        // chat turns and must never fall back.
+        let rest = path.strip_prefix("/api").unwrap_or(path.as_str());
+        let segments: Vec<&str> = rest.split('/').collect();
+        return segments.len() == 6
+            && segments[0].is_empty()
+            && segments[1] == "organizations"
+            && !segments[2].is_empty()
+            && segments[3] == "chat_conversations"
+            && !segments[4].is_empty()
+            && segments[5] == "completion";
+    }
+    false
+}
+
+/// The cheap half of challenge detection, off status + content-type alone.
+///
+/// This is what keeps the check off the streaming path: a challenge is the one
+/// case where the reply is HTML instead of the expected SSE/JSON, so a turn that
+/// clears never has its body touched.
+///
+/// **429 is excluded on purpose.** That is the vendor rate-limiting the user, not
+/// Cloudflare challenging our egress; a resend would not clear it and would push
+/// harder on a limit that is already tripped.
+fn challenge_shape(status: StatusCode, headers: &HeaderMap) -> bool {
+    if status != StatusCode::FORBIDDEN && status != StatusCode::SERVICE_UNAVAILABLE {
+        return false;
+    }
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| {
+            ct.trim_start()
+                .to_ascii_lowercase()
+                .starts_with("text/html")
+        })
+}
+
+/// Confirm a challenge-shaped response really is Cloudflare, from the
+/// `cf-mitigated` header or a marker in the body.
+///
+/// The confirmation is what separates a challenge from a plain HTML 403 the
+/// provider served itself and - the case that matters most - from Gate's OWN
+/// security block. A scan-block is `application/json` carrying `security_blocked`
+/// / `source: gateway`, so it fails [`challenge_shape`] before ever reaching
+/// here. That is the invariant stopping this from resending a turn Gate meant to
+/// block: the two envelopes have different content types, and only one can match.
+///
+/// Either signal suffices. `cf-mitigated: challenge` is the cleaner one but is
+/// asserted rather than verified (Gate's storage allowlist drops the header), so
+/// the body marker carries detection if it turns out to be absent.
+fn body_confirms_challenge(headers: &HeaderMap, body: &[u8]) -> bool {
+    if headers.contains_key("cf-mitigated") {
+        return true;
+    }
+    let text = String::from_utf8_lossy(body).to_ascii_lowercase();
+    CF_BODY_MARKERS.iter().any(|marker| text.contains(marker))
+}
+
+/// Cloudflare's `cRay` request id, for correlating a local challenge with
+/// Cloudflare's own record of it. A request-correlation id, not user data - and
+/// the only thing read out of a challenge body.
+///
+/// `_cf_chl_opt` is a JS object literal, so the key arrives UNQUOTED
+/// (`cRay:"..."`); the quoted-key spelling is tolerated too so a body that
+/// reaches us as JSON still yields the id.
+fn extract_cray(body: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    let start = text.find("cRay")?;
+    let rest = text[start + "cRay".len()..].trim_start();
+    let rest = rest.strip_prefix('"').unwrap_or(rest).trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    let end = rest.find('"')?;
+    let cray = &rest[..end];
+    // Ray ids are short alphanumerics; anything else means the parse drifted.
+    (!cray.is_empty() && cray.len() <= 32 && cray.chars().all(|c| c.is_ascii_alphanumeric()))
+        .then(|| cray.to_string())
+}
+
+/// Take the request's body so it can be replayed, leaving the request whole.
+///
+/// The turn still has to be forwarded to Gate - the fallback only fires if that
+/// forward comes back challenged - so the collected bytes go straight back.
+/// Headers and URI are cloned before the caller rewrites them, so the replay
+/// carries the client's own request and none of Gate's.
+async fn buffer_replay(req: &mut Request<Body>) -> Result<Replay> {
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let headers = req.headers().clone();
+    let body = std::mem::replace(req.body_mut(), Body::empty());
+    let bytes = body
+        .collect()
+        .await
+        .context("buffering the chat turn body for a possible direct resend")?
+        .to_bytes();
+    *req.body_mut() = Body::from(bytes.clone());
+    Ok(Replay {
+        method,
+        uri,
+        headers,
+        body: bytes,
+    })
+}
+
+/// The client the fallback resend goes out on.
+///
+/// `.no_proxy()` is load-bearing, not hygiene: while routing is on, this process
+/// has pointed the machine's proxy variables at its OWN listener, so a client
+/// honouring them would send the resend back into this engine and loop. The hop
+/// has to leave from here directly, which is the entire point of the fallback.
+///
+/// Redirects are off because a proxy forwards verbatim and never chases a 3xx on
+/// the caller's behalf.
+fn fallback_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("building the Cloudflare-fallback client")
+    })
+}
+
+/// Re-issue a challenged turn straight to the provider and stream the reply back
+/// in place of the challenge.
+async fn resend_direct(replay: Replay) -> Result<Response<Body>> {
+    let Replay {
+        method,
+        uri,
+        mut headers,
+        body,
+    } = replay;
+    // The replay opens a fresh connection, so the first hop's framing must not
+    // ride along; reqwest sets its own. `host` goes for the same reason - the
+    // URL carries the authority now.
+    let hop_by_hop: Vec<_> = headers
+        .keys()
+        .filter(|name| super::relay::is_hop_by_hop(name))
+        .cloned()
+        .collect();
+    for name in hop_by_hop {
+        headers.remove(&name);
+    }
+    headers.remove(hudsucker::hyper::header::HOST);
+    // Belt to the brace that the buffer is taken pre-rewrite: a client may set
+    // its own `x-gate-api-key`, which `inject_gate_credential` deliberately
+    // respects, and this hop goes to the PROVIDER. The Gate credential must never
+    // leave on it.
+    super::relay::strip_gate_headers(&mut headers);
+
+    let upstream = fallback_client()
+        .request(method, uri.to_string())
+        .headers(headers)
+        .body(body)
+        .send()
+        .await
+        .context("resending the challenged turn direct")?;
+
+    let mut builder = Response::builder().status(upstream.status());
+    if let Some(dst) = builder.headers_mut() {
+        for (name, value) in upstream.headers() {
+            if super::relay::is_hop_by_hop(name) {
+                continue;
+            }
+            dst.append(name.clone(), value.clone());
+        }
+    }
+    // Streamed, not collected: this is the SSE reply the turn was waiting for,
+    // and buffering it would hold every token back until the last one.
+    let stream = upstream.bytes_stream().map_err(std::io::Error::other);
+    builder
+        .body(Body::from_stream(stream))
+        .context("building the direct-resend response")
+}
+
+/// The response sent when a body we had to buffer could not be read.
+///
+/// Typed distinctly (`gate_buffer_failed`) for the same reason
+/// [`decline_upgrade_response`] is: it must be greppable in a client log and
+/// never mistakeable for something the provider said. 502, because the hop that
+/// failed is ours rather than the caller's request.
+fn buffer_failed_response() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::BAD_GATEWAY)
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .body(Body::from(
+            r#"{"error":{"message":"gate could not buffer the body for this turn","type":"gate_buffer_failed"}}"#,
+        ))
+        // Infallible: every part is a static, pre-validated value.
+        .expect("static buffer-failed response builds")
 }
 
 pub(crate) fn apply_rewrite<T>(
@@ -1255,6 +1707,8 @@ where
         peer_verdict: None,
         claude_code_route: false,
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
+        chat_turn: None,
+        challenges: Arc::new(ChallengeStats::default()),
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -1832,5 +2286,157 @@ mod tests {
         assert!(pac
             .trim_end()
             .ends_with("return \"PROXY proxy.corp.com:8080\";\n}"));
+    }
+
+    // --- Cloudflare-challenge fallback -------------------------------------
+
+    /// A captured managed-challenge body, trimmed to the parts the detector
+    /// reads: the `_cf_chl_opt` block with its `cZone` and `cRay`.
+    const CF_CHALLENGE_BODY: &str = r#"<!DOCTYPE html><html><head><title>Just a moment...</title></head>
+<body><div id="challenge-error-text"></div>
+<script>window._cf_chl_opt={cvId:"3",cZone:"chatgpt.com",cRay:"9a1b2c3d4e5f6a7b",cH:"abc"};</script>
+</body></html>"#;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                hudsucker::hyper::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    /// The positive case, end to end through both halves of the predicate.
+    #[test]
+    fn a_cloudflare_challenge_on_a_chat_turn_is_recognised() {
+        let html = headers(&[("content-type", "text/html; charset=utf-8")]);
+        assert!(challenge_shape(StatusCode::FORBIDDEN, &html));
+        assert!(body_confirms_challenge(&html, CF_CHALLENGE_BODY.as_bytes()));
+        // A JS challenge arrives as 503 and confirms off the header alone, which
+        // is the path that carries detection if the body markers ever move.
+        let mitigated = headers(&[("content-type", "text/html"), ("cf-mitigated", "challenge")]);
+        assert!(challenge_shape(StatusCode::SERVICE_UNAVAILABLE, &mitigated));
+        assert!(body_confirms_challenge(
+            &mitigated,
+            b"<html>no markers</html>"
+        ));
+    }
+
+    /// The invariant the whole fallback rests on: Gate's own security block must
+    /// never be mistaken for a challenge, or a turn Gate meant to BLOCK would be
+    /// resent direct and delivered. The two are told apart by content type, so
+    /// this holds however the block's JSON body is worded.
+    #[test]
+    fn a_gate_security_block_is_never_a_challenge() {
+        let block = headers(&[("content-type", "application/json")]);
+        assert!(
+            !challenge_shape(StatusCode::FORBIDDEN, &block),
+            "a JSON block envelope must not be challenge-shaped"
+        );
+        // Even were the body to mention Cloudflare, the content type has already
+        // decided it - confirmation is never reached.
+        let body = br#"{"error":{"type":"security_blocked","source":"gateway"}}"#;
+        assert!(!body_confirms_challenge(&block, body));
+    }
+
+    /// Everything that is NOT a challenge and must stream through untouched.
+    #[test]
+    fn rate_limits_and_successful_turns_are_not_challenges() {
+        // 429 is the vendor rate-limiting the user. A resend would not clear it
+        // and would push harder on a limit already tripped.
+        let html = headers(&[("content-type", "text/html")]);
+        assert!(!challenge_shape(StatusCode::TOO_MANY_REQUESTS, &html));
+        // The turn that cleared: an SSE stream, which must never be buffered.
+        let sse = headers(&[("content-type", "text/event-stream")]);
+        assert!(!challenge_shape(StatusCode::OK, &sse));
+        assert!(!challenge_shape(StatusCode::FORBIDDEN, &sse));
+        // A provider's own HTML 403 with no Cloudflare fingerprint stays a 403.
+        assert!(!body_confirms_challenge(
+            &html,
+            b"<html><body>Forbidden</body></html>"
+        ));
+    }
+
+    /// Only the two native chat turns are eligible. This is the surface half of
+    /// the guard: a challenge anywhere else is surfaced, never resent, because
+    /// the reasoning (tokens minted locally, IP-bound clearance) is specific to
+    /// these turns.
+    #[test]
+    fn only_native_chat_turns_are_eligible() {
+        for (host, path) in [
+            ("chatgpt.com", "/backend-api/f/conversation"),
+            ("ChatGPT.com", "/backend-api/F/Conversation"),
+            ("chatgpt.com", "/f/conversation"),
+            (
+                "claude.ai",
+                "/api/organizations/b44129f9/chat_conversations/2f261f16/completion",
+            ),
+            (
+                "claude.ai",
+                "/organizations/b44129f9/chat_conversations/2f261f16/completion",
+            ),
+        ] {
+            assert!(is_native_chat_turn(host, path), "{host}{path} is a turn");
+        }
+        for (host, path) in [
+            // Mints a conduit token, carries neither prompt nor reply.
+            ("chatgpt.com", "/backend-api/f/conversation/prepare"),
+            // The Codex tool plane: routed, but not a chat turn.
+            ("chatgpt.com", "/backend-api/ps/mcp"),
+            ("chatgpt.com", "/backend-api/wham/tasks"),
+            // The vendor's own title generator, not a user turn.
+            (
+                "claude.ai",
+                "/api/organizations/b44129f9/chat_conversations/2f261f16/title",
+            ),
+            // Siblings under the same tree that are not completions.
+            ("claude.ai", "/api/organizations/b44129f9/projects"),
+            // A path that only looks like it carries the `/api` prefix.
+            (
+                "claude.ai",
+                "/apifoo/organizations/b44129f9/chat_conversations/2f261f16/completion",
+            ),
+            // Ordinary API surfaces: a 403 here gets no fallback.
+            ("api.anthropic.com", "/v1/messages"),
+            ("api.openai.com", "/v1/chat/completions"),
+        ] {
+            assert!(
+                !is_native_chat_turn(host, path),
+                "{host}{path} is not a chat turn"
+            );
+        }
+    }
+
+    /// The correlation id is read; nothing else is. A body with no `cRay`
+    /// yields `None` rather than a guess.
+    #[test]
+    fn the_cray_is_read_and_nothing_else_is() {
+        assert_eq!(
+            extract_cray(CF_CHALLENGE_BODY.as_bytes()).as_deref(),
+            Some("9a1b2c3d4e5f6a7b")
+        );
+        assert_eq!(extract_cray(b"<html>no challenge here</html>"), None);
+        // A malformed value is not passed through as one.
+        assert_eq!(extract_cray(br#"{"cRay":""}"#), None);
+        assert_eq!(extract_cray(br#"{"cRay":"not a ray id!"}"#), None);
+    }
+
+    /// The structural warning fires once, and only on a sustained rate - a
+    /// couple of early challenges must not trip it.
+    #[test]
+    fn the_structural_warning_needs_a_sustained_rate() {
+        let stats = ChallengeStats::default();
+        // Below the sample floor, however bad the ratio looks.
+        stats.warn_if_structural("chatgpt.com", 3, 3);
+        assert!(!stats.structural_warned.load(Ordering::Relaxed));
+        // A real but intermittent rate (the measured ~1 in 5) is the case this
+        // whole fallback exists to HANDLE, so it must stay quiet.
+        stats.warn_if_structural("chatgpt.com", 20, 100);
+        assert!(!stats.structural_warned.load(Ordering::Relaxed));
+        // Sustained near-100% is the structural signal.
+        stats.warn_if_structural("chatgpt.com", 19, 20);
+        assert!(stats.structural_warned.load(Ordering::Relaxed));
     }
 }

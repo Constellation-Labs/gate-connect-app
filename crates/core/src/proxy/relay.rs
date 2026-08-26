@@ -729,7 +729,11 @@ fn set_upstream_header(headers: &mut HeaderMap, upstream_url: &str) -> Result<()
 /// Strip every Gate-internal header before a passthrough hop, so none of them
 /// leak to the real upstream. The tool's own `Authorization` is left untouched
 /// so account endpoints (usage, profile) authenticate as the tool's identity.
-fn strip_gate_headers(headers: &mut HeaderMap) {
+///
+/// Shared with the engine's Cloudflare fallback ([`super::engine`]), which makes
+/// the same kind of hop - straight to the real provider under the client's own
+/// credential - and must not leak the Gate key there either.
+pub(super) fn strip_gate_headers(headers: &mut HeaderMap) {
     headers.remove(UPSTREAM_URL_HEADER);
     headers.remove(GATE_AUTHORIZATION_HEADER);
     headers.remove(GATE_KEY_HEADER);
@@ -737,7 +741,9 @@ fn strip_gate_headers(headers: &mut HeaderMap) {
 }
 
 /// Hop-by-hop headers must not be forwarded end-to-end (RFC 9110 §7.6.1).
-fn is_hop_by_hop(name: &HeaderName) -> bool {
+/// Shared with the engine's Cloudflare fallback, which replays a buffered
+/// request onto a fresh connection and so must drop the first hop's framing.
+pub(super) fn is_hop_by_hop(name: &HeaderName) -> bool {
     matches!(
         name.as_str(),
         "connection"
