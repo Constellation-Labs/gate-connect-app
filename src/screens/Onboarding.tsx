@@ -151,7 +151,9 @@ function buildSteps(platform: Platform): Step[] {
       sub: "Once requests pass through Gate, the desktop app shows recent activity, security actions, and compression savings without exposing prompt or response content.",
       body: ["That’s all there is to it. Sign in and your first app is one toggle away."],
       note: "Notifications will alert you when a request has been blocked or flagged.",
-      noteIcon: "bell",
+      // `BellDot`, read off the frame 2026-08-26 - the bell with an unread
+      // mark, not the plain one.
+      noteIcon: "bellDot",
     },
   ];
 }
@@ -389,7 +391,7 @@ export function Onboarding() {
                   {step.hero}
 
                   {step.note && (
-                    <p className="flex items-center gap-2 rounded-md border border-base-border px-4 py-3 text-left text-base-xs leading-4 text-neutral-900">
+                    <p className="flex items-center gap-3 rounded-md border border-base-border px-4 py-3 text-left text-base-xs leading-4 text-neutral-900">
                       {step.noteIcon && (
                         <span aria-hidden className="shrink-0 text-base-muted-foreground">
                           <Icon name={step.noteIcon} size={16} />

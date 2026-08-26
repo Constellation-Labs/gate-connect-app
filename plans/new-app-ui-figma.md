@@ -781,7 +781,7 @@ holds that alignment, so it is `invisible` now instead of dimmed.
 `base-3xl` (32px) and `tracking-heading-32` for `heading/32`, which sits
 between Tailwind's own 3xl and 4xl and had no stop.
 
-### Sync 2026-08-26, second pass: step 3 read, step 4 still not
+### Sync 2026-08-26, second pass: the last two intro steps, and both quotas
 
 Both quotas ran out inside this pass, which is worth recording as a working
 constraint rather than a footnote. The step-3 card (212:85210) came back; the
@@ -805,9 +805,23 @@ macOS-only phrasing the 2026-08-19 deviation already covers; the build keeps
 component. The build stays at 8px for both rather than reproducing the
 difference - worth a designer question, not a build.
 
-**Step 4's card was not re-read.** Its title, subtitle, note copy and note
-glyph are still the 2026-08-19 browser read. Given step 3's glyph had drifted,
-assume step 4's `bell` may have too, and check it first when a quota returns.
+**Step 4 was read through the browser the same day**, both quotas being gone,
+and the guess above was right: **the glyph is `BellDot`**, the bell with an
+unread mark, not the plain `bell`. Confirmed by ctrl-click into the vector and
+reading `Parent component: Icon / BellDot` off the properties panel. Added and
+applied.
+
+Walking up from there settled the note gap too: step 4's note is `Fill (590px)`
+x `Hug (42px)`, r8, 1px `base/border`, padding 12/16, **gap 12px** - the same
+as step 3. So two of the three frames say 12 and step 2 says 8; the build moves
+to 12 and step 2 is the outlier, not the rule.
+
+Step 4's title, subtitle and note copy match the build verbatim. **One thing
+the design does not draw**: the build closes the step with "That's all there is
+to it. Sign in and your first app is one toggle away." The frame has the
+subtitle and then the illustration, nothing between. Left in place and raised
+rather than deleted - it is a sign-off before Get started, and removing user
+copy is the designer's call, not this pass's.
 
 **Not changed.** Step 1 keeps the config-versus-proxy mechanism paragraph the
 design drops and step 2 keeps its platform-aware sub-heading, both for the

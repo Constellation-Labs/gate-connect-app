@@ -60,6 +60,7 @@ export type IconName =
   | "squareCode"
   | "arrowRight"
   | "focus"
+  | "bellDot"
   | "creditCard";
 
 const PATHS: Record<IconName, JSX.Element> = {
@@ -405,6 +406,15 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="m10 9-3 3 3 3" />
       <path d="m14 15 3-3-3-3" />
       <rect x="3" y="3" width="18" height="18" rx="2" />
+    </>
+  ),
+  // Lucide `BellDot`, the bell with an unread mark. The intro's last step
+  // draws this rather than the plain `bell` its Settings row uses.
+  bellDot: (
+    <>
+      <path d="M10.268 21a2 2 0 0 0 3.464 0" />
+      <path d="M11.68 2.009A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673c-.824-.85-1.678-1.731-2.21-3.348" />
+      <circle cx="18" cy="5" r="3" />
     </>
   ),
   // Lucide `ArrowRight` and `Focus` - the intro's Next button carries the
