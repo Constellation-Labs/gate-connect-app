@@ -110,13 +110,17 @@ export function BaseSwitch({
       aria-busy={busy || undefined}
       aria-disabled={busy || undefined}
       onClick={busy ? undefined : onClick}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      // 32 x 17.78 with a 14.22 knob at 1.78 inset (`Switch` component set,
+      // 408:14253, re-read 2026-08-26), rounded to whole pixels. The off track
+      // is `neutral-400` at 50%, which lands within a hair of the `base/input`
+      // it replaces - no contrast change, just the design's own value.
+      className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         busy ? "opacity-70" : ""
-      } ${on ? "bg-blue-ribbon-700" : "bg-base-input"}`}
+      } ${on ? "bg-blue-ribbon-700" : "bg-neutral-400/50"}`}
     >
       <span
-        className={`absolute size-4 rounded-full bg-base-background shadow-base-lg transition-transform ${
-          on ? "translate-x-4" : "translate-x-1"
+        className={`absolute size-3.5 rounded-full bg-base-background shadow-base-lg transition-transform ${
+          on ? "translate-x-4" : "translate-x-[2px]"
         }`}
       />
     </button>

@@ -305,13 +305,18 @@ export function ModalOption({
       role="radio"
       aria-checked={selected}
       onClick={onSelect}
-      className={`flex w-full items-center gap-3 rounded-md border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-        selected ? "border-base-primary" : "border-base-border hover:bg-gray-50"
+      // 8px padding, and the two states carry different elevation: selected is
+      // `shadow/sm` on a `base/primary` hairline, unselected `shadow/xs` on
+      // `base/input` (`Flows / Setup` org picker, 451:7795, read 2026-08-26).
+      className={`flex w-full items-center gap-3 rounded-md border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+        selected
+          ? "border-base-primary shadow-base-sm"
+          : "border-base-input shadow-base-xs hover:bg-gray-50"
       }`}
     >
       <span
         aria-hidden
-        className="flex size-10 shrink-0 items-center justify-center rounded-sm bg-gray-100 text-sm font-medium text-neutral-700"
+        className="flex size-9 shrink-0 items-center justify-center rounded-sm bg-gray-100 text-sm font-medium text-neutral-700"
       >
         {initials}
       </span>
@@ -322,11 +327,11 @@ export function ModalOption({
         <span className="block truncate text-sm leading-5 text-neutral-600">{meta}</span>
       </span>
       {selected ? (
-        <Icon name="circleCheck" size={20} className="shrink-0 text-base-primary" />
+        <Icon name="circleCheck" size={16} className="shrink-0 text-base-primary" />
       ) : (
         <span
           aria-hidden
-          className="size-5 shrink-0 rounded-full border border-base-input"
+          className="size-4 shrink-0 rounded-full border border-base-input bg-base-background shadow-base-xs"
         />
       )}
     </button>

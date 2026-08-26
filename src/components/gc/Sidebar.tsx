@@ -5,7 +5,7 @@ import type { IconName } from "./Icon";
 
 /**
  * Left navigation rail for the new app UI (Figma `nav/sidebar/overview`,
- * node 113:16794). 250px wide, fixed, sits beside a scrolling content pane -
+ * node 408:15625, `Sidenav`). 256px wide, fixed, sits beside a scrolling pane -
  * it is not one of the popover's sliding panels and carries no back affordance.
  *
  * Presentational: every piece of state arrives as a prop so the shell can own
@@ -143,13 +143,13 @@ export function Sidebar({
   return (
     <nav
       aria-label="Main"
-      // 250px fixed, 16px padding, a 20px rhythm between the switcher, the nav,
+      // 256px fixed, 16px padding, a 24px rhythm between the switcher, the nav,
       // the divider and the app groups, and a 1px right edge at 5% black - all
       // read off `nav/sidebar/overview` (113:16794) on 2026-08-21.
-      className="flex w-[250px] shrink-0 flex-col border-r border-black/[0.05] bg-base-card p-4"
+      className="flex w-64 shrink-0 flex-col border-r border-black/[0.05] bg-base-card p-4"
     >
       <div className="flex flex-1 flex-col gap-6">
-        <div className="flex flex-col gap-5">
+        <div className="flex flex-col gap-6">
           <OrgSwitcher name={orgName} onClick={onSwitchOrg} />
 
           <div className="flex flex-col gap-1">
@@ -278,7 +278,7 @@ function NavItem({
 /**
  * The two states an empty app list can be in, told apart.
  *
- * Provisional layout: the Figma draws no empty inventory. It lives in the 250px
+ * Provisional layout: the Figma draws no empty inventory. It lives in the 256px
  * rail rather than the content pane because it is the *inventory's* state, and
  * moving it would leave the rail silently blank - which is the ambiguity this
  * exists to remove. Vertical space is ample even if width is not.
@@ -346,15 +346,16 @@ function AppRow({
 
   return (
     <li
-      // Hover and selection share one treatment, read off the component's
-      // row-hover variant (121:33421): a `neutral-100` fill inside a 1px
-      // `neutral-200` border, with the name in `base/primary`. The border is
-      // reserved while at rest so rows do not shift on hover. Drawn radius is
-      // 4px, which the radius scale maps onto `sm`.
-      className={`group flex w-full items-center gap-4 rounded-sm border px-1 py-1.5 ${
+      // Hover and selection share one treatment, read off `sidebar-menu-item`
+      // state=selected (434:128, re-read 2026-08-26): a `base/background` fill
+      // inside a 1px `base/border` under `shadow/xs`. That replaces the
+      // neutral-100/200 pairing the retired row-hover variant drew. The border
+      // is reserved while at rest so rows do not shift on hover. Drawn radius
+      // is 4px, which the radius scale maps onto `sm`; padding is 4px uniform.
+      className={`group flex w-full items-center gap-4 rounded-sm border p-1 ${
         selected
-          ? "border-neutral-200 bg-neutral-100"
-          : "border-transparent hover:border-neutral-200 hover:bg-neutral-100"
+          ? "border-base-border bg-base-background shadow-base-xs"
+          : "border-transparent hover:border-base-border hover:bg-base-background"
       }`}
     >
       <button

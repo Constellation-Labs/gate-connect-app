@@ -507,14 +507,25 @@ export function ModelPickerDialog({
   const searchRef = useRef<HTMLInputElement>(null);
 
   const vendors = useMemo(
-    () => [...new Set(models.map((m) => m.vendor))],
+    () => [...new Set(models.map((m) => m.vendor))].sort((a, b) => a.localeCompare(b)),
     [models],
   );
   const needle = query.trim().toLowerCase();
-  const shown = models.filter(
-    (m) =>
-      (vendor === "all" || m.vendor === vendor) &&
-      m.id.toLowerCase().includes(needle),
+  // "Current models will sort alphabetically, left to right using their
+  // provider. Example. Anthropic > DeepSeek > Moonshot" - written on the
+  // `App / Select multiple models (Opencode)` section, read 2026-08-26. By
+  // provider first, then by id so a provider's own models hold a stable order
+  // rather than falling back to whatever the gateway listed.
+  const shown = useMemo(
+    () =>
+      models
+        .filter(
+          (m) =>
+            (vendor === "all" || m.vendor === vendor) &&
+            m.id.toLowerCase().includes(needle),
+        )
+        .sort((a, b) => a.vendor.localeCompare(b.vendor) || a.id.localeCompare(b.id)),
+    [models, vendor, needle],
   );
 
   return (

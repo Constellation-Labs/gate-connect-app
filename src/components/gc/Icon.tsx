@@ -59,6 +59,7 @@ export type IconName =
   | "clipboardList"
   | "squareCode"
   | "arrowRight"
+  | "arrowLeft"
   | "focus"
   | "bellDot"
   | "creditCard";
@@ -424,6 +425,12 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <path d="M5 12h14" />
       <path d="m12 5 7 7-7 7" />
+    </>
+  ),
+  arrowLeft: (
+    <>
+      <path d="m12 19-7-7 7-7" />
+      <path d="M19 12H5" />
     </>
   ),
   focus: (
