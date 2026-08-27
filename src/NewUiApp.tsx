@@ -2053,6 +2053,10 @@ export function NewUiApp() {
           // `lib/groups.ts` documents - it renders off, and clicking it turns off
           // the setting the user was trying to turn on.
           isProtected={appFor(railApps, view.slug)?.on ?? false}
+          // Observation, and the whole of it: the rail row prints the phrase
+          // alone because its reason does not fit 250px, so this pane is where
+          // "Not protected - Verification failed" is legible.
+          status={appFor(railApps, view.slug)?.status}
           busy={routingBusy}
           onToggleProtected={() =>
             toggleRailApp(
