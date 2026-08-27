@@ -17,3 +17,8 @@
 /test-results/
 /playwright-report/
 /blob-report/
+.figma-mcp/.env
+.figma-mcp/assets/
+
+# TypeScript incremental build artifact.
+tsconfig.tsbuildinfo
