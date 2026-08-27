@@ -64,15 +64,16 @@ pub struct Preferences {
     pub share_diagnostics_recorded: bool,
     /// What the person calls this machine, when they have renamed it.
     ///
-    /// `None` is the normal state and is **not** a blank name: the command layer
+    /// `None` is the normal state and is **not** a blank name: [`device_name`]
     /// resolves it to the machine's own hostname, which is what Settings shows.
     /// Storing the override rather than the resolved value is what lets a
     /// renamed-then-cleared device go back to following the hostname, and keeps
     /// "the user chose this" distinguishable from "this is what the OS reports" -
     /// the same argument `share_diagnostics_recorded` makes one field up.
     ///
-    /// Local. Nothing sends it anywhere yet; it labels this install in its own
-    /// window.
+    /// Resolved (override or hostname) by [`device_name`], which labels this
+    /// install in its own window and rides gateway-bound requests as
+    /// `x-gate-device-name` - see `proxy`'s attribution injection.
     #[serde(default)]
     pub device_name: Option<String>,
     /// Which model each tool should run on, keyed by tool slug (AG-588).
@@ -164,8 +165,8 @@ fn config_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("preferences.json"))
 }
 
-/// Hot-path cache for [`gate_models_for`], stamped with the file it was read
-/// from.
+/// Hot-path cache for [`gate_models_for`] and [`device_name`], stamped with the
+/// file it was read from.
 ///
 /// The model choice is consulted on **every proxied request**, and a parse per
 /// request is not a cost the user's actual work should pay. Unlike
@@ -354,6 +355,46 @@ pub fn set_device_name(name: &str) -> Result<()> {
     let mut prefs = load();
     prefs.device_name = device_name_override(name);
     save(&prefs)
+}
+
+/// What to call this machine: the person's own name for it, or the hostname.
+///
+/// Resolved here so there is one answer everywhere the name appears - the
+/// Settings row and the `x-gate-device-name` header the proxy stamps - and one
+/// place that decides what an absent override means. The stored value stays an
+/// `Option` (see [`Preferences::device_name`]), so clearing the name goes back
+/// to following the hostname instead of freezing today's.
+///
+/// Consulted on every proxied request, hence the same stamped [`CACHE`] read as
+/// [`gate_models_for`] and for the same reasons: a parse per request is a cost
+/// the user's work should not pay, and a rename must reach the Linux helper
+/// daemon's requests without a restart.
+///
+/// "This device" rather than "Unknown" when even the hostname cannot be read:
+/// the string is a label, not a diagnostic, and a machine whose hostname is
+/// unreadable is still the machine the user is looking at.
+pub fn device_name() -> String {
+    let current = stamp();
+    let cached = CACHE.read().ok().and_then(|cache| {
+        cache
+            .as_ref()
+            .filter(|(stamped, _)| *stamped == current)
+            .map(|(_, prefs)| prefs.device_name.clone())
+    });
+    let named = cached.unwrap_or_else(|| {
+        let prefs = load();
+        let name = prefs.device_name.clone();
+        if let Ok(mut cache) = CACHE.write() {
+            *cache = Some((current, prefs));
+        }
+        name
+    });
+    named.unwrap_or_else(host_name)
+}
+
+/// The machine's own name, or a neutral stand-in.
+fn host_name() -> String {
+    sysinfo::System::host_name().unwrap_or_else(|| "This device".to_string())
 }
 
 /// What a typed name means, with the file left out of it: a real name trimmed, or
