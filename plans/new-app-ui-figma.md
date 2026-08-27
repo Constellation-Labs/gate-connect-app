@@ -1048,6 +1048,35 @@ pixel sample catch the ones nobody thought to look up.
 
 554 unit tests and the 171-test e2e suite pass.
 
+### The undrawn rows stop looking undrawn, 2026-08-27
+
+Sign-in method and Gate certificate are ours, not the file's, and they were
+wearing a paragraph each - a sentence about the OS secret store, a sentence
+about local inspection. `Row` gives any row with a value a fixed 184px label
+column, so both sentences wrapped inside a gutter: six lines on one row, four on
+the other, on a screen where no drawn row is taller than two.
+
+The proposal on the table was a hover. It was declined for the reason the pane
+exists: hiding where the credential lives behind a tooltip is the opposite of
+"reassurance comes from transparency". Both descriptions are **removed**
+instead, which is what the file does - every drawn row that carries a value
+carries no second line, and every drawn row with a second line carries no value.
+The Connection card is now four uniform value rows with their values in one
+column. What removing the certificate costs is said by the confirmation dialog,
+which is where a consequence belongs anyway.
+
+`signInNote` survives as the row's `description`, the way `updateNote` does on
+Version: a transient line about what is happening right now, not a paragraph the
+row wears at rest.
+
+`Row` keeps the two-shape rule this turned up, because those two notes still
+need it: a row with a description takes the full width and puts its value beside
+the control, a row with only a value keeps the 184px column. The drawn rows are
+unaffected either way - none of them has both - but the next person to add a row
+lands in the right shape instead of in the gutter.
+
+554 unit tests and the 171-test e2e suite pass.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a

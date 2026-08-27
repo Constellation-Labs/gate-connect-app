@@ -257,9 +257,12 @@ export function buildSettingsSections({
                 id: "sign-in-method",
                 icon: "shieldCheck" as IconName,
                 label: "Sign-in method",
-                description:
-                  signInNote ??
-                  "Your Gate account keeps its session in the OS secret store and refreshes on its own, so there is no key to paste or rotate.",
+                // No standing description: every drawn row that carries a value
+                // carries no second line, and the explanation this used to hold
+                // wrapped the row to six of them. `signInNote` still lands here,
+                // the way `updateNote` lands on Version - a transient line about
+                // what is happening now, not a paragraph the row wears at rest.
+                description: signInNote,
                 value: "Gate account",
               } as SettingsRow,
             ]
@@ -269,9 +272,7 @@ export function buildSettingsSections({
                   id: "sign-in-method",
                   icon: "shieldCheck" as IconName,
                   label: "Sign-in method",
-                  description:
-                    signInNote ??
-                    "A Gate account keeps its session in the OS secret store and refreshes on its own, so there is nothing to paste or rotate.",
+                  description: signInNote,
                   value: "API key",
                   action: {
                     label: "Use a Gate account",
@@ -286,8 +287,9 @@ export function buildSettingsSections({
                 id: "certificate",
                 icon: "shieldCheck" as IconName,
                 label: "Gate certificate",
-                description:
-                  "Lets Gate inspect your AI traffic locally. Removing it stops inspection until it is trusted again.",
+                // No description, for the reason Sign-in method has none. What
+                // removing it costs is the confirmation dialog's job to say, and
+                // that dialog says it before anything happens.
                 value: certificate,
                 // Red, like Disconnect and Reset: it is reversible, but until it is
                 // reversed every routed domain stops being inspected, and that is
@@ -556,9 +558,20 @@ function Row({ row }: { row: SettingsRow }) {
         * been drawing `neutral-500` and reading washed out beside its label. */}
       <Icon name={row.icon} size={20} className="shrink-0 text-base-foreground" />
 
+      {/* Two row shapes, which is all the design draws. A *value* row -
+        * Device, Install ID, Gate plan, Version - sets its label in a fixed
+        * 184px column so the values line up down the card. A *description* row
+        * - Launch at login, Notifications, Diagnostics report, Reset - gives the
+        * text the full width and puts its control at the end.
+        *
+        * A row carrying both is ours, not the file's. It takes the description
+        * shape, because the 184px column is a gutter and a sentence in it wraps
+        * to six lines. */}
       <div
         className={`min-w-0 ${
-          row.value === undefined && !row.unavailable ? "flex-1" : "w-[184px] shrink-0"
+          row.description !== undefined || (row.value === undefined && !row.unavailable)
+            ? "flex-1"
+            : "w-[184px] shrink-0"
         }`}
       >
         <p className="truncate text-sm font-medium leading-5 text-base-foreground">
@@ -581,7 +594,13 @@ function Row({ row }: { row: SettingsRow }) {
       ) : (
         <>
           {row.value !== undefined && (
-            <p className="min-w-0 flex-1 truncate text-sm leading-5 text-base-foreground">
+            <p
+              className={`truncate text-sm leading-5 text-base-foreground ${
+                // In a description row the text has taken the width, so the
+                // value sits with the control rather than claiming a column.
+                row.description !== undefined ? "shrink-0" : "min-w-0 flex-1"
+              }`}
+            >
               {row.value}
             </p>
           )}
