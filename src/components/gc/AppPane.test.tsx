@@ -221,29 +221,35 @@ describe("AppPane model selection", () => {
     expect(card_.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
   });
 
-  it("marks a remembered model as not in use under App default", () => {
+  it("does not report a current Gate model under App default", () => {
+    // A section headed "Current Gate model" while the app runs its own is a
+    // sentence about nothing current. The remembered model is still named - by
+    // the radio, which is the control that would put it to use.
     render(pane({ modelChoice: "app", gateModel: model }));
     const card_ = card("Model selection");
 
-    expect(within(card_).getByText(model.id)).toBeTruthy();
-    expect(within(card_).getByText(/not in use/i)).toBeTruthy();
+    expect(within(card_).queryByText(/Current Gate model/i)).toBeNull();
+    expect(within(card_).queryByRole("button", { name: "Change model" })).toBeNull();
+    expect(within(card_).getByText(`Use ${model.id}`)).toBeTruthy();
   });
 
-  it("drops the qualifier once Gate is actually serving it", () => {
+  it("reports it once Gate is the one serving", () => {
     render(pane({ modelChoice: "gate", gateModel: model }));
     const card_ = card("Model selection");
 
+    expect(within(card_).getByText(/Current Gate model/i)).toBeTruthy();
     expect(within(card_).getByText(model.id)).toBeTruthy();
-    expect(within(card_).queryByText(/not in use/i)).toBeNull();
   });
 
   it("says no model is chosen rather than drawing an empty row", () => {
-    render(pane({ modelChoice: "app", gateModel: null }));
+    // Reachable while Gate is the source and the set came back empty - the state
+    // the pane must not draw as a blank row pretending to name something.
+    render(pane({ modelChoice: "gate", gateModel: null }));
     expect(within(card("Model selection")).getByText(/No Gate model chosen yet/i)).toBeTruthy();
   });
 
   it("refuses a second click while a write is in flight", () => {
-    render(pane({ modelChoice: "app", gateModel: model, modelBusy: true }));
+    render(pane({ modelChoice: "gate", gateModel: model, modelBusy: true }));
     const card_ = card("Model selection");
 
     for (const radio of within(card_).getAllByRole("radio")) expect((radio as HTMLButtonElement).disabled).toBe(true);

@@ -263,11 +263,15 @@ function VendorMark({ provider }: { provider: string | null }) {
  * routing: the control renders one way, and clicking it turns off the setting the
  * user was trying to turn on.
  *
- * **It does not imply that a remembered model is a live one.** The design keeps
- * "Current Gate model" visible under App default so the user can see what they
- * would be switching to. Drawing it identically in both states would conflate
- * intent with what is actually served, so under App default the row is dimmed and
- * labelled - `source` is the only thing that decides what Gate serves.
+ * **It does not imply that a remembered model is a live one.** "Current Gate
+ * model" is drawn only while Gate is the source. It once stayed visible under App
+ * default, dimmed and labelled "not in use", so the user could see what they would
+ * be switching to - but a section headed "Current" that describes nothing current
+ * has to be read twice to learn it does not apply, and it sat directly under the
+ * radio that had just said the same thing. What it was for is now carried by the
+ * Gate radio itself, which names the remembered model in its own description, so
+ * the answer to "what would I be switching to?" is on the control that switches.
+ * `source` remains the only thing that decides what Gate serves.
  *
  * There used to be a third: a `supported` flag that withheld the control for an
  * app the gateway could not identify on a request. It went with the server-side
@@ -365,33 +369,40 @@ function ModelSelection({
         </p>
       )}
 
-      {/* Visible under either choice - the design's point is that you can see
-       * what you would switch to. What changes is whether it reads as live. */}
-      <p className="mt-4 text-base-xs text-base-muted-foreground">
-        {gateModel?.alsoEnabled ? "Current Gate models" : "Current Gate model"}
-      </p>
+      {/* Only while Gate is the source. Under App default there is no current
+       * Gate model to report: the row would be a section headed "Current"
+       * describing nothing current, sitting directly beneath the radio that had
+       * just said so. What it was for - seeing what you would switch to - is
+       * carried by the Gate radio, which names the remembered model itself.
+       * Choosing one is still reachable from App default: that radio opens the
+       * picker when no model is enabled yet. */}
+      {gateActive && (
+        <>
+          <p className="mt-4 text-base-xs text-base-muted-foreground">
+            {gateModel?.alsoEnabled ? "Current Gate models" : "Current Gate model"}
+          </p>
+
+          <div className="mt-2">
+            {gateModel === null ? (
+              <EmptyNote icon="cube">
+                No Gate model chosen yet. Choose one to see what Gate would serve.
+              </EmptyNote>
+            ) : (
+              <InfoRow
+                icon={gateModel.logo ?? <Icon name="cube" size={16} />}
+                action={{ label: "Change model", onClick: onChangeModel, disabled: busy }}
+              >
+                <p className="text-base-2xs leading-4 text-base-muted-foreground">
+                  {gateModel.vendor}
+                </p>
+                <p className="font-mono text-sm leading-5 text-neutral-900">{gateModel.id}</p>
+              </InfoRow>
+            )}
+          </div>
+        </>
+      )}
 
       <div className="mt-2 flex flex-col gap-2">
-        {gateModel === null ? (
-          <EmptyNote icon="cube">
-            No Gate model chosen yet. Choose one to see what Gate would serve.
-          </EmptyNote>
-        ) : (
-          <InfoRow
-            icon={gateModel.logo ?? <Icon name="cube" size={16} />}
-            action={{ label: "Change model", onClick: onChangeModel, disabled: busy }}
-            // Dimmed under App default: it is what the user would switch to, not
-            // what their requests are being answered with.
-            muted={!gateActive}
-          >
-            <p className="text-base-2xs leading-4 text-base-muted-foreground">
-              {gateModel.vendor}
-              {!gateActive && " - not in use"}
-            </p>
-            <p className="font-mono text-sm leading-5 text-neutral-900">{gateModel.id}</p>
-          </InfoRow>
-        )}
-
         <InfoRow
           icon={<Icon name="creditCard" size={16} />}
           action={{ label: "Add credits", onClick: onAddCredits, external: true }}
@@ -461,7 +472,6 @@ function InfoRow({
   icon,
   children,
   action,
-  muted,
 }: {
   icon: ReactNode;
   children: ReactNode;
@@ -470,11 +480,10 @@ function InfoRow({
   action?: { label: string; onClick: () => void; external?: boolean; disabled?: boolean };
   /** Drawn as present but not in force. Opacity rather than a grey palette so
    *  the row reads as the same thing, dimmed - which is what it is. */
-  muted?: boolean;
 }) {
   return (
     <div
-      className={`flex items-center gap-3 rounded-lg border border-base-border p-3 ${muted ? "opacity-60" : ""}`}
+      className="flex items-center gap-3 rounded-lg border border-base-border p-3"
     >
       <span
         aria-hidden
