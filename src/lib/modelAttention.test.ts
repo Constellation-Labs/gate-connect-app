@@ -153,6 +153,45 @@ describe("modelAttention", () => {
     expect(a?.cause).toBe("requests-failing");
   });
 
+  it("fires on the transition, where the older successes predate the Gate model", () => {
+    // Found against a real gateway, not by reading the code. The user runs on the
+    // app's own model, it works, they switch to a Gate model and everything after
+    // that fails. The window still holds the successes from before the switch, so
+    // a rule of "every request in the window failed" is silent at exactly the
+    // moment the tool breaks - the one moment it had to speak.
+    const a = modelAttention({
+      choice: gate("openai/gpt-5"),
+      catalogue: CATALOGUE,
+      credits: FUNDED,
+      recent: [
+        { status: "error" },
+        { status: "error" },
+        { status: "error" },
+        { status: "success" },
+        { status: "success" },
+      ],
+    });
+    expect(a?.cause).toBe("requests-failing");
+  });
+
+  it("clears itself as soon as the tool is answering again", () => {
+    // A success at the head means Gate is serving this tool now, whatever the run
+    // behind it. Leaving the warning up would outlive the problem, and a warning
+    // that does that stops being read.
+    const a = modelAttention({
+      choice: gate("openai/gpt-5"),
+      catalogue: CATALOGUE,
+      credits: FUNDED,
+      recent: [
+        { status: "success" },
+        { status: "error" },
+        { status: "error" },
+        { status: "error" },
+      ],
+    });
+    expect(a).toBeNull();
+  });
+
   it("stays quiet when only some requests failed", () => {
     // A tool that is mostly working does not need an alarm, and one that cried
     // wolf here would be ignored when it mattered.

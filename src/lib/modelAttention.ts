@@ -52,6 +52,23 @@ export interface ModelAttention {
 const MIN_FAILURES = 3;
 
 /**
+ * How many of the most recent requests failed without interruption.
+ *
+ * `recent` is newest-first, as the events feed returns it. A single success
+ * anywhere in the run ends it: the tool is being served again, whatever happened
+ * before it.
+ */
+function failureStreak(recent: { status: "success" | "error" }[] | null | undefined): number {
+  if (!recent) return 0;
+  let n = 0;
+  for (const r of recent) {
+    if (r.status !== "error") break;
+    n += 1;
+  }
+  return n;
+}
+
+/**
  * The catalogue is the definition of "available".
  *
  * `GET /v1/models` returns only what the gateway will actually serve - it
@@ -97,11 +114,13 @@ export function modelAttention({
   // *would* fail; this is the request having failed, which is both more certain
   // and what the user is actually experiencing - their tool stopped working.
   //
-  // Every recent request, not merely some: one error beside successes is a blip,
-  // and a tool that is mostly working does not need an alarm. All of them
-  // failing since a Gate model was chosen is the shape of a model this tool
-  // cannot be served with.
-  if (recent && recent.length >= MIN_FAILURES && recent.every((r) => r.status === "error")) {
+  // The unbroken run from the newest, not every request in the window. Requiring
+  // the whole window to be errors goes silent in the exact case this exists for:
+  // the user switches to a Gate model, everything after the switch fails, and the
+  // successes from before it are still in the window - so the moment the tool
+  // breaks is the moment the warning disappears. A run also self-clears, since one
+  // success at the head means the tool is answering again.
+  if (failureStreak(recent) >= MIN_FAILURES) {
     return {
       cause: "requests-failing",
       models: choice.modelIds,
