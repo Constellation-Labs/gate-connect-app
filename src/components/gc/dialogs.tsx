@@ -617,7 +617,7 @@ export function ModelPickerDialog({
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search models"
-                className="h-9 w-full rounded-base border border-base-input bg-base-card pl-9 pr-3 text-sm leading-5 text-neutral-900 placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                className="h-9 w-full rounded-base border border-base-input bg-gray-50 pl-9 pr-3 text-sm leading-5 text-neutral-900 placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               />
             </label>
             <label className="shrink-0">
@@ -625,7 +625,7 @@ export function ModelPickerDialog({
               <select
                 value={vendor}
                 onChange={(e) => setVendor(e.target.value)}
-                className="h-9 w-[8.5rem] rounded-base border border-base-input bg-base-card px-3 text-sm leading-5 text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                className="h-9 w-[8.5rem] rounded-lg border border-base-input bg-base-card px-3 text-sm leading-5 text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
                 <option value="all">All providers</option>
                 {vendors.map((v) => (
@@ -642,9 +642,17 @@ export function ModelPickerDialog({
            *  offers, and nothing filters per tool yet - so the two numbers would
            *  be the same and saying it twice would imply a filter that is not
            *  running. Reinstate it with AG-590's per-tool filtering. */}
-          <p className="text-base-xs leading-4 text-base-muted-foreground">
-            Showing {shown.length} of {models.length} models
-          </p>
+          <div className="flex items-start justify-between text-base-xs leading-4">
+            <p className="text-base-muted-foreground">
+              Showing {shown.length} of {models.length} models
+            </p>
+            {/* The frame pairs the count with the size of the current set, so the
+             *  answer to "how many have I picked?" stays on screen while picking
+             *  rather than only in the note below the list. */}
+            <p className="font-medium text-base-muted-foreground">
+              {draft.length === 1 ? "1 model selected" : `${draft.length} models selected`}
+            </p>
+          </div>
 
           {missing.length > 0 && (
             <ul className="flex flex-col gap-px">
@@ -693,55 +701,73 @@ export function ModelPickerDialog({
               <p>No model matches that search.</p>
             </ModalNote>
           ) : (
-            <div
-              role="group"
-              aria-label="Gate model"
-              className="-mr-1 flex max-h-[26rem] flex-col gap-px overflow-y-auto pr-1"
-            >
-              {shown.map((model) => {
-                const selected = chosen.includes(model.id);
-                const locked = selected && wouldEmpty(model.id);
-                return (
-                  <button
-                    key={model.id}
-                    type="button"
-                    role="checkbox"
-                    aria-checked={selected}
-                    aria-disabled={locked || undefined}
-                    title={
-                      locked
-                        ? "Gate needs at least one model. Choose another first, or switch this app back to App default."
-                        : undefined
-                    }
-                    onClick={() => {
-                      if (locked) return;
-                      setDraft((d) =>
-                        d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
-                      );
-                    }}
-                    className={`flex shrink-0 items-center gap-3 rounded-base border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-                      selected
-                        ? "border-base-primary bg-base-card"
-                        : "border-transparent hover:bg-gray-50"
-                    } ${locked ? "cursor-not-allowed" : ""}`}
-                  >
-                    <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
-                      {model.logo ?? <Icon name="cube" size={16} />}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-neutral-900">
-                      {model.id}
-                    </span>
-                    {selected ? (
-                      <Icon name="circleCheck" size={16} className="shrink-0 text-base-primary" />
-                    ) : (
-                      <span
-                        aria-hidden
-                        className="size-4 shrink-0 rounded-full border border-base-input"
-                      />
-                    )}
-                  </button>
-                );
-              })}
+            // The frame draws the rows inside a bordered card and scrolls them
+            // within it, so the edge of the list stays visible when it runs past
+            // the fold. The inner element scrolls, not the border, so that edge
+            // holds still while the contents move.
+            <div className="rounded-lg border border-base-border p-2">
+              <div
+                role="group"
+                aria-label="Gate model"
+                className="flex max-h-[22rem] flex-col overflow-y-auto"
+              >
+                {shown.map((model) => {
+                  const selected = chosen.includes(model.id);
+                  const locked = selected && wouldEmpty(model.id);
+                  return (
+                    <button
+                      key={model.id}
+                      type="button"
+                      role="checkbox"
+                      aria-checked={selected}
+                      aria-disabled={locked || undefined}
+                      title={
+                        locked
+                          ? "Gate needs at least one model. Choose another first, or switch this app back to App default."
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (locked) return;
+                        setDraft((d) =>
+                          d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
+                        );
+                      }}
+                      className={`flex h-10 shrink-0 items-center gap-2 border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+                        // The frame marks the chosen row with the muted ground and a
+                        // real border rather than a primary outline, and tightens its
+                        // radius against the looser one the other rows carry.
+                        selected
+                          ? "rounded-base border-base-border bg-gray-50"
+                          : "rounded-lg border-transparent hover:bg-gray-50"
+                      } ${locked ? "cursor-not-allowed" : ""}`}
+                    >
+                      <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
+                        {model.logo ?? <Icon name="cube" size={16} />}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-neutral-900">
+                        {model.id}
+                      </span>
+                      {selected ? (
+                        // Square, as the frame draws it - and square is what a
+                        // multi-select reads as. A round mark is the shape a radio
+                        // uses for a choice that excludes the others, which this
+                        // list stopped being when AG-590 made it a set.
+                        <span
+                          aria-hidden
+                          className="flex size-5 shrink-0 items-center justify-center rounded-base border border-base-primary"
+                        >
+                          <Icon name="check" size={14} className="text-base-primary" />
+                        </span>
+                      ) : (
+                        <span
+                          aria-hidden
+                          className="size-5 shrink-0 rounded-base border border-base-input"
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 

@@ -52,8 +52,10 @@ test.describe("new UI model picker", () => {
     const app = await boot(base);
     await openApp(app);
 
-    await expect(app.page.getByText("No Gate model chosen yet")).toBeVisible();
-    // No dead control: there is nothing to change yet.
+    // Under App default there is no current Gate model to report, so the section
+    // is absent rather than empty - and with it the control that would change a
+    // model this app is not using.
+    await expect(app.page.getByText("Current Gate model")).toHaveCount(0);
     await expect(app.page.getByRole("button", { name: "Change model" })).toHaveCount(0);
   });
 
@@ -106,9 +108,9 @@ test.describe("new UI model picker", () => {
       "aria-checked",
       "true",
     );
+    // Served, so the section reports it.
+    await expect(app.page.getByText("Current Gate model")).toBeVisible();
     await expect(app.page.getByText(catalogue[0].id, { exact: true })).toBeVisible();
-    // Served, so no "not in use" qualifier.
-    await expect(app.page.getByText(/not in use/)).toHaveCount(0);
   });
 
   test("declining the billing keeps the model without serving it", async ({ boot }) => {
@@ -127,9 +129,10 @@ test.describe("new UI model picker", () => {
       "aria-checked",
       "true",
     );
-    // Kept, and marked as not in force - the distinction the card exists to make.
-    await expect(app.page.getByText(catalogue[0].id, { exact: true })).toBeVisible();
-    await expect(app.page.getByText(/not in use/)).toBeVisible();
+    // Kept, and named by the radio that would put it to use. The "Current Gate
+    // model" section stays away: nothing about it is current under App default.
+    await expect(app.page.getByText(`Use ${catalogue[0].id}`)).toBeVisible();
+    await expect(app.page.getByText("Current Gate model")).toHaveCount(0);
   });
 
   test("does not re-ask once this install has accepted", async ({ boot }) => {
@@ -200,8 +203,10 @@ test.describe("new UI model picker", () => {
       "aria-checked",
       "true",
     );
-    await expect(app.page.getByText(catalogue[0].id, { exact: true })).toBeVisible();
-    await expect(app.page.getByText(/not in use/)).toBeVisible();
+    // Remembered, and still named - by the radio, not by a section claiming it is
+    // current.
+    await expect(app.page.getByText(`Use ${catalogue[0].id}`)).toBeVisible();
+    await expect(app.page.getByText("Current Gate model")).toHaveCount(0);
   });
 
   test("offers no choice at all when the setting could not be read", async ({ boot }) => {
@@ -254,6 +259,27 @@ test.describe("new UI model picker search and set", () => {
     await dialog.getByRole("searchbox").fill("opus");
     await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
     await expect(dialog.getByRole("checkbox")).toHaveCount(1);
+  });
+
+  test("counts the set as it is picked, beside the count of what is shown", async ({ boot }) => {
+    // The two numbers answer different questions - how much of the catalogue is
+    // on screen, and how much of it you have chosen - so the frame puts them at
+    // either end of the same line and this checks they move independently.
+    const app = await boot({ ...base, toolModels: { catalogue: many } });
+    await openApp(app);
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("0 models selected")).toBeVisible();
+
+    await dialog.getByRole("checkbox", { name: many[0].id }).click();
+    await expect(dialog.getByText("1 model selected")).toBeVisible();
+
+    await dialog.getByRole("checkbox", { name: many[1].id }).click();
+    await expect(dialog.getByText("2 models selected")).toBeVisible();
+    // Narrowing what is shown does not change what is chosen.
+    await dialog.getByRole("searchbox").fill("opus");
+    await expect(dialog.getByText("2 models selected")).toBeVisible();
   });
 
   test("says so when a search matches nothing, rather than showing an empty list", async ({
