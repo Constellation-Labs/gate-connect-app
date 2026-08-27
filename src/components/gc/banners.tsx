@@ -88,7 +88,7 @@ export function RoutingBanner({
           tone={allProtected ? "green" : "amber"}
           icon={allProtected ? "shieldCheck" : "shieldBan"}
         />
-        <p className="text-sm font-medium leading-5 text-neutral-900">
+        <p className="text-sm font-medium leading-5 text-base-foreground">
           {allProtected
             ? "Gate Connect is protecting you"
             : "Gate Connect is partly routing your apps"}
@@ -145,7 +145,7 @@ export function AlertBanner({
       <div className="flex min-w-0 flex-1 items-center gap-4">
         <StatusTile tone="amber" icon="triangleAlert" size={36} />
         <div className="min-w-0">
-          <p className="text-sm font-medium leading-5 text-neutral-900">{title}</p>
+          <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
           <p className="text-base-xs leading-4 text-neutral-600">{body}</p>
         </div>
       </div>
@@ -156,7 +156,7 @@ export function AlertBanner({
           type="button"
           onClick={onDismiss}
           aria-label="Dismiss alert"
-          className="text-neutral-500 transition-colors hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className="text-neutral-500 transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           <Icon name="x" size={20} />
         </button>
@@ -178,7 +178,7 @@ function PageButton({ side, onClick }: { side: "prev" | "next"; onClick: () => v
       type="button"
       onClick={onClick}
       aria-label={side === "prev" ? "Previous app" : "Next app"}
-      className={`absolute top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border border-base-border bg-base-card text-neutral-600 shadow-base-xs transition-colors hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`absolute top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border border-base-border bg-base-card text-neutral-600 shadow-base-xs transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         side === "prev" ? "-left-2.5" : "-right-2.5"
       }`}
     >

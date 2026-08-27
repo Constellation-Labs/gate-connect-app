@@ -147,6 +147,16 @@ export default {
           border: "#e5e7eb",
           input: "#d1d5db",
           primary: "#203de2",
+          // `base/foreground`, read off the Figma variables on 2026-08-26. Body
+          // and heading ink across the new UI, which had been `neutral-900`
+          // (#171717) on a shell-wide convention of ours. The design names this
+          // one, so it wins: it is gray-950, a touch darker and bluer.
+          foreground: "#030712",
+          // `base/destructive` and its label. The fill is red-600 to the hex, so
+          // nothing moves; the *label* does - it was white, and the design has
+          // always named a tinted red-50 for it.
+          destructive: "#dc2626",
+          "destructive-foreground": "#fef2f2",
           // From the token export (`docs/new_ui_design/tokens.json`), which
           // names it but had no call site until the update banner's dismiss
           // glyph. Same hex as `background` and as `gray-50`; kept under the
@@ -261,6 +271,35 @@ export default {
         // shifted one step down (v4 `shadow-xs` is v3 `shadow-sm`). This repo is
         // on v3.4, so Figma `shadow/sm` is v3's DEFAULT `shadow`, not `shadow-sm`.
         // Spelled out here so the mapping does not have to be re-derived.
+        // The `Button` component set's own treatment (685:20855), which the new
+        // UI had been drawing as a flat fill under `base-2xs`. Each is a drop
+        // shadow plus an inset pair - a dark bottom lip and a light top edge -
+        // and that pair is what gives the control its moulding. Sizes differ:
+        // `sm` presses its highlight harder than `default` does.
+        "base-btn": [
+          "0 1px 2px 0 rgba(0,0,0,0.05)",
+          "inset 0 -4px 4px 0 rgba(0,0,0,0.02)",
+          "inset 0 4px 4px 0 rgba(255,255,255,0.24)",
+        ].join(", "),
+        "base-btn-sm": [
+          "0 1px 2px 0 rgba(0,0,0,0.05)",
+          "inset 0 -4px 4px 0 rgba(0,0,0,0.04)",
+          "inset 0 4px 6px 0 rgba(255,255,255,0.4)",
+        ].join(", "),
+        "base-btn-primary": [
+          "0 1px 2px -1px rgba(0,0,0,0.08)",
+          "0 1px 3px 0 rgba(0,0,0,0.08)",
+          "inset 0 -4px 4px 0 rgba(0,0,0,0.08)",
+          "inset 0 4px 4px 0 rgba(255,255,255,0.1)",
+        ].join(", "),
+        // The destructive lip is `red-700` at 50%, not black: a dark neutral
+        // over `red-600` reads muddy where the design reads lit.
+        "base-btn-destructive": [
+          "0 1px 2px -1px rgba(0,0,0,0.08)",
+          "0 1px 3px 0 rgba(0,0,0,0.08)",
+          "inset 0 -4px 4px 0 rgba(185,28,28,0.5)",
+          "inset 0 4px 4px 0 rgba(255,255,255,0.2)",
+        ].join(", "),
         "base-2xs": "0 1px 0 0 rgba(0,0,0,0.05)",
         "base-xs": "0 1px 2px 0 rgba(0,0,0,0.05)",
         // Figma `shadow/sm`. The design's alpha is 8%, not v3's default 10%;
@@ -294,6 +333,11 @@ export default {
         // 4px control radius became 6px and the 12px dialog became 14px.
         none: "0px",
         xs: "2px",
+        // The drawn control radius. The token export names no 4px stop, which is
+        // why this became `sm` (6px) when the scale was adopted; the frames draw
+        // 4 on every pane-level button and the difference is visible at size, so
+        // the stop exists now rather than being rounded away.
+        control: "4px",
         sm: "6px",
         md: "8px",
         lg: "10px",
@@ -312,6 +356,15 @@ export default {
         "eyebrow-14": "1.4px",
         // `mono/label-12`: same face at 6% - the action pills (BLOCK/FLAG/REDACT).
         label: "0.72px",
+        // `heading/32`: Geist Medium 32/36 at -4% - the intro's welcome title,
+        // the only place the design uses this step. Absolute in Figma, so it
+        // is spelled in px like the rest of this group.
+        "heading-32": "-1.28px",
+        // The Button component's two label styles, both absolute like the rest of
+        // this group: `text-sm/leading-normal/medium` is -2% at 14px and
+        // `text-xs/leading-normal/medium` is -1% at 12px.
+        "button-sm": "-0.28px",
+        "button-xs": "-0.12px",
         // `heading/20`: Geist Medium 20/28 at -1% - pane titles and captions.
         // The 28px line-height is the token export's `xl`, which is also
         // Tailwind's own default, so call sites must not override it.
@@ -357,6 +410,9 @@ export default {
         // opt these out of `useTextScale` entirely.
         "base-2xs": "0.625rem", // 10px - app row status line
         "base-xs": "0.75rem", // 12px - label/12 and the mono eyebrow
+        // `heading/32`, the intro's welcome title. Between Tailwind's own 3xl
+        // (30px) and 4xl (36px), so it needs a stop of its own.
+        "base-3xl": "2rem", // 32px - heading/32
       },
     },
   },

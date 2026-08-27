@@ -518,7 +518,7 @@ drawn vendor captions via each family's `upstream_provider_name` (decision,
 ("your existing providers"), and the design draws each under its own name, so
 the leftover family splits into one group per tool. Before the catalog loads,
 one unlabelled group keeps the rows on screen. The drawn rail also shows no
-Families nav item; ours stays, per the standing deviation.
+Families nav item, and as of 2026-08-26 neither does ours - see below.
 
 **Small pieces.** The Model selection card gained the drawn divider above
 "Current Gate model". `UseGateModelDialog`, the alert banners, the stat trio,
@@ -594,7 +594,7 @@ layer is literally `image 1` - `image.png`, 931x990 - and it shows the built
 `FamiliesPane` (master card, family cards, the Config file / Local proxy
 qualifiers). So the designer has seen the pane and keeps it as reference, but
 the rail still draws no Families nav item and no frame specifies the pane.
-The standing deviation stands.
+The pane was retired on 2026-08-26; its switches moved into the rail.
 
 **One design bug to raise:** the eyebrow above the OpenRouter row reads
 `OPENCODE` in all three variants and in the flow frames' rails. The family
@@ -667,6 +667,468 @@ and it is its own PR. **Closed the same day, second pass** - domain rows open
 the pane, whose activity sections say they cannot be attributed rather than
 claiming a quiet day; see item 10 in "Still to do" for the mechanism and the
 attribution constraint.
+
+### Sync 2026-08-26: Settings read from the node data, not the canvas
+
+Read through the Framelink PAT rather than the browser: `Flows / Settings`
+(116:28963) at depth 4 to map it, then the Main-screens `scroll-content`
+(116:28972) in full. Two calls of the PAT's own Tier-1 allowance; see
+[[project-figma-mcp-view-seat-rate-limit]] for the budget. Every section on
+the page still carries the check, and the section list, row order, labels and
+button copy all match what was built on 2026-08-21. What the node data
+settles is everything the browser reads had to eyeball.
+
+**The value column is Geist, not Geist Mono.** Install ID, Gateway, API key
+and Version are all `copy/14` (Geist Regular 14/20), and so is every other
+value on the screen. The earlier read recorded them as mono and the build
+followed, with a test citing CLAUDE.md's mono-for-identifiers rule as the one
+the design did not overturn. It does overturn it here, and deliberately: the
+same file reaches for `mono/body-14` in the diagnostics report dialog a screen
+away, so the designer had the style to hand and chose the sans one. `mono` is
+gone from `SettingsRow`; `SettingsPane.test.tsx` now pins the absence.
+
+**Nine glyphs were near-misses.** The frame names its icons, and seven rows
+were drawing something else: Device is `Monitor` (not `MonitorSmartphone`),
+Install ID `SquareUser` (not `IdCard`), Gate plan `FileBadge2` (not
+`Receipt`), Launch at login `CirclePower` (not `Power`), Share diagnostic data
+`Share2` (not `ShieldCheck`), Diagnostics report `ClipboardList` (not `Info`),
+Version `SquareCode` (not `CodeXml`). API key's `key` was already lucide
+`KeyRound` and Reset's `refresh` already `RefreshCw`, so those two stood.
+`Icon.tsx` gained the five missing glyphs, geometry taken from
+`lucide-static@1.34.0` rather than drawn by hand.
+
+**The rules sit inside the card's padding.** The card pads 16px and stacks its
+rows at a 16px gap with a 1px `base/border` rule between them; the build had
+per-row `px-4 py-3` with a `border-t`, which bled each rule to the card's
+edges and set the rhythm at 12px. Restructured to the drawn shape.
+
+**Spacing and type, measured:** section-to-section gap 24px (was 16),
+heading-to-card gap 12px (was 8), section headings `heading/16` - Geist Medium
+16/24 - rather than 14/20. Row descriptions are `copy/12` at `#6B7280`, which
+is the `base/muted-foreground` token, not `neutral-600`. The On/Off word
+beside a switch is `copy/14` at full foreground weight, not a 12px muted
+label. Action buttons are `Size=sm`: 32px tall at 8/12 padding with a 16px
+trailing glyph, where the build had `px-2 py-1` and a 12px glyph. The Danger
+zone card's border is `red-600` at 40%, not `red-200` - that one had been
+marked inferred at the call site since it was written.
+
+**Two copy fixes**, both verbatim from the frame: the share-diagnostics
+description reads "routing stats", not "routing state", and the diagnostics
+report description ends in a full stop.
+
+**Not changed, and why.** Foreground text stays `neutral-900` where the frame
+says `#030712` (gray-950): that is the whole shell's convention, not this
+screen's, and moving one pane would split it. The outline button's inset
+highlight pair is likewise a Button-component treatment nothing in the new UI
+reproduces yet. The destructive button's `#FEF2F2` label stays white, matching
+`Modal`. The Notifications description keeps the honest routing-health copy
+over the drawn "blocked or flagged" for the reason recorded on 2026-08-21, and
+the Help section and the Sign-in method / certificate / What-is-collected rows
+remain the standing undrawn deviations. 548 unit tests and the 169-test e2e
+suite pass.
+
+### Sync 2026-08-26: Onboarding, and a page that had moved more than it looked
+
+Read the same way as Settings that day: `Flows / Onboarding` (177:79237) at
+depth 4, then the step-2 card (212:84769) and the welcome content column
+(240:4500) in full. The page carries the check and still holds four frames -
+a welcome and three tutorial steps - but almost every measurement under them
+had changed since the 2026-08-20 build, and the page gained a second section,
+`Onboarding / Images`, holding the three illustrations as vectors.
+
+**The eyebrow reads `Introduction`, not `Tutorial`.** The counter beside it is
+unchanged (`1 of 3` .. `3 of 3`, uppercased by `mono/eyebrow`).
+
+**The welcome frame is a different drawing.** It is no longer the app icon
+over a title: it is a 96px white tile on a `blue-ribbon-300` hairline at a 16px
+radius, carrying the hex mark at 56px, with the design's own inset pair - a
+blue glow up from the bottom edge, a white one down from the top. Under it the
+title is `heading/32` (Geist Medium 32/36 at -4%) and **two-tone**: "Welcome
+to" in foreground, "Gate Connect" in `base/primary`, the wordmark's own split.
+The sub is Geist Medium 14/20 muted, the rule under it is `base/input` rather
+than `base/border`, and the body is `copy/16` at full foreground weight - not
+14px muted - with its closing sentence, "Click Next to get started.", set in
+Medium because it is the only instruction on the frame. The column is 540px.
+`ConstellationHexMark` replaces `app-icon.png`, which now has no caller.
+
+**The tutorial card is 640px at a 16px radius under `shadow/lg`**, where the
+build had 680px, 8px and `shadow/sm`. Inside it: eyebrow row, 12px, title
+(Geist SemiBold 20/**24**), 8px, subtitle - and the subtitle is full
+foreground, not muted, as is every paragraph under it. Then 24px to the media
+block, which stacks the 220px illustration and the note at 16px. The note is
+**transparent** with a 1px border at 12/16 padding, and its text is full
+foreground too. The build had a white fill, 8/12 padding and muted text
+throughout.
+
+**The locate button is not inside the card.** The frame puts "Show me where
+Gate Connect lives" between the card and the footer, centred, as a `Size=sm`
+outline button with a **left `Focus` glyph**. Moved out, and the glyph added.
+
+**The progress rail is 8px, not 4**, on a `base/background` track with a
+bottom hairline. Its fill is `#7195FF` under a left-to-right black-to-white
+64% wash, which composites from a deep navy to a pale blue; the build
+approximated it with two blue-ribbon stops. The literal is spelled out at the
+call site because `#7195FF` sits between ramp stops and is not a token.
+
+**The footer** pads 12/24 rather than standing at a fixed 56px, and its
+buttons are a fixed 220px pair at a 12px gap, each filling half - so Next does
+not shift when its label becomes Get started. Next carries the Button
+component's right arrow; Get started does not. On the welcome frame the design
+draws Previous at **zero opacity** rather than dropping it, which is what
+holds that alignment, so it is `invisible` now instead of dimmed.
+
+`Icon.tsx` gained `arrowRight` and `focus`; `tailwind.config.ts` gained
+`base-3xl` (32px) and `tracking-heading-32` for `heading/32`, which sits
+between Tailwind's own 3xl and 4xl and had no stop.
+
+### Sync 2026-08-26, second pass: the last two intro steps, and both quotas
+
+Both quotas ran out inside this pass, which is worth recording as a working
+constraint rather than a footnote. The step-3 card (212:85210) came back; the
+next call, for step 4 (212:85407), hit Framelink's **429 with a 398,582-second
+retry** - about 4.6 days - and the official MCP answered the same request with
+the View-seat tool-call cap. So the PAT bucket and the OAuth bucket are both
+empty, and the browser method in [[reading-figma-via-browser]] is the only
+route left this month.
+
+**Step 3 confirmed the card anatomy a second time** - 640px, r16, shadow/lg,
+eyebrow `Introduction` / `2 of 3`, title Geist SemiBold 20/24, subtitle
+`copy/14` at full foreground - and turned up one miss: **the note's glyph is
+`MonitorSmartphone`, not `Monitor`**. Fixed. Its note text and the second
+sentence of its subtitle match the build verbatim.
+
+Two things left alone. The drawn subtitle opens "Gate Connect stays open in
+your menu bar, so it is always easy to access while you work", which is the
+macOS-only phrasing the 2026-08-19 deviation already covers; the build keeps
+`whereItLives(platform)`. And **the two notes disagree with each other**: step
+2's icon-to-text gap is 8px, step 3's is 12px, on what is otherwise the same
+component. The build stays at 8px for both rather than reproducing the
+difference - worth a designer question, not a build.
+
+**Step 4 was read through the browser the same day**, both quotas being gone,
+and the guess above was right: **the glyph is `BellDot`**, the bell with an
+unread mark, not the plain `bell`. Confirmed by ctrl-click into the vector and
+reading `Parent component: Icon / BellDot` off the properties panel. Added and
+applied.
+
+Walking up from there settled the note gap too: step 4's note is `Fill (590px)`
+x `Hug (42px)`, r8, 1px `base/border`, padding 12/16, **gap 12px** - the same
+as step 3. So two of the three frames say 12 and step 2 says 8; the build moves
+to 12 and step 2 is the outlier, not the rule.
+
+Step 4's title, subtitle and note copy match the build verbatim. **One thing
+the design does not draw**: the build closes the step with "That's all there is
+to it. Sign in and your first app is one toggle away." The frame has the
+subtitle and then the illustration, nothing between. Left in place and raised
+rather than deleted - it is a sign-off before Get started, and removing user
+copy is the designer's call, not this pass's.
+
+**Not changed.** Step 1 keeps the config-versus-proxy mechanism paragraph the
+design drops and step 2 keeps its platform-aware sub-heading, both for the
+reasons recorded on 2026-08-19. The design runs its step-1 subtitle and first
+body paragraph together as one text node; ours keeps them as two paragraphs of
+the same words at the card's own 8px rhythm. The welcome frame's ground is a
+white-to-gray-50 gradient where the other three are flat gray-50, left flat.
+The primary button's `blue-ribbon-500` hairline and the Button component's
+inset highlights are shell-wide treatments nothing in the new UI reproduces,
+same call as on the Settings pane. 548 unit tests and the 169-test e2e suite
+pass.
+
+### Sync 2026-08-26, third pass: every dialog in the file, measured
+
+The Settings main screen was already right - `116:28972` matches row for row
+after the morning's pass - so this one went after the dialogs, which the morning
+deliberately did not read. `Flows / Settings` (116:28963), `Flows / Overview`
+(116:26381) and `Flows / App` (116:30199) were mapped, then eight dialog frames
+read in full. All three pages carry the check.
+
+**One glyph was still wrong on the main screen.** Login ID draws
+`Icon / UserRound`; the build had lucide `User`. `Icon.tsx` gained `userRound`,
+geometry consistent with the `usersRound` already there. `user` stays in the
+palette unused, the same way `receipt` and `power` did after the morning's five.
+
+**Dialogs are 16px, everywhere.** Every dialog frame on all three pages -
+`modal/organization`, `card/organization`, `dialog/device`, `card/choose-model` -
+is 24px padding, 24px gap, white, 1px `base/border`, `shadow/lg`, radius **16**.
+The build was on `rounded-xl`, which this repo's scale makes 14px. CLAUDE.md's
+"12px modal radius LOCKED" line is rewritten in the same pass; it was the last
+of the four conflicts in §3 still standing.
+
+**Width is per dialog, and the file means it.** Four values, so `narrow` (a
+boolean for one invented 520) is gone and `Modal` takes `width`:
+
+| Width | Dialogs |
+| --- | --- |
+| 480 | Rename device `143:67735`, Replace API key `177:74869`, Disconnect Gate `143:70617` |
+| 512 | Switch organization `130:55314`, Organization switched, Change is ready `134:61659`, Use a Gate model `130:48278` |
+| 544 | Reset Gate Connect `177:74223`, alone |
+| 600 | Review config `130:57442`, Apply changes, Close apps, Diagnostics report `363:9027`, Choose model `665:18400` |
+
+Undrawn dialogs - Switch gateway, the OAuth offer, Collected data, Restore
+details, both quit dialogs - keep the 600 default.
+
+**The tone tile is a bordered gradient, not a flat 100.** 44x44 at radius 8
+with a 24px glyph on a toned dialog, 40x40 with a 20px glyph on a neutral one,
+`shadow/2xs` under both: warning `#FFFBEB`→`#FDE68A` over `#FCD34D`
+(`130:57444`), success `#F0FDF4`→`#BBF7D0` over `#86EFAC` (`134:61661`), danger
+`#FEF2F2`→`#FECACA` over `#FCA5A5` (`177:79233`), neutral white over
+`base/border` (`451:8038`). The build had one 48px flat-100 tile for all four.
+The glyph's own fill is not in the export, so the existing ink stayed.
+
+**Header and buttons.** Title is `heading/18` (18/24), not 20; it sits 12px
+from the tile, not 16; the subtitle is `base/muted-foreground` and hangs
+directly under the title with no gap. Header to body is 24, matching body to
+buttons. Buttons are radius **8** - the Button component set itself
+(`685:20928`, `685:20942`) says 8 at both sizes, and the Overview and App
+instances agree; only the older Settings dialog instances still carry 4. Side
+padding is 12, not 16, and the secondary button's label is `base/primary`, not
+neutral-900.
+
+**Not changed, and why.** The Settings pane's own row buttons keep radius 6 and
+a `base/border` line: every drawn instance on that screen says 4 (which this
+repo's scale rounds to 6), and the component-versus-instance conflict is worth
+settling for all buttons at once rather than for one pane. The destructive
+button's label stays white over the drawn `#FEF2F2`, as `Modal` already had it.
+The disconnect dialog's card carries a `red-600/40` border where reset's carries
+grey; one of the two is a slip, so both stay grey. The page title's 20/24 is
+left at the token export's 20/28 for the reason `tailwind.config.ts` records at
+`letterSpacing.heading`. Action-button labels still take no `-0.01em`.
+
+554 unit tests and the 171-test e2e suite pass.
+
+### The Families pane is retired, 2026-08-26
+
+The pane existed because the rail could not express routing: it listed config
+tools flat, with no master switch, no family switches and no rows for the chat
+domains. Three of those four have since been fixed in place - proxy members
+became rail rows on 2026-08-23, and the eyebrows already carry a
+protected-over-total counter - which left the pane holding two controls and a
+duplicate of every row beside them. Two surfaces for the same switch is the
+condition `lib/groups.ts` warns about from the other direction: it is one more
+place for intent and observation to disagree.
+
+So `FamiliesPane.tsx` is deleted, `SidebarView` loses its `families` kind, and
+the rail takes both controls:
+
+- **The engine's switch** (`MasterRouting`, moved onto `Sidebar`) sits between
+  the nav divider and the app groups, which is exactly what it governs -
+  "everything below stays off until this is on" is now literally true of what
+  follows it. Laid out label-over-description rather than the pane's
+  label-beside-switch: the rail is 256px and the untrusted-certificate line is a
+  sentence. Its `envExport` sub-switch follows it under a rule, minus the pane's
+  `codeXml` glyph, which there is no width for.
+- **The family switch** joins each eyebrow, right of the counter, driven by
+  `SidebarGroup.routing` and gated on `onToggleGroup` the way the pane's was
+  gated on `onToggleFamily`. It carries the family's own name ("Claude"), not
+  the eyebrow's vendor caption ("Anthropic") - a switch named for the vendor
+  would claim to govern more than it does - and its intent is still
+  `cascadeDesired > 0`, so it never renders on over a set it cannot flip.
+
+Nothing about the dispatch changed: `routeFamily`, `toggleMaster` and
+`setEnvExport` are the same calls with the same guards, and the member switches
+were already the rail's. What went with the pane is `memberToFamilyMember`, the
+`families` memo, and the `Config file` / `Local proxy` qualifier - the rail's
+rows have never carried the mechanism, and adding it to fifteen rows to preserve
+it on four was not worth the noise.
+
+One e2e assertion moved with it: `getByText("Not trusted")` in the certificate
+spec is now `{ exact: true }`, because the master card says "the certificate is
+not trusted" in a sentence on every screen. 554 unit tests and the 171-test e2e
+suite pass.
+
+### Sync 2026-08-26, fourth pass: the file wins, including where we argued
+
+Standing instruction, given this day: **whatever is in Figma takes precedence
+over any local decision.** That is a rule change, not a measurement, and it
+reverses most of the "not changed, and why" notes above. What it moved:
+
+**Four variables settled four arguments.** `get_variable_defs` on `116:28972`
+and `143:67735` returns the tokens by name, which is stronger evidence than a
+hex on a frame:
+
+| Variable | Value | What it overturns |
+| --- | --- | --- |
+| `base/foreground` | `#030712` | The shell-wide `neutral-900` convention. 79 call sites across 13 files. |
+| `base/primary-foreground` | `#f9fafb` | `text-white` on a filled primary. |
+| `base/destructive-foreground` | `#fef2f2` | `text-white` on a filled destructive, kept twice on the argument that `Modal` already had it. |
+| `custom/destructive\40` | `#dc262666` | "One of the two is a slip, so both stay grey." It is a *named* variable, so the Disconnect dialog's red edge is intent. `Modal` gained `edge`. |
+
+**The Button component set is now reproduced, moulding and all.** `685:20855`
+defines two sizes and nothing else: `default` at h36/10-12 and `sm` at h32/8-12,
+both `rounded-md`, bordered `base/input`, gap 8, and each carrying a drop shadow
+plus an inset pair - a dark bottom lip and a light top edge. That pair is what
+the plan had been calling "a Button-component treatment nothing in the new UI
+reproduces yet", twice. Four `boxShadow` tokens now carry it, the filled primary
+takes its white/black 8% gradient, and the ad-hoc pills that were `px-2 py-1`
+with a 12px glyph became `sm` with a 16px one - Overview's Manage link, three in
+`AppPane`, the rail's inventory retry. Two `letterSpacing` tokens carry the
+label tracking (-2% at 14px, -1% at 12px) that had been dropped.
+
+**Three copy corrections were reversed with the rest, and two were reversed
+back the same day** - decided, not re-argued, and now recorded in CLAUDE.md so
+the next pass does not undo them again:
+
+- **Replace API key** keeps **"New API key"**. `177:74869` labels the field
+  "New device name", copy-pasted from the rename dialog; the drawn label would
+  put a wrong word on the one screen where the user handles a credential.
+- **Disconnect Gate?** keeps its own body. `164:73502` reads "Protection turns
+  off, your apps stop routing through Gate, and your API key is removed from the
+  keychain", which describes Reset - the row below it on the same screen.
+  Disconnecting ends the session and touches no keychain item.
+
+Both are the same failure mode: the frame's words describe a *different action*
+on the same screen. Everything else the file says about those two dialogs - the
+480px width, the danger edge, the `base/foreground` ink on that paragraph -
+stands; only the sentences are ours.
+
+**The third stands as drawn**: the Notifications row says "Alert me when a
+request is blocked or flagged". The events behind it need the live security feed
+(AG-578), which does not exist, so the row promises more than it fires. Left as
+the file has it, unlike the two above.
+
+**Smaller, all measured.** The Settings page title takes the frame's 20/**24**
+rather than the token export's 20/28. The rail's right edge is `base/border`,
+not the 5% black an early frame read gave it - the `sidebar` component (437:161)
+names the variable. The app tile's overlay pair is 24%, not 32% (`408:14180`).
+`ModalField`'s label sits 8px above its input, the input carries `shadow/xs`,
+and the read-only one is transparent at 60% with no shadow, as `143:67746`
+draws it.
+
+**Where the file disagrees with itself**, recorded so the next pass does not
+re-litigate: the Settings dialogs draw radius-4 buttons and 32px neutral tone
+tiles where Overview and App draw radius-8 and 40px, and the Button component
+says 8. Component over instance, newer node id over older - so 8 and 40 - and
+that rule is now written into CLAUDE.md.
+
+**Not done, and not a judgement call.** The rows the build adds and no frame
+draws - Sign-in method, Gate certificate, What is collected, and the whole Help
+section - are still there. Matching the file exactly would mean deleting the
+only route to removing the certificate and to switching an API-key account onto
+a Gate account, which is a functional regression rather than a design one. Left
+standing for a decision. The onboarding window is likewise still on the `gc/`
+ink system; retheming it is its own piece of work, as it was before.
+
+554 unit tests and the 171-test e2e suite pass.
+
+### Sync 2026-08-27: rendered against the frame, not read off it
+
+"It doesn't really look like the design." The four passes of 2026-08-26 all
+compared *values*
+in the node data; this one rendered `Settings / Dimensions` (191:79795) to PNG,
+screenshotted the built pane at the same 1024x720, and sampled pixels. Four
+things the node reads had never surfaced, in descending order of how wrong they
+looked:
+
+1. **The ground was `gray-100`.** The window frames fill `#F9FAFB`
+   (`base/background`); `#F3F4F6` is a full step darker, it sat under every card
+   on four panes, and it was the single most obvious difference on screen.
+   CLAUDE.md had said `gray-100` since before the Figma existed.
+2. **Row icons were `neutral-500`.** Sampled at `#030712` in the render -
+   `base/foreground`, the same ink as the label beside them. A 20px grey glyph
+   next to full-strength text reads as disabled.
+3. **The rail was 256px.** The dimensions frame draws 250 beside a 774px content
+   area, and 250 + 774 is the window. The frames reporting 256 hang a 1030px row
+   off a 1024px window. At 250 the content column lands on the drawn 726 after
+   its 24px pads; at 256 it was 720.
+4. **Pane buttons had taken the component's radius and edge.** The fourth pass
+   resolved component-over-instance and gave them `rounded-md` on `base/input`.
+   The render disagrees: 4px corners on an `#E5E7EB` line, sampled. A `control`
+   stop (4px) exists on the radius scale now - the token export names none,
+   which is why this had been rounded to `sm` (6px) when the scale was adopted.
+
+**The tiebreak is narrowed** in CLAUDE.md as a result. "Component over instance"
+was the wrong rule: what the frame renders is what "looks like the design"
+means. The component set now settles only what no frame draws. Buttons are the
+worked example - panes draw 4 on `base/border`, dialogs draw 8 on `base/input`,
+and both now do.
+
+The method is the point. Node data gives values that are easy to match
+individually and still add up to a screen that reads wrong; a render and a
+pixel sample catch the ones nobody thought to look up.
+
+554 unit tests and the 171-test e2e suite pass.
+
+### The undrawn rows stop looking undrawn, 2026-08-27
+
+Sign-in method and Gate certificate are ours, not the file's, and they were
+wearing a paragraph each - a sentence about the OS secret store, a sentence
+about local inspection. `Row` gives any row with a value a fixed 184px label
+column, so both sentences wrapped inside a gutter: six lines on one row, four on
+the other, on a screen where no drawn row is taller than two.
+
+The proposal on the table was a hover. It was declined for the reason the pane
+exists: hiding where the credential lives behind a tooltip is the opposite of
+"reassurance comes from transparency". Both descriptions are **removed**
+instead, which is what the file does - every drawn row that carries a value
+carries no second line, and every drawn row with a second line carries no value.
+The Connection card is now four uniform value rows with their values in one
+column. What removing the certificate costs is said by the confirmation dialog,
+which is where a consequence belongs anyway.
+
+`signInNote` survives as the row's `description`, the way `updateNote` does on
+Version: a transient line about what is happening right now, not a paragraph the
+row wears at rest.
+
+`Row` keeps the two-shape rule this turned up, because those two notes still
+need it: a row with a description takes the full width and puts its value beside
+the control, a row with only a value keeps the 184px column. The drawn rows are
+unaffected either way - none of them has both - but the next person to add a row
+lands in the right shape instead of in the gutter.
+
+554 unit tests and the 171-test e2e suite pass.
+
+### The family switches come off the rail, 2026-08-27
+
+They lasted a day. Retiring the Families pane moved two controls into the rail -
+the engine's master switch and a per-family switch on each eyebrow - and the
+second one was a third control over traffic that two others already govern: the
+row switch under it and the master switch above it. The drawn rail has neither
+the switch nor anywhere to put it; the eyebrow holds a label and a counter.
+
+Removed: `SidebarGroupRouting`, `SidebarGroup.routing`, `Sidebar`'s
+`onToggleGroup` and `AppShell`'s pass-through, the `routing` field the shell was
+building for each group, and `routeFamily`. The eyebrow is back to
+`items-baseline` with the counter as its only right-hand element.
+
+**The cascade itself is untouched.** `useRouting.setFamilyRouted` and
+`Group.cascadeDesired` stay: the popover's `FamilyPanel` still drives them, and
+they keep their coverage in `useRouting.test.tsx` (seven tests on the guards -
+certificate first, abort on refusal, name the members that failed) and in
+`e2e/routing.spec.ts`'s family-panel block, which is where the
+"a family switch never touches a chat or subscription surface" guarantee is
+tested end to end. `e2e/new-ui-family-master.spec.ts` is deleted, because it
+drove a control that no longer exists and asserted nothing those two do not.
+
+`NewUiApp`'s `FamilyCascadeError` branch is now unreachable from this shell and
+says so at the call site. It is cheap to keep and would be needed again the day
+a family control is drawn.
+
+554 unit tests pass; the e2e suite is 166, down the five that spec held.
+
+### "What is collected" becomes a link, 2026-08-27
+
+The Diagnostics section had three rows where the file draws two: share the data,
+and view the report. The third was AG-603's read-only field list, and it was the
+kind of undrawn row that is hard to argue for - a whole row, icon and all, for a
+disclosure *about* the row above it.
+
+Removing it outright would have taken the criterion's only surface with it
+("What is collected opens the field list without changing the setting"), so it
+moved rather than went: `SettingsRow` gained `descriptionLink`, and the
+share-diagnostics row now ends its own description with **See what is
+collected**. The section is two rows again, the disclosure reads as part of the
+sentence it qualifies, and `CollectedDataDialog` opens unchanged - still
+read-only, still writing nothing, which is the half of the criterion that
+matters.
+
+`descriptionLink` is deliberately narrow: a label and a handler, rendered inline
+inside the description paragraph, and it needs a `description` to attach to. It
+is the affordance for "and here is exactly what that means", not a general slot.
+
+The two e2e tests move with it - same assertions, `See what is collected`
+instead of `View list`.
+
+554 unit tests and the 166-test e2e suite pass.
 
 ### Both ways in, 2026-08-20
 
@@ -1163,13 +1625,15 @@ the same PR.
    marks, plus coloured vendor marks in the model `row` set. Still no assets
    in the repo (`AppRow` falls back to an initial, the Model cells render the
    name alone); see item 11 under "Still to do" for the export route.
-3. **Groups: RESOLVED 2026-08-16 - they keep a home.** The design lists apps
-   flat, which cannot express routing's real shape: families (Claude, OpenAI,
-   OpenRouter, plus the multi-provider "Other tools" bucket) own a master
-   switch, and their members route either through a tool's own config file or
-   through the local proxy - the latter being the chat domains, which the drawn
-   UI does not show at all. `FamiliesPane` gives them a third sidebar
-   destination. **Not in the Figma**; expect it to be redrawn.
+3. **Groups: RESOLVED 2026-08-16, re-resolved 2026-08-26 - they live in the
+   rail.** The design lists apps flat, which cannot express routing's real
+   shape: families (Claude, OpenAI, OpenRouter, plus the multi-provider "Other
+   tools" bucket) own a master switch, and their members route either through a
+   tool's own config file or through the local proxy - the latter being the chat
+   domains, which the drawn UI does not show at all. `FamiliesPane` gave them a
+   third sidebar destination until the rail could carry them; it now does, and
+   the pane is gone. **Still not in the Figma**: the master card and the family
+   switches on the eyebrows are additions to the drawn rail.
 4. **Diagnostics: RESOLVED 2026-08-16.** A row under About opens
    `DiagnosticsDialog`, which shows the report before offering to copy it.
    `buildSettingsSections` owns the row, and a test pins it so it cannot be

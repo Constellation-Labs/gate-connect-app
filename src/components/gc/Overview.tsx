@@ -61,7 +61,7 @@ const ACTION_STYLES: Record<PolicyAction, string> = {
   // Not in the Figma, which draws only the three enforcing actions. Neutral
   // rather than a fourth colour: `allow` is the one that does nothing, and
   // giving it a hue would read as a severity it does not have.
-  allow: "bg-neutral-100 text-neutral-900",
+  allow: "bg-neutral-100 text-base-foreground",
 };
 
 export function Overview({
@@ -98,9 +98,9 @@ export function Overview({
   scope?: ReactNode;
 }) {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
+    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-medium tracking-heading text-neutral-900">
+        <h1 className="text-xl font-medium tracking-heading text-base-foreground">
           Overview
         </h1>
         <div className="flex items-center gap-3">
@@ -155,7 +155,7 @@ function PolicyTable({
 }) {
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-neutral-900">Policies</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">Policies</h2>
 
       {pending ? (
         <PendingRows columns={3} />
@@ -186,7 +186,7 @@ function PolicyTable({
           {policies.map((policy) => (
             <tr key={policy.id} className="border-t border-base-border">
               <td className="py-3">
-                <span className="flex items-center gap-3 text-sm leading-5 text-neutral-900">
+                <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
                   <Icon name={policy.icon} size={16} className="text-neutral-500" />
                   {policy.name}
                 </span>
@@ -237,7 +237,7 @@ function SavingsTable({
     // the same gutter the pane's padding gives every other card, rather than
     // butting the heading against the top edge.
     <Card id={SAVINGS_SECTION_ID} className="scroll-mt-6 p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-neutral-900">Token savings</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">Token savings</h2>
 
       {pending ? (
         <PendingRows columns={2} />
@@ -262,7 +262,7 @@ function SavingsTable({
           {savings.map((saving) => (
             <tr key={saving.id} className="border-t border-base-border">
               <td className="py-3">
-                <span className="flex items-center gap-3 text-sm leading-5 text-neutral-900">
+                <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
                   <Icon name={saving.icon} size={16} className="text-neutral-500" />
                   {saving.name}
                 </span>
@@ -325,10 +325,10 @@ function ManageLink({ label, onClick }: { label: string; onClick: () => void }) 
       <button
         type="button"
         onClick={onClick}
-        className="flex items-center gap-1.5 rounded-sm border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex items-center h-8 gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {label}
-        <Icon name="squareArrowOutUpRight" size={12} />
+        <Icon name="squareArrowOutUpRight" size={16} />
       </button>
     </div>
   );

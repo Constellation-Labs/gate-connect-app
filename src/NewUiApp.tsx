@@ -68,8 +68,6 @@ import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
 import { brandMarkFor } from "./components/gc/BrandMark";
-import { FamiliesPane } from "./components/gc/FamiliesPane";
-import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
@@ -83,7 +81,10 @@ import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
 import { failureNotice, sectionNotice } from "./lib/activityGaps";
 import type { GapActionKind } from "./lib/activityGaps";
-import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
+import {
+  SettingsPane,
+  buildSettingsSections,
+} from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
 import {
   ApplyChangesDialog,
@@ -119,7 +120,12 @@ import {
   SwitchGatewayDialog,
   SwitchOrganizationDialog,
 } from "./components/gc/dialogs";
-import { AlertBanner, ErrorBanner, ErrorDetails, RecoveryBanner } from "./components/gc/banners";
+import {
+  AlertBanner,
+  ErrorBanner,
+  ErrorDetails,
+  RecoveryBanner,
+} from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type {
   AppStatus,
@@ -130,7 +136,12 @@ import type {
 } from "./components/gc/Sidebar";
 import type { TopnavAction } from "./components/gc/Topbar";
 import { buildDiagnosticsReport } from "./lib/diagnosticsReport";
-import { analyticsId, setAnalyticsConsent, track, trackError } from "./lib/analytics";
+import {
+  analyticsId,
+  setAnalyticsConsent,
+  track,
+  trackError,
+} from "./lib/analytics";
 import { secretStoreName, trustPromptHint, usePlatform } from "./lib/platform";
 
 /**
@@ -207,7 +218,8 @@ export function NewUiApp() {
    * these instead. Same rule as the routing verdict and the zeroed metrics: an
    * unknown is never rendered as a value.
    */
-  const [launchAtLoginUnavailable, setLaunchAtLoginUnavailable] = useState(false);
+  const [launchAtLoginUnavailable, setLaunchAtLoginUnavailable] =
+    useState(false);
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [prefsUnavailable, setPrefsUnavailable] = useState(false);
   const [view, setView] = useState<SidebarView>({ kind: "overview" });
@@ -221,7 +233,9 @@ export function NewUiApp() {
    * produced. `null` before the first one lands - which is not "nothing found",
    * and must not render as it.
    */
-  const [scan, setScan] = useState<{ kind: "ok"; at: Date } | { kind: "failed" } | null>(null);
+  const [scan, setScan] = useState<
+    { kind: "ok"; at: Date } | { kind: "failed" } | null
+  >(null);
   /**
    * What detection last put on screen, so a poll can tell a changed machine from
    * an unchanged one and leave the unchanged one entirely alone.
@@ -247,10 +261,12 @@ export function NewUiApp() {
   const redetecting = useRef(false);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
-  const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
+  const [collectedDataOpen, setCollectedDataOpen] = useState(false);
+  const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(
+    null,
+  );
   /** The read-only "what is collected" list. Separate from the report dialog:
    * that one shows this install's values, this one shows what leaves the device. */
-  const [collectedDataOpen, setCollectedDataOpen] = useState(false);
   /**
    * Leading characters of the stored Gate key, as recorded in the account config.
    *
@@ -305,7 +321,11 @@ export function NewUiApp() {
    * asked for.
    */
   const [modelOverlay, setModelOverlay] = useState<
-    | { kind: "picker"; then: "activate" | "remember"; mode: "single" | "multi" }
+    | {
+        kind: "picker";
+        then: "activate" | "remember";
+        mode: "single" | "multi";
+      }
     | { kind: "confirm-gate"; modelIds: string[] }
     | null
   >(null);
@@ -431,7 +451,11 @@ export function NewUiApp() {
    * a no-op.
    */
   const openModelChoice: ModelChoice | null =
-    toolModels.view === null ? null : openPref?.source === "gate" ? "gate" : "app";
+    toolModels.view === null
+      ? null
+      : openPref?.source === "gate"
+        ? "gate"
+        : "app";
   /**
    * The remembered models, active or not.
    *
@@ -465,11 +489,20 @@ export function NewUiApp() {
    * tells the reader whether to retry or to look at their disk.
    */
   const saveModel = useCallback(
-    async (source: "tool" | "gate", modelIds: string[], acknowledgePaidUse = false) => {
+    async (
+      source: "tool" | "gate",
+      modelIds: string[],
+      acknowledgePaidUse = false,
+    ) => {
       if (!openTool) return;
       setModelBusy(true);
       setModelError(null);
-      const failure = await toolModels.save(openTool, source, modelIds, acknowledgePaidUse);
+      const failure = await toolModels.save(
+        openTool,
+        source,
+        modelIds,
+        acknowledgePaidUse,
+      );
       setModelBusy(false);
       if (failure) setModelError(failure.message);
     },
@@ -510,7 +543,10 @@ export function NewUiApp() {
     () =>
       (toolEvents.view?.entries ?? []).map((e) => ({
         ...e,
-        onView: () => void openExternal(`${GATE_DASHBOARD_URL}messages/${encodeURIComponent(e.id)}`),
+        onView: () =>
+          void openExternal(
+            `${GATE_DASHBOARD_URL}messages/${encodeURIComponent(e.id)}`,
+          ),
       })),
     [toolEvents.view],
   );
@@ -813,7 +849,6 @@ export function NewUiApp() {
     };
   }, []);
 
-
   /** Put the tools back, then quit - unless something stayed on Gate, in which
    * case name it and stay open. Quitting there would strand a config pointing at
    * a relay that dies with this process. */
@@ -846,7 +881,6 @@ export function NewUiApp() {
     setQuitBusy(false);
   }, []);
 
-
   const routing = useRouting({
     tools,
     proxy,
@@ -862,10 +896,19 @@ export function NewUiApp() {
       // same either way. The engine-level actions are the ones whose remedy
       // genuinely differs - a cancelled admin prompt on the master toggle has
       // nothing to do with a config file - so those report their own context.
-      const engineContexts: ErrorContext[] = ["proxy_toggle", "env_export", "untrust_ca"];
+      const engineContexts: ErrorContext[] = [
+        "proxy_toggle",
+        "env_export",
+        "untrust_ca",
+      ];
       const ctx = engineContexts.find((c) => c === context) ?? "connect";
       const classified = classifyError(e, ctx);
       setActionError(
+        // Unreachable from this shell since the family switches came off the
+        // rail on 2026-08-27: `setFamilyRouted` is the only thing that throws
+        // this, and nothing here calls it any more. Kept because the popover
+        // still cascades and this shell is the one that will get a family
+        // control back if the design ever draws one.
         e instanceof FamilyCascadeError
           ? { ...classified, title: cascadeTitle(e) }
           : classified,
@@ -878,27 +921,20 @@ export function NewUiApp() {
     onError: (e) => setActionError(classifyError(e, "close_agents")),
   });
 
-  /** Same follow-up as a single app: a family cascade rewrites configs too. */
-  const routeFamily = useCallback(
-    async (group: Group, next: boolean) => {
-      setActionError(null);
-      if (await routing.setFamilyRouted(group, next)) {
-        await runningApps.offerAfterChange();
-      }
-    },
-    [routing, runningApps],
-  );
-
   /**
    * A tool's config was rewritten. If that app is open it is still on its old
    * route until it restarts, so offer to close it - but only when something was
    * actually written, which is why `setAppRouted` reports back.
+   *
+   * Scoped to `slug`, and it has to be: the probe used to ask about every tool,
+   * so flipping Codex offered to close a running `claude` that nothing had
+   * reconfigured, and the confirm behind that offer would have killed it.
    */
   const routeApp = useCallback(
     async (slug: string, next: boolean, force = false) => {
       setActionError(null);
       if (await routing.setAppRouted(slug, next, force)) {
-        await runningApps.offerAfterChange();
+        await runningApps.offerAfterChange([slug]);
       }
     },
     [routing, runningApps],
@@ -909,6 +945,8 @@ export function NewUiApp() {
    *
    * Same follow-up as a config write: every routed tool is on its old route until
    * it restarts, so a master toggle that actually moved offers to close them.
+   *
+   * The one caller that genuinely means every tool, so it passes no filter.
    */
   const toggleMaster = useCallback(
     async (next: boolean) => {
@@ -929,6 +967,24 @@ export function NewUiApp() {
           })
         : [],
     [providers, tools, proxy],
+  );
+
+  /**
+   * The tools with no single model family, taken from `buildGroups`' own
+   * "Other tools" membership rather than a slug list of our own - so the pane
+   * and the rail can never disagree about which tools those are.
+   *
+   * Today that is OpenCode, OpenClaw and Hermes. They get no model card; see
+   * `AppPane`'s `modelChoice`.
+   */
+  const multiProviderSlugs = useMemo(
+    () =>
+      new Set(
+        groups
+          .filter((g) => g.id === MULTI_PROVIDER_ID)
+          .flatMap((g) => g.members.map((m) => m.key)),
+      ),
+    [groups],
   );
 
   // Re-read the routing facts the notices are built from. Their whole point is
@@ -954,7 +1010,10 @@ export function NewUiApp() {
   // Clamped rather than reset when the list shrinks: fixing the tool on the last
   // page removes its notice, and a page index left pointing past the end would
   // blank the banner while notices remain.
-  const notice = notices.length > 0 ? notices[Math.min(noticePage, notices.length - 1)] : null;
+  const notice =
+    notices.length > 0
+      ? notices[Math.min(noticePage, notices.length - 1)]
+      : null;
 
   /** Perform a notice's action, then re-read state so it clears itself. */
   const runNoticeAction = useCallback(
@@ -984,7 +1043,9 @@ export function NewUiApp() {
             break;
           default: {
             const unhandled: never = action;
-            throw new Error(`unhandled notice action ${JSON.stringify(unhandled)}`);
+            throw new Error(
+              `unhandled notice action ${JSON.stringify(unhandled)}`,
+            );
           }
         }
       } catch {
@@ -1081,14 +1142,19 @@ export function NewUiApp() {
 
   /** Every rail row flat, tools and domains together, for the pane header's
    *  name and switch state - `apps` alone covers only the tools. */
-  const railApps = useMemo(() => sidebarGroups.flatMap((g) => g.apps), [sidebarGroups]);
+  const railApps = useMemo(
+    () => sidebarGroups.flatMap((g) => g.apps),
+    [sidebarGroups],
+  );
 
   /** Route or unroute one rail row. The rail mixes tools and proxy domains
    *  now: a domain routes through `setDomainRouted` - no config file, so no
    *  drift gate - the same dispatch the family panel's member switches use. */
   const toggleRailApp = useCallback(
     (slug: string, next: boolean) => {
-      const member = groups.flatMap((g) => g.members).find((m) => m.key === slug);
+      const member = groups
+        .flatMap((g) => g.members)
+        .find((m) => m.key === slug);
       void (member?.kind === "proxy"
         ? routing.setDomainRouted(slug, next)
         : routeApp(slug, next));
@@ -1108,23 +1174,6 @@ export function NewUiApp() {
     if (scan.kind === "failed") return { kind: "failed" };
     return { kind: "none", scannedAt: scan.at.toLocaleTimeString() };
   }, [apps.length, scan]);
-
-  const families = useMemo<Family[]>(
-    () =>
-      groups.map((g) => ({
-        id: g.id,
-        name: g.name,
-        // `cascadeDesired`, not `desired`: this switch governs only the members
-        // it can flip. A chat member switched on alone would otherwise render
-        // the family switch on while everything it governs is off, and clicking
-        // it would ask to turn off a set already off - leaving it stuck on.
-        on: g.cascadeDesired > 0,
-        members: g.members.map((m) =>
-          memberToFamilyMember(m, verdicts, routing.writeFailures),
-        ),
-      })),
-    [groups, verdicts, routing.writeFailures],
-  );
 
   /** Finish what the interrupted restore left. `restore_all` retries only the
    * recorded entries, so this repeats no completed write; the command hands back
@@ -1146,14 +1195,23 @@ export function NewUiApp() {
   /** What is still outstanding, providers and tools together: the user does not
    * care which snapshot an entry came from. */
   const recoveryNames = useMemo(
-    () => [...(pending?.providers ?? []), ...(pending?.tools ?? [])].map((e) => e.name),
+    () =>
+      [...(pending?.providers ?? []), ...(pending?.tools ?? [])].map(
+        (e) => e.name,
+      ),
     [pending],
   );
 
   const noop = useCallback(() => {}, []);
 
   const onSession = useCallback(
-    ({ account: a, oauth: o }: { account: Account | null; oauth: OAuthStatus | null }) => {
+    ({
+      account: a,
+      oauth: o,
+    }: {
+      account: Account | null;
+      oauth: OAuthStatus | null;
+    }) => {
       setAccount(a);
       setOAuth(o);
     },
@@ -1306,7 +1364,9 @@ export function NewUiApp() {
         // one. The local id always exists. `x-gate-install-id` sends this same
         // value, so the two never disagree.
         deviceName: device ?? "Unavailable",
-        onRenameDevice: device ? () => settings.openRenameDevice(device) : undefined,
+        onRenameDevice: device
+          ? () => settings.openRenameDevice(device)
+          : undefined,
         installId: installId ?? "Unavailable",
         loginId: account?.org_name ?? "-",
         plan: "-",
@@ -1325,28 +1385,42 @@ export function NewUiApp() {
         updateNote: updateNoteFor(update),
         // Absent on a platform with no proxy subsystem: there is no engine, so
         // there is no certificate to describe.
-        certificate: proxy ? (proxy.ca_trusted ? "Trusted" : "Not trusted") : undefined,
+        certificate: proxy
+          ? proxy.ca_trusted
+            ? "Trusted"
+            : "Not trusted"
+          : undefined,
         // Only while it is actually trusted. Removing a certificate that is not
         // there is a button that cannot do anything.
-        onRemoveCertificate: proxy?.ca_trusted ? () => void routing.untrustCa() : undefined,
+        onRemoveCertificate: proxy?.ca_trusted
+          ? () => void routing.untrustCa()
+          : undefined,
         onChangeGateway: settings.openSwitchGateway,
-        onCopyInstallId: installId ? () => void settings.copyText(installId) : noop,
+        onCopyInstallId: installId
+          ? () => void settings.copyText(installId)
+          : noop,
         // Only where there is a key to replace. On an OAuth account `saveAccount`
         // with a key would flip auth_mode to api_key, quietly converting the
         // account behind a button that says "replace".
-        onReplaceKey: account?.auth_mode === "api_key" ? settings.openReplaceKey : undefined,
+        onReplaceKey:
+          account?.auth_mode === "api_key"
+            ? settings.openReplaceKey
+            : undefined,
         // Same gate as Replace key, and the counterpart to it: a key account can
         // move to a Gate account whenever it likes, not only in the one-time
         // offer it may already have dismissed. An OAuth account is not offered
         // the reverse, matching the popover.
         onSwitchToGateAccount:
-          account?.auth_mode === "api_key" ? () => void switchToGateAccount() : undefined,
+          account?.auth_mode === "api_key"
+            ? () => void switchToGateAccount()
+            : undefined,
         signInNote: settings.busy
           ? "Finish signing in on the page that opened in your browser."
           : undefined,
         // Only where there is a session to end. An API-key account never had one;
         // reset is its way out.
-        onDisconnect: account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
+        onDisconnect:
+          account?.auth_mode === "oauth" ? settings.openDisconnect : undefined,
         onReviewReset: settings.openReset,
         onToggleLaunchAtLogin: () => void settings.toggleLaunchAtLogin(),
         onRetryLaunchAtLogin: () => void loadLaunchAtLogin(),
@@ -1355,7 +1429,9 @@ export function NewUiApp() {
         // UI asserting a value the file does not hold.
         onToggleRoutingHealthNotifications: () => {
           const next = !(prefs?.routing_health_notifications ?? true);
-          setPrefs((p) => (p ? { ...p, routing_health_notifications: next } : p));
+          setPrefs((p) =>
+            p ? { ...p, routing_health_notifications: next } : p,
+          );
           void setRoutingHealthNotifications(next)
             .catch((e) => setActionError(classifyError(e, "generic")))
             .finally(() => void loadPreferences());
@@ -1437,14 +1513,19 @@ export function NewUiApp() {
     if (setupStageKind === "org-picker" && setupOrgs === null) void loadOrgs();
   }, [setupStageKind, setupOrgs, loadOrgs]);
 
-  const protectedCount = apps.filter((a) => a.status.kind === "protected").length;
+  const protectedCount = apps.filter(
+    (a) => a.status.kind === "protected",
+  ).length;
 
   // A drifted app's sidebar switch reads on - intent, and drift means the config
   // changed behind Gate rather than the user turning it off. So the sidebar can
   // only turn it off, and re-adopting is this card's job. Its switch reads off
   // because the app is not protected, and flipping it on is what reaches the
   // review gate.
-  const drifted = useMemo(() => tools.filter((t) => t.status.kind === "drifted"), [tools]);
+  const drifted = useMemo(
+    () => tools.filter((t) => t.status.kind === "drifted"),
+    [tools],
+  );
   const driftAlert = drifted.length ? (
     <AlertBanner
       // The drawn drift variant (banner/alert/single-app, read 2026-08-23)
@@ -1633,6 +1714,31 @@ export function NewUiApp() {
       view={view}
       onNavigate={setView}
       appGroups={sidebarGroups}
+      // The engine's own switch. Without it a window whose routing was off could
+      // start it only by accident, through a config member's connect - and a
+      // chat domain, which routes through the engine rather than the relay,
+      // could not start it at all.
+      master={
+        proxy
+          ? {
+              on: proxy.running,
+              busy: routingBusy,
+              caTrusted: proxy.ca_trusted,
+              onToggle: (next) => void toggleMaster(next),
+              // Absent on Linux, where these variables *are* the system proxy
+              // and cannot be declined without turning routing off.
+              envExport: proxy.env_export_separable
+                ? {
+                    on: proxy.env_export_opted_in,
+                    onToggle: (next) => {
+                      setActionError(null);
+                      void routing.setEnvExport(next);
+                    },
+                  }
+                : undefined,
+            }
+          : undefined
+      }
       onSelectApp={(slug) => setView({ kind: "app", slug })}
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
@@ -1699,13 +1805,19 @@ export function NewUiApp() {
             icon="shieldCheck"
             title="Trust the Gate certificate?"
             subtitle="Gate inspects your AI traffic locally, which needs a certificate your system trusts."
-            secondary={{ label: "Not now", onClick: () => routing.resolvePrompt(false) }}
-            primary={{ label: "Trust certificate", onClick: () => routing.resolvePrompt(true) }}
+            secondary={{
+              label: "Not now",
+              onClick: () => routing.resolvePrompt(false),
+            }}
+            primary={{
+              label: "Trust certificate",
+              onClick: () => routing.resolvePrompt(true),
+            }}
             onDismiss={() => routing.resolvePrompt(false)}
           >
             <p className="text-sm leading-5 text-neutral-600">
-              The certificate stays on this machine, and you can remove it from Settings
-              at any time.
+              The certificate stays on this machine, and you can remove it from
+              Settings at any time.
             </p>
             {/* Naming the system dialog is the whole of AG-534, and "your
                 operating system will ask for permission" is not that: on Windows
@@ -1713,7 +1825,7 @@ export function NewUiApp() {
                 name, which reads as something having gone wrong. Same sentence
                 the popover's `CertificateNotice` uses, from the same helper, so
                 the two shells do not prepare the user two different ways. */}
-            <p className="text-sm font-medium leading-5 text-neutral-900">
+            <p className="text-sm font-medium leading-5 text-base-foreground">
               {trustPromptHint(platform)}
             </p>
           </Modal>
@@ -1725,7 +1837,10 @@ export function NewUiApp() {
             icon="triangleAlert"
             title="Remove the Gate certificate?"
             subtitle="Sites and apps routed through the local proxy stop being inspected until it is trusted again."
-            secondary={{ label: "Keep it", onClick: () => routing.resolvePrompt(false) }}
+            secondary={{
+              label: "Keep it",
+              onClick: () => routing.resolvePrompt(false),
+            }}
             primary={{
               label: "Remove certificate",
               onClick: () => routing.resolvePrompt(true),
@@ -1734,8 +1849,8 @@ export function NewUiApp() {
             onDismiss={() => routing.resolvePrompt(false)}
           >
             <p className="text-sm leading-5 text-neutral-600">
-              Routing itself stays on, and your tools keep their configuration. Your
-              operating system may ask for permission to remove it.
+              Routing itself stays on, and your tools keep their configuration.
+              Your operating system may ask for permission to remove it.
             </p>
           </Modal>
         ) : runningApps.stage?.kind === "offer" ? (
@@ -1762,7 +1877,10 @@ export function NewUiApp() {
             // says in words - the design draws eleven `gate/...` ids, and
             // shipping those as though they were real would put a fabricated
             // catalogue in front of the user.
-            appName={appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "This app"}
+            appName={
+              appFor(apps, view.kind === "app" ? view.slug : "")?.name ??
+              "This app"
+            }
             // Multi-select once more than one model is already enabled, or when
             // the user asked to edit the set. Single otherwise, which is the
             // state the Figma draws and the common case.
@@ -1790,7 +1908,11 @@ export function NewUiApp() {
           />
         ) : modelOverlay?.kind === "confirm-gate" ? (
           <UseGateModelDialog
-            app={{ name: appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "this app" }}
+            app={{
+              name:
+                appFor(apps, view.kind === "app" ? view.slug : "")?.name ??
+                "this app",
+            }}
             vendor={modelOverlay.modelIds[0].split("/")[0]}
             modelId={modelOverlay.modelIds[0]}
             // Names the rest rather than hiding them: AG-590 requires the set be
@@ -1806,7 +1928,8 @@ export function NewUiApp() {
               // means the picker does not have to be walked again to change their
               // mind, and under App default they are remembered rather than
               // served.
-              if (ids.join() !== openModelIds.join()) void saveModel("tool", ids);
+              if (ids.join() !== openModelIds.join())
+                void saveModel("tool", ids);
             }}
             onUseGateCredits={() => {
               const ids = modelOverlay.modelIds;
@@ -1815,7 +1938,10 @@ export function NewUiApp() {
             }}
           />
         ) : journalOpen && journal ? (
-          <RestoreDetailsDialog journal={journal} onClose={() => setJournalOpen(false)} />
+          <RestoreDetailsDialog
+            journal={journal}
+            onClose={() => setJournalOpen(false)}
+          />
         ) : collectedDataOpen ? (
           <CollectedDataDialog onClose={() => setCollectedDataOpen(false)} />
         ) : diagnosticsReport !== null ? (
@@ -1827,7 +1953,10 @@ export function NewUiApp() {
           />
         ) : settings.prompt?.kind === "replace-key" ? (
           <ReplaceApiKeyDialog
-            currentKeyMasked={maskedKey(keyPrefix, account?.has_api_key ?? false)}
+            currentKeyMasked={maskedKey(
+              keyPrefix,
+              account?.has_api_key ?? false,
+            )}
             newKey={settings.newKey}
             onNewKeyChange={settings.setNewKey}
             onCancel={settings.dismissPrompt}
@@ -1889,7 +2018,8 @@ export function NewUiApp() {
                   role="alert"
                   className="rounded-md border border-red-200 bg-red-50 p-3 text-sm leading-5 text-red-900"
                 >
-                  <span className="font-medium">{offerError.title}</span> {offerError.hint}
+                  <span className="font-medium">{offerError.title}</span>{" "}
+                  {offerError.hint}
                 </p>
               )
             }
@@ -1901,49 +2031,6 @@ export function NewUiApp() {
     >
       {view.kind === "settings" ? (
         <SettingsPane sections={settingsSections} />
-      ) : view.kind === "families" ? (
-        <FamiliesPane
-          families={families}
-          // The engine's own switch. Without it a window whose routing was off
-          // could start it only by accident, through a config member's connect -
-          // and a chat domain, which routes through the engine rather than the
-          // relay, could not start it at all.
-          master={
-            proxy
-              ? {
-                  on: proxy.running,
-                  busy: routingBusy,
-                  caTrusted: proxy.ca_trusted,
-                  onToggle: (next) => void toggleMaster(next),
-                  // Absent on Linux, where these variables *are* the system proxy
-                  // and cannot be declined without turning routing off.
-                  envExport: proxy.env_export_separable
-                    ? {
-                        on: proxy.env_export_opted_in,
-                        onToggle: (next) => {
-                          setActionError(null);
-                          void routing.setEnvExport(next);
-                        },
-                      }
-                    : undefined,
-                }
-              : undefined
-          }
-          onToggleFamily={(id, next) => {
-            const group = groups.find((g) => g.id === id);
-            if (group) void routeFamily(group, next);
-          }}
-          onToggleMember={(familyId, key, next) => {
-            setActionError(null);
-            const member = families
-              .find((f) => f.id === familyId)
-              ?.members.find((m) => m.key === key);
-            if (!member) return;
-            void (member.kind === "proxy"
-              ? routing.setDomainRouted(key, next)
-              : routeApp(key, next));
-          }}
-        />
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
@@ -1955,7 +2042,10 @@ export function NewUiApp() {
           isProtected={appFor(railApps, view.slug)?.on ?? false}
           busy={routingBusy}
           onToggleProtected={() =>
-            toggleRailApp(view.slug, !(appFor(railApps, view.slug)?.on ?? false))
+            toggleRailApp(
+              view.slug,
+              !(appFor(railApps, view.slug)?.on ?? false),
+            )
           }
           stats={toolActivity.view?.stats ?? EMPTY_STATS}
           buckets={toolActivity.view?.buckets ?? []}
@@ -1966,74 +2056,89 @@ export function NewUiApp() {
           // and a skeleton would promise an answer that is not coming.
           pending={
             !openDomain &&
-            (!installsResolved || (toolActivity.view === null && toolActivity.failure === null))
+            (!installsResolved ||
+              (toolActivity.view === null && toolActivity.failure === null))
           }
-          modelChoice={openModelChoice}
-          modelBusy={modelBusy}
-          // The preference's own read, not the activity pane's: an unattributed
-          // machine has nothing to say about a setting.
-          modelPending={toolModels.view === null && toolModels.failure === null}
-          // Switching to a Gate model spends PAYG credits, so it is confirmed
-          // rather than taken on a radio click. Switching back is not - and it
-          // keeps the chosen model, which is the whole reason a preference may
-          // name a model while its source is "tool".
-          onChooseModel={(choice) => {
-            if (choice === "gate") {
-              if (openModelIds.length > 0) activateGateModel(openModelIds);
-              // Nothing to switch *to* yet, so the picker comes first: Gate
-              // cannot serve a model nobody enabled.
-              else setModelOverlay({ kind: "picker", then: "activate", mode: "single" });
-            } else {
-              void saveModel("tool", openModelId ? [openModelId] : []);
-            }
-          }}
-          gateModel={
-            openModelId
-              ? // Vendor from the id's own namespace rather than from the
-                // catalogue: the catalogue is only loaded when the picker is
-                // open, and a card that showed a vendor only while a dialog was
-                // up would be stranger than one that reads it off the id. AG-592
-                // is where a selected model gets looked up and told it is gone.
-                {
-                  vendor: openModelId.split("/")[0],
-                  id: openModelId,
-                  alsoEnabled: openModelIds.length - 1,
-                }
-              : null
-          }
-          onChangeModel={() =>
-            setModelOverlay({
-              kind: "picker",
-              // Already on Gate: a different model is served immediately, and
-              // billing was accepted when the switch was made. On App default it
-              // is a browse, and picking must not start spending.
-              then: openModelChoice === "gate" ? "activate" : "remember",
-              mode: "single",
-            })
-          }
-          // AG-590's entry point: edit the whole enabled set rather than swap
-          // the one model. Separate control because they are different
-          // questions - "use this instead" and "also allow these".
-          onEditModelSet={() =>
-            setModelOverlay({
-              kind: "picker",
-              then: openModelChoice === "gate" ? "activate" : "remember",
-              mode: "multi",
-            })
-          }
-          // No endpoint reports a Gate credit balance - the gateway has a PAYG
-          // service but no controller over it - so this is null and reads N/A.
-          // A dash would read as a value. See principle 6.
-          credits={null}
-          // No billing endpoint, but the row's own glyph promises an external
-          // link, and the dashboard is where credits are actually bought.
-          onAddCredits={() => void openExternal(GATE_DASHBOARD_URL)}
+          // A multi-provider tool gets no model card: see `AppPane`'s
+          // `modelChoice`. `multiProviderSlugs` is `buildGroups`' own
+          // membership, so this can never disagree with the rail about which
+          // tools those are.
+          {...(multiProviderSlugs.has(view.slug)
+            ? {}
+            : {
+                modelChoice: openModelChoice,
+                modelBusy: modelBusy,
+                // The preference's own read, not the activity pane's: an unattributed
+                // machine has nothing to say about a setting.
+                modelPending:
+                  toolModels.view === null && toolModels.failure === null,
+                // Switching to a Gate model spends PAYG credits, so it is confirmed
+                // rather than taken on a radio click. Switching back is not - and it
+                // keeps the chosen model, which is the whole reason a preference may
+                // name a model while its source is "tool".
+                onChooseModel: (choice: ModelChoice) => {
+                  if (choice === "gate") {
+                    if (openModelIds.length > 0)
+                      activateGateModel(openModelIds);
+                    // Nothing to switch *to* yet, so the picker comes first: Gate
+                    // cannot serve a model nobody enabled.
+                    else
+                      setModelOverlay({
+                        kind: "picker",
+                        then: "activate",
+                        mode: "single",
+                      });
+                  } else {
+                    void saveModel("tool", openModelId ? [openModelId] : []);
+                  }
+                },
+                gateModel: openModelId
+                  ? // Vendor from the id's own namespace rather than from the
+                    // catalogue: the catalogue is only loaded when the picker is
+                    // open, and a card that showed a vendor only while a dialog was
+                    // up would be stranger than one that reads it off the id. AG-592
+                    // is where a selected model gets looked up and told it is gone.
+                    {
+                      vendor: openModelId.split("/")[0],
+                      id: openModelId,
+                      alsoEnabled: openModelIds.length - 1,
+                    }
+                  : null,
+                onChangeModel: () =>
+                  setModelOverlay({
+                    kind: "picker",
+                    // Already on Gate: a different model is served immediately, and
+                    // billing was accepted when the switch was made. On App default it
+                    // is a browse, and picking must not start spending.
+                    then: openModelChoice === "gate" ? "activate" : "remember",
+                    mode: "single",
+                  }),
+                // AG-590's entry point: edit the whole enabled set rather than swap
+                // the one model. Separate control because they are different
+                // questions - "use this instead" and "also allow these".
+                onEditModelSet: () =>
+                  setModelOverlay({
+                    kind: "picker",
+                    then: openModelChoice === "gate" ? "activate" : "remember",
+                    mode: "multi",
+                  }),
+                // No endpoint reports a Gate credit balance - the gateway has a PAYG
+                // service but no controller over it - so this is null and reads N/A.
+                // A dash would read as a value. See principle 6.
+                credits: null,
+                // No billing endpoint, but the row's own glyph promises an external
+                // link, and the dashboard is where credits are actually bought.
+                onAddCredits: () => void openExternal(GATE_DASHBOARD_URL),
+              })}
           activity={toolEventRows}
           eventsPending={
             !openDomain &&
-            (!installsResolved || (toolEvents.view === null && toolEvents.failure === null))
+            (!installsResolved ||
+              (toolEvents.view === null && toolEvents.failure === null))
           }
-          onLoadMore={toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined}
+          onLoadMore={
+            toolEvents.view?.nextCursor ? toolEvents.loadMore : undefined
+          }
           // Each half reports its own read. Deriving the feed's flag from the
           // overview's state let a feed that answered - and answered empty - be
           // reported as unreadable because the *chart* had not landed, which is
@@ -2044,7 +2149,8 @@ export function NewUiApp() {
               openDomain ||
               unattributedMachine ||
               (toolActivity.view ? toolActivity.view.missing.chart : true),
-            events: openDomain || unattributedMachine || toolEvents.failure !== null,
+            events:
+              openDomain || unattributedMachine || toolEvents.failure !== null,
           }}
           alert={
             <>
@@ -2054,7 +2160,8 @@ export function NewUiApp() {
                 // dead network want different things from the reader, and on a
                 // write the message is the only thing that tells them apart.
                 <p className="text-base-xs text-red-700">
-                  <span className="font-medium">Model not changed:</span> {modelError}
+                  <span className="font-medium">Model not changed:</span>{" "}
+                  {modelError}
                 </p>
               )}
               {openDomain ? (
@@ -2065,9 +2172,9 @@ export function NewUiApp() {
                 // and saying so beats a zero.
                 <p className="text-base-xs text-base-muted-foreground">
                   <span className="font-medium">This app:</span> its requests
-                  aren&apos;t attributed to a single app yet, so its own activity
-                  can&apos;t be shown. The Overview still covers your whole
-                  organisation.
+                  aren&apos;t attributed to a single app yet, so its own
+                  activity can&apos;t be shown. The Overview still covers your
+                  whole organisation.
                 </p>
               ) : unattributedMachine ? (
                 // No numbers can be shown here, and the reason is not a failure:
@@ -2076,9 +2183,10 @@ export function NewUiApp() {
                 // plainly rather than by showing the org's traffic under one
                 // machine's heading, or zeros under a tool in daily use.
                 <p className="text-base-xs text-base-muted-foreground">
-                  <span className="font-medium">This machine:</span> the gateway has no traffic
-                  attributed to it yet, so this app&apos;s own activity cannot be shown. The
-                  Overview still covers your whole organisation.
+                  <span className="font-medium">This machine:</span> the gateway
+                  has no traffic attributed to it yet, so this app&apos;s own
+                  activity cannot be shown. The Overview still covers your whole
+                  organisation.
                 </p>
               ) : (
                 <>
@@ -2168,13 +2276,18 @@ export function NewUiApp() {
                   // the two whole-machine actions that do not.
                   busy={noticeBusy || routingBusy}
                   onToggle={() => void runNoticeAction(notice.action)}
-                  onDismiss={() => setDismissedNotices((d) => [...d, notice.id])}
+                  onDismiss={() =>
+                    setDismissedNotices((d) => [...d, notice.id])
+                  }
                   paging={
                     notices.length > 1
                       ? {
                           onPrev: () =>
-                            setNoticePage((p) => (p - 1 + notices.length) % notices.length),
-                          onNext: () => setNoticePage((p) => (p + 1) % notices.length),
+                            setNoticePage(
+                              (p) => (p - 1 + notices.length) % notices.length,
+                            ),
+                          onNext: () =>
+                            setNoticePage((p) => (p + 1) % notices.length),
                         }
                       : undefined
                   }
@@ -2296,7 +2409,9 @@ function SetupNote({ error }: { error: ClassifiedError }) {
 function initialsOf(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
   const letters =
-    words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "?").slice(0, 2);
+    words.length > 1
+      ? words[0][0] + words[1][0]
+      : (words[0] ?? "?").slice(0, 2);
   return letters.toUpperCase();
 }
 
@@ -2321,18 +2436,6 @@ function proxyMemberStatus(m: GroupMember): AppStatus {
   return m.routed
     ? { kind: "protected" }
     : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
-}
-
-function memberToFamilyMember(
-  m: GroupMember,
-  verdicts: Map<string, Verdict>,
-  writeFailures: ReadonlySet<string>,
-): Family["members"][number] {
-  const status: AppStatus =
-    m.kind === "config"
-      ? verdictStatus(verdicts.get(m.key), { writeFailed: writeFailures.has(m.key) })
-      : proxyMemberStatus(m);
-  return { key: m.key, name: m.name, kind: m.kind, status, on: m.desired };
 }
 
 /** Placeholder while the probes run, and what a copy taken mid-collection would

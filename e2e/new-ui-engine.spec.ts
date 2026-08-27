@@ -2,7 +2,8 @@ import { test, expect } from "./fixtures";
 
 /**
  * The controls the window shell was drawn with and never wired: the engine's own
- * switch, the shell-environment channel, the certificate, the app pane's switch,
+ * switch - now in the navigation rail, above the families it governs - the
+ * shell-environment channel, the certificate, the app pane's switch,
  * the diagnostics probes, and the one-time OAuth offer.
  *
  * All of these existed as backend commands the whole time - the popover reaches
@@ -31,7 +32,6 @@ test.describe("new UI engine controls", () => {
   test("the master switch starts the engine", async ({ boot }) => {
     const app = await boot({ proxy: { running: false, ca_trusted: true } });
 
-    await app.page.getByRole("button", { name: "Families" }).click();
     const master = app.page.getByRole("switch", { name: "Route traffic through Gate" });
     await expect(master).toHaveAttribute("aria-checked", "false");
 
@@ -46,7 +46,6 @@ test.describe("new UI engine controls", () => {
     // not raise the OS dialog again.
     const app = await boot({ proxy: { running: true, ca_trusted: false } });
 
-    await app.page.getByRole("button", { name: "Families" }).click();
     await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
 
     await expect.poll(() => app.lastCall("proxy_disable")).not.toBeNull();
@@ -58,15 +57,9 @@ test.describe("new UI engine controls", () => {
     // to write intent and route nothing, with no control anywhere to start it.
     const app = await boot({ proxy: { running: false, ca_trusted: true } });
 
-    await app.page.getByRole("button", { name: "Families" }).click();
     // A chat surface, which is where this matters most: it has no config file to
-    // write, so the engine is the only thing that could route it. `.last()`
-    // picks the family panel's switch - the rail draws a row for the same
-    // domain now, and it comes first in the DOM.
-    await app.page
-      .getByRole("switch", { name: "ChatGPT (Codex subscription)" })
-      .last()
-      .click();
+    // write, so the engine is the only thing that could route it.
+    await app.page.getByRole("switch", { name: "ChatGPT (Codex subscription)" }).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
       slug: "chatgpt",
@@ -84,7 +77,6 @@ test.describe("new UI engine controls", () => {
       proxy: { running: true, ca_trusted: true, env_export_separable: true },
     });
 
-    await app.page.getByRole("button", { name: "Families" }).click();
     await app.page
       .getByRole("switch", { name: "Also set shell environment variables" })
       .click();
@@ -98,8 +90,6 @@ test.describe("new UI engine controls", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true, env_export_separable: false },
     });
-
-    await app.page.getByRole("button", { name: "Families" }).click();
 
     await expect(
       app.page.getByRole("switch", { name: "Also set shell environment variables" }),
@@ -171,7 +161,10 @@ test.describe("new UI certificate and diagnostics", () => {
 
     await app.page.getByRole("button", { name: "Settings" }).click();
 
-    await expect(app.page.getByText("Not trusted")).toBeVisible();
+    // Exact: the rail's master card says "the certificate is not trusted" in a
+    // sentence on every screen now, and this assertion is about the Settings
+    // row's own value.
+    await expect(app.page.getByText("Not trusted", { exact: true })).toBeVisible();
     await expect(app.page.getByRole("button", { name: "Remove certificate" })).toHaveCount(0);
   });
 

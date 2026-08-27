@@ -159,15 +159,18 @@ describe("buildSettingsSections", () => {
     ]);
   });
 
-  it("renders identifiers in mono and prose in sans", () => {
-    // CLAUDE.md's one typography rule the new design did not overturn.
-    const mono = sections()
-      .flatMap((s) => s.rows)
-      .filter((r) => r.mono)
-      .map((r) => r.id);
-    // The gateway joined them: a base URL is an identifier, which is exactly
-    // what CLAUDE.md reserves mono for.
-    expect(mono).toEqual(["install-id", "gateway", "api-key", "version"]);
+  it("renders every value in sans, identifiers included", () => {
+    // The exception to CLAUDE.md's mono-for-identifiers rule, and the design's
+    // own call rather than an oversight: the Settings frame styles the install
+    // ID, gateway, key and version as `copy/14` (Geist Regular), while the same
+    // file reaches for `mono/body-14` in the diagnostics report a screen away.
+    // An earlier browser read of the frame recorded these as mono; the node
+    // data says otherwise. Regressing this looks like "identifiers should be
+    // mono".
+    render(<SettingsPane sections={sections()} />);
+    for (const value of ["gc_a1b2c3d4", "Managed by Gate", "sk-gw***********", "v0.1.4"]) {
+      expect(screen.getByText(value).className).not.toContain("font-mono");
+    }
   });
 });
 

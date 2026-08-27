@@ -5,7 +5,7 @@ import type { IconName } from "./Icon";
 
 /**
  * Left navigation rail for the new app UI (Figma `nav/sidebar/overview`,
- * node 113:16794). 250px wide, fixed, sits beside a scrolling content pane -
+ * node 408:15625, `Sidenav`). 256px wide, fixed, sits beside a scrolling pane -
  * it is not one of the popover's sliding panels and carries no back affordance.
  *
  * Presentational: every piece of state arrives as a prop so the shell can own
@@ -14,7 +14,6 @@ import type { IconName } from "./Icon";
 
 export type SidebarView =
   | { kind: "overview" }
-  | { kind: "families" }
   | { kind: "settings" }
   /** An app row is selected and its detail pane is open. */
   | { kind: "app"; slug: string };
@@ -92,6 +91,28 @@ export interface SidebarGroup {
   apps: SidebarApp[];
 }
 
+/**
+ * The engine itself, above the families that ride on it.
+ *
+ * Not in the Figma, and the omission is load-bearing: with routing off, a family
+ * switch can still start the engine (a config member's connect does it
+ * implicitly) but a chat domain cannot, so the window could reach a state it had
+ * no control for. `envExport` is the master's sub-setting - whether the proxy
+ * also goes into the shell environment, which reaches `git` and `curl` and not
+ * just the AI tools - and is absent on Linux, where those variables *are* the
+ * system proxy and cannot be declined separately.
+ */
+export interface MasterRouting {
+  on: boolean;
+  busy?: boolean;
+  onToggle: (next: boolean) => void;
+  /** Whether the certificate is in the system trust store. Routing without it
+   * inspects nothing, so the card says so rather than leaving the switch to
+   * imply otherwise. */
+  caTrusted?: boolean;
+  envExport?: { on: boolean; onToggle: (next: boolean) => void };
+}
+
 const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: string }> = {
   protected: { label: "Protected", className: "text-green-600" },
   "not-protected": { label: "Not protected", className: "text-amber-600" },
@@ -112,6 +133,7 @@ export function Sidebar({
   view,
   onNavigate,
   groups,
+  master,
   onSelectApp,
   onToggleApp,
   onRefresh,
@@ -123,6 +145,10 @@ export function Sidebar({
   view: SidebarView;
   onNavigate: (view: SidebarView) => void;
   groups: SidebarGroup[];
+  /** The engine's switch, above the families it carries. Omit on a platform with
+   * no proxy subsystem, where there is nothing to turn on and the card would
+   * describe nothing. */
+  master?: MasterRouting;
   /** Opens the per-app pane. */
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
@@ -143,13 +169,19 @@ export function Sidebar({
   return (
     <nav
       aria-label="Main"
-      // 250px fixed, 16px padding, a 20px rhythm between the switcher, the nav,
-      // the divider and the app groups, and a 1px right edge at 5% black - all
-      // read off `nav/sidebar/overview` (113:16794) on 2026-08-21.
-      className="flex w-[250px] shrink-0 flex-col border-r border-black/[0.05] bg-base-card p-4"
+      // 250px fixed, 16px padding, a 24px rhythm between the switcher, the nav,
+      // the divider and the app groups, and a 1px `base/border` right edge.
+      //
+      // 250 and not the 256 the `sidebar` component set (437:161) reports,
+      // which is the one place the component loses to a frame: `Settings /
+      // Dimensions` (191:79795) is the annotated spec, it draws the rail at 250
+      // beside a 774px content area, and 250 + 774 is the window. The frames
+      // that say 256 hang a 1030px row off a 1024px window and overflow it. At
+      // 250 the content column comes out at the drawn 726 after its 24px pads.
+      className="flex w-[250px] shrink-0 flex-col border-r border-base-border bg-base-card p-4"
     >
       <div className="flex flex-1 flex-col gap-6">
-        <div className="flex flex-col gap-5">
+        <div className="flex flex-col gap-6">
           <OrgSwitcher name={orgName} onClick={onSwitchOrg} />
 
           <div className="flex flex-col gap-1">
@@ -158,15 +190,6 @@ export function Sidebar({
               label="Overview"
               active={view.kind === "overview"}
               onClick={() => onNavigate({ kind: "overview" })}
-            />
-            {/* Not in the Figma. The model families that actually carry routing
-             * have no destination in the drawn IA, so they get one here rather
-             * than being dropped. See plans/new-app-ui-figma.md. */}
-            <NavItem
-              icon="layers"
-              label="Families"
-              active={view.kind === "families"}
-              onClick={() => onNavigate({ kind: "families" })}
             />
             <NavItem
               icon="settings2"
@@ -177,6 +200,8 @@ export function Sidebar({
           </div>
 
           <hr className="border-t border-base-border" />
+
+          {master && <MasterCard master={master} />}
 
           {/* 12px between groups, 8px inside one - `apps-section` (113:16814),
            * re-read 2026-08-21. */}
@@ -192,15 +217,20 @@ export function Sidebar({
             {groups.map((group) => (
               <div key={group.id} className="flex flex-col gap-2">
                 {group.label && (
-                  <div className="flex items-baseline justify-between">
-                    <h2 className="font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
+                  // Label and counter, which is all the drawn eyebrow holds. A
+                  // family switch lived here briefly when the Families pane was
+                  // retired; it was removed on 2026-08-27 as a third control
+                  // over the same traffic the row switches and the master switch
+                  // already cover, on a rail the design draws without one.
+                  <div className="flex items-baseline justify-between gap-2">
+                    <h2 className="truncate font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
                       {group.label}
                     </h2>
                     {/* Protected over total, drawn on every eyebrow
                      * (`Components / Sidenav`, read 2026-08-23). Derived from
                      * the rows so it can never disagree with them. Not
                      * uppercase: the drawn counter reads "1 of 2". */}
-                    <span className="font-mono text-base-xs font-medium leading-4 text-base-muted-foreground">
+                    <span className="shrink-0 font-mono text-base-xs font-medium leading-4 text-base-muted-foreground">
                       {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
                       {group.apps.length}
                     </span>
@@ -235,7 +265,7 @@ function OrgSwitcher({ name, onClick }: { name: string; onClick: () => void }) {
     >
       <span className="flex items-center gap-2">
         <Icon name="usersRound" size={16} />
-        <span className="text-base-xs font-medium leading-4 text-neutral-900">{name}</span>
+        <span className="text-base-xs font-medium leading-4 text-base-foreground">{name}</span>
       </span>
       <Icon name="chevronsUpDown" size={16} />
     </button>
@@ -260,13 +290,66 @@ function NavItem({
       aria-current={active ? "page" : undefined}
       className={`flex w-full items-center gap-2 rounded-sm px-1.5 py-2 text-base-xs font-medium leading-4 ${
         active
-          ? "border border-base-border bg-gray-100 text-base-primary shadow-base-2xs"
-          : "text-neutral-900"
+          ? "border border-base-border bg-base-background text-base-primary shadow-base-xs"
+          : "text-base-foreground"
       }`}
     >
       <Icon name={icon} size={16} />
       {label}
     </button>
+  );
+}
+
+/**
+ * The engine's switch and its shell-environment sub-setting.
+ *
+ * Laid out label-over-description rather than the pane's label-beside-switch:
+ * the rail is 256px, and the certificate warning is a sentence, not a phrase.
+ * Above the app groups because that is what it governs - "everything below
+ * stays off until this is on" is literally true of what follows it.
+ */
+function MasterCard({ master }: { master: MasterRouting }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-base-border bg-base-card p-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 text-base-xs font-medium leading-4 text-base-foreground">
+          Route traffic through Gate
+        </p>
+        <BaseSwitch
+          on={master.on}
+          label="Route traffic through Gate"
+          busy={master.busy}
+          onClick={() => master.onToggle(!master.on)}
+        />
+      </div>
+      <p className="text-base-2xs leading-4 text-base-muted-foreground">
+        {master.on
+          ? master.caTrusted === false
+            ? "Running, but the certificate is not trusted - nothing is being inspected"
+            : "The local engine is running"
+          : "Everything below stays off until this is on"}
+      </p>
+
+      {master.envExport && (
+        <div className="flex flex-col gap-2 border-t border-base-border pt-2">
+          <div className="flex items-start justify-between gap-2">
+            <p className="min-w-0 text-base-xs leading-4 text-base-foreground">
+              Also set shell environment variables
+            </p>
+            <BaseSwitch
+              on={master.envExport.on}
+              label="Also set shell environment variables"
+              busy={master.busy}
+              onClick={() => master.envExport?.onToggle(!master.envExport.on)}
+            />
+          </div>
+          <p className="text-base-2xs leading-4 text-base-muted-foreground">
+            Routes command-line tools too. Machine-wide: it reaches git and curl, not
+            only your AI tools.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -278,7 +361,7 @@ function NavItem({
 /**
  * The two states an empty app list can be in, told apart.
  *
- * Provisional layout: the Figma draws no empty inventory. It lives in the 250px
+ * Provisional layout: the Figma draws no empty inventory. It lives in the 256px
  * rail rather than the content pane because it is the *inventory's* state, and
  * moving it would leave the rail silently blank - which is the ambiguity this
  * exists to remove. Vertical space is ample even if width is not.
@@ -300,7 +383,7 @@ function InventoryState({
         failed ? "border-amber-200 bg-amber-50" : "border-base-border bg-base-card"
       }`}
     >
-      <p className="text-sm font-medium leading-5 text-neutral-900">
+      <p className="text-sm font-medium leading-5 text-base-foreground">
         {failed ? "Couldn’t check for apps" : "No apps detected"}
       </p>
       <p className="text-base-xs leading-4 text-neutral-600">
@@ -321,7 +404,7 @@ function InventoryState({
           type="button"
           onClick={onRefresh}
           disabled={refreshing}
-          className="flex h-7 items-center justify-center rounded-sm border border-base-border bg-base-card px-2 text-base-xs font-medium text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-8 items-center justify-center rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           {refreshing ? "Checking…" : failed ? "Try again" : "Refresh"}
         </button>
@@ -346,15 +429,16 @@ function AppRow({
 
   return (
     <li
-      // Hover and selection share one treatment, read off the component's
-      // row-hover variant (121:33421): a `neutral-100` fill inside a 1px
-      // `neutral-200` border, with the name in `base/primary`. The border is
-      // reserved while at rest so rows do not shift on hover. Drawn radius is
-      // 4px, which the radius scale maps onto `sm`.
-      className={`group flex w-full items-center gap-4 rounded-sm border px-1 py-1.5 ${
+      // Hover and selection share one treatment, read off `sidebar-menu-item`
+      // state=selected (434:128, re-read 2026-08-26): a `base/background` fill
+      // inside a 1px `base/border` under `shadow/xs`. That replaces the
+      // neutral-100/200 pairing the retired row-hover variant drew. The border
+      // is reserved while at rest so rows do not shift on hover. Drawn radius
+      // is 4px, which the radius scale maps onto `sm`; padding is 4px uniform.
+      className={`group flex w-full items-center gap-4 rounded-sm border p-1 ${
         selected
-          ? "border-neutral-200 bg-neutral-100"
-          : "border-transparent hover:border-neutral-200 hover:bg-neutral-100"
+          ? "border-base-border bg-base-background shadow-base-xs"
+          : "border-transparent hover:border-base-border hover:bg-base-background"
       }`}
     >
       <button
@@ -366,9 +450,11 @@ function AppRow({
         <span
           aria-hidden
           className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
+          // `logo-wrapper` (408:14180): the overlay pair is 24%, not the 32%
+          // this had.
           style={{
             backgroundImage:
-              "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
+              "linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(0,0,0,0.24) 100%)",
           }}
         >
           {app.logo ?? app.name.charAt(0)}
@@ -376,7 +462,7 @@ function AppRow({
         <span className="flex min-w-0 flex-1 flex-col">
           <span
             className={`truncate text-base-xs font-medium leading-4 ${
-              selected ? "text-base-primary" : "text-neutral-900 group-hover:text-base-primary"
+              selected ? "text-base-primary" : "text-base-foreground group-hover:text-base-primary"
             }`}
           >
             {app.name}

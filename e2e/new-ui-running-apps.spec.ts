@@ -17,6 +17,14 @@ const CLAUDE_CODE = {
   status: { kind: "detected" as const },
 };
 
+const CODEX = {
+  slug: "codex",
+  name: "Codex",
+  upstream_provider_name: "OpenAI",
+  default_upstream_url: "https://gw.example/codex",
+  status: { kind: "detected" as const },
+};
+
 test.describe("new UI running apps", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
@@ -107,6 +115,40 @@ test.describe("new UI running apps", () => {
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
     expect(await app.lastCall("close_running_agents")).toBeNull();
     expect(await app.lastCall("connect_tool")).not.toBeNull();
+  });
+
+  test("says nothing about a tool whose config was not touched", async ({ boot }) => {
+    // The regression: the probe asked about every tool, so switching Codex on
+    // offered to close a running `claude` that nothing had reconfigured - and
+    // the confirmation behind that offer would have killed it.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CLAUDE_CODE, CODEX],
+      runningAgentNames: ["claude"],
+    });
+
+    // Exact: "Codex" is a substring of the ChatGPT domain rows' labels too, and
+    // those route through the proxy rather than a config file.
+    await app.page.getByRole("switch", { name: "Codex", exact: true }).click();
+
+    await expect
+      .poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool")))
+      .toBe(true);
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("offers only the app that was reconfigured", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CLAUDE_CODE, CODEX],
+      runningAgentNames: ["claude", "codex"],
+    });
+
+    await app.page.getByRole("switch", { name: "Codex", exact: true }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toContainText("codex");
+    await expect(dialog).not.toContainText("claude");
   });
 
   test("a declined review never reaches the sequence", async ({ boot }) => {

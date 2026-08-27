@@ -55,16 +55,26 @@ export function SetupLayout({
           aria-valuemax={100}
           aria-valuenow={Math.round(progress * 100)}
           aria-label="Setup progress"
-          className="h-1 shrink-0 bg-gray-100"
+          className="h-2 shrink-0 border-b border-base-border bg-base-background"
         >
+          {/* Identical to `screens/Onboarding.tsx`'s rail, and deliberately so:
+           * the frames draw one element. `#7195FF` under a left-to-right
+           * black-to-white 64% wash, which composites navy to pale blue. */}
           <div
-            className="h-full bg-gradient-to-r from-blue-ribbon-800 to-blue-ribbon-700 transition-[width] duration-300"
-            style={{ width: `${progress * 100}%` }}
+            className="h-full transition-[width] duration-300"
+            style={{
+              width: `${progress * 100}%`,
+              background:
+                "linear-gradient(90deg, rgba(0,0,0,0.64) 0%, rgba(255,255,255,0.64) 100%), #7195FF",
+            }}
           />
         </div>
       )}
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-gray-100 p-6">
-        <div className="w-full max-w-[520px] rounded-md border border-base-border bg-base-card p-6 shadow-base-sm">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-base-background p-6">
+        {/* 496px, r16, shadow/lg. Unpadded: the panes that carry an action
+         * footer need it to span the card and sit on a rule, so padding is the
+         * body's job (`SetupBody`), not the shell's. */}
+        <div className="w-full max-w-[496px] overflow-hidden rounded-2xl border border-base-border bg-base-card shadow-base-lg">
           {children}
         </div>
       </div>
@@ -72,22 +82,103 @@ export function SetupLayout({
   );
 }
 
+/** The padded region of a setup card. Separate from the card so a pane can put
+ *  a full-bleed action footer under it. */
+function SetupBody({ children, gap = 6 }: { children: ReactNode; gap?: 5 | 6 }) {
+  return (
+    <div className={`flex flex-col p-6 ${gap === 5 ? "gap-5" : "gap-6"}`}>{children}</div>
+  );
+}
+
+/** The tile every setup header fronts itself with: white, a hairline, and the
+ *  design's inset pair - a glow up from the bottom edge, white down from the
+ *  top. `brand` swaps the hairline for `blue-ribbon-300` and tints the glow,
+ *  which the frames reserve for the ones holding the product mark. */
+function HeaderTile({
+  size,
+  brand,
+  children,
+}: {
+  size: 32 | 48;
+  brand?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <span
+      aria-hidden
+      className={`flex shrink-0 items-center justify-center border bg-base-card text-base-foreground ${
+        size === 48 ? "size-12 rounded-md" : "size-8 rounded-sm"
+      } ${brand ? "border-blue-ribbon-300" : "border-base-border"}`}
+      style={{
+        boxShadow: `0 1px 0 0 rgba(0,0,0,0.05), inset 0 -4px 8px 0 ${
+          brand ? "rgba(151,195,255,0.24)" : "rgba(0,0,0,0.08)"
+        }, inset 0 4px 8px 0 rgba(255,255,255,0.4)`,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * Two archetypes, both drawn in `Flows / Setup`:
+ *
+ * - **centred** (`row` unset) - a 48px tile over a centred title and subtitle.
+ *   The entry and exit panes: sign-in, the key form, the diagnostics step.
+ * - **row** - a 32px tile beside the title, subtitle left-aligned beneath.
+ *   The stepped panes, which pair it with a `SetupFooter`.
+ *
+ * Both stack at a 12px rhythm, which is what the frames measure.
+ */
 function SetupHeader({
   title,
   subtitle,
   mark,
+  row,
+  brand,
+  large,
 }: {
   title: ReactNode;
-  subtitle: string;
+  subtitle: ReactNode;
   mark?: ReactNode;
+  /** Left-aligned tile-beside-title, for a pane with a footer. */
+  row?: boolean;
+  /** The tile holds the product mark rather than a glyph. */
+  brand?: boolean;
+  /** The sign-in wordmark, which the frame sets at 24px rather than 20. */
+  large?: boolean;
 }) {
+  const heading = (
+    <h1
+      className={`tracking-heading text-base-foreground ${
+        large ? "text-2xl font-medium leading-6" : "text-xl font-medium leading-6"
+      }`}
+    >
+      {title}
+    </h1>
+  );
+
+  if (row) {
+    return (
+      <header className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <HeaderTile size={32} brand={brand}>
+            {mark}
+          </HeaderTile>
+          {heading}
+        </div>
+        <p className="text-sm leading-5 text-base-muted-foreground">{subtitle}</p>
+      </header>
+    );
+  }
+
   return (
-    <header className="flex flex-col items-center text-center">
-      <span className="mb-4">{mark ?? <ConstellationHexMark size={40} />}</span>
-      <h1 className="text-xl font-medium tracking-heading text-neutral-900">
-        {title}
-      </h1>
-      <p className="mt-1 text-sm leading-5 text-neutral-600">{subtitle}</p>
+    <header className="flex flex-col items-center gap-3 text-center">
+      <HeaderTile size={48} brand={brand}>
+        {mark ?? <ConstellationHexMark size={24} />}
+      </HeaderTile>
+      {heading}
+      <p className="text-sm leading-5 text-base-muted-foreground">{subtitle}</p>
     </header>
   );
 }
@@ -97,6 +188,7 @@ function PrimaryButton({
   onClick,
   busy,
   disabled,
+  arrow,
 }: {
   children: ReactNode;
   onClick: () => void;
@@ -104,6 +196,8 @@ function PrimaryButton({
   /** The Auth panes draw their primary muted until the field below it is filled
    *  and the org list has a selection. Same argument as `ModalButton`. */
   disabled?: boolean;
+  /** The drawn primary carries the Button component's right arrow. */
+  arrow?: boolean;
 }) {
   const inert = busy || disabled;
   return (
@@ -112,11 +206,12 @@ function PrimaryButton({
       onClick={inert ? undefined : onClick}
       aria-busy={busy || undefined}
       aria-disabled={inert || undefined}
-      className={`flex h-9 w-full items-center justify-center rounded-sm bg-blue-ribbon-700 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-ribbon-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex h-11 w-full items-center justify-center gap-2 rounded-md bg-blue-ribbon-700 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-ribbon-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         inert ? "opacity-70" : ""
       } ${disabled && !busy ? "cursor-not-allowed" : ""}`}
     >
       {children}
+      {arrow && <Icon name="arrowRight" size={20} />}
     </button>
   );
 }
@@ -138,9 +233,9 @@ function SetupLink({ children, onClick }: { children: ReactNode; onClick: () => 
 /** `or`, between the two sign-in routes. */
 function OrDivider() {
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-[19px]">
       <span aria-hidden className="h-px flex-1 bg-base-border" />
-      <span className="text-base-xs leading-4 text-base-muted-foreground">or</span>
+      <span className="text-sm leading-5 text-base-muted-foreground">or</span>
       <span aria-hidden className="h-px flex-1 bg-base-border" />
     </div>
   );
@@ -157,7 +252,7 @@ function SecondaryButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-9 w-full items-center justify-center rounded-sm border border-base-border bg-base-card px-4 text-sm font-medium text-neutral-900 shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      className="flex h-11 w-full items-center justify-center rounded-md border border-base-input bg-base-card px-4 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
     >
       {children}
     </button>
@@ -171,6 +266,7 @@ function TextField({
   placeholder,
   mono,
   type = "text",
+  clearable,
 }: {
   label: string;
   value: string;
@@ -178,23 +274,37 @@ function TextField({
   placeholder?: string;
   mono?: boolean;
   type?: "text" | "password";
+  /** Draws the frame's trailing clear button once there is something to clear. */
+  clearable?: boolean;
 }) {
   const id = useId();
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-base-xs font-medium leading-4 text-neutral-900">
+    <div className="flex flex-col gap-2">
+      <label htmlFor={id} className="text-base-xs font-medium leading-4 text-base-foreground">
         {label}
       </label>
-      <input
-        id={id}
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        className={`h-9 w-full rounded-sm border border-base-input bg-base-card px-3 text-sm text-neutral-900 shadow-base-2xs placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-          mono ? "font-mono" : ""
-        }`}
-      />
+      <div className="relative">
+        <input
+          id={id}
+          type={type}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          className={`h-11 w-full rounded-md border border-base-input bg-base-background px-3 text-sm text-base-foreground shadow-base-xs placeholder:text-base-muted-foreground focus:border-base-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+            mono ? "font-mono" : ""
+          } ${clearable && value ? "pr-10" : ""}`}
+        />
+        {clearable && value && (
+          <button
+            type="button"
+            onClick={() => onChange("")}
+            aria-label={`Clear ${label.toLowerCase()}`}
+            className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-base-muted-foreground transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            <Icon name="circleX" size={16} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -247,7 +357,7 @@ export function GatewayPicker({
         <button
           type="button"
           onClick={() => onOpenChange(true)}
-          className="-mx-1.5 -my-1.5 px-1.5 py-1.5 text-base-xs font-medium text-neutral-600 underline decoration-base-input underline-offset-2 transition-colors hover:text-neutral-900"
+          className="-mx-1.5 -my-1.5 px-1.5 py-1.5 text-base-xs font-medium text-neutral-600 underline decoration-base-input underline-offset-2 transition-colors hover:text-base-foreground"
         >
           change
         </button>
@@ -264,7 +374,7 @@ export function GatewayPicker({
         <button
           type="button"
           onClick={() => onOpenChange(false)}
-          className="text-base-xs font-medium text-neutral-600 transition-colors hover:text-neutral-900"
+          className="text-base-xs font-medium text-neutral-600 transition-colors hover:text-base-foreground"
         >
           Hide
         </button>
@@ -311,14 +421,17 @@ export function WelcomePane({
   error?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-6">
+    <SetupBody>
       <SetupHeader
+        brand
+        large={!reauth}
         title={
           reauth ? (
             "Session expired"
           ) : (
             <>
-              <span className="text-blue-ribbon-800">Gate</span> Connect
+              <span className="font-semibold text-base-primary">Gate</span>{" "}
+              <span className="font-semibold text-base-muted-foreground">Connect</span>
             </>
           )
         }
@@ -331,8 +444,8 @@ export function WelcomePane({
 
       {error && <SetupError>{error}</SetupError>}
 
-      <div className="flex flex-col gap-3">
-        <PrimaryButton onClick={onSignIn} busy={busy}>
+      <div className="flex flex-col gap-2">
+        <PrimaryButton onClick={onSignIn} busy={busy} arrow>
           {reauth ? "Sign in again" : "Continue with Gate account"}
         </PrimaryButton>
         <OrDivider />
@@ -340,7 +453,7 @@ export function WelcomePane({
       </div>
 
       {gateway}
-    </div>
+    </SetupBody>
   );
 }
 
@@ -366,7 +479,7 @@ export function ApiKeyPane({
   error?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-6">
+    <SetupBody>
       <SetupHeader
         mark={<Icon name="key" size={24} />}
         title="Use an API key"
@@ -384,14 +497,14 @@ export function ApiKeyPane({
           mono
           type="password"
         />
-        <PrimaryButton onClick={onConnect} busy={busy} disabled={!apiKey.trim()}>
+        <PrimaryButton onClick={onConnect} busy={busy} disabled={!apiKey.trim()} arrow>
           Connect and continue
         </PrimaryButton>
         <SetupLink onClick={onGoBack}>Go back</SetupLink>
       </div>
 
       {gateway}
-    </div>
+    </SetupBody>
   );
 }
 
@@ -416,7 +529,7 @@ export function NameDevicePane({
   error?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-6">
+    <SetupBody>
       <SetupHeader
         mark={<Icon name="monitor" size={24} />}
         title="Name this device"
@@ -431,13 +544,14 @@ export function NameDevicePane({
           value={value}
           onChange={onChange}
           placeholder="Enter a device name"
+          clearable
         />
-        <PrimaryButton onClick={onContinue} busy={busy} disabled={!value.trim()}>
+        <PrimaryButton onClick={onContinue} busy={busy} disabled={!value.trim()} arrow>
           Continue
         </PrimaryButton>
         <SetupLink onClick={onSkip}>Skip naming</SetupLink>
       </div>
-    </div>
+    </SetupBody>
   );
 }
 
@@ -475,7 +589,7 @@ export function OrgPickerPane({
   error?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-6">
+    <SetupBody>
       <SetupHeader
         mark={<Icon name="usersRound" size={24} />}
         title="Choose an organization"
@@ -514,14 +628,14 @@ export function OrgPickerPane({
             ))}
           </div>
           <div className="flex flex-col gap-3">
-            <PrimaryButton onClick={onContinue} busy={busy} disabled={!selectedId}>
+            <PrimaryButton onClick={onContinue} busy={busy} disabled={!selectedId} arrow>
               Continue
             </PrimaryButton>
             <SetupLink onClick={onUseDifferentAccount}>Use a different account</SetupLink>
           </div>
         </>
       )}
-    </div>
+    </SetupBody>
   );
 }
 
@@ -545,15 +659,11 @@ export function ConnectedPane({
   onDone: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-6">
+    <SetupBody>
       <SetupHeader
         title="You're connected"
         subtitle={`Gate Connect is signed in to ${workspace}.`}
-        mark={
-          <span className="flex size-12 items-center justify-center rounded-md bg-green-100 text-green-700">
-            <Icon name="circleCheck" size={24} />
-          </span>
-        }
+        mark={<Icon name="circleCheck" size={24} className="text-green-600" />}
       />
 
       <div className="flex flex-col gap-3">
@@ -568,7 +678,7 @@ export function ConnectedPane({
           <PrimaryButton onClick={onDone}>Done</PrimaryButton>
         )}
       </div>
-    </div>
+    </SetupBody>
   );
 }
 
@@ -605,35 +715,40 @@ export function DiagnosticsPane({
   onSkip: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-6">
+    <SetupBody gap={5}>
       <SetupHeader
+        mark={<Icon name="share2" size={24} />}
         title="Share diagnostic data"
-        subtitle="Opt in to send Gate errors and routing state to help fix problems. Prompts, credentials, or private information are never shared."
-        mark={
-          <span className="flex size-12 items-center justify-center rounded-md bg-gray-100 text-neutral-700">
-            <Icon name="share2" size={24} />
-          </span>
+        subtitle={
+          <>
+            Opt-in to send Gate errors and routing stats to help fix problems.{" "}
+            {/* Medium, and the frame sets it apart on purpose: it is the
+             * sentence that says what never leaves the machine. */}
+            <span className="font-medium text-base-foreground">
+              Prompts, credentials, or private information are never shared.
+            </span>
+          </>
         }
       />
 
-      <div className="flex items-center gap-3 rounded-md border border-base-border bg-base-card px-4 py-3">
-        <p className="min-w-0 flex-1 text-sm font-medium leading-5 text-neutral-900">
+      <div className="flex items-center gap-3 rounded-md border border-base-border bg-base-card p-3 shadow-base-xs">
+        <p className="min-w-0 flex-1 text-sm font-medium leading-5 text-base-foreground">
           Diagnostic data sharing
         </p>
         <span className="flex shrink-0 items-center gap-2">
-          <span className="text-base-xs font-medium text-neutral-600">
+          <span className="text-sm leading-5 text-base-foreground">
             {share ? "On" : "Off"}
           </span>
           <BaseSwitch on={share} label="Diagnostic data sharing" onClick={onToggleShare} />
         </span>
       </div>
 
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-2">
         <PrimaryButton onClick={onContinue} busy={busy}>
           Finish setup
         </PrimaryButton>
         <SetupLink onClick={onSkip}>Skip data sharing</SetupLink>
       </div>
-    </div>
+    </SetupBody>
   );
 }

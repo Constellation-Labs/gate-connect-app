@@ -153,7 +153,7 @@ function Stat({
           // resize under the user when the reading lands.
           <Skeleton className="my-1 h-6 w-16" />
         ) : (
-          <span className="text-2xl font-semibold leading-8 text-neutral-900">{value}</span>
+          <span className="text-2xl font-semibold leading-8 text-base-foreground">{value}</span>
         )}
         {delta && (
           <span className="text-base-xs font-medium text-green-600">{delta}</span>
@@ -201,7 +201,7 @@ export function MessagesChart({
   const empty = !pending && !unavailable && highest === 0;
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-neutral-900">Messages</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">Messages</h2>
 
       {pending ? (
         <PendingChart />
@@ -399,7 +399,7 @@ function ChartTooltip({
           : { right: `calc(${(1 - offset) * 100}% + 0.75rem)` }
       }
     >
-      <p className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-neutral-900">
+      <p className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-base-foreground">
         {bucket.label}
       </p>
       <div className="mt-2 flex flex-col gap-1">
@@ -407,9 +407,9 @@ function ChartTooltip({
           <div key={key} className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
               <span className={`size-3 rounded-xs ${className}`} />
-              <span className="text-base-xs leading-4 text-neutral-900">{label}</span>
+              <span className="text-base-xs leading-4 text-base-foreground">{label}</span>
             </span>
-            <span className="text-base-xs font-medium leading-4 text-neutral-900">
+            <span className="text-base-xs font-medium leading-4 text-base-foreground">
               {bucket[key].toLocaleString()}
             </span>
           </div>

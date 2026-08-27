@@ -8,7 +8,6 @@ import { ConstellationHexMark } from "../components/gc/ConstellationHexMark";
 import { Icon } from "../components/gc/Icon";
 import type { IconName } from "../components/gc/Icon";
 import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
-import appIcon from "../assets/app-icon.png";
 import whatIsGateConnect from "../assets/onboarding-what-is-gate-connect.png";
 import seeWhatGateIsDoing from "../assets/onboarding-see-what-gate-is-doing.png";
 import whereMacos from "../assets/where-is-gate-connect-macos.png";
@@ -52,14 +51,20 @@ type Step = {
 function buildSteps(platform: Platform): Step[] {
   return [
     {
+      // A 96px white tile on a blue-ribbon-300 hairline, holding the hex mark
+      // at the drawn 56px. The inset pair is the design's own: a blue glow up
+      // from the bottom edge and a white one down from the top.
       hero: (
-        <img
-          src={appIcon}
-          alt="The Gate Connect app icon"
-          width={128}
-          height={128}
-          className="mx-auto rounded-[28px] drop-shadow-[0_14px_34px_rgba(0,42,95,0.5)]"
-        />
+        <div
+          aria-hidden
+          className="mx-auto flex size-24 items-center justify-center rounded-2xl border border-blue-ribbon-300 bg-base-card"
+          style={{
+            boxShadow:
+              "0 2px 4px -2px rgba(0,0,0,0.08), 0 4px 6px -1px rgba(0,0,0,0.08), inset 0 -4px 8px 0 rgba(151,195,255,0.24), inset 0 4px 8px 0 rgba(255,255,255,0.4)",
+          }}
+        >
+          <ConstellationHexMark size={56} />
+        </div>
       ),
       title: "Welcome to Gate Connect",
       sub: "Created by Constellation Network",
@@ -121,7 +126,9 @@ function buildSteps(platform: Platform): Step[] {
         "Click the Gate Connect icon to open the compact popover for a quick status check, or expand it to the full desktop app for more details, alerts, and controls.",
       ],
       note: "Open the desktop app for detail. Collapse to a popover for a fast status check.",
-      noteIcon: "monitor",
+      // The frame's own glyph (read 2026-08-26): the monitor-plus-phone pair,
+      // not the plain display the welcome pane uses.
+      noteIcon: "monitorSmartphone",
       locate: true,
     },
     {
@@ -144,7 +151,9 @@ function buildSteps(platform: Platform): Step[] {
       sub: "Once requests pass through Gate, the desktop app shows recent activity, security actions, and compression savings without exposing prompt or response content.",
       body: ["That’s all there is to it. Sign in and your first app is one toggle away."],
       note: "Notifications will alert you when a request has been blocked or flagged.",
-      noteIcon: "bell",
+      // `BellDot`, read off the frame 2026-08-26 - the bell with an unread
+      // mark, not the plain one.
+      noteIcon: "bellDot",
     },
   ];
 }
@@ -179,11 +188,20 @@ function IntroProgress({ step, total }: { step: number; total: number }) {
       aria-valuemax={total}
       aria-valuenow={step}
       aria-label={`Step ${step} of ${total}`}
-      className="h-1 shrink-0 bg-gray-100"
+      className="h-2 shrink-0 border-b border-base-border bg-base-background"
     >
+      {/* The fill is one colour under a left-to-right black-to-white 64% wash,
+       * which is how the design draws it - the composite runs from a deep navy
+       * to a pale blue. `#7195FF` sits between blue-ribbon 400 and 500 and is
+       * not a token, so it is spelled out here with the wash that goes over it
+       * rather than approximated by two ramp stops. */}
       <div
-        className="h-full bg-gradient-to-r from-blue-ribbon-800 to-blue-ribbon-700 transition-[width] duration-300"
-        style={{ width: `${(step / total) * 100}%` }}
+        className="h-full transition-[width] duration-300"
+        style={{
+          width: `${(step / total) * 100}%`,
+          background:
+            "linear-gradient(90deg, rgba(0,0,0,0.64) 0%, rgba(255,255,255,0.64) 100%), #7195FF",
+        }}
       />
     </div>
   );
@@ -194,22 +212,24 @@ function IntroButton({
   onClick,
   primary,
   disabled,
+  className = "",
 }: {
   children: React.ReactNode;
   onClick: () => void;
   primary?: boolean;
   disabled?: boolean;
+  className?: string;
 }) {
   return (
     <button
       type="button"
       onClick={disabled ? undefined : onClick}
       aria-disabled={disabled || undefined}
-      className={`flex h-9 min-w-[88px] items-center justify-center rounded-sm px-4 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         primary
-          ? "bg-blue-ribbon-700 text-white hover:bg-blue-ribbon-800"
-          : "border border-base-border bg-base-card text-neutral-900 shadow-base-2xs hover:bg-gray-50"
-      } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+          ? "border border-white/20 bg-base-primary bg-gradient-to-b from-white/[0.08] to-black/[0.08] text-base-primary-foreground shadow-base-btn-primary hover:bg-blue-ribbon-800"
+          : "border border-base-input bg-base-card text-base-primary shadow-base-btn hover:bg-gray-50"
+      } ${disabled ? "cursor-not-allowed" : ""} ${className}`}
     >
       {children}
     </button>
@@ -295,80 +315,110 @@ export function Onboarding() {
   const tutorialTotal = steps.length - 1;
 
   return (
-    <div className="flex h-full flex-col bg-base-background text-neutral-900">
+    <div className="flex h-full flex-col bg-base-background text-base-foreground">
       <IntroTopbar />
       <IntroProgress step={index + 1} total={steps.length} />
 
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
         <div
           key={index}
-          className={`w-full max-w-[680px] ${
+          className={`w-full ${index === 0 ? "max-w-[540px]" : "max-w-[640px]"} ${
             dir === "fwd" ? "ob-slide-in-fwd" : "ob-slide-in-back"
           }`}
         >
           {index === 0 ? (
-            <div className="text-center">
-              <div className="mb-4">{step.hero}</div>
-              <h1 className="text-balance text-2xl font-semibold leading-8 tracking-heading">
-                {step.title}
-              </h1>
-              <p className="mt-1 text-sm leading-5 text-neutral-600">{step.sub}</p>
-              <div className="my-4 h-px w-full bg-base-border" aria-hidden />
-              <div className="space-y-3 text-pretty text-left text-sm leading-5 text-neutral-600">
-                {step.body.map((p) => (
-                  <p key={p.slice(0, 24)}>{p}</p>
+            <div className="flex flex-col gap-6">
+              <div className="flex flex-col items-center gap-6">
+                {step.hero}
+                <div className="flex flex-col gap-2 text-center">
+                  {/* Two-tone, like the wordmark: the product name is in
+                   * `base/primary` and the words leading up to it are not. */}
+                  <h1 className="text-balance text-base-3xl font-medium leading-9 tracking-heading-32">
+                    Welcome to <span className="text-base-primary">Gate Connect</span>
+                  </h1>
+                  <p className="text-sm font-medium leading-5 text-base-muted-foreground">
+                    {step.sub}
+                  </p>
+                </div>
+              </div>
+              <div className="h-px w-full bg-base-input" aria-hidden />
+              {/* `copy/16`, and the closing sentence in Medium - the design
+               * sets it apart because it is the only instruction on the frame. */}
+              <div className="space-y-6 text-pretty text-base leading-6 tracking-heading text-base-foreground">
+                {step.body.map((p, i) => (
+                  <p key={p.slice(0, 24)}>
+                    {i === step.body.length - 1 ? (
+                      <>
+                        {p.replace(" Click Next to get started.", " ")}
+                        <span className="font-medium">Click Next to get started.</span>
+                      </>
+                    ) : (
+                      p
+                    )}
+                  </p>
                 ))}
               </div>
             </div>
           ) : (
-            <section className="rounded-md border border-base-border bg-base-card p-6 shadow-base-sm">
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="font-mono text-base-xs uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
-                  Tutorial
-                </span>
-                <span className="font-mono text-base-xs uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
-                  {index} of {tutorialTotal}
-                </span>
-              </div>
-              <h1 className="mt-2 text-balance text-xl font-semibold tracking-heading">
-                {step.title}
-              </h1>
-              <p className="mt-1.5 text-pretty text-sm leading-5 text-neutral-600">{step.sub}</p>
-              <div className="mt-3 space-y-3 text-pretty text-sm leading-5 text-neutral-600">
-                {step.body.map((p) => (
-                  <p key={p.slice(0, 24)}>{p}</p>
-                ))}
-              </div>
+            <>
+              <section className="flex flex-col gap-6 rounded-2xl border border-base-border bg-base-card p-6 shadow-base-lg">
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="font-mono text-base-xs uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
+                        Introduction
+                      </span>
+                      <span className="font-mono text-base-xs uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
+                        {index} of {tutorialTotal}
+                      </span>
+                    </div>
+                    <h1 className="text-balance text-xl font-semibold leading-6 tracking-heading">
+                      {step.title}
+                    </h1>
+                  </div>
+                  <p className="text-pretty text-sm leading-5 text-base-foreground">{step.sub}</p>
+                  {step.body.map((p) => (
+                    <p key={p.slice(0, 24)} className="text-pretty text-sm leading-5 text-base-foreground">
+                      {p}
+                    </p>
+                  ))}
+                </div>
 
-              {/* No panel around this: the captured art *is* the design's
-                  590x220 panel, border and gray field included, so wrapping it
-                  gives two nested boxes. */}
-              <div className="mt-4">{step.hero}</div>
+                <div className="flex flex-col gap-4">
+                  {/* No panel around this: the captured art *is* the design's
+                      590x220 panel, border and gray field included, so wrapping
+                      it gives two nested boxes. */}
+                  {step.hero}
 
-              {step.note && (
-                <p className="mt-3 flex items-center gap-2 rounded-md border border-base-border bg-base-card px-3 py-2 text-left text-base-xs leading-4 text-neutral-600">
-                  {step.noteIcon && (
-                    <span aria-hidden className="shrink-0 text-base-muted-foreground">
-                      <Icon name={step.noteIcon} size={16} />
-                    </span>
+                  {step.note && (
+                    <p className="flex items-center gap-3 rounded-md border border-base-border px-4 py-3 text-left text-base-xs leading-4 text-base-foreground">
+                      {step.noteIcon && (
+                        <span aria-hidden className="shrink-0 text-base-muted-foreground">
+                          <Icon name={step.noteIcon} size={16} />
+                        </span>
+                      )}
+                      {step.note}
+                    </p>
                   )}
-                  {step.note}
-                </p>
-              )}
+                </div>
+              </section>
 
+              {/* Outside the card, between it and the footer, which is where
+                  the frame puts it. */}
               {step.locate && (
-                <div className="mt-4 flex justify-center">
+                <div className="mt-6 flex justify-center">
                   <IntroButton onClick={() => void invoke("reveal_popover")}>
+                    <Icon name="focus" size={16} />
                     Show me where Gate Connect lives
                   </IntroButton>
                 </div>
               )}
-            </section>
+            </>
           )}
         </div>
       </div>
 
-      <footer className="flex h-14 shrink-0 items-center justify-between gap-3 border-t border-base-border bg-base-card px-4">
+      <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-base-border bg-base-card px-6 py-3">
         <label className="flex w-max cursor-pointer items-center gap-2 text-base-xs leading-4 text-neutral-600">
           <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
             <input
@@ -381,7 +431,7 @@ export function Onboarding() {
               }}
               // WKWebView renders native checkboxes white-on-white and
               // effectively invisible, so we draw the box + check ourselves.
-              className="peer size-4 cursor-pointer appearance-none rounded-xs border border-base-input bg-base-card transition-colors checked:border-base-primary checked:bg-base-primary"
+              className="peer size-4 cursor-pointer appearance-none rounded-xs border border-base-input bg-base-background shadow-base-xs transition-colors checked:border-base-primary checked:bg-base-primary"
             />
             <svg
               aria-hidden
@@ -401,8 +451,12 @@ export function Onboarding() {
           Do not show this intro again
         </label>
 
-        <div className="flex items-center gap-2">
+        {/* A fixed 220px pair, so Next does not move as its label changes.
+         * On the welcome frame the design draws Previous at zero opacity
+         * rather than dropping it, which keeps that alignment. */}
+        <div className="flex w-[220px] items-center gap-3">
           <IntroButton
+            className={`flex-1 ${index === 0 ? "invisible" : ""}`}
             disabled={index === 0}
             onClick={() => {
               setDir("back");
@@ -413,6 +467,7 @@ export function Onboarding() {
           </IntroButton>
           <IntroButton
             primary
+            className="flex-1"
             onClick={() => {
               if (last) {
                 finish();
@@ -423,6 +478,7 @@ export function Onboarding() {
             }}
           >
             {last ? "Get started" : "Next"}
+            {!last && <Icon name="arrowRight" size={16} />}
           </IntroButton>
         </div>
       </footer>
