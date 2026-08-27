@@ -885,6 +885,17 @@ export function ResetGateConnectDialog({
 /**
  * What the diagnostic channel actually sends, and what it never sends.
  *
+ * **Nothing renders this today.** Its Settings row was removed on 2026-08-27
+ * for being undrawn, which took AG-603's only surface with it. Kept rather than
+ * deleted because the list itself is the expensive part - it is written from
+ * what `analytics.ts` actually sends, not from the ticket's field list - and
+ * because the criterion has not been withdrawn, only left without a door.
+ *
+ * Opened from a link inside the share-diagnostics row's own description rather
+ * than from a row of its own: the file draws two rows under Diagnostics, and a
+ * disclosure about a setting reads better as part of that setting's sentence
+ * than as furniture beside it.
+ *
  * AG-603 asks for a "What is collected" list that opens without changing the
  * setting - so this is read-only and its only action closes it.
  *

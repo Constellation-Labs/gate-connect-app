@@ -245,10 +245,10 @@ export function NewUiApp() {
   const redetecting = useRef(false);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
+  const [collectedDataOpen, setCollectedDataOpen] = useState(false);
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(null);
   /** The read-only "what is collected" list. Separate from the report dialog:
    * that one shows this install's values, this one shows what leaves the device. */
-  const [collectedDataOpen, setCollectedDataOpen] = useState(false);
   /**
    * Leading characters of the stored Gate key, as recorded in the account config.
    *

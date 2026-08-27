@@ -270,6 +270,10 @@ test.describe("new UI settings preferences", () => {
 /**
  * AG-603: "What is collected opens the field list WITHOUT changing the setting."
  *
+ * It opens from a link inside the share-diagnostics row's own description, not
+ * from a row of its own: Diagnostics draws two rows and the file gives it no
+ * third, so the disclosure lives in the sentence it qualifies.
+ *
  * The read-only half is the testable half here: whether the opt-out actually
  * stops PostHog is pinned in `lib/analytics.test.ts`, since the e2e build has no
  * analytics key and the channel no-ops entirely.
@@ -283,7 +287,7 @@ test.describe("new UI: what diagnostics collects", () => {
     const app = await boot({});
     await app.page.getByRole("button", { name: "Settings" }).click();
 
-    await app.page.getByRole("button", { name: "View list" }).click();
+    await app.page.getByRole("button", { name: "See what is collected" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -303,7 +307,7 @@ test.describe("new UI: what diagnostics collects", () => {
     // rather than left to the copy drifting.
     const app = await boot({});
     await app.page.getByRole("button", { name: "Settings" }).click();
-    await app.page.getByRole("button", { name: "View list" }).click();
+    await app.page.getByRole("button", { name: "See what is collected" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog.getByText(/Prompts or model responses/)).toBeVisible();

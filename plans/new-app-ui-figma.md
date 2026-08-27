@@ -1105,6 +1105,31 @@ a family control is drawn.
 
 554 unit tests pass; the e2e suite is 166, down the five that spec held.
 
+### "What is collected" becomes a link, 2026-08-27
+
+The Diagnostics section had three rows where the file draws two: share the data,
+and view the report. The third was AG-603's read-only field list, and it was the
+kind of undrawn row that is hard to argue for - a whole row, icon and all, for a
+disclosure *about* the row above it.
+
+Removing it outright would have taken the criterion's only surface with it
+("What is collected opens the field list without changing the setting"), so it
+moved rather than went: `SettingsRow` gained `descriptionLink`, and the
+share-diagnostics row now ends its own description with **See what is
+collected**. The section is two rows again, the disclosure reads as part of the
+sentence it qualifies, and `CollectedDataDialog` opens unchanged - still
+read-only, still writing nothing, which is the half of the criterion that
+matters.
+
+`descriptionLink` is deliberately narrow: a label and a handler, rendered inline
+inside the description paragraph, and it needs a `description` to attach to. It
+is the affordance for "and here is exactly what that means", not a general slot.
+
+The two e2e tests move with it - same assertions, `See what is collected`
+instead of `View list`.
+
+554 unit tests and the 166-test e2e suite pass.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a

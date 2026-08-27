@@ -29,6 +29,15 @@ export interface SettingsRow {
   label: string;
   /** Second line under the label - the Startup rows and Danger zone. */
   description?: string;
+  /**
+   * A link at the end of that second line.
+   *
+   * For a disclosure that belongs *to* a setting rather than beside it: AG-603's
+   * field list had a row of its own, which the file does not draw, and a row is
+   * too much furniture for "and here is exactly what that means". Inline, it
+   * reads as part of the sentence it qualifies. Needs `description`.
+   */
+  descriptionLink?: { label: string; onClick: () => void };
   /** Middle column, e.g. "MacBook Pro". */
   value?: string;
   action?: SettingsAction;
@@ -100,11 +109,11 @@ export function buildSettingsSections({
   onRetryLaunchAtLogin,
   onToggleRoutingHealthNotifications,
   onToggleShareDiagnostics,
+  onViewCollectedData,
   onRetryPreferences,
   onReplayTutorial,
   onCheckForUpdates,
   onViewDiagnostics,
-  onViewCollectedData,
   onOpenDocs,
   onContactSupport,
   onReviewReset,
@@ -170,13 +179,14 @@ export function buildSettingsSections({
   onRetryLaunchAtLogin?: () => void;
   onToggleRoutingHealthNotifications?: () => void;
   onToggleShareDiagnostics?: () => void;
+  /** Opens the collected-data list from the share-diagnostics row's own
+   * description. Read-only: AG-603 requires it to open "without changing the
+   * setting", which is also why it is a link and not a second switch. */
+  onViewCollectedData?: () => void;
   onRetryPreferences?: () => void;
   onReplayTutorial: () => void;
   onCheckForUpdates?: () => void;
   onViewDiagnostics: () => void;
-  /** Opens the collected-data list. Read-only: AG-603 requires it to open
-   * "without changing the setting". */
-  onViewCollectedData?: () => void;
   onOpenDocs?: () => void;
   onContactSupport?: () => void;
   onReviewReset?: () => void;
@@ -373,6 +383,11 @@ export function buildSettingsSections({
     // choice, and the report is the evidence of what would be shared. Sending a
     // report on demand, and the reference it returns, belong with the collection
     // work and are not here.
+    //
+    // Two rows, which is what the file draws. AG-603's read-only field list had
+    // a third; it hangs off the share-diagnostics description as a link now, so
+    // the criterion keeps a door without the section growing a row the design
+    // does not have.
     {
       id: "diagnostics",
       title: "Diagnostics",
@@ -385,6 +400,14 @@ export function buildSettingsSections({
                 label: "Share diagnostic data",
                 description:
                   "Send Gate errors and routing stats to help fix problems. Never prompts or credentials.",
+                ...(onViewCollectedData
+                  ? {
+                      descriptionLink: {
+                        label: "See what is collected",
+                        onClick: onViewCollectedData,
+                      },
+                    }
+                  : {}),
                 ...(preferencesUnavailable && onRetryPreferences
                   ? { unavailable: { onRetry: onRetryPreferences } }
                   : {
@@ -393,17 +416,6 @@ export function buildSettingsSections({
                         onToggle: onToggleShareDiagnostics,
                       },
                     }),
-              } as SettingsRow,
-            ]
-          : []),
-        ...(onViewCollectedData
-          ? [
-              {
-                id: "collected-data",
-                icon: "eye" as IconName,
-                label: "What is collected",
-                description: "The exact fields that leave this device, and the ones that never do",
-                action: { label: "View list", onClick: onViewCollectedData },
               } as SettingsRow,
             ]
           : []),
@@ -564,9 +576,9 @@ function Row({ row }: { row: SettingsRow }) {
         * - Launch at login, Notifications, Diagnostics report, Reset - gives the
         * text the full width and puts its control at the end.
         *
-        * A row carrying both is ours, not the file's. It takes the description
-        * shape, because the 184px column is a gutter and a sentence in it wraps
-        * to six lines. */}
+        * A row carrying both is ours, not the file's: Sign-in method and Gate
+        * certificate. They take the description shape, because the 184px column
+        * is a gutter and a sentence in it wrapped to six lines. */}
       <div
         className={`min-w-0 ${
           row.description !== undefined || (row.value === undefined && !row.unavailable)
@@ -580,6 +592,18 @@ function Row({ row }: { row: SettingsRow }) {
         {row.description && (
           <p className="text-base-xs leading-4 text-base-muted-foreground">
             {row.description}
+            {row.descriptionLink && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={row.descriptionLink.onClick}
+                  className="rounded-control font-medium text-base-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                >
+                  {row.descriptionLink.label}
+                </button>
+              </>
+            )}
           </p>
         )}
       </div>
