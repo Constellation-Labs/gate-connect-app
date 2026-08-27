@@ -1749,15 +1749,13 @@ fn reopen_pending_for(slug: &str) -> bool {
     };
     let bound = routing_bound_unix();
     let mut pending = false;
-    for_each_agent_process(&[wanted], |process| {
-        match bound {
-            Some(bound) => {
-                if process.start_time() < bound {
-                    pending = true;
-                }
+    for_each_agent_process(&[wanted], |process| match bound {
+        Some(bound) => {
+            if process.start_time() < bound {
+                pending = true;
             }
-            None => pending = true,
         }
+        None => pending = true,
     });
     pending
 }
