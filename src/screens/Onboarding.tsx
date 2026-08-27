@@ -225,10 +225,10 @@ function IntroButton({
       type="button"
       onClick={disabled ? undefined : onClick}
       aria-disabled={disabled || undefined}
-      className={`flex h-9 items-center justify-center gap-1.5 rounded-sm px-3 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         primary
-          ? "bg-blue-ribbon-700 text-white hover:bg-blue-ribbon-800"
-          : "border border-base-border bg-base-card text-neutral-900 shadow-base-2xs hover:bg-gray-50"
+          ? "border border-white/20 bg-base-primary bg-gradient-to-b from-white/[0.08] to-black/[0.08] text-base-primary-foreground shadow-base-btn-primary hover:bg-blue-ribbon-800"
+          : "border border-base-input bg-base-card text-base-primary shadow-base-btn hover:bg-gray-50"
       } ${disabled ? "cursor-not-allowed" : ""} ${className}`}
     >
       {children}
@@ -315,7 +315,7 @@ export function Onboarding() {
   const tutorialTotal = steps.length - 1;
 
   return (
-    <div className="flex h-full flex-col bg-base-background text-neutral-900">
+    <div className="flex h-full flex-col bg-base-background text-base-foreground">
       <IntroTopbar />
       <IntroProgress step={index + 1} total={steps.length} />
 
@@ -344,7 +344,7 @@ export function Onboarding() {
               <div className="h-px w-full bg-base-input" aria-hidden />
               {/* `copy/16`, and the closing sentence in Medium - the design
                * sets it apart because it is the only instruction on the frame. */}
-              <div className="space-y-6 text-pretty text-base leading-6 tracking-heading text-neutral-900">
+              <div className="space-y-6 text-pretty text-base leading-6 tracking-heading text-base-foreground">
                 {step.body.map((p, i) => (
                   <p key={p.slice(0, 24)}>
                     {i === step.body.length - 1 ? (
@@ -376,9 +376,9 @@ export function Onboarding() {
                       {step.title}
                     </h1>
                   </div>
-                  <p className="text-pretty text-sm leading-5 text-neutral-900">{step.sub}</p>
+                  <p className="text-pretty text-sm leading-5 text-base-foreground">{step.sub}</p>
                   {step.body.map((p) => (
-                    <p key={p.slice(0, 24)} className="text-pretty text-sm leading-5 text-neutral-900">
+                    <p key={p.slice(0, 24)} className="text-pretty text-sm leading-5 text-base-foreground">
                       {p}
                     </p>
                   ))}
@@ -391,7 +391,7 @@ export function Onboarding() {
                   {step.hero}
 
                   {step.note && (
-                    <p className="flex items-center gap-3 rounded-md border border-base-border px-4 py-3 text-left text-base-xs leading-4 text-neutral-900">
+                    <p className="flex items-center gap-3 rounded-md border border-base-border px-4 py-3 text-left text-base-xs leading-4 text-base-foreground">
                       {step.noteIcon && (
                         <span aria-hidden className="shrink-0 text-base-muted-foreground">
                           <Icon name={step.noteIcon} size={16} />

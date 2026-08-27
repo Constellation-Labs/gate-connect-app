@@ -32,6 +32,9 @@ test.describe("new UI settings", () => {
     await expect(launch).toHaveAttribute("aria-checked", "true");
   });
 
+  // Figma labels this field "New device name", copy-pasted from the rename
+  // dialog. "New API key" is a decided exception to "the file wins" - see
+  // `ReplaceApiKeyDialog`. Do not "fix" this back to match the frame.
   test("replacing the API key saves against the current gateway", async ({ boot }) => {
     const app = await boot({
       account: {

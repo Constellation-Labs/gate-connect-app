@@ -91,7 +91,7 @@ function OutlineIconButton({
       aria-label={label}
       aria-haspopup={expanded === undefined ? undefined : "menu"}
       aria-expanded={expanded}
-      className="flex size-8 items-center justify-center rounded-sm border border-base-input bg-base-card text-neutral-900 shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.06)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      className="flex size-8 items-center justify-center rounded-sm border border-base-input bg-base-card text-base-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.06)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
     >
       <Icon name={icon} size={16} />
     </button>
@@ -112,7 +112,7 @@ export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => v
           type="button"
           role="menuitem"
           onClick={() => onSelect(action)}
-          className="flex h-8 w-full items-center justify-between rounded-sm px-1.5 text-neutral-900 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className="flex h-8 w-full items-center justify-between rounded-sm px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           <span className="flex items-center gap-2">
             <Icon name={icon} size={16} />

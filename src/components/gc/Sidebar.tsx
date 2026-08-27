@@ -195,9 +195,11 @@ export function Sidebar({
     <nav
       aria-label="Main"
       // 256px fixed, 16px padding, a 24px rhythm between the switcher, the nav,
-      // the divider and the app groups, and a 1px right edge at 5% black - all
-      // read off `nav/sidebar/overview` (113:16794) on 2026-08-21.
-      className="flex w-64 shrink-0 flex-col border-r border-black/[0.05] bg-base-card p-4"
+      // the divider and the app groups - read off `nav/sidebar/overview`
+      // (113:16794) on 2026-08-21. The right edge is `base/border`, not the 5%
+      // black that read gave it: the `sidebar` component set (437:161) names the
+      // variable, and a component beats a frame measurement.
+      className="flex w-64 shrink-0 flex-col border-r border-base-border bg-base-card p-4"
     >
       <div className="flex flex-1 flex-col gap-6">
         <div className="flex flex-col gap-6">
@@ -294,7 +296,7 @@ function OrgSwitcher({ name, onClick }: { name: string; onClick: () => void }) {
     >
       <span className="flex items-center gap-2">
         <Icon name="usersRound" size={16} />
-        <span className="text-base-xs font-medium leading-4 text-neutral-900">{name}</span>
+        <span className="text-base-xs font-medium leading-4 text-base-foreground">{name}</span>
       </span>
       <Icon name="chevronsUpDown" size={16} />
     </button>
@@ -320,7 +322,7 @@ function NavItem({
       className={`flex w-full items-center gap-2 rounded-sm px-1.5 py-2 text-base-xs font-medium leading-4 ${
         active
           ? "border border-base-border bg-gray-100 text-base-primary shadow-base-2xs"
-          : "text-neutral-900"
+          : "text-base-foreground"
       }`}
     >
       <Icon name={icon} size={16} />
@@ -341,7 +343,7 @@ function MasterCard({ master }: { master: MasterRouting }) {
   return (
     <div className="flex flex-col gap-2 rounded-md border border-base-border bg-base-card p-3">
       <div className="flex items-start justify-between gap-2">
-        <p className="min-w-0 text-base-xs font-medium leading-4 text-neutral-900">
+        <p className="min-w-0 text-base-xs font-medium leading-4 text-base-foreground">
           Route traffic through Gate
         </p>
         <BaseSwitch
@@ -362,7 +364,7 @@ function MasterCard({ master }: { master: MasterRouting }) {
       {master.envExport && (
         <div className="flex flex-col gap-2 border-t border-base-border pt-2">
           <div className="flex items-start justify-between gap-2">
-            <p className="min-w-0 text-base-xs leading-4 text-neutral-900">
+            <p className="min-w-0 text-base-xs leading-4 text-base-foreground">
               Also set shell environment variables
             </p>
             <BaseSwitch
@@ -412,7 +414,7 @@ function InventoryState({
         failed ? "border-amber-200 bg-amber-50" : "border-base-border bg-base-card"
       }`}
     >
-      <p className="text-sm font-medium leading-5 text-neutral-900">
+      <p className="text-sm font-medium leading-5 text-base-foreground">
         {failed ? "Couldn’t check for apps" : "No apps detected"}
       </p>
       <p className="text-base-xs leading-4 text-neutral-600">
@@ -433,7 +435,7 @@ function InventoryState({
           type="button"
           onClick={onRefresh}
           disabled={refreshing}
-          className="flex h-7 items-center justify-center rounded-sm border border-base-border bg-base-card px-2 text-base-xs font-medium text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-8 items-center justify-center rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           {refreshing ? "Checking…" : failed ? "Try again" : "Refresh"}
         </button>
@@ -479,9 +481,11 @@ function AppRow({
         <span
           aria-hidden
           className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
+          // `logo-wrapper` (408:14180): the overlay pair is 24%, not the 32%
+          // this had.
           style={{
             backgroundImage:
-              "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
+              "linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(0,0,0,0.24) 100%)",
           }}
         >
           {app.logo ?? app.name.charAt(0)}
@@ -489,7 +493,7 @@ function AppRow({
         <span className="flex min-w-0 flex-1 flex-col">
           <span
             className={`truncate text-base-xs font-medium leading-4 ${
-              selected ? "text-base-primary" : "text-neutral-900 group-hover:text-base-primary"
+              selected ? "text-base-primary" : "text-base-foreground group-hover:text-base-primary"
             }`}
           >
             {app.name}

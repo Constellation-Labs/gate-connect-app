@@ -106,7 +106,7 @@ function HeaderTile({
   return (
     <span
       aria-hidden
-      className={`flex shrink-0 items-center justify-center border bg-base-card text-neutral-900 ${
+      className={`flex shrink-0 items-center justify-center border bg-base-card text-base-foreground ${
         size === 48 ? "size-12 rounded-md" : "size-8 rounded-sm"
       } ${brand ? "border-blue-ribbon-300" : "border-base-border"}`}
       style={{
@@ -150,7 +150,7 @@ function SetupHeader({
 }) {
   const heading = (
     <h1
-      className={`tracking-heading text-neutral-900 ${
+      className={`tracking-heading text-base-foreground ${
         large ? "text-2xl font-medium leading-6" : "text-xl font-medium leading-6"
       }`}
     >
@@ -252,7 +252,7 @@ function SecondaryButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-11 w-full items-center justify-center rounded-md border border-base-input bg-base-card px-4 text-sm font-medium text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      className="flex h-11 w-full items-center justify-center rounded-md border border-base-input bg-base-card px-4 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
     >
       {children}
     </button>
@@ -280,7 +280,7 @@ function TextField({
   const id = useId();
   return (
     <div className="flex flex-col gap-2">
-      <label htmlFor={id} className="text-base-xs font-medium leading-4 text-neutral-900">
+      <label htmlFor={id} className="text-base-xs font-medium leading-4 text-base-foreground">
         {label}
       </label>
       <div className="relative">
@@ -290,7 +290,7 @@ function TextField({
           value={value}
           placeholder={placeholder}
           onChange={(e) => onChange(e.target.value)}
-          className={`h-11 w-full rounded-md border border-base-input bg-base-background px-3 text-sm text-neutral-900 shadow-base-xs placeholder:text-base-muted-foreground focus:border-base-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+          className={`h-11 w-full rounded-md border border-base-input bg-base-background px-3 text-sm text-base-foreground shadow-base-xs placeholder:text-base-muted-foreground focus:border-base-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
             mono ? "font-mono" : ""
           } ${clearable && value ? "pr-10" : ""}`}
         />
@@ -299,7 +299,7 @@ function TextField({
             type="button"
             onClick={() => onChange("")}
             aria-label={`Clear ${label.toLowerCase()}`}
-            className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-base-muted-foreground transition-colors hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-base-muted-foreground transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             <Icon name="circleX" size={16} />
           </button>
@@ -357,7 +357,7 @@ export function GatewayPicker({
         <button
           type="button"
           onClick={() => onOpenChange(true)}
-          className="-mx-1.5 -my-1.5 px-1.5 py-1.5 text-base-xs font-medium text-neutral-600 underline decoration-base-input underline-offset-2 transition-colors hover:text-neutral-900"
+          className="-mx-1.5 -my-1.5 px-1.5 py-1.5 text-base-xs font-medium text-neutral-600 underline decoration-base-input underline-offset-2 transition-colors hover:text-base-foreground"
         >
           change
         </button>
@@ -374,7 +374,7 @@ export function GatewayPicker({
         <button
           type="button"
           onClick={() => onOpenChange(false)}
-          className="text-base-xs font-medium text-neutral-600 transition-colors hover:text-neutral-900"
+          className="text-base-xs font-medium text-neutral-600 transition-colors hover:text-base-foreground"
         >
           Hide
         </button>
@@ -724,7 +724,7 @@ export function DiagnosticsPane({
             Opt-in to send Gate errors and routing stats to help fix problems.{" "}
             {/* Medium, and the frame sets it apart on purpose: it is the
              * sentence that says what never leaves the machine. */}
-            <span className="font-medium text-neutral-900">
+            <span className="font-medium text-base-foreground">
               Prompts, credentials, or private information are never shared.
             </span>
           </>
@@ -732,11 +732,11 @@ export function DiagnosticsPane({
       />
 
       <div className="flex items-center gap-3 rounded-md border border-base-border bg-base-card p-3 shadow-base-xs">
-        <p className="min-w-0 flex-1 text-sm font-medium leading-5 text-neutral-900">
+        <p className="min-w-0 flex-1 text-sm font-medium leading-5 text-base-foreground">
           Diagnostic data sharing
         </p>
         <span className="flex shrink-0 items-center gap-2">
-          <span className="text-sm leading-5 text-neutral-900">
+          <span className="text-sm leading-5 text-base-foreground">
             {share ? "On" : "Off"}
           </span>
           <BaseSwitch on={share} label="Diagnostic data sharing" onClick={onToggleShare} />

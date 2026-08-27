@@ -936,6 +936,80 @@ spec is now `{ exact: true }`, because the master card says "the certificate is
 not trusted" in a sentence on every screen. 554 unit tests and the 171-test e2e
 suite pass.
 
+### Sync 2026-08-26, fourth pass: the file wins, including where we argued
+
+Standing instruction, given this day: **whatever is in Figma takes precedence
+over any local decision.** That is a rule change, not a measurement, and it
+reverses most of the "not changed, and why" notes above. What it moved:
+
+**Four variables settled four arguments.** `get_variable_defs` on `116:28972`
+and `143:67735` returns the tokens by name, which is stronger evidence than a
+hex on a frame:
+
+| Variable | Value | What it overturns |
+| --- | --- | --- |
+| `base/foreground` | `#030712` | The shell-wide `neutral-900` convention. 79 call sites across 13 files. |
+| `base/primary-foreground` | `#f9fafb` | `text-white` on a filled primary. |
+| `base/destructive-foreground` | `#fef2f2` | `text-white` on a filled destructive, kept twice on the argument that `Modal` already had it. |
+| `custom/destructive\40` | `#dc262666` | "One of the two is a slip, so both stay grey." It is a *named* variable, so the Disconnect dialog's red edge is intent. `Modal` gained `edge`. |
+
+**The Button component set is now reproduced, moulding and all.** `685:20855`
+defines two sizes and nothing else: `default` at h36/10-12 and `sm` at h32/8-12,
+both `rounded-md`, bordered `base/input`, gap 8, and each carrying a drop shadow
+plus an inset pair - a dark bottom lip and a light top edge. That pair is what
+the plan had been calling "a Button-component treatment nothing in the new UI
+reproduces yet", twice. Four `boxShadow` tokens now carry it, the filled primary
+takes its white/black 8% gradient, and the ad-hoc pills that were `px-2 py-1`
+with a 12px glyph became `sm` with a 16px one - Overview's Manage link, three in
+`AppPane`, the rail's inventory retry. Two `letterSpacing` tokens carry the
+label tracking (-2% at 14px, -1% at 12px) that had been dropped.
+
+**Three copy corrections were reversed with the rest, and two were reversed
+back the same day** - decided, not re-argued, and now recorded in CLAUDE.md so
+the next pass does not undo them again:
+
+- **Replace API key** keeps **"New API key"**. `177:74869` labels the field
+  "New device name", copy-pasted from the rename dialog; the drawn label would
+  put a wrong word on the one screen where the user handles a credential.
+- **Disconnect Gate?** keeps its own body. `164:73502` reads "Protection turns
+  off, your apps stop routing through Gate, and your API key is removed from the
+  keychain", which describes Reset - the row below it on the same screen.
+  Disconnecting ends the session and touches no keychain item.
+
+Both are the same failure mode: the frame's words describe a *different action*
+on the same screen. Everything else the file says about those two dialogs - the
+480px width, the danger edge, the `base/foreground` ink on that paragraph -
+stands; only the sentences are ours.
+
+**The third stands as drawn**: the Notifications row says "Alert me when a
+request is blocked or flagged". The events behind it need the live security feed
+(AG-578), which does not exist, so the row promises more than it fires. Left as
+the file has it, unlike the two above.
+
+**Smaller, all measured.** The Settings page title takes the frame's 20/**24**
+rather than the token export's 20/28. The rail's right edge is `base/border`,
+not the 5% black an early frame read gave it - the `sidebar` component (437:161)
+names the variable. The app tile's overlay pair is 24%, not 32% (`408:14180`).
+`ModalField`'s label sits 8px above its input, the input carries `shadow/xs`,
+and the read-only one is transparent at 60% with no shadow, as `143:67746`
+draws it.
+
+**Where the file disagrees with itself**, recorded so the next pass does not
+re-litigate: the Settings dialogs draw radius-4 buttons and 32px neutral tone
+tiles where Overview and App draw radius-8 and 40px, and the Button component
+says 8. Component over instance, newer node id over older - so 8 and 40 - and
+that rule is now written into CLAUDE.md.
+
+**Not done, and not a judgement call.** The rows the build adds and no frame
+draws - Sign-in method, Gate certificate, What is collected, and the whole Help
+section - are still there. Matching the file exactly would mean deleting the
+only route to removing the certificate and to switching an API-key account onto
+a Gate account, which is a functional regression rather than a design one. Left
+standing for a decision. The onboarding window is likewise still on the `gc/`
+ink system; retheming it is its own piece of work, as it was before.
+
+554 unit tests and the 171-test e2e suite pass.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a

@@ -32,7 +32,7 @@ export function InstallationPicker({
     <label className="flex items-center gap-2">
       <span className="text-base-xs text-base-muted-foreground">Installation</span>
       <select
-        className="rounded-sm border border-base-input bg-base-card px-2 py-1 font-mono text-base-xs text-neutral-900"
+        className="rounded-sm border border-base-input bg-base-card px-2 py-1 font-mono text-base-xs text-base-foreground"
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
       >

@@ -158,7 +158,7 @@ export function SwitchGatewayDialog({
         ))}
       </div>
       <ModalNote>
-        <p className="font-medium text-neutral-900">Switching starts a fresh session.</p>
+        <p className="font-medium text-base-foreground">Switching starts a fresh session.</p>
         <p className="mt-1">
           Your stored key is forgotten, managed tools disconnect, and Gate Connect
           relaunches against the new server.
@@ -237,7 +237,7 @@ export function OrganizationSwitchedDialog({
       width={512}
     >
       <ModalNote>
-        <p className="font-medium text-neutral-900">Your local routing is unchanged.</p>
+        <p className="font-medium text-base-foreground">Your local routing is unchanged.</p>
         <p className="mt-1">
           New activity and PAYG usage will appear under {organizationName}.
         </p>
@@ -300,14 +300,14 @@ export function ReviewConfigDialog({
       )}
       {configLocation && (
         <ModalNote>
-          <p className="font-medium text-neutral-900">The file that changes:</p>
+          <p className="font-medium text-base-foreground">The file that changes:</p>
           {/* Mono, like every other identifier in this UI. `break-all` because a
               home-directory path overflows the 600px dialog on any real machine. */}
           <p className="mt-1 break-all font-mono text-base-xs">{configLocation}</p>
         </ModalNote>
       )}
       <ModalNote>
-        <p className="font-medium text-neutral-900">If Gate takes over:</p>
+        <p className="font-medium text-base-foreground">If Gate takes over:</p>
         <p className="mt-1">
           Gate Connect saves a private snapshot of these settings, replaces only the
           routing fields, and keeps the credential in your operating system keychain.
@@ -417,7 +417,7 @@ export function ChangeReadyDialog({
       width={512}
     >
       <ModalNote>
-        <p className="font-medium text-neutral-900">The new Gate route is active</p>
+        <p className="font-medium text-base-foreground">The new Gate route is active</p>
         <p className="mt-1">Open {app.name} whenever you are ready to continue.</p>
       </ModalNote>
     </Modal>
@@ -540,7 +540,7 @@ export function ModelPickerDialog({
     >
       {models.length === 0 ? (
         <ModalNote>
-          <p className="font-medium text-neutral-900">No models to choose from yet</p>
+          <p className="font-medium text-base-foreground">No models to choose from yet</p>
           <p className="mt-1">
             Gate will list the models your gateway offers here. Until then, apps keep
             using the model they are configured with.
@@ -549,7 +549,7 @@ export function ModelPickerDialog({
       ) : (
         <>
           <div className="flex items-center gap-3">
-            <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-sm border border-base-input bg-base-card px-2.5 shadow-base-2xs focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-base-primary">
+            <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-sm border border-base-input bg-base-card px-2.5 shadow-base-xs focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-base-primary">
               <Icon name="search" size={16} className="shrink-0 text-neutral-500" />
               <input
                 ref={searchRef}
@@ -558,14 +558,14 @@ export function ModelPickerDialog({
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search models"
                 aria-label="Search models"
-                className="w-full bg-transparent text-sm leading-5 text-neutral-900 outline-none placeholder:text-neutral-500"
+                className="w-full bg-transparent text-sm leading-5 text-base-foreground outline-none placeholder:text-neutral-500"
               />
             </label>
             <select
               value={vendor}
               onChange={(e) => setVendor(e.target.value)}
               aria-label="Provider"
-              className="h-9 shrink-0 rounded-sm border border-base-input bg-base-card px-2.5 text-sm font-medium leading-5 text-neutral-900 shadow-base-2xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+              className="h-9 shrink-0 rounded-sm border border-base-input bg-base-card px-2.5 text-sm font-medium leading-5 text-base-foreground shadow-base-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
             >
               <option value="all">All providers</option>
               {vendors.map((v) => (
@@ -605,7 +605,7 @@ export function ModelPickerDialog({
                   <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
                     {model.logo ?? <Icon name="cube" size={16} />}
                   </span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-neutral-900">
+                  <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-base-foreground">
                     {model.id}
                   </span>
                   {selected ? (
@@ -677,7 +677,7 @@ export function UseGateModelDialog({
           <Icon name="creditCard" size={16} />
         </span>
         <p className="flex-1 text-sm leading-5 text-neutral-600">Gate credits:</p>
-        <p className="shrink-0 text-sm font-medium leading-5 text-neutral-900">
+        <p className="shrink-0 text-sm font-medium leading-5 text-base-foreground">
           {credits}
         </p>
       </div>
@@ -732,10 +732,11 @@ export function RenameDeviceDialog({
 /**
  * Replace the API key.
  *
- * The design labels the second field "New device name", copy-pasted from the
- * rename dialog. Implemented as "New API key" deliberately: shipping the drawn
- * label would put a wrong word on the one screen where the user is handling a
- * credential. Raised with the designer.
+ * `177:74869` labels the second field "New device name", copy-pasted from the
+ * rename dialog. Shipped as "New API key" by explicit decision (2026-08-26),
+ * standing as the named exception to "the file wins": the drawn label would put
+ * a wrong word on the one screen where the user handles a credential. Raised
+ * with the designer.
  */
 export function ReplaceApiKeyDialog({
   currentKeyMasked,
@@ -805,8 +806,16 @@ export function DisconnectGateDialog({
         destructive: true,
       }}
       onDismiss={onCancel}
+      edge="danger"
     >
-      <p className="text-sm leading-5 text-neutral-600">
+      {/* `164:73502` reads "Protection turns off, your apps stop routing through
+        * Gate, and your API key is removed from the keychain" - which describes
+        * Reset, the row below this one on the same screen. Corrected by explicit
+        * decision (2026-08-26), the second named exception to "the file wins":
+        * disconnecting ends the session and touches no keychain item, so the
+        * drawn sentence promises a change this action does not make. The ink is
+        * still the frame's `base/foreground`; only the words are ours. */}
+      <p className="text-sm leading-5 text-base-foreground">
         This device signs out of Gate and stops sending activity. Your apps keep their
         current configuration, and signing back in restores routing.
       </p>
@@ -925,7 +934,7 @@ export function CollectedDataLists({
   return (
     <>
       <Wrapper>
-        <p className="font-medium text-neutral-900">Sent</p>
+        <p className="font-medium text-base-foreground">Sent</p>
         <ul className="mt-1 list-disc pl-4">
           <li>
             An anonymous device id, generated locally. No name, email, or account
@@ -953,7 +962,7 @@ export function CollectedDataLists({
           the app started sending them would make the page that exists to be
           trusted the one place that understated what leaves the machine. */}
       <Wrapper>
-        <p className="font-medium text-neutral-900">Sent with your traffic, whatever this setting says</p>
+        <p className="font-medium text-base-foreground">Sent with your traffic, whatever this setting says</p>
         <ul className="mt-1 list-disc pl-4">
           <li>
             The same anonymous device id, so your activity view can group requests
@@ -967,7 +976,7 @@ export function CollectedDataLists({
         </ul>
       </Wrapper>
       <Wrapper>
-        <p className="font-medium text-neutral-900">Never sent</p>
+        <p className="font-medium text-base-foreground">Never sent</p>
         <ul className="mt-1 list-disc pl-4">
           <li>Prompts or model responses.</li>
           <li>API keys, credentials, or anything from your keychain.</li>

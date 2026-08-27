@@ -76,6 +76,7 @@ export function Modal({
   onDismiss,
   onClose,
   width = 600,
+  edge = "default",
   initialFocus,
 }: {
   tone?: ModalTone;
@@ -100,6 +101,12 @@ export function Modal({
   /** Which of the file's four widths this dialog is drawn at. Defaults to the
    * widest, which is what an undrawn dialog gets. */
   width?: ModalWidth;
+  /**
+   * The card's own border. `danger` is `custom/destructive\40` (#dc262666), a
+   * named variable rather than a one-off, which is why the Disconnect dialog
+   * drawing it and the Reset dialog not is taken as intent rather than a slip.
+   */
+  edge?: "default" | "danger";
   /** Draws an X at the header's right edge. Only for the dialogs the design
    * gives one - the model picker is the first - and separate from `onDismiss`
    * because a visible control and an escape hatch are different affordances. */
@@ -130,7 +137,9 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`${WIDTH_STYLES[width]} max-w-full rounded-2xl bg-base-card p-6 shadow-base-lg`}
+        className={`${WIDTH_STYLES[width]} max-w-full rounded-2xl border bg-base-card p-6 shadow-base-lg ${
+          edge === "danger" ? "border-base-destructive/40" : "border-base-border"
+        }`}
       >
         <div className="flex items-center gap-3">
           {/* 44px on a toned dialog, 40px on a neutral one, which is the size
@@ -146,7 +155,7 @@ export function Modal({
           <div className="min-w-0 flex-1">
             <h2
               id={titleId}
-              className="text-lg font-medium leading-6 tracking-heading text-neutral-900"
+              className="text-lg font-medium leading-6 tracking-heading text-base-foreground"
             >
               {title}
             </h2>
@@ -167,7 +176,7 @@ export function Modal({
               type="button"
               aria-label="Close"
               onClick={onClose}
-              className="shrink-0 rounded-sm p-1 text-neutral-500 transition-colors hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+              className="shrink-0 rounded-sm p-1 text-neutral-500 transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
             >
               <Icon name="x" size={16} />
             </button>
@@ -183,7 +192,7 @@ export function Modal({
                 ref={safeRef}
                 type="button"
                 onClick={secondary.onClick}
-                className="flex h-9 items-center rounded-md border border-base-input bg-base-card px-3 text-sm font-medium text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                className="flex h-9 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm text-base-primary shadow-base-btn transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
                 {secondary.label}
               </button>
@@ -193,12 +202,12 @@ export function Modal({
                 type="button"
                 onClick={middle.disabled ? undefined : middle.onClick}
                 aria-disabled={middle.disabled || undefined}
-                className={`flex h-9 items-center rounded-md border border-base-input bg-base-card px-3 text-sm font-medium shadow-base-2xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   middle.disabled ? "cursor-not-allowed opacity-45" : "hover:bg-gray-50"
                 } ${
                   middle.destructive
                     ? "text-red-600 focus-visible:outline-red-600"
-                    : "text-neutral-900 focus-visible:outline-base-primary"
+                    : "text-base-foreground focus-visible:outline-base-primary"
                 }`}
               >
                 {middle.label}
@@ -209,12 +218,12 @@ export function Modal({
                 type="button"
                 onClick={primary.disabled ? undefined : primary.onClick}
                 aria-disabled={primary.disabled || undefined}
-                className={`flex h-9 items-center rounded-md px-3 text-sm font-medium text-white transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium tracking-button-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   primary.disabled ? "cursor-not-allowed opacity-45" : ""
                 } ${
                   primary.destructive
-                    ? "bg-red-600 hover:bg-red-700 focus-visible:outline-red-600"
-                    : "bg-blue-ribbon-700 hover:bg-blue-ribbon-800 focus-visible:outline-base-primary"
+                    ? "bg-base-destructive text-base-destructive-foreground shadow-base-btn-destructive hover:bg-red-700 focus-visible:outline-red-600"
+                    : "border border-white/20 bg-base-primary bg-gradient-to-b from-white/[0.08] to-black/[0.08] text-base-primary-foreground shadow-base-btn-primary hover:bg-blue-ribbon-800 focus-visible:outline-base-primary"
                 }`}
               >
                 {primary.label}
@@ -273,7 +282,7 @@ export function ModalSubject({
           className={
             identity
               ? "truncate text-base-2xs leading-4 text-base-muted-foreground"
-              : "truncate text-sm font-medium leading-5 text-neutral-900"
+              : "truncate text-sm font-medium leading-5 text-base-foreground"
           }
         >
           {title}
@@ -282,7 +291,7 @@ export function ModalSubject({
           <p
             className={
               identity
-                ? "truncate font-mono text-sm leading-5 text-neutral-900"
+                ? "truncate font-mono text-sm leading-5 text-base-foreground"
                 : "truncate text-sm leading-5 text-neutral-600"
             }
           >
@@ -351,7 +360,7 @@ export function ModalOption({
         {initials}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium leading-5 text-neutral-900">
+        <span className="block truncate text-sm font-medium leading-5 text-base-foreground">
           {name}
         </span>
         <span className="block truncate text-sm leading-5 text-neutral-600">{meta}</span>
@@ -394,8 +403,8 @@ export function ModalField({
 }) {
   const id = useId();
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-base-xs font-medium leading-4 text-neutral-900">
+    <div className="flex flex-col gap-2">
+      <label htmlFor={id} className="text-base-xs font-medium leading-4 text-base-foreground">
         {label}
       </label>
       <div className="relative">
@@ -406,10 +415,12 @@ export function ModalField({
           readOnly={readOnly}
           placeholder={placeholder}
           onChange={(e) => onChange?.(e.target.value)}
-          className={`h-9 w-full rounded-sm border bg-base-card pl-3 text-sm shadow-base-2xs placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+          className={`h-9 w-full rounded-sm border pl-3 text-sm placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
             readOnly
-              ? "border-base-border text-base-muted-foreground"
-              : "border-base-input text-neutral-900"
+              ? // Drawn with no fill and no shadow at 60%: it is the value being
+                // replaced, not a field. `143:67746`.
+                "border-base-input bg-transparent text-base-foreground opacity-60"
+              : "border-base-input bg-base-card text-base-foreground shadow-base-xs"
           } ${mono ? "font-mono" : ""} ${onChange && value ? "pr-9" : "pr-3"}`}
         />
         {onChange && value && (
@@ -417,7 +428,7 @@ export function ModalField({
             type="button"
             onClick={() => onChange("")}
             aria-label={`Clear ${label}`}
-            className="absolute inset-y-0 right-2 flex items-center text-base-muted-foreground transition-colors hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            className="absolute inset-y-0 right-2 flex items-center text-base-muted-foreground transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             <Icon name="circleX" size={16} />
           </button>
@@ -440,7 +451,7 @@ export function ModalSteps({
 }) {
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm font-medium leading-5 text-neutral-900">{label}</p>
+      <p className="text-sm font-medium leading-5 text-base-foreground">{label}</p>
       <ol className="flex flex-col gap-2">
         {steps.map((step, i) => (
           <li
@@ -454,7 +465,7 @@ export function ModalSteps({
               {i + 1}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium leading-5 text-neutral-900">
+              <span className="block text-sm font-medium leading-5 text-base-foreground">
                 {step.title}
               </span>
               <span className="block text-sm leading-5 text-neutral-600">
@@ -482,7 +493,7 @@ export function ModalCheckbox({
   label: string;
 }) {
   return (
-    <label className="flex cursor-pointer items-center gap-2 text-sm leading-5 text-neutral-900">
+    <label className="flex cursor-pointer items-center gap-2 text-sm leading-5 text-base-foreground">
       <input
         type="checkbox"
         checked={checked}

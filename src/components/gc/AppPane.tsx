@@ -158,7 +158,7 @@ export function AppPane({
           {logo ?? name.charAt(0)}
         </span>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-xl font-medium tracking-heading text-neutral-900">
+          <h1 className="truncate text-xl font-medium tracking-heading text-base-foreground">
             {name}
           </h1>
           <p className="text-base-xs font-medium leading-4">
@@ -232,7 +232,7 @@ function ModelSelection({
 }) {
   return (
     <Card className="p-4">
-      <h2 className="text-sm font-medium leading-5 text-neutral-900">Model selection</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">Model selection</h2>
       <p className="mt-1 text-sm leading-5 text-neutral-600">
         Choose whether {appName} or Gate selects the AI model for requests
       </p>
@@ -270,14 +270,14 @@ function ModelSelection({
           <p className="text-base-2xs leading-4 text-base-muted-foreground">
             {gateModel.vendor}
           </p>
-          <p className="font-mono text-sm leading-5 text-neutral-900">{gateModel.id}</p>
+          <p className="font-mono text-sm leading-5 text-base-foreground">{gateModel.id}</p>
         </InfoRow>
 
         <InfoRow
           icon={<Icon name="creditCard" size={16} />}
           action={{ label: "Add credits", onClick: onAddCredits, external: true }}
         >
-          <p className="text-sm leading-5 text-neutral-900">
+          <p className="text-sm leading-5 text-base-foreground">
             <span className="text-neutral-600">Gate credits: </span>
             {credits}
           </p>
@@ -319,7 +319,7 @@ function ModelOption({
         {icon}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium leading-5 text-neutral-900">
+        <span className="block truncate text-sm font-medium leading-5 text-base-foreground">
           {title}
         </span>
         <span className="block truncate text-base-xs leading-4 text-neutral-600">
@@ -354,10 +354,10 @@ function InfoRow({
       <button
         type="button"
         onClick={action.onClick}
-        className="flex shrink-0 items-center gap-1.5 rounded-sm border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex shrink-0 items-center h-8 gap-2 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {action.label}
-        {action.external && <Icon name="squareArrowOutUpRight" size={12} />}
+        {action.external && <Icon name="squareArrowOutUpRight" size={16} />}
       </button>
     </div>
   );
@@ -382,7 +382,7 @@ function RecentActivity({
 }) {
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-neutral-900">Recent activity</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">Recent activity</h2>
 
       {pending ? (
         <PendingRows />
@@ -422,7 +422,7 @@ function RecentActivity({
             const verdict = rowVerdict(entry);
             return (
             <tr key={entry.id} className="border-t border-base-border">
-              <td className="whitespace-nowrap py-3 pr-4 text-sm leading-5 text-neutral-900">
+              <td className="whitespace-nowrap py-3 pr-4 text-sm leading-5 text-base-foreground">
                 {entry.time}
               </td>
               <td className="py-3 pr-4">
@@ -442,7 +442,7 @@ function RecentActivity({
                 {/* Name only - the design pairs it with a vendor mark, but no
                   * marks are exported yet (open question 2), and the sidebar's
                   * tiles already fall back the same way. */}
-                <p className="truncate text-sm leading-5 text-neutral-900">
+                <p className="truncate text-sm leading-5 text-base-foreground">
                   {entry.model}
                 </p>
               </td>
@@ -464,10 +464,10 @@ function RecentActivity({
                 <button
                   type="button"
                   onClick={() => onViewEntry?.(entry)}
-                  className="inline-flex items-center gap-1.5 rounded-sm border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                  className="inline-flex items-center h-8 gap-2 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
                 >
                   View
-                  <Icon name="squareArrowOutUpRight" size={12} />
+                  <Icon name="squareArrowOutUpRight" size={16} />
                 </button>
               </td>
             </tr>
@@ -482,7 +482,7 @@ function RecentActivity({
           <button
             type="button"
             onClick={onLoadMore}
-            className="rounded-sm border border-base-border bg-base-card px-3 py-1.5 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            className="h-8 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Load more
           </button>

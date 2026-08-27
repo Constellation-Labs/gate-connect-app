@@ -349,8 +349,11 @@ export function buildSettingsSections({
                 id: "routing-health",
                 icon: "bell" as IconName,
                 label: "Notifications",
-                description:
-                  "Tell me when a session expires or a tool cannot be put back",
+                // `116:29086`, verbatim. The honest routing-health wording was
+                // ours, on the grounds that the blocked/flagged events need a
+                // live security feed (AG-578) that does not exist. The file
+                // wins; the row now promises more than it fires.
+                description: "Alert me when a request is blocked or flagged",
                 ...(preferencesUnavailable && onRetryPreferences
                   ? { unavailable: { onRetry: onRetryPreferences } }
                   : {
@@ -502,7 +505,10 @@ export function buildSettingsSections({
 export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   return (
     <div className="flex flex-1 flex-col gap-6 overflow-auto bg-gray-100 p-6">
-      <h1 className="text-xl font-medium tracking-heading text-neutral-900">
+      {/* `heading/20` is 20/24 in the file. The token export's 28 is what
+        * `tailwind.config.ts` records, and `text-xl` carries it by default, so
+        * the leading is pinned here rather than left to the default. */}
+      <h1 className="text-xl font-medium leading-6 tracking-heading text-base-foreground">
         Settings
       </h1>
 
@@ -510,7 +516,7 @@ export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
         <section key={section.id} className="flex flex-col gap-3">
           <h2
             className={`text-base font-medium leading-6 tracking-heading ${
-              section.danger ? "text-red-600" : "text-neutral-900"
+              section.danger ? "text-red-600" : "text-base-foreground"
             }`}
           >
             {section.title}
@@ -553,7 +559,7 @@ function Row({ row }: { row: SettingsRow }) {
           row.value === undefined && !row.unavailable ? "flex-1" : "w-[184px] shrink-0"
         }`}
       >
-        <p className="truncate text-sm font-medium leading-5 text-neutral-900">
+        <p className="truncate text-sm font-medium leading-5 text-base-foreground">
           {row.label}
         </p>
         {row.description && (
@@ -573,14 +579,14 @@ function Row({ row }: { row: SettingsRow }) {
       ) : (
         <>
           {row.value !== undefined && (
-            <p className="min-w-0 flex-1 truncate text-sm leading-5 text-neutral-900">
+            <p className="min-w-0 flex-1 truncate text-sm leading-5 text-base-foreground">
               {row.value}
             </p>
           )}
 
           {row.toggle && (
             <span className="flex shrink-0 items-center gap-2">
-              <span className="text-sm leading-5 text-neutral-900">
+              <span className="text-sm leading-5 text-base-foreground">
                 {row.toggle.on ? "On" : "Off"}
               </span>
               <BaseSwitch
@@ -603,10 +609,10 @@ function ActionButton({ action }: { action: SettingsAction }) {
     <button
       type="button"
       onClick={action.onClick}
-      className={`flex h-8 shrink-0 items-center gap-1.5 rounded-sm px-3 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+      className={`flex h-8 shrink-0 items-center gap-2 rounded-md px-3 text-base-xs font-medium leading-4 tracking-button-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
         action.destructive
-          ? "bg-red-600 text-white hover:bg-red-700 focus-visible:outline-red-600"
-          : "border border-base-border bg-base-card text-base-primary shadow-base-2xs hover:bg-gray-50 focus-visible:outline-base-primary"
+          ? "bg-base-destructive text-base-destructive-foreground shadow-base-btn-destructive hover:bg-red-700 focus-visible:outline-red-600"
+          : "border border-base-input bg-base-card text-base-primary shadow-base-btn-sm hover:bg-gray-50 focus-visible:outline-base-primary"
       }`}
     >
       {action.label}

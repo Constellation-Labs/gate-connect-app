@@ -1642,7 +1642,7 @@ export function NewUiApp() {
                 name, which reads as something having gone wrong. Same sentence
                 the popover's `CertificateNotice` uses, from the same helper, so
                 the two shells do not prepare the user two different ways. */}
-            <p className="text-sm font-medium leading-5 text-neutral-900">
+            <p className="text-sm font-medium leading-5 text-base-foreground">
               {trustPromptHint(platform)}
             </p>
           </Modal>
