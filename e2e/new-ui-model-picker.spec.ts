@@ -270,16 +270,17 @@ test.describe("new UI model picker search and set", () => {
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
 
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog.getByText("0 models selected")).toBeVisible();
+    // Nothing picked yet, so there is nothing to unselect and the control is away.
+    await expect(dialog.getByRole("button", { name: /Unselect all/ })).toHaveCount(0);
 
     await dialog.getByRole("checkbox", { name: many[0].id }).click();
-    await expect(dialog.getByText("1 model selected")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Unselect all (1)" })).toBeVisible();
 
     await dialog.getByRole("checkbox", { name: many[1].id }).click();
-    await expect(dialog.getByText("2 models selected")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Unselect all (2)" })).toBeVisible();
     // Narrowing what is shown does not change what is chosen.
     await dialog.getByRole("searchbox").fill("opus");
-    await expect(dialog.getByText("2 models selected")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Unselect all (2)" })).toBeVisible();
   });
 
   test("says so when a search matches nothing, rather than showing an empty list", async ({
@@ -332,10 +333,11 @@ test.describe("new UI model picker search and set", () => {
     await expect(app.page.getByText("Current Gate models")).toBeVisible();
   });
 
-  test("refuses to remove the last enabled model", async ({ boot }) => {
+  test("refuses to save an empty set, which is where the last model is held", async ({ boot }) => {
     // AG-590: the final model cannot be removed without selecting another or
-    // returning to App default. The dialog holds the line; the pane's radio is
-    // the other way out.
+    // returning to App default. The line is held on Save rather than on the row -
+    // the row has to be clearable for "Unselect all" to mean anything, and what
+    // the ticket protects is the state that gets written, not the draft.
     const app = await boot({
       ...base,
       toolModels: {
@@ -350,18 +352,45 @@ test.describe("new UI model picker search and set", () => {
     const dialog = app.page.getByRole("dialog");
     const only = dialog.getByRole("checkbox", { name: catalogue[0].id });
 
-    // Asserted as state rather than by clicking: the row carries
-    // `aria-disabled`, so a click is refused before it reaches the handler -
-    // which is the point, and is also why Playwright will not click it.
     await expect(only).toHaveAttribute("aria-checked", "true");
-    await expect(only).toHaveAttribute("aria-disabled", "true");
-    await expect(only).toHaveAttribute("title", /at least one model/);
     await expect(dialog.getByText("1 model enabled")).toBeVisible();
 
-    // And the way out the ticket names still works: enable a second, and the
-    // first unlocks.
+    // The row clears, and the dialog neither pretends the set is fine nor leaves
+    // a disabled button with nothing beside it.
+    await only.click();
+    await expect(only).toHaveAttribute("aria-checked", "false");
+    await expect(dialog.getByText("No models enabled")).toBeVisible();
+    await expect(dialog.getByText(/needs at least one model/)).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Save models" })).toBeDisabled();
+
+    // Nothing was written: the stored set is what it was until Save says otherwise.
     await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
-    await expect(only).not.toHaveAttribute("aria-disabled", "true");
+    await expect(dialog.getByRole("button", { name: "Save models" })).toBeEnabled();
+  });
+
+  test("Unselect all empties the draft without touching the stored set", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue: many,
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "gate", model_ids: [catalogue[0].id] } },
+      },
+    });
+    await openApp(app);
+
+    await app.page.getByRole("button", { name: "Change model" }).click();
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
+    await expect(dialog.getByRole("button", { name: "Unselect all (2)" })).toBeVisible();
+
+    await dialog.getByRole("button", { name: "Unselect all (2)" }).click();
+    await expect(dialog.getByRole("button", { name: /Unselect all/ })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Save models" })).toBeDisabled();
+
+    // Cancel is a real cancel: the pane still names the model that was stored.
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(app.page.getByText(catalogue[0].id, { exact: true })).toBeVisible();
   });
 });
 

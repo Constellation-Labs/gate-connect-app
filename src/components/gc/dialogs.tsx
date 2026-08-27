@@ -553,11 +553,22 @@ export function ModelPickerDialog({
   }, [models, query, vendor]);
 
   const chosen = draft;
-  /** AG-590: the last model cannot be removed without choosing another. The
-   *  remedy the ticket names is "or return to Tool default", which is the pane's
-   *  radio, not this dialog - so here the last one simply refuses to clear, and
-   *  the footer says why. */
-  const wouldEmpty = (id: string) => chosen.length === 1 && chosen[0] === id;
+  /**
+   * AG-590's "the final model cannot be removed" is enforced on Save, not on the
+   * row.
+   *
+   * The row used to refuse to clear when it was the last one. That cannot coexist
+   * with the frame's "Unselect all", which exists precisely to empty the set, and
+   * the two ways out the ticket names - choose another, or return to App default -
+   * are both still reachable from an empty draft.
+   *
+   * What the ticket is protecting is the *saved* state: a tool whose source is
+   * Gate and whose model list is empty has nothing to be served with. Disabling
+   * Save while the draft is empty protects exactly that, and it does it at the
+   * moment the state would actually be written rather than by making a checkbox
+   * refuse the click that led there. Cancel still leaves the stored set untouched.
+   */
+  const emptyDraft = draft.length === 0;
 
   return (
     <Modal
@@ -570,10 +581,9 @@ export function ModelPickerDialog({
         label: "Save models",
         onClick: () => onSave(draft),
         // Gate cannot serve a model nobody enabled, so an empty set is not a
-        // saveable state. AG-590's "the final model cannot be removed" is
-        // enforced on the row itself; this is the backstop for a set that
-        // started empty.
-        disabled: draft.length === 0,
+        // saveable state. This is where AG-590's "the final model cannot be
+        // removed" is enforced now - see `emptyDraft`.
+        disabled: emptyDraft,
       }}
       onDismiss={onDismiss}
     >
@@ -620,12 +630,20 @@ export function ModelPickerDialog({
                 className="h-9 w-full rounded-base border border-base-input bg-gray-50 pl-9 pr-3 text-sm leading-5 text-neutral-900 placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               />
             </label>
-            <label className="shrink-0">
+            {/* Figma 665:19076 draws this as an outline button with a 20px
+             *  chevron, which is what a menu built out of divs looks like. It
+             *  stays a native `select`: the platform popup brings keyboard
+             *  handling, scrolling and the OS text-size setting on all three
+             *  platforms, none of which a hand-rolled menu gets for free - the
+             *  reasoning `InstallationPicker` already records. `appearance-none`
+             *  drops the OS control's own arrow so the frame's chevron is the one
+             *  drawn, leaving the two agreeing on everything but the mechanism. */}
+            <label className="relative shrink-0">
               <span className="sr-only">Filter by provider</span>
               <select
                 value={vendor}
                 onChange={(e) => setVendor(e.target.value)}
-                className="h-9 w-[8.5rem] rounded-lg border border-base-input bg-base-card px-3 text-sm leading-5 text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                className="h-9 w-[8.5rem] appearance-none rounded-lg border border-base-input bg-base-card pl-3 pr-9 text-sm font-medium leading-5 text-neutral-900 shadow-base-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
                 <option value="all">All providers</option>
                 {vendors.map((v) => (
@@ -634,6 +652,11 @@ export function ModelPickerDialog({
                   </option>
                 ))}
               </select>
+              <Icon
+                name="chevronDown"
+                size={20}
+                className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-neutral-900"
+              />
             </label>
           </div>
 
@@ -646,37 +669,34 @@ export function ModelPickerDialog({
             <p className="text-base-muted-foreground">
               Showing {shown.length} of {models.length} models
             </p>
-            {/* The frame pairs the count with the size of the current set, so the
-             *  answer to "how many have I picked?" stays on screen while picking
-             *  rather than only in the note below the list. */}
-            <p className="font-medium text-base-muted-foreground">
-              {draft.length === 1 ? "1 model selected" : `${draft.length} models selected`}
-            </p>
+            {/* Figma 682:20043. It takes the slot the earlier frame drew a "3
+             *  models selected" label in, and carries the same count - so the
+             *  answer to "how many have I picked?" is still on screen, now on a
+             *  control that can act on it rather than a label restating it.
+             *
+             *  Absent at zero: "Unselect all (0)" offers to undo nothing. */}
+            {!emptyDraft && (
+              <button
+                type="button"
+                onClick={() => setDraft([])}
+                className="-my-1 rounded-base px-2 py-1 text-sm font-medium leading-5 text-base-primary hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+              >
+                Unselect all ({draft.length})
+              </button>
+            )}
           </div>
 
           {missing.length > 0 && (
             <ul className="flex flex-col gap-px">
               {missing.map((id) => {
-                const locked = wouldEmpty(id);
                 return (
                   <li key={id}>
                     <button
                       type="button"
                       role="checkbox"
                       aria-checked
-                      aria-disabled={locked || undefined}
-                      title={
-                        locked
-                          ? "Gate needs at least one model. Choose another first, or switch this app back to App default."
-                          : undefined
-                      }
-                      onClick={() => {
-                        if (locked) return;
-                        setDraft((d) => d.filter((x) => x !== id));
-                      }}
-                      className={`flex w-full items-center gap-3 rounded-base border border-amber-300 bg-amber-50 px-3 py-2 text-left ${
-                        locked ? "cursor-not-allowed" : ""
-                      }`}
+                      onClick={() => setDraft((d) => d.filter((x) => x !== id))}
+                      className="flex w-full items-center gap-3 rounded-base border border-amber-300 bg-amber-50 px-3 py-2 text-left"
                     >
                       <Icon
                         name="triangleAlert"
@@ -713,21 +733,13 @@ export function ModelPickerDialog({
               >
                 {shown.map((model) => {
                   const selected = chosen.includes(model.id);
-                  const locked = selected && wouldEmpty(model.id);
                   return (
                     <button
                       key={model.id}
                       type="button"
                       role="checkbox"
                       aria-checked={selected}
-                      aria-disabled={locked || undefined}
-                      title={
-                        locked
-                          ? "Gate needs at least one model. Choose another first, or switch this app back to App default."
-                          : undefined
-                      }
                       onClick={() => {
-                        if (locked) return;
                         setDraft((d) =>
                           d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
                         );
@@ -739,7 +751,7 @@ export function ModelPickerDialog({
                         selected
                           ? "rounded-base border-base-border bg-gray-50"
                           : "rounded-lg border-transparent hover:bg-gray-50"
-                      } ${locked ? "cursor-not-allowed" : ""}`}
+                      }`}
                     >
                       <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
                         {model.logo ?? <Icon name="cube" size={16} />}
@@ -772,17 +784,29 @@ export function ModelPickerDialog({
           )}
 
           {/* AG-590 asks that the set be stated before confirmation, and that
-           *  the cost consequence be stated with it. */}
+           *  the cost consequence be stated with it. An empty draft says what is
+           *  needed instead: it is reachable now that "Unselect all" exists, and
+           *  a disabled Save with no sentence beside it is a dead end. */}
           <ModalNote>
-              <p className="font-medium text-neutral-900">
-                {draft.length === 1
-                  ? "1 model enabled"
-                  : `${draft.length} models enabled`}
-              </p>
-              <p className="mt-1">
-                Eligible requests may use any of them and consume Gate credits. Gate never
-                uses a model you have not enabled.
-              </p>
+            {emptyDraft ? (
+              <>
+                <p className="font-medium text-neutral-900">No models enabled</p>
+                <p className="mt-1">
+                  Gate needs at least one model to serve this app. Choose one, or cancel
+                  and switch the app back to App default.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-medium text-neutral-900">
+                  {draft.length === 1 ? "1 model enabled" : `${draft.length} models enabled`}
+                </p>
+                <p className="mt-1">
+                  Eligible requests may use any of them and consume Gate credits. Gate never
+                  uses a model you have not enabled.
+                </p>
+              </>
+            )}
           </ModalNote>
         </>
       )}

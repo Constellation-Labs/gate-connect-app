@@ -14,6 +14,7 @@ export type IconName =
   | "chevronRight"
   | "caretRight"
   | "chevronLeft"
+  | "chevronDown"
   | "cube"
   | "key"
   | "copy"
@@ -73,6 +74,7 @@ const PATHS: Record<IconName, JSX.Element> = {
     </>
   ),
   chevronRight: <path d="m9 18 6-6-6-6" />,
+  chevronDown: <path d="m6 9 6 6 6-6" />,
   // Disclosure, as distinct from navigation. A chevron means "this opens
   // somewhere else" and a filled caret means "this opens in place" - the split
   // every platform's settings UI makes, and the one this app had lost by
