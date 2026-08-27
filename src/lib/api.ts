@@ -13,7 +13,6 @@ export interface Tool {
   name: string;
   upstream_provider_name: string;
   default_upstream_url: string;
-  requires_upstream_credential: boolean;
   /** The file Gate rewrites for this tool, so the confirmation can say what is
    * about to change. Null where no single file names it (the environment
    * channel). Not a secret - it is a path in the user's own home directory, and
@@ -24,12 +23,20 @@ export interface Tool {
 
 export type AuthMode = "api_key" | "oauth";
 
+/** Who pays the upstream provider. `byok` forwards each tool's own provider
+ * credential; `payg` sends none, so Gate routes through the workspace's
+ * provider accounts and debits its prepaid balance. */
+export type BillingMode = "byok" | "payg";
+
 export interface Account {
   gateway_base_url: string;
   has_api_key: boolean;
   /** Which credential the account authenticates with. Drives sign-in routing
    * and whether the legacy key controls show in Settings. */
   auth_mode: AuthMode;
+  /** Who pays the upstream provider. No UI surfaces this yet - the backend
+   * mechanism landed first (see docs/payg-implementation-plan.md §3). */
+  billing_mode: BillingMode;
   /** Selected org (OAuth mode). Both null until the user picks one; an OAuth
    * account with no org routes to the picker. */
   org_id: string | null;
@@ -62,13 +69,6 @@ export const connectTool = (slug: string, upstreamUrl: string) =>
 
 /** Revert one tool's config to its pre-Gate state. */
 export const disconnectTool = (slug: string) => invoke<Status>("disconnect_tool", { slug });
-
-export const hasUpstreamCredential = (slug: string) => invoke<boolean>("has_upstream_credential", { slug });
-
-export const saveUpstreamApiKey = (slug: string, apiKey: string) =>
-  invoke<void>("save_upstream_api_key", { slug, apiKey });
-
-export const clearUpstreamCredential = (slug: string) => invoke<void>("clear_upstream_credential", { slug });
 
 export const getAccount = () => invoke<Account | null>("get_account");
 
@@ -109,6 +109,11 @@ export const oauthSignOut = () => invoke<void>("oauth_sign_out");
 /** Set the auth mode explicitly. Used when choosing the legacy pasted-key path
  * from the sign-in screen; OAuth sign-in sets it implicitly. */
 export const setAuthMode = (oauth: boolean) => invoke<void>("set_auth_mode", { oauth });
+
+/** Switch who pays the upstream provider. The relay and the MITM engine read
+ * the mode per request, so routing follows immediately; a connected Codex is
+ * re-applied on the Rust side, since its provider block encodes the mode. */
+export const setBillingMode = (payg: boolean) => invoke<void>("set_billing_mode", { payg });
 
 /** List the orgs the signed-in user may act on, for the picker. */
 export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
@@ -279,8 +284,6 @@ export interface ProxyState {
 
 export const proxyStatus = () => invoke<ProxyState>("proxy_status");
 
-export const proxyListDomains = () => invoke<ProxyDomain[]>("proxy_list_domains");
-
 /** Turn the proxy on: starts the loopback engine, trusts the CA (the one
  * step that prompts, and only when not already trusted), and points the
  * system proxy at it. */
@@ -336,15 +339,6 @@ export interface ProviderState {
 
 export const listProviders = () => invoke<ProviderState[]>("list_providers");
 
-/** Turn a provider on: configures installed tools and, if the proxy is already
- * running, enables its proxy domain(s) (macOS / Windows / Linux). Never
- * triggers an admin prompt. */
-export const providerEnable = (slug: string) => invoke<ProviderState>("provider_enable", { slug });
-
-/** Turn a provider off: reverts the tool config and disables its proxy
- * domain(s) if the proxy is running. */
-export const providerDisable = (slug: string) => invoke<ProviderState>("provider_disable", { slug });
-
 // ---- Launch at login ----
 //
 // Standalone user setting that owns the OS login item directly. Decoupled from
@@ -367,10 +361,11 @@ export const setLaunchAtLogin = (enabled: boolean) =>
   invoke<void>("set_launch_at_login", { enabled });
 
 /** Mark (or unmark) the next exit as an updater-driven relaunch, so the exit
- * handler keeps the routing intent and the relaunched app restores routing.
- * Set after the update download completes, right before `install()` (Windows
- * exits from inside it); a quit while the download is still running is a
- * genuine user exit and must not carry the mark. Reset if the install fails. */
+ * handler leaves a pending launch-at-login opt-out (and its login item) in
+ * place for the relaunched app instead of completing it. Set after the update
+ * download completes, right before `install()` (Windows exits from inside
+ * it); a quit while the download is still running is a genuine user exit and
+ * must not carry the mark. Reset if the install fails. */
 export const setUpdaterRelaunching = (relaunching: boolean) =>
   invoke<void>("set_updater_relaunching", { relaunching });
 
@@ -455,22 +450,28 @@ export interface RunningAgents {
 
 /** The running agents themselves rather than a count: name, pid, start time,
  * and whether each predates routing. Same process set and staleness rule as
- * the two count probes above. */
-/** Running agent processes, optionally narrowed to the ones belonging to
- *  `tools`.
+ * the two count probes above.
  *
- *  Omitting `tools` scans for every agent, which is right after a master toggle
- *  - it changed the route for all of them. After a single app's toggle it is
- *  wrong: offering to close Claude because someone switched Codex names
- *  processes the change never touched. */
-export const runningAgents = (tools?: string[]) =>
-  invoke<RunningAgents>("running_agents", { tools });
+ * `only` narrows the scan to the tools whose configs were just rewritten - a
+ * per-app switch passes its own slug, a family cascade the slugs it touched.
+ * Omitting it asks about every tool, which is what diagnostics and the master
+ * toggle mean. Narrowing matters because offering to close Claude when someone
+ * switched Codex names processes the change never touched. Slugs with no process
+ * name of their own (`hermes`, `openclaw`, `env-proxy`, a proxy domain key)
+ * match nothing rather than everything. */
+export const runningAgents = (only?: string[]) =>
+  invoke<RunningAgents>("running_agents", { only: only ?? null });
 
 /** Terminate running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up
  * the routing change. Resolves to how many processes were signalled; 0 means
- * none were running. */
-export const closeRunningAgents = () => invoke<number>("close_running_agents");
+ * none were running.
+ *
+ * `only` is the same filter {@link runningAgents} takes, and the caller is
+ * expected to pass back exactly what it offered: this signals processes, so the
+ * set it kills has to be the set the user was shown and agreed to. */
+export const closeRunningAgents = (only?: string[]) =>
+  invoke<number>("close_running_agents", { only: only ?? null });
 
 /** Finish a quit the tray deferred to the popover: the backend buffers the
  * connected tool names and emits a `quit-requested` nudge instead of exiting

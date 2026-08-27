@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { BaseSwitch, StatusTile } from "./base";
 import { Icon } from "./Icon";
 
@@ -25,7 +26,7 @@ export function UpdateBanner({
   onDismiss: () => void;
 }) {
   return (
-    <div className="relative flex h-12 w-full items-center justify-between border-b border-black/20 bg-gradient-to-b from-blue-ribbon-800 to-blue-ribbon-900 px-4">
+    <div className="relative flex h-12 w-full items-center justify-between border-b border-base-border bg-gradient-to-b from-blue-ribbon-800 to-blue-ribbon-900 px-4">
       <span
         aria-hidden
         className="pointer-events-none absolute inset-0"
@@ -35,15 +36,17 @@ export function UpdateBanner({
           backgroundSize: "8px 8px",
         }}
       />
-      <p className="relative text-sm font-medium leading-5 text-white">
-        Update available <span className="text-white/50">-</span>{" "}
-        <span className="font-mono text-white/80">{version}</span>
+      <p className="relative text-sm leading-5 text-white">
+        <span className="font-medium">Update available</span>{" "}
+        {/* One mono run at 400, dash included, matching the design's single
+         * `- v0.5.0` text node. */}
+        <span className="font-mono">- {version}</span>
       </p>
       <div className="relative flex items-center gap-3">
         <button
           type="button"
           onClick={onUpdate}
-          className="flex h-6 items-center rounded-base border border-white/40 px-2 text-base-xs font-medium leading-4 text-white transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          className="flex h-6 items-center rounded-sm border border-base-input bg-base-card px-2.5 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.06)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
         >
           Update
         </button>
@@ -51,7 +54,7 @@ export function UpdateBanner({
           type="button"
           onClick={onDismiss}
           aria-label="Dismiss update notice"
-          className="text-white/80 transition-colors hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          className="-m-1 rounded-sm p-1 text-base-primary-foreground transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
         >
           <Icon name="x" size={16} />
         </button>
@@ -85,7 +88,7 @@ export function RoutingBanner({
           tone={allProtected ? "green" : "amber"}
           icon={allProtected ? "shieldCheck" : "shieldBan"}
         />
-        <p className="text-sm font-medium leading-5 text-neutral-900">
+        <p className="text-sm font-medium leading-5 text-base-foreground">
           {allProtected
             ? "Gate Connect is protecting you"
             : "Gate Connect is partly routing your apps"}
@@ -95,7 +98,9 @@ export function RoutingBanner({
         <span
           className={`font-medium ${allProtected ? "text-green-600" : "text-amber-600"}`}
         >
-          {allProtected ? "Routing" : "Partly routed"}
+          {/* "Routed", not "Routing": every routed frame on Flows/Overview reads
+            * `Routed · 4 of 4 Apps` (re-read 2026-08-21). */}
+          {allProtected ? "Routed" : "Partly routed"}
         </span>
         <span className="text-neutral-400"> · </span>
         <span className="text-neutral-600">
@@ -136,11 +141,11 @@ export function AlertBanner({
   paging?: { onPrev: () => void; onNext: () => void };
 }) {
   return (
-    <div className="relative flex items-center gap-6 rounded-lg border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
+    <div className="relative flex items-center gap-6 rounded-md border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
       <div className="flex min-w-0 flex-1 items-center gap-4">
         <StatusTile tone="amber" icon="triangleAlert" size={36} />
         <div className="min-w-0">
-          <p className="text-sm font-medium leading-5 text-neutral-900">{title}</p>
+          <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
           <p className="text-base-xs leading-4 text-neutral-600">{body}</p>
         </div>
       </div>
@@ -151,7 +156,7 @@ export function AlertBanner({
           type="button"
           onClick={onDismiss}
           aria-label="Dismiss alert"
-          className="text-neutral-500 transition-colors hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className="text-neutral-500 transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           <Icon name="x" size={20} />
         </button>
@@ -173,12 +178,61 @@ function PageButton({ side, onClick }: { side: "prev" | "next"; onClick: () => v
       type="button"
       onClick={onClick}
       aria-label={side === "prev" ? "Previous app" : "Next app"}
-      className={`absolute top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border border-base-border bg-base-card text-neutral-600 shadow-base-xs transition-colors hover:text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`absolute top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border border-base-border bg-base-card text-neutral-600 shadow-base-xs transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         side === "prev" ? "-left-2.5" : "-right-2.5"
       }`}
     >
       <Icon name={side === "prev" ? "chevronLeft" : "chevronRight"} size={12} />
     </button>
+  );
+}
+
+/**
+ * The underlying message, behind an expander, with a copy button.
+ *
+ * Two of `classifyError`'s hints end on "the details below help when reporting
+ * it", and one of them is the catch-all fallback - so every context without a
+ * branch of its own lands on copy that promises something below. That makes
+ * this the surface for any failure nobody classified. `ErrorBanner` grew it
+ * first and the setup screen still had none, which meant a first-run or
+ * re-sign-in failure - the one with no shell behind it - read as a dead end.
+ * Shared rather than copied so the next surface cannot forget it again.
+ *
+ * Renders nothing when `raw` is absent or merely repeats the title, which is
+ * the same guard the popover's `ErrorNote` makes.
+ */
+export function ErrorDetails({ raw, title }: { raw?: string; title: string }) {
+  const [copied, setCopied] = useState(false);
+  // Timed reset with a cleanup rather than a bare setTimeout: the surface is
+  // dismissed by whatever the user does next, and a pending timer would then
+  // set state on an unmounted component.
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  if (!raw || raw === title) return null;
+
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer py-0.5 text-base-2xs text-red-900/70">
+        Details
+      </summary>
+      <p className="mt-1 break-all font-mono text-base-2xs leading-4 text-red-900/80">
+        {raw}
+      </p>
+      <button
+        type="button"
+        onClick={() => {
+          void navigator.clipboard.writeText(raw).then(() => setCopied(true));
+        }}
+        className="mt-1.5 inline-flex items-center gap-1 text-base-2xs font-medium text-red-900/70 transition-colors hover:text-red-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
+      >
+        <Icon name={copied ? "check" : "copy"} size={12} />
+        {copied ? "Copied" : "Copy details"}
+      </button>
+    </details>
   );
 }
 
@@ -190,10 +244,13 @@ function PageButton({ side, onClick }: { side: "prev" | "next"; onClick: () => v
 export function ErrorBanner({
   title,
   hint,
+  raw,
   onDismiss,
 }: {
   title: string;
   hint: string;
+  /** The underlying message; see `ErrorDetails`. */
+  raw?: string;
   onDismiss: () => void;
 }) {
   return (
@@ -205,6 +262,7 @@ export function ErrorBanner({
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium leading-5 text-red-900">{title}</p>
         <p className="text-base-xs leading-4 text-red-900/80">{hint}</p>
+        <ErrorDetails raw={raw} title={title} />
       </div>
       <button
         type="button"
@@ -277,7 +335,7 @@ export function RecoveryBanner({
         <button
           type="button"
           onClick={onReviewDetails}
-          className="shrink-0 rounded-base px-2 py-1 text-base-xs font-medium text-amber-900 underline decoration-amber-300 transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+          className="shrink-0 rounded-sm px-2 py-1 text-base-xs font-medium text-amber-900 underline decoration-amber-300 transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
         >
           Review details
         </button>
@@ -286,7 +344,7 @@ export function RecoveryBanner({
         type="button"
         onClick={onResume}
         disabled={busy}
-        className="shrink-0 rounded-base border border-amber-300 bg-base-card px-2 py-1 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+        className="shrink-0 rounded-sm border border-amber-300 bg-base-card px-2 py-1 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {busy ? "Resuming…" : "Resume now"}
       </button>

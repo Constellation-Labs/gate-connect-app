@@ -31,6 +31,7 @@ const account: Account = {
   gateway_base_url: "https://gateway.constellationgate.ai",
   has_api_key: false,
   auth_mode: "oauth",
+  billing_mode: "byok",
   org_id: "2f9c0000-0000-0000-0000-000000000000",
   org_name: "Constellation",
 };
@@ -102,8 +103,7 @@ const tools: Tool[] = [
     name: "Claude Code",
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
-    requires_upstream_credential: false,
-  config_location: null,
+    config_location: null,
     status: { kind: "connected" },
   },
   {
@@ -111,8 +111,7 @@ const tools: Tool[] = [
     name: "Codex",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://api.openai.com",
-    requires_upstream_credential: false,
-  config_location: null,
+    config_location: null,
     status: { kind: "drifted", reason: "base_url points elsewhere" },
   },
 ];

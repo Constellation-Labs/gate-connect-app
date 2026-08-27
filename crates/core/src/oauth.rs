@@ -56,15 +56,10 @@ const EXPIRY_SKEW_SECS: i64 = 60;
 /// background loop both tick on this interval, calling [`ensure_fresh`].
 pub const REFRESH_INTERVAL_SECS: u64 = 30;
 
-/// The gateway host that selects the **staging** Cognito pool. Every other
-/// host (production, self-hosted, unknown, or no account yet) uses the prod
-/// pool. Keep in sync with `GATEWAY_SERVERS` in `src/lib/config.ts`.
-const STAGING_GATEWAY_HOST: &str = "gateway-staging.constellationgate.ai";
-
 /// OAuth client configuration, resolved for the **currently selected
 /// gateway**. Both the production and staging Cognito pools are baked in at
 /// build time; [`OAuthConfig::from_build_env`] picks the pair matching the
-/// active gateway host (see [`STAGING_GATEWAY_HOST`]). Set
+/// active gateway host (see [`crate::account::gateway_is_staging`]). Set
 /// `GATE_COGNITO_HOSTED_DOMAIN` / `GATE_COGNITO_CLIENT_ID` /
 /// `GATE_COGNITO_SCOPES` (and their `_STAGING` variants) at build time, or
 /// override any of them via the process env at runtime.
@@ -89,21 +84,6 @@ fn config_value(name: &str, baked: Option<&str>) -> Option<String> {
         .or_else(|| baked.map(str::to_string))
 }
 
-/// Whether the currently-selected gateway is the known staging host, which
-/// decides which Cognito pool [`OAuthConfig::from_build_env`] resolves. Reads
-/// the gateway URL from `account.json` (no keychain touch); a missing account
-/// or any parse failure falls back to production.
-fn active_gateway_is_staging() -> bool {
-    crate::account::load_base_url()
-        .ok()
-        .flatten()
-        .as_deref()
-        .and_then(|u| reqwest::Url::parse(u).ok())
-        .and_then(|u| u.host_str().map(str::to_owned))
-        .map(|h| h == STAGING_GATEWAY_HOST)
-        .unwrap_or(false)
-}
-
 impl OAuthConfig {
     /// Resolve the OAuth client config for the gateway currently on disk. The
     /// active gateway host (`account.json`) selects the production or staging
@@ -115,7 +95,7 @@ impl OAuthConfig {
     /// of panicking. All values are public client config (no secret), so a
     /// runtime override is safe.
     pub fn from_build_env() -> Option<Self> {
-        let (hosted_domain, client_id, scopes_raw) = if active_gateway_is_staging() {
+        let (hosted_domain, client_id, scopes_raw) = if crate::account::gateway_is_staging() {
             (
                 config_value(
                     "GATE_COGNITO_HOSTED_DOMAIN_STAGING",
@@ -162,7 +142,7 @@ impl OAuthConfig {
     fn token_endpoint(&self) -> String {
         // Test seam mirroring `GATE_CONNECT_TEST_*` elsewhere: point the token
         // exchange at a loopback mock. Unset in real builds.
-        if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_TOKEN_ENDPOINT") {
+        if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_TOKEN_ENDPOINT") {
             return o.to_string_lossy().into_owned();
         }
         format!("https://{}/oauth2/token", self.hosted_domain)

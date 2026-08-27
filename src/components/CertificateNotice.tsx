@@ -40,7 +40,7 @@ function DialogSketch({ platform }: { platform: Platform }) {
         className="mx-auto w-full max-w-[248px] rounded-[10px] bg-gc-surface p-3 text-left shadow-border"
       >
         <div className="flex items-center gap-2">
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gc-warning-wash text-gc-warning-deep">
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-gc-warning-wash text-gc-warning-deep">
             <Icon name="info" size={12} />
           </span>
           <span className="text-gc-body-sm font-medium text-gc-ink">{dialog.title}</span>

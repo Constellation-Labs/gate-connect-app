@@ -18,8 +18,16 @@ export type ModelChoice = "app" | "gate";
 // The feed's row type lives in `lib/` with the adapter that produces it; see
 // `toolEventRow.ts`. Re-exported here so existing importers of this module keep
 // working and the pane's own props stay readable.
-export type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
-import type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
+export type {
+  ActivityEntry,
+  ActivitySecurity,
+  ActivityStatus,
+} from "../../lib/toolEventRow";
+import type {
+  ActivityEntry,
+  ActivitySecurity,
+  ActivityStatus,
+} from "../../lib/toolEventRow";
 
 export interface GateModel {
   /** Model vendor, e.g. "anthropic". */
@@ -39,30 +47,43 @@ export interface GateModel {
 }
 
 /**
- * One badge per row, under a single Security column (Figma 272:3266).
+ * One badge per row, under a single Security column (`table/recent-activity`,
+ * 272:3150, sampled from the properties panel 2026-08-21).
  *
  * Status and security used to be two columns; the design merged them, so a row
  * that failed reads ERROR and every other row reads what the guardrails did.
  * `error` is in this map rather than a second one because they now compete for one
  * cell and the precedence has to live somewhere the reader can see it.
  *
- * `allow` is neutral grey, not green, which is the change worth noticing: green
- * reads as "good", and the useful signal in this column is when something was
- * *acted on*. A wall of green ticks is what makes the one amber row easy to miss.
+ * `allow` is grey, not green, which is the change worth noticing: green reads as
+ * "good", and the useful signal in this column is when something was *acted on*.
+ * A wall of green ticks is what makes the one amber row easy to miss. It is the
+ * one entry that is not a verdict, so it takes a neutral over `gray/100` rather
+ * than a coloured pair.
  *
- * Text sits at the palette's 900 level; the 100 backgrounds are inferred from that
- * pairing rather than sampled.
+ * That neutral is `gray/600`, not the design's `base/muted-foreground`. The
+ * sampled pair is 4.39:1 on `gray/100` and this text is 12px medium, so it misses
+ * AA by a hair - on the badge that will sit in almost every row. `gray/600` is
+ * 6.87:1 and reads as the same grey. The same call the `gc` switch track made
+ * when 2.98:1 turned up on a hovered row.
+ *
+ * The 100 stop with 700 text, deliberately quieter than `Overview`'s 200/900
+ * action pills: those name a policy, these report what happened to one request,
+ * and a table of them should not shout. REDACTED's text sits at the 800 - the
+ * design's own exception, not a rounding of ours - and ERROR and BLOCKED sample
+ * identically. Redacted is violet, matching `chart.redacted`; purple here was a
+ * slip, and this was the app's last use of it.
  */
 const BADGE_STYLES: Record<ActivitySecurity | ActivityStatus, string> = {
-  allow: "bg-neutral-100 text-neutral-600",
-  flagged: "bg-amber-100 text-amber-900",
-  redacted: "bg-purple-100 text-purple-900",
-  blocked: "bg-red-100 text-red-900",
-  error: "bg-red-100 text-red-900",
+  allow: "bg-gray-100 text-gray-600",
+  flagged: "bg-amber-100 text-amber-700",
+  redacted: "bg-violet-100 text-violet-800",
+  blocked: "bg-red-100 text-red-700",
+  error: "bg-red-100 text-red-700",
   // Never rendered: a successful request shows its security action instead. Here
   // so the map stays exhaustive over both unions and a new status cannot be added
-  // without deciding what it looks like.
-  success: "bg-neutral-100 text-neutral-600",
+  // without deciding what it looks like. Matches `allow`, the other non-verdict.
+  success: "bg-gray-100 text-gray-600",
 };
 
 export function AppPane({
@@ -106,16 +127,25 @@ export function AppPane({
    *  Null is not "App default". A control drawn from a failed read is the bug
    *  CLAUDE.md's principle 2 names: the card would show App default, and clicking
    *  Gate model would look like a change when it is the first thing anyone said.
-   *  So null disables the choice and says why. */
-  modelChoice: ModelChoice | null;
-  onChooseModel: (choice: ModelChoice) => void;
+   *  So null disables the choice and says why.
+   *
+   *  Omitting it and `onChooseModel` together is a third thing again: the card
+   *  is withheld entirely. A multi-provider tool gets that. OpenCode, OpenClaw
+   *  and Hermes route whichever of their configured providers Gate covers -
+   *  `lib/groups.ts` calls them "tools that talk to several providers, not one
+   *  model family" - so "what does this app use on Gate model" has no single
+   *  answer for them, and `main` never poses the question at all. Per the house
+   *  rule the Settings pane states: an omitted handler omits its control. No
+   *  `onChooseModel`, no card. */
+  modelChoice?: ModelChoice | null;
+  onChooseModel?: (choice: ModelChoice) => void;
   /** The remembered model, or `null` when none has been chosen.
    *
    *  Remembered, not necessarily active: it stays on screen under App default so
    *  the user can see what they would be switching to, and the card marks it
    *  inactive rather than letting its presence imply Gate is serving it. */
-  gateModel: GateModel | null;
-  onChangeModel: () => void;
+  gateModel?: GateModel | null;
+  onChangeModel?: () => void;
   /** A model write is in flight, so the controls refuse a second click. */
   modelBusy?: boolean;
   /** Why this app's Gate model needs attention, if it does (AG-592).
@@ -134,8 +164,8 @@ export function AppPane({
   /** Pre-formatted balance, or `null` when nothing reports one. Renders "N/A":
    *  no endpoint returns a Gate credit balance yet, and a dash reads as a value.
    *  See principle 6. */
-  credits: string | null;
-  onAddCredits: () => void;
+  credits?: string | null;
+  onAddCredits?: () => void;
   activity: ActivityEntry[];
   /** The first reading for this tool has not landed. Draws skeletons rather than
    *  answers, per AG-576. */
@@ -159,11 +189,11 @@ export function AppPane({
   alert?: ReactNode;
 }) {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
+    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-center gap-3">
         <span
           aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-base border border-white/[0.24] bg-black text-sm font-medium text-white"
+          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-sm font-medium text-white"
           style={{
             backgroundImage:
               "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
@@ -172,7 +202,7 @@ export function AppPane({
           {logo ?? name.charAt(0)}
         </span>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-xl font-medium leading-6 tracking-heading text-neutral-900">
+          <h1 className="truncate text-xl font-medium tracking-heading text-base-foreground">
             {name}
           </h1>
           <p className="text-base-xs font-medium leading-4">
@@ -187,9 +217,9 @@ export function AppPane({
             {isProtected ? "On" : "Off"}
           </span>
           {/* "Route Claude Code", not "Claude Code": the sidebar row for the
-            * same app is on screen with its own switch, and two switches with
-            * one name is a screen reader reading the same control twice. The
-            * families pane names its switches the same way. */}
+           * same app is on screen with its own switch, and two switches with
+           * one name is a screen reader reading the same control twice. The
+           * families pane names its switches the same way. */}
           <BaseSwitch
             on={isProtected}
             label={`Route ${name}`}
@@ -202,20 +232,26 @@ export function AppPane({
       {alert}
 
       <StatTiles stats={stats} pending={pending} />
-      <MessagesChart buckets={buckets} pending={pending} unavailable={unavailable?.chart} />
-
-      <ModelSelection
-        appName={name}
-        choice={modelChoice}
-        pending={modelPending}
-        busy={modelBusy}
-        attention={modelAttention}
-        onChoose={onChooseModel}
-        gateModel={gateModel}
-        onChangeModel={onChangeModel}
-        credits={credits}
-        onAddCredits={onAddCredits}
+      <MessagesChart
+        buckets={buckets}
+        pending={pending}
+        unavailable={unavailable?.chart}
       />
+
+      {onChooseModel && onChangeModel && onAddCredits && (
+        <ModelSelection
+          appName={name}
+          choice={modelChoice ?? null}
+          pending={modelPending}
+          busy={modelBusy}
+          attention={modelAttention}
+          onChoose={onChooseModel}
+          gateModel={gateModel ?? null}
+          onChangeModel={onChangeModel}
+          credits={credits ?? null}
+          onAddCredits={onAddCredits}
+        />
+      )}
 
       <RecentActivity
         activity={activity}
@@ -238,17 +274,26 @@ export function AppPane({
  * Renders nothing when the provider is unknown, rather than a question mark: the
  * model name beside it already carries the row, and an empty slot keeps the column
  * aligned.
+ *
+ * The glyph is decorative, so it is `aria-hidden` and the name is carried by an
+ * `sr-only` sibling rather than by `title` alone. A `title` on an `aria-hidden`
+ * element is reachable by mouse and by nothing else, which for a one-letter
+ * monogram means the provider is the one thing on the row a screen reader could
+ * not get at. The tooltip stays for pointer users.
  */
 function VendorMark({ provider }: { provider: string | null }) {
   if (!provider) return <span aria-hidden className="size-4 shrink-0" />;
   return (
-    <span
-      aria-hidden
-      title={provider}
-      className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-neutral-200 font-mono text-[0.5rem] font-semibold uppercase leading-none text-neutral-700"
-    >
-      {provider.charAt(0)}
-    </span>
+    <>
+      <span
+        aria-hidden
+        title={provider}
+        className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-neutral-200 font-mono text-[0.5rem] font-semibold uppercase leading-none text-neutral-700"
+      >
+        {provider.charAt(0)}
+      </span>
+      <span className="sr-only">{provider}</span>
+    </>
   );
 }
 
@@ -303,7 +348,9 @@ function ModelSelection({
 
   return (
     <Card className="p-4">
-      <h2 className="text-sm font-medium leading-5 text-neutral-900">Model selection</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">
+        Model selection
+      </h2>
       <p className="mt-1 text-sm leading-5 text-neutral-600">
         Choose whether {appName} or Gate selects the AI model for requests
       </p>
@@ -315,7 +362,11 @@ function ModelSelection({
         </div>
       ) : (
         <>
-          <div role="radiogroup" aria-label="Model selection" className="mt-4 grid grid-cols-2 gap-4">
+          <div
+            role="radiogroup"
+            aria-label="Model selection"
+            className="mt-4 grid grid-cols-2 gap-4"
+          >
             <ModelOption
               selected={choice === "app"}
               disabled={choice === null || busy}
@@ -335,8 +386,8 @@ function ModelSelection({
           </div>
           {choice === null && (
             <EmptyNote className="mt-4" icon="cube">
-              Gate could not read this app's model setting, so it is not shown. The
-              setting itself is unchanged.
+              Gate could not read this app's model setting, so it is not shown.
+              The setting itself is unchanged.
             </EmptyNote>
           )}
         </>
@@ -370,7 +421,11 @@ function ModelSelection({
         ) : (
           <InfoRow
             icon={gateModel.logo ?? <Icon name="cube" size={16} />}
-            action={{ label: "Change model", onClick: onChangeModel, disabled: busy }}
+            action={{
+              label: "Change model",
+              onClick: onChangeModel,
+              disabled: busy,
+            }}
             // Dimmed under App default: it is what the user would switch to, not
             // what their requests are being answered with.
             muted={!gateActive}
@@ -379,15 +434,21 @@ function ModelSelection({
               {gateModel.vendor}
               {!gateActive && " - not in use"}
             </p>
-            <p className="font-mono text-sm leading-5 text-neutral-900">{gateModel.id}</p>
+            <p className="font-mono text-sm leading-5 text-base-foreground">
+              {gateModel.id}
+            </p>
           </InfoRow>
         )}
 
         <InfoRow
           icon={<Icon name="creditCard" size={16} />}
-          action={{ label: "Add credits", onClick: onAddCredits, external: true }}
+          action={{
+            label: "Add credits",
+            onClick: onAddCredits,
+            external: true,
+          }}
         >
-          <p className="text-sm leading-5 text-neutral-900">
+          <p className="text-sm leading-5 text-base-foreground">
             <span className="text-neutral-600">Gate credits: </span>
             {credits ?? "N/A"}
           </p>
@@ -429,12 +490,12 @@ function ModelOption({
     >
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
       >
         {icon}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium leading-5 text-neutral-900">
+        <span className="block truncate text-sm font-medium leading-5 text-base-foreground">
           {title}
         </span>
         <span className="block truncate text-base-xs leading-4 text-neutral-600">
@@ -442,7 +503,11 @@ function ModelOption({
         </span>
       </span>
       {selected && (
-        <Icon name="circleCheck" size={16} className="shrink-0 text-base-primary" />
+        <Icon
+          name="circleCheck"
+          size={16}
+          className="shrink-0 text-base-primary"
+        />
       )}
     </button>
   );
@@ -458,7 +523,12 @@ function InfoRow({
   children: ReactNode;
   /** Omitted when there is nothing to do here, which removes the button rather
    *  than leaving a dead one on screen. */
-  action?: { label: string; onClick: () => void; external?: boolean; disabled?: boolean };
+  action?: {
+    label: string;
+    onClick: () => void;
+    external?: boolean;
+    disabled?: boolean;
+  };
   /** Drawn as present but not in force. Opacity rather than a grey palette so
    *  the row reads as the same thing, dimmed - which is what it is. */
   muted?: boolean;
@@ -469,7 +539,7 @@ function InfoRow({
     >
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
       >
         {icon}
       </span>
@@ -479,10 +549,10 @@ function InfoRow({
           type="button"
           onClick={action.onClick}
           disabled={action.disabled}
-          className="flex shrink-0 items-center gap-1.5 rounded-base border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className="flex h-8 shrink-0 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           {action.label}
-          {action.external && <Icon name="squareArrowOutUpRight" size={12} />}
+          {action.external && <Icon name="squareArrowOutUpRight" size={16} />}
         </button>
       )}
     </div>
@@ -502,10 +572,13 @@ function RecentActivity({
   unavailable?: boolean;
   /** Absent when there is no next page. */
   onLoadMore?: () => void;
+  /** See `AppPane`. */
 }) {
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-neutral-900">Recent activity</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">
+        Recent activity
+      </h2>
 
       {pending ? (
         <PendingRows />
@@ -517,102 +590,129 @@ function RecentActivity({
         // window this card does not use. It also put the same line twice on a pane
         // with no traffic, which is how the inaccuracy came to light.
         <EmptyNote>
-          {unavailable ? "Recent activity couldn't be read" : "No recent messages"}
+          {unavailable
+            ? "Recent activity couldn't be read"
+            : "No recent messages"}
         </EmptyNote>
       ) : (
-      <table className="mt-4 w-full">
-        <thead>
-          <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-2 text-left font-normal">
-              Time
-            </th>
-            {/* One column, not two: the design merged status into security, so a
+        <table className="mt-4 w-full">
+          <thead>
+            <tr className="text-base-xs text-base-muted-foreground">
+              <th scope="col" className="pb-2 text-left font-normal">
+                Time
+              </th>
+              {/* One column, not two: the design merged status into security, so a
                 failed request reads ERROR and every other row reads what the
                 guardrails did. */}
-            <th scope="col" className="pb-2 text-left font-normal">
-              Security
-            </th>
-            <th scope="col" className="pb-2 text-left font-normal">
-              Model
-            </th>
-            <th scope="col" className="pb-2 text-left font-normal">
-              Message
-            </th>
-            <th scope="col" className="w-20 pb-2 text-right font-normal">
-              Action
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {activity.map((entry) => (
-            <tr key={entry.id} className="border-t border-base-border">
-              <td className="whitespace-nowrap py-3 pr-4 text-sm leading-5 text-neutral-900">
-                {entry.time}
-              </td>
-              <td className="py-3 pr-4">
-                {/* Error outranks the guardrail verdict, which is the design's
+              <th scope="col" className="pb-2 text-left font-normal">
+                Security
+              </th>
+              <th scope="col" className="w-1/4 pb-2 text-left font-normal">
+                Model
+              </th>
+              <th scope="col" className="pb-2 text-left font-normal">
+                Message
+              </th>
+              <th scope="col" className="w-20 pb-2 text-right font-normal">
+                Action
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {activity.map((entry) => (
+              <tr key={entry.id} className="border-t border-base-border">
+                <td className="whitespace-nowrap py-3 pr-4 text-sm leading-5 text-base-foreground">
+                  {entry.time}
+                </td>
+                <td className="py-3 pr-4">
+                  {/* Error outranks the guardrail verdict, which is the design's
                     call and the defensible one: a request that did not complete
                     is the thing the reader needs first. It does cost information -
                     a failed request that was also flagged now shows only ERROR -
-                    so the row keeps both facts in its tooltip rather than losing
-                    the quieter one entirely. */}
-                {entry.status === "error" ? (
-                  <Pill
-                    className={BADGE_STYLES.error}
-                    title={
-                      entry.security
-                        ? `Request failed. Guardrails: ${entry.security}.`
-                        : "Request failed."
-                    }
-                  >
-                    error
-                  </Pill>
-                ) : entry.security ? (
-                  <Pill className={BADGE_STYLES[entry.security]}>{entry.security}</Pill>
-                ) : (
-                  // Withheld, not permitted. A pill here would read as a verdict.
-                  <span
-                    className="text-sm leading-5 text-base-muted-foreground"
-                    title="No security action recorded, or not your request"
-                  >
-                    &#8212;
+                    so the row keeps the quieter fact rather than dropping it.
+                    In the tooltip for pointer users, and in `sr-only` text beside
+                    the badge for everyone else: a `title` is the whole mitigation
+                    here, and a mitigation only a mouse can reach is not one. */}
+                  {entry.status === "error" ? (
+                    <>
+                      <Pill
+                        className={BADGE_STYLES.error}
+                        title={
+                          entry.security
+                            ? `Request failed. Guardrails: ${entry.security}.`
+                            : "Request failed."
+                        }
+                      >
+                        error
+                      </Pill>
+                      {entry.security && (
+                        <span className="sr-only">
+                          Guardrails: {entry.security}.
+                        </span>
+                      )}
+                    </>
+                  ) : entry.security ? (
+                    <Pill className={BADGE_STYLES[entry.security]}>
+                      {entry.security}
+                    </Pill>
+                  ) : (
+                    // Withheld, not permitted. A pill here would read as a verdict.
+                    <span
+                      className="text-sm leading-5 text-base-muted-foreground"
+                      title="No security action recorded, or not your request"
+                    >
+                      &#8212;
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 pr-4">
+                  {/* Truncated, not `nowrap`. A model id is unbounded - the
+                    canonical ones run to `anthropic/claude-opus-4-5-20260514` -
+                    and an un-truncated cell makes that string the table's minimum
+                    width. Time and Action are already fixed and Message is
+                    collapsed to `max-w-0`, so Model was the only column left that
+                    could push the floor past the card; at the window's 760px
+                    minimum the table would overflow and scroll the whole pane
+                    body sideways, chart and header with it. The width cap lives on
+                    the `th` as a share of the table rather than a pixel count, so
+                    it holds at both window sizes. */}
+                  <span className="flex items-center gap-2">
+                    <VendorMark provider={entry.provider} />
+                    <span className="truncate text-sm leading-5 text-base-foreground">
+                      {entry.model}
+                    </span>
                   </span>
-                )}
-              </td>
-              <td className="whitespace-nowrap py-3 pr-4">
-                <span className="flex items-center gap-2">
-                  <VendorMark provider={entry.provider} />
-                  <span className="text-sm leading-5 text-neutral-900">{entry.model}</span>
-                </span>
-              </td>
-              <td className="min-w-0 max-w-0 py-3 pr-4">
-                {/* `max-w-0` with `truncate` is what makes the ellipsis actually
+                </td>
+                <td className="min-w-0 max-w-0 py-3 pr-4">
+                  {/* `max-w-0` with `truncate` is what makes the ellipsis actually
                     appear: a table cell sizes to its content otherwise, and the
                     design truncates this column rather than letting a prompt push
                     the Action button off the card. */}
-                {entry.title && (
-                  <p className="truncate text-sm leading-5 text-neutral-900">{entry.title}</p>
-                )}
-                <p className="truncate font-mono text-base-2xs leading-4 text-base-muted-foreground">
-                  {entry.reference}
-                </p>
-              </td>
-              <td className="py-3 text-right">
-                {entry.onView ? (
-                  <button
-                    type="button"
-                    onClick={entry.onView}
-                    className="inline-flex items-center gap-1.5 rounded-base border border-base-border bg-base-card px-2 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-                  >
-                    View
-                    <Icon name="squareArrowOutUpRight" size={12} />
-                  </button>
-                ) : null}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                  {entry.title && (
+                    <p className="truncate text-sm leading-5 text-base-foreground">
+                      {entry.title}
+                    </p>
+                  )}
+                  <p className="truncate font-mono text-base-2xs leading-4 text-base-muted-foreground">
+                    {entry.reference}
+                  </p>
+                </td>
+                <td className="py-3 text-right">
+                  {entry.onView ? (
+                    <button
+                      type="button"
+                      onClick={entry.onView}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                    >
+                      View
+                      <Icon name="squareArrowOutUpRight" size={16} />
+                    </button>
+                  ) : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
 
       {onLoadMore && (
@@ -620,7 +720,7 @@ function RecentActivity({
           <button
             type="button"
             onClick={onLoadMore}
-            className="rounded-base border border-base-border bg-base-card px-3 py-1.5 text-base-xs font-medium leading-4 text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            className="h-8 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Load more
           </button>
@@ -647,7 +747,7 @@ function PendingRows() {
         >
           <Skeleton className="h-4 w-16" />
           <Skeleton className="h-4 w-14" />
-          <Skeleton className="h-4 w-14" />
+          <Skeleton className="h-4 w-24" />
           <Skeleton className="h-4 w-32" />
           <Skeleton className="h-4 w-12" />
         </div>
@@ -670,7 +770,7 @@ function Pill({
   return (
     <span
       title={title}
-      className={`inline-block rounded-base px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
+      className={`inline-block rounded-xs px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
     >
       {children}
     </span>

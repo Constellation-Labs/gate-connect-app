@@ -38,6 +38,97 @@ function sections(overrides: Partial<Parameters<typeof buildSettingsSections>[0]
 
 afterEach(cleanup);
 
+describe("the way back to a Gate account", () => {
+  it("offers a key account a Gate account, under its key", () => {
+    // The popover has always carried this. The new shell had only the one-time
+    // OAuthOfferDialog, so dismissing that once left no route to OAuth at all.
+    const built = sections({ onSwitchToGateAccount: noop });
+    const connection = built.find((sec) => sec.id === "connection")!;
+    const ids = connection.rows.map((r) => r.id);
+
+    expect(ids).toContain("sign-in-method");
+    expect(ids.indexOf("sign-in-method")).toBe(ids.indexOf("api-key") + 1);
+
+    const row = connection.rows.find((r) => r.id === "sign-in-method")!;
+    expect(row.value).toBe("API key");
+    expect(row.action?.label).toBe("Use a Gate account");
+  });
+
+  it("omits it when the shell does not offer one", () => {
+    // An OAuth account has nowhere to switch to, and the shell says so by
+    // withholding the handler - the same way it withholds Replace key.
+    const built = sections({ onSwitchToGateAccount: undefined });
+    const connection = built.find((sec) => sec.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).not.toContain("sign-in-method");
+  });
+
+  it("speaks for itself while the browser flow is open", () => {
+    const built = sections({
+      onSwitchToGateAccount: noop,
+      signInNote: "Finish signing in on the page that opened in your browser.",
+    });
+    const row = built
+      .find((sec) => sec.id === "connection")!
+      .rows.find((r) => r.id === "sign-in-method")!;
+
+    expect(row.description).toBe(
+      "Finish signing in on the page that opened in your browser.",
+    );
+  });
+});
+
+/**
+ * An OAuth account keeps its old key in the keychain - the upgrade does not
+ * delete it - so `has_api_key` stays true and the pane drew a masked key under
+ * "API key" for a session a Cognito bearer authenticates. On the one screen
+ * whose job is to say where the credential lives, that named the wrong one, and
+ * offered no way to change it either (`onReplaceKey` is withheld for OAuth).
+ */
+describe("what a Gate account sees under Connection", () => {
+  const gateAccount = { authMode: "oauth" as const, onReplaceKey: undefined };
+
+  it("drops the API key row entirely", () => {
+    const connection = sections(gateAccount).find((s) => s.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).not.toContain("api-key");
+  });
+
+  it("puts the sign-in method in its place rather than going quiet", () => {
+    const connection = sections(gateAccount).find((s) => s.id === "connection")!;
+    const ids = connection.rows.map((r) => r.id);
+    const row = connection.rows.find((r) => r.id === "sign-in-method")!;
+
+    expect(row.value).toBe("Gate account");
+    // Where the key row used to be: directly under the gateway.
+    expect(ids.indexOf("sign-in-method")).toBe(ids.indexOf("gateway") + 1);
+  });
+
+  it("offers no switch to a Gate account it already is", () => {
+    const row = sections(gateAccount)
+      .find((s) => s.id === "connection")!
+      .rows.find((r) => r.id === "sign-in-method")!;
+    expect(row.action).toBeUndefined();
+  });
+
+  it("keeps Disconnect Gate, which is the row that ends the session", () => {
+    const connection = sections(gateAccount).find((s) => s.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).toContain("session");
+  });
+
+  it("leaves a key account's rows alone", () => {
+    const connection = sections({ authMode: "api_key" }).find((s) => s.id === "connection")!;
+    const ids = connection.rows.map((r) => r.id);
+    expect(ids).toContain("api-key");
+    expect(ids).not.toContain("sign-in-method");
+  });
+
+  /** The state before the account read lands. The key row is the older default,
+   *  and flashing it away and back is worse than showing it a beat early. */
+  it("keeps the key row while the auth mode is still unknown", () => {
+    const connection = sections({ authMode: undefined }).find((s) => s.id === "connection")!;
+    expect(connection.rows.map((r) => r.id)).toContain("api-key");
+  });
+});
+
 describe("buildSettingsSections", () => {
   it("keeps Diagnostics reachable from Settings", () => {
     // The Figma does not draw this row. `screens/Diagnostics.tsx` has nowhere
@@ -68,15 +159,18 @@ describe("buildSettingsSections", () => {
     ]);
   });
 
-  it("renders identifiers in mono and prose in sans", () => {
-    // CLAUDE.md's one typography rule the new design did not overturn.
-    const mono = sections()
-      .flatMap((s) => s.rows)
-      .filter((r) => r.mono)
-      .map((r) => r.id);
-    // The gateway joined them: a base URL is an identifier, which is exactly
-    // what CLAUDE.md reserves mono for.
-    expect(mono).toEqual(["install-id", "gateway", "api-key", "version"]);
+  it("renders every value in sans, identifiers included", () => {
+    // The exception to CLAUDE.md's mono-for-identifiers rule, and the design's
+    // own call rather than an oversight: the Settings frame styles the install
+    // ID, gateway, key and version as `copy/14` (Geist Regular), while the same
+    // file reaches for `mono/body-14` in the diagnostics report a screen away.
+    // An earlier browser read of the frame recorded these as mono; the node
+    // data says otherwise. Regressing this looks like "identifiers should be
+    // mono".
+    render(<SettingsPane sections={sections()} />);
+    for (const value of ["gc_a1b2c3d4", "Managed by Gate", "sk-gw***********", "v0.1.4"]) {
+      expect(screen.getByText(value).className).not.toContain("font-mono");
+    }
   });
 });
 
@@ -161,7 +255,6 @@ describe("SettingsPane", () => {
       "Account",
       "Connection",
       "Startup",
-      "Notifications",
       "Diagnostics",
       "About",
       "Help",
@@ -184,7 +277,7 @@ describe("SettingsPane", () => {
       screen.getByRole("switch", { name: "Launch at login" }).getAttribute("aria-checked"),
     ).toBe("false");
     expect(
-      screen.getByRole("switch", { name: "Routing health" }).getAttribute("aria-checked"),
+      screen.getByRole("switch", { name: "Notifications" }).getAttribute("aria-checked"),
     ).toBe("true");
   });
 

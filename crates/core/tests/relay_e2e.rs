@@ -21,8 +21,15 @@ use hyper_util::rt::TokioIo;
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
 use tokio::net::TcpListener;
 
+use gate_connect_core::account::BillingMode;
 use gate_connect_core::proxy::default_domains;
 use gate_connect_core::proxy::engine::{self, EngineConfig};
+
+/// Serializes the tests that use the process-global `GATE_CONNECT_TEST_UPSTREAM`
+/// seam. It names one upstream for the whole process, and each engine captures
+/// its value at construction, so two of these running concurrently would point
+/// one test's relay at the other's mock upstream.
+static UPSTREAM_SEAM: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// One request the mock gateway received, reduced to what we assert on.
 #[derive(Clone)]
@@ -118,6 +125,22 @@ fn boot_engine_owned(
     org_id: &str,
     owner_uid: Option<u32>,
 ) -> engine::RunningEngine {
+    boot_engine_full(
+        gateway_base_url,
+        oauth_token,
+        org_id,
+        owner_uid,
+        BillingMode::Byok,
+    )
+}
+
+fn boot_engine_full(
+    gateway_base_url: String,
+    oauth_token: &str,
+    org_id: &str,
+    owner_uid: Option<u32>,
+    billing_mode: BillingMode,
+) -> engine::RunningEngine {
     let (ca_cert_pem, ca_key_pem) = mint_ca();
     engine::start(
         EngineConfig {
@@ -125,6 +148,7 @@ fn boot_engine_owned(
             api_key: "sk-gw-test".into(),
             oauth_token: oauth_token.into(),
             org_id: org_id.into(),
+            billing_mode,
             domains: default_domains(),
             ca_cert_pem,
             ca_key_pem,
@@ -343,6 +367,79 @@ async fn relay_rejects_unknown_upstream() {
     );
 }
 
+/// The browser boundary: a DNS-rebound request arrives carrying the
+/// attacker's hostname in `Host`, and a cross-site fetch carries the page's
+/// `Origin`. Both must be refused before any credential is injected - CORS
+/// does not stop a "simple" cross-origin POST from being *delivered*, so the
+/// relay itself is the only thing standing between a web page and billed
+/// inference on the owner's credential.
+#[tokio::test]
+async fn relay_refuses_rebound_host_and_cross_site_origin() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine(
+        gateway.base_url.clone(),
+        "cognito-access-token",
+        "org-uuid-1",
+    );
+    let client = reqwest::Client::builder().build().unwrap();
+
+    // DNS rebinding: the TCP connection reaches our loopback listener, but
+    // the Host header still names the attacker's domain.
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("host", "attacker.example")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("relay request should return a response");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Cross-site fetch: loopback Host (the browser resolved 127.0.0.1
+    // directly) but a foreign Origin stamped by the page.
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("origin", "https://attacker.example")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("relay request should return a response");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // A loopback Origin (a local web UI talking to its own machine) stays
+    // served - the boundary is site, not browser-ness.
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/messages",
+            engine.relay_port()
+        ))
+        .header("origin", "http://127.0.0.1:5173")
+        .header("x-gate-upstream-url", "https://api.anthropic.com")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("relay request should return a response");
+    assert!(
+        resp.status().is_success(),
+        "loopback origin should be served, got {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "only the loopback-origin request may reach the gateway"
+    );
+}
+
 /// A non-owner peer can't spend the host credential: with an `owner_uid` that
 /// can't match our connection, the relay drops the socket before serving, so
 /// the client sees a closed connection and nothing reaches the gateway. UID
@@ -394,6 +491,7 @@ async fn relay_refuses_non_owner_peer() {
 /// hosts, so a loopback mock could never pass validation otherwise.
 #[tokio::test]
 async fn relay_forwards_direct_when_not_intercepting() {
+    let _seam = UPSTREAM_SEAM.lock().await;
     let gateway = start_mock_gateway().await;
     // A second capturing server, standing in for the tool's real upstream.
     let upstream = start_mock_gateway().await;
@@ -558,4 +656,148 @@ async fn relay_health_path_is_get_only() {
     );
 
     engine.stop();
+}
+
+/// PAYG through the relay: the tool sends its own provider credential (which is
+/// all a CLI tool has), and what reaches the gateway must carry neither that
+/// credential nor an upstream hint. Those two absences are the entire contract -
+/// with either one present the gateway routes BYOK, and with the credential
+/// present but no hint it refuses the request outright.
+#[tokio::test]
+async fn relay_in_payg_sends_no_upstream_hint_and_no_client_credential() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine_full(gateway.base_url.clone(), "", "", None, BillingMode::Payg);
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/anthropic/v1/messages",
+            engine.relay_port()
+        ))
+        // What Claude Code / Cowork actually send, and what we must remove.
+        .header("authorization", "Bearer sk-ant-oat01-app-token")
+        .header("x-api-key", "sk-ant-api03-app-key")
+        .json(&serde_json::json!({ "model": "claude", "messages": [] }))
+        .send()
+        .await
+        .expect("relay request should succeed");
+    assert!(
+        resp.status().is_success(),
+        "relay returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "expected exactly one gateway request");
+    let r = &reqs[0];
+    // The slug is stripped, leaving the gateway-native path the reseller router
+    // expects.
+    assert_eq!(r.path, "/v1/messages");
+    // We still say who the workspace is.
+    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-gate-upstream-url"),
+        None,
+        "the hint's absence is what selects reseller routing"
+    );
+    assert_eq!(
+        r.header("authorization"),
+        None,
+        "a provider token here is read as passthrough and forces BYOK"
+    );
+    assert_eq!(r.header("x-api-key"), None);
+}
+
+/// PAYG applies per domain. A consumer-chat surface is authenticated by a
+/// session cookie and covered by the user's own subscription, so it keeps its
+/// BYOK shape even while the account bills through Gate - stripping its
+/// credential would break it and route nothing.
+#[tokio::test]
+async fn relay_in_payg_leaves_an_ineligible_domain_on_the_byok_shape() {
+    let gateway = start_mock_gateway().await;
+    let engine = boot_engine_full(gateway.base_url.clone(), "", "", None, BillingMode::Payg);
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/claude-web/organizations/o/chat_conversations/c/completion",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer session-token")
+        .json(&serde_json::json!({ "prompt": "hi" }))
+        .send()
+        .await
+        .expect("relay request should succeed");
+    assert!(
+        resp.status().is_success(),
+        "relay returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    let r = &reqs[0];
+    assert_eq!(
+        r.header("x-gate-upstream-url"),
+        Some("https://claude.ai/api"),
+        "an ineligible domain keeps routing BYOK"
+    );
+    assert_eq!(
+        r.header("authorization"),
+        Some("Bearer session-token"),
+        "and keeps the credential that is the only thing authenticating it"
+    );
+}
+
+/// A passthrough hop is untouched by the mode. Those are account/metadata paths
+/// that go to the real upstream under the tool's own identity, so stripping the
+/// credential there would simply 401 - and no Gate header may leak either way.
+/// Uses the loopback test-upstream seam, since a real passthrough target is not
+/// reachable from a test.
+#[tokio::test]
+async fn relay_in_payg_does_not_touch_a_passthrough_hop() {
+    let _seam = UPSTREAM_SEAM.lock().await;
+    let gateway = start_mock_gateway().await;
+    let upstream = start_mock_gateway().await;
+    std::env::set_var("GATE_CONNECT_TEST_UPSTREAM", &upstream.base_url);
+    let engine = boot_engine_full(gateway.base_url.clone(), "", "", None, BillingMode::Payg);
+
+    // The test-upstream entry rewrites `/v1/` only, so this path is classified
+    // as passthrough and forwarded to the upstream itself.
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/test-upstream/oauth/token",
+            engine.relay_port()
+        ))
+        .header("authorization", "Bearer sk-ant-oat01-app-token")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("passthrough request should succeed");
+    assert!(
+        resp.status().is_success(),
+        "passthrough returned {}",
+        resp.status()
+    );
+
+    engine.stop();
+    std::env::remove_var("GATE_CONNECT_TEST_UPSTREAM");
+
+    let up = upstream.captured.lock().unwrap().clone();
+    assert_eq!(up.len(), 1, "the request must reach the real upstream");
+    assert_eq!(
+        up[0].header("authorization"),
+        Some("Bearer sk-ant-oat01-app-token"),
+        "PAYG must not strip the only credential a passthrough hop has"
+    );
+    assert_eq!(up[0].header("x-gate-api-key"), None);
+    assert!(
+        gateway.captured.lock().unwrap().is_empty(),
+        "a non-inference path must never reach the gateway"
+    );
 }

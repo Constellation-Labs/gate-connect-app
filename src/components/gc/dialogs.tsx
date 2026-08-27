@@ -54,12 +54,17 @@ export interface DialogOrganization {
 export function SwitchOrganizationDialog({
   organizations,
   selectedId,
+  currentId,
   onSelect,
   onCancel,
   onConfirm,
 }: {
   organizations: DialogOrganization[];
   selectedId: string;
+  /** The org this device already uses. While it is the one selected the primary
+   * is refused - the drawn dialog mutes it - because confirming a no-op switch
+   * would fire the whole switch sequence to change nothing. */
+  currentId?: string;
   onSelect: (id: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
@@ -68,12 +73,21 @@ export function SwitchOrganizationDialog({
     <Modal
       icon="usersRound"
       title="Switch organization"
-      subtitle="Choose where this device sends activity and uses Gate credits"
+      width={512}
+      subtitle="Select where this device sends activity and uses Gate credits"
       secondary={{ label: "Cancel", onClick: onCancel }}
-      primary={{ label: "Switch organization", onClick: onConfirm }}
+      primary={{
+        label: "Switch organization",
+        onClick: onConfirm,
+        disabled: currentId !== undefined && selectedId === currentId,
+      }}
       onDismiss={onCancel}
     >
-      <div role="radiogroup" aria-label="Organization" className="flex flex-col gap-3">
+      <div
+        role="radiogroup"
+        aria-label="Organization"
+        className="flex flex-col gap-3"
+      >
         {organizations.map((org) => (
           <ModalOption
             key={org.id}
@@ -136,7 +150,11 @@ export function SwitchGatewayDialog({
       }}
       onDismiss={onCancel}
     >
-      <div role="radiogroup" aria-label="Gateway server" className="flex flex-col gap-3">
+      <div
+        role="radiogroup"
+        aria-label="Gateway server"
+        className="flex flex-col gap-3"
+      >
         {servers.map((server) => (
           <ModalOption
             key={server.url}
@@ -149,10 +167,12 @@ export function SwitchGatewayDialog({
         ))}
       </div>
       <ModalNote>
-        <p className="font-medium text-neutral-900">Switching starts a fresh session.</p>
+        <p className="font-medium text-base-foreground">
+          Switching starts a fresh session.
+        </p>
         <p className="mt-1">
-          Your stored key is forgotten, managed tools disconnect, and Gate Connect
-          relaunches against the new server.
+          Your stored key is forgotten, managed tools disconnect, and Gate
+          Connect relaunches against the new server.
         </p>
       </ModalNote>
     </Modal>
@@ -193,7 +213,10 @@ export function OAuthOfferDialog({
       // Guarded rather than `disabled`: `Modal` does not honour that on the
       // secondary, and a decline that lands mid-flow would close the offer over
       // a browser sign-in that is still going to finish.
-      secondary={{ label: "Keep using my API key", onClick: () => !busy && onKeepKey() }}
+      secondary={{
+        label: "Keep using my API key",
+        onClick: () => !busy && onKeepKey(),
+      }}
       primary={{
         label: busy ? "Waiting for browser..." : "Sign in with Constellation",
         onClick: onSignIn,
@@ -202,8 +225,8 @@ export function OAuthOfferDialog({
       onDismiss={busy ? undefined : onKeepKey}
     >
       <p className="text-sm leading-5 text-neutral-600">
-        Your gateway and your routing stay exactly as they are. You can switch either
-        way later, under Connection in Settings.
+        Your gateway and your routing stay exactly as they are. You can switch
+        either way later, under Connection in Settings.
       </p>
       {error}
     </Modal>
@@ -222,12 +245,15 @@ export function OrganizationSwitchedDialog({
       tone="success"
       icon="circleCheck"
       title="Organization switched"
-      subtitle={`Gate Connect is now using ${organizationName}.`}
+      subtitle={`Gate Connect is now using ${organizationName}`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
+      width={512}
     >
       <ModalNote>
-        <p className="font-medium text-neutral-900">Your local routing is unchanged.</p>
+        <p className="font-medium text-base-foreground">
+          Your local routing is unchanged.
+        </p>
         <p className="mt-1">
           New activity and PAYG usage will appear under {organizationName}.
         </p>
@@ -290,21 +316,26 @@ export function ReviewConfigDialog({
       )}
       {configLocation && (
         <ModalNote>
-          <p className="font-medium text-neutral-900">The file that changes:</p>
+          <p className="font-medium text-base-foreground">
+            The file that changes:
+          </p>
           {/* Mono, like every other identifier in this UI. `break-all` because a
               home-directory path overflows the 600px dialog on any real machine. */}
-          <p className="mt-1 break-all font-mono text-base-xs">{configLocation}</p>
+          <p className="mt-1 break-all font-mono text-base-xs">
+            {configLocation}
+          </p>
         </ModalNote>
       )}
       <ModalNote>
-        <p className="font-medium text-neutral-900">If Gate takes over:</p>
+        <p className="font-medium text-base-foreground">If Gate takes over:</p>
         <p className="mt-1">
-          Gate Connect saves a private snapshot of these settings, replaces only the
-          routing fields, and keeps the credential in your operating system keychain.
+          Gate Connect saves a private snapshot of these settings, replaces only
+          the routing fields, and keeps the credential in your operating system
+          keychain.
         </p>
         <p className="mt-3">
-          Your configuration is restored when you turn protection off, disconnect Gate
-          Connect, or do a complete reset.
+          Your configuration is restored when you turn protection off,
+          disconnect Gate Connect, or do a complete reset.
         </p>
       </ModalNote>
     </Modal>
@@ -329,10 +360,10 @@ export function ApplyChangesDialog({
     <Modal
       tone="warning"
       icon="triangleAlert"
-      title="Apply changes to running apps"
-      subtitle="Your configuration is now saved. One final step makes the new route active"
-      secondary={{ label: "Close affected apps", onClick: onCloseApps }}
-      primary={{ label: "I will reopen later", onClick: onReopenLater }}
+      title="Apply changes to running apps?"
+      subtitle="Your configuration is saved. One final step makes the new route active"
+      secondary={{ label: "Yes, close affected apps", onClick: onCloseApps }}
+      primary={{ label: "No, I will reopen later", onClick: onReopenLater }}
       onDismiss={onReopenLater}
     >
       {apps.map((app) => (
@@ -346,7 +377,9 @@ export function ApplyChangesDialog({
       ))}
       <ModalNote>
         <p>Gate Connect can close these apps, but cannot reopen them.</p>
-        <p className="mt-1">You can keep working and reopen {appLabel(apps)} yourself.</p>
+        <p className="mt-1">
+          You can keep working and reopen {appLabel(apps)} yourself.
+        </p>
       </ModalNote>
     </Modal>
   );
@@ -368,8 +401,12 @@ export function CloseAppsDialog({
       icon="triangleAlert"
       title="Close affected apps now?"
       subtitle="Unsaved work or active sessions in these apps may be interrupted"
-      secondary={{ label: "Go back", onClick: onGoBack }}
-      primary={{ label: `Close ${label}`, onClick: onCloseApps, destructive: true }}
+      secondary={{ label: "No, I will close later", onClick: onGoBack }}
+      primary={{
+        label: "Yes, close apps",
+        onClick: onCloseApps,
+        destructive: true,
+      }}
       onDismiss={onGoBack}
     >
       {apps.map((app) => (
@@ -382,8 +419,8 @@ export function CloseAppsDialog({
         />
       ))}
       <ModalNote>
-        After these apps are closed, open {label} again yourself. The new Gate route will
-        be active on launch.
+        After these apps are closed, open {label} again yourself. The new Gate
+        route will be active on launch.
       </ModalNote>
     </Modal>
   );
@@ -404,10 +441,15 @@ export function ChangeReadyDialog({
       subtitle={`${app.name} closed successfully`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
+      width={512}
     >
       <ModalNote>
-        <p className="font-medium text-neutral-900">The new Gate route is active</p>
-        <p className="mt-1">Open {app.name} whenever you are ready to continue.</p>
+        <p className="font-medium text-base-foreground">
+          The new Gate route is active
+        </p>
+        <p className="mt-1">
+          Open {app.name} whenever you are ready to continue.
+        </p>
       </ModalNote>
     </Modal>
   );
@@ -437,13 +479,14 @@ export function DiagnosticsDialog({
   return (
     <Modal
       icon="info"
-      title="Diagnostics"
+      title="Diagnostics report"
+      // The drawn subtitle reads "this installed" - a typo, kept corrected.
       subtitle="The state of this install, as text you can hand to someone else"
       secondary={{ label: "Close", onClick: onClose }}
       primary={{ label: copied ? "Copied" : "Copy report", onClick: onCopy }}
       onDismiss={onClose}
     >
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-base-border bg-gray-50 p-4 font-mono text-base-xs leading-4 text-neutral-700">
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-base-xs leading-4 text-neutral-700">
         {report}
       </pre>
     </Modal>
@@ -517,6 +560,10 @@ export function ModelPickerDialog({
 }) {
   const [query, setQuery] = useState("");
   const [vendor, setVendor] = useState("all");
+  /** The dialog opens on its search field: with a catalogue this long, typing is
+   *  the first thing to do. */
+  const searchRef = useRef<HTMLInputElement>(null);
+
   /** Seeded from the stored set so Cancel is a real cancel. */
   const [draft, setDraft] = useState<string[]>(selectedIds);
 
@@ -539,18 +586,35 @@ export function ModelPickerDialog({
   }, [models, draft]);
 
   const vendors = useMemo(
-    () => [...new Set(models.map((m) => m.vendor))].sort((a, b) => (a < b ? -1 : 1)),
+    () =>
+      [...new Set(models.map((m) => m.vendor))].sort((a, b) =>
+        a.localeCompare(b),
+      ),
     [models],
   );
 
-  const shown = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return models.filter(
-      (m) =>
-        (vendor === "all" || m.vendor === vendor) &&
-        (q === "" || m.id.toLowerCase().includes(q) || m.vendor.toLowerCase().includes(q)),
-    );
-  }, [models, query, vendor]);
+  const needle = query.trim().toLowerCase();
+  // "Current models will sort alphabetically, left to right using their
+  // provider. Example. Anthropic > DeepSeek > Moonshot" - written on the
+  // `App / Select multiple models (Opencode)` section, read 2026-08-26. By
+  // provider first, then by id so a provider's own models hold a stable order
+  // rather than falling back to whatever the gateway listed.
+  const shown = useMemo(
+    () =>
+      models
+        .filter(
+          (m) =>
+            (vendor === "all" || m.vendor === vendor) &&
+            (needle === "" ||
+              m.id.toLowerCase().includes(needle) ||
+              m.vendor.toLowerCase().includes(needle)),
+        )
+        .sort(
+          (a, b) =>
+            a.vendor.localeCompare(b.vendor) || a.id.localeCompare(b.id),
+        ),
+    [models, vendor, needle],
+  );
 
   const chosen = draft;
   /** AG-590: the last model cannot be removed without choosing another. The
@@ -565,17 +629,24 @@ export function ModelPickerDialog({
       title="Choose a Gate model"
       subtitle={`${appName} may use any model you enable here`}
       closeButton
-      secondary={{ label: "Cancel", onClick: onDismiss }}
-      primary={{
-        label: "Save models",
-        onClick: () => onSave(draft),
-        // Gate cannot serve a model nobody enabled, so an empty set is not a
-        // saveable state. AG-590's "the final model cannot be removed" is
-        // enforced on the row itself; this is the backstop for a set that
-        // started empty.
-        disabled: draft.length === 0,
-      }}
+      secondary={
+        !loading && !failure ? { label: "Cancel", onClick: onDismiss } : undefined
+      }
+      primary={
+        !loading && !failure
+          ? {
+              label: "Save models",
+              onClick: () => onSave(draft),
+              // Gate cannot serve a model nobody enabled, so an empty set is not
+              // a saveable state. AG-590's "the final model cannot be removed"
+              // is enforced on the row itself; this is the backstop for a set
+              // that started empty.
+              disabled: draft.length === 0,
+            }
+          : undefined
+      }
       onDismiss={onDismiss}
+      initialFocus={searchRef}
     >
       {loading ? (
         <div className="flex flex-col gap-1" aria-busy>
@@ -585,18 +656,22 @@ export function ModelPickerDialog({
         </div>
       ) : failure ? (
         <ModalNote>
-          <p className="font-medium text-neutral-900">Gate could not list its models</p>
+          <p className="font-medium text-base-foreground">
+            Gate could not list its models
+          </p>
           <p className="mt-1">
-            Nothing has changed: this app keeps the model it is using. Close this and try
-            again.
+            Nothing has changed: this app keeps the model it is using. Close
+            this and try again.
           </p>
         </ModalNote>
       ) : models.length === 0 ? (
         <ModalNote>
-          <p className="font-medium text-neutral-900">No models to choose from yet</p>
+          <p className="font-medium text-base-foreground">
+            No models to choose from yet
+          </p>
           <p className="mt-1">
-            This gateway offers no models of its own, so apps keep using the model they
-            are configured with.
+            This gateway offers no models of its own, so apps keep using the
+            model they are configured with.
           </p>
         </ModalNote>
       ) : (
@@ -604,37 +679,36 @@ export function ModelPickerDialog({
           {/* Search and provider filter (Figma 139:66683). Both are client-side
            *  over the catalogue already in hand - the endpoint takes no query, and
            *  344 rows filter faster than a round trip. */}
-          <div className="flex gap-3">
-            <label className="relative flex-1">
-              <span className="sr-only">Search models</span>
+          <div className="flex items-center gap-3">
+            <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-sm border border-base-input bg-base-card px-2.5 shadow-base-xs focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-base-primary">
               <Icon
                 name="search"
                 size={16}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-base-muted-foreground"
+                className="shrink-0 text-neutral-500"
               />
               <input
+                ref={searchRef}
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search models"
-                className="h-9 w-full rounded-base border border-base-input bg-base-card pl-9 pr-3 text-sm leading-5 text-neutral-900 placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                aria-label="Search models"
+                className="w-full bg-transparent text-sm leading-5 text-base-foreground outline-none placeholder:text-neutral-500"
               />
             </label>
-            <label className="shrink-0">
-              <span className="sr-only">Filter by provider</span>
-              <select
-                value={vendor}
-                onChange={(e) => setVendor(e.target.value)}
-                className="h-9 w-[8.5rem] rounded-base border border-base-input bg-base-card px-3 text-sm leading-5 text-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-              >
-                <option value="all">All providers</option>
-                {vendors.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <select
+              value={vendor}
+              onChange={(e) => setVendor(e.target.value)}
+              aria-label="Provider"
+              className="h-9 shrink-0 rounded-sm border border-base-input bg-base-card px-2.5 text-sm font-medium leading-5 text-base-foreground shadow-base-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            >
+              <option value="all">All providers</option>
+              {vendors.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* The frame reads "Showing 10 of 14 models・400+ in Gate AI". The third
@@ -716,23 +790,32 @@ export function ModelPickerDialog({
                     onClick={() => {
                       if (locked) return;
                       setDraft((d) =>
-                        d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
+                        d.includes(model.id)
+                          ? d.filter((x) => x !== model.id)
+                          : [...d, model.id],
                       );
                     }}
-                    className={`flex shrink-0 items-center gap-3 rounded-base border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+                    className={`flex shrink-0 items-center gap-3 rounded-sm border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
                       selected
                         ? "border-base-primary bg-base-card"
                         : "border-transparent hover:bg-gray-50"
                     } ${locked ? "cursor-not-allowed" : ""}`}
                   >
-                    <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
+                    <span
+                      aria-hidden
+                      className="flex size-4 shrink-0 items-center justify-center"
+                    >
                       {model.logo ?? <Icon name="cube" size={16} />}
                     </span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-neutral-900">
+                    <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-base-foreground">
                       {model.id}
                     </span>
                     {selected ? (
-                      <Icon name="circleCheck" size={16} className="shrink-0 text-base-primary" />
+                      <Icon
+                        name="circleCheck"
+                        size={16}
+                        className="shrink-0 text-base-primary"
+                      />
                     ) : (
                       <span
                         aria-hidden
@@ -748,14 +831,14 @@ export function ModelPickerDialog({
           {/* AG-590 asks that the set be stated before confirmation, and that
            *  the cost consequence be stated with it. */}
           <ModalNote>
-              <p className="font-medium text-neutral-900">
+            <p className="font-medium text-base-foreground">
                 {draft.length === 1
                   ? "1 model enabled"
                   : `${draft.length} models enabled`}
               </p>
               <p className="mt-1">
-                Eligible requests may use any of them and consume Gate credits. Gate never
-                uses a model you have not enabled.
+                Eligible requests may use any of them and consume Gate credits.
+                Gate never uses a model you have not enabled.
               </p>
           </ModalNote>
         </>
@@ -800,13 +883,12 @@ export function UseGateModelDialog({
       icon="layers"
       title={`Use a Gate model for ${app.name}?`}
       subtitle="Your next requests will use Constellation Gate PAYG credits"
-      // 130:48278 draws this one narrower than the picker. The design uses two
-      // dialog widths, so the shared Modal takes the width rather than every
-      // dialog being forced to the wider frame's shape.
-      width={512}
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}
+      // 130:48278 draws this one narrower than the picker; 512 is one of the
+      // four widths the file uses.
+      width={512}
     >
       {single ? (
         <ModalSubject
@@ -820,15 +902,18 @@ export function UseGateModelDialog({
         // The same row, holding a set. No mark: one glyph cannot stand for
         // several vendors, and repeating it per line would say each id is that
         // vendor's when the set is usually mixed.
-        <div className="flex items-start gap-3 rounded-lg border border-base-border p-3">
-          <ul className="min-w-0 flex-1 flex flex-col gap-1">
+        <div className="flex items-start gap-3 rounded-md border border-base-border p-3">
+          <ul className="flex min-w-0 flex-1 flex-col gap-1">
             {modelIds.map((id) => (
-              <li key={id} className="truncate font-mono text-sm leading-5 text-neutral-900">
+              <li
+                key={id}
+                className="truncate font-mono text-sm leading-5 text-base-foreground"
+              >
                 {id}
               </li>
             ))}
           </ul>
-          <span className="shrink-0 rounded-base border border-base-border px-2 py-1 font-mono text-base-2xs leading-4 text-neutral-700">
+          <span className="shrink-0 rounded-sm border border-base-border px-2 py-1 font-mono text-base-2xs leading-4 text-neutral-700">
             PAYG
           </span>
         </div>
@@ -838,20 +923,24 @@ export function UseGateModelDialog({
        * (130:48302): the balance is the thing being spent and the sentence is
        * what limits the commitment, so they belong to each other rather than
        * reading as two unrelated notes. */}
-      <div className="rounded-lg bg-gray-50 p-3">
+      <div className="rounded-md bg-gray-50 p-3">
         <div className="flex items-center gap-3">
           <span
             aria-hidden
-            className="flex size-9 shrink-0 items-center justify-center rounded-base border border-base-border bg-base-card text-neutral-700"
+            className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-neutral-700"
           >
             <Icon name="creditCard" size={20} />
           </span>
-          <p className="flex-1 text-sm leading-5 text-neutral-600">Gate credits:</p>
-          <p className="shrink-0 text-sm leading-5 text-neutral-900">{credits}</p>
+          <p className="flex-1 text-sm leading-5 text-neutral-600">
+            Gate credits:
+          </p>
+          <p className="shrink-0 text-sm font-medium leading-5 text-base-foreground">
+            {credits}
+          </p>
         </div>
         <p className="mt-3 text-sm leading-5 text-neutral-600">
-          {app.name}&apos;s own model preference is not changed. You can return to App
-          default at any time.
+          {app.name}&apos;s own model preference is not changed. You can return
+          to App default at any time.
         </p>
       </div>
     </Modal>
@@ -881,8 +970,13 @@ export function RenameDeviceDialog({
     <Modal
       icon="monitorSmartphone"
       title="Rename your device"
+      width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
-      primary={{ label: "Rename device", onClick: onRename, disabled: !newName.trim() }}
+      primary={{
+        label: "Rename device",
+        onClick: onRename,
+        disabled: !newName.trim(),
+      }}
       onDismiss={onCancel}
       initialFocus={field}
     >
@@ -900,10 +994,11 @@ export function RenameDeviceDialog({
 /**
  * Replace the API key.
  *
- * The design labels the second field "New device name", copy-pasted from the
- * rename dialog. Implemented as "New API key" deliberately: shipping the drawn
- * label would put a wrong word on the one screen where the user is handling a
- * credential. Raised with the designer.
+ * `177:74869` labels the second field "New device name", copy-pasted from the
+ * rename dialog. Shipped as "New API key" by explicit decision (2026-08-26),
+ * standing as the named exception to "the file wins": the drawn label would put
+ * a wrong word on the one screen where the user handles a credential. Raised
+ * with the designer.
  */
 export function ReplaceApiKeyDialog({
   currentKeyMasked,
@@ -923,12 +1018,22 @@ export function ReplaceApiKeyDialog({
     <Modal
       icon="key"
       title="Replace API key"
+      width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
-      primary={{ label: "Replace key", onClick: onReplace, disabled: !newKey.trim() }}
+      primary={{
+        label: "Replace key",
+        onClick: onReplace,
+        disabled: !newKey.trim(),
+      }}
       onDismiss={onCancel}
       initialFocus={field}
     >
-      <ModalField label="Current API key" value={currentKeyMasked} readOnly mono />
+      <ModalField
+        label="Current API key"
+        value={currentKeyMasked}
+        readOnly
+        mono
+      />
       <ModalField
         label="New API key"
         value={newKey}
@@ -964,6 +1069,7 @@ export function DisconnectGateDialog({
       tone="danger"
       icon="triangleAlert"
       title="Disconnect Gate?"
+      width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{
         label: "Yes, disconnect Gate",
@@ -971,10 +1077,18 @@ export function DisconnectGateDialog({
         destructive: true,
       }}
       onDismiss={onCancel}
+      edge="danger"
     >
-      <p className="text-sm leading-5 text-neutral-600">
-        This device signs out of Gate and stops sending activity. Your apps keep their
-        current configuration, and signing back in restores routing.
+      {/* `164:73502` reads "Protection turns off, your apps stop routing through
+       * Gate, and your API key is removed from the keychain" - which describes
+       * Reset, the row below this one on the same screen. Corrected by explicit
+       * decision (2026-08-26), the second named exception to "the file wins":
+       * disconnecting ends the session and touches no keychain item, so the
+       * drawn sentence promises a change this action does not make. The ink is
+       * still the frame's `base/foreground`; only the words are ours. */}
+      <p className="text-sm leading-5 text-base-foreground">
+        This device signs out of Gate and stops sending activity. Your apps keep
+        their current configuration, and signing back in restores routing.
       </p>
     </Modal>
   );
@@ -1001,6 +1115,7 @@ export function ResetGateConnectDialog({
       tone="danger"
       icon="triangleAlert"
       title="Reset Gate Connect"
+      width={544}
       subtitle="This removes Gate Connect setup from this device."
       secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{
@@ -1016,7 +1131,8 @@ export function ResetGateConnectDialog({
         steps={[
           {
             title: "Routing turns off",
-            description: "Managed tools return to their saved pre_gate configurations.",
+            description:
+              "Managed tools return to their saved pre_gate configurations.",
           },
           {
             title: "Tools disconnect",
@@ -1040,6 +1156,17 @@ export function ResetGateConnectDialog({
 
 /**
  * What the diagnostic channel actually sends, and what it never sends.
+ *
+ * **Nothing renders this today.** Its Settings row was removed on 2026-08-27
+ * for being undrawn, which took AG-603's only surface with it. Kept rather than
+ * deleted because the list itself is the expensive part - it is written from
+ * what `analytics.ts` actually sends, not from the ticket's field list - and
+ * because the criterion has not been withdrawn, only left without a door.
+ *
+ * Opened from a link inside the share-diagnostics row's own description rather
+ * than from a row of its own: the file draws two rows under Diagnostics, and a
+ * disclosure about a setting reads better as part of that setting's sentence
+ * than as furniture beside it.
  *
  * AG-603 asks for a "What is collected" list that opens without changing the
  * setting - so this is read-only and its only action closes it.
@@ -1090,20 +1217,20 @@ export function CollectedDataLists({
   return (
     <>
       <Wrapper>
-        <p className="font-medium text-neutral-900">Sent</p>
+        <p className="font-medium text-base-foreground">Sent</p>
         <ul className="mt-1 list-disc pl-4">
           <li>
-            An anonymous device id, generated locally. No name, email, or account
-            identifier.
+            An anonymous device id, generated locally. No name, email, or
+            account identifier.
           </li>
           <li>App version and operating system.</li>
           <li>
-            Which action happened, from a fixed list - routing turned on or off, an
-            update installed, a dialog shown. Never free text.
+            Which action happened, from a fixed list - routing turned on or off,
+            an update installed, a dialog shown. Never free text.
           </li>
           <li>
-            A short label for each action: which app or provider it concerned, and
-            whether it was on or off.
+            A short label for each action: which app or provider it concerned,
+            and whether it was on or off.
           </li>
           <li>
             A classified title when something fails, e.g. &ldquo;keychain
@@ -1118,21 +1245,24 @@ export function CollectedDataLists({
           the app started sending them would make the page that exists to be
           trusted the one place that understated what leaves the machine. */}
       <Wrapper>
-        <p className="font-medium text-neutral-900">Sent with your traffic, whatever this setting says</p>
+        <p className="font-medium text-base-foreground">
+          Sent with your traffic, whatever this setting says
+        </p>
         <ul className="mt-1 list-disc pl-4">
           <li>
-            The same anonymous device id, so your activity view can group requests
-            by machine. It identifies nothing else and authorizes nothing.
+            The same anonymous device id, so your activity view can group
+            requests by machine. It identifies nothing else and authorizes
+            nothing.
           </li>
           <li>
-            Which app made the request, when Gate can tell from the request itself
-            - Claude Code, Codex, and so on. Unrecognised apps are sent unlabelled
-            rather than guessed at.
+            Which app made the request, when Gate can tell from the request
+            itself - Claude Code, Codex, and so on. Unrecognised apps are sent
+            unlabelled rather than guessed at.
           </li>
         </ul>
       </Wrapper>
       <Wrapper>
-        <p className="font-medium text-neutral-900">Never sent</p>
+        <p className="font-medium text-base-foreground">Never sent</p>
         <ul className="mt-1 list-disc pl-4">
           <li>Prompts or model responses.</li>
           <li>API keys, credentials, or anything from your keychain.</li>
@@ -1161,7 +1291,8 @@ const RESTORE_OUTCOME_TEXT: Record<
   },
   write_failed: {
     label: "Failed",
-    detail: "Gate could not write the configuration. Resuming tries this one again.",
+    detail:
+      "Gate could not write the configuration. Resuming tries this one again.",
     tone: "amber",
   },
   not_installed: {
@@ -1295,17 +1426,18 @@ export function QuitDialog({
       onDismiss={busy ? undefined : onCancel}
     >
       <p className="text-sm leading-5 text-neutral-600">
-        {names} still {plural ? "route" : "routes"} through Gate. Quitting stops the
-        local relay {plural ? "they" : "it"} points at, so {plural ? "they" : "it"}{" "}
-        {plural ? "cannot" : "cannot"} reach a model until Gate Connect runs again.
+        {names} still {plural ? "route" : "routes"} through Gate. Quitting stops
+        the local relay {plural ? "they" : "it"} points at, so{" "}
+        {plural ? "they" : "it"} {plural ? "cannot" : "cannot"} reach a model
+        until Gate Connect runs again.
       </p>
       <p className="text-sm leading-5 text-neutral-600">
         {/* "when Gate Connect starts again", not "at the next start": the next
             start of *what* was the ambiguity, and the tool's own launch is the
             wrong answer. Same phrasing as the notification this fires. */}
         Disconnecting puts {plural ? "their" : "its"} own settings back for the
-        meantime, then reconnects {plural ? "them" : "it"} when Gate Connect starts
-        again. Routing stays switched on either way.
+        meantime, then reconnects {plural ? "them" : "it"} when Gate Connect
+        starts again. Routing stays switched on either way.
       </p>
     </Modal>
   );
@@ -1341,14 +1473,18 @@ export function QuitLeftBehindDialog({
       title={plural ? "Some tools stayed on Gate" : "One tool stayed on Gate"}
       secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
       middle={{ label: "Quit anyway", onClick: onQuitAnyway, disabled: busy }}
-      primary={{ label: busy ? "Working…" : "Try again", onClick: onRetry, disabled: busy }}
+      primary={{
+        label: busy ? "Working…" : "Try again",
+        onClick: onRetry,
+        disabled: busy,
+      }}
       onDismiss={busy ? undefined : onCancel}
     >
       <p className="text-sm leading-5 text-neutral-600">
         Couldn’t put {joinNames(tools)} back on{" "}
         {plural ? "their own settings" : "its own settings"}.{" "}
-        {plural ? "They still point" : "It still points"} at Gate, and won’t reach a
-        model until Gate Connect runs again.
+        {plural ? "They still point" : "It still points"} at Gate, and won’t
+        reach a model until Gate Connect runs again.
       </p>
       <ModalNote>
         Everything else was put back. Trying again only retouches the{" "}

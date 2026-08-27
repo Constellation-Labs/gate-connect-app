@@ -24,13 +24,15 @@ Divergences from the plan as written:
    one-shot `autostart-defaulted` marker file (`lib.rs`, setup), and is
    exposed as a standalone Settings toggle. The marker distinguishes
    "never configured" from "user turned it off" so an opt-out sticks.
-2. **Exit-time intent handling is conditional, not hands-off.** The
-   `RunEvent::Exit` handler calls `disable_quiet()` (reverts the system
-   proxy) and *clears* intent when launch-at-login is off - otherwise a
-   quit would strand intent with nothing to restore it. Intent is
-   preserved across an updater relaunch via the `UPDATER_RELAUNCHING`
-   flag (`set_updater_relaunching`, set by `UpdatePanel.tsx` before
-   `downloadAndInstall()`), so routing auto-restores after a self-update.
+2. **Exit-time intent handling is hands-off** (updated 2026-08-22; this
+   item previously described a conditional clear that has been removed).
+   The `RunEvent::Exit` handler calls `disable_quiet()` (reverts the
+   system proxy) and leaves the intent alone: it survives every quit,
+   only the routing switch (`proxy_disable`) clears it, and the startup
+   auto-enable honors it on any launch - login item or manual. The
+   `UPDATER_RELAUNCHING` flag (`set_updater_relaunching`, set by
+   `UpdatePanel.tsx` before the install) now only carries a pending
+   launch-at-login opt-out through a self-update relaunch.
 3. **Port persistence** (not in the plan): the engine persists its
    loopback port (`proxy/port`, `proxy/pac-port`) and rebinds it with
    `SO_REUSEADDR` on the next enable, so a restart normally comes back

@@ -1,0 +1,465 @@
+/* ============================================================
+   Design Tokens (Light Mode) — Generated from Figma Variables
+   Gate Connect
+   ============================================================ */
+
+:root {
+
+  /* —— 1. TailwindCSS —— */
+
+  /* spacing */
+  --spacing-0: 0px;
+  --spacing-px: 1px;
+  --spacing-0-5: 2px;
+  --spacing-1: 4px;
+  --spacing-1-5: 6px;
+  --spacing-2: 8px;
+  --spacing-2-5: 10px;
+  --spacing-3: 12px;
+  --spacing-3-5: 14px;
+  --spacing-4: 16px;
+  --spacing-5: 20px;
+  --spacing-6: 24px;
+  --spacing-7: 28px;
+  --spacing-8: 32px;
+  --spacing-9: 36px;
+  --spacing-10: 40px;
+  --spacing-11: 44px;
+  --spacing-12: 48px;
+  --spacing-14: 56px;
+  --spacing-16: 64px;
+  --spacing-20: 80px;
+  --spacing-24: 96px;
+  --spacing-28: 112px;
+  --spacing-32: 128px;
+  --spacing-36: 144px;
+  --spacing-40: 160px;
+  --spacing-44: 176px;
+  --spacing-48: 192px;
+  --spacing-52: 208px;
+  --spacing-56: 224px;
+  --spacing-60: 240px;
+  --spacing-64: 256px;
+  --spacing-72: 288px;
+  --spacing-80: 320px;
+  --spacing-96: 384px;
+
+  /* width */
+  --width-w-0: 0px;
+  --width-w-px: 1px;
+  --width-w-0-5: 2px;
+  --width-w-1: 4px;
+  --width-w-1-5: 6px;
+  --width-w-2: 8px;
+  --width-w-2-5: 10px;
+  --width-w-3: 12px;
+  --width-w-3-5: 14px;
+  --width-w-4: 16px;
+  --width-w-5: 20px;
+  --width-w-6: 24px;
+  --width-w-7: 28px;
+  --width-w-8: 32px;
+  --width-w-9: 36px;
+  --width-w-10: 40px;
+  --width-w-11: 44px;
+  --width-w-12: 48px;
+  --width-w-14: 56px;
+  --width-w-16: 64px;
+  --width-w-20: 80px;
+  --width-w-24: 96px;
+  --width-w-28: 112px;
+  --width-w-32: 128px;
+  --width-w-36: 144px;
+  --width-w-44: 176px;
+  --width-w-48: 192px;
+  --width-w-52: 208px;
+  --width-w-56: 224px;
+  --width-w-64: 256px;
+  --width-w-72: 288px;
+  --width-w-80: 320px;
+  --width-w-96: 384px;
+
+  /* height */
+  --height-h-0: 0px;
+  --height-h-px: 1px;
+  --height-h-0-5: 2px;
+  --height-h-1: 4px;
+  --height-h-1-5: 6px;
+  --height-h-2: 8px;
+  --height-h-2-5: 10px;
+  --height-h-3: 12px;
+  --height-h-3-5: 14px;
+  --height-h-4: 16px;
+  --height-h-5: 20px;
+  --height-h-6: 24px;
+  --height-h-7: 28px;
+  --height-h-8: 32px;
+  --height-h-9: 36px;
+  --height-h-10: 40px;
+  --height-h-11: 44px;
+  --height-h-12: 48px;
+  --height-h-14: 56px;
+  --height-h-16: 64px;
+  --height-h-20: 80px;
+  --height-h-24: 96px;
+  --height-h-28: 112px;
+  --height-h-32: 128px;
+  --height-h-36: 144px;
+  --height-h-44: 176px;
+  --height-h-48: 192px;
+  --height-h-52: 208px;
+  --height-h-56: 224px;
+  --height-h-64: 256px;
+  --height-h-72: 288px;
+  --height-h-80: 320px;
+  --height-h-96: 384px;
+
+  /* app viewport */
+  --app-width: 1024;
+
+  /* border-radius */
+  --border-radius-rounded-none: 0px;
+  --border-radius-rounded-xs: var(--radius-xs);
+  --border-radius-rounded-sm: var(--radius-sm);
+  --border-radius-rounded-md: var(--radius-md);
+  --border-radius-rounded-lg: var(--radius-lg);
+  --border-radius-rounded-xl: var(--radius-xl);
+  --border-radius-rounded-2xl: var(--radius-2xl);
+  --border-radius-rounded-3xl: var(--radius-3xl);
+  --border-radius-rounded-4xl: var(--radius-4xl);
+  --border-radius-rounded-full: 9999px;
+
+  /* border-width */
+  --border-width-border-0: 0px;
+  --border-width-border: 1px;
+  --border-width-border-2: 2px;
+  --border-width-border-3: 3px;
+  --border-width-border-4: 4px;
+  --border-width-border-5: 5px;
+  --border-width-border-6: 6px;
+  --border-width-border-7: 6px;
+  --border-width-border-8: 8px;
+
+  /* opacity */
+  --opacity-0: 0;
+  --opacity-5: 0.05;
+  --opacity-10: 0.1;
+  --opacity-15: 0.15;
+  --opacity-20: 0.2;
+  --opacity-25: 0.25;
+  --opacity-30: 0.3;
+  --opacity-35: 0.35;
+  --opacity-40: 0.4;
+  --opacity-45: 0.45;
+  --opacity-50: 0.5;
+  --opacity-55: 0.55;
+  --opacity-60: 0.6;
+  --opacity-65: 0.65;
+  --opacity-70: 0.7;
+  --opacity-75: 0.75;
+  --opacity-80: 0.8;
+  --opacity-85: 0.85;
+  --opacity-90: 0.9;
+  --opacity-95: 0.95;
+  --opacity-100: 1.0;
+
+  /* line-height */
+  --leading-1: 4;
+  --leading-2: 8;
+  --leading-3: 12;
+  --leading-4: 16;
+  --leading-5: 20;
+  --leading-6: 24;
+  --leading-7: 28;
+  --leading-8: 32;
+  --leading-9: 36;
+  --leading-10: 40;
+
+  /* tailwind colors */
+  --tw-black: #000000;
+  --tw-white: #ffffff;
+  --tw-transparent: rgba(255, 255, 255, 0);
+  --tw-slate-50: #f8fafc;
+  --tw-slate-100: #f1f5f9;
+  --tw-slate-200: #e2e8f0;
+  --tw-slate-300: #cbd5e1;
+  --tw-slate-400: #94a3b8;
+  --tw-slate-500: #64748b;
+  --tw-slate-600: #475569;
+  --tw-slate-700: #334155;
+  --tw-slate-800: #1e293b;
+  --tw-slate-900: #0f172a;
+  --tw-slate-950: #020617;
+  --tw-gray-50: #f9fafb;
+  --tw-gray-100: #f3f4f6;
+  --tw-gray-200: #e5e7eb;
+  --tw-gray-300: #d1d5db;
+  --tw-gray-400: #9ca3af;
+  --tw-gray-500: #6b7280;
+  --tw-gray-600: #4b5563;
+  --tw-gray-700: #374151;
+  --tw-gray-800: #1f2937;
+  --tw-gray-900: #111827;
+  --tw-gray-950: #030712;
+  --tw-red-50: #fef2f2;
+  --tw-red-500: #ef4444;
+  --tw-red-600: #dc2626;
+  --tw-red-700: #b91c1c;
+  --tw-orange-500: #f97316;
+  --tw-amber-400: #fbbf24;
+  --tw-amber-500: #f59e0b;
+  --tw-green-500: #22c55e;
+  --tw-emerald-500: #10b981;
+  --tw-teal-500: #14b8a6;
+  --tw-cyan-500: #06b6d4;
+  --tw-sky-500: #0ea5e9;
+  --tw-blue-500: #3b82f6;
+  --tw-blue-600: #2563eb;
+  --tw-blue-700: #1d4ed8;
+  --tw-indigo-500: #6366f1;
+  --tw-violet-500: #8b5cf6;
+  --tw-purple-500: #a855f7;
+  --tw-pink-500: #ec4899;
+  --tw-rose-500: #f43f5e;
+  --tw-blue-ribbon-50: #ebf6ff;
+  --tw-blue-ribbon-100: #dbecff;
+  --tw-blue-ribbon-200: #bedcff;
+  --tw-blue-ribbon-300: #97c3ff;
+  --tw-blue-ribbon-400: #6e9dff;
+  --tw-blue-ribbon-500: #4c79ff;
+  --tw-blue-ribbon-600: #294dff;
+  --tw-blue-ribbon-700: #203de2;
+  --tw-blue-ribbon-800: #1d37b6;
+  --tw-blue-ribbon-900: #172563;
+  --tw-blue-ribbon-950: #101738;
+
+
+  /* —— 2. Theme —— */
+
+  /* semantic colors */
+  --color-accent: var(--tw-gray-100);
+  --color-accent-foreground: var(--tw-gray-900);
+  --color-background: var(--tw-gray-50);
+  --color-border: var(--tw-gray-200);
+  --color-card: var(--tw-white);
+  --color-card-foreground: var(--tw-gray-950);
+  --color-destructive: var(--tw-red-600);
+  --color-destructive-foreground: var(--tw-red-50);
+  --color-foreground: var(--tw-gray-950);
+  --color-input: var(--tw-gray-300);
+  --color-muted: var(--tw-gray-100);
+  --color-muted-foreground: var(--tw-gray-500);
+  --color-popover: var(--tw-white);
+  --color-popover-foreground: var(--tw-gray-900);
+  --color-primary: var(--tw-blue-ribbon-700);
+  --color-primary-foreground: var(--tw-gray-50);
+  --color-ring: var(--tw-gray-400);
+  --color-secondary: var(--tw-gray-200);
+  --color-secondary-foreground: var(--tw-gray-900);
+  --color-chart-1: var(--tw-blue-400);
+  --color-chart-2: var(--tw-red-500);
+  --color-chart-3: var(--tw-amber-400);
+  --color-chart-4: var(--tw-violet-500);
+  --color-sidebar-background: var(--tw-gray-50);
+  --color-sidebar-foreground: var(--tw-gray-950);
+  --color-sidebar-primary: var(--tw-gray-950);
+  --color-sidebar-primary-foreground: var(--tw-gray-50);
+  --color-sidebar-accent: var(--tw-gray-100);
+  --color-sidebar-accent-foreground: var(--tw-gray-900);
+  --color-sidebar-border: var(--tw-gray-200);
+  --color-sidebar-ring: var(--tw-gray-400);
+
+  /* fonts */
+  --font-sans: Geist;
+  --font-serif: Georgia;
+  --font-mono: Geist Mono;
+
+  /* typography */
+  --text-xs: 12px;
+  --text-xs-lh: 16px;
+  --text-sm: 14px;
+  --text-sm-lh: 20px;
+  --text-base: 16px;
+  --text-base-lh: 24px;
+  --text-lg: 18px;
+  --text-lg-lh: 28px;
+  --text-xl: 20px;
+  --text-xl-lh: 28px;
+  --text-2xl: 24px;
+  --text-2xl-lh: 32px;
+  --text-3xl: 30px;
+  --text-3xl-lh: 36px;
+  --text-4xl: 36px;
+  --text-4xl-lh: 40px;
+  --text-5xl: 48px;
+  --text-5xl-lh: 48px;
+  --text-6xl: 60px;
+  --text-6xl-lh: 60px;
+  --text-7xl: 72px;
+  --text-7xl-lh: 72px;
+  --text-8xl: 96px;
+  --text-8xl-lh: 96px;
+  --text-9xl: 128px;
+  --text-9xl-lh: 128px;
+
+  /* container */
+  --container-app: 1024px;
+
+  /* font-weight */
+  --font-thin: 100;
+  --font-extralight: 200;
+  --font-light: 300;
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+  --font-extrabold: 800;
+  --font-black: 900;
+
+  /* radius */
+  --radius-xs: 2px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
+  --radius-3xl: 24px;
+  --radius-4xl: 32px;
+
+  /* shadows */
+  --shadow-2xs: 0 1px 0 0 rgba(0,0,0,0.05);
+  --shadow-xs: 0 1px 2px 0 rgba(0,0,0,0.05);
+  --shadow-sm: 0 1px 3px 0 rgba(0,0,0,0.08), 0 1px 2px -1px rgba(0,0,0,0.08);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.08), 0 2px 4px -2px rgba(0,0,0,0.08);
+  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.08);
+  --shadow-xl: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
+  --shadow-2xl: 0 25px 50px -12px rgba(0,0,0,0.25);
+
+  /* inset shadows */
+  --inset-shadow-2xs: inset 0 1px 0 0 rgba(0,0,0,0.05);
+  --inset-shadow-xs: inset 0 1px 1px 0 rgba(0,0,0,0.05);
+  --inset-shadow-sm: inset 0 2px 4px 0 rgba(0,0,0,0.05);
+
+  /* drop shadows */
+  --drop-shadow-xs: 0 1px 1px rgba(0,0,0,0.05);
+  --drop-shadow-sm: 0 1px 2px rgba(0,0,0,0.15);
+  --drop-shadow-md: 0 3px 3px rgba(0,0,0,0.12);
+  --drop-shadow-lg: 0 4px 4px rgba(0,0,0,0.15);
+  --drop-shadow-xl: 0 9px 7px rgba(0,0,0,0.1);
+  --drop-shadow-2xl: 0 25px 25px rgba(0,0,0,0.15);
+
+  /* blur */
+  --blur-xs: 4px;
+  --blur-sm: 8px;
+  --blur-md: 12px;
+  --blur-lg: 16px;
+  --blur-xl: 24px;
+  --blur-2xl: 40px;
+  --blur-3xl: 64px;
+
+
+  /* —— 3. Mode (Light) —— */
+
+  /* semantic aliases */
+  --accent: var(--color-accent);
+  --accent-foreground: var(--color-accent-foreground);
+  --background: var(--color-background);
+  --border: var(--color-border);
+  --card: var(--color-card);
+  --card-foreground: var(--color-card-foreground);
+  --destructive: var(--color-destructive);
+  --destructive-foreground: var(--color-destructive-foreground);
+  --foreground: var(--color-foreground);
+  --input: var(--color-input);
+  --muted: var(--color-muted);
+  --muted-foreground: var(--color-muted-foreground);
+  --popover: var(--color-popover);
+  --popover-foreground: var(--color-popover-foreground);
+  --primary: var(--color-primary);
+  --primary-foreground: var(--color-primary-foreground);
+  --ring: var(--color-ring);
+  --ring-offset: var(--color-background);
+  --secondary: var(--color-secondary);
+  --secondary-foreground: var(--color-secondary-foreground);
+  --chart-1: var(--color-chart-1);
+  --chart-2: var(--color-chart-2);
+  --chart-3: var(--color-chart-3);
+  --chart-4: var(--color-chart-4);
+  --sidebar-background: var(--color-sidebar-background);
+  --sidebar-foreground: var(--color-sidebar-foreground);
+  --sidebar-primary: var(--color-sidebar-primary);
+  --sidebar-primary-foreground: var(--color-sidebar-primary-foreground);
+  --sidebar-accent: var(--color-sidebar-accent);
+  --sidebar-accent-foreground: var(--color-sidebar-accent-foreground);
+  --sidebar-border: var(--color-sidebar-border);
+  --sidebar-ring: var(--color-sidebar-ring);
+
+  /* alpha */
+  --alpha-5: rgba(255, 255, 255, 0.95);
+  --alpha-10: rgba(255, 255, 255, 0.9);
+  --alpha-20: rgba(255, 255, 255, 0.8);
+  --alpha-30: rgba(255, 255, 255, 0.7);
+  --alpha-40: rgba(255, 255, 255, 0.6);
+  --alpha-50: rgba(255, 255, 255, 0.5);
+  --alpha-60: rgba(255, 255, 255, 0.4);
+  --alpha-70: rgba(255, 255, 255, 0.3);
+  --alpha-80: rgba(255, 255, 255, 0.2);
+  --alpha-90: rgba(255, 255, 255, 0.1);
+
+  /* custom */
+  --outline: rgba(163, 163, 163, 0.5);
+  --outline-10: rgba(163, 163, 163, 0.1);
+  --destructive-20: rgba(220, 38, 38, 0.2);
+  --destructive-40: rgba(220, 38, 38, 0.4);
+
+  /* mode-switching custom aliases (light values shown) */
+  --destructive-60: var(--color-destructive);
+  --destructive-70: var(--color-destructive);
+  --destructive-90: var(--color-destructive);
+  --destructive-40-60: rgba(220, 38, 38, 0.4);
+  --outline-10-20: rgba(163, 163, 163, 0.1);
+  --blue-500-600: var(--tw-blue-500);
+  --background-input-30: var(--color-background);
+  --background-calendar-30: var(--color-background);
+  --input-80: var(--color-input);
+  --accent-calendar-50: var(--color-accent);
+  --accent-input-50: var(--color-accent);
+  --ring-input-dark: var(--color-ring);
+  --border-input-dark: var(--color-border);
+
+
+  /* —— 4. Custom (Desktop) —— */
+
+  /* headings */
+  --heading-xl-font: var(--font-sans);
+  --heading-xl-size: var(--text-5xl);
+  --heading-xl-lh: var(--text-5xl-lh);
+  --heading-xl-weight: var(--font-bold);
+  --heading-xl-tracking: 0;
+
+  --heading-lg-font: var(--font-sans);
+  --heading-lg-size: var(--text-4xl);
+  --heading-lg-lh: var(--text-4xl-lh);
+  --heading-lg-weight: var(--font-bold);
+  --heading-lg-tracking: 0;
+
+  --heading-md-font: var(--font-sans);
+  --heading-md-size: var(--text-3xl);
+  --heading-md-lh: var(--text-3xl-lh);
+  --heading-md-weight: var(--font-bold);
+  --heading-md-tracking: 0;
+
+  --heading-sm-font: var(--font-sans);
+  --heading-sm-size: var(--text-2xl);
+  --heading-sm-lh: var(--text-2xl-lh);
+  --heading-sm-weight: var(--font-bold);
+  --heading-sm-tracking: 0;
+
+  /* layout */
+  --container-padding-x: var(--spacing-6);
+  --section-padding-y: var(--spacing-24);
+  --section-title-gap-xl: var(--spacing-6);
+  --section-title-gap-lg: var(--spacing-5);
+  --section-title-gap-md: var(--spacing-5);
+  --section-title-gap-sm: var(--spacing-4);
+}

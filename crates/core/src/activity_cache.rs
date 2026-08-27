@@ -206,10 +206,16 @@ mod tests {
     /// org's body under the second's name.
     #[test]
     fn replacing_an_api_key_changes_the_scope() {
+        // Both seams are process-global, so another test redirecting them while
+        // this one is between its `save()` and its `scope()` would have it read a
+        // home with no account in it. See `crate::env::path_env_lock`.
+        let _lock = crate::env::path_env_lock();
         let home = std::env::temp_dir().join(format!("gate-cache-scope-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         // Both seams: the account file lives under app support, and `save()` writes
         // the key itself through the keychain, which must not touch the real one.
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+        let prev_secrets = std::env::var_os("GATE_CONNECT_TEST_SECRETS");
         std::env::set_var("GATE_CONNECT_TEST_HOME", &home);
         std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
 
@@ -218,8 +224,13 @@ mod tests {
         account::save("https://gw.example", Some("sk-gw-bbbbbbbbbbbb2222")).unwrap();
         let second = scope(None, None).expect("an account exists");
 
-        std::env::remove_var("GATE_CONNECT_TEST_HOME");
-        std::env::remove_var("GATE_CONNECT_TEST_SECRETS");
+        // Restore rather than clear: an ambient value belongs to whoever set it.
+        let restore = |k: &str, v: Option<std::ffi::OsString>| match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        };
+        restore("GATE_CONNECT_TEST_HOME", prev_home);
+        restore("GATE_CONNECT_TEST_SECRETS", prev_secrets);
         let _ = std::fs::remove_dir_all(&home);
 
         assert_ne!(

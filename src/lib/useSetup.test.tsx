@@ -10,9 +10,11 @@ vi.mock("./api", () => ({
   getAccount: vi.fn(),
   oauthBeginLogin: vi.fn(),
   oauthListOrgs: vi.fn(),
+  oauthSignOut: vi.fn(),
   oauthStatus: vi.fn(),
   proxyEnable: vi.fn(),
   saveAccount: vi.fn(),
+  setDeviceName: vi.fn(),
   setOrg: vi.fn(),
 }));
 vi.mock("./analytics", () => ({ track: vi.fn(), trackError: vi.fn() }));
@@ -22,9 +24,11 @@ import {
   getAccount,
   oauthBeginLogin,
   oauthListOrgs,
+  oauthSignOut,
   oauthStatus,
   proxyEnable,
   saveAccount,
+  setDeviceName,
   setOrg,
 } from "./api";
 import { markOAuthOfferSeen } from "./oauthOffer";
@@ -40,6 +44,7 @@ const oauthAccount = (over: Partial<Account> = {}): Account => ({
   gateway_base_url: "https://gw.example",
   has_api_key: false,
   auth_mode: "oauth",
+  billing_mode: "byok",
   org_id: "org-1",
   org_name: "Example Org",
   ...over,
@@ -49,6 +54,7 @@ const keyAccount = (over: Partial<Account> = {}): Account => ({
   gateway_base_url: "https://gw.example",
   has_api_key: true,
   auth_mode: "api_key",
+  billing_mode: "byok",
   org_id: null,
   org_name: null,
   ...over,
@@ -66,6 +72,7 @@ function harness(initial: {
   account?: Account | null;
   oauth?: OAuthStatus | null;
   proxyRunning?: boolean;
+  deviceNamed?: boolean;
 }) {
   const api: { current: ReturnType<typeof useSetup> | null } = { current: null };
   const onProxy = vi.fn();
@@ -82,6 +89,7 @@ function harness(initial: {
       oauth: session.oauth,
       onSession: setSession,
       onProxy,
+      deviceNamed: initial.deviceNamed,
     });
     return null;
   }
@@ -99,6 +107,8 @@ beforeEach(() => {
   (proxyEnable as Mock).mockResolvedValue({ running: true });
   (getAccount as Mock).mockResolvedValue(oauthAccount());
   (oauthStatus as Mock).mockResolvedValue(SIGNED_IN);
+  (oauthSignOut as Mock).mockResolvedValue(undefined);
+  (setDeviceName as Mock).mockResolvedValue(undefined);
 });
 afterEach(cleanup);
 
@@ -175,6 +185,57 @@ describe("useSetup: signing in", () => {
     expect(saveOrder).toBeLessThan(loginOrder);
   });
 
+  /**
+   * Re-signing in must not repoint the install.
+   *
+   * The gateway used to be `useState(DEFAULT_GATEWAY_BASE_URL)`, seeded before
+   * the account read landed and never synced, so this write sent production for
+   * an account that had been on staging. That also picks the Cognito pool
+   * `OAuthConfig::from_build_env` resolves, so the visible symptom was not a
+   * wrong URL in Settings but a sign-in that failed before the browser opened.
+   */
+  it("re-signs in against the account's own gateway, not the build default", async () => {
+    const { api } = harness({
+      account: oauthAccount({ gateway_base_url: "https://gateway-staging.example" }),
+      oauth: SIGNED_OUT,
+    });
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+
+    expect(saveAccount).toHaveBeenCalledWith("https://gateway-staging.example", null);
+    expect(saveAccount).not.toHaveBeenCalledWith(DEFAULT_GATEWAY_BASE_URL, null);
+  });
+
+  it("still uses the build default when there is no account to read one from", async () => {
+    // First run on a fresh machine: nothing on disk, so the default is the only
+    // answer, and the picker keeps overriding it.
+    const { api } = harness({ account: null, oauth: null });
+    expect(api.current!.gateway).toBe(DEFAULT_GATEWAY_BASE_URL);
+
+    act(() => api.current!.setGateway("https://gateway-staging.example"));
+    expect(api.current!.gateway).toBe("https://gateway-staging.example");
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+    expect(saveAccount).toHaveBeenCalledWith("https://gateway-staging.example", null);
+  });
+
+  /** The picker is an explicit choice and outranks the account it was made
+   *  against, or selecting a server would appear to do nothing. */
+  it("lets the picker override the account's gateway", () => {
+    const { api } = harness({
+      account: oauthAccount({ gateway_base_url: "https://gw.example" }),
+      oauth: SIGNED_OUT,
+    });
+    expect(api.current!.gateway).toBe("https://gw.example");
+
+    act(() => api.current!.setGateway("https://gateway-staging.example"));
+    expect(api.current!.gateway).toBe("https://gateway-staging.example");
+  });
+
   it("re-reads the session so the stage moves on its own", async () => {
     const { api } = harness({ account: null, oauth: null });
 
@@ -229,19 +290,84 @@ describe("useSetup: the API-key path", () => {
     expect(saveAccount).not.toHaveBeenCalled();
   });
 
-  it("escapes the org-picker dead end to the key form", async () => {
-    // Signed in, no organization, no admin to ask: the key form is the only way
-    // forward, and derivation alone would keep returning to the picker.
+  it("escapes the org-picker dead end by dropping the session", async () => {
+    // Signed in, no organization, no admin to ask. `Auth / Organizations` sends
+    // this back to the sign-in choice rather than sideways into the key form:
+    // an account with nothing to route for cannot go forward, and both drawn
+    // affordances - "Go back" and "Use a different account" - mean this.
     const { api } = harness({
       account: oauthAccount({ org_id: null, org_name: null }),
       oauth: SIGNED_IN,
     });
     expect(api.current!.stage.kind).toBe("org-picker");
 
-    act(() => api.current!.useApiKeyInstead());
+    (getAccount as Mock).mockResolvedValue(null);
+    (oauthStatus as Mock).mockResolvedValue(SIGNED_OUT);
+    await act(async () => {
+      await api.current!.signOut();
+    });
 
+    expect(oauthSignOut).toHaveBeenCalled();
+    // The gateway survives, and it is *the account's own* - not the build
+    // default. This assertion used to name the default while the comment
+    // claimed the gateway survived, which is the bug the two together hid:
+    // signing out, then back in, rewrote a staging or local account with the
+    // production URL.
+    expect(saveAccount).toHaveBeenCalledWith("https://gw.example", null);
     expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false });
-    expect(api.current!.apiKeyOpen).toBe(true);
+  });
+
+  it("opens the key route as its own pane, and goes back", () => {
+    const { api } = harness({ account: null, oauth: null });
+
+    act(() => api.current!.openApiKey());
+    expect(api.current!.stage).toEqual({ kind: "api-key" });
+
+    act(() => api.current!.closeApiKey());
+    expect(api.current!.stage).toEqual({ kind: "welcome", reauth: false });
+  });
+
+  it("names the device after a sign-in, before confirming", async () => {
+    const { api } = harness({ account: null, oauth: null, deviceNamed: false });
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+    expect(api.current!.stage).toEqual({ kind: "name-device" });
+
+    act(() => api.current!.setDeviceNameDraft("Chad's Macbook Pro"));
+    await act(async () => {
+      await api.current!.nameDevice();
+    });
+
+    expect(setDeviceName).toHaveBeenCalledWith("Chad's Macbook Pro");
+    // Does not wait on the preferences re-read that flips `deviceNamed`.
+    expect(api.current!.stage).toEqual({ kind: "connected" });
+  });
+
+  it("lets naming be skipped, and does not ask again", async () => {
+    const { api } = harness({ account: null, oauth: null, deviceNamed: false });
+
+    await act(async () => {
+      await api.current!.signIn();
+    });
+    expect(api.current!.stage).toEqual({ kind: "name-device" });
+
+    act(() => api.current!.skipNaming());
+
+    expect(setDeviceName).not.toHaveBeenCalled();
+    expect(api.current!.stage).toEqual({ kind: "connected" });
+  });
+
+  it("never asks a returning user to name a machine that follows the hostname", () => {
+    // `device_name` is null for everyone who never renamed, so deriving from it
+    // alone would greet them with the pane on every launch.
+    const { api } = harness({
+      account: oauthAccount(),
+      oauth: SIGNED_IN,
+      deviceNamed: false,
+    });
+    expect(api.current!.stage).toEqual({ kind: "ready" });
   });
 });
 

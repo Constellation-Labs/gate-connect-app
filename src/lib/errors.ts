@@ -264,7 +264,11 @@ export function classifyError(
     // the rows may be stale rather than implying the change did not land.
     resync: "Couldn’t refresh what’s on screen",
     open_external: "Couldn’t open that link",
-    sign_in: "Couldn’t save your account",
+    // Three of the four `sign_in` call sites are browser flows, not writes:
+    // the OAuth offer, Settings’ switch to a Gate account, and first run’s
+    // sign-in. "Couldn’t save your account" described the fourth and read as
+    // a non sequitur after a Cognito round-trip that never saved anything.
+    sign_in: "Couldn’t complete sign-in",
     sign_out: "Couldn’t sign out",
     connect: "Couldn’t connect this tool",
     forget: "Couldn’t reset Gate Connect",

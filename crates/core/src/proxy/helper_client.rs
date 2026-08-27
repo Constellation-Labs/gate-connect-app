@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::account::BillingMode;
 use crate::proxy::control::{self, Request, Response};
 use crate::proxy::ProxyDomain;
 
@@ -151,6 +152,7 @@ impl HelperClient {
         api_key: &str,
         oauth_token: &str,
         org_id: &str,
+        billing_mode: BillingMode,
         ca_cert_pem: &str,
         ca_key_pem: &str,
         domains: &[ProxyDomain],
@@ -163,6 +165,7 @@ impl HelperClient {
             api_key: api_key.to_string(),
             oauth_token: oauth_token.to_string(),
             org_id: org_id.to_string(),
+            billing_mode,
             ca_cert_pem: ca_cert_pem.to_string(),
             ca_key_pem: ca_key_pem.to_string(),
             domains: domains.to_vec(),

@@ -1,6 +1,8 @@
+import { Fragment } from "react";
 import { BaseSwitch, Card } from "./base";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
+import type { AuthMode } from "../../lib/api";
 
 /**
  * The Settings pane (Figma `Flows / Settings`). Named `SettingsPane` rather
@@ -27,10 +29,17 @@ export interface SettingsRow {
   label: string;
   /** Second line under the label - the Startup rows and Danger zone. */
   description?: string;
+  /**
+   * A link at the end of that second line.
+   *
+   * For a disclosure that belongs *to* a setting rather than beside it: AG-603's
+   * field list had a row of its own, which the file does not draw, and a row is
+   * too much furniture for "and here is exactly what that means". Inline, it
+   * reads as part of the sentence it qualifies. Needs `description`.
+   */
+  descriptionLink?: { label: string; onClick: () => void };
   /** Middle column, e.g. "MacBook Pro". */
   value?: string;
-  /** Set the value in Geist Mono: install IDs, API keys, versions. */
-  mono?: boolean;
   action?: SettingsAction;
   toggle?: { on: boolean; onToggle: () => void };
   /**
@@ -78,6 +87,7 @@ export function buildSettingsSections({
   plan,
   gateway,
   apiKeyMasked,
+  authMode,
   launchAtLogin,
   launchAtLoginUnavailable,
   routingHealthNotifications,
@@ -92,16 +102,18 @@ export function buildSettingsSections({
   onCopyInstallId,
   onUpgradePlan,
   onReplaceKey,
+  onSwitchToGateAccount,
+  signInNote,
   onDisconnect,
   onToggleLaunchAtLogin,
   onRetryLaunchAtLogin,
   onToggleRoutingHealthNotifications,
   onToggleShareDiagnostics,
+  onViewCollectedData,
   onRetryPreferences,
   onReplayTutorial,
   onCheckForUpdates,
   onViewDiagnostics,
-  onViewCollectedData,
   onOpenDocs,
   onContactSupport,
   onReviewReset,
@@ -113,6 +125,21 @@ export function buildSettingsSections({
   gateway: string;
   /** Already masked upstream - this pane never sees the key. */
   apiKeyMasked: string;
+  /**
+   * How the account actually authenticates, which decides whether the API key
+   * row belongs on screen at all.
+   *
+   * An OAuth account keeps whatever key it had before the upgrade: the keychain
+   * item is not deleted, so `has_api_key` stays true and this pane used to draw
+   * a masked key under "API key" for a session authenticated by a Cognito
+   * bearer. On the screen whose whole job is to say where the credential lives,
+   * that named the wrong one - and the key it named cannot be replaced from
+   * here either, because `onReplaceKey` is withheld for OAuth.
+   *
+   * Undefined leaves the key row in place: it is the state before the account
+   * read lands, and the key row is the older default.
+   */
+  authMode?: AuthMode;
   launchAtLogin: boolean;
   /** The launch-at-login read failed. Drives the Unavailable row; the boolean
    * above is then meaningless and must not reach a switch. */
@@ -137,6 +164,14 @@ export function buildSettingsSections({
   onCopyInstallId: () => void;
   onUpgradePlan?: () => void;
   onReplaceKey?: () => void;
+  /** Offered only to an account still on a pasted key. The popover has carried
+   * this since it shipped (`screens/Settings.tsx`); the new shell had only the
+   * one-time `OAuthOfferDialog`, and `markOAuthOfferSeen` meant that dismissing
+   * it once left no route to a Gate account at all. */
+  onSwitchToGateAccount?: () => void;
+  /** Replaces that row's description while the browser flow is open, the same
+   * way `updateNote` speaks for the version row. */
+  signInNote?: string;
   onDisconnect?: () => void;
   onToggleLaunchAtLogin: () => void;
   /** Present only when the launch-at-login read failed, so the row can offer a
@@ -144,13 +179,14 @@ export function buildSettingsSections({
   onRetryLaunchAtLogin?: () => void;
   onToggleRoutingHealthNotifications?: () => void;
   onToggleShareDiagnostics?: () => void;
+  /** Opens the collected-data list from the share-diagnostics row's own
+   * description. Read-only: AG-603 requires it to open "without changing the
+   * setting", which is also why it is a link and not a second switch. */
+  onViewCollectedData?: () => void;
   onRetryPreferences?: () => void;
   onReplayTutorial: () => void;
   onCheckForUpdates?: () => void;
   onViewDiagnostics: () => void;
-  /** Opens the collected-data list. Read-only: AG-603 requires it to open
-   * "without changing the setting". */
-  onViewCollectedData?: () => void;
   onOpenDocs?: () => void;
   onContactSupport?: () => void;
   onReviewReset?: () => void;
@@ -162,7 +198,7 @@ export function buildSettingsSections({
       rows: [
         {
           id: "device",
-          icon: "monitorSmartphone",
+          icon: "monitor",
           label: "Device",
           value: deviceName,
           action: onRenameDevice
@@ -171,10 +207,9 @@ export function buildSettingsSections({
         },
         {
           id: "install-id",
-          icon: "idCard",
+          icon: "squareUser",
           label: "Install ID",
           value: installId,
-          mono: true,
           action: { label: "Copy ID", onClick: onCopyInstallId },
         },
       ],
@@ -183,10 +218,10 @@ export function buildSettingsSections({
       id: "account",
       title: "Account",
       rows: [
-        { id: "login", icon: "user", label: "Login ID", value: loginId },
+        { id: "login", icon: "userRound", label: "Login ID", value: loginId },
         {
           id: "plan",
-          icon: "receipt",
+          icon: "fileBadge2",
           label: "Gate plan",
           value: plan,
           action: onUpgradePlan
@@ -204,27 +239,67 @@ export function buildSettingsSections({
           icon: "globe",
           label: "Gateway",
           value: gateway,
-          mono: true,
           action: onChangeGateway
             ? { label: "Change server", onClick: onChangeGateway }
             : undefined,
         },
-        {
-          id: "api-key",
-          icon: "key",
-          label: "API key",
-          value: apiKeyMasked,
-          mono: true,
-          action: onReplaceKey ? { label: "Replace key", onClick: onReplaceKey } : undefined,
-        },
+        // Only for an account a key actually authenticates. See `authMode`.
+        ...(authMode === "oauth"
+          ? []
+          : [
+              {
+                id: "api-key",
+                icon: "key" as IconName,
+                label: "API key",
+                value: apiKeyMasked,
+                action: onReplaceKey
+                  ? { label: "Replace key", onClick: onReplaceKey }
+                  : undefined,
+              } as SettingsRow,
+            ]),
+        // Takes the key row's place for a Gate account, so the section still
+        // says what signs the user in rather than going quiet about it. The
+        // switch action stays gated on the handler, which the shell withholds
+        // for an account already on OAuth - there is nowhere to switch to.
+        ...(authMode === "oauth"
+          ? [
+              {
+                id: "sign-in-method",
+                icon: "shieldCheck" as IconName,
+                label: "Sign-in method",
+                // No standing description: every drawn row that carries a value
+                // carries no second line, and the explanation this used to hold
+                // wrapped the row to six of them. `signInNote` still lands here,
+                // the way `updateNote` lands on Version - a transient line about
+                // what is happening now, not a paragraph the row wears at rest.
+                description: signInNote,
+                value: "Gate account",
+              } as SettingsRow,
+            ]
+          : onSwitchToGateAccount
+            ? [
+                {
+                  id: "sign-in-method",
+                  icon: "shieldCheck" as IconName,
+                  label: "Sign-in method",
+                  description: signInNote,
+                  value: "API key",
+                  action: {
+                    label: "Use a Gate account",
+                    onClick: onSwitchToGateAccount,
+                  },
+                } as SettingsRow,
+              ]
+            : []),
         ...(certificate
           ? [
               {
                 id: "certificate",
                 icon: "shieldCheck" as IconName,
                 label: "Gate certificate",
-                description:
-                  "Lets Gate inspect your AI traffic locally. Removing it stops inspection until it is trusted again.",
+                // No description, for the reason Sign-in method has none. What
+                // removing it costs is the confirmation dialog's job to say, and
+                // that dialog says it before anything happens.
                 value: certificate,
                 // Red, like Disconnect and Reset: it is reversible, but until it is
                 // reversed every routed domain stops being inspected, and that is
@@ -264,35 +339,33 @@ export function buildSettingsSections({
       rows: [
         {
           id: "launch",
-          icon: "power",
+          icon: "circlePower",
           label: "Launch at login",
           description: "Keeps routing on after restart",
           ...(launchAtLoginUnavailable && onRetryLaunchAtLogin
             ? { unavailable: { onRetry: onRetryLaunchAtLogin } }
             : { toggle: { on: launchAtLogin, onToggle: onToggleLaunchAtLogin } }),
         },
-      ],
-    },
-    // Its own section rather than a row under Startup: these are choices about
-    // what interrupts the user, not about what happens at boot.
-    //
-    // One switch, not the four the criteria list. Blocked-event, flagged-event
-    // and sound notifications are specified alongside the live security-event
-    // feed, and there is no feed - the only notifications this app fires are
-    // about routing itself. A switch for an event that cannot arrive would tell
-    // the user they had turned something off.
-    ...(onToggleRoutingHealthNotifications
-      ? [
-          {
-            id: "notifications",
-            title: "Notifications",
-            rows: [
+        // A row under Startup, where the drawn screen keeps it ("Settings /
+        // Main screens", read 2026-08-21) - an earlier build gave it a section
+        // of its own because AG-594 names one.
+        //
+        // One switch, not the four the criteria list, and not the drawn
+        // description either: the drawing promises alerts when a request is
+        // blocked or flagged, and those events need the live security feed
+        // (AG-578), which does not exist. The only notifications this app fires
+        // are about routing itself, so that is what the row claims to control.
+        ...(onToggleRoutingHealthNotifications
+          ? [
               {
                 id: "routing-health",
                 icon: "bell" as IconName,
-                label: "Routing health",
-                description:
-                  "Tell me when a session expires or a tool cannot be put back",
+                label: "Notifications",
+                // `116:29086`, verbatim. The honest routing-health wording was
+                // ours, on the grounds that the blocked/flagged events need a
+                // live security feed (AG-578) that does not exist. The file
+                // wins; the row now promises more than it fires.
+                description: "Alert me when a request is blocked or flagged",
                 ...(preferencesUnavailable && onRetryPreferences
                   ? { unavailable: { onRetry: onRetryPreferences } }
                   : {
@@ -301,15 +374,20 @@ export function buildSettingsSections({
                         onToggle: onToggleRoutingHealthNotifications,
                       },
                     }),
-              },
-            ],
-          },
-        ]
-      : []),
+              } as SettingsRow,
+            ]
+          : []),
+      ],
+    },
     // Diagnostics gets its own section, out of About: sharing data is a privacy
     // choice, and the report is the evidence of what would be shared. Sending a
     // report on demand, and the reference it returns, belong with the collection
     // work and are not here.
+    //
+    // Two rows, which is what the file draws. AG-603's read-only field list had
+    // a third; it hangs off the share-diagnostics description as a link now, so
+    // the criterion keeps a door without the section growing a row the design
+    // does not have.
     {
       id: "diagnostics",
       title: "Diagnostics",
@@ -318,10 +396,18 @@ export function buildSettingsSections({
           ? [
               {
                 id: "share-diagnostics",
-                icon: "shieldCheck" as IconName,
+                icon: "share2" as IconName,
                 label: "Share diagnostic data",
                 description:
-                  "Send Gate errors and routing state to help fix problems. Never prompts, responses, or credentials.",
+                  "Send Gate errors and routing stats to help fix problems. Never prompts or credentials.",
+                ...(onViewCollectedData
+                  ? {
+                      descriptionLink: {
+                        label: "See what is collected",
+                        onClick: onViewCollectedData,
+                      },
+                    }
+                  : {}),
                 ...(preferencesUnavailable && onRetryPreferences
                   ? { unavailable: { onRetry: onRetryPreferences } }
                   : {
@@ -333,22 +419,11 @@ export function buildSettingsSections({
               } as SettingsRow,
             ]
           : []),
-        ...(onViewCollectedData
-          ? [
-              {
-                id: "collected-data",
-                icon: "eye" as IconName,
-                label: "What is collected",
-                description: "The exact fields that leave this device, and the ones that never do",
-                action: { label: "View list", onClick: onViewCollectedData },
-              } as SettingsRow,
-            ]
-          : []),
         {
           id: "diagnostics-report",
-          icon: "info",
+          icon: "clipboardList",
           label: "Diagnostics report",
-          description: "Everything Gate knows about this install, as shareable text",
+          description: "Everything Gate knows about this install, as shareable text.",
           action: { label: "View report", onClick: onViewDiagnostics },
         },
       ],
@@ -365,11 +440,10 @@ export function buildSettingsSections({
         },
         {
           id: "version",
-          icon: "codeXml",
+          icon: "squareCode",
           label: "Version",
           description: updateNote,
           value: version,
-          mono: true,
           action: onCheckForUpdates
             ? { label: "Check for updates", onClick: onCheckForUpdates }
             : undefined,
@@ -444,28 +518,44 @@ export function buildSettingsSections({
 
 export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
-      <h1 className="text-xl font-medium leading-6 tracking-heading text-neutral-900">
+    <div className="flex flex-1 flex-col gap-6 overflow-auto bg-base-background p-6">
+      {/* `heading/20` is 20/24 in the file. The token export's 28 is what
+        * `tailwind.config.ts` records, and `text-xl` carries it by default, so
+        * the leading is pinned here rather than left to the default. */}
+      <h1 className="text-xl font-medium leading-6 tracking-heading text-base-foreground">
         Settings
       </h1>
 
       {sections.map((section) => (
-        <section key={section.id} className="flex flex-col gap-2">
+        <section key={section.id} className="flex flex-col gap-3">
           <h2
-            className={`text-sm font-medium leading-5 ${
-              section.danger ? "text-red-600" : "text-neutral-900"
+            className={`text-base font-medium leading-6 tracking-heading ${
+              section.danger ? "text-red-600" : "text-base-foreground"
             }`}
           >
             {section.title}
           </h2>
 
-          {/* The danger card tints rather than sitting on plain white. Its
-           * red-50 / red-200 pairing is inferred from the heading colour, not
-           * sampled from Figma. */}
-          <Card className={section.danger ? "border-red-200 bg-red-50" : ""}>
-            {section.rows.map((row, i) => (
-              <Row key={row.id} row={row} first={i === 0} danger={section.danger} />
-            ))}
+          {/* The card pads 16px and the rules sit inside that padding rather
+           * than bleeding to its edges, which is what the frame draws: rows
+           * are stacked at a 16px gap with a 1px rule between them. */}
+          <Card
+            className={`p-4 ${section.danger ? "border-red-600/40 bg-red-50" : ""}`}
+          >
+            <div className="flex flex-col gap-4">
+              {section.rows.map((row, i) => (
+                <Fragment key={row.id}>
+                  {i > 0 && (
+                    <div
+                      className={`h-px ${
+                        section.danger ? "bg-red-600/40" : "bg-base-border"
+                      }`}
+                    />
+                  )}
+                  <Row row={row} />
+                </Fragment>
+              ))}
+            </div>
           </Card>
         </section>
       ))}
@@ -473,39 +563,54 @@ export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   );
 }
 
-function Row({
-  row,
-  first,
-  danger,
-}: {
-  row: SettingsRow;
-  first: boolean;
-  danger?: boolean;
-}) {
+function Row({ row }: { row: SettingsRow }) {
   return (
-    <div
-      className={`flex items-center gap-3 px-4 py-3 ${
-        first ? "" : danger ? "border-t border-red-200" : "border-t border-base-border"
-      }`}
-    >
-      <Icon name={row.icon} size={16} className="shrink-0 text-neutral-500" />
+    <div className="flex items-center gap-3">
+      {/* Full-strength ink. Sampled off `191:79795` at #030712, where this had
+        * been drawing `neutral-500` and reading washed out beside its label. */}
+      <Icon name={row.icon} size={20} className="shrink-0 text-base-foreground" />
 
+      {/* Two row shapes, which is all the design draws. A *value* row -
+        * Device, Install ID, Gate plan, Version - sets its label in a fixed
+        * 184px column so the values line up down the card. A *description* row
+        * - Launch at login, Notifications, Diagnostics report, Reset - gives the
+        * text the full width and puts its control at the end.
+        *
+        * A row carrying both is ours, not the file's: Sign-in method and Gate
+        * certificate. They take the description shape, because the 184px column
+        * is a gutter and a sentence in it wrapped to six lines. */}
       <div
         className={`min-w-0 ${
-          row.value === undefined && !row.unavailable ? "flex-1" : "w-[184px] shrink-0"
+          row.description !== undefined || (row.value === undefined && !row.unavailable)
+            ? "flex-1"
+            : "w-[184px] shrink-0"
         }`}
       >
-        <p className="truncate text-sm font-medium leading-5 text-neutral-900">
+        <p className="truncate text-sm font-medium leading-5 text-base-foreground">
           {row.label}
         </p>
         {row.description && (
-          <p className="text-base-xs leading-4 text-neutral-600">{row.description}</p>
+          <p className="text-base-xs leading-4 text-base-muted-foreground">
+            {row.description}
+            {row.descriptionLink && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={row.descriptionLink.onClick}
+                  className="rounded-control font-medium text-base-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                >
+                  {row.descriptionLink.label}
+                </button>
+              </>
+            )}
+          </p>
         )}
       </div>
 
       {row.unavailable ? (
         <>
-          <p className="min-w-0 flex-1 truncate text-sm leading-5 text-neutral-600">
+          <p className="min-w-0 flex-1 truncate text-sm leading-5 text-base-muted-foreground">
             Unavailable
           </p>
           <ActionButton action={{ label: "Retry", onClick: row.unavailable.onRetry }} />
@@ -514,17 +619,19 @@ function Row({
         <>
           {row.value !== undefined && (
             <p
-              className={`min-w-0 flex-1 truncate text-sm leading-5 text-neutral-900 ${
-                row.mono ? "font-mono" : ""
+              className={`truncate text-sm leading-5 text-base-foreground ${
+                // In a description row the text has taken the width, so the
+                // value sits with the control rather than claiming a column.
+                row.description !== undefined ? "shrink-0" : "min-w-0 flex-1"
               }`}
             >
               {row.value}
             </p>
           )}
 
-              {row.toggle && (
+          {row.toggle && (
             <span className="flex shrink-0 items-center gap-2">
-              <span className="text-base-xs font-medium text-neutral-600">
+              <span className="text-sm leading-5 text-base-foreground">
                 {row.toggle.on ? "On" : "Off"}
               </span>
               <BaseSwitch
@@ -547,14 +654,14 @@ function ActionButton({ action }: { action: SettingsAction }) {
     <button
       type="button"
       onClick={action.onClick}
-      className={`flex shrink-0 items-center gap-1.5 rounded-base px-2 py-1 text-base-xs font-medium leading-4 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+      className={`flex h-8 shrink-0 items-center gap-1.5 rounded-control px-3 text-base-xs font-medium leading-4 tracking-button-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
         action.destructive
-          ? "bg-red-600 text-white hover:bg-red-700 focus-visible:outline-red-600"
-          : "border border-base-border bg-base-card text-base-primary shadow-base-2xs hover:bg-gray-50 focus-visible:outline-base-primary"
+          ? "bg-base-destructive text-base-destructive-foreground shadow-base-btn-destructive hover:bg-red-700 focus-visible:outline-red-600"
+          : "border border-base-border bg-base-card text-base-primary shadow-base-btn-sm hover:bg-gray-50 focus-visible:outline-base-primary"
       }`}
     >
       {action.label}
-      {action.external && <Icon name="squareArrowOutUpRight" size={12} />}
+      {action.external && <Icon name="squareArrowOutUpRight" size={16} />}
     </button>
   );
 }
