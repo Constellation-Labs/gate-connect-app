@@ -3,6 +3,8 @@ import { BaseSwitch, Card, EmptyNote, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
+import { STATUS_TEXT, statusDetail } from "./Sidebar";
+import type { AppStatus } from "./Sidebar";
 
 /**
  * The per-app pane (Figma `Flows / App`), reached by selecting an app in the
@@ -88,6 +90,7 @@ const BADGE_STYLES: Record<ActivitySecurity | ActivityStatus, string> = {
 export function AppPane({
   name,
   isProtected,
+  status,
   since,
   logo,
   busy,
@@ -112,7 +115,20 @@ export function AppPane({
 }: {
   name: string;
   isProtected: boolean;
-  /** Relative age of the current status ("2m ago"). */
+  /**
+   * Observed status, which the header line draws in full.
+   *
+   * This is the pane's half of the split the rail makes: a 250px row cannot fit
+   * "Not protected - Configuration update failed" and truncates the reason
+   * away, so `Sidebar`'s row prints the phrase alone and the reason lands here,
+   * where the header has the width for a sentence.
+   *
+   * Absent falls back to the intent flag below, which is the older, coarser
+   * line: "Protected" or "Not protected", with no reason behind it.
+   */
+  status?: AppStatus;
+  /** Relative age of the current status ("2m ago"). Ignored when `status`
+   *  carries its own suffix. */
   since?: string;
   /** 16px brand mark for the header tile. */
   logo?: ReactNode;
@@ -203,12 +219,7 @@ export function AppPane({
           <h1 className="truncate text-xl font-medium tracking-heading text-base-foreground">
             {name}
           </h1>
-          <p className="text-base-xs font-medium leading-4">
-            <span className={isProtected ? "text-green-600" : "text-amber-600"}>
-              {isProtected ? "Protected" : "Not protected"}
-            </span>
-            {since && <span className="text-neutral-500"> - {since}</span>}
-          </p>
+          <AppStatusLine isProtected={isProtected} status={status} since={since} />
         </div>
         <span className="flex shrink-0 items-center gap-2">
           <span className="text-base-xs font-medium text-neutral-600">
@@ -258,6 +269,35 @@ export function AppPane({
         onLoadMore={onLoadMore}
       />
     </div>
+  );
+}
+
+/**
+ * The header's status line: the rail's coloured phrase, and after it the reason
+ * the rail had no room for. It wraps rather than truncates - the reason is the
+ * only thing on screen telling the user why their tool is not covered.
+ */
+function AppStatusLine({
+  isProtected,
+  status,
+  since,
+}: {
+  isProtected: boolean;
+  status?: AppStatus;
+  since?: string;
+}) {
+  const text = status
+    ? STATUS_TEXT[status.kind]
+    : isProtected
+      ? STATUS_TEXT.protected
+      : STATUS_TEXT["not-protected"];
+  const detail = status ? statusDetail(status) : since;
+
+  return (
+    <p className="text-base-xs font-medium leading-4">
+      <span className={text.className}>{text.label}</span>
+      {detail && <span className="text-neutral-500"> - {detail}</span>}
+    </p>
   );
 }
 

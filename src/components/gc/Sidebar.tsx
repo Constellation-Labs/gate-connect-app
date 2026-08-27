@@ -113,18 +113,33 @@ export interface MasterRouting {
   envExport?: { on: boolean; onToggle: (next: boolean) => void };
 }
 
-const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: string }> = {
+export const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: string }> = {
   protected: { label: "Protected", className: "text-green-600" },
   "not-protected": { label: "Not protected", className: "text-amber-600" },
   drifted: { label: "Config drifted", className: "text-amber-600" },
   "not-routed": { label: "Not routed", className: "text-amber-600" },
 };
 
+/**
+ * The grey suffix a rail row draws: "2m ago", "Off", "Blocked" - the short ones
+ * the design draws inside 250px.
+ *
+ * A "Not protected" detail is deliberately not among them. Those are the
+ * verdict's reasons ("Configuration update failed", "Verification failed"), and
+ * at rail width they truncate mid-word, which turns an actionable sentence into
+ * an ellipsis. The row keeps the coloured phrase and the app pane's header
+ * carries the reason in full - see `statusDetail`.
+ */
 function statusSuffix(status: AppStatus): string | undefined {
   if (status.kind === "protected") return status.since;
   if (status.kind === "not-routed") return status.detail;
-  if (status.kind === "not-protected") return status.detail;
   return undefined;
+}
+
+/** The same suffix, plus the reason the rail drops. For a surface with the room
+ *  to print it. */
+export function statusDetail(status: AppStatus): string | undefined {
+  return status.kind === "not-protected" ? status.detail : statusSuffix(status);
 }
 
 export function Sidebar({
