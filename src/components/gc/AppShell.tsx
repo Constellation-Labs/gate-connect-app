@@ -35,7 +35,6 @@ export function AppShell({
   master,
   onSelectApp,
   onToggleApp,
-  onToggleGroup,
   onRefreshApps,
   refreshingApps,
   inventory,
@@ -60,7 +59,6 @@ export function AppShell({
   master?: MasterRouting;
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
-  onToggleGroup?: (id: string, next: boolean) => void;
   /** Re-run tool detection. Passed straight through to the sidebar, which owns
    * the control. */
   onRefreshApps?: () => void;
@@ -113,7 +111,6 @@ export function AppShell({
           master={master}
           onSelectApp={onSelectApp}
           onToggleApp={onToggleApp}
-          onToggleGroup={onToggleGroup}
           onRefresh={onRefreshApps}
           refreshing={refreshingApps}
           inventory={inventory}

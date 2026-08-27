@@ -747,6 +747,11 @@ export function NewUiApp() {
       const ctx = engineContexts.find((c) => c === context) ?? "connect";
       const classified = classifyError(e, ctx);
       setActionError(
+        // Unreachable from this shell since the family switches came off the
+        // rail on 2026-08-27: `setFamilyRouted` is the only thing that throws
+        // this, and nothing here calls it any more. Kept because the popover
+        // still cascades and this shell is the one that will get a family
+        // control back if the design ever draws one.
         e instanceof FamilyCascadeError
           ? { ...classified, title: cascadeTitle(e) }
           : classified,
@@ -758,24 +763,6 @@ export function NewUiApp() {
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),
   });
-
-  /**
-   * Same follow-up as a single app: a family cascade rewrites configs too - so
-   * the offer is scoped to the family's config members. Its proxy members route
-   * through the engine rather than a config file, and nothing in the scanned set
-   * reads their settings at launch, so they contribute no slugs.
-   */
-  const routeFamily = useCallback(
-    async (group: Group, next: boolean) => {
-      setActionError(null);
-      if (await routing.setFamilyRouted(group, next)) {
-        await runningApps.offerAfterChange(
-          group.members.filter((m) => m.kind === "config").map((m) => m.key),
-        );
-      }
-    },
-    [routing, runningApps],
-  );
 
   /**
    * A tool's config was rewritten. If that app is open it is still on its old
@@ -979,11 +966,6 @@ export function NewUiApp() {
         // fragment ("your existing providers"), not a caption.
         id: g.id,
         label: g.id === MULTI_PROVIDER_ID ? g.name : (vendor ?? g.name),
-        // `cascadeDesired`, not `desired`: this switch governs only the members
-        // it can flip. A chat member switched on alone would otherwise render
-        // the family switch on while everything it governs is off, and clicking
-        // it would ask to turn off a set already off - leaving it stuck on.
-        routing: { name: g.name, on: g.cascadeDesired > 0, busy: routingBusy },
         apps: members,
       });
     }
@@ -1558,10 +1540,6 @@ export function NewUiApp() {
             }
           : undefined
       }
-      onToggleGroup={(id, next) => {
-        const group = groups.find((g) => g.id === id);
-        if (group) void routeFamily(group, next);
-      }}
       onSelectApp={(slug) => setView({ kind: "app", slug })}
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}

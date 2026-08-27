@@ -1077,6 +1077,34 @@ lands in the right shape instead of in the gutter.
 
 554 unit tests and the 171-test e2e suite pass.
 
+### The family switches come off the rail, 2026-08-27
+
+They lasted a day. Retiring the Families pane moved two controls into the rail -
+the engine's master switch and a per-family switch on each eyebrow - and the
+second one was a third control over traffic that two others already govern: the
+row switch under it and the master switch above it. The drawn rail has neither
+the switch nor anywhere to put it; the eyebrow holds a label and a counter.
+
+Removed: `SidebarGroupRouting`, `SidebarGroup.routing`, `Sidebar`'s
+`onToggleGroup` and `AppShell`'s pass-through, the `routing` field the shell was
+building for each group, and `routeFamily`. The eyebrow is back to
+`items-baseline` with the counter as its only right-hand element.
+
+**The cascade itself is untouched.** `useRouting.setFamilyRouted` and
+`Group.cascadeDesired` stay: the popover's `FamilyPanel` still drives them, and
+they keep their coverage in `useRouting.test.tsx` (seven tests on the guards -
+certificate first, abort on refusal, name the members that failed) and in
+`e2e/routing.spec.ts`'s family-panel block, which is where the
+"a family switch never touches a chat or subscription surface" guarantee is
+tested end to end. `e2e/new-ui-family-master.spec.ts` is deleted, because it
+drove a control that no longer exists and asserted nothing those two do not.
+
+`NewUiApp`'s `FamilyCascadeError` branch is now unreachable from this shell and
+says so at the call site. It is cheap to keep and would be needed again the day
+a family control is drawn.
+
+554 unit tests pass; the e2e suite is 166, down the five that spec held.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a

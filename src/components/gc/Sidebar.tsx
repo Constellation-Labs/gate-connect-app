@@ -88,24 +88,7 @@ export interface SidebarGroup {
   /** The eyebrow. Empty renders no header, which is the state before the
    * catalog has loaded and grouping is not yet known. */
   label: string;
-  /** The family's own routing intent, drawn as a switch beside the counter.
-   * Omitted by the unlabelled catch-all groups, which are not families and have
-   * nothing to cascade over. */
-  routing?: SidebarGroupRouting;
   apps: SidebarApp[];
-}
-
-export interface SidebarGroupRouting {
-  /**
-   * The family's own name ("Claude"), which is what the switch is called. Not
-   * the eyebrow above it: that is the vendor caption ("Anthropic"), and a
-   * switch named for the vendor would claim to govern more than it does.
-   */
-  name: string;
-  /** Intent, not observation - the same split as a row's, and for the same
-   * reason. See `SidebarApp.on`. */
-  on: boolean;
-  busy?: boolean;
 }
 
 /**
@@ -153,7 +136,6 @@ export function Sidebar({
   master,
   onSelectApp,
   onToggleApp,
-  onToggleGroup,
   onRefresh,
   refreshing,
   inventory,
@@ -170,13 +152,6 @@ export function Sidebar({
   /** Opens the per-app pane. */
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
-  /**
-   * Route or unroute a whole family. Omit to draw no family switches: a family
-   * switch has to cascade over its members, skipping the ones with a
-   * hand-written config, and until that is wired a switch that does nothing is
-   * worse than no switch at all.
-   */
-  onToggleGroup?: (id: string, next: boolean) => void;
   /** Re-run detection now, for the inventory card's Refresh / Try again. There is
    * no control for this while the list has rows: detection polls itself, so a
    * tool installed while the window is open appears on its own. The card keeps
@@ -242,32 +217,22 @@ export function Sidebar({
             {groups.map((group) => (
               <div key={group.id} className="flex flex-col gap-2">
                 {group.label && (
-                  <div className="flex items-center justify-between gap-2">
+                  // Label and counter, which is all the drawn eyebrow holds. A
+                  // family switch lived here briefly when the Families pane was
+                  // retired; it was removed on 2026-08-27 as a third control
+                  // over the same traffic the row switches and the master switch
+                  // already cover, on a rail the design draws without one.
+                  <div className="flex items-baseline justify-between gap-2">
                     <h2 className="truncate font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
                       {group.label}
                     </h2>
-                    <span className="flex shrink-0 items-center gap-2">
-                      {/* Protected over total, drawn on every eyebrow
-                       * (`Components / Sidenav`, read 2026-08-23). Derived from
-                       * the rows so it can never disagree with them. Not
-                       * uppercase: the drawn counter reads "1 of 2". */}
-                      <span className="font-mono text-base-xs font-medium leading-4 text-base-muted-foreground">
-                        {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
-                        {group.apps.length}
-                      </span>
-                      {/* The family switch, which the retired Families pane
-                       * used to carry. Not in the Figma: the drawn eyebrow
-                       * holds the label and the counter and nothing else. */}
-                      {onToggleGroup && group.routing && (
-                        <BaseSwitch
-                          on={group.routing.on}
-                          label={`Route ${group.routing.name}`}
-                          busy={group.routing.busy}
-                          onClick={() =>
-                            onToggleGroup(group.id, !group.routing?.on)
-                          }
-                        />
-                      )}
+                    {/* Protected over total, drawn on every eyebrow
+                     * (`Components / Sidenav`, read 2026-08-23). Derived from
+                     * the rows so it can never disagree with them. Not
+                     * uppercase: the drawn counter reads "1 of 2". */}
+                    <span className="shrink-0 font-mono text-base-xs font-medium leading-4 text-base-muted-foreground">
+                      {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
+                      {group.apps.length}
                     </span>
                   </div>
                 )}
