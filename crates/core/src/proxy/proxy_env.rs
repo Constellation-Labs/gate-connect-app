@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 /// Keep loopback off the proxy. Required, not merely polite: OpenCode's TUI
 /// talks to its own local HTTP server, and routing that through the engine
 /// forms a loop (their own docs call this out).
-const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
+pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
 
 /// The variables we manage on platforms whose environment is case-sensitive
 /// (Linux, macOS), in a stable order. Both cases of the proxy trio are set

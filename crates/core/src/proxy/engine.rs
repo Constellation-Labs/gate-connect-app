@@ -146,7 +146,8 @@ impl RunningEngine {
         self.relay_port
     }
 
-    /// Loopback port serving the PAC script (Windows-only).
+    /// Loopback port serving the PAC script, and on Windows the CA's CRL (see
+    /// `cert_authority::CRL_PATH`).
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub fn pac_port(&self) -> u16 {
         self.pac_port
@@ -1077,6 +1078,14 @@ fn pac_script(domains: &[ProxyDomain], proxy_port: u16, upstream: Option<&str>) 
         // Preserve the user's prior upstream proxy for all other traffic, but
         // keep plain/local hostnames DIRECT as WinINET's `<local>` bypass did.
         Some(proxy) => {
+            // Loopback must be spelled out. `isPlainHostName` is false for
+            // "127.0.0.1" (it has dots), so without this the literal address
+            // falls through to the upstream proxy - and the one thing that
+            // fetches a loopback URL while routing is on is CryptoAPI going
+            // after the CRL our own leaves advertise. Sending that to a
+            // corporate proxy fails the fetch, and a CDP that cannot be
+            // fetched breaks the handshake it was added to fix.
+            s.push_str("  if (h === \"127.0.0.1\") return \"DIRECT\";\n");
             s.push_str("  if (isPlainHostName(h)) return \"DIRECT\";\n");
             s.push_str(&format!("  return \"PROXY {proxy}\";\n"));
         }
@@ -1100,17 +1109,31 @@ fn request_host(buf: &[u8]) -> Option<String> {
     })
 }
 
-/// Serve the PAC script on a dedicated loopback listener. WinINET fetches the
-/// `AutoConfigURL` *directly* (not through the proxy), so this must be a plain
-/// HTTP responder, separate from the hudsucker proxy on `proxy_port`. The body
-/// is rebuilt per request from the live rule set. Runs until the engine's
-/// runtime is torn down.
+/// Serve the PAC script, and the CA's CRL, on a dedicated loopback listener.
+///
+/// WinINET fetches the `AutoConfigURL` *directly* (not through the proxy), so
+/// this must be a plain HTTP responder, separate from the hudsucker proxy on
+/// `proxy_port`. The PAC body is rebuilt per request from the live rule set.
+/// Runs until the engine's runtime is torn down.
+///
+/// The CRL rides on this listener rather than on the proxy port for a reason
+/// worth keeping: CryptoAPI fetches it *during* a TLS handshake the proxy is in
+/// the middle of performing, so answering from the proxy port would make the
+/// handshake depend on that same port servicing a nested request. Here it is a
+/// separate listener and a separate task, so the fetch cannot contend with the
+/// handshake that triggered it. `crl_issuer` is `None` wherever leaves carry no
+/// distribution point, in which case nothing will ever ask for it.
+///
+/// Both routes sit behind the same `Host` guard: the CRL fetcher is CryptoAPI
+/// addressing us as loopback, so it passes, while a DNS-rebound browser request
+/// is refused before either body is disclosed.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 async fn serve_pac(
     listener: tokio::net::TcpListener,
     rules: watch::Receiver<Arc<Vec<ProxyDomain>>>,
     proxy_port: u16,
     upstream: Option<String>,
+    crl_issuer: Option<Arc<Issuer<'static, KeyPair>>>,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     loop {
@@ -1123,6 +1146,7 @@ async fn serve_pac(
         };
         let rules = rules.clone();
         let upstream = upstream.clone();
+        let crl_issuer = crl_issuer.clone();
         tokio::spawn(async move {
             // Consume the request before replying. Parsed only far enough to
             // read `Host`: the system PAC fetcher addresses us as loopback,
@@ -1142,15 +1166,55 @@ async fn serve_pac(
                 let _ = stream.shutdown().await;
                 return;
             }
-            let body = pac_script(&rules.borrow(), proxy_port, upstream.as_deref());
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\n\
-                 Content-Type: application/x-ns-proxy-autoconfig\r\n\
-                 Content-Length: {}\r\n\
-                 Connection: close\r\n\r\n{body}",
-                body.len(),
-            );
-            let _ = stream.write_all(resp.as_bytes()).await;
+            // Route on the request target. Only two paths exist, and a partial
+            // read simply misses the CRL one and serves the PAC - the same
+            // answer this gave before it had two routes to choose between.
+            let wants_crl = std::str::from_utf8(&buf[..n])
+                .ok()
+                .and_then(|req| req.split_whitespace().nth(1))
+                .is_some_and(|target| target == crate::proxy::cert_authority::CRL_PATH);
+
+            let resp: Vec<u8> = match (wants_crl, crl_issuer.as_deref()) {
+                (true, Some(issuer)) => {
+                    match crate::proxy::cert_authority::sign_empty_crl(issuer) {
+                        // Signed per request, not once at startup: a CRL is only
+                        // valid until its `nextUpdate`, and this listener outlives
+                        // that window on any long-running engine. One ECDSA
+                        // signature on a path Windows caches for a week is cheaper
+                        // than the alternative failure, which is silent.
+                        Ok(der) => {
+                            let mut r = format!(
+                                "HTTP/1.1 200 OK\r\n\
+                             Content-Type: application/pkix-crl\r\n\
+                             Content-Length: {}\r\n\
+                             Connection: close\r\n\r\n",
+                                der.len(),
+                            )
+                            .into_bytes();
+                            r.extend_from_slice(&der);
+                            r
+                        }
+                        Err(e) => {
+                            eprintln!("gate proxy failed to sign CRL: {e}");
+                            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\
+                          Connection: close\r\n\r\n"
+                                .to_vec()
+                        }
+                    }
+                }
+                _ => {
+                    let body = pac_script(&rules.borrow(), proxy_port, upstream.as_deref());
+                    format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: application/x-ns-proxy-autoconfig\r\n\
+                         Content-Length: {}\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len(),
+                    )
+                    .into_bytes()
+                }
+            };
+            let _ = stream.write_all(&resp).await;
             let _ = stream.shutdown().await;
         });
     }
@@ -1189,6 +1253,20 @@ where
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let (pac_listener, pac_port) =
         bind_loopback(cfg.preferred_pac_port).context("binding the PAC loopback port")?;
+
+    // Windows is the only platform with a TLS client that hard-fails a leaf
+    // carrying no CRL distribution point (see `cert_authority::sign_empty_crl`),
+    // so it is the only one whose leaves advertise one. The URL names the PAC
+    // listener bound just above, which serves `CRL_PATH` for as long as the
+    // engine minting those leaves is up - the two lifetimes have to match,
+    // because an unfetchable CDP fails handshakes rather than fixing them.
+    #[cfg(target_os = "windows")]
+    let crl_url = Some(format!(
+        "http://127.0.0.1:{pac_port}{}",
+        crate::proxy::cert_authority::CRL_PATH
+    ));
+    #[cfg(not(target_os = "windows"))]
+    let crl_url: Option<String> = None;
 
     let (rules_tx, rules_rx) = watch::channel(Arc::new(enabled_only(&cfg.domains)));
     // The PAC body is regenerated per request from this live rule set, so a
@@ -1259,13 +1337,29 @@ where
                         }
                     };
                     match Issuer::from_ca_cert_pem(&cert_pem, key_pair) {
-                        Ok(issuer) => GateCa::new(issuer, aws_lc_rs::default_provider()),
+                        Ok(issuer) => {
+                            GateCa::new(issuer, aws_lc_rs::default_provider(), crl_url.clone())
+                        }
                         Err(e) => {
                             let _ = ready_tx.send(Err(format!("parsing CA certificate: {e}")));
                             return;
                         }
                     }
                 };
+
+                // A second issuer over the same PEMs, for signing the CRL. The
+                // first one is owned by the CA that hudsucker takes by value,
+                // and `Issuer` holds a `KeyPair` that is not `Clone`, so the
+                // cheapest way to have a signer on both sides is to parse
+                // twice. Only built where leaves advertise a CDP; anywhere else
+                // nothing would ever fetch it.
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                let crl_issuer = crl_url.as_ref().and_then(|_| {
+                    let key_pair = KeyPair::from_pem(&key_pem).ok()?;
+                    Issuer::from_ca_cert_pem(&cert_pem, key_pair)
+                        .ok()
+                        .map(Arc::new)
+                });
 
                 let listener = match tokio::net::TcpListener::from_std(listener) {
                     Ok(l) => l,
@@ -1355,6 +1449,7 @@ where
                                 pac_rules_rx,
                                 port,
                                 upstream_proxy,
+                                crl_issuer,
                             )));
                         }
                         Err(e) => eprintln!("gate proxy PAC listener failed to start: {e}"),
@@ -1859,6 +1954,12 @@ mod tests {
         let pac = pac_script(&domains, 8123, Some("proxy.corp.com:8080"));
         assert!(pac.contains("if (h === \"api.anthropic.com\") return \"PROXY 127.0.0.1:8123\";"));
         assert!(pac.contains("if (isPlainHostName(h)) return \"DIRECT\";"));
+        // Loopback must be DIRECT even behind an upstream proxy: it is where
+        // CryptoAPI goes to fetch the CRL our leaves advertise, and
+        // `isPlainHostName` is false for a dotted literal address, so without
+        // an explicit rule that fetch would be handed to the corporate proxy
+        // and fail - breaking the handshake the CDP exists to fix.
+        assert!(pac.contains("if (h === \"127.0.0.1\") return \"DIRECT\";"));
         assert!(pac
             .trim_end()
             .ends_with("return \"PROXY proxy.corp.com:8080\";\n}"));
