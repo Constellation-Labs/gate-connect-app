@@ -39,8 +39,10 @@ export interface ModalButton {
  * stays as it was - the frames export the tile but not the glyph's own fill.
  */
 const TONE_STYLES: Record<ModalTone, string> = {
-  warning: "border-amber-300 bg-gradient-to-b from-amber-50 to-amber-200 text-amber-700",
-  success: "border-green-300 bg-gradient-to-b from-green-50 to-green-200 text-green-700",
+  warning:
+    "border-amber-300 bg-gradient-to-b from-amber-50 to-amber-200 text-amber-700",
+  success:
+    "border-green-300 bg-gradient-to-b from-green-50 to-green-200 text-green-700",
   // Disconnect and Reset. Red rather than amber: these are not "are you sure",
   // they undo the setup. The 600 icon matches the destructive button fill.
   danger: "border-red-300 bg-gradient-to-b from-red-50 to-red-200 text-red-600",
@@ -73,6 +75,7 @@ export function Modal({
   secondary,
   middle,
   primary,
+  closeButton,
   onDismiss,
   onClose,
   width = 600,
@@ -96,6 +99,13 @@ export function Modal({
    * safe → middle → primary left to right. */
   middle?: ModalButton;
   primary?: ModalButton;
+  /** Draw a close X in the top-right corner (Figma 139:66759).
+   *
+   *  Opt-in because most dialogs here end in a button row, and a second way out
+   *  would be a second thing to explain. The model picker has no footer - a
+   *  selection applies on click - so without this its only exits would be Escape
+   *  and a scrim click, neither of which is visible. */
+  closeButton?: boolean;
   /** Escape and scrim clicks. Omit to make the dialog unskippable. */
   onDismiss?: () => void;
   /** Which of the file's four widths this dialog is drawn at. Defaults to the
@@ -138,9 +148,21 @@ export function Modal({
         aria-modal="true"
         aria-labelledby={titleId}
         className={`${WIDTH_STYLES[width]} max-w-full rounded-2xl border bg-base-card p-6 shadow-base-lg ${
-          edge === "danger" ? "border-base-destructive/40" : "border-base-border"
+          edge === "danger"
+            ? "border-base-destructive/40"
+            : "border-base-border"
         }`}
       >
+        {closeButton && onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Close"
+            className="float-right -mr-1 -mt-1 flex size-6 items-center justify-center rounded-sm text-base-muted-foreground transition-colors hover:bg-gray-50 hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          >
+            <Icon name="x" size={24} />
+          </button>
+        )}
         <div className="flex items-center gap-3">
           {/* 44px on a toned dialog, 40px on a neutral one, which is the size
            * difference the frames draw rather than a rounding of one number. */}
@@ -203,7 +225,9 @@ export function Modal({
                 onClick={middle.disabled ? undefined : middle.onClick}
                 aria-disabled={middle.disabled || undefined}
                 className={`flex h-9 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-sm font-medium tracking-button-sm shadow-base-btn transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
-                  middle.disabled ? "cursor-not-allowed opacity-45" : "hover:bg-gray-50"
+                  middle.disabled
+                    ? "cursor-not-allowed opacity-45"
+                    : "hover:bg-gray-50"
                 } ${
                   middle.destructive
                     ? "text-red-600 focus-visible:outline-red-600"
@@ -363,10 +387,16 @@ export function ModalOption({
         <span className="block truncate text-sm font-medium leading-5 text-base-foreground">
           {name}
         </span>
-        <span className="block truncate text-sm leading-5 text-neutral-600">{meta}</span>
+        <span className="block truncate text-sm leading-5 text-neutral-600">
+          {meta}
+        </span>
       </span>
       {selected ? (
-        <Icon name="circleCheck" size={16} className="shrink-0 text-base-primary" />
+        <Icon
+          name="circleCheck"
+          size={16}
+          className="shrink-0 text-base-primary"
+        />
       ) : (
         <span
           aria-hidden
@@ -404,7 +434,10 @@ export function ModalField({
   const id = useId();
   return (
     <div className="flex flex-col gap-2">
-      <label htmlFor={id} className="text-base-xs font-medium leading-4 text-base-foreground">
+      <label
+        htmlFor={id}
+        className="text-base-xs font-medium leading-4 text-base-foreground"
+      >
         {label}
       </label>
       <div className="relative">
@@ -451,7 +484,9 @@ export function ModalSteps({
 }) {
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm font-medium leading-5 text-base-foreground">{label}</p>
+      <p className="text-sm font-medium leading-5 text-base-foreground">
+        {label}
+      </p>
       <ol className="flex flex-col gap-2">
         {steps.map((step, i) => (
           <li

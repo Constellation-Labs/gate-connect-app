@@ -22,7 +22,9 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 use crate::env;
 use crate::primitives;
@@ -73,6 +75,76 @@ pub struct Preferences {
     /// window.
     #[serde(default)]
     pub device_name: Option<String>,
+    /// Which model each tool should run on, keyed by tool slug (AG-588).
+    ///
+    /// **Local by decision, not by omission.** An earlier revision stored this on
+    /// the gateway, per organization. Keeping it here trades two things away and
+    /// buys one back, and all three are worth stating:
+    ///
+    /// - Lost: agreement between a person's machines. Two laptops can now differ
+    ///   about which model a tool uses.
+    /// - Lost: an organization-level record of the paid-use acknowledgement. See
+    ///   `gate_model_paid_ack_unix`.
+    /// - Gained: the choice belongs to the machine whose traffic it governs. The
+    ///   app pane is already scoped to this machine, and a per-org setting meant
+    ///   one developer's click changed what their colleagues' requests were
+    ///   answered with.
+    ///
+    /// Keyed on OUR tool slug rather than the gateway's platform id, which is the
+    /// simplification that follows: the gateway no longer has to identify the
+    /// tool, because the app already knows which tool it is configuring.
+    ///
+    /// A `BTreeMap` rather than a `HashMap` so the file's key order is stable and
+    /// a diff of `preferences.json` shows what changed rather than a reshuffle.
+    #[serde(default)]
+    pub tool_models: BTreeMap<String, ToolModelChoice>,
+    /// When this install first accepted paid Gate model use, unix seconds, or
+    /// `None` if it never has.
+    ///
+    /// Per install, which is a real departure from AG-588 - the ticket words the
+    /// confirmation as once per *organization*. Storing it locally is the honest
+    /// consequence of storing the choice locally: there is no org-level record to
+    /// consult, so a second machine asks again. Being asked twice is a smaller
+    /// harm than being billed without having been asked on the machine doing the
+    /// spending, which is what a purely local "already accepted" flag inherited
+    /// from nowhere would risk.
+    ///
+    /// `None` and "accepted long ago" are different facts, which is why this is a
+    /// timestamp rather than a bool - the same argument
+    /// `share_diagnostics_recorded` makes above. Unix seconds rather than a
+    /// formatted string, matching `restore_journal`'s `at_unix` and the OAuth
+    /// token store; the `time` crate is pulled in without its formatting feature.
+    #[serde(default)]
+    pub gate_model_paid_ack_unix: Option<i64>,
+}
+
+/// What Gate should serve for one tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSource {
+    /// The tool picks its own model and Gate does not intervene. The default for
+    /// every tool, and what a missing entry means.
+    Tool,
+    /// Gate serves the chosen model, overriding what the tool asked for.
+    Gate,
+}
+
+/// One tool's stored choice.
+///
+/// `source` and `model_ids` are separate because a chosen model is not
+/// necessarily an active one: the pane keeps "Current Gate model" visible while
+/// the tool is on its own default, so the user can see what they would be
+/// switching to. `source` alone decides what would be served.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolModelChoice {
+    pub source: ModelSource,
+    /// Canonical ids, e.g. `anthropic/claude-opus-5`. Empty is legal with either
+    /// source; it means no model has been chosen yet.
+    ///
+    /// A list from the start because AG-590 selects a set, and widening a scalar
+    /// later would mean rewriting every stored file.
+    #[serde(default)]
+    pub model_ids: Vec<String>,
 }
 
 impl Default for Preferences {
@@ -82,12 +154,94 @@ impl Default for Preferences {
             share_diagnostics: true,
             share_diagnostics_recorded: false,
             device_name: None,
+            tool_models: BTreeMap::new(),
+            gate_model_paid_ack_unix: None,
         }
     }
 }
 
 fn config_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("preferences.json"))
+}
+
+/// Hot-path cache for [`gate_models_for`], stamped with the file it was read
+/// from.
+///
+/// The model choice is consulted on **every proxied request**, and a parse per
+/// request is not a cost the user's actual work should pay. Unlike
+/// [`crate::primitives::install_id_cached`] this cannot be a `OnceLock`: the
+/// value changes whenever someone picks a model, and a choice that only took
+/// effect after a restart would be its own bug report.
+///
+/// **The stamp is why this is not just a memo.** On Linux the engine does not
+/// run in the window's process at all - it is the detached helper daemon
+/// (`proxy::helper`, Linux only), spawned once and outliving the GUI. A cache
+/// that only [`save`] could refresh would be refreshed in the wrong process
+/// there:
+/// the daemon would answer every request from whatever the file held when its
+/// first request arrived, and every later pick would change what the pane shows
+/// and nothing about what is served, until logout. The same applies to a write
+/// from the CLI on any platform.
+///
+/// So the entry carries the file's modified time and length, and a `stat` per
+/// request decides whether the parse can be skipped. A `stat` is what the
+/// Windows domain watcher already spends once a second for the same reason; it
+/// is far cheaper than the read-and-parse it replaces, and unlike a memo it
+/// cannot be wrong.
+static CACHE: RwLock<Option<(Stamp, Preferences)>> = RwLock::new(None);
+
+/// What the preferences file looked like when the cached copy was parsed.
+///
+/// `None` is a legitimate stamp - the file does not exist yet, which is the
+/// normal first-run state and a perfectly cacheable answer (the defaults). It
+/// still differs from any `Some`, so the first write is picked up.
+///
+/// Length as well as modified time because mtime granularity is a filesystem's
+/// choice, not ours: two saves inside one tick are unlikely but they are exactly
+/// the case where being wrong means serving a model the user just switched away
+/// from.
+type Stamp = Option<(std::time::SystemTime, u64)>;
+
+fn stamp() -> Stamp {
+    let meta = config_path().ok().and_then(|p| std::fs::metadata(p).ok())?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// The models Gate should serve for one tool, or `None` to leave the request
+/// alone.
+///
+/// `None` covers every case where the tool's own model must win: no entry, an
+/// entry whose source is [`ModelSource::Tool`], or an empty set. That last one
+/// matters - a `Gate` source with nothing chosen is not "serve anything", it is
+/// a state the UI prevents and the request path must not invent a meaning for.
+///
+/// Infallible by construction, for the reason `install_id_cached` gives: this is
+/// called while forwarding the user's real work, and a preferences file that
+/// cannot be read must degrade to "the tool picks", never to a failed request.
+pub fn gate_models_for(slug: &str) -> Option<Vec<String>> {
+    let current = stamp();
+    {
+        let cache = CACHE.read().ok()?;
+        if let Some((cached, prefs)) = cache.as_ref() {
+            if *cached == current {
+                return servable(prefs, slug);
+            }
+        }
+    }
+    let prefs = load();
+    let answer = servable(&prefs, slug);
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = Some((current, prefs));
+    }
+    answer
+}
+
+fn servable(prefs: &Preferences, slug: &str) -> Option<Vec<String>> {
+    let choice = prefs.tool_models.get(slug)?;
+    if choice.source != ModelSource::Gate || choice.model_ids.is_empty() {
+        return None;
+    }
+    Some(choice.model_ids.clone())
 }
 
 /// Read the preferences, falling back to the defaults.
@@ -112,7 +266,25 @@ pub fn save(prefs: &Preferences) -> Result<()> {
     let path = config_path()?;
     let body = serde_json::to_vec_pretty(prefs).context("serializing preferences")?;
     primitives::write_file(&path, &body, 0o644)
-        .with_context(|| format!("writing {}", path.display()))
+        .with_context(|| format!("writing {}", path.display()))?;
+    // Refresh rather than clear: the next reader is on the request path, and
+    // handing it a miss would put the parse back where this cache exists to keep
+    // it out of. Written after the file, and re-stamped from what actually
+    // landed, so a failed write leaves the cache agreeing with what is on disk.
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = Some((stamp(), prefs.clone()));
+    }
+    Ok(())
+}
+
+/// Drop the cached copy. Tests only - each one points the app-support dir
+/// somewhere new, and a value cached from the previous directory would outlive
+/// it.
+#[doc(hidden)]
+pub fn reset_cache_for_tests() {
+    if let Ok(mut cache) = CACHE.write() {
+        *cache = None;
+    }
 }
 
 /// Turn routing-health notifications on or off, leaving the other preferences
@@ -135,6 +307,41 @@ pub fn set_share_diagnostics(enabled: bool) -> Result<()> {
     let mut prefs = load();
     prefs.share_diagnostics = enabled;
     prefs.share_diagnostics_recorded = true;
+    save(&prefs)
+}
+
+/// Set one tool's model choice, leaving every other tool alone.
+///
+/// Read-modify-write on the whole file, like the switches above, so a caller
+/// that knows about one tool cannot clobber another's entry.
+///
+/// **The acknowledgement is recorded here rather than by a separate call.** It is
+/// only ever true *because* someone accepted a specific switch to a Gate model,
+/// and a second entry point would let the two drift - an install that had
+/// acknowledged but never chosen, or the reverse. `acknowledge_paid_use` is
+/// honoured only when moving to [`ModelSource::Gate`]: nothing is billed for
+/// remembering a model under the tool's own default, so nothing there should
+/// record consent to be billed.
+///
+/// The stamp is written once and never moved, for the reason the gateway's
+/// version used `COALESCE`: the record of *when* someone agreed to be billed is
+/// worthless if a later save can advance it.
+pub fn set_tool_model(
+    slug: &str,
+    source: ModelSource,
+    model_ids: Vec<String>,
+    acknowledge_paid_use: bool,
+) -> Result<()> {
+    let mut prefs = load();
+    if source == ModelSource::Gate
+        && acknowledge_paid_use
+        && prefs.gate_model_paid_ack_unix.is_none()
+    {
+        prefs.gate_model_paid_ack_unix = Some(time::OffsetDateTime::now_utc().unix_timestamp());
+    }
+    prefs
+        .tool_models
+        .insert(slug.to_string(), ToolModelChoice { source, model_ids });
     save(&prefs)
 }
 
@@ -193,6 +400,7 @@ mod tests {
             share_diagnostics_recorded: true,
             routing_health_notifications: true,
             device_name: None,
+            ..Preferences::default()
         })
         .expect("serialize");
         let back: Preferences = serde_json::from_str(&raw).expect("deserialize");
@@ -222,6 +430,7 @@ mod tests {
             share_diagnostics: true,
             share_diagnostics_recorded: true,
             device_name: None,
+            ..Preferences::default()
         };
         let raw = serde_json::to_string(&prefs).expect("serialize");
         let back: Preferences = serde_json::from_str(&raw).expect("deserialize");

@@ -110,8 +110,7 @@ export function installFakeTauri(state: BackendState): void {
     // Fill the field the real backend always sends, so a fixture that omits it
     // still produces a well-formed Tool rather than an undefined the UI has to
     // guess about.
-    list_tools: () =>
-      state.tools.map((t) => ({ config_location: null, ...t })),
+    list_tools: () => state.tools.map((t) => ({ config_location: null, ...t })),
     connect_tool: ({ slug }) => {
       const t = tool(slug);
       t.status = { kind: "connected" };
@@ -125,6 +124,31 @@ export function installFakeTauri(state: BackendState): void {
     has_upstream_credential: () => true,
     save_upstream_api_key: () => null,
     clear_upstream_credential: () => null,
+
+    // ---- model selection (AG-588)
+    // The choice is a local file, so these commands are file reads and writes,
+    // not gateway calls. The fake enforces the one rule the real setter has -
+    // consent is recorded only when moving to `gate` - because a mock that
+    // accepted everything would let the confirmation flow rot unnoticed.
+    tool_model_preferences: () => ({
+      tools: state.toolModels.choices,
+      paid_ack_unix: state.toolModels.paidAckUnix,
+    }),
+    set_tool_model: ({ tool, source, modelIds, acknowledgePaidUse }) => {
+      const slug = String(tool);
+      if (!state.tools.some((t) => t.slug === slug)) throw `unknown tool slug "${slug}"`;
+      if (source !== "tool" && source !== "gate") throw `unknown model source "${String(source)}"`;
+      if (source === "gate" && acknowledgePaidUse === true && state.toolModels.paidAckUnix === null) {
+        state.toolModels.paidAckUnix = 1787740800;
+      }
+      state.toolModels.choices[slug] = {
+        source,
+        model_ids: (modelIds as string[]) ?? [],
+      };
+      return null;
+    },
+    gate_model_catalogue: () =>
+      JSON.stringify({ object: "list", data: state.toolModels.catalogue }),
 
     // ---- account
     get_account: () => state.account,

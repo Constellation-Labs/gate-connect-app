@@ -235,26 +235,6 @@ pub fn relay_base_url() -> Option<String> {
     relay::load_persisted_port().map(relay::base_url)
 }
 
-/// Whether something is accepting connections on the persisted relay port
-/// right now - the engine-hosted relay or a standalone `proxy relay` host,
-/// either counts (which is why this probes the port instead of reading
-/// [`engine_likely_running`]: the standalone host touches no system proxy and
-/// leaves no snapshot). This is the *liveness* half of a relay-tool status
-/// check; [`relay_base_url`] alone is *identity* - the port file persists
-/// across restarts precisely so tool configs stay valid - so checking a
-/// config against it reads Connected even while the tool is dialing a dead
-/// port. A refused loopback connect returns immediately; the timeout only
-/// bounds pathological states.
-pub fn relay_listening() -> bool {
-    relay::load_persisted_port().is_some_and(|port| {
-        std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-            std::time::Duration::from_millis(300),
-        )
-        .is_ok()
-    })
-}
-
 /// The relay's own liveness path, re-exported so callers and the e2e suite spell
 /// it once.
 pub use relay::HEALTH_PATH as RELAY_HEALTH_PATH;
@@ -299,6 +279,26 @@ pub fn probe_relay_route() -> crate::routing_health::RouteHealth {
         Ok(_) => RouteHealth::Unknown,
         Err(_) => RouteHealth::Unreachable,
     }
+}
+
+/// Whether something is accepting connections on the persisted relay port
+/// right now - the engine-hosted relay or a standalone `proxy relay` host,
+/// either counts (which is why this probes the port instead of reading
+/// [`engine_likely_running`]: the standalone host touches no system proxy and
+/// leaves no snapshot). This is the *liveness* half of a relay-tool status
+/// check; [`relay_base_url`] alone is *identity* - the port file persists
+/// across restarts precisely so tool configs stay valid - so checking a
+/// config against it reads Connected even while the tool is dialing a dead
+/// port. A refused loopback connect returns immediately; the timeout only
+/// bounds pathological states.
+pub fn relay_listening() -> bool {
+    relay::load_persisted_port().is_some_and(|port| {
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            std::time::Duration::from_millis(300),
+        )
+        .is_ok()
+    })
 }
 
 /// Run the CLI reverse-proxy relay as a standalone, blocking headless host (no
@@ -589,6 +589,14 @@ pub(crate) const GATE_INSTALL_ID_HEADER: &str = "x-gate-install-id";
 /// Which tool sent the request, when we can tell. Feeds the per-tool series in
 /// the activity view.
 pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
+/// The models the user chose for this tool, comma-separated and in preference
+/// order (AG-588 / AG-590).
+///
+/// Unlike the two above this is not a label on the request - it **changes what
+/// the gateway serves**, so the gateway rewrites the body's `model` to the first
+/// entry. Sent only when the user set that tool to a Gate model; absent means
+/// the tool's own choice stands, which is the default and must stay the default.
+pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 
 /// Stamp the attribution headers the activity view groups by.
 ///
@@ -600,7 +608,15 @@ pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
 /// existed. Failing a request to protect a chart would be the wrong trade.
 ///
 /// Any value the caller sent is overwritten: a tool cannot label its traffic as
-/// another machine's.
+/// another machine's - and, for the model header, a tool cannot ask Gate to
+/// serve something the user did not choose.
+///
+/// **The model header is not attribution and does not follow its rules.** The
+/// other two are labels: leaving one off costs a chart a data point. This one
+/// decides what the user is billed for, so it is stamped only from stored intent
+/// and only when a tool was positively identified. An unrecognised tool sends no
+/// override at all rather than a best guess, because guessing here would serve -
+/// and charge for - a model chosen for a different tool.
 fn inject_attribution(headers: &mut HeaderMap) {
     headers.remove(GATE_INSTALL_ID_HEADER);
     if let Some(id) = crate::primitives::install_id_cached() {
@@ -615,6 +631,50 @@ fn inject_attribution(headers: &mut HeaderMap) {
             HeaderName::from_static(GATE_CLIENT_HEADER),
             HeaderValue::from_static(slug),
         );
+    }
+    inject_model_choice(headers, tool);
+}
+
+/// Stamp the chosen models for `tool`, or strip the header entirely.
+///
+/// Stripped unconditionally first, and that is the security-relevant half: a
+/// tool that set `x-gate-model` itself would otherwise pick its own Gate model
+/// and bill the user for it, having never been offered the confirmation. The
+/// only thing that may populate this header is a choice the user stored.
+///
+/// Comma-separated because AG-590 enables a set. Which of the set a request uses
+/// is the gateway's decision, not this one - see the header's own doc. The order
+/// is the user's, preserved.
+fn inject_model_choice(headers: &mut HeaderMap, tool: Option<&'static str>) {
+    headers.remove(GATE_MODEL_HEADER);
+    let Some(slug) = tool else { return };
+    let Some(models) = crate::preferences::gate_models_for(slug) else {
+        return;
+    };
+    // A model id that cannot be a header value is dropped rather than escaped:
+    // the ids are `provider/model`, so anything that fails here did not come
+    // from a catalogue, and sending part of a set would serve a model the user
+    // did not put first.
+    if let Ok(value) = HeaderValue::from_str(&models.join(",")) {
+        headers.insert(HeaderName::from_static(GATE_MODEL_HEADER), value);
+    }
+}
+
+/// Test seam for the attribution + model-choice injection.
+///
+/// The injection itself is `pub(crate)` because nothing outside the proxy should
+/// stamp these headers. It still needs covering from an integration test rather
+/// than a unit test - it reads the preferences file, and the app-support override
+/// is process-global - so this is the narrowest door that allows it.
+#[doc(hidden)]
+pub mod testing {
+    use hyper::header::HeaderMap;
+
+    /// The header name, so a test asserts on the same constant the code sends.
+    pub const GATE_MODEL_HEADER_NAME: &str = super::GATE_MODEL_HEADER;
+
+    pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
+        super::inject_attribution(headers);
     }
 }
 

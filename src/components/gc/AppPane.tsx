@@ -18,45 +18,72 @@ export type ModelChoice = "app" | "gate";
 // The feed's row type lives in `lib/` with the adapter that produces it; see
 // `toolEventRow.ts`. Re-exported here so existing importers of this module keep
 // working and the pane's own props stay readable.
-export type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
-import type { ActivityEntry, ActivitySecurity } from "../../lib/toolEventRow";
+export type {
+  ActivityEntry,
+  ActivitySecurity,
+  ActivityStatus,
+} from "../../lib/toolEventRow";
+import type {
+  ActivityEntry,
+  ActivitySecurity,
+  ActivityStatus,
+} from "../../lib/toolEventRow";
 
 export interface GateModel {
-  /** Model vendor, e.g. "Anthropic". */
+  /** Model vendor, e.g. "anthropic". */
   vendor: string;
-  /** Fully qualified model id, rendered mono, e.g. "gate/opus 5". */
+  /** Canonical model id, rendered mono, e.g. `anthropic/claude-opus-5`. */
   id: string;
   /** Vendor mark, 16px. */
   logo?: ReactNode;
+  /** How many further models are enabled alongside this one (AG-590).
+   *
+   *  A count here rather than a row each: the Figma gives this card one model
+   *  row, and growing it to six would push the chart and the feed off the pane.
+   *  The full set is listed where it matters - in the picker, and in the
+   *  confirmation before anything is billed. */
+  alsoEnabled?: number;
 }
 
 /**
- * One pill per row, in the design's own set (`table/recent-activity`, 272:3150,
- * sampled from the properties panel 2026-08-21): ERROR / REDACTED / FLAGGED /
- * ALLOW / BLOCKED. These are the 100 stop with 700 text - deliberately quieter
- * than the Overview's 200/900 action pills - with ALLOW as a grey non-verdict
- * (`gray/100` over `base/muted-foreground`) and REDACTED's text at the 800.
- * ERROR and BLOCKED sample identically.
+ * One badge per row, under a single Security column (`table/recent-activity`,
+ * 272:3150, sampled from the properties panel 2026-08-21).
+ *
+ * Status and security used to be two columns; the design merged them, so a row
+ * that failed reads ERROR and every other row reads what the guardrails did.
+ * `error` is in this map rather than a second one because they now compete for one
+ * cell and the precedence has to live somewhere the reader can see it.
+ *
+ * `allow` is grey, not green, which is the change worth noticing: green reads as
+ * "good", and the useful signal in this column is when something was *acted on*.
+ * A wall of green ticks is what makes the one amber row easy to miss. It is the
+ * one entry that is not a verdict, so it takes a neutral over `gray/100` rather
+ * than a coloured pair.
+ *
+ * That neutral is `gray/600`, not the design's `base/muted-foreground`. The
+ * sampled pair is 4.39:1 on `gray/100` and this text is 12px medium, so it misses
+ * AA by a hair - on the badge that will sit in almost every row. `gray/600` is
+ * 6.87:1 and reads as the same grey. The same call the `gc` switch track made
+ * when 2.98:1 turned up on a hovered row.
+ *
+ * The 100 stop with 700 text, deliberately quieter than `Overview`'s 200/900
+ * action pills: those name a policy, these report what happened to one request,
+ * and a table of them should not shout. REDACTED's text sits at the 800 - the
+ * design's own exception, not a rounding of ours - and ERROR and BLOCKED sample
+ * identically. Redacted is violet, matching `chart.redacted`; purple here was a
+ * slip, and this was the app's last use of it.
  */
-const PILL_STYLES: Record<ActivitySecurity | "error", string> = {
-  error: "bg-red-100 text-red-700",
-  allow: "bg-gray-100 text-base-muted-foreground",
+const BADGE_STYLES: Record<ActivitySecurity | ActivityStatus, string> = {
+  allow: "bg-gray-100 text-gray-600",
   flagged: "bg-amber-100 text-amber-700",
   redacted: "bg-violet-100 text-violet-800",
   blocked: "bg-red-100 text-red-700",
+  error: "bg-red-100 text-red-700",
+  // Never rendered: a successful request shows its security action instead. Here
+  // so the map stays exhaustive over both unions and a new status cannot be added
+  // without deciding what it looks like. Matches `allow`, the other non-verdict.
+  success: "bg-gray-100 text-gray-600",
 };
-
-/**
- * Which pill a row wears. The design merged the old Status column into
- * Security, so one cell must choose: the guardrail's verdict outranks the
- * transport outcome, because a blocked request usually *also* errors from the
- * client's side, and a column of ERRORs over what Gate actually did would bury
- * the pane's story. ERROR is what remains when the gateway recorded no action.
- */
-function rowVerdict(entry: ActivityEntry): ActivitySecurity | "error" | null {
-  if (entry.security) return entry.security;
-  return entry.status === "error" ? "error" : null;
-}
 
 export function AppPane({
   name,
@@ -71,13 +98,15 @@ export function AppPane({
   onChooseModel,
   gateModel,
   onChangeModel,
+  onEditModelSet,
+  modelBusy,
+  modelPending,
   credits,
   onAddCredits,
   activity,
   pending,
   eventsPending,
   onLoadMore,
-  onViewEntry,
   unavailable,
   alert,
 }: {
@@ -92,31 +121,48 @@ export function AppPane({
   onToggleProtected: () => void;
   stats: UsageStats;
   buckets: MessagesBucket[];
-  /**
-   * The model card, or nothing.
+  /** What this app is set to, or `null` when no reading landed.
    *
-   * Withheld for a multi-provider tool. OpenCode, OpenClaw and Hermes route
-   * whichever of their configured providers Gate covers - `lib/groups.ts` calls
-   * them "tools that talk to several providers, not one model family" - so
-   * "what does this app use on Gate model" has no single answer for them. `main`
-   * never poses the question at all: it has no model UI, and these tools appear
-   * only as routing targets.
+   *  Null is not "App default". A control drawn from a failed read is the bug
+   *  CLAUDE.md's principle 2 names: the card would show App default, and clicking
+   *  Gate model would look like a change when it is the first thing anyone said.
+   *  So null disables the choice and says why.
    *
-   * The Figma's answer is a multi-select picker
-   * (`App / Select multiple models (Opencode)`), which needs a model list no
-   * gateway endpoint reports yet and a selection shape `ModelChoice` cannot
-   * hold. Until that exists, matching `main` and asking nothing beats asking a
-   * question whose answer the app cannot record.
-   *
-   * Per the house rule the Settings pane states: an omitted handler omits its
-   * control. No `onChooseModel`, no card.
-   */
-  modelChoice?: ModelChoice;
+   *  Omitting it and `onChooseModel` together is a third thing again: the card
+   *  is withheld entirely. A multi-provider tool gets that. OpenCode, OpenClaw
+   *  and Hermes route whichever of their configured providers Gate covers -
+   *  `lib/groups.ts` calls them "tools that talk to several providers, not one
+   *  model family" - so "what does this app use on Gate model" has no single
+   *  answer for them, and `main` never poses the question at all. Per the house
+   *  rule the Settings pane states: an omitted handler omits its control. No
+   *  `onChooseModel`, no card. */
+  modelChoice?: ModelChoice | null;
   onChooseModel?: (choice: ModelChoice) => void;
-  gateModel?: GateModel;
+  /** The remembered model, or `null` when none has been chosen.
+   *
+   *  Remembered, not necessarily active: it stays on screen under App default so
+   *  the user can see what they would be switching to, and the card marks it
+   *  inactive rather than letting its presence imply Gate is serving it. */
+  gateModel?: GateModel | null;
   onChangeModel?: () => void;
-  /** Pre-formatted balance, e.g. "$10.25 available". */
-  credits?: string;
+  /** Open the picker in multi-select, to edit the whole enabled set (AG-590).
+   *
+   *  A separate control from Change model because they answer different
+   *  questions: "use this one instead" and "also allow these". Omit it and the
+   *  card offers only the single-model swap, which is what the Figma draws. */
+  onEditModelSet?: () => void;
+  /** A model write is in flight, so the controls refuse a second click. */
+  modelBusy?: boolean;
+  /** The model *preference* read has not landed.
+   *
+   *  Its own flag rather than the pane's `pending`, which tracks the activity
+   *  reading. Sharing one made the card draw skeletons whenever this machine was
+   *  unattributed - a fact about traffic, with nothing to say about a setting. */
+  modelPending?: boolean;
+  /** Pre-formatted balance, or `null` when nothing reports one. Renders "N/A":
+   *  no endpoint returns a Gate credit balance yet, and a dash reads as a value.
+   *  See principle 6. */
+  credits?: string | null;
   onAddCredits?: () => void;
   activity: ActivityEntry[];
   /** The first reading for this tool has not landed. Draws skeletons rather than
@@ -129,10 +175,6 @@ export function AppPane({
   /** Fetch the next page of the feed. Absent when there is no next page, which
    *  is what removes the control rather than leaving a dead one on screen. */
   onLoadMore?: () => void;
-  /** Open one request in the web dashboard. The button is drawn regardless -
-   *  the design's call - and this is where its destination lands once
-   *  `dashboard-web` can filter by request. */
-  onViewEntry?: (entry: ActivityEntry) => void;
   /** Which sections have no reading behind them.
    *
    *  Not "this app sent nothing": a tool can be routing correctly and still be
@@ -173,9 +215,9 @@ export function AppPane({
             {isProtected ? "On" : "Off"}
           </span>
           {/* "Route Claude Code", not "Claude Code": the sidebar row for the
-            * same app is on screen with its own switch, and two switches with
-            * one name is a screen reader reading the same control twice. The
-            * families pane names its switches the same way. */}
+           * same app is on screen with its own switch, and two switches with
+           * one name is a screen reader reading the same control twice. The
+           * families pane names its switches the same way. */}
           <BaseSwitch
             on={isProtected}
             label={`Route ${name}`}
@@ -188,17 +230,24 @@ export function AppPane({
       {alert}
 
       <StatTiles stats={stats} pending={pending} />
-      <MessagesChart buckets={buckets} pending={pending} unavailable={unavailable?.chart} />
+      <MessagesChart
+        buckets={buckets}
+        pending={pending}
+        unavailable={unavailable?.chart}
+      />
 
-      {onChooseModel && (
+      {onChooseModel && onChangeModel && onAddCredits && (
         <ModelSelection
           appName={name}
-          choice={modelChoice ?? "app"}
+          choice={modelChoice ?? null}
+          pending={modelPending}
+          busy={modelBusy}
           onChoose={onChooseModel}
-          gateModel={gateModel ?? { vendor: "-", id: "-" }}
-          onChangeModel={onChangeModel ?? (() => {})}
-          credits={credits ?? "-"}
-          onAddCredits={onAddCredits ?? (() => {})}
+          gateModel={gateModel ?? null}
+          onChangeModel={onChangeModel}
+          onEditModelSet={onEditModelSet}
+          credits={credits ?? null}
+          onAddCredits={onAddCredits}
         />
       )}
 
@@ -207,79 +256,194 @@ export function AppPane({
         pending={eventsPending}
         unavailable={unavailable?.events}
         onLoadMore={onLoadMore}
-        onViewEntry={onViewEntry}
       />
     </div>
   );
 }
 
+/**
+ * The upstream's mark beside the model (Figma 272:3282).
+ *
+ * A monogram, not a brand asset: this repo carries no provider logos - the sidebar
+ * falls back to a letter for the same reason - and drawing someone else's mark
+ * badly from memory is worse than not drawing it. Swap this for the real SVGs when
+ * they land; the shape and size are already what the design asks for.
+ *
+ * Renders nothing when the provider is unknown, rather than a question mark: the
+ * model name beside it already carries the row, and an empty slot keeps the column
+ * aligned.
+ *
+ * The glyph is decorative, so it is `aria-hidden` and the name is carried by an
+ * `sr-only` sibling rather than by `title` alone. A `title` on an `aria-hidden`
+ * element is reachable by mouse and by nothing else, which for a one-letter
+ * monogram means the provider is the one thing on the row a screen reader could
+ * not get at. The tooltip stays for pointer users.
+ */
+function VendorMark({ provider }: { provider: string | null }) {
+  if (!provider) return <span aria-hidden className="size-4 shrink-0" />;
+  return (
+    <>
+      <span
+        aria-hidden
+        title={provider}
+        className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-neutral-200 font-mono text-[0.5rem] font-semibold uppercase leading-none text-neutral-700"
+      >
+        {provider.charAt(0)}
+      </span>
+      <span className="sr-only">{provider}</span>
+    </>
+  );
+}
+
+/**
+ * The Model selection card (Figma `Flows / App`).
+ *
+ * Three things this deliberately does not do.
+ *
+ * **It does not default.** `choice` of `null` means no reading landed, and the
+ * radios are drawn unselected and disabled rather than showing App default. A
+ * switch driven by a failed read is the bug `lib/groups.ts` documents for
+ * routing: the control renders one way, and clicking it turns off the setting the
+ * user was trying to turn on.
+ *
+ * **It does not imply that a remembered model is a live one.** The design keeps
+ * "Current Gate model" visible under App default so the user can see what they
+ * would be switching to. Drawing it identically in both states would conflate
+ * intent with what is actually served, so under App default the row is dimmed and
+ * labelled - `source` is the only thing that decides what Gate serves.
+ *
+ * There used to be a third: a `supported` flag that withheld the control for an
+ * app the gateway could not identify on a request. It went with the server-side
+ * store - the choice is now a local file keyed on our own tool slug, so every
+ * app this window lists can hold one.
+ */
 function ModelSelection({
   appName,
   choice,
+  pending,
+  busy,
   onChoose,
   gateModel,
   onChangeModel,
+  onEditModelSet,
   credits,
   onAddCredits,
 }: {
   appName: string;
-  choice: ModelChoice;
+  choice: ModelChoice | null;
+  pending?: boolean;
+  busy?: boolean;
   onChoose: (choice: ModelChoice) => void;
-  gateModel: GateModel;
+  gateModel: GateModel | null;
   onChangeModel: () => void;
-  credits: string;
+  onEditModelSet?: () => void;
+  credits: string | null;
   onAddCredits: () => void;
 }) {
+  // Under App default a chosen model is remembered, not served. Kept as one
+  // named value because three places below depend on it and they must agree.
+  const gateActive = choice === "gate";
+
   return (
     <Card className="p-4">
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">Model selection</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">
+        Model selection
+      </h2>
       <p className="mt-1 text-sm leading-5 text-neutral-600">
         Choose whether {appName} or Gate selects the AI model for requests
       </p>
 
-      <div role="radiogroup" aria-label="Model selection" className="mt-4 grid grid-cols-2 gap-4">
-        <ModelOption
-          selected={choice === "app"}
-          onSelect={() => onChoose("app")}
-          icon={<Icon name="cube" size={16} />}
-          title="App default"
-          description="Use the model configured in your app"
-        />
-        <ModelOption
-          selected={choice === "gate"}
-          onSelect={() => onChoose("gate")}
-          icon={<Icon name="layers" size={16} />}
-          title="Gate model"
-          description="Use a model selected in Gate AI"
-        />
-      </div>
+      {pending ? (
+        <div className="mt-4 grid grid-cols-2 gap-4">
+          <Skeleton className="h-[3.75rem]" />
+          <Skeleton className="h-[3.75rem]" />
+        </div>
+      ) : (
+        <>
+          <div
+            role="radiogroup"
+            aria-label="Model selection"
+            className="mt-4 grid grid-cols-2 gap-4"
+          >
+            <ModelOption
+              selected={choice === "app"}
+              disabled={choice === null || busy}
+              onSelect={() => onChoose("app")}
+              icon={<Icon name="cube" size={16} />}
+              title="App default"
+              description="Use the model configured in your app"
+            />
+            <ModelOption
+              selected={gateActive}
+              disabled={choice === null || busy}
+              onSelect={() => onChoose("gate")}
+              icon={<Icon name="layers" size={16} />}
+              title="Gate model"
+              description="Use a model selected in Gate AI"
+            />
+          </div>
+          {choice === null && (
+            <EmptyNote className="mt-4" icon="cube">
+              Gate could not read this app's model setting, so it is not shown.
+              The setting itself is unchanged.
+            </EmptyNote>
+          )}
+        </>
+      )}
 
-      {/* The design separates the choice above from the current-model rows
-       * below with a full-width rule. */}
-      <hr className="mt-4 border-t border-base-border" />
-
-      {/* Only meaningful once Gate is picking the model, but the design keeps it
-       * visible either way so the user can see what they would switch to. */}
-      <p className="mt-4 text-base-xs text-base-muted-foreground">Current Gate model</p>
+      {/* Visible under either choice - the design's point is that you can see
+       * what you would switch to. What changes is whether it reads as live. */}
+      <p className="mt-4 text-base-xs text-base-muted-foreground">
+        {gateModel?.alsoEnabled ? "Current Gate models" : "Current Gate model"}
+      </p>
 
       <div className="mt-2 flex flex-col gap-2">
-        <InfoRow
-          icon={gateModel.logo ?? <Icon name="cube" size={16} />}
-          action={{ label: "Change model", onClick: onChangeModel }}
-        >
-          <p className="text-base-2xs leading-4 text-base-muted-foreground">
-            {gateModel.vendor}
-          </p>
-          <p className="font-mono text-sm leading-5 text-base-foreground">{gateModel.id}</p>
-        </InfoRow>
+        {gateModel === null ? (
+          <EmptyNote icon="cube">
+            No Gate model chosen yet. Choose one to see what Gate would serve.
+          </EmptyNote>
+        ) : (
+          <InfoRow
+            icon={gateModel.logo ?? <Icon name="cube" size={16} />}
+            action={{
+              label: "Change model",
+              onClick: onChangeModel,
+              disabled: busy,
+            }}
+            // AG-590's entry point, beside the swap rather than replacing it.
+            secondaryAction={
+              onEditModelSet
+                ? { label: "Edit set", onClick: onEditModelSet, disabled: busy }
+                : undefined
+            }
+            // Dimmed under App default: it is what the user would switch to, not
+            // what their requests are being answered with.
+            muted={!gateActive}
+          >
+            <p className="text-base-2xs leading-4 text-base-muted-foreground">
+              {gateModel.vendor}
+              {gateModel.alsoEnabled
+                ? ` + ${gateModel.alsoEnabled} more enabled`
+                : ""}
+              {!gateActive && " - not in use"}
+            </p>
+            <p className="font-mono text-sm leading-5 text-base-foreground">
+              {gateModel.id}
+            </p>
+          </InfoRow>
+        )}
 
         <InfoRow
           icon={<Icon name="creditCard" size={16} />}
-          action={{ label: "Add credits", onClick: onAddCredits, external: true }}
+          action={{
+            label: "Add credits",
+            onClick: onAddCredits,
+            external: true,
+          }}
         >
           <p className="text-sm leading-5 text-base-foreground">
             <span className="text-neutral-600">Gate credits: </span>
-            {credits}
+            {credits ?? "N/A"}
           </p>
         </InfoRow>
       </div>
@@ -289,12 +453,16 @@ function ModelSelection({
 
 function ModelOption({
   selected,
+  disabled,
   onSelect,
   icon,
   title,
   description,
 }: {
   selected: boolean;
+  /** No reading landed, or a write is in flight. Disabled rather than hidden so
+   *  the card keeps its shape and the user can see the choice exists. */
+  disabled?: boolean;
   onSelect: () => void;
   icon: ReactNode;
   title: string;
@@ -305,11 +473,12 @@ function ModelOption({
       type="button"
       role="radio"
       aria-checked={selected}
+      disabled={disabled}
       onClick={onSelect}
-      className={`flex items-center gap-3 rounded-md border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`flex items-center gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-60 ${
         selected
           ? "border-base-primary bg-base-card"
-          : "border-base-border bg-base-card hover:bg-gray-50"
+          : "border-base-border bg-base-card enabled:hover:bg-gray-50"
       }`}
     >
       <span
@@ -327,7 +496,11 @@ function ModelOption({
         </span>
       </span>
       {selected && (
-        <Icon name="circleCheck" size={16} className="shrink-0 text-base-primary" />
+        <Icon
+          name="circleCheck"
+          size={16}
+          className="shrink-0 text-base-primary"
+        />
       )}
     </button>
   );
@@ -337,13 +510,29 @@ function InfoRow({
   icon,
   children,
   action,
+  secondaryAction,
+  muted,
 }: {
   icon: ReactNode;
   children: ReactNode;
-  action: { label: string; onClick: () => void; external?: boolean };
+  /** Omitted when there is nothing to do here, which removes the button rather
+   *  than leaving a dead one on screen. */
+  action?: {
+    label: string;
+    onClick: () => void;
+    external?: boolean;
+    disabled?: boolean;
+  };
+  /** A second, lower-emphasis action. Only the model row has one. */
+  secondaryAction?: { label: string; onClick: () => void; disabled?: boolean };
+  /** Drawn as present but not in force. Opacity rather than a grey palette so
+   *  the row reads as the same thing, dimmed - which is what it is. */
+  muted?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-md border border-base-border p-3">
+    <div
+      className={`flex items-center gap-3 rounded-lg border border-base-border p-3 ${muted ? "opacity-60" : ""}`}
+    >
       <span
         aria-hidden
         className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
@@ -351,14 +540,27 @@ function InfoRow({
         {icon}
       </span>
       <div className="min-w-0 flex-1">{children}</div>
-      <button
-        type="button"
-        onClick={action.onClick}
-        className="flex shrink-0 items-center h-8 gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-      >
-        {action.label}
-        {action.external && <Icon name="squareArrowOutUpRight" size={16} />}
-      </button>
+      {secondaryAction && (
+        <button
+          type="button"
+          onClick={secondaryAction.onClick}
+          disabled={secondaryAction.disabled}
+          className="flex h-8 shrink-0 items-center rounded-control px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-muted-foreground transition-colors enabled:hover:bg-gray-50 enabled:hover:text-base-foreground disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          {secondaryAction.label}
+        </button>
+      )}
+      {action && (
+        <button
+          type="button"
+          onClick={action.onClick}
+          disabled={action.disabled}
+          className="flex h-8 shrink-0 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors enabled:hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          {action.label}
+          {action.external && <Icon name="squareArrowOutUpRight" size={16} />}
+        </button>
+      )}
     </div>
   );
 }
@@ -368,7 +570,6 @@ function RecentActivity({
   pending,
   unavailable,
   onLoadMore,
-  onViewEntry,
 }: {
   activity: ActivityEntry[];
   /** The first page is in flight; see `AppPane`. */
@@ -378,11 +579,12 @@ function RecentActivity({
   /** Absent when there is no next page. */
   onLoadMore?: () => void;
   /** See `AppPane`. */
-  onViewEntry?: (entry: ActivityEntry) => void;
 }) {
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">Recent activity</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">
+        Recent activity
+      </h2>
 
       {pending ? (
         <PendingRows />
@@ -394,87 +596,129 @@ function RecentActivity({
         // window this card does not use. It also put the same line twice on a pane
         // with no traffic, which is how the inaccuracy came to light.
         <EmptyNote>
-          {unavailable ? "Recent activity couldn't be read" : "No recent messages"}
+          {unavailable
+            ? "Recent activity couldn't be read"
+            : "No recent messages"}
         </EmptyNote>
       ) : (
-      <table className="mt-4 w-full">
-        <thead>
-          <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-2 text-left font-normal">
-              Time
-            </th>
-            <th scope="col" className="pb-2 text-left font-normal">
-              Security
-            </th>
-            <th scope="col" className="pb-2 text-left font-normal">
-              Model
-            </th>
-            <th scope="col" className="pb-2 text-left font-normal">
-              Message
-            </th>
-            <th scope="col" className="pb-2 text-right font-normal">
-              Action
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {activity.map((entry) => {
-            const verdict = rowVerdict(entry);
-            return (
-            <tr key={entry.id} className="border-t border-base-border">
-              <td className="whitespace-nowrap py-3 pr-4 text-sm leading-5 text-base-foreground">
-                {entry.time}
-              </td>
-              <td className="py-3 pr-4">
-                {verdict ? (
-                  <Pill className={PILL_STYLES[verdict]}>{verdict}</Pill>
-                ) : (
-                  // Withheld, not permitted. A pill here would read as a verdict.
-                  <span
-                    className="text-sm leading-5 text-base-muted-foreground"
-                    title="No security action recorded, or not your request"
-                  >
-                    &#8212;
-                  </span>
-                )}
-              </td>
-              <td className="min-w-0 py-3 pr-4">
-                {/* Name only - the design pairs it with a vendor mark, but no
-                  * marks are exported yet (open question 2), and the sidebar's
-                  * tiles already fall back the same way. */}
-                <p className="truncate text-sm leading-5 text-base-foreground">
-                  {entry.model}
-                </p>
-              </td>
-              <td className="min-w-0 py-3 pr-4">
-                {/* The design draws a message title over this identifier. There
-                  * is no title to draw: AG-574 excludes prompt text, and the only
-                  * human-readable label the gateway holds for a conversation is
-                  * the user's own prompt, stored unredacted. So the cell carries
-                  * what the row can truthfully be identified by. */}
-                <p className="truncate font-mono text-base-xs leading-4 text-base-muted-foreground">
-                  {entry.reference}
-                </p>
-              </td>
-              <td className="py-3 text-right">
-                {/* Opens the request in the web dashboard - once there is a URL
-                  * for it. The dashboard has no tool/machine/time filter yet, so
-                  * the shell has nothing to pass for `onViewEntry`; the button is
-                  * drawn ahead of its wiring by decision (2026-08-21). */}
-                <button
-                  type="button"
-                  onClick={() => onViewEntry?.(entry)}
-                  className="inline-flex items-center h-8 gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-                >
-                  View
-                  <Icon name="squareArrowOutUpRight" size={16} />
-                </button>
-              </td>
+        <table className="mt-4 w-full">
+          <thead>
+            <tr className="text-base-xs text-base-muted-foreground">
+              <th scope="col" className="pb-2 text-left font-normal">
+                Time
+              </th>
+              {/* One column, not two: the design merged status into security, so a
+                failed request reads ERROR and every other row reads what the
+                guardrails did. */}
+              <th scope="col" className="pb-2 text-left font-normal">
+                Security
+              </th>
+              <th scope="col" className="w-1/4 pb-2 text-left font-normal">
+                Model
+              </th>
+              <th scope="col" className="pb-2 text-left font-normal">
+                Message
+              </th>
+              <th scope="col" className="w-20 pb-2 text-right font-normal">
+                Action
+              </th>
             </tr>
-            );
-          })}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {activity.map((entry) => (
+              <tr key={entry.id} className="border-t border-base-border">
+                <td className="whitespace-nowrap py-3 pr-4 text-sm leading-5 text-base-foreground">
+                  {entry.time}
+                </td>
+                <td className="py-3 pr-4">
+                  {/* Error outranks the guardrail verdict, which is the design's
+                    call and the defensible one: a request that did not complete
+                    is the thing the reader needs first. It does cost information -
+                    a failed request that was also flagged now shows only ERROR -
+                    so the row keeps the quieter fact rather than dropping it.
+                    In the tooltip for pointer users, and in `sr-only` text beside
+                    the badge for everyone else: a `title` is the whole mitigation
+                    here, and a mitigation only a mouse can reach is not one. */}
+                  {entry.status === "error" ? (
+                    <>
+                      <Pill
+                        className={BADGE_STYLES.error}
+                        title={
+                          entry.security
+                            ? `Request failed. Guardrails: ${entry.security}.`
+                            : "Request failed."
+                        }
+                      >
+                        error
+                      </Pill>
+                      {entry.security && (
+                        <span className="sr-only">
+                          Guardrails: {entry.security}.
+                        </span>
+                      )}
+                    </>
+                  ) : entry.security ? (
+                    <Pill className={BADGE_STYLES[entry.security]}>
+                      {entry.security}
+                    </Pill>
+                  ) : (
+                    // Withheld, not permitted. A pill here would read as a verdict.
+                    <span
+                      className="text-sm leading-5 text-base-muted-foreground"
+                      title="No security action recorded, or not your request"
+                    >
+                      &#8212;
+                    </span>
+                  )}
+                </td>
+                <td className="py-3 pr-4">
+                  {/* Truncated, not `nowrap`. A model id is unbounded - the
+                    canonical ones run to `anthropic/claude-opus-4-5-20260514` -
+                    and an un-truncated cell makes that string the table's minimum
+                    width. Time and Action are already fixed and Message is
+                    collapsed to `max-w-0`, so Model was the only column left that
+                    could push the floor past the card; at the window's 760px
+                    minimum the table would overflow and scroll the whole pane
+                    body sideways, chart and header with it. The width cap lives on
+                    the `th` as a share of the table rather than a pixel count, so
+                    it holds at both window sizes. */}
+                  <span className="flex items-center gap-2">
+                    <VendorMark provider={entry.provider} />
+                    <span className="truncate text-sm leading-5 text-base-foreground">
+                      {entry.model}
+                    </span>
+                  </span>
+                </td>
+                <td className="min-w-0 max-w-0 py-3 pr-4">
+                  {/* `max-w-0` with `truncate` is what makes the ellipsis actually
+                    appear: a table cell sizes to its content otherwise, and the
+                    design truncates this column rather than letting a prompt push
+                    the Action button off the card. */}
+                  {entry.title && (
+                    <p className="truncate text-sm leading-5 text-base-foreground">
+                      {entry.title}
+                    </p>
+                  )}
+                  <p className="truncate font-mono text-base-2xs leading-4 text-base-muted-foreground">
+                    {entry.reference}
+                  </p>
+                </td>
+                <td className="py-3 text-right">
+                  {entry.onView ? (
+                    <button
+                      type="button"
+                      onClick={entry.onView}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                    >
+                      View
+                      <Icon name="squareArrowOutUpRight" size={16} />
+                    </button>
+                  ) : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
 
       {onLoadMore && (
@@ -518,12 +762,21 @@ function PendingRows() {
   );
 }
 
-function Pill({ className, children }: { className: string; children: ReactNode }) {
-  // Drawn at 4px; the radius scale names no 4px stop and its comment maps the
-  // drawn 4 onto `sm`, the same call the controls made.
+function Pill({
+  className,
+  title,
+  children,
+}: {
+  className: string;
+  /** Hover detail, for a badge that stands in for more than it says - the merged
+   *  security column uses it to keep the guardrail verdict on a failed row. */
+  title?: string;
+  children: ReactNode;
+}) {
   return (
     <span
-      className={`inline-block rounded-sm px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
+      title={title}
+      className={`inline-block rounded-xs px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
     >
       {children}
     </span>

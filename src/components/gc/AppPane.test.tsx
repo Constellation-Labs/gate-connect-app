@@ -19,7 +19,9 @@ const entry: ActivityEntry = {
   status: "success",
   security: "flagged",
   model: "claude-opus-4",
-  reference: "cnv_824bd2c0",
+  provider: "anthropic",
+  title: "Update our data-model.md",
+  reference: "824bd2c0-4123",
 };
 
 /**
@@ -47,9 +49,9 @@ function pane(props: Partial<Parameters<typeof AppPane>[0]> = {}) {
       buckets={[]}
       modelChoice="app"
       onChooseModel={() => {}}
-      gateModel={{ vendor: "-", id: "-" }}
+      gateModel={null}
       onChangeModel={() => {}}
-      credits="-"
+      credits={null}
       onAddCredits={() => {}}
       activity={[]}
       {...props}
@@ -115,20 +117,36 @@ describe("AppPane recent activity", () => {
     expect(within(card("Recent activity")).getByText("No recent messages")).toBeTruthy();
   });
 
-  it("renders a row's model and reference, and no conversation title", () => {
-    render(pane({ activity: [entry] }));
+  it("shows one badge, and lets a failure outrank the guardrail verdict", () => {
+    render(pane({ activity: [{ ...entry, status: "error", security: "flagged" }] }));
+    const feed = card("Recent activity");
 
-    expect(screen.getByText("claude-opus-4")).toBeTruthy();
-    expect(screen.getByText("cnv_824bd2c0")).toBeTruthy();
-    // Model and Message are separate columns now, per `table/recent-activity`.
-    // The Message cell carries only the reference: a title could only have come
-    // from prompt text.
-    expect(screen.getByRole("columnheader", { name: "Model" })).toBeTruthy();
-    expect(screen.getByRole("columnheader", { name: "Message" })).toBeTruthy();
-    expect(screen.queryByRole("columnheader", { name: "Conversation" })).toBeNull();
+    // Status and security share a column now, so the row cannot show both. The
+    // failure wins, and the verdict it displaced stays reachable rather than being
+    // dropped - on hover for pointer users, and as `sr-only` text for everyone
+    // else, since a tooltip alone would leave keyboard and screen reader users
+    // with no route to it at all.
+    expect(within(feed).getByText("error")).toBeTruthy();
+    expect(within(feed).queryByText("flagged")).toBeNull();
+    expect(within(feed).getByTitle("Request failed. Guardrails: flagged.")).toBeTruthy();
+    expect(within(feed).getByText("Guardrails: flagged.")).toBeTruthy();
   });
 
-  it("wears one pill per row, and the recorded verdict outranks the error", () => {
+  it("adds no displaced verdict when a failed row had none", () => {
+    render(pane({ activity: [{ ...entry, status: "error", security: null }] }));
+    const feed = card("Recent activity");
+
+    expect(within(feed).getByTitle("Request failed.")).toBeTruthy();
+    expect(within(feed).queryByText(/Guardrails:/)).toBeNull();
+  });
+
+  it("shows the guardrail verdict when the request succeeded", () => {
+    render(pane({ activity: [{ ...entry, status: "success", security: "redacted" }] }));
+
+    expect(within(card("Recent activity")).getByText("redacted")).toBeTruthy();
+  });
+
+  it("wears one pill per row, with no column left for a status", () => {
     render(
       pane({
         activity: [
@@ -139,12 +157,16 @@ describe("AppPane recent activity", () => {
     );
     const feed = card("Recent activity");
 
-    // The design merged the old Status column into Security: no SUCCESS pill
-    // exists, and ERROR appears only when the gateway recorded no action.
+    // The design merged the old Status column into Security, so there is no
+    // second cell to put a transport outcome in and no SUCCESS pill at all.
+    // Which of the two facts a row shows when it has both is the precedence
+    // question, pinned above; what this pins is that it only ever shows one.
     expect(within(feed).queryByRole("columnheader", { name: "Status" })).toBeNull();
-    expect(within(feed).getByText("flagged")).toBeTruthy();
-    expect(within(feed).getByText("error")).toBeTruthy();
     expect(within(feed).queryByText("success")).toBeNull();
+    // Both rows failed, so under the precedence above both wear ERROR: the
+    // first displaced its `flagged` into the tooltip, the second never had a
+    // verdict to displace.
+    expect(within(feed).getAllByText("error")).toHaveLength(2);
   });
 
   it("marks a row whose security detail is absent, without inventing a verdict", () => {
@@ -161,15 +183,44 @@ describe("AppPane recent activity", () => {
     expect(within(feed).queryByText("error")).toBeNull();
   });
 
-  it("draws a View per row, and hands the entry to whoever owns a destination", () => {
-    const onViewEntry = vi.fn();
-    render(pane({ activity: [entry], onViewEntry }));
+  it("offers a per-row action when the surface supplies a destination", () => {
+    const onView = vi.fn();
+    render(pane({ activity: [{ ...entry, onView }] }));
 
-    // Drawn ahead of its wiring by decision (2026-08-21): the dashboard cannot
-    // filter by request yet, so the shell passes no handler in production.
-    const view = within(card("Recent activity")).getByRole("button", { name: "View" });
-    view.click();
-    expect(onViewEntry).toHaveBeenCalledWith(entry);
+    within(card("Recent activity")).getByRole("button", { name: "View" }).click();
+    expect(onView).toHaveBeenCalledOnce();
+  });
+
+  it("draws no action when there is nowhere to send the user", () => {
+    // The row type makes `onView` optional for exactly this: an inert control is
+    // worse than an absent one.
+    render(pane({ activity: [entry] }));
+
+    expect(within(card("Recent activity")).queryByRole("button", { name: "View" })).toBeNull();
+  });
+
+  it("renders the message, its reference, and the vendor beside the model", () => {
+    render(pane({ activity: [entry] }));
+    const feed = card("Recent activity");
+
+    expect(within(feed).getByText("Update our data-model.md")).toBeTruthy();
+    expect(within(feed).getByText("824bd2c0-4123")).toBeTruthy();
+    expect(within(feed).getByText("claude-opus-4")).toBeTruthy();
+    expect(within(feed).getByTitle("anthropic")).toBeTruthy();
+    // The monogram is decorative, so the provider has to be named in text too -
+    // otherwise the one-letter glyph is all a screen reader gets.
+    expect(within(feed).getByText("anthropic")).toBeTruthy();
+    expect(within(feed).getByRole("columnheader", { name: "Message" })).toBeTruthy();
+  });
+
+  it("shows the reference alone when there is no message to show", () => {
+    // Null covers three cases the row does not distinguish - no session, a
+    // placeholder name, and a row this caller may not see into.
+    render(pane({ activity: [{ ...entry, title: null }] }));
+    const feed = card("Recent activity");
+
+    expect(within(feed).queryByText("Update our data-model.md")).toBeNull();
+    expect(within(feed).getByText("824bd2c0-4123")).toBeTruthy();
   });
 
   it("offers Load more only when there is another page", () => {
@@ -197,5 +248,86 @@ describe("AppPane counters and chart", () => {
     expect(within(card("Messages")).getByText("Messages couldn't be read")).toBeTruthy();
     // The feed is a separate read and still reports its own empty state.
     expect(within(card("Recent activity")).getByText("No recent messages")).toBeTruthy();
+  });
+});
+
+/**
+ * The model card, whose whole job is to not overstate what it knows.
+ *
+ * Three separate states get confused if the card is careless, and each is a
+ * different sentence to the user: "we have not read this yet", "this app cannot
+ * have one", and "a model is chosen but not in use". Collapsing any pair of them
+ * produces a control that lies about what it does.
+ */
+describe("AppPane model selection", () => {
+  const model = { vendor: "anthropic", id: "anthropic/claude-opus-5" };
+
+  it("selects neither option when no reading landed", () => {
+    // Principle 2, in its purest form: an org that HAD switched to a Gate model
+    // would see App default selected the instant a read failed, and clicking
+    // Gate model would look like a change when it was a no-op.
+    render(pane({ modelChoice: null }));
+    const card_ = card("Model selection");
+
+    for (const radio of within(card_).getAllByRole("radio")) {
+      expect(radio.getAttribute("aria-checked")).toBe("false");
+      expect((radio as HTMLButtonElement).disabled).toBe(true);
+    }
+    expect(within(card_).getByText(/could not read this app's model setting/i)).toBeTruthy();
+  });
+
+  it("draws skeletons rather than a default while the reading is in flight", () => {
+    // `modelPending`, not the pane's `pending`: the latter tracks the activity
+    // reading, and an unattributed machine has nothing to say about a setting.
+    // Sharing one flag made this card draw skeletons forever on such a machine.
+    render(pane({ modelChoice: null, modelPending: true }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).queryByRole("radio")).toBeNull();
+    expect(card_.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
+  });
+
+  it("marks a remembered model as not in use under App default", () => {
+    render(pane({ modelChoice: "app", gateModel: model }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).getByText(model.id)).toBeTruthy();
+    expect(within(card_).getByText(/not in use/i)).toBeTruthy();
+  });
+
+  it("drops the qualifier once Gate is actually serving it", () => {
+    render(pane({ modelChoice: "gate", gateModel: model }));
+    const card_ = card("Model selection");
+
+    expect(within(card_).getByText(model.id)).toBeTruthy();
+    expect(within(card_).queryByText(/not in use/i)).toBeNull();
+  });
+
+  it("says no model is chosen rather than drawing an empty row", () => {
+    render(pane({ modelChoice: "app", gateModel: null }));
+    expect(within(card("Model selection")).getByText(/No Gate model chosen yet/i)).toBeTruthy();
+  });
+
+  it("refuses a second click while a write is in flight", () => {
+    render(pane({ modelChoice: "app", gateModel: model, modelBusy: true }));
+    const card_ = card("Model selection");
+
+    for (const radio of within(card_).getAllByRole("radio")) expect((radio as HTMLButtonElement).disabled).toBe(true);
+    expect((within(card_).getByRole("button", { name: "Change model" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("reads N/A for a credit balance nothing reports", () => {
+    // Not a dash: a dash reads as a value. No endpoint returns a Gate balance.
+    render(pane({ credits: null }));
+    expect(within(card("Model selection")).getByText("N/A")).toBeTruthy();
+  });
+
+  it("chooses through the callback rather than deciding locally", async () => {
+    const onChooseModel = vi.fn();
+    render(pane({ modelChoice: "app", gateModel: model, onChooseModel }));
+    const card_ = card("Model selection");
+
+    within(card_).getByRole("radio", { name: /Gate model/ }).click();
+    expect(onChooseModel).toHaveBeenCalledWith("gate");
   });
 });

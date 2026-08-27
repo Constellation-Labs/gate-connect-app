@@ -908,7 +908,9 @@ pub fn restore_all() -> Result<()> {
             }
             // Nothing to do yet, or a route that did not take. Neither is a
             // failure worth reporting - the engine simply is not up - and
-            // neither is a completion, so the journal entry stays Pending.
+            // neither is a completion. The seeded `Pending` is already the
+            // right entry, so the journal is left alone rather than told a
+            // story about an attempt that has not happened yet.
             Ok(_) => pending.push(slug),
             Err(e) => {
                 eprintln!("[gate] restoring provider {slug:?} on master-on failed: {e}");

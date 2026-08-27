@@ -171,6 +171,20 @@ export interface BackendState {
       at_unix: number;
     }[];
   } | null;
+  /** Per-tool model choices and the catalogue behind the picker (AG-588).
+   *
+   *  `choices` is keyed on TOOL SLUG and models `preferences.json` on this
+   *  install, not a gateway response - the choice is local. `paidAckUnix` null is
+   *  an install that has never accepted paid use, which is what makes the next
+   *  switch to a Gate model ask. */
+  toolModels: {
+    choices: Record<string, { source: "tool" | "gate"; model_ids: string[] }>;
+    paidAckUnix: number | null;
+    /** What `/v1/models` offers. Empty by default: a gateway with no platform
+     *  provider accounts has nothing of its own, and that is the state the
+     *  picker's own empty copy is written for. */
+    catalogue: { id: string; owned_by: string; name: string }[];
+  };
   /** This install's stable id, as `install_id` reports it. A fixed string rather
    *  than a generated uuid so a spec can assert on what the row shows. */
   installId: string;
@@ -193,7 +207,7 @@ const CLAUDE_CODE: ToolFixture = {
   name: "Claude Code",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",
-    config_location: null,
+  config_location: null,
   status: { kind: "detected" },
 };
 
@@ -202,7 +216,7 @@ const CODEX: ToolFixture = {
   name: "Codex",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://api.openai.com/v1",
-    config_location: null,
+  config_location: null,
   status: { kind: "detected" },
 };
 
@@ -211,7 +225,7 @@ const OPENCODE: ToolFixture = {
   name: "OpenCode",
   upstream_provider_name: "your existing providers",
   default_upstream_url: "https://api.anthropic.com",
-    config_location: null,
+  config_location: null,
   status: { kind: "detected" },
 };
 
@@ -376,6 +390,7 @@ export function defaultState(): BackendState {
     pendingRestore: { providers: [], tools: [] },
     pendingResumeKeeps: [],
     restoreJournal: null,
+    toolModels: { choices: {}, paidAckUnix: null, catalogue: [] },
     installId: "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f",
     hostName: "e2e-macbook",
     failures: {},

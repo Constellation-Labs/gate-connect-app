@@ -7,12 +7,16 @@ import type { ActivityEntry } from "./toolEventRow";
  * Adapter between `GET /v1/me/tool-events` and the app pane's activity feed
  * (AG-574).
  *
- * The gateway sends one row per request, carrying only a timestamp, an enum, and
- * identifiers. There is no title and there will not be one: the ticket forbids
- * showing prompt text, and the only human-readable string the gateway holds for a
- * conversation is the user's own prompt, stored unredacted. So this module's job
- * is narrower than the Overview adapter's - format a time, name a state - and it
- * has no copy to invent.
+ * The gateway sends one row per request: a timestamp, a couple of enums,
+ * identifiers, and one human-readable string. That string is the user's own
+ * prompt, shortened upstream. An earlier round of this module refused to carry it
+ * and said so here, on the reading that showing prompt text was out of scope;
+ * Figma 272:3286 restored the column and product accepted what the label is. The
+ * gateway gates it per row, so a colleague's prompt never arrives here to be
+ * mishandled in the first place.
+ *
+ * So this module's job stays narrow - format a time, name a state, pass the
+ * strings through - and it still has no copy to invent.
  */
 
 /** Per-row shape as the gateway sends it. */
@@ -28,7 +32,11 @@ interface RawEvent {
   securityAction: "allow" | "flag" | "redact" | "block" | null;
   securityCategory: string | null;
   model: string | null;
+  provider: string | null;
   sessionRef: string | null;
+  /** The user's own prompt, shortened and per-row gated upstream. Null when there
+   *  is nothing to show; see `ActivityEntry.title`. */
+  conversationTitle: string | null;
 }
 
 interface RawToolEvents {
@@ -102,6 +110,8 @@ function toEntry(raw: RawEvent): ActivityEntry {
     // action is unknown to us and renders as a dash, not as a verdict.
     security: raw.securityAction ? SECURITY[raw.securityAction] : null,
     model: raw.model ?? NO_MODEL,
+    provider: raw.provider,
+    title: raw.conversationTitle,
     reference: raw.sessionRef ?? NO_REFERENCE,
   };
 }

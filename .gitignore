@@ -20,5 +20,5 @@
 .figma-mcp/.env
 .figma-mcp/assets/
 
-# TypeScript incremental build artifact.
-tsconfig.tsbuildinfo
+# TypeScript incremental build stamp (tsc -b). Machine-local, never reviewable.
+/*.tsbuildinfo
