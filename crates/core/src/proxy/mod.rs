@@ -142,6 +142,52 @@ pub(crate) fn notify_engine_crash_observer() {
     }
 }
 
+/// Observer the desktop shell registers to hear that a rewritten chatgpt.com
+/// app turn was answered with a Cloudflare managed challenge
+/// (`cf-mitigated: challenge`). The app shell has no HTML/JS surface to run
+/// the interstitial, so the GUI opens a one-time solve webview, captures the
+/// resulting `cf_clearance` cookie, and feeds it back through
+/// [`engine::RunningEngine::update_cf_clearance`]. Set once at startup. Not
+/// cfg-gated like the crash observer above: the notify below is called from
+/// `engine::handle_response`, which compiles on every desktop OS (the Linux
+/// helper daemon hosts the same engine); a daemon-hosted engine simply has no
+/// observer registered, so the notify is a no-op there.
+static CF_CHALLENGE_OBSERVER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// Debounce latch: set by the notify that fired the observer, cleared by
+/// [`cf_challenge_solve_finished`]. While a solve webview is open (or a
+/// captured cookie is being fed back) every further challenged turn would
+/// otherwise re-fire the observer and stack webviews.
+static CF_CHALLENGE_SOLVING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Register the challenge observer. First registration wins; later calls are
+/// ignored (the shell registers exactly once at setup).
+pub fn set_cf_challenge_observer(observer: impl Fn() + Send + Sync + 'static) {
+    let _ = CF_CHALLENGE_OBSERVER.set(Box::new(observer));
+}
+
+/// Invoke the registered challenge observer, if any, unless a solve is
+/// already in flight. Called by the engine's `handle_response` when a
+/// chatgpt.com app turn comes back `cf-mitigated: challenge`.
+pub(crate) fn notify_cf_challenge_observer() {
+    let Some(observer) = CF_CHALLENGE_OBSERVER.get() else {
+        return;
+    };
+    if CF_CHALLENGE_SOLVING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    observer();
+}
+
+/// Clear the solve-in-progress latch so the next challenged turn can re-open
+/// the solve webview. The GUI calls this when the capture completes or the
+/// webview is closed without one.
+pub fn cf_challenge_solve_finished() {
+    CF_CHALLENGE_SOLVING.store(false, std::sync::atomic::Ordering::Release);
+}
+
 /// Whether an HTTP authority (`host` or `host:port`, IPv6 in brackets) names
 /// this machine's loopback - the only place our plain-HTTP loopback listeners
 /// (the relay, the PAC responder) may be addressed from.

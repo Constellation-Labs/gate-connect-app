@@ -513,6 +513,21 @@ impl<O: DesktopOps> DesktopManager<O> {
         }
     }
 
+    /// Push a captured chatgpt.com `cf_clearance` cookie into the running
+    /// engine, if any. Empty string clears it. Used by the challenge-solve
+    /// webview so a freshly minted cookie reaches in-flight app turns without
+    /// a restart.
+    pub fn refresh_cf_clearance(&self, cf_clearance: &str) {
+        if let Some(running) = self
+            .engine
+            .lock()
+            .expect("proxy engine mutex poisoned")
+            .as_ref()
+        {
+            running.update_cf_clearance(cf_clearance);
+        }
+    }
+
     /// Trust the CA without enabling the proxy (standalone command).
     pub fn trust_ca(&self) -> Result<ProxyState> {
         self.ops.ca_load_or_create()?; // ensure the cert file exists to trust
@@ -1201,6 +1216,7 @@ mod tests {
         mgr.refresh_api_key("sk-gw-rotated");
         mgr.refresh_token("fresh-token");
         mgr.refresh_org("org-uuid-2");
+        mgr.refresh_cf_clearance("cf-clearance-cookie");
         assert!(mgr.status().expect("status").running);
 
         mgr.shutdown_engine().expect("shutdown");

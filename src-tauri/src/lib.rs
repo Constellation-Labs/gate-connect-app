@@ -1273,6 +1273,100 @@ async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result
     Ok(())
 }
 
+/// Label of the Cloudflare challenge-solve webview (see
+/// [`open_cf_challenge_window`]). Named because the window-event handler must
+/// recognise it too.
+const CF_CHALLENGE_WINDOW: &str = "cf-challenge";
+
+/// The last `cf_clearance` value fed into the engine. Lets the solve window
+/// tell a pre-existing still-good cookie in the webview store (feed it
+/// straight away with no user action - the engine value is memory-only, so
+/// this is the normal case right after an app restart) from the very cookie
+/// Cloudflare just challenged (wait for the solve to mint a new value;
+/// re-feeding the stale one would loop: inject -> challenge -> reopen).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+static LAST_CF_CLEARANCE: Mutex<String> = Mutex::new(String::new());
+
+/// Open (or refocus) the Cloudflare challenge-solve webview at the real
+/// chatgpt.com and poll its cookie store for the `cf_clearance` a solved
+/// interstitial mints. On capture: feed the cookie into the running engine,
+/// close the window, and clear the solve latch. If the user closes the window
+/// first, just clear the latch - the next challenged turn re-opens it.
+///
+/// The webview loads the live site the way the browser does (it honours the
+/// system proxy, and `/` is not a rewritten path, so the interstitial itself
+/// egresses from the user's IP) - the browser path is the one empirically
+/// proven to mint a cookie Cloudflare then accepts from Gate's IP.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn open_cf_challenge_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(CF_CHALLENGE_WINDOW) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+    let url: tauri::Url = "https://chatgpt.com"
+        .parse()
+        // Infallible: static, pre-validated URL.
+        .expect("static chatgpt.com URL parses");
+    let window = match tauri::WebviewWindowBuilder::new(
+        app,
+        CF_CHALLENGE_WINDOW,
+        tauri::WebviewUrl::External(url.clone()),
+    )
+    .title("Verify ChatGPT connection")
+    .inner_size(480.0, 640.0)
+    .center()
+    .build()
+    {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("[gate] opening the challenge-solve window failed: {e}");
+            report_backend_error("cf_challenge_window", format!("{e}"));
+            gate_connect_core::proxy::cf_challenge_solve_finished();
+            return;
+        }
+    };
+    let _ = window.set_focus();
+
+    // Poll for the cookie rather than hooking navigation: the challenge
+    // round-trips within one page, so the cookie can land without any
+    // navigation event. A separate thread is also what the cookie API needs
+    // on Windows - reading cookies from an event handler deadlocks WebView2.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let challenged = LAST_CF_CLEARANCE
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            // Window gone: the user gave up (or the capture below already
+            // closed it). Clear the latch so the next challenge re-opens.
+            let Some(window) = app.get_webview_window(CF_CHALLENGE_WINDOW) else {
+                gate_connect_core::proxy::cf_challenge_solve_finished();
+                return;
+            };
+            let captured = window
+                .cookies_for_url(url.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .find(|c| c.name() == "cf_clearance")
+                .map(|c| c.value().to_string());
+            let Some(value) = captured else { continue };
+            if value.is_empty() || value == challenged {
+                continue;
+            }
+            if let Ok(mut last) = LAST_CF_CLEARANCE.lock() {
+                *last = value.clone();
+            }
+            gate_connect_core::proxy::manager().refresh_cf_clearance(&value);
+            let _ = window.close();
+            gate_connect_core::proxy::cf_challenge_solve_finished();
+            return;
+        }
+    });
+}
+
 /// Bring the tray popover back on screen, anchored under the tray icon where
 /// the platform can report one. The onboarding flow calls this from its
 /// "locate Gate Connect" button and on close, so the handoff always ends at
@@ -1532,6 +1626,13 @@ pub fn run() {
                 }
                 return;
             }
+            // The challenge-solve webview is a regular window too: closing it
+            // really closes it (the capture thread notices and clears the
+            // solve latch), and the popover's blur-dismiss below must not
+            // hide it mid-solve.
+            if window.label() == CF_CHALLENGE_WINDOW {
+                return;
+            }
             // X-button on the popover should hide it, not quit the app.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -1603,6 +1704,23 @@ pub fn run() {
                             report_backend_error("restore_routing", format!("{e:#}"));
                         }
                     }
+                });
+
+                // ChatGPT app Cloudflare-challenge fix: the engine detects
+                // `cf-mitigated: challenge` on a rewritten chatgpt.com app
+                // turn (the app shell can't render the interstitial) and this
+                // observer opens a one-time solve webview at the real host;
+                // the captured `cf_clearance` is fed back into the engine and
+                // merged into subsequent app turns. Off-thread because the
+                // observer fires on the engine thread mid-response and must
+                // not block it on window creation. The event mirrors
+                // `proxy-state-changed` so a mounted popover can react;
+                // opening the window does not depend on it.
+                let challenge_handle = app.handle().clone();
+                gate_connect_core::proxy::set_cf_challenge_observer(move || {
+                    let _ = challenge_handle.emit("cf-challenge-required", ());
+                    let handle = challenge_handle.clone();
+                    std::thread::spawn(move || open_cf_challenge_window(&handle));
                 });
             }
 

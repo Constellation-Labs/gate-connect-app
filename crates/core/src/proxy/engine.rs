@@ -119,6 +119,9 @@ pub struct RunningEngine {
     key_tx: watch::Sender<Arc<str>>,
     token_tx: watch::Sender<Arc<str>>,
     org_tx: watch::Sender<Arc<str>>,
+    /// Captured chatgpt.com `cf_clearance` cookie for app turns; empty when
+    /// none is held. See [`update_cf_clearance`](Self::update_cf_clearance).
+    cf_clearance_tx: watch::Sender<Arc<str>>,
     /// Whether the relay rewrites inference to the gateway (true) or forwards
     /// everything straight to the real upstream (false). See
     /// [`set_relay_intercept`](Self::set_relay_intercept).
@@ -184,6 +187,13 @@ impl RunningEngine {
     /// Cheap - no restart; this is how an org switch reaches in-flight routing.
     pub fn update_org(&self, org_id: &str) {
         let _ = self.org_tx.send(Arc::from(org_id));
+    }
+
+    /// Push a captured chatgpt.com `cf_clearance` cookie to the live engine.
+    /// Empty string clears it. Cheap - no restart; this is how a freshly
+    /// solved Cloudflare challenge reaches in-flight app turns.
+    pub fn update_cf_clearance(&self, cf_clearance: &str) {
+        let _ = self.cf_clearance_tx.send(Arc::from(cf_clearance));
     }
 
     /// Flip the relay between gateway interception (rewrite inference and
@@ -338,6 +348,22 @@ struct GateHandler {
     /// Live-updatable selected org UUID. Empty string means "none selected";
     /// injected as `X-Gate-Org-Id` only when an OAuth token is present.
     org: watch::Receiver<Arc<str>>,
+    /// Live-updatable chatgpt.com `cf_clearance` cookie, captured by the GUI's
+    /// challenge-solve webview. Empty string means "none held"; merged into
+    /// the `cookie` header on rewritten chatgpt.com app turns (see
+    /// [`inject_cf_clearance`]).
+    cf_clearance: watch::Receiver<Arc<str>>,
+    /// Per-connection memo: whether the request this connection last rewrote
+    /// targeted the chatgpt.com app surface. `handle_response` reads it to
+    /// attribute a `cf-mitigated: challenge` answer, which arrives with no
+    /// host context of its own. Best-effort under HTTP/2 multiplexing
+    /// (several requests can be in flight on one connection), which is
+    /// acceptable for now: the only rewritten host that both carries that
+    /// header and lacks a browsing cookie is the chatgpt.com app turn, so a
+    /// false trigger at worst opens the solve webview once when not strictly
+    /// needed. If that proves noisy, tighten by keying the memo to the
+    /// request rather than the connection.
+    last_turn_was_chatgpt_app: bool,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
@@ -555,6 +581,8 @@ impl HttpHandler for GateHandler {
             req.headers_mut().remove("proxy-authorization");
             return req.into();
         }
+        // Fresh verdict per request; only the rewrite branch below can set it.
+        self.last_turn_was_chatgpt_app = false;
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
         // website, which shares their host (see `BROWSER_EXCLUDED_SLUGS`).
         // Classify before `decide` and hand it a narrowed rule set, so the
@@ -644,6 +672,18 @@ impl HttpHandler for GateHandler {
                 ) {
                     Ok(()) => {
                         action = "rewrite->gateway";
+                        // chatgpt.com app turns egress from the gateway's IP
+                        // with no browsing cookie, so Cloudflare may answer
+                        // them with a managed challenge. Remember the surface
+                        // for `handle_response` and attach whatever clearance
+                        // the GUI's solve webview has captured.
+                        if host == "chatgpt.com" {
+                            self.last_turn_was_chatgpt_app = true;
+                            let cf = self.cf_clearance.borrow().clone();
+                            if !cf.is_empty() {
+                                inject_cf_clearance(&mut req, &cf);
+                            }
+                        }
                     }
                     Err(e) => {
                         action = "rewrite-FAILED";
@@ -703,6 +743,13 @@ impl HttpHandler for GateHandler {
         _ctx: &HttpContext,
         res: hudsucker::hyper::Response<Body>,
     ) -> hudsucker::hyper::Response<Body> {
+        // A Cloudflare managed challenge answering a chatgpt.com app turn:
+        // the app shell has no HTML/JS surface to run the interstitial, so
+        // notify the GUI to open the one-time solve webview. Side-channel
+        // notification only - the response is returned unchanged either way.
+        if cf_challenge_detected(self.last_turn_was_chatgpt_app, &res) {
+            crate::proxy::notify_cf_challenge_observer();
+        }
         if debug_log() {
             eprintln!(
                 "[gate-proxy] <- {} ct={:?}",
@@ -768,6 +815,48 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
             v.split(',')
                 .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
         })
+}
+
+/// Whether `res` is a Cloudflare managed challenge answering a chatgpt.com
+/// app turn. `last_turn_was_chatgpt_app` is the per-connection memo set by
+/// `handle_request` (see its field docs for the HTTP/2 caveat) - a response
+/// on any other surface never triggers, whatever headers it carries.
+/// `cf-mitigated` is Cloudflare's own marker that the body is its
+/// interstitial rather than the origin's answer.
+fn cf_challenge_detected<T>(
+    last_turn_was_chatgpt_app: bool,
+    res: &hudsucker::hyper::Response<T>,
+) -> bool {
+    last_turn_was_chatgpt_app
+        && res
+            .headers()
+            .get("cf-mitigated")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("challenge"))
+}
+
+/// Merge a `cf_clearance` value into the request's `cookie` header without
+/// disturbing cookies the client already sent (append with `; ` when a
+/// header is present, set it when none is). No-op if the client already
+/// carries its own `cf_clearance`.
+fn inject_cf_clearance<T>(req: &mut Request<T>, cf_clearance: &str) {
+    use hudsucker::hyper::header::COOKIE;
+    let merged = match req.headers().get(COOKIE).and_then(|v| v.to_str().ok()) {
+        Some(cookies) => {
+            let has_own = cookies.split(';').any(|c| {
+                c.split_once('=')
+                    .is_some_and(|(name, _)| name.trim() == "cf_clearance")
+            });
+            if has_own {
+                return;
+            }
+            format!("{cookies}; cf_clearance={cf_clearance}")
+        }
+        None => format!("cf_clearance={cf_clearance}"),
+    };
+    if let Ok(value) = HeaderValue::from_str(&merged) {
+        req.headers_mut().insert(COOKIE, value);
+    }
 }
 
 pub(crate) fn apply_rewrite<T>(
@@ -1233,6 +1322,9 @@ where
     let (key_tx, key_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.api_key.as_str()));
     let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
     let (org_tx, org_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.org_id.as_str()));
+    // Starts empty: a cf_clearance only exists once the GUI's challenge-solve
+    // webview captures one (memory-only; a restart re-solves on demand).
+    let (cf_clearance_tx, cf_clearance_rx) = watch::channel::<Arc<str>>(Arc::from(""));
     // Intercepting until told otherwise: the engine only starts on an explicit
     // enable / SetIntercept, both of which mean "route through Gate".
     let (relay_intercept_tx, relay_intercept_rx) = watch::channel(true);
@@ -1251,6 +1343,8 @@ where
         api_key: key_rx,
         token: token_rx,
         org: org_rx,
+        cf_clearance: cf_clearance_rx,
+        last_turn_was_chatgpt_app: false,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
         claude_code_route: false,
@@ -1459,6 +1553,7 @@ where
             key_tx,
             token_tx,
             org_tx,
+            cf_clearance_tx,
             relay_intercept_tx,
             stopping,
         }),
@@ -1540,6 +1635,76 @@ mod tests {
                 upstream_url: "https://chatgpt.com/backend-api".into()
             },
         );
+    }
+
+    /// The chat turn the challenge fix exists for, cookie header as given.
+    fn app_chat_turn(cookie: Option<&str>) -> Request<()> {
+        let builder = Request::builder()
+            .method("POST")
+            .uri("https://chatgpt.com/backend-api/f/conversation");
+        let builder = match cookie {
+            Some(c) => builder.header("cookie", c),
+            None => builder,
+        };
+        builder.body(()).unwrap()
+    }
+
+    fn cookie_header(req: &Request<()>) -> Option<&str> {
+        req.headers()
+            .get(hudsucker::hyper::header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+    }
+
+    #[test]
+    fn inject_cf_clearance_sets_the_header_when_none_is_present() {
+        let mut req = app_chat_turn(None);
+        inject_cf_clearance(&mut req, "abc123");
+        assert_eq!(cookie_header(&req), Some("cf_clearance=abc123"));
+    }
+
+    #[test]
+    fn inject_cf_clearance_appends_without_disturbing_existing_cookies() {
+        let mut req = app_chat_turn(Some(
+            "__Secure-next-auth.session-token=s3ss10n; oai-did=dev",
+        ));
+        inject_cf_clearance(&mut req, "abc123");
+        assert_eq!(
+            cookie_header(&req),
+            Some("__Secure-next-auth.session-token=s3ss10n; oai-did=dev; cf_clearance=abc123")
+        );
+    }
+
+    #[test]
+    fn inject_cf_clearance_never_clobbers_a_client_supplied_cf_clearance() {
+        let original = "oai-did=dev; cf_clearance=client-owned";
+        let mut req = app_chat_turn(Some(original));
+        inject_cf_clearance(&mut req, "ours");
+        assert_eq!(cookie_header(&req), Some(original));
+    }
+
+    #[test]
+    fn a_challenge_is_detected_only_on_a_chatgpt_app_turn() {
+        let challenge = hudsucker::hyper::Response::builder()
+            .status(403)
+            .header("cf-mitigated", "challenge")
+            .body(())
+            .unwrap();
+        assert!(cf_challenge_detected(true, &challenge));
+        // Same response on any other surface must not open the solve webview.
+        assert!(!cf_challenge_detected(false, &challenge));
+        // And an app turn answered normally (or with a non-challenge
+        // mitigation) must not either.
+        let plain = hudsucker::hyper::Response::builder()
+            .status(200)
+            .body(())
+            .unwrap();
+        assert!(!cf_challenge_detected(true, &plain));
+        let other = hudsucker::hyper::Response::builder()
+            .status(403)
+            .header("cf-mitigated", "block")
+            .body(())
+            .unwrap();
+        assert!(!cf_challenge_detected(true, &other));
     }
 
     /// Serialize the tests that bind real listeners in [`STABLE_PORT_RANGE`].
