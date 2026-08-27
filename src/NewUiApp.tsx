@@ -68,8 +68,6 @@ import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
 import { TOUR_SEEN_EVENT } from "./screens/Onboarding";
 import { AppShell } from "./components/gc/AppShell";
 import { brandMarkFor } from "./components/gc/BrandMark";
-import { FamiliesPane } from "./components/gc/FamiliesPane";
-import type { Family } from "./components/gc/FamiliesPane";
 import { AppPane } from "./components/gc/AppPane";
 import type { ModelChoice } from "./components/gc/AppPane";
 import { Overview } from "./components/gc/Overview";
@@ -981,6 +979,11 @@ export function NewUiApp() {
         // fragment ("your existing providers"), not a caption.
         id: g.id,
         label: g.id === MULTI_PROVIDER_ID ? g.name : (vendor ?? g.name),
+        // `cascadeDesired`, not `desired`: this switch governs only the members
+        // it can flip. A chat member switched on alone would otherwise render
+        // the family switch on while everything it governs is off, and clicking
+        // it would ask to turn off a set already off - leaving it stuck on.
+        routing: { name: g.name, on: g.cascadeDesired > 0, busy: routingBusy },
         apps: members,
       });
     }
@@ -1022,23 +1025,6 @@ export function NewUiApp() {
     if (scan.kind === "failed") return { kind: "failed" };
     return { kind: "none", scannedAt: scan.at.toLocaleTimeString() };
   }, [apps.length, scan]);
-
-  const families = useMemo<Family[]>(
-    () =>
-      groups.map((g) => ({
-        id: g.id,
-        name: g.name,
-        // `cascadeDesired`, not `desired`: this switch governs only the members
-        // it can flip. A chat member switched on alone would otherwise render
-        // the family switch on while everything it governs is off, and clicking
-        // it would ask to turn off a set already off - leaving it stuck on.
-        on: g.cascadeDesired > 0,
-        members: g.members.map((m) =>
-          memberToFamilyMember(m, verdicts, routing.writeFailures),
-        ),
-      })),
-    [groups, verdicts, routing.writeFailures],
-  );
 
   /** Finish what the interrupted restore left. `restore_all` retries only the
    * recorded entries, so this repeats no completed write; the command hands back
@@ -1547,6 +1533,35 @@ export function NewUiApp() {
       view={view}
       onNavigate={setView}
       appGroups={sidebarGroups}
+      // The engine's own switch. Without it a window whose routing was off could
+      // start it only by accident, through a config member's connect - and a
+      // chat domain, which routes through the engine rather than the relay,
+      // could not start it at all.
+      master={
+        proxy
+          ? {
+              on: proxy.running,
+              busy: routingBusy,
+              caTrusted: proxy.ca_trusted,
+              onToggle: (next) => void toggleMaster(next),
+              // Absent on Linux, where these variables *are* the system proxy
+              // and cannot be declined without turning routing off.
+              envExport: proxy.env_export_separable
+                ? {
+                    on: proxy.env_export_opted_in,
+                    onToggle: (next) => {
+                      setActionError(null);
+                      void routing.setEnvExport(next);
+                    },
+                  }
+                : undefined,
+            }
+          : undefined
+      }
+      onToggleGroup={(id, next) => {
+        const group = groups.find((g) => g.id === id);
+        if (group) void routeFamily(group, next);
+      }}
       onSelectApp={(slug) => setView({ kind: "app", slug })}
       onRefreshApps={() => void refreshNow()}
       refreshingApps={refreshing}
@@ -1782,49 +1797,6 @@ export function NewUiApp() {
     >
       {view.kind === "settings" ? (
         <SettingsPane sections={settingsSections} />
-      ) : view.kind === "families" ? (
-        <FamiliesPane
-          families={families}
-          // The engine's own switch. Without it a window whose routing was off
-          // could start it only by accident, through a config member's connect -
-          // and a chat domain, which routes through the engine rather than the
-          // relay, could not start it at all.
-          master={
-            proxy
-              ? {
-                  on: proxy.running,
-                  busy: routingBusy,
-                  caTrusted: proxy.ca_trusted,
-                  onToggle: (next) => void toggleMaster(next),
-                  // Absent on Linux, where these variables *are* the system proxy
-                  // and cannot be declined without turning routing off.
-                  envExport: proxy.env_export_separable
-                    ? {
-                        on: proxy.env_export_opted_in,
-                        onToggle: (next) => {
-                          setActionError(null);
-                          void routing.setEnvExport(next);
-                        },
-                      }
-                    : undefined,
-                }
-              : undefined
-          }
-          onToggleFamily={(id, next) => {
-            const group = groups.find((g) => g.id === id);
-            if (group) void routeFamily(group, next);
-          }}
-          onToggleMember={(familyId, key, next) => {
-            setActionError(null);
-            const member = families
-              .find((f) => f.id === familyId)
-              ?.members.find((m) => m.key === key);
-            if (!member) return;
-            void (member.kind === "proxy"
-              ? routing.setDomainRouted(key, next)
-              : routeApp(key, next));
-          }}
-        />
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
@@ -2159,18 +2131,6 @@ function proxyMemberStatus(m: GroupMember): AppStatus {
   return m.routed
     ? { kind: "protected" }
     : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
-}
-
-function memberToFamilyMember(
-  m: GroupMember,
-  verdicts: Map<string, Verdict>,
-  writeFailures: ReadonlySet<string>,
-): Family["members"][number] {
-  const status: AppStatus =
-    m.kind === "config"
-      ? verdictStatus(verdicts.get(m.key), { writeFailed: writeFailures.has(m.key) })
-      : proxyMemberStatus(m);
-  return { key: m.key, name: m.name, kind: m.kind, status, on: m.desired };
 }
 
 /** Placeholder while the probes run, and what a copy taken mid-collection would

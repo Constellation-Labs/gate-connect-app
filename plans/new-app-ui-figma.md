@@ -518,7 +518,7 @@ drawn vendor captions via each family's `upstream_provider_name` (decision,
 ("your existing providers"), and the design draws each under its own name, so
 the leftover family splits into one group per tool. Before the catalog loads,
 one unlabelled group keeps the rows on screen. The drawn rail also shows no
-Families nav item; ours stays, per the standing deviation.
+Families nav item, and as of 2026-08-26 neither does ours - see below.
 
 **Small pieces.** The Model selection card gained the drawn divider above
 "Current Gate model". `UseGateModelDialog`, the alert banners, the stat trio,
@@ -594,7 +594,7 @@ layer is literally `image 1` - `image.png`, 931x990 - and it shows the built
 `FamiliesPane` (master card, family cards, the Config file / Local proxy
 qualifiers). So the designer has seen the pane and keeps it as reference, but
 the rail still draws no Families nav item and no frame specifies the pane.
-The standing deviation stands.
+The pane was retired on 2026-08-26; its switches moved into the rail.
 
 **One design bug to raise:** the eyebrow above the OpenRouter row reads
 `OPENCODE` in all three variants and in the flow frames' rails. The family
@@ -895,6 +895,46 @@ left at the token export's 20/28 for the reason `tailwind.config.ts` records at
 `letterSpacing.heading`. Action-button labels still take no `-0.01em`.
 
 554 unit tests and the 171-test e2e suite pass.
+
+### The Families pane is retired, 2026-08-26
+
+The pane existed because the rail could not express routing: it listed config
+tools flat, with no master switch, no family switches and no rows for the chat
+domains. Three of those four have since been fixed in place - proxy members
+became rail rows on 2026-08-23, and the eyebrows already carry a
+protected-over-total counter - which left the pane holding two controls and a
+duplicate of every row beside them. Two surfaces for the same switch is the
+condition `lib/groups.ts` warns about from the other direction: it is one more
+place for intent and observation to disagree.
+
+So `FamiliesPane.tsx` is deleted, `SidebarView` loses its `families` kind, and
+the rail takes both controls:
+
+- **The engine's switch** (`MasterRouting`, moved onto `Sidebar`) sits between
+  the nav divider and the app groups, which is exactly what it governs -
+  "everything below stays off until this is on" is now literally true of what
+  follows it. Laid out label-over-description rather than the pane's
+  label-beside-switch: the rail is 256px and the untrusted-certificate line is a
+  sentence. Its `envExport` sub-switch follows it under a rule, minus the pane's
+  `codeXml` glyph, which there is no width for.
+- **The family switch** joins each eyebrow, right of the counter, driven by
+  `SidebarGroup.routing` and gated on `onToggleGroup` the way the pane's was
+  gated on `onToggleFamily`. It carries the family's own name ("Claude"), not
+  the eyebrow's vendor caption ("Anthropic") - a switch named for the vendor
+  would claim to govern more than it does - and its intent is still
+  `cascadeDesired > 0`, so it never renders on over a set it cannot flip.
+
+Nothing about the dispatch changed: `routeFamily`, `toggleMaster` and
+`setEnvExport` are the same calls with the same guards, and the member switches
+were already the rail's. What went with the pane is `memberToFamilyMember`, the
+`families` memo, and the `Config file` / `Local proxy` qualifier - the rail's
+rows have never carried the mechanism, and adding it to fifteen rows to preserve
+it on four was not worth the noise.
+
+One e2e assertion moved with it: `getByText("Not trusted")` in the certificate
+spec is now `{ exact: true }`, because the master card says "the certificate is
+not trusted" in a sentence on every screen. 554 unit tests and the 171-test e2e
+suite pass.
 
 ### Both ways in, 2026-08-20
 
@@ -1391,13 +1431,15 @@ the same PR.
    marks, plus coloured vendor marks in the model `row` set. Still no assets
    in the repo (`AppRow` falls back to an initial, the Model cells render the
    name alone); see item 11 under "Still to do" for the export route.
-3. **Groups: RESOLVED 2026-08-16 - they keep a home.** The design lists apps
-   flat, which cannot express routing's real shape: families (Claude, OpenAI,
-   OpenRouter, plus the multi-provider "Other tools" bucket) own a master
-   switch, and their members route either through a tool's own config file or
-   through the local proxy - the latter being the chat domains, which the drawn
-   UI does not show at all. `FamiliesPane` gives them a third sidebar
-   destination. **Not in the Figma**; expect it to be redrawn.
+3. **Groups: RESOLVED 2026-08-16, re-resolved 2026-08-26 - they live in the
+   rail.** The design lists apps flat, which cannot express routing's real
+   shape: families (Claude, OpenAI, OpenRouter, plus the multi-provider "Other
+   tools" bucket) own a master switch, and their members route either through a
+   tool's own config file or through the local proxy - the latter being the chat
+   domains, which the drawn UI does not show at all. `FamiliesPane` gave them a
+   third sidebar destination until the rail could carry them; it now does, and
+   the pane is gone. **Still not in the Figma**: the master card and the family
+   switches on the eyebrows are additions to the drawn rail.
 4. **Diagnostics: RESOLVED 2026-08-16.** A row under About opens
    `DiagnosticsDialog`, which shows the report before offering to copy it.
    `buildSettingsSections` owns the row, and a test pins it so it cannot be

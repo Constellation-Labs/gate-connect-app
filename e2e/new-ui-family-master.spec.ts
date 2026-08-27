@@ -1,7 +1,9 @@
 import { test, expect } from "./fixtures";
 
 /**
- * The family master switch in the new window UI.
+ * The family master switch in the new window UI. It sits on the rail's family
+ * eyebrow, beside that family's protected-over-total counter - the Families pane
+ * that used to carry it is gone, so there is nothing to navigate to first.
  *
  * What matters here is what the switch refuses to do: it never adopts a config
  * somebody wrote by hand, and it never flips a chat surface. Both are decisions
@@ -30,7 +32,6 @@ test.describe("new UI family master", () => {
       tools: anthropicTools,
     });
 
-    await app.page.getByRole("button", { name: "Families" }).click();
     await app.page.getByRole("switch", { name: "Route Claude" }).click();
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({ slug: "claude-code" });
@@ -52,7 +53,6 @@ test.describe("new UI family master", () => {
       ],
     });
 
-    await app.page.getByRole("button", { name: "Families" }).click();
     const master = app.page.getByRole("switch", { name: "Route Claude" });
     await expect(master).toHaveAttribute("aria-checked", "false");
 
@@ -70,7 +70,6 @@ test.describe("new UI family master", () => {
       tools: anthropicTools,
     });
 
-    await app.page.getByRole("button", { name: "Families" }).click();
     await app.page.getByRole("switch", { name: "Route Claude" }).click();
 
     await expect.poll(() => app.lastCall("connect_tool")).not.toBeNull();
@@ -84,7 +83,6 @@ test.describe("new UI family master", () => {
       tools: anthropicTools,
     });
 
-    await app.page.getByRole("button", { name: "Families" }).click();
     await app.page.getByRole("switch", { name: "Route Claude" }).click();
 
     await expect(
@@ -106,7 +104,6 @@ test.describe("new UI family master", () => {
       tools: anthropicTools,
     });
 
-    await app.page.getByRole("button", { name: "Families" }).click();
     await app.page.getByRole("switch", { name: "Route Claude" }).click();
 
     // "Couldn't connect this tool" names nobody; the row that failed should be

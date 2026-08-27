@@ -14,7 +14,6 @@ import type { IconName } from "./Icon";
 
 export type SidebarView =
   | { kind: "overview" }
-  | { kind: "families" }
   | { kind: "settings" }
   /** An app row is selected and its detail pane is open. */
   | { kind: "app"; slug: string };
@@ -89,7 +88,46 @@ export interface SidebarGroup {
   /** The eyebrow. Empty renders no header, which is the state before the
    * catalog has loaded and grouping is not yet known. */
   label: string;
+  /** The family's own routing intent, drawn as a switch beside the counter.
+   * Omitted by the unlabelled catch-all groups, which are not families and have
+   * nothing to cascade over. */
+  routing?: SidebarGroupRouting;
   apps: SidebarApp[];
+}
+
+export interface SidebarGroupRouting {
+  /**
+   * The family's own name ("Claude"), which is what the switch is called. Not
+   * the eyebrow above it: that is the vendor caption ("Anthropic"), and a
+   * switch named for the vendor would claim to govern more than it does.
+   */
+  name: string;
+  /** Intent, not observation - the same split as a row's, and for the same
+   * reason. See `SidebarApp.on`. */
+  on: boolean;
+  busy?: boolean;
+}
+
+/**
+ * The engine itself, above the families that ride on it.
+ *
+ * Not in the Figma, and the omission is load-bearing: with routing off, a family
+ * switch can still start the engine (a config member's connect does it
+ * implicitly) but a chat domain cannot, so the window could reach a state it had
+ * no control for. `envExport` is the master's sub-setting - whether the proxy
+ * also goes into the shell environment, which reaches `git` and `curl` and not
+ * just the AI tools - and is absent on Linux, where those variables *are* the
+ * system proxy and cannot be declined separately.
+ */
+export interface MasterRouting {
+  on: boolean;
+  busy?: boolean;
+  onToggle: (next: boolean) => void;
+  /** Whether the certificate is in the system trust store. Routing without it
+   * inspects nothing, so the card says so rather than leaving the switch to
+   * imply otherwise. */
+  caTrusted?: boolean;
+  envExport?: { on: boolean; onToggle: (next: boolean) => void };
 }
 
 const STATUS_TEXT: Record<AppStatus["kind"], { label: string; className: string }> = {
@@ -112,8 +150,10 @@ export function Sidebar({
   view,
   onNavigate,
   groups,
+  master,
   onSelectApp,
   onToggleApp,
+  onToggleGroup,
   onRefresh,
   refreshing,
   inventory,
@@ -123,9 +163,20 @@ export function Sidebar({
   view: SidebarView;
   onNavigate: (view: SidebarView) => void;
   groups: SidebarGroup[];
+  /** The engine's switch, above the families it carries. Omit on a platform with
+   * no proxy subsystem, where there is nothing to turn on and the card would
+   * describe nothing. */
+  master?: MasterRouting;
   /** Opens the per-app pane. */
   onSelectApp: (slug: string) => void;
   onToggleApp: (slug: string, next: boolean) => void;
+  /**
+   * Route or unroute a whole family. Omit to draw no family switches: a family
+   * switch has to cascade over its members, skipping the ones with a
+   * hand-written config, and until that is wired a switch that does nothing is
+   * worse than no switch at all.
+   */
+  onToggleGroup?: (id: string, next: boolean) => void;
   /** Re-run detection now, for the inventory card's Refresh / Try again. There is
    * no control for this while the list has rows: detection polls itself, so a
    * tool installed while the window is open appears on its own. The card keeps
@@ -159,15 +210,6 @@ export function Sidebar({
               active={view.kind === "overview"}
               onClick={() => onNavigate({ kind: "overview" })}
             />
-            {/* Not in the Figma. The model families that actually carry routing
-             * have no destination in the drawn IA, so they get one here rather
-             * than being dropped. See plans/new-app-ui-figma.md. */}
-            <NavItem
-              icon="layers"
-              label="Families"
-              active={view.kind === "families"}
-              onClick={() => onNavigate({ kind: "families" })}
-            />
             <NavItem
               icon="settings2"
               label="Settings"
@@ -177,6 +219,8 @@ export function Sidebar({
           </div>
 
           <hr className="border-t border-base-border" />
+
+          {master && <MasterCard master={master} />}
 
           {/* 12px between groups, 8px inside one - `apps-section` (113:16814),
            * re-read 2026-08-21. */}
@@ -192,17 +236,32 @@ export function Sidebar({
             {groups.map((group) => (
               <div key={group.id} className="flex flex-col gap-2">
                 {group.label && (
-                  <div className="flex items-baseline justify-between">
-                    <h2 className="font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 className="truncate font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
                       {group.label}
                     </h2>
-                    {/* Protected over total, drawn on every eyebrow
-                     * (`Components / Sidenav`, read 2026-08-23). Derived from
-                     * the rows so it can never disagree with them. Not
-                     * uppercase: the drawn counter reads "1 of 2". */}
-                    <span className="font-mono text-base-xs font-medium leading-4 text-base-muted-foreground">
-                      {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
-                      {group.apps.length}
+                    <span className="flex shrink-0 items-center gap-2">
+                      {/* Protected over total, drawn on every eyebrow
+                       * (`Components / Sidenav`, read 2026-08-23). Derived from
+                       * the rows so it can never disagree with them. Not
+                       * uppercase: the drawn counter reads "1 of 2". */}
+                      <span className="font-mono text-base-xs font-medium leading-4 text-base-muted-foreground">
+                        {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
+                        {group.apps.length}
+                      </span>
+                      {/* The family switch, which the retired Families pane
+                       * used to carry. Not in the Figma: the drawn eyebrow
+                       * holds the label and the counter and nothing else. */}
+                      {onToggleGroup && group.routing && (
+                        <BaseSwitch
+                          on={group.routing.on}
+                          label={`Route ${group.routing.name}`}
+                          busy={group.routing.busy}
+                          onClick={() =>
+                            onToggleGroup(group.id, !group.routing?.on)
+                          }
+                        />
+                      )}
                     </span>
                   </div>
                 )}
@@ -267,6 +326,59 @@ function NavItem({
       <Icon name={icon} size={16} />
       {label}
     </button>
+  );
+}
+
+/**
+ * The engine's switch and its shell-environment sub-setting.
+ *
+ * Laid out label-over-description rather than the pane's label-beside-switch:
+ * the rail is 256px, and the certificate warning is a sentence, not a phrase.
+ * Above the app groups because that is what it governs - "everything below
+ * stays off until this is on" is literally true of what follows it.
+ */
+function MasterCard({ master }: { master: MasterRouting }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-base-border bg-base-card p-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 text-base-xs font-medium leading-4 text-neutral-900">
+          Route traffic through Gate
+        </p>
+        <BaseSwitch
+          on={master.on}
+          label="Route traffic through Gate"
+          busy={master.busy}
+          onClick={() => master.onToggle(!master.on)}
+        />
+      </div>
+      <p className="text-base-2xs leading-4 text-base-muted-foreground">
+        {master.on
+          ? master.caTrusted === false
+            ? "Running, but the certificate is not trusted - nothing is being inspected"
+            : "The local engine is running"
+          : "Everything below stays off until this is on"}
+      </p>
+
+      {master.envExport && (
+        <div className="flex flex-col gap-2 border-t border-base-border pt-2">
+          <div className="flex items-start justify-between gap-2">
+            <p className="min-w-0 text-base-xs leading-4 text-neutral-900">
+              Also set shell environment variables
+            </p>
+            <BaseSwitch
+              on={master.envExport.on}
+              label="Also set shell environment variables"
+              busy={master.busy}
+              onClick={() => master.envExport?.onToggle(!master.envExport.on)}
+            />
+          </div>
+          <p className="text-base-2xs leading-4 text-base-muted-foreground">
+            Routes command-line tools too. Machine-wide: it reaches git and curl, not
+            only your AI tools.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
