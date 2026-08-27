@@ -1786,6 +1786,10 @@ export function NewUiApp() {
               choice: openPref,
               catalogue: gateModels.models,
               credits: credits.credits,
+              // The feed is the only thing that can see a Gate model the tool
+              // cannot actually be served with: the catalogue says it exists and
+              // the balance says it is affordable, and the requests fail anyway.
+              recent: toolEvents.view?.entries.slice(0, 5) ?? null,
             })?.message ?? null
           }
           // Switching to a Gate model spends PAYG credits, so it is confirmed

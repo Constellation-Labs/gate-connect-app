@@ -106,7 +106,7 @@ test.describe("new UI model picker", () => {
       "aria-checked",
       "true",
     );
-    await expect(app.page.getByText(catalogue[0].id)).toBeVisible();
+    await expect(app.page.getByText(catalogue[0].id, { exact: true })).toBeVisible();
     // Served, so no "not in use" qualifier.
     await expect(app.page.getByText(/not in use/)).toHaveCount(0);
   });
@@ -128,7 +128,7 @@ test.describe("new UI model picker", () => {
       "true",
     );
     // Kept, and marked as not in force - the distinction the card exists to make.
-    await expect(app.page.getByText(catalogue[0].id)).toBeVisible();
+    await expect(app.page.getByText(catalogue[0].id, { exact: true })).toBeVisible();
     await expect(app.page.getByText(/not in use/)).toBeVisible();
   });
 
@@ -174,7 +174,7 @@ test.describe("new UI model picker", () => {
 
     // No second confirmation: billing was accepted when the switch was made.
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
-    await expect(app.page.getByText(catalogue[1].id)).toBeVisible();
+    await expect(app.page.getByText(catalogue[1].id, { exact: true })).toBeVisible();
     await expect(app.page.getByRole("radio", { name: /Gate model/ })).toHaveAttribute(
       "aria-checked",
       "true",
@@ -200,7 +200,7 @@ test.describe("new UI model picker", () => {
       "aria-checked",
       "true",
     );
-    await expect(app.page.getByText(catalogue[0].id)).toBeVisible();
+    await expect(app.page.getByText(catalogue[0].id, { exact: true })).toBeVisible();
     await expect(app.page.getByText(/not in use/)).toBeVisible();
   });
 
@@ -566,5 +566,49 @@ test.describe("new UI model needs attention", () => {
 
     await dialog.getByRole("checkbox", { name: /retired-model/ }).click();
     await expect(dialog.getByText("1 model enabled")).toBeVisible();
+  });
+});
+
+/**
+ * Feedback after a save, and after a Gate model breaks the tool.
+ *
+ * Both come from the same complaint: the app was silent when it should not have
+ * been. Choosing a model while on App default only remembers it, and the only
+ * sign was "not in use" in small grey text; and a Gate model the tool could not
+ * be served with simply broke the tool with nothing on screen.
+ */
+test.describe("new UI model feedback", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  const funded = {
+    plan: "pro",
+    paygEnabled: true,
+    balanceCents: 1025,
+    lowBalanceThresholdCents: 500,
+    autoTopupArmed: false,
+  };
+
+  test("names the chosen model on the option that would use it", async ({ boot }) => {
+    // Saving a model while on App default used to change nothing visible.
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: funded,
+        choices: { "claude-code": { source: "tool", model_ids: [catalogue[0].id] } },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText(`Use ${catalogue[0].id}`)).toBeVisible();
+  });
+
+  test("falls back to the generic line when nothing is chosen", async ({ boot }) => {
+    const app = await boot({ ...base, toolModels: { catalogue, credits: funded } });
+    await openApp(app);
+
+    await expect(app.page.getByText("Use a model selected in Gate AI")).toBeVisible();
   });
 });

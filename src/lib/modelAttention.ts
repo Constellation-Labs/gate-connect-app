@@ -24,6 +24,8 @@ import type { Credits, GateModel, ToolModelChoice } from "./toolModels";
 
 /** What is wrong, in the terms the pane needs to explain it. */
 export type ModelAttentionCause =
+  /** Gate is serving this tool and its recent requests are failing. */
+  | "requests-failing"
   /** A chosen model is no longer in the catalogue Gate serves from. */
   | "model-unavailable"
   /** PAYG is on and the balance cannot cover a request. */
@@ -39,6 +41,15 @@ export interface ModelAttention {
   /** One sentence, already written for the person reading it. */
   message: string;
 }
+
+/**
+ * How many recent requests must have failed before this says so.
+ *
+ * Low, because the user has already noticed - their tool is broken - and the
+ * question is only whether the app can name the cause. Not one, because a single
+ * error is a blip and an alarm on it would train people to ignore this.
+ */
+const MIN_FAILURES = 3;
 
 /**
  * The catalogue is the definition of "available".
@@ -57,6 +68,7 @@ export function modelAttention({
   choice,
   catalogue,
   credits,
+  recent,
 }: {
   /** The tool's stored preference, or undefined when it has none. */
   choice: ToolModelChoice | undefined;
@@ -64,14 +76,42 @@ export function modelAttention({
   catalogue: GateModel[] | null;
   /** This org's credit standing, or null when it has not been read. */
   credits: Credits | null;
+  /**
+   * This tool's most recent requests, newest first, or null when the feed has
+   * not been read.
+   *
+   * The point of the whole module: a Gate model that the tool cannot actually be
+   * served with breaks the tool, and nothing else here can see that. The
+   * catalogue says the model exists, the balance says it is affordable, and the
+   * requests still fail - at a provider, for reasons only the traffic shows. So
+   * the traffic is consulted.
+   */
+  recent?: { status: "success" | "error" }[] | null;
 }): ModelAttention | null {
   // Nothing is at stake unless Gate is actually serving this tool. A model
   // remembered under the tool's own default is not in use, so a warning about it
   // would be noise about a request nobody is making.
   if (choice?.source !== "gate" || choice.modelIds.length === 0) return null;
 
-  // A model that has gone comes first: it is the most specific fact, and it
-  // stops requests regardless of how well funded the account is.
+  // Failing traffic outranks everything below. The others are reasons a request
+  // *would* fail; this is the request having failed, which is both more certain
+  // and what the user is actually experiencing - their tool stopped working.
+  //
+  // Every recent request, not merely some: one error beside successes is a blip,
+  // and a tool that is mostly working does not need an alarm. All of them
+  // failing since a Gate model was chosen is the shape of a model this tool
+  // cannot be served with.
+  if (recent && recent.length >= MIN_FAILURES && recent.every((r) => r.status === "error")) {
+    return {
+      cause: "requests-failing",
+      models: choice.modelIds,
+      message:
+        "Every recent request from this app has failed while Gate has been serving it. The model may not work with this app. Switch back to App default to use the app's own model again, or choose a different Gate model.",
+    };
+  }
+
+  // A model that has gone comes first among the rest: it is the most specific
+  // fact, and it stops requests regardless of how well funded the account is.
   if (catalogue !== null) {
     const gone = unavailable(choice.modelIds, catalogue);
     // Only when EVERY chosen model has gone. With one still servable the tool

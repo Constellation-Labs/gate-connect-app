@@ -330,7 +330,16 @@ function ModelSelection({
               onSelect={() => onChoose("gate")}
               icon={<Icon name="layers" size={16} />}
               title="Gate model"
-              description="Use a model selected in Gate AI"
+              // Names the chosen model once there is one, rather than the
+              // generic line the frame draws.
+              //
+              // A deliberate deviation, for a reason worth keeping: choosing a
+              // model from "Change model" while on App default only *remembers*
+              // it, and the sole feedback was "not in use" in small grey text on
+              // a row that otherwise looked identical. Saving a model therefore
+              // appeared to do nothing at all. Naming it here makes the save
+              // visible and points at the switch that would actually use it.
+              description={gateModel ? `Use ${gateModel.id}` : "Use a model selected in Gate AI"}
             />
           </div>
           {choice === null && (
