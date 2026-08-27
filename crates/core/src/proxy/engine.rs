@@ -591,18 +591,47 @@ pub(crate) fn apply_rewrite<T>(
 
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
-    let headers = req.headers_mut();
-    super::inject_gate_credential(headers, api_key, oauth_token, org_id)?;
-    if super::serves_gate_model(headers) {
+    // Credential first: `inject_gate_credential` is what stamps the model
+    // header (through `inject_attribution`), so asking whether this request is
+    // served before it runs would always answer no.
+    super::inject_gate_credential(req.headers_mut(), api_key, oauth_token, org_id)?;
+
+    // The serve decision turns on the path as well as the header. Gate can only
+    // answer a request itself on a path it implements; withholding the upstream
+    // hint on any other leaves the gateway with nothing to forward to and
+    // nothing to answer with, and the caller waits. See `serve_path`.
+    let served = if super::serves_gate_model(req.headers()) {
+        super::serve_path(req.uri().path())
+    } else {
+        None
+    };
+
+    if let Some(gateway_path) = served {
+        // Onto the servable path, keeping the query. `/codex/responses` is
+        // answered at `/v1/responses`: the same wire format, under a route the
+        // gateway implements.
+        let query = req.uri().query().map(str::to_string);
+        let mut parts = req.uri().clone().into_parts();
+        parts.path_and_query = Some(
+            match query.as_deref() {
+                Some(q) => format!("{gateway_path}?{q}"),
+                None => gateway_path.to_string(),
+            }
+            .parse()
+            .context("rebuilding request path onto the servable gateway route")?,
+        );
+        *req.uri_mut() = Uri::from_parts(parts).context("rebuilding served request URI")?;
+
         // Gate serves this one: no upstream hint, so the gateway resolves a
         // provider itself and bills credits rather than forwarding to the tool's
         // own. See the relay's copy of this branch for the full reasoning; the
         // two paths must agree, because a tool can reach Gate through either -
         // including why the header is REMOVED rather than left unwritten.
+        let headers = req.headers_mut();
         headers.remove(super::UPSTREAM_URL_HEADER);
         super::strip_tool_credential(headers);
     } else {
-        headers.insert(
+        req.headers_mut().insert(
             super::UPSTREAM_URL_HEADER,
             HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
         );

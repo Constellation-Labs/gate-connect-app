@@ -15,7 +15,8 @@ use std::sync::Mutex;
 use gate_connect_core::env;
 use gate_connect_core::preferences::{self, ModelSource};
 use gate_connect_core::proxy::testing::{
-    inject_attribution_for_tests, serves_gate_model, strip_tool_credential_for_tests,
+    apply_rewrite_for_tests, inject_attribution_for_tests, serve_path, serves_gate_model,
+    strip_tool_credential_for_tests,
     GATE_MODEL_HEADER_NAME,
 };
 
@@ -317,4 +318,160 @@ fn a_served_request_drops_the_tools_credential_from_both_slots() {
     assert_eq!(h.get("x-api-key"), None);
     // The attribution headers are not credentials and stay.
     assert!(h.contains_key(hyper::header::USER_AGENT));
+}
+
+/// Where a served request is actually sent.
+///
+/// Serving works by withholding the upstream hint so the gateway resolves a
+/// provider of its own. That only works on a path the gateway implements: give
+/// it one it does not, with nothing to forward to, and it holds the socket open
+/// until the client gives up. Codex hit precisely that - and a hang is the worst
+/// shape a failure can take, because it looks like a broken network rather than
+/// a refused request.
+mod where_a_served_request_goes {
+    use super::serve_path;
+
+    #[test]
+    fn an_already_servable_path_is_left_alone() {
+        // Claude Code's path, and the two OpenAI-shaped ones. Rewriting these
+        // would break the case that already worked.
+        assert_eq!(serve_path("/v1/messages"), Some("/v1/messages"));
+        assert_eq!(
+            serve_path("/v1/chat/completions"),
+            Some("/v1/chat/completions")
+        );
+        assert_eq!(serve_path("/v1/responses"), Some("/v1/responses"));
+    }
+
+    #[test]
+    fn codex_is_served_on_the_responses_route_not_its_passthrough_one() {
+        // `/codex/responses` means "forward this to ChatGPT" and nothing else,
+        // so with the hint withheld it names no handler and no destination.
+        // `/v1/responses` is the same wire format under a route that exists.
+        assert_eq!(serve_path("/codex/responses"), Some("/v1/responses"));
+    }
+
+    #[test]
+    fn both_spellings_of_the_codex_path_map(
+    ) {
+        // The relay sees the short path Codex builds from its own base URL; the
+        // engine sees the real one off a bare host. A tool can reach Gate
+        // through either, so the two must agree.
+        assert_eq!(
+            serve_path("/backend-api/codex/responses"),
+            serve_path("/codex/responses")
+        );
+    }
+
+    #[test]
+    fn a_path_gate_cannot_answer_refuses_to_be_served() {
+        // The guard. `None` sends the caller back to the passthrough branch,
+        // which keeps the upstream hint - so an unservable request still
+        // reaches the tool's own provider instead of hanging.
+        assert_eq!(serve_path("/api/oauth/usage"), None);
+        assert_eq!(serve_path("/v1/complete"), None);
+        assert_eq!(serve_path("/"), None);
+        assert_eq!(serve_path(""), None);
+    }
+
+    #[test]
+    fn the_match_is_exact_so_a_lookalike_path_is_not_served() {
+        // A prefix match here would send anything under `/v1/messages/...` to a
+        // route that cannot answer it.
+        assert_eq!(serve_path("/v1/messages/count_tokens"), None);
+        assert_eq!(serve_path("/v1/responses/compact"), None);
+        assert_eq!(serve_path("/codex/responses/x"), None);
+    }
+}
+
+/// The whole rewrite, end to end, for the case that was hanging.
+///
+/// `where_a_served_request_goes` pins the mapping; this pins that the rewrite
+/// actually applies it - including an ordering that is easy to get wrong and
+/// silent when it is. The model header is stamped by `inject_gate_credential`,
+/// so a serve decision taken before that call reads a header that does not exist
+/// yet and always answers "not served". The symptom would not be a failure but
+/// the feature quietly never engaging.
+mod the_rewrite_applies_the_serve_route {
+    use super::{apply_rewrite_for_tests, preferences, TempHome, LOCK};
+    use hyper::{Request, Uri};
+
+    fn codex_request() -> Request<()> {
+        Request::builder()
+            .method("POST")
+            .uri("https://chatgpt.com/backend-api/codex/responses")
+            .header("user-agent", "codex_cli_rs/0.146.1")
+            .header("authorization", "Bearer chatgpt-oauth-token")
+            .body(())
+            .expect("building the request")
+    }
+
+    fn gateway() -> Uri {
+        "https://gateway-staging.constellationgate.ai"
+            .parse()
+            .expect("gateway uri")
+    }
+
+    #[test]
+    fn a_codex_request_on_a_gate_model_is_sent_to_the_responses_route() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tmp = TempHome::set();
+        preferences::set_tool_model(
+            "codex",
+            preferences::ModelSource::Gate,
+            vec!["openai/gpt-4o".to_string()],
+            true,
+        )
+        .expect("store the choice");
+
+        let mut req = codex_request();
+        apply_rewrite_for_tests(
+            &mut req,
+            &gateway(),
+            "https://chatgpt.com/backend-api",
+            "sk-gw-test",
+        )
+        .expect("rewrite");
+
+        // Not `/codex/responses`, which only means "forward to ChatGPT" and
+        // would leave the gateway holding the socket with nothing to answer.
+        assert_eq!(
+            req.uri().to_string(),
+            "https://gateway-staging.constellationgate.ai/v1/responses"
+        );
+        // Served, so no upstream hint and no ChatGPT credential: the model, the
+        // provider and the bill are all Gate's.
+        assert!(req.headers().get("x-gate-upstream-url").is_none());
+        assert!(req.headers().get("authorization").is_none());
+        assert_eq!(req.headers().get("x-gate-model").unwrap(), "openai/gpt-4o");
+    }
+
+    #[test]
+    fn the_same_request_without_a_gate_model_keeps_its_passthrough_route() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tmp = TempHome::set();
+
+        let mut req = codex_request();
+        apply_rewrite_for_tests(
+            &mut req,
+            &gateway(),
+            "https://chatgpt.com/backend-api",
+            "sk-gw-test",
+        )
+        .expect("rewrite");
+
+        assert_eq!(
+            req.uri().to_string(),
+            "https://gateway-staging.constellationgate.ai/codex/responses"
+        );
+        assert_eq!(
+            req.headers().get("x-gate-upstream-url").unwrap(),
+            "https://chatgpt.com/backend-api"
+        );
+        // The tool pays, so it keeps its own credential.
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer chatgpt-oauth-token"
+        );
+    }
 }

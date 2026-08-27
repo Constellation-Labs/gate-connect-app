@@ -478,7 +478,20 @@ async fn proxy(
                     format!("injecting Gate credential: {e:#}"),
                 )
             })?;
-            if super::serves_gate_model(&headers) {
+            // The serve decision turns on the path as well as the header: Gate
+            // can only answer a request itself on a path it implements, and
+            // withholding the upstream hint on any other path leaves the gateway
+            // with nothing to do and the caller waiting. See `serve_path`.
+            let (req_path, req_query) = routed
+                .path_and_query
+                .split_once('?')
+                .map_or((routed.path_and_query.as_str(), None), |(p, q)| (p, Some(q)));
+            let served = if super::serves_gate_model(&headers) {
+                super::serve_path(req_path)
+            } else {
+                None
+            };
+            if let Some(gateway_path) = served {
                 // The user put this tool on a Gate model, so Gate picks the
                 // provider and pays for it. Withholding the upstream hint is
                 // what asks for that: the gateway treats the hint as "the caller
@@ -495,6 +508,14 @@ async fn proxy(
                 // The tool's own key goes with it. On a served request the
                 // model, the provider and the bill are all Gate's.
                 super::strip_tool_credential(&mut headers);
+                // Onto the path that can answer, which is not always the one the
+                // tool asked on: Codex's `/codex/responses` is served at
+                // `/v1/responses`, the same wire format under a route the
+                // gateway implements.
+                match req_query {
+                    Some(q) => format!("{}{gateway_path}?{q}", state.gateway_base),
+                    None => format!("{}{gateway_path}", state.gateway_base),
+                }
             } else {
                 // We set the upstream hint, overwriting anything the caller sent.
                 // The value comes from the catalog entry we resolved, so a local
@@ -505,8 +526,8 @@ async fn proxy(
                         format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
                     )
                 })?;
+                format!("{}{}", state.gateway_base, routed.path_and_query)
             }
-            format!("{}{}", state.gateway_base, routed.path_and_query)
         }
         Route::Passthrough => {
             // Strip every Gate-internal header and forward under the tool's own
