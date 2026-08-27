@@ -674,7 +674,12 @@ export function NewUiApp() {
       void refresh();
     });
     return () => {
-      void unlisten.then((off) => off());
+      // Swallowed on purpose. Tauri's unregisterListener throws if the listener
+      // is already gone, which happens routinely on teardown, and an uncaught
+      // rejection here is reported by the global handler as an app ERROR in the
+      // diagnostic log - a failure that never happened, sitting where someone
+      // debugging a real one will read it first.
+      void unlisten.then((off) => off()).catch(() => {});
     };
   }, [refresh]);
 

@@ -180,7 +180,7 @@ export function Onboarding() {
       }
     });
     return () => {
-      void unlisten.then((f) => f());
+      void unlisten.then((f) => f()).catch(() => {});
     };
   }, [source]);
 
