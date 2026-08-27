@@ -90,5 +90,17 @@ export const GATE_DOCS_URL = "https://docs.constellationgate.ai/";
  *
  *  That entry lists this exact URL, not the site: the ACL is what a compromised
  *  renderer is held to, and nothing here needs to open the rest of the domain.
- *  Changing this constant means changing the ACL too. */
+ *  Changing this constant means changing the ACL too.
+ *
+ *  **This address 404s, and nothing references this constant.** Verified
+ *  2026-08-26: `constellationnetwork.io/support` returns 404, and
+ *  `docs.constellationgate.ai/support` returns 200 only because that site serves
+ *  a shell for every path - an obvious nonsense path returns the same page. So
+ *  the surfaces that would open it (Settings, and the topnav's Contact support
+ *  entry) are deliberately still unwired, and wiring them would ship a button
+ *  that opens a broken page.
+ *
+ *  Do not wire this up on the strength of the constant existing. AG-598 needs a
+ *  real destination first; when there is one, replace this value, update the ACL
+ *  entry, and the two call sites are then a small change. */
 export const GATE_SUPPORT_URL = "https://constellationnetwork.io/support";

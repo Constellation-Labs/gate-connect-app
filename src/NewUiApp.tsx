@@ -74,7 +74,8 @@ import { Overview } from "./components/gc/Overview";
 import type { UsageStats } from "./components/gc/metrics";
 import { InstallationPicker } from "./components/gc/InstallationPicker";
 import { useActivity, useInstallations } from "./lib/activity";
-import { useGateModels, useToolModels } from "./lib/toolModels";
+import { formatCredits, useCredits, useGateModels, useToolModels } from "./lib/toolModels";
+import { modelAttention } from "./lib/modelAttention";
 import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
@@ -259,14 +260,14 @@ export function NewUiApp() {
    * reading, not this stale one's turn.
    */
   const redetecting = useRef(false);
+  /** The read-only "what is collected" list. Separate from the report dialog:
+   * that one shows this install's values, this one shows what leaves the device. */
+  const [collectedDataOpen, setCollectedDataOpen] = useState(false);
   // Held as text rather than a boolean: the report is a snapshot, and the copy
   // button has to hand over exactly what the dialog showed.
-  const [collectedDataOpen, setCollectedDataOpen] = useState(false);
   const [diagnosticsReport, setDiagnosticsReport] = useState<string | null>(
     null,
   );
-  /** The read-only "what is collected" list. Separate from the report dialog:
-   * that one shows this install's values, this one shows what leaves the device. */
   /**
    * Leading characters of the stored Gate key, as recorded in the account config.
    *
@@ -321,11 +322,7 @@ export function NewUiApp() {
    * asked for.
    */
   const [modelOverlay, setModelOverlay] = useState<
-    | {
-        kind: "picker";
-        then: "activate" | "remember";
-        mode: "single" | "multi";
-      }
+    | { kind: "picker"; then: "activate" | "remember" }
     | { kind: "confirm-gate"; modelIds: string[] }
     | null
   >(null);
@@ -434,13 +431,26 @@ export function NewUiApp() {
    *  sidebar: the preference is org-wide, so asking per pane would repeat the
    *  same question. */
   const toolModels = useToolModels(canRead, credential);
-  /** The catalogue, deferred until the picker is actually raised. It is a few
-   *  hundred rows that nothing else needs. */
-  const gateModels = useGateModels(modelOverlay?.kind === "picker");
-
   /** This app's stored choice, or undefined when it has never been set - which
    *  is not a gap but the true default: the tool picks its own model. */
   const openPref = openTool ? toolModels.view?.byTool.get(openTool) : undefined;
+  /**
+   * The catalogue, read when the picker needs it OR when a tool is running on a
+   * Gate model.
+   *
+   * The second case is AG-592: the catalogue is the definition of "available",
+   * so checking whether a chosen model still exists means having it. It is a few
+   * hundred rows, which is why this is not read on every pane - only where a
+   * selection could have gone stale.
+   */
+  const gateModels = useGateModels(
+    modelOverlay?.kind === "picker" || (canRead && openPref?.source === "gate"),
+  );
+  /** The org's Gate credit balance, for the card and the billing confirmation.
+   *  Read whenever an app pane is open - it is what a switch to a Gate model
+   *  starts spending. */
+  const credits = useCredits(canRead && openTool !== null, credential);
+
   /**
    * What the open app is set to, or null when we do not know.
    *
@@ -544,9 +554,7 @@ export function NewUiApp() {
       (toolEvents.view?.entries ?? []).map((e) => ({
         ...e,
         onView: () =>
-          void openExternal(
-            `${GATE_DASHBOARD_URL}messages/${encodeURIComponent(e.id)}`,
-          ),
+          openLink(`${GATE_DASHBOARD_URL}messages/${encodeURIComponent(e.id)}`),
       })),
     [toolEvents.view],
   );
@@ -920,6 +928,21 @@ export function NewUiApp() {
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),
   });
+
+  /**
+   * Open a link, and show it in the existing error banner if it fails.
+   *
+   * Ten call sites open external URLs, and a rejected `openUrl` used to be
+   * invisible - an opener-ACL miss looked exactly like a dead button. Routed
+   * into `actionError` rather than a new surface: that banner is dismissible and
+   * navigates nowhere, which is what AG-598 asks for (the failure must not
+   * discard what the user was doing).
+   */
+  const openLink = useCallback((url: string) => {
+    void openExternal(url).then((err) => {
+      if (err) setActionError(err);
+    });
+  }, []);
 
   /**
    * A tool's config was rewritten. If that app is open it is still on its old
@@ -1449,11 +1472,12 @@ export function NewUiApp() {
             .finally(() => void loadPreferences());
         },
         onRetryPreferences: () => void loadPreferences(),
-        onOpenDocs: () => void openExternal(GATE_DOCS_URL),
-        // No `onContactSupport`, so the row is omitted: there is no support URL
-        // anywhere in the app to open, and a button that opens an invented
-        // address is worse than an absent one. The topnav's Contact support
-        // entry is dead for the same reason.
+        onOpenDocs: () => openLink(GATE_DOCS_URL),
+        // No `onContactSupport`, so the row is omitted. `GATE_SUPPORT_URL` does
+        // exist in `lib/config.ts` - but it 404s, so there is still nothing to
+        // open, and a button that opens a broken page is worse than an absent
+        // one. The topnav's Contact support entry is dark for the same reason.
+        // See that constant for what has to change first (AG-598).
 
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
@@ -1551,10 +1575,10 @@ export function NewUiApp() {
 
   const onMenuSelect = useCallback((action: TopnavAction) => {
     setMenuOpen(false);
-    if (action === "dashboard") void openExternal(GATE_DASHBOARD_URL);
+    if (action === "dashboard") openLink(GATE_DASHBOARD_URL);
     // The docs entry was drawn, listed and dead: `GATE_DOCS_URL` is the same one
     // the Settings row opens.
-    else if (action === "docs") void openExternal(GATE_DOCS_URL);
+    else if (action === "docs") openLink(GATE_DOCS_URL);
   }, []);
 
   const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;
@@ -1881,23 +1905,10 @@ export function NewUiApp() {
               appFor(apps, view.kind === "app" ? view.slug : "")?.name ??
               "This app"
             }
-            // Multi-select once more than one model is already enabled, or when
-            // the user asked to edit the set. Single otherwise, which is the
-            // state the Figma draws and the common case.
-            mode={modelOverlay.mode}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
             failure={gateModels.failure?.message ?? null}
             selectedIds={openModelIds}
-            onSelect={(id) => {
-              const then = modelOverlay.then;
-              setModelOverlay(null);
-              // "Remember" keeps the current source, which is App default here:
-              // the user browsed and picked, and nothing starts being billed for
-              // it. "Activate" continues into the billing confirmation.
-              if (then === "activate") activateGateModel([id]);
-              else void saveModel("tool", [id]);
-            }}
             onSave={(ids) => {
               const then = modelOverlay.then;
               setModelOverlay(null);
@@ -1913,14 +1924,16 @@ export function NewUiApp() {
                 appFor(apps, view.kind === "app" ? view.slug : "")?.name ??
                 "this app",
             }}
+            // Only meaningful when there is one model to attribute; the dialog
+            // drops it for a set.
             vendor={modelOverlay.modelIds[0].split("/")[0]}
-            modelId={modelOverlay.modelIds[0]}
-            // Names the rest rather than hiding them: AG-590 requires the set be
-            // listed before the charge is accepted.
-            alsoEnabled={modelOverlay.modelIds.slice(1)}
-            // No endpoint reports a balance; N/A rather than a dash, which would
-            // read as one. The sentence above it already says credits are spent.
-            credits="N/A"
+            // The whole set, so the dialog can list what the charge covers.
+            // AG-590 requires the enabled models be stated before it is accepted.
+            modelIds={modelOverlay.modelIds}
+            // The real balance now. This dialog is where someone agrees to spend
+            // it, so showing what there is to spend belongs here more than
+            // anywhere.
+            credits={formatCredits(credits.credits) ?? "N/A"}
             onKeepAppDefault={() => {
               const ids = modelOverlay.modelIds;
               setModelOverlay(null);
@@ -2072,26 +2085,31 @@ export function NewUiApp() {
             : {
                 modelChoice: openModelChoice,
                 modelBusy: modelBusy,
-                // The preference's own read, not the activity pane's: an unattributed
-                // machine has nothing to say about a setting.
+                // The preference's own read, not the activity pane's: an
+                // unattributed machine has nothing to say about a setting.
                 modelPending:
                   toolModels.view === null && toolModels.failure === null,
-                // Switching to a Gate model spends PAYG credits, so it is confirmed
-                // rather than taken on a radio click. Switching back is not - and it
-                // keeps the chosen model, which is the whole reason a preference may
-                // name a model while its source is "tool".
+                // AG-592. Null while anything it depends on is unread - an
+                // unchecked model is not a healthy one, and saying nothing is
+                // the honest state.
+                modelAttention:
+                  modelAttention({
+                    choice: openPref,
+                    catalogue: gateModels.models,
+                    credits: credits.credits,
+                  })?.message ?? null,
+                // Switching to a Gate model spends PAYG credits, so it is
+                // confirmed rather than taken on a radio click. Switching back
+                // is not - and it keeps the chosen model, which is the whole
+                // reason a preference may name a model while its source is
+                // "tool".
                 onChooseModel: (choice: ModelChoice) => {
                   if (choice === "gate") {
                     if (openModelIds.length > 0)
                       activateGateModel(openModelIds);
-                    // Nothing to switch *to* yet, so the picker comes first: Gate
-                    // cannot serve a model nobody enabled.
-                    else
-                      setModelOverlay({
-                        kind: "picker",
-                        then: "activate",
-                        mode: "single",
-                      });
+                    // Nothing to switch *to* yet, so the picker comes first:
+                    // Gate cannot serve a model nobody enabled.
+                    else setModelOverlay({ kind: "picker", then: "activate" });
                   } else {
                     void saveModel("tool", openModelId ? [openModelId] : []);
                   }
@@ -2099,9 +2117,10 @@ export function NewUiApp() {
                 gateModel: openModelId
                   ? // Vendor from the id's own namespace rather than from the
                     // catalogue: the catalogue is only loaded when the picker is
-                    // open, and a card that showed a vendor only while a dialog was
-                    // up would be stranger than one that reads it off the id. AG-592
-                    // is where a selected model gets looked up and told it is gone.
+                    // open, and a card that showed a vendor only while a dialog
+                    // was up would be stranger than one that reads it off the
+                    // id. AG-592 is where a selected model gets looked up and
+                    // told it is gone.
                     {
                       vendor: openModelId.split("/")[0],
                       id: openModelId,
@@ -2111,28 +2130,20 @@ export function NewUiApp() {
                 onChangeModel: () =>
                   setModelOverlay({
                     kind: "picker",
-                    // Already on Gate: a different model is served immediately, and
-                    // billing was accepted when the switch was made. On App default it
-                    // is a browse, and picking must not start spending.
+                    // Already on Gate: a different model is served immediately,
+                    // and billing was accepted when the switch was made. On App
+                    // default it is a browse, and picking must not start
+                    // spending.
                     then: openModelChoice === "gate" ? "activate" : "remember",
-                    mode: "single",
                   }),
-                // AG-590's entry point: edit the whole enabled set rather than swap
-                // the one model. Separate control because they are different
-                // questions - "use this instead" and "also allow these".
-                onEditModelSet: () =>
-                  setModelOverlay({
-                    kind: "picker",
-                    then: openModelChoice === "gate" ? "activate" : "remember",
-                    mode: "multi",
-                  }),
-                // No endpoint reports a Gate credit balance - the gateway has a PAYG
-                // service but no controller over it - so this is null and reads N/A.
-                // A dash would read as a value. See principle 6.
-                credits: null,
-                // No billing endpoint, but the row's own glyph promises an external
-                // link, and the dashboard is where credits are actually bought.
-                onAddCredits: () => void openExternal(GATE_DASHBOARD_URL),
+                // The real balance, from `GET /v1/me/credits`. Null when it
+                // could not be read, which the card draws as N/A rather than as
+                // a zero balance. See principle 6.
+                credits: formatCredits(credits.credits),
+                // No billing endpoint, but the row's own glyph promises an
+                // external link, and the dashboard is where credits are actually
+                // bought.
+                onAddCredits: () => openLink(GATE_DASHBOARD_URL),
               })}
           activity={toolEventRows}
           eventsPending={
@@ -2209,6 +2220,7 @@ export function NewUiApp() {
                       toolEvents.reload();
                     }}
                     onDiagnostics={() => void openDiagnostics()}
+                    onOpenLink={openLink}
                   />
                   <ActivityGaps
                     view={null}
@@ -2216,6 +2228,7 @@ export function NewUiApp() {
                     loading={toolEvents.loading}
                     onRetry={toolEvents.reload}
                     onDiagnostics={() => void openDiagnostics()}
+                    onOpenLink={openLink}
                     subject="Recent activity"
                   />
                 </>
@@ -2229,8 +2242,8 @@ export function NewUiApp() {
           buckets={activity.view?.buckets ?? []}
           policies={activity.view?.policies ?? []}
           savings={activity.view?.savings ?? []}
-          onManagePolicies={() => void openExternal(GATE_POLICIES_URL)}
-          onManageSavings={() => void openExternal(GATE_SAVINGS_URL)}
+          onManagePolicies={() => openLink(GATE_POLICIES_URL)}
+          onManageSavings={() => openLink(GATE_SAVINGS_URL)}
           // Skeletons until there is something real to draw: a zero is a
           // reading and would claim the user had no traffic, and a dash says we
           // asked and were refused. Neither is true while the answer is on its
@@ -2301,6 +2314,7 @@ export function NewUiApp() {
                 view={activity.view}
                 failure={activity.failure}
                 loading={activity.loading}
+                onOpenLink={openLink}
                 onRetry={activity.reload}
                 onDiagnostics={() => void openDiagnostics()}
               />
@@ -2482,6 +2496,7 @@ function ActivityGaps({
   loading,
   onRetry,
   onDiagnostics,
+  onOpenLink,
   subject,
 }: {
   view: ActivityView | null;
@@ -2489,6 +2504,10 @@ function ActivityGaps({
   loading: boolean;
   onRetry: () => void;
   onDiagnostics: () => void;
+  /** Opens an external link and surfaces a failure. Passed in rather than
+   *  imported: this component sits at module scope and cannot reach the shell's
+   *  error banner, and a link that silently fails is what AG-598 is about. */
+  onOpenLink: (url: string) => void;
   /** Overrides the notice's subject, for a caller that owns one read rather than
    *  the whole pane. The app pane mounts this twice - once for the counters and
    *  chart, once for the event feed - and two notices both headed "Activity"
@@ -2498,9 +2517,9 @@ function ActivityGaps({
   const run = (kind: GapActionKind) => {
     if (kind === "retry") onRetry();
     else if (kind === "diagnostics") onDiagnostics();
-    else if (kind === "dashboard") void openExternal(GATE_DASHBOARD_URL);
-    else if (kind === "api-keys") void openExternal(GATE_API_KEYS_URL);
-    else void openExternal(GATE_DOCS_URL);
+    else if (kind === "dashboard") onOpenLink(GATE_DASHBOARD_URL);
+    else if (kind === "api-keys") onOpenLink(GATE_API_KEYS_URL);
+    else onOpenLink(GATE_DOCS_URL);
   };
 
   // A failed fetch outranks per-section gaps: if nothing landed there is nothing

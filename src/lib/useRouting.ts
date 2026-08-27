@@ -13,6 +13,7 @@ import {
   proxyUntrustCa,
 } from "./api";
 import { track, trackError } from "./analytics";
+import { describe, logInfo, logWarn } from "./log";
 import { cascadeTargets } from "./groups";
 import type { Group } from "./groups";
 
@@ -151,13 +152,45 @@ export function useRouting({
     return freshProxy;
   }, [tools, proxy, onSnapshot]);
 
+  /**
+   * Release the busy flag, then re-read the world.
+   *
+   * **That order is the point.** Every write below ends in a `finally` that did
+   * `await resync(); setBusy(false);` - so a throw from the resync skipped the
+   * release and left `busy` stuck on for the life of the window. `BaseSwitch`
+   * drops clicks while busy and each writer returns early on it, so one failed
+   * resync silently killed every switch in the app: no error, no log line, and
+   * nothing to do but reload. It escaped as an unhandled rejection out of the
+   * `void routing.…` call sites, which is why it left no trace at all.
+   *
+   * Releasing first means a failed re-read costs a stale row until the next poll
+   * instead of the ability to click anything, and the resync's own failure is
+   * reported rather than thrown into the void.
+   */
+  const settle = useCallback(async () => {
+    setBusy(false);
+    try {
+      await resync();
+    } catch (e) {
+      trackError(e, "resync");
+    }
+  }, [resync]);
+
   /** Trust the CA if it is not trusted yet, asking first. */
   const ensureCaTrusted = useCallback(async () => {
     // Null on a platform with no proxy subsystem: nothing to trust, and nothing
     // to interrupt the user with.
     if (!proxy || proxy.ca_trusted) return;
+    // Logged on both sides of the gate. The await between them is an in-app
+    // modal, and a promise that never settles there leaves `busy` stuck on with
+    // no error anywhere - a pair of lines is what distinguishes "the user never
+    // answered" from "trusting the CA failed", which look identical from
+    // outside.
+    logInfo("routing: asking to trust the CA");
     await ask({ kind: "trust" });
+    logInfo("routing: trust accepted, installing the CA");
     await proxyTrustCa();
+    logInfo("routing: CA installed");
   }, [proxy, ask]);
 
   /**
@@ -187,7 +220,13 @@ export function useRouting({
    */
   const setAppRouted = useCallback(
     async (slug: string, routed: boolean, force = false): Promise<boolean> => {
-      if (busy) return false;
+      if (busy) {
+        // Not a no-op worth passing over in silence: `busy` sticking on is what
+        // makes every switch in the window stop responding, and without this
+        // line the symptom is a click that does nothing, anywhere.
+        logWarn(`routing: ignored ${slug} -> ${routed ? "on" : "off"}, a write is already in flight`);
+        return false;
+      }
       setBusy(true);
       let changed = false;
       try {
@@ -215,6 +254,7 @@ export function useRouting({
           return next;
         });
       } catch (e) {
+        logWarn(`routing: ${slug} -> ${routed ? "on" : "off"} failed: ${describe(e)}`);
         // Declining a gate is an answer, not a failure: nothing was written and
         // there is nothing to report - and in particular the row must not be
         // marked failed, because the user chose this.
@@ -224,12 +264,11 @@ export function useRouting({
           setWriteFailures((prev) => new Set(prev).add(slug));
         }
       } finally {
-        await resync();
-        setBusy(false);
+        await settle();
       }
       return changed;
     },
-    [busy, tools, ask, ensureCaTrusted, resync, onError],
+    [busy, tools, ask, ensureCaTrusted, settle, onError],
   );
 
   /**
@@ -285,8 +324,7 @@ export function useRouting({
           onError?.(e, "connect");
         }
       } finally {
-        await resync();
-        setBusy(false);
+        await settle();
       }
       return changed;
     },
@@ -313,8 +351,7 @@ export function useRouting({
         trackError(e, "provider_toggle", { domain: slug, routed });
         onError?.(e, "domain");
       } finally {
-        await resync();
-        setBusy(false);
+        await settle();
       }
     },
     [busy, ensureCaTrusted, ensureEngineRunning, resync, onError],
@@ -350,8 +387,7 @@ export function useRouting({
           onError?.(e, "proxy_toggle");
         }
       } finally {
-        await resync();
-        setBusy(false);
+        await settle();
       }
       return changed;
     },
@@ -377,8 +413,7 @@ export function useRouting({
         trackError(e, "env_export");
         onError?.(e, "env_export");
       } finally {
-        await resync();
-        setBusy(false);
+        await settle();
       }
     },
     [busy, resync, onError],
@@ -406,10 +441,9 @@ export function useRouting({
         onError?.(e, "untrust_ca");
       }
     } finally {
-      await resync();
-      setBusy(false);
+      await settle();
     }
-  }, [busy, ask, resync, onError]);
+  }, [busy, ask, settle, onError]);
 
   return {
     busy,

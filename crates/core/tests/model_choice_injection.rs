@@ -14,7 +14,10 @@ use std::sync::Mutex;
 
 use gate_connect_core::env;
 use gate_connect_core::preferences::{self, ModelSource};
-use gate_connect_core::proxy::testing::{inject_attribution_for_tests, GATE_MODEL_HEADER_NAME};
+use gate_connect_core::proxy::testing::{
+    inject_attribution_for_tests, serves_gate_model, strip_tool_credential_for_tests,
+    GATE_MODEL_HEADER_NAME,
+};
 
 use hyper::header::{HeaderMap, HeaderValue, USER_AGENT};
 
@@ -250,4 +253,68 @@ fn a_choice_written_by_another_process_is_served_without_a_restart() {
         model_header(&h).as_deref(),
         Some("anthropic/claude-sonnet-5")
     );
+}
+
+/// The serve decision, and what it takes with it.
+///
+/// A tool set to a Gate model routes differently: no upstream hint, so the
+/// gateway resolves a provider and bills credits instead of forwarding to the
+/// tool's own. These pin the two halves of that - the signal both proxy paths
+/// branch on, and the credential a served request stops carrying.
+#[test]
+fn a_gate_model_marks_the_request_as_one_gate_serves() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _tmp = TempHome::set();
+    preferences::set_tool_model(
+        "claude-code",
+        ModelSource::Gate,
+        vec!["anthropic/claude-opus-5".into()],
+        true,
+    )
+    .expect("save");
+
+    let mut h = headers("claude-cli/1.2.3");
+    inject_attribution_for_tests(&mut h);
+
+    assert!(
+        serves_gate_model(&h),
+        "a stored Gate model is what tells both proxy paths to withhold the upstream hint"
+    );
+}
+
+#[test]
+fn the_tools_own_default_leaves_the_request_forwarded_as_before() {
+    // The default path must be untouched by any of this: no Gate model means the
+    // upstream hint still goes, and the tool's own credential still pays.
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _tmp = TempHome::set();
+
+    let mut h = headers("claude-cli/1.2.3");
+    inject_attribution_for_tests(&mut h);
+
+    assert!(!serves_gate_model(&h));
+}
+
+#[test]
+fn a_served_request_drops_the_tools_credential_from_both_slots() {
+    // OpenAI-shaped APIs authenticate on `Authorization`, Anthropic on
+    // `x-api-key`. A served request is paid for by Gate, so neither is needed -
+    // and not sending a credential is better than trusting the far side to keep
+    // discarding it.
+    let mut h = headers("claude-cli/1.2.3");
+    h.insert(
+        hyper::header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer sk-ant-oat-secret"),
+    );
+    h.insert(
+        hyper::header::HeaderName::from_static("x-api-key"),
+        HeaderValue::from_static("sk-ant-secret"),
+    );
+
+    strip_tool_credential_for_tests(&mut h);
+
+    assert_eq!(h.get(hyper::header::AUTHORIZATION), None);
+    assert_eq!(h.get("x-api-key"), None);
+    // The attribution headers are not credentials and stay.
+    assert!(h.contains_key(hyper::header::USER_AGENT));
 }

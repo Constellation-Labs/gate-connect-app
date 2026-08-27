@@ -205,6 +205,13 @@ export const setToolModel = (
   acknowledgePaidUse = false,
 ) => invoke<void>("set_tool_model", { tool, source, modelIds, acknowledgePaidUse });
 
+/** This organization's Gate credit balance and plan, as raw JSON text
+ * (AG-588/590/592).
+ *
+ * Its own read rather than a field on the catalogue: the balance is small and
+ * changes as requests are served, the catalogue is large and does not. */
+export const gateCredits = () => invoke<string>("gate_credits");
+
 /** The models this gateway offers, as raw JSON text (Vercel AI Gateway shape).
  *
  * An empty `data` array is a real answer, not a failed read: the catalogue is
@@ -448,8 +455,10 @@ export interface RunningAgents {
  * `only` narrows the scan to the tools whose configs were just rewritten - a
  * per-app switch passes its own slug, a family cascade the slugs it touched.
  * Omitting it asks about every tool, which is what diagnostics and the master
- * toggle mean. Slugs with no process name of their own (`hermes`, `openclaw`,
- * `env-proxy`, a proxy domain key) match nothing rather than everything. */
+ * toggle mean. Narrowing matters because offering to close Claude when someone
+ * switched Codex names processes the change never touched. Slugs with no process
+ * name of their own (`hermes`, `openclaw`, `env-proxy`, a proxy domain key)
+ * match nothing rather than everything. */
 export const runningAgents = (only?: string[]) =>
   invoke<RunningAgents>("running_agents", { only: only ?? null });
 

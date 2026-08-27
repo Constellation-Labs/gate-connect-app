@@ -50,8 +50,9 @@ export function useRunningApps({ onError }: { onError?: (err: unknown) => void }
   const [busy, setBusy] = useState(false);
 
   /**
-   * Called after a config write that succeeded. Nothing running means nothing to
-   * close, and a dialog saying so would be a dialog about nothing.
+   * Called after a config write that succeeded, with the tools it changed.
+   * Nothing running means nothing to close, and a dialog saying so would be a
+   * dialog about nothing.
    *
    * A failed probe stays silent rather than defaulting to showing: the popover
    * defaults the other way, but it is choosing whether to show *advice*, and

@@ -40,10 +40,11 @@ export interface GateModel {
   logo?: ReactNode;
   /** How many further models are enabled alongside this one (AG-590).
    *
-   *  A count here rather than a row each: the Figma gives this card one model
-   *  row, and growing it to six would push the chart and the feed off the pane.
-   *  The full set is listed where it matters - in the picker, and in the
-   *  confirmation before anything is billed. */
+   *  Drives only the heading's plural. Figma 228:89517 draws this card with one
+   *  model row and one action, so the set is not enumerated here - it is listed
+   *  where it matters, in the picker and in the confirmation before anything is
+   *  billed. The plural is the minimum that keeps the heading from naming one
+   *  model when several are enabled. */
   alsoEnabled?: number;
 }
 
@@ -101,8 +102,8 @@ export function AppPane({
   onChooseModel,
   gateModel,
   onChangeModel,
-  onEditModelSet,
   modelBusy,
+  modelAttention,
   modelPending,
   credits,
   onAddCredits,
@@ -161,14 +162,15 @@ export function AppPane({
    *  inactive rather than letting its presence imply Gate is serving it. */
   gateModel?: GateModel | null;
   onChangeModel?: () => void;
-  /** Open the picker in multi-select, to edit the whole enabled set (AG-590).
-   *
-   *  A separate control from Change model because they answer different
-   *  questions: "use this one instead" and "also allow these". Omit it and the
-   *  card offers only the single-model swap, which is what the Figma draws. */
-  onEditModelSet?: () => void;
   /** A model write is in flight, so the controls refuse a second click. */
   modelBusy?: boolean;
+  /** Why this app's Gate model needs attention, if it does (AG-592).
+   *
+   *  Highlighted in place rather than raised as a banner: the cause is about
+   *  this one control, and the recovery is the control itself. Null means
+   *  nothing to say - which is not the same as "all clear", since an unread
+   *  catalogue or balance also yields null. See `modelAttention`. */
+  modelAttention?: string | null;
   /** The model *preference* read has not landed.
    *
    *  Its own flag rather than the pane's `pending`, which tracks the activity
@@ -253,10 +255,10 @@ export function AppPane({
           choice={modelChoice ?? null}
           pending={modelPending}
           busy={modelBusy}
+          attention={modelAttention}
           onChoose={onChooseModel}
           gateModel={gateModel ?? null}
           onChangeModel={onChangeModel}
-          onEditModelSet={onEditModelSet}
           credits={credits ?? null}
           onAddCredits={onAddCredits}
         />
@@ -362,10 +364,10 @@ function ModelSelection({
   choice,
   pending,
   busy,
+  attention,
   onChoose,
   gateModel,
   onChangeModel,
-  onEditModelSet,
   credits,
   onAddCredits,
 }: {
@@ -373,10 +375,10 @@ function ModelSelection({
   choice: ModelChoice | null;
   pending?: boolean;
   busy?: boolean;
+  attention?: string | null;
   onChoose: (choice: ModelChoice) => void;
   gateModel: GateModel | null;
   onChangeModel: () => void;
-  onEditModelSet?: () => void;
   credits: string | null;
   onAddCredits: () => void;
 }) {
@@ -431,6 +433,20 @@ function ModelSelection({
         </>
       )}
 
+      {attention && (
+        // AG-592's Needs attention, as a highlight rather than a dialog: the
+        // cause concerns this one control and the recovery is the control
+        // itself, so interrupting the pane would put the explanation further
+        // from the fix.
+        <p
+          role="status"
+          className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm leading-5 text-amber-900"
+        >
+          <Icon name="triangleAlert" size={16} className="mt-0.5 shrink-0" />
+          <span>{attention}</span>
+        </p>
+      )}
+
       {/* Visible under either choice - the design's point is that you can see
        * what you would switch to. What changes is whether it reads as live. */}
       <p className="mt-4 text-base-xs text-base-muted-foreground">
@@ -450,21 +466,12 @@ function ModelSelection({
               onClick: onChangeModel,
               disabled: busy,
             }}
-            // AG-590's entry point, beside the swap rather than replacing it.
-            secondaryAction={
-              onEditModelSet
-                ? { label: "Edit set", onClick: onEditModelSet, disabled: busy }
-                : undefined
-            }
             // Dimmed under App default: it is what the user would switch to, not
             // what their requests are being answered with.
             muted={!gateActive}
           >
             <p className="text-base-2xs leading-4 text-base-muted-foreground">
               {gateModel.vendor}
-              {gateModel.alsoEnabled
-                ? ` + ${gateModel.alsoEnabled} more enabled`
-                : ""}
               {!gateActive && " - not in use"}
             </p>
             <p className="font-mono text-sm leading-5 text-base-foreground">
@@ -550,7 +557,6 @@ function InfoRow({
   icon,
   children,
   action,
-  secondaryAction,
   muted,
 }: {
   icon: ReactNode;
@@ -563,8 +569,6 @@ function InfoRow({
     external?: boolean;
     disabled?: boolean;
   };
-  /** A second, lower-emphasis action. Only the model row has one. */
-  secondaryAction?: { label: string; onClick: () => void; disabled?: boolean };
   /** Drawn as present but not in force. Opacity rather than a grey palette so
    *  the row reads as the same thing, dimmed - which is what it is. */
   muted?: boolean;
@@ -580,16 +584,6 @@ function InfoRow({
         {icon}
       </span>
       <div className="min-w-0 flex-1">{children}</div>
-      {secondaryAction && (
-        <button
-          type="button"
-          onClick={secondaryAction.onClick}
-          disabled={secondaryAction.disabled}
-          className="flex h-8 shrink-0 items-center rounded-control px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-muted-foreground transition-colors enabled:hover:bg-gray-50 enabled:hover:text-base-foreground disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-        >
-          {secondaryAction.label}
-        </button>
-      )}
       {action && (
         <button
           type="button"

@@ -799,6 +799,47 @@ async fn gate_model_catalogue() -> Result<String, String> {
         .map_err(envelope)
 }
 
+/// This organization's Gate credit balance and plan (AG-588/590/592).
+///
+/// Its own read rather than part of the catalogue: the balance is small and
+/// changes as requests are served, the catalogue is large and does not. Same
+/// envelope and failure taxonomy as [`activity_overview`].
+#[tauri::command]
+async fn gate_credits() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(gate_connect_core::gate_models::credits_json)
+        .await
+        .map_err(|e| format!("gate credits join error: {e}"))?
+        .map_err(envelope)
+}
+
+/// Write one line to the diagnostic log from the front end.
+///
+/// The front end is where this app is least observable: its errors go to a
+/// webview console that nobody can read after the fact, which is how a routing
+/// switch that stopped responding stayed undiagnosable. This is the door to the
+/// same file the Rust side writes.
+///
+/// Off in production - `logging::enabled` decides, and a call made when it is off
+/// does nothing rather than failing. Callers must not pass credentials, prompts
+/// or request bodies; see that module's note on what may be written.
+#[tauri::command]
+fn log_message(level: String, message: String) {
+    gate_connect_core::logging::log(
+        gate_connect_core::logging::Level::from_wire(&level),
+        &message,
+    );
+}
+
+/// Where the diagnostic log lives, or `None` when logging is off.
+///
+/// Lets Settings and the diagnostics report name the file to send instead of
+/// asking someone to find it, and returns nothing in a production build so the
+/// UI cannot offer a path to a file that is never written.
+#[tauri::command]
+fn log_file_path() -> Option<String> {
+    gate_connect_core::logging::path_for_report().map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Serialize an activity failure for the IPC boundary.
 fn envelope(f: gate_connect_core::activity::Failure) -> String {
     serde_json::to_string(&f).unwrap_or_else(|_| {
@@ -2310,6 +2351,9 @@ pub fn run() {
                     tool_model_preferences,
                     set_tool_model,
                     gate_model_catalogue,
+                    gate_credits,
+                    log_message,
+                    log_file_path,
                     set_org,
                     app_platform,
                     diagnostics,
@@ -2374,6 +2418,9 @@ pub fn run() {
                     tool_model_preferences,
                     set_tool_model,
                     gate_model_catalogue,
+                    gate_credits,
+                    log_message,
+                    log_file_path,
                     set_org,
                     app_platform,
                     diagnostics,

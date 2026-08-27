@@ -264,7 +264,7 @@ test.describe("new UI drift repair", () => {
     await expect(dialog.getByText("What Gate would write instead")).toHaveCount(0);
   });
 
-  test("a failed write says so on the row, not only in a banner", async ({ boot }) => {
+  test("a failed write says so in the pane header, not only in a banner", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],
@@ -274,10 +274,14 @@ test.describe("new UI drift repair", () => {
     const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
     await sidebarSwitch.click();
 
+    // The rail row keeps the phrase and drops the reason, which does not fit
+    // 250px. The pane header is the surface with room for the sentence, and it
+    // outlives the banner - which is the half of this that still matters.
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
     await expect(app.page.getByText("Configuration update failed")).toBeVisible();
   });
 
-  test("a retry that succeeds clears the failure from the row", async ({ boot }) => {
+  test("a retry that succeeds clears the failure from the pane header", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],
@@ -286,6 +290,11 @@ test.describe("new UI drift repair", () => {
 
     const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
     await sidebarSwitch.click();
+
+    // Opened before the retry, not after: with the pane closed the reason is
+    // nowhere on the page and the count below would pass without the retry ever
+    // having cleared anything.
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
     await expect(app.page.getByText("Configuration update failed")).toBeVisible();
 
     // Clear the injected failure, then click again - the switch is the retry.

@@ -20,6 +20,31 @@
 use crate::account;
 use crate::gateway_api::{self, Failure, FailureCode};
 
+/// Credit balance endpoint, with its own test seam.
+/// `<gateway_base_url>/v1/me/credits` in real builds.
+fn credits_endpoint(gateway_base_url: &str) -> String {
+    if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_CREDITS_ENDPOINT") {
+        return o.to_string_lossy().into_owned();
+    }
+    format!("{}/v1/me/credits", gateway_base_url.trim_end_matches('/'))
+}
+
+/// This organization's Gate credit balance and plan, as raw JSON.
+///
+/// Its own call rather than a field on the catalogue: the catalogue is large,
+/// unchanging within a session and only the picker wants it, while the balance
+/// is small, changes as requests are served, and the card shows it whenever an
+/// app pane is open. Loading them together would make every pane open pay for a
+/// list it is not going to draw.
+///
+/// A balance the caller cannot read is not zero - see the endpoint's own types.
+/// The failure travels as a [`Failure`] so the card can say "couldn't be read"
+/// rather than print a number nobody measured.
+pub fn credits_json() -> Result<String, Failure> {
+    let base = base_url()?;
+    gateway_api::call_json(gateway_api::Method::Get, credits_endpoint(&base), &[], None)
+}
+
 /// Catalogue endpoint, with a test seam mirroring [`crate::activity`]'s.
 /// `<gateway_base_url>/v1/models` in real builds.
 fn catalogue_endpoint(gateway_base_url: &str) -> String {
@@ -42,20 +67,23 @@ fn catalogue_endpoint(gateway_base_url: &str) -> String {
 /// public route reached through our own MITM would answer, and answer for the
 /// wrong deployment.
 pub fn catalogue_json() -> Result<String, Failure> {
-    let base = match account::load() {
-        Ok(Some(a)) => a.gateway_base_url,
-        Ok(None) => {
-            return Err(Failure::new(
-                FailureCode::SignedOut,
-                "no gateway account is configured",
-            ))
-        }
-        Err(e) => return Err(Failure::new(FailureCode::Unknown, format!("{e:#}"))),
-    };
+    let base = base_url()?;
     gateway_api::call_json(
         gateway_api::Method::Get,
         catalogue_endpoint(&base),
         &[],
         None,
     )
+}
+
+/// The configured gateway's base URL, or a signed-out failure.
+fn base_url() -> Result<String, Failure> {
+    match account::load() {
+        Ok(Some(a)) => Ok(a.gateway_base_url),
+        Ok(None) => Err(Failure::new(
+            FailureCode::SignedOut,
+            "no gateway account is configured",
+        )),
+        Err(e) => Err(Failure::new(FailureCode::Unknown, format!("{e:#}"))),
+    }
 }

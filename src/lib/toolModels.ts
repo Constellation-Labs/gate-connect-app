@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { gateModelCatalogue, setToolModel, toolModelPreferences, type ToolModels } from "./api";
+import {
+  gateCredits,
+  gateModelCatalogue,
+  setToolModel,
+  toolModelPreferences,
+  type ToolModels,
+} from "./api";
 import { toFailure, type ActivityFailure } from "./activity";
 
 /**
@@ -259,4 +265,90 @@ export function useGateModels(enabled: boolean): {
     if (enabled && models === null) reload();
   }, [enabled, models, reload]);
   return { models, failure, loading, reload };
+}
+
+/** What the pane needs to know about this org's ability to pay for a Gate model. */
+export interface Credits {
+  plan: string;
+  paygEnabled: boolean;
+  /** Whole cents, or null when it could not be read. Null is not zero - see
+   *  {@link formatCredits}. */
+  balanceCents: number | null;
+  lowBalanceThresholdCents: number | null;
+  autoTopupArmed: boolean;
+}
+
+export function adaptCredits(raw: Partial<Credits>): Credits {
+  return {
+    plan: typeof raw?.plan === "string" ? raw.plan : "free",
+    paygEnabled: raw?.paygEnabled === true,
+    balanceCents: typeof raw?.balanceCents === "number" ? raw.balanceCents : null,
+    lowBalanceThresholdCents:
+      typeof raw?.lowBalanceThresholdCents === "number" ? raw.lowBalanceThresholdCents : null,
+    autoTopupArmed: raw?.autoTopupArmed === true,
+  };
+}
+
+/**
+ * The credits line for the model card, as Figma 228:89517 words it
+ * ("$10.25 available").
+ *
+ * Three different answers, deliberately not collapsed:
+ *
+ * - No reading -> "N/A". Printing "$0.00" for a balance nobody reported would
+ *   tell a funded org their tools are about to stop (CLAUDE.md principle 6).
+ * - PAYG off -> "Not enabled". The org may have money and still be unable to
+ *   spend it here, and the fix is different from adding funds - the gateway's
+ *   balance gate reports these as separate causes for the same reason.
+ * - Otherwise the amount, which may legitimately be $0.00 and is then the whole
+ *   explanation for why requests started failing.
+ */
+export function formatCredits(credits: Credits | null): string | null {
+  if (!credits || credits.balanceCents === null) return null;
+  if (!credits.paygEnabled) return "Not enabled";
+  return `$${(credits.balanceCents / 100).toFixed(2)} available`;
+}
+
+/**
+ * The org's credit balance.
+ *
+ * Read whenever an app pane is open, because the card shows it and a switch to a
+ * Gate model turns on spending. Not polled: it changes as requests are served,
+ * but a timer here would spend the gateway's address-keyed rate limit on a
+ * number that only matters when someone is looking at it.
+ */
+export function useCredits(
+  enabled: boolean,
+  credential = "",
+): { credits: Credits | null; failure: ActivityFailure | null; reload: () => void } {
+  const [credits, setCredits] = useState<Credits | null>(null);
+  const [failure, setFailure] = useState<ActivityFailure | null>(null);
+  const attempt = useRef(0);
+
+  const reload = useCallback(() => {
+    if (!enabled) return;
+    const mine = ++attempt.current;
+    gateCredits()
+      .then((text) => {
+        if (mine !== attempt.current) return;
+        setCredits(adaptCredits(JSON.parse(text) as Partial<Credits>));
+        setFailure(null);
+      })
+      .catch((e) => {
+        if (mine !== attempt.current) return;
+        // Dropped rather than kept: a balance is a figure that moves, and a
+        // stale one beside a button that spends money is worse than no figure.
+        setCredits(null);
+        setFailure(toFailure(e));
+      });
+  }, [enabled, credential]);
+
+  useEffect(() => {
+    setCredits(null);
+    setFailure(null);
+  }, [credential]);
+
+  useEffect(reload, [reload]);
+
+  return { credits, failure, reload };
 }

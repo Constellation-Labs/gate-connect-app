@@ -541,15 +541,27 @@ async fn proxy(
                     format!("injecting Gate credential: {e:#}"),
                 )
             })?;
-            // BYOK: we set the upstream hint, overwriting anything the caller
-            // sent. The value comes from the catalog entry we resolved, so a
-            // local process can't aim the gateway at a host of its choosing.
+            // Forwarded: we set the upstream hint, overwriting anything the
+            // caller sent. The value comes from the catalog entry we resolved,
+            // so a local process can't aim the gateway at a host of its
+            // choosing.
             //
-            // PAYG: the hint's ABSENCE is the whole switch, so it is removed
+            // Served: the hint's ABSENCE is the whole switch, so it is removed
             // instead - including anything the caller sent, which would
-            // otherwise be a way for a local process to force BYOK and spend
-            // the tool's own credential.
-            if mode == BillingMode::Byok {
+            // otherwise be a way for a local process to force a forward and
+            // spend the tool's own credential.
+            //
+            // Two independent things ask Gate to serve, and either is enough.
+            // The org routes this domain pay-as-you-go, so the gateway resolves
+            // a provider and debits its balance. Or the user put this tool on a
+            // Gate model, which is why a chosen model had no effect until this
+            // branch existed: with the hint present the gateway forwards to the
+            // tool's own provider and never reaches the override. That half is
+            // read back from the header `inject_credential` has just stamped
+            // rather than derived a second time - two computations of "is this
+            // served?" could disagree, and the disagreement would be a request
+            // billed one way and routed the other.
+            if mode == BillingMode::Byok && !super::serves_gate_model(&headers) {
                 set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -558,6 +570,11 @@ async fn proxy(
                 })?;
             } else {
                 headers.remove(UPSTREAM_URL_HEADER);
+                // The tool's own key goes with it - on a served request the
+                // model, the provider and the bill are all Gate's.
+                // `inject_credential` has already done this for PAYG; this
+                // covers the Gate-model case, where the org is still BYOK.
+                super::strip_client_auth(&mut headers);
             }
             format!("{}{}", state.gateway_base, routed.path_and_query)
         }

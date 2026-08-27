@@ -66,7 +66,7 @@ test.describe("new UI model picker", () => {
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
 
     await expect(app.page.getByText("No models to choose from yet")).toBeVisible();
-    await expect(app.page.getByRole("dialog").getByRole("radio")).toHaveCount(0);
+    await expect(app.page.getByRole("dialog").getByRole("checkbox")).toHaveCount(0);
 
     // The X, not a Cancel button: single-select applies on click, so the Figma
     // gives the dialog no footer and the close control is the only exit.
@@ -83,7 +83,7 @@ test.describe("new UI model picker", () => {
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
 
     await expect(app.page.getByRole("heading", { name: "Choose a Gate model" })).toBeVisible();
-    await expect(app.page.getByRole("dialog").getByRole("radio")).toHaveCount(2);
+    await expect(app.page.getByRole("dialog").getByRole("checkbox")).toHaveCount(2);
   });
 
   test("picking a model then confirming hands routing to Gate", async ({ boot }) => {
@@ -91,7 +91,8 @@ test.describe("new UI model picker", () => {
     await openApp(app);
 
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
-    await app.page.getByRole("dialog").getByRole("radio", { name: catalogue[0].id }).click();
+    await app.page.getByRole("dialog").getByRole("checkbox", { name: catalogue[0].id }).click();
+    await app.page.getByRole("button", { name: "Save models" }).click();
 
     // The billing confirmation, because this organization has never accepted it.
     await expect(
@@ -116,7 +117,8 @@ test.describe("new UI model picker", () => {
     await openApp(app);
 
     await app.page.getByRole("radio", { name: /Gate model/ }).click();
-    await app.page.getByRole("dialog").getByRole("radio", { name: catalogue[0].id }).click();
+    await app.page.getByRole("dialog").getByRole("checkbox", { name: catalogue[0].id }).click();
+    await app.page.getByRole("button", { name: "Save models" }).click();
     await app.page.getByRole("button", { name: "Keep App default" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -164,7 +166,10 @@ test.describe("new UI model picker", () => {
     await openApp(app);
 
     await app.page.getByRole("button", { name: "Change model" }).click();
-    await app.page.getByRole("dialog").getByRole("radio", { name: catalogue[1].id }).click();
+    const swap = app.page.getByRole("dialog");
+    await swap.getByRole("checkbox", { name: catalogue[1].id }).click();
+    await swap.getByRole("checkbox", { name: catalogue[0].id }).click();
+    await swap.getByRole("button", { name: "Save models" }).click();
 
     // No second confirmation: billing was accepted when the switch was made.
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -247,7 +252,7 @@ test.describe("new UI model picker search and set", () => {
 
     await dialog.getByRole("searchbox").fill("opus");
     await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
-    await expect(dialog.getByRole("radio")).toHaveCount(1);
+    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
   });
 
   test("says so when a search matches nothing, rather than showing an empty list", async ({
@@ -261,7 +266,7 @@ test.describe("new UI model picker search and set", () => {
     await dialog.getByRole("searchbox").fill("nothing-matches-this");
 
     await expect(dialog.getByText("No model matches that search.")).toBeVisible();
-    await expect(dialog.getByRole("radio")).toHaveCount(0);
+    await expect(dialog.getByRole("checkbox")).toHaveCount(0);
   });
 
   test("the provider filter narrows to one vendor", async ({ boot }) => {
@@ -275,7 +280,7 @@ test.describe("new UI model picker search and set", () => {
     await expect(dialog.getByText("Showing 1 of 4 models")).toBeVisible();
   });
 
-  test("Edit set enables several models at once and states the count", async ({ boot }) => {
+  test("Change model enables several models at once and states the count", async ({ boot }) => {
     const app = await boot({
       ...base,
       toolModels: {
@@ -286,7 +291,7 @@ test.describe("new UI model picker search and set", () => {
     });
     await openApp(app);
 
-    await app.page.getByRole("button", { name: "Edit set" }).click();
+    await app.page.getByRole("button", { name: "Change model" }).click();
     const dialog = app.page.getByRole("dialog");
     await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
 
@@ -294,8 +299,10 @@ test.describe("new UI model picker search and set", () => {
     await dialog.getByRole("button", { name: "Save models" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
-    // The card keeps one row and says how many more, so the pane does not grow.
-    await expect(app.page.getByText(/\+ 1 more enabled/)).toBeVisible();
+    // The card keeps the single row Figma 228:89517 draws; only the heading
+    // turns plural, which is the minimum that stops it naming one model when
+    // two are enabled.
+    await expect(app.page.getByText("Current Gate models")).toBeVisible();
   });
 
   test("refuses to remove the last enabled model", async ({ boot }) => {
@@ -312,7 +319,7 @@ test.describe("new UI model picker search and set", () => {
     });
     await openApp(app);
 
-    await app.page.getByRole("button", { name: "Edit set" }).click();
+    await app.page.getByRole("button", { name: "Change model" }).click();
     const dialog = app.page.getByRole("dialog");
     const only = dialog.getByRole("checkbox", { name: catalogue[0].id });
 
@@ -328,5 +335,235 @@ test.describe("new UI model picker search and set", () => {
     // first unlocks.
     await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
     await expect(only).not.toHaveAttribute("aria-disabled", "true");
+  });
+});
+
+/**
+ * The credits line on the model card (Figma 228:89517).
+ *
+ * The number sits beside the control that starts spending it, so the three
+ * states it can be in have to stay apart: a real balance, a balance nobody
+ * reported, and PAYG being switched off entirely.
+ */
+test.describe("new UI model card credits", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("shows the balance the way the design words it", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        credits: {
+          plan: "pro",
+          paygEnabled: true,
+          balanceCents: 1025,
+          lowBalanceThresholdCents: 500,
+          autoTopupArmed: false,
+        },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText("$10.25 available")).toBeVisible();
+  });
+
+  test("reads N/A when no balance was reported, not $0.00", async ({ boot }) => {
+    // The default fixture reports none. Printing zero here would tell a funded
+    // org their tools are about to stop.
+    const app = await boot(base);
+    await openApp(app);
+
+    await expect(app.page.getByText("N/A")).toBeVisible();
+    await expect(app.page.getByText("$0.00 available")).toHaveCount(0);
+  });
+
+  test("says PAYG is off rather than showing money that cannot be spent here", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        credits: {
+          plan: "pro",
+          paygEnabled: false,
+          balanceCents: 4200,
+          lowBalanceThresholdCents: 500,
+          autoTopupArmed: false,
+        },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText("Not enabled")).toBeVisible();
+    await expect(app.page.getByText("$42.00 available")).toHaveCount(0);
+  });
+});
+
+/**
+ * The confirmation dialog (Figma 130:48278), and what it does with a set.
+ *
+ * This is where someone agrees to be billed, so what it lists is the whole
+ * commitment - not the first model with the rest summarised somewhere else.
+ */
+test.describe("new UI Gate model confirmation", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("names the single model with its vendor, as the frame draws it", async ({ boot }) => {
+    const app = await boot({ ...base, toolModels: { catalogue } });
+    await openApp(app);
+
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: catalogue[0].id }).click();
+    await dialog.getByRole("button", { name: "Save models" }).click();
+
+    const confirm = app.page.getByRole("dialog");
+    await expect(confirm.getByText("anthropic", { exact: true })).toBeVisible();
+    await expect(confirm.getByText(catalogue[0].id)).toBeVisible();
+    // Exact: the subtitle also says "PAYG", and this is asserting the pill.
+    await expect(confirm.getByText("PAYG", { exact: true })).toBeVisible();
+  });
+
+  test("lists every model when several are enabled", async ({ boot }) => {
+    // The charge covers all of them, so all of them are stated before it is
+    // accepted - AG-590. An "and 2 others" would not be stating them.
+    const app = await boot({ ...base, toolModels: { catalogue } });
+    await openApp(app);
+
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: catalogue[0].id }).click();
+    await dialog.getByRole("checkbox", { name: catalogue[1].id }).click();
+    await dialog.getByRole("button", { name: "Save models" }).click();
+
+    const confirm = app.page.getByRole("dialog");
+    await expect(confirm.getByText(catalogue[0].id)).toBeVisible();
+    await expect(confirm.getByText(catalogue[1].id)).toBeVisible();
+    // The set replaced the old split presentation entirely.
+    await expect(confirm.getByText(/Also enabled/)).toHaveCount(0);
+  });
+
+  test("says the tool's own preference is untouched", async ({ boot }) => {
+    const app = await boot({ ...base, toolModels: { catalogue } });
+    await openApp(app);
+
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("checkbox", { name: catalogue[0].id }).click();
+    await dialog.getByRole("button", { name: "Save models" }).click();
+
+    await expect(
+      app.page.getByText(/own model preference is not changed/),
+    ).toBeVisible();
+  });
+});
+
+/**
+ * AG-592: a Gate model that stops working says so, and can be recovered from.
+ *
+ * The catalogue is the definition of "available" - `/v1/models` returns only
+ * what the gateway will actually serve - so a chosen id missing from it is
+ * precisely a model Gate can no longer serve.
+ */
+test.describe("new UI model needs attention", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  const funded = {
+    plan: "pro",
+    paygEnabled: true,
+    balanceCents: 1025,
+    lowBalanceThresholdCents: 500,
+    autoTopupArmed: false,
+  };
+
+  test("highlights a chosen model the catalogue no longer offers", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: funded,
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "gate", model_ids: ["anthropic/retired-model"] } },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText(/no longer available from Gate/)).toBeVisible();
+    // The rule the ticket is emphatic about.
+    await expect(app.page.getByText(/will not pick a replacement/)).toBeVisible();
+  });
+
+  test("stays quiet when one chosen model is still servable", async ({ boot }) => {
+    // Gate uses a model the user chose, which is not a substitution.
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: funded,
+        paidAckUnix: 1787740800,
+        choices: {
+          "claude-code": { source: "gate", model_ids: ["anthropic/retired-model", catalogue[0].id] },
+        },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText(/no longer available from Gate/)).toHaveCount(0);
+  });
+
+  test("says nothing about a model remembered under App default", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: funded,
+        choices: { "claude-code": { source: "tool", model_ids: ["anthropic/retired-model"] } },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText(/no longer available/)).toHaveCount(0);
+  });
+
+  test("highlights an empty balance", async ({ boot }) => {
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: { ...funded, balanceCents: 0 },
+        paidAckUnix: 1787740800,
+        choices: { "claude-code": { source: "gate", model_ids: [catalogue[0].id] } },
+      },
+    });
+    await openApp(app);
+
+    await expect(app.page.getByText(/no Gate credits left/)).toBeVisible();
+  });
+
+  test("lets an unavailable model be removed, which nothing else could", async ({ boot }) => {
+    // A model absent from the catalogue renders no row, so without listing it
+    // there is no checkbox to clear and no way out of the selection.
+    const app = await boot({
+      ...base,
+      toolModels: {
+        catalogue,
+        credits: funded,
+        paidAckUnix: 1787740800,
+        choices: {
+          "claude-code": { source: "gate", model_ids: ["anthropic/retired-model", catalogue[0].id] },
+        },
+      },
+    });
+    await openApp(app);
+
+    await app.page.getByRole("button", { name: "Change model" }).click();
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("Unavailable")).toBeVisible();
+
+    await dialog.getByRole("checkbox", { name: /retired-model/ }).click();
+    await expect(dialog.getByText("1 model enabled")).toBeVisible();
   });
 });

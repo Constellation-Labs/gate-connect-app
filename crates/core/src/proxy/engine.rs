@@ -827,18 +827,31 @@ pub(crate) fn apply_rewrite<T>(
 
     let headers = req.headers_mut();
     super::inject_gate_credential(headers, api_key, oauth_token, org_id, mode)?;
-    // PAYG is the ABSENCE of this header: with it the gateway forwards under
-    // the caller's own credential (BYOK), without it the gateway routes to one
-    // of the org's provider accounts and debits its balance. Nothing else in
-    // the request says which mode it is.
-    if mode == BillingMode::Byok {
+    // Serving is the ABSENCE of this header: with it the gateway forwards under
+    // the caller's own credential (BYOK), without it the gateway resolves one of
+    // the org's provider accounts and debits its balance. Nothing else in the
+    // request says which it is.
+    //
+    // Two independent things ask Gate to serve, and either is enough: the org
+    // routes this domain pay-as-you-go, or the user put this tool on a Gate
+    // model - read back from the header `inject_model_choice` has just stamped,
+    // rather than derived a second time. See the relay's copy of this branch;
+    // the two paths must agree, because a tool can reach Gate through either.
+    if mode == BillingMode::Byok && !super::serves_gate_model(headers) {
         headers.insert(
             super::UPSTREAM_URL_HEADER,
             HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
         );
     } else {
-        // A caller cannot smuggle BYOK back in on a PAYG rewrite.
+        // REMOVED, not merely left unwritten: a caller cannot smuggle BYOK back
+        // in on a served rewrite, which would both escape the serve routing and
+        // aim the gateway at a host of the caller's choosing.
         headers.remove(super::UPSTREAM_URL_HEADER);
+        // The tool's own key goes with it - on a served request the model, the
+        // provider and the bill are all Gate's. `inject_gate_credential` has
+        // already done this for PAYG; this covers the Gate-model case, where the
+        // org is still BYOK.
+        super::strip_client_auth(headers);
     }
     Ok(())
 }

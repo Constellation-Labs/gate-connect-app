@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adaptModels, adaptPreferences } from "./toolModels";
+import { adaptCredits, adaptModels, adaptPreferences, formatCredits } from "./toolModels";
 import type { ToolModels } from "./api";
 
 /**
@@ -107,5 +107,58 @@ describe("adaptModels", () => {
     // offers nothing of its own. The picker says so in words.
     expect(adaptModels({ data: [] })).toEqual([]);
     expect(adaptModels({})).toEqual([]);
+  });
+});
+
+/**
+ * The credits line (Figma 228:89517 draws it as "$10.25 available").
+ *
+ * Three answers that a careless formatter collapses into one, and the collapse
+ * is expensive: this number sits beside a control that starts spending money.
+ */
+describe("formatCredits", () => {
+  const funded = {
+    plan: "pro",
+    paygEnabled: true,
+    balanceCents: 1025,
+    lowBalanceThresholdCents: 500,
+    autoTopupArmed: false,
+  };
+
+  it("formats a real balance the way the design words it", () => {
+    expect(formatCredits(funded)).toBe("$10.25 available");
+  });
+
+  it("reads an unknown balance as no answer, never as zero", () => {
+    // Printing $0.00 for a balance nobody reported would tell a funded org their
+    // tools are about to stop. Null lets the card say N/A instead.
+    expect(formatCredits({ ...funded, balanceCents: null })).toBeNull();
+    expect(formatCredits(null)).toBeNull();
+  });
+
+  it("keeps a measured zero, which is the whole explanation for a failing tool", () => {
+    expect(formatCredits({ ...funded, balanceCents: 0 })).toBe("$0.00 available");
+  });
+
+  it("says PAYG is off rather than showing money that cannot be spent here", () => {
+    // An org can hold a balance and still have PAYG disabled, and the fix is
+    // different from adding funds - the balance gate reports them as separate
+    // causes for the same reason.
+    expect(formatCredits({ ...funded, paygEnabled: false })).toBe("Not enabled");
+  });
+});
+
+describe("adaptCredits", () => {
+  it("defaults an unreadable payload to the safe reading", () => {
+    // Safe here means "we do not know and PAYG is off", not "you have nothing":
+    // one sends the user to look, the other tells them a falsehood about money.
+    const c = adaptCredits({} as never);
+    expect(c.balanceCents).toBeNull();
+    expect(c.paygEnabled).toBe(false);
+    expect(c.plan).toBe("free");
+  });
+
+  it("keeps a zero balance as a reading", () => {
+    expect(adaptCredits({ balanceCents: 0, paygEnabled: true }).balanceCents).toBe(0);
   });
 });

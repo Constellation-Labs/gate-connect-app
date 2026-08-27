@@ -16,11 +16,14 @@ import type { IconName } from "./Icon";
  */
 
 /**
- * The design draws a third entry, Contact support, and it is not here: there is
- * no support address or URL anywhere in the app to open, and an entry that
- * cannot do anything is worse than an absent one - the user cannot tell "not
- * built" from "broken". `SettingsPane` omits its Support row for the same
- * reason. Add both back together, with an address.
+ * The design draws a third entry, Contact support, and it is not here.
+ *
+ * `GATE_SUPPORT_URL` does exist in `lib/config.ts`, and it 404s - so there is
+ * still nothing to open. An entry that cannot do anything is worse than an
+ * absent one, because the user cannot tell "not built" from "broken", and one
+ * that opens a broken page is worse again. `SettingsPane` omits its Support row
+ * for the same reason. Add both back together once there is a real address; see
+ * that constant for what has to change (AG-598).
  */
 export type TopnavAction = "dashboard" | "docs";
 

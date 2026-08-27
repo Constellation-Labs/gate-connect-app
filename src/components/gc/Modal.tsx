@@ -70,7 +70,6 @@ export function Modal({
   icon,
   title,
   subtitle,
-  subtitleTone = "muted",
   children,
   secondary,
   middle,
@@ -86,9 +85,6 @@ export function Modal({
   icon: IconName;
   title: string;
   subtitle?: string;
-  /** The Gate-model dialog states its cost consequence in `base-primary`
-   * rather than muted grey, which is the only place the design does this. */
-  subtitleTone?: "muted" | "primary";
   children?: ReactNode;
   secondary?: ModalButton;
   /** A third action, between the safe one and the primary, for the rare dialog
@@ -182,13 +178,7 @@ export function Modal({
               {title}
             </h2>
             {subtitle && (
-              <p
-                className={`text-sm leading-5 ${
-                  subtitleTone === "primary"
-                    ? "text-base-primary"
-                    : "text-base-muted-foreground"
-                }`}
-              >
+              <p className="text-sm leading-5 text-base-muted-foreground">
                 {subtitle}
               </p>
             )}

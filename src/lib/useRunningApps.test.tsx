@@ -190,6 +190,13 @@ describe("useRunningApps: closing takes two answers", () => {
   });
 });
 
+/**
+ * Which processes the offer names.
+ *
+ * Offering to close Claude because someone switched Codex asks to kill work the
+ * change never touched - and it is the kind of thing a user reads as the app not
+ * understanding what it just did.
+ */
 describe("useRunningApps: which tool it is talking about", () => {
   it("asks only about the tools whose configs were written", async () => {
     const { api } = harness();

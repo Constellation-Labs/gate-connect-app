@@ -507,9 +507,6 @@ export interface GateModelOption {
   logo?: ReactNode;
 }
 
-/** What the picker is choosing: one model, or a set (AG-590). */
-export type ModelPickerMode = "single" | "multi";
-
 /**
  * Choosing which Gate model an app runs on (Figma 139:66117, `card/choose-model`).
  *
@@ -526,28 +523,23 @@ export type ModelPickerMode = "single" | "multi";
  * a fabricated catalogue in front of the user, which is the same argument the
  * zeroed metrics make.
  *
- * **`multi` is an extension, not a drawn state.** The frame shows radios, so
- * single-select is the designed behaviour and is what `"single"` reproduces.
- * AG-590 asks for a set, and AG-589 - the design task that would specify how that
- * looks - is still open, so `"multi"` swaps the radios for checkboxes and adds a
- * footer that states the count. Deliberately the smallest departure that answers
- * the ticket: if AG-589 lands on something else, one branch changes rather than a
- * second dialog being deleted.
+ * **Multi-select is the design** (AG-589, settled): a checkbox per model, with a
+ * footer stating how many are enabled. 139:66117 draws the radios of the
+ * single-model era, so a reader diffing against that frame is looking at the
+ * older state rather than a divergence - everything around the control still
+ * comes from it.
  */
 export function ModelPickerDialog({
   appName,
-  mode = "single",
   models,
   loading,
   failure,
   selectedIds,
-  onSelect,
   onSave,
   onDismiss,
 }: {
   /** Named in the subtitle, as the frame does. */
   appName: string;
-  mode?: ModelPickerMode;
   models: GateModelOption[];
   /** The catalogue has not landed. Distinct from an empty one, which is a real
    *  answer: a gateway with no platform provider accounts offers nothing, and
@@ -557,16 +549,13 @@ export function ModelPickerDialog({
   /** The catalogue could not be read, in the gateway's own words. Distinct again
    *  from empty: "we could not ask" is not "there are none". */
   failure?: string | null;
-  /** Already-chosen ids. One entry in `"single"`, any number in `"multi"`. */
+  /** Already-chosen ids, in the user's order. */
   selectedIds: string[];
-  /** `"single"`: the chosen model, applied immediately - the frame has no footer,
-   *  so a click is the decision. */
-  onSelect: (id: string) => void;
-  /** `"multi"`: the whole set, applied on Save. A set is not a sequence of
-   *  independent clicks - AG-590 requires the final model not be removable
-   *  without choosing another - so it is confirmed once rather than written per
-   *  toggle. */
-  onSave?: (ids: string[]) => void;
+  /** The whole set, applied on Save. A set is not a sequence of independent
+   *  clicks - AG-590 requires the final model not be removable without choosing
+   *  another - so it is confirmed once rather than written per toggle, and
+   *  Cancel is a real cancel. */
+  onSave: (ids: string[]) => void;
   onDismiss: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -575,9 +564,26 @@ export function ModelPickerDialog({
    *  the first thing to do. */
   const searchRef = useRef<HTMLInputElement>(null);
 
-  /** Draft set, only used in `"multi"`. Seeded from the stored set so Cancel is
-   *  a real cancel. */
+  /** Seeded from the stored set so Cancel is a real cancel. */
   const [draft, setDraft] = useState<string[]>(selectedIds);
+
+  /**
+   * Chosen models the catalogue no longer offers (AG-592).
+   *
+   * They have to be listed, or the set contains something the user cannot reach:
+   * a model absent from the catalogue renders no row, so there is no checkbox to
+   * clear and no way out except abandoning the whole selection. Shown at the top,
+   * marked, and removable - which is the recovery the ticket asks for.
+   */
+  const missing = useMemo(() => {
+    const servable = new Set(models.map((m) => m.id));
+    // Derived from the DRAFT, not from what is stored: clearing one has to make
+    // the row go, and deriving from the stored set left it on screen still
+    // marked enabled while the footer count disagreed. Its absence afterwards is
+    // also what satisfies "an unavailable model cannot be selected" - there is no
+    // row left to re-check.
+    return draft.filter((id) => !servable.has(id));
+  }, [models, draft]);
 
   const vendors = useMemo(
     () =>
@@ -610,7 +616,7 @@ export function ModelPickerDialog({
     [models, vendor, needle],
   );
 
-  const chosen = mode === "multi" ? draft : selectedIds;
+  const chosen = draft;
   /** AG-590: the last model cannot be removed without choosing another. The
    *  remedy the ticket names is "or return to Tool default", which is the pane's
    *  radio, not this dialog - so here the last one simply refuses to clear, and
@@ -621,22 +627,20 @@ export function ModelPickerDialog({
     <Modal
       icon="layers"
       title="Choose a Gate model"
-      subtitle={
-        mode === "multi"
-          ? `${appName} may use any model you enable here`
-          : `${appName} uses one Gate model`
-      }
+      subtitle={`${appName} may use any model you enable here`}
       closeButton
       secondary={
-        mode === "multi" && !loading && !failure
-          ? { label: "Cancel", onClick: onDismiss }
-          : undefined
+        !loading && !failure ? { label: "Cancel", onClick: onDismiss } : undefined
       }
       primary={
-        mode === "multi" && !loading && !failure && onSave
+        !loading && !failure
           ? {
               label: "Save models",
               onClick: () => onSave(draft),
+              // Gate cannot serve a model nobody enabled, so an empty set is not
+              // a saveable state. AG-590's "the final model cannot be removed"
+              // is enforced on the row itself; this is the backstop for a set
+              // that started empty.
               disabled: draft.length === 0,
             }
           : undefined
@@ -716,25 +720,66 @@ export function ModelPickerDialog({
             Showing {shown.length} of {models.length} models
           </p>
 
+          {missing.length > 0 && (
+            <ul className="flex flex-col gap-px">
+              {missing.map((id) => {
+                const locked = wouldEmpty(id);
+                return (
+                  <li key={id}>
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked
+                      aria-disabled={locked || undefined}
+                      title={
+                        locked
+                          ? "Gate needs at least one model. Choose another first, or switch this app back to App default."
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (locked) return;
+                        setDraft((d) => d.filter((x) => x !== id));
+                      }}
+                      className={`flex w-full items-center gap-3 rounded-base border border-amber-300 bg-amber-50 px-3 py-2 text-left ${
+                        locked ? "cursor-not-allowed" : ""
+                      }`}
+                    >
+                      <Icon
+                        name="triangleAlert"
+                        size={16}
+                        className="shrink-0 text-amber-700"
+                      />
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-amber-900">
+                        {id}
+                      </span>
+                      <span className="shrink-0 text-base-2xs uppercase leading-4 tracking-label text-amber-800">
+                        Unavailable
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
           {shown.length === 0 ? (
             <ModalNote>
               <p>No model matches that search.</p>
             </ModalNote>
           ) : (
             <div
-              role={mode === "multi" ? "group" : "radiogroup"}
+              role="group"
               aria-label="Gate model"
               className="-mr-1 flex max-h-[26rem] flex-col gap-px overflow-y-auto pr-1"
             >
               {shown.map((model) => {
                 const selected = chosen.includes(model.id);
-                const locked =
-                  mode === "multi" && selected && wouldEmpty(model.id);
+                const locked = selected && wouldEmpty(model.id);
                 return (
                   <button
                     key={model.id}
                     type="button"
-                    role={mode === "multi" ? "checkbox" : "radio"}
+                    role="checkbox"
                     aria-checked={selected}
                     aria-disabled={locked || undefined}
                     title={
@@ -743,7 +788,6 @@ export function ModelPickerDialog({
                         : undefined
                     }
                     onClick={() => {
-                      if (mode === "single") return onSelect(model.id);
                       if (locked) return;
                       setDraft((d) =>
                         d.includes(model.id)
@@ -784,11 +828,10 @@ export function ModelPickerDialog({
             </div>
           )}
 
-          {mode === "multi" && (
-            // AG-590 asks that the set be stated before confirmation, and that
-            // the cost consequence be stated with it.
-            <ModalNote>
-              <p className="font-medium text-base-foreground">
+          {/* AG-590 asks that the set be stated before confirmation, and that
+           *  the cost consequence be stated with it. */}
+          <ModalNote>
+            <p className="font-medium text-base-foreground">
                 {draft.length === 1
                   ? "1 model enabled"
                   : `${draft.length} models enabled`}
@@ -797,8 +840,7 @@ export function ModelPickerDialog({
                 Eligible requests may use any of them and consume Gate credits.
                 Gate never uses a model you have not enabled.
               </p>
-            </ModalNote>
-          )}
+          </ModalNote>
         </>
       )}
     </Modal>
@@ -808,8 +850,7 @@ export function ModelPickerDialog({
 export function UseGateModelDialog({
   app,
   vendor,
-  modelId,
-  alsoEnabled = [],
+  modelIds,
   /** Pre-formatted balance, e.g. "$10.25 available". */
   credits,
   vendorLogo,
@@ -817,80 +858,91 @@ export function UseGateModelDialog({
   onUseGateCredits,
 }: {
   app: DialogApp;
+  /** Who makes the model, shown only when there is one to attribute (Figma
+   *  130:48278 draws "Anthropic" above the id). */
   vendor: string;
-  modelId: string;
-  /** The rest of the enabled set, beyond the one named above (AG-590).
+  /**
+   * Every model this switch enables, in the user's order (AG-590).
    *
-   *  Listed rather than counted: the ticket requires the flow to state which
-   *  models may be used before the charge is accepted, and "and 4 others" is not
-   *  that. Empty for a single-model switch, which is the common case and draws
-   *  exactly as the Figma does. */
-  alsoEnabled?: string[];
+   * One entry draws the frame exactly: vendor mark, vendor, id, PAYG pill.
+   * Several stack the ids in the same row with the mark dropped - a column of
+   * marks would imply each id belongs to the one beside it, which is only true
+   * by accident, and the row is where the reader is already looking for what
+   * they are about to pay for. It replaces an "Also enabled" note that put half
+   * the set in one place and half in another.
+   */
+  modelIds: string[];
   credits: string;
   vendorLogo?: ReactNode;
   onKeepAppDefault: () => void;
   onUseGateCredits: () => void;
 }) {
+  const single = modelIds.length === 1;
   return (
     <Modal
       icon="layers"
       title={`Use a Gate model for ${app.name}?`}
       subtitle="Your next requests will use Constellation Gate PAYG credits"
-      subtitleTone="primary"
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}
+      // 130:48278 draws this one narrower than the picker; 512 is one of the
+      // four widths the file uses.
       width={512}
     >
-      <ModalSubject
-        icon={vendorLogo ?? <Icon name="cube" size={16} />}
-        title={vendor}
-        description={modelId}
-        variant="identity"
-        pill={{ label: "PAYG", tone: "neutral" }}
-      />
-
-      {alsoEnabled.length > 0 && (
-        <ModalNote>
-          <p className="font-medium text-base-foreground">
-            {alsoEnabled.length === 1
-              ? "Also enabled"
-              : `Also enabled (${alsoEnabled.length})`}
-          </p>
-          <ul className="mt-1 flex flex-col gap-0.5">
-            {alsoEnabled.map((id) => (
-              <li key={id} className="font-mono text-base-xs leading-4">
+      {single ? (
+        <ModalSubject
+          icon={vendorLogo ?? <Icon name="cube" size={16} />}
+          title={vendor}
+          description={modelIds[0]}
+          variant="identity"
+          pill={{ label: "PAYG", tone: "neutral" }}
+        />
+      ) : (
+        // The same row, holding a set. No mark: one glyph cannot stand for
+        // several vendors, and repeating it per line would say each id is that
+        // vendor's when the set is usually mixed.
+        <div className="flex items-start gap-3 rounded-md border border-base-border p-3">
+          <ul className="flex min-w-0 flex-1 flex-col gap-1">
+            {modelIds.map((id) => (
+              <li
+                key={id}
+                className="truncate font-mono text-sm leading-5 text-base-foreground"
+              >
                 {id}
               </li>
             ))}
           </ul>
-          <p className="mt-2">
-            Eligible requests may use any of these and consume Gate credits.
-            Gate never uses a model you have not enabled.
-          </p>
-        </ModalNote>
+          <span className="shrink-0 rounded-sm border border-base-border px-2 py-1 font-mono text-base-2xs leading-4 text-neutral-700">
+            PAYG
+          </span>
+        </div>
       )}
 
-      {/* Label left, balance right - the one row in the dialogs that reads
-       * across rather than stacking, so it is not a `ModalSubject`. */}
-      <div className="flex items-center gap-3 rounded-md border border-base-border p-3">
-        <span
-          aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
-        >
-          <Icon name="creditCard" size={16} />
-        </span>
-        <p className="flex-1 text-sm leading-5 text-neutral-600">
-          Gate credits:
-        </p>
-        <p className="shrink-0 text-sm font-medium leading-5 text-base-foreground">
-          {credits}
+      {/* Credits and the reassurance are one block, as the frame draws them
+       * (130:48302): the balance is the thing being spent and the sentence is
+       * what limits the commitment, so they belong to each other rather than
+       * reading as two unrelated notes. */}
+      <div className="rounded-md bg-gray-50 p-3">
+        <div className="flex items-center gap-3">
+          <span
+            aria-hidden
+            className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-neutral-700"
+          >
+            <Icon name="creditCard" size={20} />
+          </span>
+          <p className="flex-1 text-sm leading-5 text-neutral-600">
+            Gate credits:
+          </p>
+          <p className="shrink-0 text-sm font-medium leading-5 text-base-foreground">
+            {credits}
+          </p>
+        </div>
+        <p className="mt-3 text-sm leading-5 text-neutral-600">
+          {app.name}&apos;s own model preference is not changed. You can return
+          to App default at any time.
         </p>
       </div>
-      <ModalNote>
-        {app.name}'s own model preference is not changed. You can return to App
-        default at any time.
-      </ModalNote>
     </Modal>
   );
 }

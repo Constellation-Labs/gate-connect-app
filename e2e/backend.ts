@@ -180,6 +180,18 @@ export interface BackendState {
   toolModels: {
     choices: Record<string, { source: "tool" | "gate"; model_ids: string[] }>;
     paidAckUnix: number | null;
+    /** The org's Gate credit standing, as `/v1/me/credits` reports it.
+     *
+     *  `balanceCents` null is "could not be read", which the card draws as N/A -
+     *  deliberately not the same as a zero balance, which is a reading and is
+     *  the explanation for a tool that just stopped working. */
+    credits: {
+      plan: string;
+      paygEnabled: boolean;
+      balanceCents: number | null;
+      lowBalanceThresholdCents: number | null;
+      autoTopupArmed: boolean;
+    };
     /** What `/v1/models` offers. Empty by default: a gateway with no platform
      *  provider accounts has nothing of its own, and that is the state the
      *  picker's own empty copy is written for. */
@@ -390,7 +402,18 @@ export function defaultState(): BackendState {
     pendingRestore: { providers: [], tools: [] },
     pendingResumeKeeps: [],
     restoreJournal: null,
-    toolModels: { choices: {}, paidAckUnix: null, catalogue: [] },
+    toolModels: {
+      choices: {},
+      paidAckUnix: null,
+      catalogue: [],
+      credits: {
+        plan: "free",
+        paygEnabled: false,
+        balanceCents: null,
+        lowBalanceThresholdCents: null,
+        autoTopupArmed: false,
+      },
+    },
     installId: "8f14e45f-ea0f-4b7c-9c1e-2a3b4c5d6e7f",
     hostName: "e2e-macbook",
     failures: {},
