@@ -145,7 +145,7 @@ export function AppPane({
   alert?: ReactNode;
 }) {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
+    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-center gap-3">
         <span
           aria-hidden
@@ -354,7 +354,7 @@ function InfoRow({
       <button
         type="button"
         onClick={action.onClick}
-        className="flex shrink-0 items-center h-8 gap-2 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex shrink-0 items-center h-8 gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {action.label}
         {action.external && <Icon name="squareArrowOutUpRight" size={16} />}
@@ -464,7 +464,7 @@ function RecentActivity({
                 <button
                   type="button"
                   onClick={() => onViewEntry?.(entry)}
-                  className="inline-flex items-center h-8 gap-2 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                  className="inline-flex items-center h-8 gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
                 >
                   View
                   <Icon name="squareArrowOutUpRight" size={16} />
@@ -482,7 +482,7 @@ function RecentActivity({
           <button
             type="button"
             onClick={onLoadMore}
-            className="h-8 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            className="h-8 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
           >
             Load more
           </button>

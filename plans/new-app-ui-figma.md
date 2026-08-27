@@ -1010,6 +1010,44 @@ ink system; retheming it is its own piece of work, as it was before.
 
 554 unit tests and the 171-test e2e suite pass.
 
+### Sync 2026-08-27: rendered against the frame, not read off it
+
+"It doesn't really look like the design." The four passes of 2026-08-26 all
+compared *values*
+in the node data; this one rendered `Settings / Dimensions` (191:79795) to PNG,
+screenshotted the built pane at the same 1024x720, and sampled pixels. Four
+things the node reads had never surfaced, in descending order of how wrong they
+looked:
+
+1. **The ground was `gray-100`.** The window frames fill `#F9FAFB`
+   (`base/background`); `#F3F4F6` is a full step darker, it sat under every card
+   on four panes, and it was the single most obvious difference on screen.
+   CLAUDE.md had said `gray-100` since before the Figma existed.
+2. **Row icons were `neutral-500`.** Sampled at `#030712` in the render -
+   `base/foreground`, the same ink as the label beside them. A 20px grey glyph
+   next to full-strength text reads as disabled.
+3. **The rail was 256px.** The dimensions frame draws 250 beside a 774px content
+   area, and 250 + 774 is the window. The frames reporting 256 hang a 1030px row
+   off a 1024px window. At 250 the content column lands on the drawn 726 after
+   its 24px pads; at 256 it was 720.
+4. **Pane buttons had taken the component's radius and edge.** The fourth pass
+   resolved component-over-instance and gave them `rounded-md` on `base/input`.
+   The render disagrees: 4px corners on an `#E5E7EB` line, sampled. A `control`
+   stop (4px) exists on the radius scale now - the token export names none,
+   which is why this had been rounded to `sm` (6px) when the scale was adopted.
+
+**The tiebreak is narrowed** in CLAUDE.md as a result. "Component over instance"
+was the wrong rule: what the frame renders is what "looks like the design"
+means. The component set now settles only what no frame draws. Buttons are the
+worked example - panes draw 4 on `base/border`, dialogs draw 8 on `base/input`,
+and both now do.
+
+The method is the point. Node data gives values that are easy to match
+individually and still add up to a screen that reads wrong; a render and a
+pixel sample catch the ones nobody thought to look up.
+
+554 unit tests and the 171-test e2e suite pass.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a

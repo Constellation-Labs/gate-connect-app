@@ -504,7 +504,7 @@ export function buildSettingsSections({
 
 export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
   return (
-    <div className="flex flex-1 flex-col gap-6 overflow-auto bg-gray-100 p-6">
+    <div className="flex flex-1 flex-col gap-6 overflow-auto bg-base-background p-6">
       {/* `heading/20` is 20/24 in the file. The token export's 28 is what
         * `tailwind.config.ts` records, and `text-xl` carries it by default, so
         * the leading is pinned here rather than left to the default. */}
@@ -552,7 +552,9 @@ export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
 function Row({ row }: { row: SettingsRow }) {
   return (
     <div className="flex items-center gap-3">
-      <Icon name={row.icon} size={20} className="shrink-0 text-neutral-500" />
+      {/* Full-strength ink. Sampled off `191:79795` at #030712, where this had
+        * been drawing `neutral-500` and reading washed out beside its label. */}
+      <Icon name={row.icon} size={20} className="shrink-0 text-base-foreground" />
 
       <div
         className={`min-w-0 ${
@@ -609,10 +611,10 @@ function ActionButton({ action }: { action: SettingsAction }) {
     <button
       type="button"
       onClick={action.onClick}
-      className={`flex h-8 shrink-0 items-center gap-2 rounded-md px-3 text-base-xs font-medium leading-4 tracking-button-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+      className={`flex h-8 shrink-0 items-center gap-1.5 rounded-control px-3 text-base-xs font-medium leading-4 tracking-button-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
         action.destructive
           ? "bg-base-destructive text-base-destructive-foreground shadow-base-btn-destructive hover:bg-red-700 focus-visible:outline-red-600"
-          : "border border-base-input bg-base-card text-base-primary shadow-base-btn-sm hover:bg-gray-50 focus-visible:outline-base-primary"
+          : "border border-base-border bg-base-card text-base-primary shadow-base-btn-sm hover:bg-gray-50 focus-visible:outline-base-primary"
       }`}
     >
       {action.label}

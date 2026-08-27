@@ -98,7 +98,7 @@ export function Overview({
   scope?: ReactNode;
 }) {
   return (
-    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-6">
+    <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-baseline justify-between">
         <h1 className="text-xl font-medium tracking-heading text-base-foreground">
           Overview
@@ -325,7 +325,7 @@ function ManageLink({ label, onClick }: { label: string; onClick: () => void }) 
       <button
         type="button"
         onClick={onClick}
-        className="flex items-center h-8 gap-2 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex items-center h-8 gap-1.5 rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         {label}
         <Icon name="squareArrowOutUpRight" size={16} />

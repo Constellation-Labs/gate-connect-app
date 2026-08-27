@@ -48,8 +48,13 @@ release.
 **The Figma is the source of truth**, not this file and not the older
 `cg/` ink system. Where the file and a local judgement disagree, the file
 wins, including on copy - standing instruction, 2026-08-26. Where the file
-disagrees with *itself*, prefer the component set over a frame instance,
-and the newer node id over the older; say which you took and why.
+disagrees with *itself*, **match what the frame renders** for the surface
+you are building - that is what "looks like the design" means, and it is
+what a designer checks against. Reach for the component set only where no
+frame draws the thing. Buttons are the worked example: the `Button`
+component says radius 8 on a `base.input` line, and every pane instance
+draws radius 4 on a `base.border` one, so panes get 4. Dialogs draw 8, and
+get 8. Say which you took and why.
 
 Two copy exceptions are decided and stay decided, both because the drawn
 words describe something the action does not do. Do not "fix" either back
@@ -79,18 +84,24 @@ one-to-one so any value can be traced back without guessing.
   `base.foreground` on body and headings, `base.primary-foreground
   #f9fafb` on a filled primary button, `base.destructive-foreground
   #fef2f2` on a filled destructive one. Never `text-white` on a button.
-- **Buttons come from the `Button` component set**, which has exactly two
-  sizes: `default` (h36, 10/12 padding) and `sm` (h32, 8/12). Both are
-  `rounded-md`, bordered `base.input`, gap 8, and carry a moulded
+- **Buttons have exactly two sizes**, from the `Button` component set:
+  `default` (h36, 10/12 padding) and `sm` (h32, 8/12). All carry a moulded
   elevation - `shadow-base-btn`, `-btn-sm`, `-btn-primary`,
-  `-btn-destructive` - not a flat `shadow-base-2xs`. A filled primary also
-  takes the white/black 8% vertical gradient over `base.primary`.
+  `-btn-destructive` - never a flat `shadow-base-2xs`, and a filled primary
+  also takes the white/black 8% vertical gradient over `base.primary`.
+  Radius and edge follow the surface: **panes** draw `rounded-control`
+  (4px) on a `base.border` line, **dialogs** draw `rounded-md` (8px) on a
+  `base.input` one.
+- **Row icons are `base.foreground`**, not a grey. A 20px glyph at
+  `neutral-500` beside a `#030712` label reads as disabled.
 - **Radii** come from `tailwind.config.ts`'s own scale, not from Tailwind's:
   `rounded-sm` (6px) on controls and nav items, `rounded-md` (8px) on cards,
   rows and buttons, `rounded-2xl` (**16px**) on dialogs. The 16px is measured -
   every dialog frame in Settings, Overview and App carries it - and it replaces
   the 12px this file used to call locked.
-- **Ground is `gray-100`**, cards and chrome are white.
+- **Ground is `base.background #f9fafb`**, cards and chrome are white. Not
+  `gray-100`: the window frames fill `#F9FAFB`, and the darker grey read as
+  the single most obviously wrong thing on screen.
 - **Geist + Geist Mono.** Mono is for identifiers (URLs, hosts, keys,
   model ids, install ids, versions, status pill labels, the sidebar
   eyebrow), never for body copy.

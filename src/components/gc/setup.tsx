@@ -70,7 +70,7 @@ export function SetupLayout({
           />
         </div>
       )}
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-gray-100 p-6">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-base-background p-6">
         {/* 496px, r16, shadow/lg. Unpadded: the panes that carry an action
          * footer need it to span the card and sit on a rule, so padding is the
          * body's job (`SetupBody`), not the shell's. */}

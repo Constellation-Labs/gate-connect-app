@@ -194,12 +194,16 @@ export function Sidebar({
   return (
     <nav
       aria-label="Main"
-      // 256px fixed, 16px padding, a 24px rhythm between the switcher, the nav,
-      // the divider and the app groups - read off `nav/sidebar/overview`
-      // (113:16794) on 2026-08-21. The right edge is `base/border`, not the 5%
-      // black that read gave it: the `sidebar` component set (437:161) names the
-      // variable, and a component beats a frame measurement.
-      className="flex w-64 shrink-0 flex-col border-r border-base-border bg-base-card p-4"
+      // 250px fixed, 16px padding, a 24px rhythm between the switcher, the nav,
+      // the divider and the app groups, and a 1px `base/border` right edge.
+      //
+      // 250 and not the 256 the `sidebar` component set (437:161) reports,
+      // which is the one place the component loses to a frame: `Settings /
+      // Dimensions` (191:79795) is the annotated spec, it draws the rail at 250
+      // beside a 774px content area, and 250 + 774 is the window. The frames
+      // that say 256 hang a 1030px row off a 1024px window and overflow it. At
+      // 250 the content column comes out at the drawn 726 after its 24px pads.
+      className="flex w-[250px] shrink-0 flex-col border-r border-base-border bg-base-card p-4"
     >
       <div className="flex flex-1 flex-col gap-6">
         <div className="flex flex-col gap-6">
@@ -321,7 +325,7 @@ function NavItem({
       aria-current={active ? "page" : undefined}
       className={`flex w-full items-center gap-2 rounded-sm px-1.5 py-2 text-base-xs font-medium leading-4 ${
         active
-          ? "border border-base-border bg-gray-100 text-base-primary shadow-base-2xs"
+          ? "border border-base-border bg-base-background text-base-primary shadow-base-xs"
           : "text-base-foreground"
       }`}
     >
@@ -435,7 +439,7 @@ function InventoryState({
           type="button"
           onClick={onRefresh}
           disabled={refreshing}
-          className="flex h-8 items-center justify-center rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-8 items-center justify-center rounded-control border border-base-border bg-base-card px-3 text-base-xs font-medium tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           {refreshing ? "Checking…" : failed ? "Try again" : "Refresh"}
         </button>

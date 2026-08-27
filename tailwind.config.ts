@@ -333,6 +333,11 @@ export default {
         // 4px control radius became 6px and the 12px dialog became 14px.
         none: "0px",
         xs: "2px",
+        // The drawn control radius. The token export names no 4px stop, which is
+        // why this became `sm` (6px) when the scale was adopted; the frames draw
+        // 4 on every pane-level button and the difference is visible at size, so
+        // the stop exists now rather than being rounded away.
+        control: "4px",
         sm: "6px",
         md: "8px",
         lg: "10px",
