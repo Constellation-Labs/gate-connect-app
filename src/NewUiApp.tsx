@@ -510,7 +510,7 @@ export function NewUiApp() {
     () =>
       (toolEvents.view?.entries ?? []).map((e) => ({
         ...e,
-        onView: () => void openExternal(`${GATE_DASHBOARD_URL}messages/${e.id}`),
+        onView: () => void openExternal(`${GATE_DASHBOARD_URL}messages/${encodeURIComponent(e.id)}`),
       })),
     [toolEvents.view],
   );

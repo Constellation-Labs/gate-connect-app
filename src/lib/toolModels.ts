@@ -255,7 +255,8 @@ export function useGateModels(enabled: boolean): {
       });
   }, [enabled]);
 
-  useEffect(reload, [reload]);
-
+  useEffect(() => {
+    if (enabled && models === null) reload();
+  }, [enabled, models, reload]);
   return { models, failure, loading, reload };
 }

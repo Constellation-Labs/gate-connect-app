@@ -579,9 +579,11 @@ export function ModelPickerDialog({
           : `${appName} uses one Gate model`
       }
       closeButton
-      secondary={mode === "multi" ? { label: "Cancel", onClick: onDismiss } : undefined}
+      secondary={
+        mode === "multi" && !loading && !failure ? { label: "Cancel", onClick: onDismiss } : undefined
+      }
       primary={
-        mode === "multi" && onSave
+        mode === "multi" && !loading && !failure && onSave
           ? {
               label: "Save models",
               onClick: () => onSave(draft),
