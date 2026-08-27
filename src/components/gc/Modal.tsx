@@ -13,8 +13,10 @@ import type { IconName } from "./Icon";
  *           an acknowledgement checkbox, or plain body copy
  *   right-aligned secondary / primary buttons
  *
- * Centred over a scrim at 600px. These are real dialogs, not the popover's
- * full-panel takeovers - that grammar goes away with the popover.
+ * Centred over a scrim at 16px radius. Width is per dialog rather than one
+ * house number: the file draws 480, 512, 544 and 600 and each frame means it -
+ * see `ModalWidth`. These are real dialogs, not the popover's full-panel
+ * takeovers - that grammar goes away with the popover.
  */
 
 export type ModalTone = "warning" | "success" | "danger" | "neutral";
@@ -30,13 +32,35 @@ export interface ModalButton {
   disabled?: boolean;
 }
 
+/**
+ * The tone tile. Every drawn dialog gives it a 1px border, `shadow/2xs` and a
+ * vertical 50-to-200 gradient rather than the flat 100 fill this used to carry:
+ * `130:57444` (warning), `134:61661` (success), `177:79233` (danger). The ink
+ * stays as it was - the frames export the tile but not the glyph's own fill.
+ */
 const TONE_STYLES: Record<ModalTone, string> = {
-  warning: "bg-amber-100 text-amber-700",
-  success: "bg-green-100 text-green-700",
+  warning: "border-amber-300 bg-gradient-to-b from-amber-50 to-amber-200 text-amber-700",
+  success: "border-green-300 bg-gradient-to-b from-green-50 to-green-200 text-green-700",
   // Disconnect and Reset. Red rather than amber: these are not "are you sure",
   // they undo the setup. The 600 icon matches the destructive button fill.
-  danger: "bg-red-100 text-red-600",
-  neutral: "bg-gray-100 text-neutral-700",
+  danger: "border-red-300 bg-gradient-to-b from-red-50 to-red-200 text-red-600",
+  neutral: "border-base-border bg-base-card text-neutral-700",
+};
+
+/**
+ * The four widths the file draws. Not a size scale invented here: 480 is the
+ * Settings form and confirm dialogs (`143:67735`, `143:70617`), 512 the
+ * organization and model confirmations (`130:55314`, `134:61659`, `130:48278`),
+ * 544 the reset dialog alone (`177:74223`), and 600 everything that carries a
+ * subject card, a report or a model list.
+ */
+export type ModalWidth = 480 | 512 | 544 | 600;
+
+const WIDTH_STYLES: Record<ModalWidth, string> = {
+  480: "w-[480px]",
+  512: "w-[512px]",
+  544: "w-[544px]",
+  600: "w-[600px]",
 };
 
 export function Modal({
@@ -51,7 +75,7 @@ export function Modal({
   primary,
   onDismiss,
   onClose,
-  narrow,
+  width = 600,
   initialFocus,
 }: {
   tone?: ModalTone;
@@ -73,9 +97,9 @@ export function Modal({
   primary?: ModalButton;
   /** Escape and scrim clicks. Omit to make the dialog unskippable. */
   onDismiss?: () => void;
-  /** The design draws its short confirmations - Change is ready, Organization
-   * switched, Use a Gate model - at 520px rather than the template's 600. */
-  narrow?: boolean;
+  /** Which of the file's four widths this dialog is drawn at. Defaults to the
+   * widest, which is what an undrawn dialog gets. */
+  width?: ModalWidth;
   /** Draws an X at the header's right edge. Only for the dialogs the design
    * gives one - the model picker is the first - and separate from `onDismiss`
    * because a visible control and an escape hatch are different affordances. */
@@ -106,26 +130,32 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`${narrow ? "w-[520px]" : "w-[600px]"} max-w-full rounded-xl bg-base-card p-6 shadow-base-lg`}
+        className={`${WIDTH_STYLES[width]} max-w-full rounded-2xl bg-base-card p-6 shadow-base-lg`}
       >
-        <div className="flex items-start gap-4">
+        <div className="flex items-center gap-3">
+          {/* 44px on a toned dialog, 40px on a neutral one, which is the size
+           * difference the frames draw rather than a rounding of one number. */}
           <span
             aria-hidden
-            className={`flex size-12 shrink-0 items-center justify-center rounded-md ${TONE_STYLES[tone]}`}
+            className={`flex shrink-0 items-center justify-center rounded-md border shadow-base-2xs ${
+              tone === "neutral" ? "size-10" : "size-11"
+            } ${TONE_STYLES[tone]}`}
           >
-            <Icon name={icon} size={24} />
+            <Icon name={icon} size={tone === "neutral" ? 20 : 24} />
           </span>
           <div className="min-w-0 flex-1">
             <h2
               id={titleId}
-              className="text-xl font-medium tracking-heading text-neutral-900"
+              className="text-lg font-medium leading-6 tracking-heading text-neutral-900"
             >
               {title}
             </h2>
             {subtitle && (
               <p
-                className={`mt-1 text-sm leading-5 ${
-                  subtitleTone === "primary" ? "text-base-primary" : "text-neutral-600"
+                className={`text-sm leading-5 ${
+                  subtitleTone === "primary"
+                    ? "text-base-primary"
+                    : "text-base-muted-foreground"
                 }`}
               >
                 {subtitle}
@@ -144,7 +174,7 @@ export function Modal({
           )}
         </div>
 
-        {children && <div className="mt-4 flex flex-col gap-3">{children}</div>}
+        {children && <div className="mt-6 flex flex-col gap-3">{children}</div>}
 
         {(secondary || middle || primary) && (
           <div className="mt-6 flex justify-end gap-3">
@@ -153,7 +183,7 @@ export function Modal({
                 ref={safeRef}
                 type="button"
                 onClick={secondary.onClick}
-                className="flex h-9 items-center rounded-sm border border-base-border bg-base-card px-4 text-sm font-medium text-neutral-900 shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                className="flex h-9 items-center rounded-md border border-base-input bg-base-card px-3 text-sm font-medium text-base-primary shadow-base-2xs transition-colors hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
                 {secondary.label}
               </button>
@@ -163,7 +193,7 @@ export function Modal({
                 type="button"
                 onClick={middle.disabled ? undefined : middle.onClick}
                 aria-disabled={middle.disabled || undefined}
-                className={`flex h-9 items-center rounded-sm border border-base-input bg-base-card px-4 text-sm font-medium shadow-base-2xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 items-center rounded-md border border-base-input bg-base-card px-3 text-sm font-medium shadow-base-2xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   middle.disabled ? "cursor-not-allowed opacity-45" : "hover:bg-gray-50"
                 } ${
                   middle.destructive
@@ -179,7 +209,7 @@ export function Modal({
                 type="button"
                 onClick={primary.disabled ? undefined : primary.onClick}
                 aria-disabled={primary.disabled || undefined}
-                className={`flex h-9 items-center rounded-sm px-4 text-sm font-medium text-white transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+                className={`flex h-9 items-center rounded-md px-3 text-sm font-medium text-white transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                   primary.disabled ? "cursor-not-allowed opacity-45" : ""
                 } ${
                   primary.destructive

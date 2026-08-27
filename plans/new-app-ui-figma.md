@@ -834,6 +834,68 @@ inset highlights are shell-wide treatments nothing in the new UI reproduces,
 same call as on the Settings pane. 548 unit tests and the 169-test e2e suite
 pass.
 
+### Sync 2026-08-26, third pass: every dialog in the file, measured
+
+The Settings main screen was already right - `116:28972` matches row for row
+after the morning's pass - so this one went after the dialogs, which the morning
+deliberately did not read. `Flows / Settings` (116:28963), `Flows / Overview`
+(116:26381) and `Flows / App` (116:30199) were mapped, then eight dialog frames
+read in full. All three pages carry the check.
+
+**One glyph was still wrong on the main screen.** Login ID draws
+`Icon / UserRound`; the build had lucide `User`. `Icon.tsx` gained `userRound`,
+geometry consistent with the `usersRound` already there. `user` stays in the
+palette unused, the same way `receipt` and `power` did after the morning's five.
+
+**Dialogs are 16px, everywhere.** Every dialog frame on all three pages -
+`modal/organization`, `card/organization`, `dialog/device`, `card/choose-model` -
+is 24px padding, 24px gap, white, 1px `base/border`, `shadow/lg`, radius **16**.
+The build was on `rounded-xl`, which this repo's scale makes 14px. CLAUDE.md's
+"12px modal radius LOCKED" line is rewritten in the same pass; it was the last
+of the four conflicts in §3 still standing.
+
+**Width is per dialog, and the file means it.** Four values, so `narrow` (a
+boolean for one invented 520) is gone and `Modal` takes `width`:
+
+| Width | Dialogs |
+| --- | --- |
+| 480 | Rename device `143:67735`, Replace API key `177:74869`, Disconnect Gate `143:70617` |
+| 512 | Switch organization `130:55314`, Organization switched, Change is ready `134:61659`, Use a Gate model `130:48278` |
+| 544 | Reset Gate Connect `177:74223`, alone |
+| 600 | Review config `130:57442`, Apply changes, Close apps, Diagnostics report `363:9027`, Choose model `665:18400` |
+
+Undrawn dialogs - Switch gateway, the OAuth offer, Collected data, Restore
+details, both quit dialogs - keep the 600 default.
+
+**The tone tile is a bordered gradient, not a flat 100.** 44x44 at radius 8
+with a 24px glyph on a toned dialog, 40x40 with a 20px glyph on a neutral one,
+`shadow/2xs` under both: warning `#FFFBEB`→`#FDE68A` over `#FCD34D`
+(`130:57444`), success `#F0FDF4`→`#BBF7D0` over `#86EFAC` (`134:61661`), danger
+`#FEF2F2`→`#FECACA` over `#FCA5A5` (`177:79233`), neutral white over
+`base/border` (`451:8038`). The build had one 48px flat-100 tile for all four.
+The glyph's own fill is not in the export, so the existing ink stayed.
+
+**Header and buttons.** Title is `heading/18` (18/24), not 20; it sits 12px
+from the tile, not 16; the subtitle is `base/muted-foreground` and hangs
+directly under the title with no gap. Header to body is 24, matching body to
+buttons. Buttons are radius **8** - the Button component set itself
+(`685:20928`, `685:20942`) says 8 at both sizes, and the Overview and App
+instances agree; only the older Settings dialog instances still carry 4. Side
+padding is 12, not 16, and the secondary button's label is `base/primary`, not
+neutral-900.
+
+**Not changed, and why.** The Settings pane's own row buttons keep radius 6 and
+a `base/border` line: every drawn instance on that screen says 4 (which this
+repo's scale rounds to 6), and the component-versus-instance conflict is worth
+settling for all buttons at once rather than for one pane. The destructive
+button's label stays white over the drawn `#FEF2F2`, as `Modal` already had it.
+The disconnect dialog's card carries a `red-600/40` border where reset's carries
+grey; one of the two is a slip, so both stay grey. The page title's 20/24 is
+left at the token export's 20/28 for the reason `tailwind.config.ts` records at
+`letterSpacing.heading`. Action-button labels still take no `-0.01em`.
+
+554 unit tests and the 171-test e2e suite pass.
+
 ### Both ways in, 2026-08-20
 
 The popover lets an account be either a pasted key or a Gate sign-in, and lets a

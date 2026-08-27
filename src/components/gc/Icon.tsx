@@ -43,6 +43,7 @@ export type IconName =
   | "chartColumn"
   | "idCard"
   | "user"
+  | "userRound"
   | "receipt"
   | "globe"
   | "link"
@@ -292,6 +293,12 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
       <circle cx="12" cy="7" r="4" />
+    </>
+  ),
+  userRound: (
+    <>
+      <circle cx="12" cy="8" r="5" />
+      <path d="M20 21a8 8 0 0 0-16 0" />
     </>
   ),
   receipt: (

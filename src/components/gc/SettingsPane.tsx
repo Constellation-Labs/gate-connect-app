@@ -208,7 +208,7 @@ export function buildSettingsSections({
       id: "account",
       title: "Account",
       rows: [
-        { id: "login", icon: "user", label: "Login ID", value: loginId },
+        { id: "login", icon: "userRound", label: "Login ID", value: loginId },
         {
           id: "plan",
           icon: "fileBadge2",

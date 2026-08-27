@@ -72,6 +72,7 @@ export function SwitchOrganizationDialog({
     <Modal
       icon="usersRound"
       title="Switch organization"
+      width={512}
       subtitle="Select where this device sends activity and uses Gate credits"
       secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{
@@ -233,7 +234,7 @@ export function OrganizationSwitchedDialog({
       subtitle={`Gate Connect is now using ${organizationName}`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
-      narrow
+      width={512}
     >
       <ModalNote>
         <p className="font-medium text-neutral-900">Your local routing is unchanged.</p>
@@ -413,7 +414,7 @@ export function ChangeReadyDialog({
       subtitle={`${app.name} closed successfully`}
       primary={{ label: "Done", onClick: onDone }}
       onDismiss={onDone}
-      narrow
+      width={512}
     >
       <ModalNote>
         <p className="font-medium text-neutral-900">The new Gate route is active</p>
@@ -656,7 +657,7 @@ export function UseGateModelDialog({
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}
       primary={{ label: "Use Gate credits", onClick: onUseGateCredits }}
       onDismiss={onKeepAppDefault}
-      narrow
+      width={512}
     >
       <ModalSubject
         icon={vendorLogo ?? <Icon name="cube" size={16} />}
@@ -711,6 +712,7 @@ export function RenameDeviceDialog({
     <Modal
       icon="monitorSmartphone"
       title="Rename your device"
+      width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{ label: "Rename device", onClick: onRename, disabled: !newName.trim() }}
       onDismiss={onCancel}
@@ -753,6 +755,7 @@ export function ReplaceApiKeyDialog({
     <Modal
       icon="key"
       title="Replace API key"
+      width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{ label: "Replace key", onClick: onReplace, disabled: !newKey.trim() }}
       onDismiss={onCancel}
@@ -794,6 +797,7 @@ export function DisconnectGateDialog({
       tone="danger"
       icon="triangleAlert"
       title="Disconnect Gate?"
+      width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{
         label: "Yes, disconnect Gate",
@@ -831,6 +835,7 @@ export function ResetGateConnectDialog({
       tone="danger"
       icon="triangleAlert"
       title="Reset Gate Connect"
+      width={544}
       subtitle="This removes Gate Connect setup from this device."
       secondary={{ label: "Cancel", onClick: onCancel }}
       primary={{

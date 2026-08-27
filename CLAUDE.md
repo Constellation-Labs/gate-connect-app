@@ -58,8 +58,11 @@ one-to-one so any value can be traced back without guessing.
 - **Borders are real 1px lines.** `base.border #e5e7eb` on cards and
   dividers, `base.input #d1d5db` on controls. Cards additionally carry
   `shadow-base-sm`.
-- **Radii: 4px** (`rounded-base`) on controls, nav items and pills, **8px**
-  (`rounded-lg`) on cards and rows, **12px** (`rounded-xl`) on dialogs.
+- **Radii** come from `tailwind.config.ts`'s own scale, not from Tailwind's:
+  `rounded-sm` (6px) on controls and nav items, `rounded-md` (8px) on cards,
+  rows and buttons, `rounded-2xl` (**16px**) on dialogs. The 16px is measured -
+  every dialog frame in Settings, Overview and App carries it - and it replaces
+  the 12px this file used to call locked.
 - **Ground is `gray-100`**, cards and chrome are white.
 - **Geist + Geist Mono.** Mono is for identifiers (URLs, hosts, keys,
   model ids, install ids, versions, status pill labels, the sidebar
