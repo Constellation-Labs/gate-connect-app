@@ -67,13 +67,16 @@ export function StatusTile({
 }: {
   tone: keyof typeof TILE_TONES;
   icon: IconName;
-  size?: 28 | 36;
+  size?: 28 | 32 | 36;
 }) {
   return (
     <span
       aria-hidden
-      className={`flex shrink-0 items-center justify-center rounded-sm border bg-gradient-to-b ${TILE_TONES[tone]} ${
-        size === 36 ? "size-9" : "size-7"
+      // Drawn radius is 4px on both banner tiles (228:85985 reads 3.5, the
+      // alert's 228:90546 reads 4; both round to `control`, not the 6px `sm`
+      // this used to carry).
+      className={`flex shrink-0 items-center justify-center rounded-control border bg-gradient-to-b ${TILE_TONES[tone]} ${
+        size === 36 ? "size-9" : size === 32 ? "size-8" : "size-7"
       }`}
     >
       <Icon name={icon} size={size === 36 ? 20 : 16} />

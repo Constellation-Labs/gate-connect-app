@@ -12,9 +12,11 @@ import { Icon } from "./Icon";
  */
 
 /**
- * Navy strip offering an available update. Fill is a vertical gradient from
- * blue-ribbon 800 to 900, overlaid with the design's dot matrix - approximated
- * here as a CSS radial-gradient rather than shipping the Figma raster.
+ * Navy strip offering an available update. The fill is horizontal now
+ * (228:85974, read 2026-08-28): blue-ribbon 800 to 900 right-to-left at 50%
+ * over solid 900, replacing the old vertical pair. The design's dot matrix is
+ * approximated here as a CSS radial-gradient rather than shipping the Figma
+ * raster.
  */
 export function UpdateBanner({
   version,
@@ -26,7 +28,7 @@ export function UpdateBanner({
   onDismiss: () => void;
 }) {
   return (
-    <div className="relative flex h-12 w-full items-center justify-between border-b border-base-border bg-gradient-to-b from-blue-ribbon-800 to-blue-ribbon-900 px-4">
+    <div className="relative flex h-12 w-full items-center justify-between border-b border-base-border bg-blue-ribbon-900 bg-gradient-to-l from-blue-ribbon-800/50 to-blue-ribbon-900/50 px-4">
       <span
         aria-hidden
         className="pointer-events-none absolute inset-0"
@@ -36,17 +38,17 @@ export function UpdateBanner({
           backgroundSize: "8px 8px",
         }}
       />
-      <p className="relative text-sm leading-5 text-white">
+      <p className="relative text-sm leading-5 text-white [text-shadow:0_1px_0_rgba(0,0,0,0.05)]">
         <span className="font-medium">Update available</span>{" "}
         {/* One mono run at 400, dash included, matching the design's single
          * `- v0.5.0` text node. */}
         <span className="font-mono">- {version}</span>
       </p>
-      <div className="relative flex items-center gap-3">
+      <div className="relative flex items-center gap-4">
         <button
           type="button"
           onClick={onUpdate}
-          className="flex h-6 items-center rounded-sm border border-base-input bg-base-card px-2.5 py-1 text-base-xs font-medium leading-4 text-base-primary shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.06)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          className="flex h-6 items-center rounded-control border border-base-input bg-base-card px-2.5 py-1 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
         >
           Update
         </button>
@@ -84,9 +86,12 @@ export function RoutingBanner({
   return (
     <div className="flex h-12 w-full items-center justify-between border-b border-base-border bg-base-card px-4 py-2">
       <div className="flex items-center gap-3">
+        {/* 32px tile with a 16px glyph - `banner/status-protected`'s
+         * icon-wrapper (228:85985), between the tile's other two sizes. */}
         <StatusTile
           tone={allProtected ? "green" : "amber"}
           icon={allProtected ? "shieldCheck" : "shieldBan"}
+          size={32}
         />
         <p className="text-sm font-medium leading-5 text-base-foreground">
           {allProtected
@@ -102,8 +107,10 @@ export function RoutingBanner({
             * `Routed · 4 of 4 Apps` (re-read 2026-08-21). */}
           {allProtected ? "Routed" : "Partly routed"}
         </span>
-        <span className="text-neutral-400"> · </span>
-        <span className="text-neutral-600">
+        {/* Both greys are the drawn `base/muted-foreground` (228:85990) - the
+          * separator is that list's own disc marker, same colour as its text. */}
+        <span className="text-base-muted-foreground"> · </span>
+        <span className="text-base-muted-foreground">
           {protectedCount} of {totalCount} Apps
         </span>
       </p>
@@ -141,12 +148,12 @@ export function AlertBanner({
   paging?: { onPrev: () => void; onNext: () => void };
 }) {
   return (
-    <div className="relative flex items-center gap-6 rounded-md border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
+    <div className="relative flex items-center gap-6 rounded-control border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
       <div className="flex min-w-0 flex-1 items-center gap-4">
         <StatusTile tone="amber" icon="triangleAlert" size={36} />
         <div className="min-w-0">
           <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
-          <p className="text-base-xs leading-4 text-neutral-600">{body}</p>
+          <p className="text-base-xs leading-4 text-gray-600">{body}</p>
         </div>
       </div>
 
@@ -178,7 +185,7 @@ function PageButton({ side, onClick }: { side: "prev" | "next"; onClick: () => v
       type="button"
       onClick={onClick}
       aria-label={side === "prev" ? "Previous app" : "Next app"}
-      className={`absolute top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border border-base-border bg-base-card text-neutral-600 shadow-base-xs transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      className={`absolute top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border border-base-input bg-base-card text-neutral-600 shadow-base-xs transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         side === "prev" ? "-left-2.5" : "-right-2.5"
       }`}
     >
