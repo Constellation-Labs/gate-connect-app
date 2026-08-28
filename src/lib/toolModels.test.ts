@@ -83,10 +83,22 @@ describe("adaptPreferences", () => {
 describe("adaptModels", () => {
   it("reads the catalogue's Vercel-shaped rows", () => {
     const models = adaptModels({
-      data: [{ id: "anthropic/claude-opus-5", owned_by: "anthropic", name: "Claude Opus 5" }],
+      data: [
+        {
+          id: "anthropic/claude-opus-5",
+          owned_by: "anthropic",
+          name: "Claude Opus 5",
+          tags: ["tool-use", "vision"],
+        },
+      ],
     });
     expect(models).toEqual([
-      { id: "anthropic/claude-opus-5", vendor: "anthropic", name: "Claude Opus 5" },
+      {
+        id: "anthropic/claude-opus-5",
+        vendor: "anthropic",
+        name: "Claude Opus 5",
+        tags: ["tool-use", "vision"],
+      },
     ]);
   });
 
@@ -94,7 +106,14 @@ describe("adaptModels", () => {
     // Both fields are optional upstream. Neither absence is worth dropping a
     // selectable model over.
     expect(adaptModels({ data: [{ id: "mistralai/mistral-large" }] })).toEqual([
-      { id: "mistralai/mistral-large", vendor: "mistralai", name: "mistralai/mistral-large" },
+      {
+        id: "mistralai/mistral-large",
+        vendor: "mistralai",
+        name: "mistralai/mistral-large",
+        // No tags is not "no capabilities": `modelCompatibility` reads an empty
+        // list as unknown rather than as a denial.
+        tags: [],
+      },
     ]);
   });
 

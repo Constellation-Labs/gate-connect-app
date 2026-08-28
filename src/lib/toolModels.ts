@@ -101,12 +101,21 @@ export interface GateModel {
   vendor: string;
   /** Human-readable name, falling back to the id when discovery gave none. */
   name: string;
+  /**
+   * Capabilities the gateway advertises, e.g. `tool-use`, `reasoning`, `vision`.
+   *
+   * Empty when the row carried none, which is not the same as "can do nothing":
+   * an older catalogue row simply may not say. `modelCompatibility` treats an
+   * absent tag list as unknown rather than as a denial, for that reason.
+   */
+  tags: string[];
 }
 
 interface RawModel {
   id?: unknown;
   owned_by?: unknown;
   name?: unknown;
+  tags?: unknown;
 }
 
 /**
@@ -129,6 +138,9 @@ export function adaptModels(raw: { data?: unknown }): GateModel[] {
       id: m.id,
       vendor: typeof m.owned_by === "string" ? m.owned_by : m.id.split("/")[0],
       name: typeof m.name === "string" && m.name.length > 0 ? m.name : m.id,
+      // Only the string entries: a malformed row should lose a tag, not the
+      // whole model, because the id is what a preference stores.
+      tags: Array.isArray(m.tags) ? m.tags.filter((t): t is string => typeof t === "string") : [],
     });
   }
   return models;

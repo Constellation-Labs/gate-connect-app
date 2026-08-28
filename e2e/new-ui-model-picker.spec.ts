@@ -667,3 +667,85 @@ test.describe("new UI model feedback", () => {
     await expect(app.page.getByText("Use a model selected in Gate AI")).toBeVisible();
   });
 });
+
+/**
+ * Only the models this app can actually be served with (AG-590).
+ *
+ * The case that cost a real prompt on staging: Codex was offered `gpt-4o`, which
+ * carries the `tool-use` tag and still cannot serve it, because Codex sends
+ * freeform tools and only OpenAI's GPT-5 family accepts those. The provider's
+ * refusal - `Missing required parameter: 'tools[0].custom'` - is not something a
+ * user can act on, so the picker answers first.
+ */
+test.describe("new UI model picker compatibility", () => {
+  const codexTools = [
+    {
+      slug: "codex",
+      name: "Codex",
+      upstream_provider_name: "OpenAI",
+      default_upstream_url: "https://gw.example/codex",
+      requires_upstream_credential: false,
+      status: { kind: "connected" as const },
+    },
+  ];
+  const mixed = [
+    { id: "openai/gpt-5-3-codex", owned_by: "openai", name: "GPT-5.3 Codex", tags: ["tool-use"] },
+    { id: "openai/gpt-4o", owned_by: "openai", name: "GPT-4o", tags: ["tool-use"] },
+    { id: "openai/gpt-3-5-turbo-instruct", owned_by: "openai", name: "Instruct", tags: ["vision"] },
+  ];
+
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("offers Codex only what can serve it, and says what it held back", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: codexTools,
+      toolModels: { catalogue: mixed },
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
+    await expect(dialog.getByRole("checkbox", { name: "openai/gpt-5-3-codex" })).toBeVisible();
+
+    // Held back, not hidden. Two different causes here - one model lacks tools
+    // outright, the other lacks the freeform kind - so the count is stated
+    // without a reason: two reasons in one sentence would explain neither.
+    await expect(dialog.getByText(/2 models are not shown/)).toBeVisible();
+  });
+
+  test("names the reason when every held-back model shares one", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: codexTools,
+      // Both refused for the same cause, so there is one sentence worth saying.
+      toolModels: { catalogue: mixed.filter((m) => m.tags.includes("tool-use")) },
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText(/1 model is not shown/)).toBeVisible();
+    await expect(dialog.getByText(/only OpenAI's GPT-5 models accept/)).toBeVisible();
+  });
+
+  test("lets the user overrule it, because the rule will date", async ({ boot }) => {
+    // The freeform-tool rule is empirical. A model that starts working would be
+    // unreachable if this were a hard filter, with no way to tell us so.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: codexTools,
+      toolModels: { catalogue: mixed },
+    });
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Show anyway" }).click();
+    await expect(dialog.getByRole("checkbox")).toHaveCount(3);
+    await expect(dialog.getByRole("checkbox", { name: "openai/gpt-4o" })).toBeVisible();
+  });
+});

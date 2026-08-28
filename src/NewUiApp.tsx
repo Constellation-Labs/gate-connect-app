@@ -1590,6 +1590,9 @@ export function NewUiApp() {
             // shipping those as though they were real would put a fabricated
             // catalogue in front of the user.
             appName={appFor(apps, view.kind === "app" ? view.slug : "")?.name ?? "This app"}
+            // The slug, not the display name: compatibility is keyed on the tool
+            // the preferences use, and two apps can share a name.
+            appSlug={view.kind === "app" ? view.slug : null}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
             failure={gateModels.failure?.message ?? null}

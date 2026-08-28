@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
 import { Skeleton } from "./base";
+import { compatibility, explain, needsOf } from "../../lib/modelCompatibility";
 import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
 import type { PillTone } from "./Modal";
 import {
@@ -462,6 +463,8 @@ export interface GateModelOption {
   vendor: string;
   /** 16px vendor mark. Falls back to a cube while the marks are unexported. */
   logo?: ReactNode;
+  /** Capabilities the gateway advertises; `modelCompatibility` reads them. */
+  tags: string[];
 }
 
 /**
@@ -488,6 +491,7 @@ export interface GateModelOption {
  */
 export function ModelPickerDialog({
   appName,
+  appSlug,
   models,
   loading,
   failure,
@@ -497,6 +501,8 @@ export function ModelPickerDialog({
 }: {
   /** Named in the subtitle, as the frame does. */
   appName: string;
+  /** Tool slug, which is what compatibility is keyed on. */
+  appSlug: string | null;
   models: GateModelOption[];
   /** The catalogue has not landed. Distinct from an empty one, which is a real
    *  answer: a gateway with no platform provider accounts offers nothing, and
@@ -517,6 +523,16 @@ export function ModelPickerDialog({
 }) {
   const [query, setQuery] = useState("");
   const [vendor, setVendor] = useState("all");
+  /**
+   * Show models this app cannot be served with (AG-590).
+   *
+   * Off by default, because offering a model that fails costs a prompt to find
+   * out and reports itself as a provider error nobody can act on. Available at
+   * all because the freeform-tool rule is empirical and will date: a model that
+   * starts working would otherwise be unreachable, with no way for the user to
+   * tell us the list is wrong.
+   */
+  const [showAll, setShowAll] = useState(false);
   /** Seeded from the stored set so Cancel is a real cancel. */
   const [draft, setDraft] = useState<string[]>(selectedIds);
 
@@ -543,14 +559,33 @@ export function ModelPickerDialog({
     [models],
   );
 
+  // What this app can actually be served with. Computed over the whole catalogue
+  // rather than the filtered view, so the count of what was set aside is about
+  // the app and not about the current search.
+  const needs = useMemo(() => needsOf(appSlug), [appSlug]);
+  const usable = useMemo(
+    () => models.filter((m) => compatibility(m, needs).ok),
+    [models, needs],
+  );
+  const setAside = models.length - usable.length;
+  // The reason to name, when there is one shared reason worth naming. Two
+  // different causes in one sentence would explain neither.
+  const asideReason = useMemo(() => {
+    const reasons = new Set(
+      models.map((m) => compatibility(m, needs).reason).filter((r) => r !== undefined),
+    );
+    return reasons.size === 1 ? [...reasons][0]! : null;
+  }, [models, needs]);
+
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return models.filter(
+    const base = showAll ? models : usable;
+    return base.filter(
       (m) =>
         (vendor === "all" || m.vendor === vendor) &&
         (q === "" || m.id.toLowerCase().includes(q) || m.vendor.toLowerCase().includes(q)),
     );
-  }, [models, query, vendor]);
+  }, [models, usable, showAll, query, vendor]);
 
   const chosen = draft;
   /**
@@ -667,7 +702,7 @@ export function ModelPickerDialog({
            *  running. Reinstate it with AG-590's per-tool filtering. */}
           <div className="flex items-start justify-between text-base-xs leading-4">
             <p className="text-base-muted-foreground">
-              Showing {shown.length} of {models.length} models
+              Showing {shown.length} of {showAll ? models.length : usable.length} models
             </p>
             {/* Figma 682:20043. It takes the slot the earlier frame drew a "3
              *  models selected" label in, and carries the same count - so the
@@ -685,6 +720,26 @@ export function ModelPickerDialog({
               </button>
             )}
           </div>
+
+          {/* Never hidden silently. The rule that sets models aside is partly
+           *  empirical - see `modelCompatibility` - so it will date, and a user
+           *  looking for a model that is missing needs to be told it was a
+           *  decision rather than an omission, and be able to overrule it. */}
+          {setAside > 0 && (
+            <p className="flex flex-wrap items-baseline gap-x-2 text-base-xs leading-4 text-base-muted-foreground">
+              <span>
+                {setAside} {setAside === 1 ? "model is" : "models are"} not shown
+                {asideReason ? `: ${explain(asideReason, appName)}` : "."}
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowAll((v) => !v)}
+                className="rounded-base font-medium text-base-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+              >
+                {showAll ? "Hide them" : "Show anyway"}
+              </button>
+            </p>
+          )}
 
           {missing.length > 0 && (
             <ul className="flex flex-col gap-px">

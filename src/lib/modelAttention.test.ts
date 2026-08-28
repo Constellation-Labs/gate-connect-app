@@ -11,8 +11,8 @@ import type { Credits, GateModel, ToolModelChoice } from "./toolModels";
  * the normal first paint.
  */
 const CATALOGUE: GateModel[] = [
-  { id: "anthropic/claude-opus-5", vendor: "anthropic", name: "Claude Opus 5" },
-  { id: "openai/gpt-5", vendor: "openai", name: "GPT-5" },
+  { id: "anthropic/claude-opus-5", vendor: "anthropic", name: "Claude Opus 5", tags: ["tool-use"] },
+  { id: "openai/gpt-5", vendor: "openai", name: "GPT-5", tags: ["tool-use"] },
 ];
 
 const FUNDED: Credits = {
