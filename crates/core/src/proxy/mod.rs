@@ -170,8 +170,19 @@ static CF_CHALLENGE_SOLVING: std::sync::atomic::AtomicBool =
 /// who fixed the underlying problem is not locked out for the session.
 const CF_CHALLENGE_RETRY_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// How long the observer stays quiet after an attempt that DID capture a
+/// cookie. Responses to turns sent before the cookie was injected can still
+/// be in flight carrying `cf-mitigated: challenge`; without a grace the first
+/// of them re-fires the observer the moment the latch clears, reopening the
+/// window on a cookie that will never change until the poll's deadline gives
+/// up and starts the long cooldown above. Long enough for stale responses to
+/// drain, short enough that a genuinely re-challenged user is not left
+/// waiting.
+const CF_CHALLENGE_SUCCESS_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Earliest instant at which the observer may fire again; `None` means "no
-/// cooldown running". Set only by an attempt that captured nothing.
+/// cooldown running". Set by every finished attempt: the long cooldown after
+/// one that captured nothing, the short grace after one that captured.
 static CF_CHALLENGE_NEXT_ALLOWED: std::sync::Mutex<Option<std::time::Instant>> =
     std::sync::Mutex::new(None);
 
@@ -182,7 +193,7 @@ pub fn set_cf_challenge_observer(observer: impl Fn() + Send + Sync + 'static) {
 }
 
 /// Invoke the registered challenge observer, if any, unless a solve is
-/// already in flight or a failed attempt's cooldown is still running. Called
+/// already in flight or a finished attempt's cooldown is still running. Called
 /// by the engine's `handle_response` when a chatgpt.com app turn comes back
 /// `cf-mitigated: challenge`.
 pub(crate) fn notify_cf_challenge_observer() {
@@ -201,8 +212,8 @@ pub(crate) fn notify_cf_challenge_observer() {
         // first question anyone debugging this asks.
         if engine::debug_log() {
             eprintln!(
-                "[gate-proxy] challenge detected but the solve window is cooling down \
-                 after an attempt that captured nothing"
+                "[gate-proxy] challenge detected but the previous solve attempt's \
+                 cooldown is still running"
             );
         }
         return;
@@ -216,13 +227,21 @@ pub(crate) fn notify_cf_challenge_observer() {
     observer();
 }
 
-/// Release the solve latch. `captured` reports whether the attempt actually
-/// produced a cookie: on `false` a cooldown starts, so a challenge the webview
-/// cannot clear stops reopening the window on every subsequent request. The
-/// GUI calls this exactly once per attempt.
+/// Release the solve latch and start the cooldown for the next attempt.
+/// `captured` reports whether the attempt actually produced a cookie: `false`
+/// starts the long cooldown, so a challenge the webview cannot clear stops
+/// reopening the window on every subsequent request; `true` starts the short
+/// grace, so challenged responses already in flight when the cookie landed
+/// cannot immediately reopen the window it just closed. The GUI calls this
+/// exactly once per attempt.
 pub fn cf_challenge_solve_finished(captured: bool) {
+    let cooldown = if captured {
+        CF_CHALLENGE_SUCCESS_GRACE
+    } else {
+        CF_CHALLENGE_RETRY_COOLDOWN
+    };
     if let Ok(mut next) = CF_CHALLENGE_NEXT_ALLOWED.lock() {
-        *next = (!captured).then(|| std::time::Instant::now() + CF_CHALLENGE_RETRY_COOLDOWN);
+        *next = Some(std::time::Instant::now() + cooldown);
     }
     CF_CHALLENGE_SOLVING.store(false, std::sync::atomic::Ordering::Release);
 }

@@ -431,7 +431,8 @@ impl GateHandler {
     }
 
     /// Report a tunnelled CONNECT to Claude Code's own destination that carried
-    /// no route selector.    ///
+    /// no route selector.
+    ///
     /// Outside `debug_log`, unlike every other line here, because this is the
     /// only place in the app that can observe the regression it names: Claude
     /// Code's `status()` compares `settings.json` against our own write and
@@ -787,26 +788,38 @@ impl HttpHandler for GateHandler {
                         .unwrap_or_default(),
                 );
 
-/// drop the app shell's product token from the
-/// `user-agent` on chatgpt.com turns we forward through the gateway, leaving
-/// the browser-shaped remainder the token was prefixed to.
-///
-/// What this is testing. Measured 2026-08-28 on one machine, same endpoint,
-/// same gateway, same Cloudflare datacenter (`cf-ray` colo `IAD`):
-/// `POST /backend-api/f/conversation` from the website answered 200 carrying a
-/// single `oai-did` cookie, while the same path from the app answered
-/// `cf-mitigated: challenge` carrying MORE cookies, including a freshly solved
-/// `cf_clearance`. So neither the cookie nor Gate's egress IP explains the
-/// difference, and the app's user-agent is character-for-character the
-/// website's with `CodexBrowser ` prefixed. This flag exists to confirm or
-/// refute that the prefix is what the challenge rule keys on.
-///
-/// Careful: leaving it on ships a request that names a
-/// different client than the one that sent it, to a third party's bot
-/// management, it is fragile (Cloudflare fingerprints far more than this header, so a result today says
-/// nothing about next month) and it erases the signal the vendor uses to tell
-/// its own clients apart.
-                if rewritten  {
+                let cf = self.cf_clearance.borrow().clone();
+                // Strip the app shell's product token from the `user-agent`
+                // on chatgpt.com turns we forward through the gateway,
+                // leaving the browser-shaped remainder the token was
+                // prefixed to.
+                //
+                // What this is testing. Measured 2026-08-28 on one machine,
+                // same endpoint, same gateway, same Cloudflare datacenter
+                // (`cf-ray` colo `IAD`): `POST /backend-api/f/conversation`
+                // from the website answered 200 carrying a single `oai-did`
+                // cookie, while the same path from the app answered
+                // `cf-mitigated: challenge` carrying MORE cookies, including
+                // a freshly solved `cf_clearance`. So neither the cookie nor
+                // Gate's egress IP explains the difference, and the app's
+                // user-agent is character-for-character the website's with
+                // `CodexBrowser ` prefixed. The strip exists to confirm or
+                // refute that the prefix is what the challenge rule keys on.
+                //
+                // Careful: it ships a request that names a different client
+                // than the one that sent it, to a third party's bot
+                // management; it is fragile (Cloudflare fingerprints far
+                // more than this header, so a result today says nothing
+                // about next month); and it erases the signal the vendor
+                // uses to tell its own clients apart.
+                //
+                // Skipped whenever a captured `cf_clearance` is about to be
+                // injected below: the cookie is bound to the user-agent it
+                // was minted under - the full shell UA the solve webview
+                // wears - so stripping here would replay it under a UA
+                // Cloudflare never issued it to, and the challenge the
+                // cookie exists to clear would just fire again.
+                if rewritten && cf.is_empty() {
                     let stripped = req
                         .headers()
                         .get(hudsucker::hyper::header::USER_AGENT)
@@ -818,7 +831,6 @@ impl HttpHandler for GateHandler {
                             .insert(hudsucker::hyper::header::USER_AGENT, ua);
                     }
                 }
-                let cf = self.cf_clearance.borrow().clone();
                 if !cf.is_empty() {
                     inject_cf_clearance(&mut req, &cf);
                     cf_injected = true;
