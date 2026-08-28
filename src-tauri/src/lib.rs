@@ -1299,10 +1299,17 @@ static LAST_CF_CLEARANCE: Mutex<String> = Mutex::new(String::new());
 /// proven to mint a cookie Cloudflare then accepts from Gate's IP.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn open_cf_challenge_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(CF_CHALLENGE_WINDOW) {
-        let _ = window.show();
-        let _ = window.set_focus();
-        return;
+    // A window from a previous attempt should not exist here - the observer
+    // is latched, so only one attempt runs at a time, and every exit path
+    // closes its window. If one survived anyway, close it and start over
+    // rather than adopting it: the poll thread is what reveals the window,
+    // captures the cookie, and releases the latch, so a window with no live
+    // poll behind it is a wedge that suppresses every later challenge for
+    // the rest of the session. Since the window is now built hidden, such an
+    // orphan would also be invisible - the exact failure this avoids.
+    if let Some(stale) = app.get_webview_window(CF_CHALLENGE_WINDOW) {
+        eprintln!("[gate] challenge-solve: closing an orphaned solve window");
+        let _ = stale.close();
     }
     let url: tauri::Url = "https://chatgpt.com"
         .parse()

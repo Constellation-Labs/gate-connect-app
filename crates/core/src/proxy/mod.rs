@@ -195,9 +195,22 @@ pub(crate) fn notify_cf_challenge_observer() {
         .and_then(|next| *next)
         .is_some_and(|next| std::time::Instant::now() < next);
     if cooling {
+        // Say so. A suppressed challenge is otherwise indistinguishable from
+        // a challenge that was never detected - both are silence followed by
+        // the app showing Cloudflare's page - and telling those apart is the
+        // first question anyone debugging this asks.
+        if engine::debug_log() {
+            eprintln!(
+                "[gate-proxy] challenge detected but the solve window is cooling down \
+                 after an attempt that captured nothing"
+            );
+        }
         return;
     }
     if CF_CHALLENGE_SOLVING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if engine::debug_log() {
+            eprintln!("[gate-proxy] challenge detected while a solve is already in flight");
+        }
         return;
     }
     observer();
