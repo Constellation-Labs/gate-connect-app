@@ -188,6 +188,42 @@ pub fn cf_challenge_solve_finished() {
     CF_CHALLENGE_SOLVING.store(false, std::sync::atomic::Ordering::Release);
 }
 
+/// The `user-agent` last seen on an intercepted chatgpt.com app request.
+///
+/// The solve webview adopts it, for two reasons that both bite. Cloudflare
+/// waves a stock WebView2 through - the observed solve window loads the
+/// ordinary chat prompt, never an interstitial - and `cf_clearance` exists
+/// ONLY as the result of a challenge, so a webview that is never challenged
+/// mints nothing to capture. And the cookie is bound to the user-agent it was
+/// issued to, so one minted under the webview's own UA would be refused when
+/// replayed under the app's. Wearing the app's UA is what makes the challenge
+/// fire in a surface that can solve it, and what makes the result usable.
+///
+/// Read from the wire rather than hardcoded: the app's UA carries its build
+/// (`ChatGPTBrowser/<version> …`) and a pinned guess would drift out of date
+/// silently, which is the failure this whole flow is least able to diagnose.
+static CHATGPT_APP_USER_AGENT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Remember the app's user-agent for the solve webview. Called by the engine
+/// on intercepted chatgpt.com app requests; empty values are ignored.
+pub(crate) fn record_chatgpt_app_user_agent(user_agent: &str) {
+    if user_agent.is_empty() {
+        return;
+    }
+    if let Ok(mut held) = CHATGPT_APP_USER_AGENT.lock() {
+        if held.as_deref() != Some(user_agent) {
+            *held = Some(user_agent.to_owned());
+        }
+    }
+}
+
+/// The app's user-agent, if the engine has seen an app request this run.
+/// `None` before the first one, in which case the solve webview keeps its
+/// platform default.
+pub fn chatgpt_app_user_agent() -> Option<String> {
+    CHATGPT_APP_USER_AGENT.lock().ok().and_then(|v| v.clone())
+}
+
 /// Whether an HTTP authority (`host` or `host:port`, IPv6 in brackets) names
 /// this machine's loopback - the only place our plain-HTTP loopback listeners
 /// (the relay, the PAC responder) may be addressed from.

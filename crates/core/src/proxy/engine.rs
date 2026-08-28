@@ -704,6 +704,15 @@ impl HttpHandler for GateHandler {
             && self.peer_allowed(ctx)
         {
             self.last_turn_was_chatgpt_app = true;
+            // The solve webview wears this UA, or Cloudflare never challenges
+            // it and there is no cookie to capture. See
+            // `record_chatgpt_app_user_agent`.
+            crate::proxy::record_chatgpt_app_user_agent(
+                req.headers()
+                    .get(hudsucker::hyper::header::USER_AGENT)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default(),
+            );
             let cf = self.cf_clearance.borrow().clone();
             if !cf.is_empty() {
                 inject_cf_clearance(&mut req, &cf);

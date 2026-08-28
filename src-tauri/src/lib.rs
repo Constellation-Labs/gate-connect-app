@@ -1308,16 +1308,29 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
         .parse()
         // Infallible: static, pre-validated URL.
         .expect("static chatgpt.com URL parses");
-    let window = match tauri::WebviewWindowBuilder::new(
+    let builder = tauri::WebviewWindowBuilder::new(
         app,
         CF_CHALLENGE_WINDOW,
         tauri::WebviewUrl::External(url.clone()),
     )
     .title("Verify ChatGPT connection")
     .inner_size(480.0, 640.0)
-    .center()
-    .build()
-    {
+    .center();
+    // Wear the app's own user-agent: a stock webview is waved through without
+    // a challenge, and `cf_clearance` only exists as the result of one, so
+    // without this there is nothing to capture. See
+    // `proxy::chatgpt_app_user_agent`. Absent until the engine has seen an app
+    // request, in which case the platform default stands.
+    let app_user_agent = gate_connect_core::proxy::chatgpt_app_user_agent();
+    let builder = match app_user_agent.as_deref() {
+        Some(ua) => builder.user_agent(ua),
+        None => builder,
+    };
+    eprintln!(
+        "[gate] challenge-solve window opening as {}",
+        app_user_agent.as_deref().unwrap_or("<platform default UA>")
+    );
+    let window = match builder.build() {
         Ok(w) => w,
         Err(e) => {
             eprintln!("[gate] opening the challenge-solve window failed: {e}");
@@ -1346,20 +1359,35 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
                 gate_connect_core::proxy::cf_challenge_solve_finished();
                 return;
             };
-            let captured = window
-                .cookies_for_url(url.clone())
-                .unwrap_or_default()
+            let cookies = window.cookies_for_url(url.clone()).unwrap_or_default();
+            // Which cookies the jar holds, by NAME only - the values are
+            // session credentials. Without this the window's behaviour is the
+            // only signal, and "no cf_clearance was ever minted" looks
+            // identical to "capture is broken", which cost a build to tell
+            // apart. `cf_clearance` absent while others are present means
+            // Cloudflare did not challenge this surface.
+            let names: Vec<&str> = cookies.iter().map(|c| c.name()).collect();
+            eprintln!(
+                "[gate] challenge-solve jar: {} cookie(s) [{}]",
+                names.len(),
+                names.join(",")
+            );
+            let captured = cookies
                 .into_iter()
                 .find(|c| c.name() == "cf_clearance")
                 .map(|c| c.value().to_string());
             let Some(value) = captured else { continue };
             if value.is_empty() || value == challenged {
+                // A cookie identical to the one just challenged is not a
+                // solve; re-feeding it would loop the window open.
+                eprintln!("[gate] challenge-solve: cf_clearance present but unchanged, waiting");
                 continue;
             }
             if let Ok(mut last) = LAST_CF_CLEARANCE.lock() {
                 *last = value.clone();
             }
             gate_connect_core::proxy::manager().refresh_cf_clearance(&value);
+            eprintln!("[gate] challenge-solve: captured cf_clearance, fed to the engine");
             let _ = window.close();
             gate_connect_core::proxy::cf_challenge_solve_finished();
             return;
