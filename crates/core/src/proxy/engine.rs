@@ -32,8 +32,8 @@ use tokio::sync::{oneshot, watch};
 
 use crate::proxy::cert_authority::GateCa;
 use crate::proxy::{
-    classify_client, decide, rules_for_client, should_decline_upgrade, should_intercept_host,
-    Decision, ProxyDomain,
+    classify_client, decide, domain_claiming_host, is_non_browser_ua, rules_for_client,
+    should_decline_upgrade, should_intercept_host, ClientClass, Decision, ProxyDomain,
 };
 
 /// Everything the engine needs to run one session. The account + CA are
@@ -353,6 +353,9 @@ struct GateHandler {
     /// `should_intercept`. Shared across handler clones, so an engine run
     /// reports it once instead of once per connection.
     anthropic_unselected_logged: Arc<AtomicBool>,
+    /// One-shot latch for the "unrecognised app shell" line in
+    /// `handle_request`, shared across handler clones for the same reason.
+    app_shell_unrecognised_logged: Arc<AtomicBool>,
 }
 
 impl GateHandler {
@@ -406,6 +409,52 @@ impl GateHandler {
             "[gate-proxy] CONNECT {} carried no Claude Code route selector -> tunnel. \
              Expected for other Anthropic clients while their domain is off; if this \
              is a connected Claude Code, it is bypassing Gate.",
+            host.unwrap_or("?")
+        );
+    }
+
+    /// Report a ChatGPT request from a client that is neither the website nor
+    /// anything `classify_client` recognises as the app.
+    ///
+    /// Outside `debug_log`, for the reason above: the wire is the only witness.
+    /// The app shell's user-agent has been renamed once already
+    /// (`ChatGPTBrowser` -> `CodexBrowser`), and the roster it was matched
+    /// against went stale without a single symptom - the app simply classified
+    /// as `Unknown`, which routes identically, so nothing looked wrong. This
+    /// line is what makes the next rename arrive as a message naming the new
+    /// token instead of as app-only handling quietly ceasing to apply.
+    ///
+    /// The trigger is deliberately wider than the classifier's own
+    /// [`super::is_wrapped_browser_ua`]: any non-browser user-agent will do, so
+    /// a rename that also drops the wrapped `Mozilla/` still surfaces. That width is why it is latched to one line
+    /// per engine run - an unrecognised non-browser client here is the
+    /// ordinary, harmless state for anything third-party, and a per-request
+    /// warning would be noise.
+    fn warn_if_an_app_shell_is_unrecognised(
+        &self,
+        client: ClientClass,
+        rules: &[ProxyDomain],
+        host: Option<&str>,
+        ua: &str,
+    ) {
+        if client != ClientClass::Unknown
+            || !is_non_browser_ua(ua)
+            // The MITM entry for chatgpt.com, whether or not it is switched on:
+            // this reports on a client, not on a route.
+            || host
+                .and_then(|h| domain_claiming_host(rules, h))
+                .is_none_or(|d| d.slug != "chatgpt-apps")
+            || self
+                .app_shell_unrecognised_logged
+                .swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        eprintln!(
+            "[gate-proxy] {} request from an unrecognised client: user-agent {ua:?} \
+             classifies as Unknown. Expected for third-party clients; if this is the \
+             ChatGPT/Codex app, its shell has been renamed again and app-only handling \
+             no longer applies to it (see `classify_client`).",
             host.unwrap_or("?")
         );
     }
@@ -566,6 +615,15 @@ impl HttpHandler for GateHandler {
         let rules = rules_for_client(
             &route_rules(&live_rules, self.claude_code_route, host.as_deref()),
             client,
+        );
+        self.warn_if_an_app_shell_is_unrecognised(
+            client,
+            &live_rules,
+            host.as_deref(),
+            req.headers()
+                .get(hudsucker::hyper::header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default(),
         );
         // Path only, never `path_and_query()`: some providers pass the API key
         // as a URL query param (e.g. Google `...?key=...`), and this value is
@@ -1255,6 +1313,7 @@ where
         peer_verdict: None,
         claude_code_route: false,
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
+        app_shell_unrecognised_logged: Arc::new(AtomicBool::new(false)),
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

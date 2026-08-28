@@ -848,13 +848,57 @@ const BROWSER_ROUTED: &[BrowserScope] = &[
     },
 ];
 
+/// The token every real browser's user-agent opens with.
+const BROWSER_UA_PREFIX: &str = "Mozilla/";
+
+/// True for a user-agent that is not a browser's own. Non-empty, and it does
+/// not open with `Mozilla/`.
+///
+/// Wider than [`is_wrapped_browser_ua`] on purpose, and used only to *report*:
+/// an unrecognised client on the app's own host is worth one log line, and the
+/// net has to be wider than the classifier's for a rename to show up in it at
+/// all. Deliberately not a classification signal - plenty of third-party
+/// clients look exactly like this and they are ordinary.
+pub(crate) fn is_non_browser_ua(ua: &str) -> bool {
+    let ua = ua.trim_start();
+    !ua.is_empty() && !ua.starts_with(BROWSER_UA_PREFIX)
+}
+
+/// True for an app shell's user-agent: a product token, then an otherwise
+/// browser-shaped UA (`ChatGPTBrowser Mozilla/5.0 ...`, `CodexBrowser
+/// Mozilla/5.0 ...`).
+///
+/// Keyed on the SHAPE because the vendor has renamed this token once already
+/// and a roster of names cannot survive the next rename; a browser's own UA
+/// starts with `Mozilla/`, so it can never match. Also deliberately NOT keyed
+/// on the substrings `codex`/`chatgpt`: that is the same roster problem one
+/// level down.
+///
+/// A third-party client that prepends its own token to a browser UA reads as
+/// `App` here rather than `Unknown`. Both route identically, so that costs
+/// nothing, and the direction that matters holds: the browser cannot be
+/// mistaken for the app.
+pub(crate) fn is_wrapped_browser_ua(ua: &str) -> bool {
+    is_non_browser_ua(ua)
+        && ua
+            .split_whitespace()
+            .skip(1)
+            .any(|token| token.starts_with(BROWSER_UA_PREFIX))
+}
+
 /// Classify a request from its headers.
 ///
 /// `originator` is the primary signal: it is the vendor's own "which front-end
 /// is this" field, it was present on EVERY app request to a routed path in the
-/// captures, and on none of the web ones. The user-agent prefix is the fallback,
-/// because a build that drops `originator` but still says `ChatGPTBrowser`
-/// should keep routing.
+/// captures, and on none of the web ones. The user-agent is the fallback,
+/// because a build that drops `originator` but still names itself should keep
+/// routing.
+///
+/// That fallback is matched by SHAPE, not by a roster of product names. It was
+/// originally a list of prefixes led by `ChatGPTBrowser`, and the vendor then
+/// renamed the shell: the Windows build captured 2026-08-28 sends `CodexBrowser
+/// Mozilla/5.0 ...`, which matched nothing, so the fallback had silently stopped
+/// covering the app it was written for. See [`is_wrapped_browser_ua`].
 ///
 /// The web markers are what routing actually keys on, so they are matched
 /// POSITIVELY: `Web` means "this is the website", never "no app signal found".
@@ -902,9 +946,10 @@ pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientCl
         return ClientClass::App;
     }
     let ua = header("user-agent").unwrap_or_default();
-    // `ChatGPTBrowser` prefixes the app shell's otherwise browser-shaped UA;
-    // the other two are Codex's native agent and its MCP client.
-    if ua.starts_with("ChatGPTBrowser")
+    // The app shell wraps a browser UA; the other two are Codex's native agent
+    // and its MCP client, neither of which is browser-shaped, so no shape rule
+    // covers them and they keep their exact prefixes.
+    if is_wrapped_browser_ua(ua)
         || ua.starts_with("Codex Desktop/")
         || ua.starts_with("codex-mcp-client/")
     {
@@ -1574,11 +1619,31 @@ mod tests {
         // A build that drops `originator` but still names itself should keep
         // routing, so each app UA family is matched on its own.
         for ua in [
+            // The shipping Windows app, captured verbatim 2026-08-28. The shell
+            // was renamed `ChatGPTBrowser` -> `CodexBrowser` and the roster of
+            // prefixes stopped covering it, with nothing here to say so; this
+            // string is the assertion whose absence let that through.
+            "CodexBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+            // The older shipped build. The rename is additive; it must not regress.
             "ChatGPTBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/151.0.0.0",
             "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)",
             "codex-mcp-client/0.148.0-alpha.9",
         ] {
             assert_eq!(
+                classify_client(hdrs(&[("user-agent", ua)])),
+                ClientClass::App,
+                "{ua}"
+            );
+        }
+        // The one direction the shape rule must never allow: a browser's own UA
+        // opens with `Mozilla/`, so no amount of what follows makes it the app.
+        // Getting this wrong would cost the browser its narrowing.
+        for ua in [
+            WEB_UA,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) CodexBrowser/1.0",
+        ] {
+            assert_ne!(
                 classify_client(hdrs(&[("user-agent", ua)])),
                 ClientClass::App,
                 "{ua}"
