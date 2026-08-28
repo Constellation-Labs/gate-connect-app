@@ -354,16 +354,16 @@ struct GateHandler {
     /// rewritten and passthrough alike (see [`inject_cf_clearance`] and the
     /// injection site's comment for why passthrough needs it too).
     cf_clearance: watch::Receiver<Arc<str>>,
-    /// Per-connection memo: whether the request this connection last rewrote
-    /// targeted the chatgpt.com app surface. `handle_response` reads it to
-    /// attribute a `cf-mitigated: challenge` answer, which arrives with no
-    /// host context of its own. Best-effort under HTTP/2 multiplexing
-    /// (several requests can be in flight on one connection), which is
-    /// acceptable for now: the only rewritten host that both carries that
-    /// header and lacks a browsing cookie is the chatgpt.com app turn, so a
-    /// false trigger at worst opens the solve webview once when not strictly
-    /// needed. If that proves noisy, tighten by keying the memo to the
-    /// request rather than the connection.
+    /// Per-request memo: whether `handle_request` saw an intercepted
+    /// chatgpt.com app request - rewritten or passthrough. `handle_response`
+    /// reads it to attribute a `cf-mitigated: challenge` answer, which
+    /// arrives with no host context of its own. Not just rewritten turns:
+    /// the app's passthrough warm-up calls are challenged too, and they can
+    /// kill the app before it ever issues a rewritten turn, so they must be
+    /// able to open the solve webview as well. Reliable per request:
+    /// hudsucker clones the handler per request and runs both hooks on that
+    /// clone (`internal.rs`: `service_fn` -> `self.clone().proxy(req)`), so
+    /// the flag cannot leak across requests, HTTP/2 multiplexing included.
     last_turn_was_chatgpt_app: bool,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
@@ -582,7 +582,8 @@ impl HttpHandler for GateHandler {
             req.headers_mut().remove("proxy-authorization");
             return req.into();
         }
-        // Fresh verdict per request; only the rewrite branch below can set it.
+        // Fresh verdict per request; only the chatgpt.com app block below can
+        // set it.
         self.last_turn_was_chatgpt_app = false;
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
         // website, which shares their host (see `BROWSER_EXCLUDED_SLUGS`).
@@ -673,15 +674,6 @@ impl HttpHandler for GateHandler {
                 ) {
                     Ok(()) => {
                         action = "rewrite->gateway";
-                        // chatgpt.com app turns egress from the gateway's IP
-                        // with no browsing cookie, so Cloudflare may answer
-                        // them with a managed challenge. Remember the surface
-                        // for `handle_response`; the clearance itself is
-                        // attached below, on rewritten and passthrough
-                        // requests alike.
-                        if host == "chatgpt.com" {
-                            self.last_turn_was_chatgpt_app = true;
-                        }
                     }
                     Err(e) => {
                         action = "rewrite-FAILED";
@@ -692,22 +684,26 @@ impl HttpHandler for GateHandler {
                 }
             }
         }
-        // Attach the captured clearance to EVERY intercepted chatgpt.com app
-        // request, not only the rewritten turns. The app has no cookie jar of
-        // its own, so its passthrough calls (settings, models, sentinel) go
-        // out bare through the engine's TLS stack and Cloudflare challenges
-        // those too - observed as 403 text/html across the whole warm-up
-        // sequence, which kills the app before it ever sends the chat turn
-        // that rewrite-only injection would have fixed. The browser survives
-        // the identical path because its own jar carries `cf_clearance` on
-        // every request to the host; this does for the app what the jar does
-        // for the browser. App-client only, gated on `peer_allowed` like the
-        // rewrite above, and `inject_cf_clearance` never clobbers a cookie
-        // the client sent itself, so browser traffic is untouched either way.
+        // EVERY intercepted chatgpt.com app request - not only the rewritten
+        // turns - arms challenge detection and carries the captured
+        // clearance. The app has no cookie jar of its own, so its passthrough
+        // calls (settings, models, sentinel) go out bare through the engine's
+        // TLS stack and Cloudflare challenges those too - observed as 403
+        // text/html across the whole warm-up sequence, which kills the app
+        // before it ever issues a rewritten turn. Scoping either half to the
+        // rewrite path deadlocks: no rewritten turn, so no solve webview, so
+        // no cookie, so the warm-up keeps 403ing. The browser survives the
+        // identical path because its own jar carries `cf_clearance` on every
+        // request to the host (and it can render a challenge itself, which is
+        // why Web is excluded here); this does for the app what the jar does
+        // for the browser. Gated on `peer_allowed` like the rewrite above,
+        // and `inject_cf_clearance` never clobbers a cookie the client sent
+        // itself.
         if host.as_deref() == Some("chatgpt.com")
             && client == crate::proxy::ClientClass::App
             && self.peer_allowed(ctx)
         {
+            self.last_turn_was_chatgpt_app = true;
             let cf = self.cf_clearance.borrow().clone();
             if !cf.is_empty() {
                 inject_cf_clearance(&mut req, &cf);
@@ -860,11 +856,12 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
 }
 
 /// Whether `res` is a Cloudflare managed challenge answering a chatgpt.com
-/// app turn. `last_turn_was_chatgpt_app` is the per-connection memo set by
-/// `handle_request` (see its field docs for the HTTP/2 caveat) - a response
-/// on any other surface never triggers, whatever headers it carries.
-/// `cf-mitigated` is Cloudflare's own marker that the body is its
-/// interstitial rather than the origin's answer.
+/// app request. `last_turn_was_chatgpt_app` is the per-request memo set by
+/// `handle_request` for intercepted chatgpt.com app requests, rewritten and
+/// passthrough alike (see its field docs) - a response on any other surface
+/// never triggers, whatever headers it carries. `cf-mitigated` is
+/// Cloudflare's own marker that the body is its interstitial rather than the
+/// origin's answer.
 fn cf_challenge_detected<T>(
     last_turn_was_chatgpt_app: bool,
     res: &hudsucker::hyper::Response<T>,
