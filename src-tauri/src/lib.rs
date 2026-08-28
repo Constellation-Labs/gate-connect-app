@@ -1351,6 +1351,8 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             .lock()
             .map(|v| v.clone())
             .unwrap_or_default();
+        let mut last_names = String::new();
+        let mut reported_unchanged = false;
         // Bounded, because the window can sit on a challenge it will never
         // clear: the poll would otherwise log a jar line every two seconds
         // for as long as the app runs. Generous enough for a person to read
@@ -1375,17 +1377,20 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             }
             let cookies = window.cookies_for_url(url.clone()).unwrap_or_default();
             // Which cookies the jar holds, by NAME only - the values are
-            // session credentials. Without this the window's behaviour is the
-            // only signal, and "no cf_clearance was ever minted" looks
-            // identical to "capture is broken", which cost a build to tell
-            // apart. `cf_clearance` absent while others are present means
-            // Cloudflare did not challenge this surface.
-            let names: Vec<&str> = cookies.iter().map(|c| c.name()).collect();
-            eprintln!(
-                "[gate] challenge-solve jar: {} cookie(s) [{}]",
-                names.len(),
-                names.join(",")
-            );
+            // session credentials. Without this, the window's behaviour is
+            // the only signal, and "Cloudflare never minted a cf_clearance"
+            // looks identical to "capture is broken", which cost a build to
+            // tell apart. Logged only when the set CHANGES: it is polled
+            // every two seconds and the jar is usually static.
+            let names = cookies
+                .iter()
+                .map(|c| c.name())
+                .collect::<Vec<_>>()
+                .join(",");
+            if names != last_names {
+                eprintln!("[gate] challenge-solve jar: [{names}]");
+                last_names = names;
+            }
             let captured = cookies
                 .into_iter()
                 .find(|c| c.name() == "cf_clearance")
@@ -1393,8 +1398,14 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             let Some(value) = captured else { continue };
             if value.is_empty() || value == challenged {
                 // A cookie identical to the one just challenged is not a
-                // solve; re-feeding it would loop the window open.
-                eprintln!("[gate] challenge-solve: cf_clearance present but unchanged, waiting");
+                // solve; re-feeding it would loop the window open. Said once
+                // - the poll re-reads the same jar until the deadline.
+                if !reported_unchanged {
+                    eprintln!(
+                        "[gate] challenge-solve: cf_clearance present but unchanged, waiting"
+                    );
+                    reported_unchanged = true;
+                }
                 continue;
             }
             if let Ok(mut last) = LAST_CF_CLEARANCE.lock() {

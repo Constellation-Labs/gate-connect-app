@@ -372,6 +372,10 @@ struct ChatgptTurn {
     /// or passed through to chatgpt.com (the user's own IP). The distinction
     /// the Cloudflare investigation turns on.
     rewritten: bool,
+    /// Whether a captured `cf_clearance` was merged into this request. Reads
+    /// as "our cookie was on the wire" without putting a credential-bearing
+    /// header anywhere near the log.
+    cf_injected: bool,
 }
 
 #[derive(Clone)]
@@ -395,15 +399,16 @@ struct GateHandler {
     /// injection site's comment for why passthrough needs it too).
     cf_clearance: watch::Receiver<Arc<str>>,
     /// What `handle_request` saw on an intercepted chatgpt.com request, kept
-    /// so `handle_response` can attribute an answer that arrives with no
-    /// host, path, or client context of its own. `None` on every other host.
+    /// so the response hook can name what it is answering: a response arrives
+    /// with no host, path, or client context of its own. `None` on every
+    /// other host.
     ///
-    /// Recorded for EVERY client class, not just the app: the open question
-    /// this exists to answer is why a browser's rewritten chat turn succeeds
-    /// from Gate's egress IP where the app's is challenged, and that is a
-    /// comparison between the two. Arming the solve webview stays app-only
-    /// (see [`cf_challenge_detected`]) - a browser can run an interstitial
-    /// itself and needs no help from us.
+    /// Recorded for every client class, not just the app. Arming the solve
+    /// webview stays app-only (see [`cf_challenge_detected`]) - a browser
+    /// runs its own interstitial - but keeping the browser's turns in the
+    /// memo is what let the app's challenged turn be compared against the
+    /// website's succeeding one on the same endpoint, which is how the
+    /// user-agent finding was made.
     ///
     /// Reliable per request: hudsucker clones the handler per request and
     /// runs both hooks on that clone (`internal.rs`: `service_fn` ->
@@ -795,12 +800,7 @@ impl HttpHandler for GateHandler {
         // itself.
         if host.as_deref() == Some("chatgpt.com") && self.peer_allowed(ctx) {
             let rewritten = action == "rewrite->gateway";
-            self.chatgpt_turn = Some(ChatgptTurn {
-                client,
-                method: req.method().clone(),
-                path: path.clone(),
-                rewritten,
-            });
+            let mut cf_injected = false;
             if client == crate::proxy::ClientClass::App {
                 // The solve webview wears this UA, or Cloudflare never
                 // challenges it and there is no cookie to capture. Recorded
@@ -831,8 +831,16 @@ impl HttpHandler for GateHandler {
                 let cf = self.cf_clearance.borrow().clone();
                 if !cf.is_empty() {
                     inject_cf_clearance(&mut req, &cf);
+                    cf_injected = true;
                 }
             }
+            self.chatgpt_turn = Some(ChatgptTurn {
+                client,
+                method: req.method().clone(),
+                path: path.clone(),
+                rewritten,
+                cf_injected,
+            });
         }
         if debug_log() {
             let auth = if req
@@ -858,42 +866,6 @@ impl HttpHandler for GateHandler {
                 host.as_deref().unwrap_or("?"),
                 path,
             );
-            // Which cookies ride a chatgpt.com request, by NAME only - the
-            // values are live session credentials (Cloudflare clearance,
-            // OpenAI session), and gate redacts this same header at rest for
-            // that reason.
-            //
-            // Printed as forwarded, i.e. AFTER any injection above, and for
-            // every client class, because the open question it exists to
-            // answer is a diff: the browser succeeds on a rewritten chat turn
-            // from Gate's egress IP where the app is challenged, and the
-            // browser is the one carrying a full Cloudflare set (`__cf_bm`,
-            // `_cfuvid`, `cf_clearance`) that Gate forwards verbatim, while
-            // the app carries only what we hold. Compare the App line against
-            // the Web line on the same endpoint and the difference is the
-            // answer.
-            if host.as_deref() == Some("chatgpt.com") {
-                let names: Vec<&str> = req
-                    .headers()
-                    .get(hudsucker::hyper::header::COOKIE)
-                    .and_then(|v| v.to_str().ok())
-                    .map(|cookies| {
-                        cookies
-                            .split(';')
-                            .filter_map(|c| c.split_once('=').map(|(name, _)| name.trim()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                eprintln!(
-                    "[gate-proxy]   cookies client={client:?} n={} [{}] ua={:?}",
-                    names.len(),
-                    names.join(","),
-                    req.headers()
-                        .get(hudsucker::hyper::header::USER_AGENT)
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("<absent>"),
-                );
-            }
             // Dump x-goog-* request headers as forwarded to the gateway.
             // The Code Assist project rides in `x-goog-user-project` (when
             // not in the JSON body); present here but missing at Google
@@ -935,28 +907,27 @@ impl HttpHandler for GateHandler {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
             );
-            // One correlated line per chatgpt.com response, because the two
-            // lines above cannot be paired with their request: responses
-            // arrive interleaved under HTTP/2 and the status line names
-            // neither path nor client, which made every previous capture a
-            // guess about which 403 belonged to what.
+            // One correlated line per chatgpt.com surface we handle. The
+            // status line above cannot be paired with its request - responses
+            // arrive interleaved under HTTP/2 and name neither path nor
+            // client - which made every capture a guess about which 403
+            // belonged to what.
             //
-            // Everything the Cloudflare question turns on is here:
-            //
-            // - `rewritten` says which egress answered - Gate's IP or the
-            //   user's - and `cf-ray`'s colo suffix corroborates it.
-            // - `cf-mitigated: challenge` is Cloudflare's own marker, relayed
-            //   by the gateway (`CHALLENGE_RELAY_HEADERS` in gate's
-            //   proxy-helpers.ts); its absence on a 403 means a plain WAF
-            //   block instead, which no captured cookie would fix.
-            // - `client` is what lets the browser's turn be compared against
-            //   the app's on the same endpoint - the open question.
-            // - `set-cookie` NAMES show whether Cloudflare is handing out a
-            //   rotated `__cf_bm`, which its own docs make load-bearing on
-            //   this host. Names only; the values are session credentials.
-            // - Gate's provenance headers separate a Cloudflare 403 relayed
-            //   through the gateway from one the gateway itself produced.
-            if let Some(turn) = self.chatgpt_turn.as_ref() {
+            // Scoped to the turns we route or inject into, so a page load's
+            // hundred asset fetches stay out of it. `rewritten` says which
+            // egress answered (Gate's IP or the user's) and `cf-ray`'s colo
+            // suffix corroborates it; `cf-injected` says whether our captured
+            // cookie rode along; `cf-mitigated` is Cloudflare's own marker,
+            // relayed by the gateway (`CHALLENGE_RELAY_HEADERS` in gate's
+            // proxy-helpers.ts), and its absence on a 403 means a plain WAF
+            // block that no cookie would fix. `set-cookie` is NAMES only -
+            // the values are session credentials. Gate's provenance headers
+            // separate a relayed Cloudflare 403 from one the gateway raised.
+            if let Some(turn) = self
+                .chatgpt_turn
+                .as_ref()
+                .filter(|t| t.rewritten || t.client == crate::proxy::ClientClass::App)
+            {
                 let header = |name: &str| {
                     res.headers()
                         .get(name)
@@ -973,13 +944,14 @@ impl HttpHandler for GateHandler {
                     .collect();
                 eprintln!(
                     "[gate-proxy]   <- {} for {} {} client={:?} rewritten={} \
-                     cf-mitigated={:?} cf-ray={:?} set-cookie=[{}] \
+                     cf-injected={} cf-mitigated={:?} cf-ray={:?} set-cookie=[{}] \
                      gate-error-source={:?} gate-upstream-status={:?}",
                     res.status(),
                     turn.method,
                     turn.path,
                     turn.client,
                     turn.rewritten,
+                    turn.cf_injected,
                     header("cf-mitigated"),
                     header("cf-ray"),
                     set_cookies.join(","),
@@ -1918,6 +1890,7 @@ mod tests {
             method: Method::POST,
             path: "/backend-api/f/conversation".into(),
             rewritten: true,
+            cf_injected: false,
         };
         let app = turn(ClientClass::App);
         let challenge = hudsucker::hyper::Response::builder()
