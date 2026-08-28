@@ -854,11 +854,12 @@ const BROWSER_UA_PREFIX: &str = "Mozilla/";
 /// True for a user-agent that is not a browser's own. Non-empty, and it does
 /// not open with `Mozilla/`.
 ///
-/// Wider than [`is_wrapped_browser_ua`] on purpose, and used only to *report*:
-/// an unrecognised client on the app's own host is worth one log line, and the
-/// net has to be wider than the classifier's for a rename to show up in it at
-/// all. Deliberately not a classification signal - plenty of third-party
-/// clients look exactly like this and they are ordinary.
+/// Wider than [`is_wrapped_browser_ua`] on purpose: the reporting net has to be
+/// wider than the classifier's for a rename to show up in it at all.
+/// Deliberately not a classification signal on its own - plenty of third-party
+/// clients look exactly like this and they are ordinary. The classifier only
+/// consumes it through [`is_wrapped_browser_ua`], which additionally demands
+/// the wrapped shape.
 pub(crate) fn is_non_browser_ua(ua: &str) -> bool {
     let ua = ua.trim_start();
     !ua.is_empty() && !ua.starts_with(BROWSER_UA_PREFIX)
