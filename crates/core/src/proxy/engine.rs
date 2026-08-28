@@ -334,6 +334,20 @@ fn init_tracing() {
     });
 }
 
+/// One intercepted chatgpt.com request, as `handle_request` saw it. Carried on
+/// the handler so the response hook can name what it is answering; see
+/// [`GateHandler::chatgpt_turn`].
+#[derive(Clone)]
+struct ChatgptTurn {
+    client: crate::proxy::ClientClass,
+    method: Method,
+    path: String,
+    /// Whether it was rewritten to the gateway (so it egresses from Gate's IP)
+    /// or passed through to chatgpt.com (the user's own IP). The distinction
+    /// the Cloudflare investigation turns on.
+    rewritten: bool,
+}
+
 #[derive(Clone)]
 struct GateHandler {
     /// Live-updatable set of enabled domains.
@@ -354,17 +368,22 @@ struct GateHandler {
     /// rewritten and passthrough alike (see [`inject_cf_clearance`] and the
     /// injection site's comment for why passthrough needs it too).
     cf_clearance: watch::Receiver<Arc<str>>,
-    /// Per-request memo: whether `handle_request` saw an intercepted
-    /// chatgpt.com app request - rewritten or passthrough. `handle_response`
-    /// reads it to attribute a `cf-mitigated: challenge` answer, which
-    /// arrives with no host context of its own. Not just rewritten turns:
-    /// the app's passthrough warm-up calls are challenged too, and they can
-    /// kill the app before it ever issues a rewritten turn, so they must be
-    /// able to open the solve webview as well. Reliable per request:
-    /// hudsucker clones the handler per request and runs both hooks on that
-    /// clone (`internal.rs`: `service_fn` -> `self.clone().proxy(req)`), so
-    /// the flag cannot leak across requests, HTTP/2 multiplexing included.
-    last_turn_was_chatgpt_app: bool,
+    /// What `handle_request` saw on an intercepted chatgpt.com request, kept
+    /// so `handle_response` can attribute an answer that arrives with no
+    /// host, path, or client context of its own. `None` on every other host.
+    ///
+    /// Recorded for EVERY client class, not just the app: the open question
+    /// this exists to answer is why a browser's rewritten chat turn succeeds
+    /// from Gate's egress IP where the app's is challenged, and that is a
+    /// comparison between the two. Arming the solve webview stays app-only
+    /// (see [`cf_challenge_detected`]) - a browser can run an interstitial
+    /// itself and needs no help from us.
+    ///
+    /// Reliable per request: hudsucker clones the handler per request and
+    /// runs both hooks on that clone (`internal.rs`: `service_fn` ->
+    /// `self.clone().proxy(req)`), so the memo cannot leak across requests,
+    /// HTTP/2 multiplexing included.
+    chatgpt_turn: Option<ChatgptTurn>,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
@@ -582,9 +601,8 @@ impl HttpHandler for GateHandler {
             req.headers_mut().remove("proxy-authorization");
             return req.into();
         }
-        // Fresh verdict per request; only the chatgpt.com app block below can
-        // set it.
-        self.last_turn_was_chatgpt_app = false;
+        // Fresh verdict per request; only the chatgpt.com block below sets it.
+        self.chatgpt_turn = None;
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
         // website, which shares their host (see `BROWSER_EXCLUDED_SLUGS`).
         // Classify before `decide` and hand it a narrowed rule set, so the
@@ -699,23 +717,27 @@ impl HttpHandler for GateHandler {
         // for the browser. Gated on `peer_allowed` like the rewrite above,
         // and `inject_cf_clearance` never clobbers a cookie the client sent
         // itself.
-        if host.as_deref() == Some("chatgpt.com")
-            && client == crate::proxy::ClientClass::App
-            && self.peer_allowed(ctx)
-        {
-            self.last_turn_was_chatgpt_app = true;
-            // The solve webview wears this UA, or Cloudflare never challenges
-            // it and there is no cookie to capture. See
-            // `record_chatgpt_app_user_agent`.
-            crate::proxy::record_chatgpt_app_user_agent(
-                req.headers()
-                    .get(hudsucker::hyper::header::USER_AGENT)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or_default(),
-            );
-            let cf = self.cf_clearance.borrow().clone();
-            if !cf.is_empty() {
-                inject_cf_clearance(&mut req, &cf);
+        if host.as_deref() == Some("chatgpt.com") && self.peer_allowed(ctx) {
+            self.chatgpt_turn = Some(ChatgptTurn {
+                client,
+                method: req.method().clone(),
+                path: path.clone(),
+                rewritten: action == "rewrite->gateway",
+            });
+            if client == crate::proxy::ClientClass::App {
+                // The solve webview wears this UA, or Cloudflare never
+                // challenges it and there is no cookie to capture. See
+                // `record_chatgpt_app_user_agent`.
+                crate::proxy::record_chatgpt_app_user_agent(
+                    req.headers()
+                        .get(hudsucker::hyper::header::USER_AGENT)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default(),
+                );
+                let cf = self.cf_clearance.borrow().clone();
+                if !cf.is_empty() {
+                    inject_cf_clearance(&mut req, &cf);
+                }
             }
         }
         if debug_log() {
@@ -769,9 +791,13 @@ impl HttpHandler for GateHandler {
                     })
                     .unwrap_or_default();
                 eprintln!(
-                    "[gate-proxy]   cookies client={client:?} n={} [{}]",
+                    "[gate-proxy]   cookies client={client:?} n={} [{}] ua={:?}",
                     names.len(),
-                    names.join(",")
+                    names.join(","),
+                    req.headers()
+                        .get(hudsucker::hyper::header::USER_AGENT)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("<absent>"),
                 );
             }
             // Dump x-goog-* request headers as forwarded to the gateway.
@@ -803,7 +829,7 @@ impl HttpHandler for GateHandler {
         // the app shell has no HTML/JS surface to run the interstitial, so
         // notify the GUI to open the one-time solve webview. Side-channel
         // notification only - the response is returned unchanged either way.
-        if cf_challenge_detected(self.last_turn_was_chatgpt_app, &res) {
+        if cf_challenge_detected(self.chatgpt_turn.as_ref(), &res) {
             crate::proxy::notify_cf_challenge_observer();
         }
         if debug_log() {
@@ -815,16 +841,28 @@ impl HttpHandler for GateHandler {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
             );
-            // On a chatgpt.com app turn, print the two Cloudflare markers the
-            // gateway relays (`CHALLENGE_RELAY_HEADERS` in gate's
-            // proxy-helpers.ts). This is what tells a managed challenge
-            // (`cf-mitigated: challenge`, which the solve webview fixes) apart
-            // from a plain WAF block (a 403 with no `cf-mitigated`, which a
-            // captured cookie would not), and confirms the header survived the
-            // gateway - the response line above shows neither. Printed only
-            // for the surface `cf_challenge_detected` keys on, so it stays
-            // quiet on every other host.
-            if self.last_turn_was_chatgpt_app {
+            // One correlated line per chatgpt.com response, because the two
+            // lines above cannot be paired with their request: responses
+            // arrive interleaved under HTTP/2 and the status line names
+            // neither path nor client, which made every previous capture a
+            // guess about which 403 belonged to what.
+            //
+            // Everything the Cloudflare question turns on is here:
+            //
+            // - `rewritten` says which egress answered - Gate's IP or the
+            //   user's - and `cf-ray`'s colo suffix corroborates it.
+            // - `cf-mitigated: challenge` is Cloudflare's own marker, relayed
+            //   by the gateway (`CHALLENGE_RELAY_HEADERS` in gate's
+            //   proxy-helpers.ts); its absence on a 403 means a plain WAF
+            //   block instead, which no captured cookie would fix.
+            // - `client` is what lets the browser's turn be compared against
+            //   the app's on the same endpoint - the open question.
+            // - `set-cookie` NAMES show whether Cloudflare is handing out a
+            //   rotated `__cf_bm`, which its own docs make load-bearing on
+            //   this host. Names only; the values are session credentials.
+            // - Gate's provenance headers separate a Cloudflare 403 relayed
+            //   through the gateway from one the gateway itself produced.
+            if let Some(turn) = self.chatgpt_turn.as_ref() {
                 let header = |name: &str| {
                     res.headers()
                         .get(name)
@@ -832,10 +870,27 @@ impl HttpHandler for GateHandler {
                         .unwrap_or("<absent>")
                         .to_owned()
                 };
+                let set_cookies: Vec<&str> = res
+                    .headers()
+                    .get_all(hudsucker::hyper::header::SET_COOKIE)
+                    .iter()
+                    .filter_map(|v| v.to_str().ok())
+                    .filter_map(|c| c.split_once('=').map(|(name, _)| name.trim()))
+                    .collect();
                 eprintln!(
-                    "[gate-proxy]   chatgpt-app turn: cf-mitigated={:?} cf-ray={:?}",
+                    "[gate-proxy]   <- {} for {} {} client={:?} rewritten={} \
+                     cf-mitigated={:?} cf-ray={:?} set-cookie=[{}] \
+                     gate-error-source={:?} gate-upstream-status={:?}",
+                    res.status(),
+                    turn.method,
+                    turn.path,
+                    turn.client,
+                    turn.rewritten,
                     header("cf-mitigated"),
                     header("cf-ray"),
+                    set_cookies.join(","),
+                    header("x-gate-error-source"),
+                    header("x-gate-upstream-status"),
                 );
             }
         }
@@ -897,17 +952,17 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
 }
 
 /// Whether `res` is a Cloudflare managed challenge answering a chatgpt.com
-/// app request. `last_turn_was_chatgpt_app` is the per-request memo set by
-/// `handle_request` for intercepted chatgpt.com app requests, rewritten and
-/// passthrough alike (see its field docs) - a response on any other surface
-/// never triggers, whatever headers it carries. `cf-mitigated` is
-/// Cloudflare's own marker that the body is its interstitial rather than the
-/// origin's answer.
+/// **app** request. `turn` is the per-request memo set by `handle_request`
+/// (see [`GateHandler::chatgpt_turn`]) - a response on any other host never
+/// triggers, whatever headers it carries, and neither does the browser's:
+/// it can run an interstitial itself, so opening our webview for it would be
+/// a window the user never needed. `cf-mitigated` is Cloudflare's own marker
+/// that the body is its interstitial rather than the origin's answer.
 fn cf_challenge_detected<T>(
-    last_turn_was_chatgpt_app: bool,
+    turn: Option<&ChatgptTurn>,
     res: &hudsucker::hyper::Response<T>,
 ) -> bool {
-    last_turn_was_chatgpt_app
+    turn.is_some_and(|t| t.client == crate::proxy::ClientClass::App)
         && res
             .headers()
             .get("cf-mitigated")
@@ -1424,7 +1479,7 @@ where
         token: token_rx,
         org: org_rx,
         cf_clearance: cf_clearance_rx,
-        last_turn_was_chatgpt_app: false,
+        chatgpt_turn: None,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
         claude_code_route: false,
@@ -1763,27 +1818,38 @@ mod tests {
 
     #[test]
     fn a_challenge_is_detected_only_on_a_chatgpt_app_turn() {
+        let turn = |client| ChatgptTurn {
+            client,
+            method: Method::POST,
+            path: "/backend-api/f/conversation".into(),
+            rewritten: true,
+        };
+        let app = turn(ClientClass::App);
         let challenge = hudsucker::hyper::Response::builder()
             .status(403)
             .header("cf-mitigated", "challenge")
             .body(())
             .unwrap();
-        assert!(cf_challenge_detected(true, &challenge));
-        // Same response on any other surface must not open the solve webview.
-        assert!(!cf_challenge_detected(false, &challenge));
+        assert!(cf_challenge_detected(Some(&app), &challenge));
+        // No memo means the response answered some other host.
+        assert!(!cf_challenge_detected(None, &challenge));
+        // The browser runs its own interstitial, so the same challenge on the
+        // website must not open a webview the user never needed.
+        let web = turn(ClientClass::Web);
+        assert!(!cf_challenge_detected(Some(&web), &challenge));
         // And an app turn answered normally (or with a non-challenge
         // mitigation) must not either.
         let plain = hudsucker::hyper::Response::builder()
             .status(200)
             .body(())
             .unwrap();
-        assert!(!cf_challenge_detected(true, &plain));
+        assert!(!cf_challenge_detected(Some(&app), &plain));
         let other = hudsucker::hyper::Response::builder()
             .status(403)
             .header("cf-mitigated", "block")
             .body(())
             .unwrap();
-        assert!(!cf_challenge_detected(true, &other));
+        assert!(!cf_challenge_detected(Some(&app), &other));
     }
 
     /// Serialize the tests that bind real listeners in [`STABLE_PORT_RANGE`].
