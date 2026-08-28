@@ -43,6 +43,7 @@ function pane(props: Partial<Parameters<typeof AppPane>[0]> = {}) {
   return (
     <AppPane
       name="Claude Code"
+      plan={null}
       isProtected
       onToggleProtected={() => {}}
       stats={stats}
@@ -272,6 +273,19 @@ describe("AppPane model selection", () => {
       }),
     );
     expect(within(card("Model selection")).getByText("Use any of 2 Gate models")).toBeTruthy();
+  });
+
+  it("shows the plan the gateway named, which AG-592 asks the tool detail for", () => {
+    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids: ["openai/gpt-5"] }, plan: "paid" }));
+    expect(within(card("Model selection")).getByText("Paid plan")).toBeTruthy();
+  });
+
+  it("says nothing about a plan nobody named", () => {
+    // It used to default to "free". A plan is what a reader acts on, by going to
+    // upgrade - and "Free" would send them to change something they may already
+    // have changed. Principle 6: no figure without a reading behind it.
+    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids: ["openai/gpt-5"] }, plan: null }));
+    expect(within(card("Model selection")).queryByText(/plan/i)).toBeNull();
   });
 
   it("says no model is chosen rather than drawing an empty row", () => {

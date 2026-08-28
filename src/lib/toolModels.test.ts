@@ -174,7 +174,9 @@ describe("adaptCredits", () => {
     const c = adaptCredits({} as never);
     expect(c.balanceCents).toBeNull();
     expect(c.paygEnabled).toBe(false);
-    expect(c.plan).toBe("free");
+    // Not "free": a plan nobody named is unknown, and "Free" is the one value a
+    // reader would act on - by upgrading something they may already have.
+    expect(c.plan).toBeNull();
   });
 
   it("keeps a zero balance as a reading", () => {

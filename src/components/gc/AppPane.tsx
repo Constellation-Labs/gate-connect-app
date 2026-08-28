@@ -87,6 +87,7 @@ export function AppPane({
   modelAttention,
   modelPending,
   credits,
+  plan,
   onAddCredits,
   activity,
   pending,
@@ -140,6 +141,8 @@ export function AppPane({
    *  no endpoint returns a Gate credit balance yet, and a dash reads as a value.
    *  See principle 6. */
   credits: string | null;
+  /** The org's plan, or null when the gateway did not name one (AG-592). */
+  plan: string | null;
   onAddCredits: () => void;
   activity: ActivityEntry[];
   /** The first reading for this tool has not landed. Draws skeletons rather than
@@ -219,6 +222,7 @@ export function AppPane({
         gateModel={gateModel}
         onChangeModel={onChangeModel}
         credits={credits}
+        plan={plan}
         onAddCredits={onAddCredits}
       />
 
@@ -293,6 +297,7 @@ function ModelSelection({
   gateModel,
   onChangeModel,
   credits,
+  plan,
   onAddCredits,
 }: {
   appName: string;
@@ -304,6 +309,8 @@ function ModelSelection({
   gateModel: GateModel | null;
   onChangeModel: () => void;
   credits: string | null;
+  /** The org's plan, or null when the gateway did not name one (AG-592). */
+  plan: string | null;
   onAddCredits: () => void;
 }) {
   // Under App default a chosen model is remembered, not served. Kept as one
@@ -437,6 +444,15 @@ function ModelSelection({
           icon={<Icon name="creditCard" size={16} />}
           action={{ label: "Add credits", onClick: onAddCredits, external: true }}
         >
+          {/* AG-592 asks the tool detail to show the plan alongside the
+           *  balance. Drawn only when the gateway named one: a plan is the
+           *  thing a reader would act on, by upgrading, and naming the wrong
+           *  one sends them to change something they may already have. */}
+          {plan && (
+            <p className="text-base-2xs leading-4 text-base-muted-foreground">
+              {plan.charAt(0).toUpperCase() + plan.slice(1)} plan
+            </p>
+          )}
           <p className="text-sm leading-5 text-neutral-900">
             <span className="text-neutral-600">Gate credits: </span>
             {credits ?? "N/A"}

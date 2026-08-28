@@ -280,7 +280,14 @@ export function useGateModels(enabled: boolean): {
 
 /** What the pane needs to know about this org's ability to pay for a Gate model. */
 export interface Credits {
-  plan: string;
+  /**
+   * The org's plan, or null when the gateway did not name one.
+   *
+   * Null rather than a default. It used to fall back to "free", which puts a
+   * plan on screen that nobody reported - and "Free" is the one value a reader
+   * would act on, by going to upgrade something they may already have upgraded.
+   */
+  plan: string | null;
   paygEnabled: boolean;
   /** Whole cents, or null when it could not be read. Null is not zero - see
    *  {@link formatCredits}. */
@@ -291,7 +298,7 @@ export interface Credits {
 
 export function adaptCredits(raw: Partial<Credits>): Credits {
   return {
-    plan: typeof raw?.plan === "string" ? raw.plan : "free",
+    plan: typeof raw?.plan === "string" && raw.plan.length > 0 ? raw.plan : null,
     paygEnabled: raw?.paygEnabled === true,
     balanceCents: typeof raw?.balanceCents === "number" ? raw.balanceCents : null,
     lowBalanceThresholdCents:

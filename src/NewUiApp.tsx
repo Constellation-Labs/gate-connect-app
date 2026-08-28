@@ -1841,6 +1841,8 @@ export function NewUiApp() {
           // Null when it could not be read, which the card draws as N/A rather
           // than $0.00 - a balance nobody reported is not a balance of nothing.
           credits={formatCredits(credits.credits)}
+          // Null when unread, which the row omits rather than guessing at.
+          plan={credits.credits?.plan ?? null}
           // No billing endpoint, but the row's own glyph promises an external
           // link, and the dashboard is where credits are actually bought.
           onAddCredits={() => openLink(GATE_DASHBOARD_URL)}
