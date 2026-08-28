@@ -184,18 +184,20 @@ export function Sidebar({
   return (
     <nav
       aria-label="Main"
-      // 250px fixed, sectioned the way the `sidebar` set (437:161, read
+      // 256px fixed, sectioned the way the `sidebar` set (437:161, read
       // 2026-08-28) draws it: a 12px-padded header and nav each closed by a
       // 1px `base/border` bottom edge, then the app groups on 12/16 padding.
       // The old single 16px pad and its `hr` are gone from the file.
       //
-      // 250 and not the 256 the `sidebar` component set (437:161) reports,
-      // which is the one place the component loses to a frame: `Settings /
-      // Dimensions` (191:79795) is the annotated spec, it draws the rail at 250
-      // beside a 774px content area, and 250 + 774 is the window. The frames
-      // that say 256 hang a 1030px row off a 1024px window and overflow it. At
-      // 250 the content column comes out at the drawn 726 after its 24px pads.
-      className="flex w-[250px] shrink-0 flex-col border-r border-base-border bg-base-card"
+      // 256 held the rail at 250 until 2026-08-28, on the strength of the
+      // `Settings / Dimensions` annotated spec (191:79795) drawing 250 + 774
+      // = 1024 while the then-current frames overflowed the window at 256.
+      // The flow frames have been redrawn since - `overview-loading`
+      // (228:85602) and `App/Claude-desktop` (228:89241) both fit 256 + 768
+      // = 1024 cleanly - and the Dimensions frame still carries its old
+      // pre-redraw internals, so it is the stale one now and the set's 256
+      // stands.
+      className="flex w-[256px] shrink-0 flex-col border-r border-base-border bg-base-card"
     >
       <div className="border-b border-base-border p-3">
         <OrgSwitcher name={orgName} onClick={onSwitchOrg} />
