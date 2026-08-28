@@ -24,18 +24,23 @@ import type { ActivityEntry, ActivitySecurity, ActivityStatus } from "../../lib/
 export interface GateModel {
   /** Model vendor, e.g. "anthropic". */
   vendor: string;
-  /** Canonical model id, rendered mono, e.g. `anthropic/claude-opus-5`. */
-  id: string;
-  /** Vendor mark, 16px. */
-  logo?: ReactNode;
-  /** How many further models are enabled alongside this one (AG-590).
+  /**
+   * Every enabled model, in the user's order, rendered mono.
    *
-   *  Drives only the heading's plural. Figma 228:89517 draws this card with one
-   *  model row and one action, so the set is not enumerated here - it is listed
-   *  where it matters, in the picker and in the confirmation before anything is
-   *  billed. The plural is the minimum that keeps the heading from naming one
-   *  model when several are enabled. */
-  alsoEnabled?: number;
+   * The whole set, not the first of it. Figma 228:89517 draws this card with a
+   * single model row, and following that drew a heading reading "Current Gate
+   * models" over exactly one id - which reads as the card having lost five of
+   * them, because that is indistinguishable from what it would look like if it
+   * had. A count in the heading is not worth a list the user cannot see.
+   *
+   * Listed the way the confirmation dialog lists a set (130:48278): stacked, and
+   * with no vendor mark once there is more than one, since a single glyph cannot
+   * stand for several vendors and repeating it per line would claim each id
+   * belongs to the first one's.
+   */
+  ids: string[];
+  /** Vendor mark, 16px. Drawn only for a set of one. */
+  logo?: ReactNode;
 }
 
 /**
@@ -343,7 +348,13 @@ function ModelSelection({
               // a row that otherwise looked identical. Saving a model therefore
               // appeared to do nothing at all. Naming it here makes the save
               // visible and points at the switch that would actually use it.
-              description={gateModel ? `Use ${gateModel.id}` : "Use a model selected in Gate AI"}
+              description={
+                !gateModel
+                  ? "Use a model selected in Gate AI"
+                  : gateModel.ids.length === 1
+                    ? `Use ${gateModel.ids[0]}`
+                    : `Use any of ${gateModel.ids.length} Gate models`
+              }
             />
           </div>
           {choice === null && (
@@ -379,7 +390,7 @@ function ModelSelection({
       {gateActive && (
         <>
           <p className="mt-4 text-base-xs text-base-muted-foreground">
-            {gateModel?.alsoEnabled ? "Current Gate models" : "Current Gate model"}
+            {(gateModel?.ids.length ?? 0) > 1 ? "Current Gate models" : "Current Gate model"}
           </p>
 
           <div className="mt-2">
@@ -389,13 +400,32 @@ function ModelSelection({
               </EmptyNote>
             ) : (
               <InfoRow
-                icon={gateModel.logo ?? <Icon name="cube" size={16} />}
+                // No mark for a set: see `GateModel.ids`.
+                icon={
+                  gateModel.ids.length === 1
+                    ? (gateModel.logo ?? <Icon name="cube" size={16} />)
+                    : undefined
+                }
                 action={{ label: "Change model", onClick: onChangeModel, disabled: busy }}
               >
-                <p className="text-base-2xs leading-4 text-base-muted-foreground">
-                  {gateModel.vendor}
-                </p>
-                <p className="font-mono text-sm leading-5 text-neutral-900">{gateModel.id}</p>
+                {gateModel.ids.length === 1 ? (
+                  <>
+                    <p className="text-base-2xs leading-4 text-base-muted-foreground">
+                      {gateModel.vendor}
+                    </p>
+                    <p className="font-mono text-sm leading-5 text-neutral-900">
+                      {gateModel.ids[0]}
+                    </p>
+                  </>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {gateModel.ids.map((id) => (
+                      <li key={id} className="truncate font-mono text-sm leading-5 text-neutral-900">
+                        {id}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </InfoRow>
             )}
           </div>
@@ -447,12 +477,14 @@ function ModelOption({
           : "border-base-border bg-base-card enabled:hover:bg-gray-50"
       }`}
     >
-      <span
-        aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
-      >
-        {icon}
-      </span>
+      {icon && (
+        <span
+          aria-hidden
+          className="flex size-8 shrink-0 items-center justify-center rounded-base border border-base-border text-neutral-700"
+        >
+          {icon}
+        </span>
+      )}
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium leading-5 text-neutral-900">
           {title}
@@ -473,7 +505,8 @@ function InfoRow({
   children,
   action,
 }: {
-  icon: ReactNode;
+  /** Omitted for a row about a set, where no one mark could stand for it. */
+  icon?: ReactNode;
   children: ReactNode;
   /** Omitted when there is nothing to do here, which removes the button rather
    *  than leaving a dead one on screen. */

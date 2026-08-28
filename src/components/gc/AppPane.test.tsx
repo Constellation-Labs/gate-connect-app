@@ -194,7 +194,7 @@ describe("AppPane counters and chart", () => {
  * produces a control that lies about what it does.
  */
 describe("AppPane model selection", () => {
-  const model = { vendor: "anthropic", id: "anthropic/claude-opus-5" };
+  const model = { vendor: "anthropic", ids: ["anthropic/claude-opus-5"] };
 
   it("selects neither option when no reading landed", () => {
     // Principle 2, in its purest form: an org that HAD switched to a Gate model
@@ -230,7 +230,7 @@ describe("AppPane model selection", () => {
 
     expect(within(card_).queryByText(/Current Gate model/i)).toBeNull();
     expect(within(card_).queryByRole("button", { name: "Change model" })).toBeNull();
-    expect(within(card_).getByText(`Use ${model.id}`)).toBeTruthy();
+    expect(within(card_).getByText(`Use ${model.ids[0]}`)).toBeTruthy();
   });
 
   it("reports it once Gate is the one serving", () => {
@@ -238,7 +238,40 @@ describe("AppPane model selection", () => {
     const card_ = card("Model selection");
 
     expect(within(card_).getByText(/Current Gate model/i)).toBeTruthy();
-    expect(within(card_).getByText(model.id)).toBeTruthy();
+    expect(within(card_).getByText(model.ids[0])).toBeTruthy();
+  });
+
+  it("lists every enabled model, not the first of them", () => {
+    // Reported from the running app: six models chosen, one drawn, and a heading
+    // reading "Current Gate models" above it. A plural heading over a single row
+    // is indistinguishable from the card having lost the other five.
+    const ids = [
+      "openai/gpt-5-6-terra",
+      "openai/gpt-5-6-sol",
+      "openai/gpt-5-6-luna",
+      "openai/gpt-5-3-codex",
+      "openai/gpt-5-2",
+      "openai/gpt-5-1",
+    ];
+    render(pane({ modelChoice: "gate", gateModel: { vendor: "openai", ids } }));
+    const card_ = card("Model selection");
+
+    for (const id of ids) expect(within(card_).getByText(id)).toBeTruthy();
+    expect(within(card_).getByText("Current Gate models")).toBeTruthy();
+    // One action for the set, not one per row.
+    expect(within(card_).getAllByRole("button", { name: "Change model" })).toHaveLength(1);
+  });
+
+  it("names the size of the set on the radio rather than one of its members", () => {
+    // "Use openai/gpt-5-6-terra" beside six enabled models says Gate will use
+    // that one, which is the opposite of what a set means.
+    render(
+      pane({
+        modelChoice: "app",
+        gateModel: { vendor: "openai", ids: ["openai/gpt-5-2", "openai/gpt-5-1"] },
+      }),
+    );
+    expect(within(card("Model selection")).getByText("Use any of 2 Gate models")).toBeTruthy();
   });
 
   it("says no model is chosen rather than drawing an empty row", () => {

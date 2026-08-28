@@ -1823,8 +1823,9 @@ export function NewUiApp() {
                 // is where a selected model gets looked up and told it is gone.
                 {
                   vendor: openModelId.split("/")[0],
-                  id: openModelId,
-                  alsoEnabled: openModelIds.length - 1,
+                  // The whole set: the card lists it rather than naming the
+                  // first and counting the rest in a heading nobody can expand.
+                  ids: openModelIds,
                 }
               : null
           }
