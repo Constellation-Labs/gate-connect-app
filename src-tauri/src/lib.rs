@@ -1315,7 +1315,18 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
     )
     .title("Verify ChatGPT connection")
     .inner_size(480.0, 640.0)
-    .center();
+    .center()
+    // Starts hidden. A non-interactive managed challenge is pure JavaScript
+    // and resolves on its own, so the common case should cost the user no
+    // window at all; the poll below reveals it only when a cookie has not
+    // appeared, which is the signature of the kind that wants a click.
+    //
+    // Hidden is not free: a window the platform considers invisible can have
+    // its rendering and timers throttled, and the challenge leans on exactly
+    // that work, so it may simply not complete while concealed. The reveal is
+    // the safety net either way - the worst case is that the window appears a
+    // few seconds later and behaves as it always did.
+    .visible(false);
     // Wear the app's own user-agent: a stock webview is waved through without
     // a challenge, and `cf_clearance` only exists as the result of one, so
     // without this there is nothing to capture. See
@@ -1339,7 +1350,10 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             return;
         }
     };
-    let _ = window.set_focus();
+    // Deliberately no `set_focus` here: the window is hidden, and the whole
+    // point of starting it that way is to not interrupt someone mid-sentence
+    // for a challenge that may well solve itself. Focus is taken at the
+    // reveal below, where a human genuinely has to act.
 
     // Poll for the cookie rather than hooking navigation: the challenge
     // round-trips within one page, so the cookie can land without any
@@ -1357,7 +1371,14 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
         // clear: the poll would otherwise log a jar line every two seconds
         // for as long as the app runs. Generous enough for a person to read
         // an interstitial and click through it.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(180);
+        // How long a non-interactive challenge gets to resolve unseen before
+        // we assume it wants a human. Short enough that an interactive one
+        // does not feel stalled, long enough to cover a page load plus the
+        // challenge round trip on a slow link.
+        let reveal_at = started + std::time::Duration::from_secs(8);
+        let mut revealed = false;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
             // Window gone: the user gave up (or the capture below already
@@ -1374,6 +1395,16 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
                 let _ = window.close();
                 gate_connect_core::proxy::cf_challenge_solve_finished(false);
                 return;
+            }
+            // Nothing captured while hidden: either the challenge wants a
+            // click, or being concealed stopped it running. Both are fixed by
+            // putting it in front of the user, and this is the one moment in
+            // the flow where taking focus is warranted.
+            if !revealed && std::time::Instant::now() >= reveal_at {
+                eprintln!("[gate] challenge-solve: not resolved on its own, showing the window");
+                let _ = window.show();
+                let _ = window.set_focus();
+                revealed = true;
             }
             let cookies = window.cookies_for_url(url.clone()).unwrap_or_default();
             // Which cookies the jar holds, by NAME only - the values are
