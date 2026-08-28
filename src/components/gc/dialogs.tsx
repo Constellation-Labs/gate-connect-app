@@ -697,12 +697,19 @@ export function ModelPickerDialog({
 
           {/* The frame reads "Showing 10 of 14 models・400+ in Gate AI". The third
            *  clause distinguishes what this tool may use from everything Gate
-           *  offers, and nothing filters per tool yet - so the two numbers would
-           *  be the same and saying it twice would imply a filter that is not
-           *  running. Reinstate it with AG-590's per-tool filtering. */}
+           *  offers, and it was held back while nothing filtered per tool: the
+           *  two numbers would have been the same, and saying it twice would
+           *  imply a filter that was not running. AG-590's compatibility filter
+           *  is that filter, so it says something now - and it is the honest
+           *  frame for the count beside it, which is about this app rather than
+           *  about Gate.
+           *
+           *  Dropped again under "Show anyway", where the list IS the catalogue
+           *  and the clause would restate the number it sits next to. */}
           <div className="flex items-start justify-between text-base-xs leading-4">
             <p className="text-base-muted-foreground">
               Showing {shown.length} of {showAll ? models.length : usable.length} models
+              {!showAll && setAside > 0 && `・${models.length} in Gate AI`}
             </p>
             {/* Figma 682:20043. It takes the slot the earlier frame drew a "3
              *  models selected" label in, and carries the same count - so the
@@ -838,10 +845,16 @@ export function ModelPickerDialog({
             </div>
           )}
 
-          {/* AG-590 asks that the set be stated before confirmation, and that
-           *  the cost consequence be stated with it. An empty draft says what is
-           *  needed instead: it is reachable now that "Unselect all" exists, and
-           *  a disabled Save with no sentence beside it is a dead end. */}
+          {/* AG-590 asks that the set be stated before confirmation, and that the
+           *  cost consequence be stated with it. The set is stated above - the
+           *  checked rows, and the count on "Unselect all" - so this carries the
+           *  consequence alone. It said the number a third time until the count
+           *  row gained one, and a figure repeated three ways reads as three
+           *  facts to reconcile rather than one.
+           *
+           *  An empty draft is the exception, and says what is needed instead:
+           *  it became reachable when "Unselect all" arrived, and a disabled Save
+           *  with no sentence beside it is a dead end. */}
           <ModalNote>
             {emptyDraft ? (
               <>
@@ -852,15 +865,10 @@ export function ModelPickerDialog({
                 </p>
               </>
             ) : (
-              <>
-                <p className="font-medium text-neutral-900">
-                  {draft.length === 1 ? "1 model enabled" : `${draft.length} models enabled`}
-                </p>
-                <p className="mt-1">
-                  Eligible requests may use any of them and consume Gate credits. Gate never
-                  uses a model you have not enabled.
-                </p>
-              </>
+              <p>
+                Eligible requests may use any model enabled here and consume Gate credits.
+                Gate never uses a model you have not enabled.
+              </p>
             )}
           </ModalNote>
         </>

@@ -323,7 +323,7 @@ test.describe("new UI model picker search and set", () => {
     const dialog = app.page.getByRole("dialog");
     await dialog.getByRole("checkbox", { name: "openai/gpt-5" }).click();
 
-    await expect(dialog.getByText("2 models enabled")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Unselect all (2)" })).toBeVisible();
     await dialog.getByRole("button", { name: "Save models" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -353,7 +353,7 @@ test.describe("new UI model picker search and set", () => {
     const only = dialog.getByRole("checkbox", { name: catalogue[0].id });
 
     await expect(only).toHaveAttribute("aria-checked", "true");
-    await expect(dialog.getByText("1 model enabled")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Unselect all (1)" })).toBeVisible();
 
     // The row clears, and the dialog neither pretends the set is fine nor leaves
     // a disabled button with nothing beside it.
@@ -620,7 +620,7 @@ test.describe("new UI model needs attention", () => {
     await expect(dialog.getByText("Unavailable")).toBeVisible();
 
     await dialog.getByRole("checkbox", { name: /retired-model/ }).click();
-    await expect(dialog.getByText("1 model enabled")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Unselect all (1)" })).toBeVisible();
   });
 });
 
