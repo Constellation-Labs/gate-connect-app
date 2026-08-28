@@ -184,8 +184,10 @@ export function Sidebar({
   return (
     <nav
       aria-label="Main"
-      // 250px fixed, 16px padding, a 24px rhythm between the switcher, the nav,
-      // the divider and the app groups, and a 1px `base/border` right edge.
+      // 250px fixed, sectioned the way the `sidebar` set (437:161, read
+      // 2026-08-28) draws it: a 12px-padded header and nav each closed by a
+      // 1px `base/border` bottom edge, then the app groups on 12/16 padding.
+      // The old single 16px pad and its `hr` are gone from the file.
       //
       // 250 and not the 256 the `sidebar` component set (437:161) reports,
       // which is the one place the component loses to a frame: `Settings /
@@ -193,79 +195,79 @@ export function Sidebar({
       // beside a 774px content area, and 250 + 774 is the window. The frames
       // that say 256 hang a 1030px row off a 1024px window and overflow it. At
       // 250 the content column comes out at the drawn 726 after its 24px pads.
-      className="flex w-[250px] shrink-0 flex-col border-r border-base-border bg-base-card p-4"
+      className="flex w-[250px] shrink-0 flex-col border-r border-base-border bg-base-card"
     >
-      <div className="flex flex-1 flex-col gap-6">
-        <div className="flex flex-col gap-6">
-          <OrgSwitcher name={orgName} onClick={onSwitchOrg} />
+      <div className="border-b border-base-border p-3">
+        <OrgSwitcher name={orgName} onClick={onSwitchOrg} />
+      </div>
 
-          <div className="flex flex-col gap-1">
-            <NavItem
-              icon="layoutDashboard"
-              label="Overview"
-              active={view.kind === "overview"}
-              onClick={() => onNavigate({ kind: "overview" })}
-            />
-            <NavItem
-              icon="settings2"
-              label="Settings"
-              active={view.kind === "settings"}
-              onClick={() => onNavigate({ kind: "settings" })}
-            />
-          </div>
+      <div className="flex flex-col gap-1 border-b border-base-border p-3">
+        <NavItem
+          icon="layoutDashboard"
+          label="Overview"
+          active={view.kind === "overview"}
+          onClick={() => onNavigate({ kind: "overview" })}
+        />
+        <NavItem
+          icon="settings2"
+          label="Settings"
+          active={view.kind === "settings"}
+          onClick={() => onNavigate({ kind: "settings" })}
+        />
+      </div>
 
-          <hr className="border-t border-base-border" />
+      {/* 16px between groups, 8px inside one - `sidebar-group-list`. The
+       * section scrolls on its own: the set draws a scroll indicator over this
+       * region and the header and nav stay put above it. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 py-4">
+        {master && <MasterCard master={master} />}
 
-          {master && <MasterCard master={master} />}
+        {inventory && inventory.kind !== "ok" ? (
+          <InventoryState
+            state={inventory}
+            onRefresh={onRefresh}
+            refreshing={refreshing}
+          />
+        ) : null}
 
-          {/* 12px between groups, 8px inside one - `apps-section` (113:16814),
-           * re-read 2026-08-21. */}
-          <div className="flex flex-col gap-3">
-            {inventory && inventory.kind !== "ok" ? (
-              <InventoryState
-                state={inventory}
-                onRefresh={onRefresh}
-                refreshing={refreshing}
-              />
-            ) : null}
-
-            {groups.map((group) => (
-              <div key={group.id} className="flex flex-col gap-2">
-                {group.label && (
-                  // Label and counter, which is all the drawn eyebrow holds. A
-                  // family switch lived here briefly when the Families pane was
-                  // retired; it was removed on 2026-08-27 as a third control
-                  // over the same traffic the row switches and the master switch
-                  // already cover, on a rail the design draws without one.
-                  <div className="flex items-baseline justify-between gap-2">
-                    <h2 className="truncate font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
-                      {group.label}
-                    </h2>
-                    {/* Protected over total, drawn on every eyebrow
-                     * (`Components / Sidenav`, read 2026-08-23). Derived from
-                     * the rows so it can never disagree with them. Not
-                     * uppercase: the drawn counter reads "1 of 2". */}
-                    <span className="shrink-0 font-mono text-base-xs font-medium leading-4 text-base-muted-foreground">
-                      {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
-                      {group.apps.length}
-                    </span>
-                  </div>
-                )}
-                <ul className="flex flex-col gap-1">
-                  {group.apps.map((app) => (
-                    <AppRow
-                      key={app.slug}
-                      app={app}
-                      selected={view.kind === "app" && view.slug === app.slug}
-                      onSelect={onSelectApp}
-                      onToggle={onToggleApp}
-                    />
-                  ))}
-                </ul>
+        {groups.map((group) => (
+          <div key={group.id} className="flex flex-col gap-2">
+            {group.label && (
+              // Label and counter, which is all the drawn eyebrow holds. A
+              // family switch lived here briefly when the Families pane was
+              // retired; it was removed on 2026-08-27 as a third control
+              // over the same traffic the row switches and the master switch
+              // already cover, on a rail the design draws without one.
+              <div className="flex items-baseline justify-between gap-2">
+                {/* 0.96px is the redrawn `mono/eyebrow` (8%), not the 1.2px
+                 * the shared `tracking-eyebrow` token still carries. */}
+                <h2 className="truncate font-mono text-base-xs font-medium uppercase leading-4 tracking-[0.96px] text-base-muted-foreground">
+                  {group.label}
+                </h2>
+                {/* Protected over total, drawn on every eyebrow
+                 * (`Components / Sidenav`, read 2026-08-23). Derived from
+                 * the rows so it can never disagree with them. Not
+                 * uppercase: the drawn counter is Geist Mono Regular and
+                 * reads "1 of 2". */}
+                <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
+                  {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
+                  {group.apps.length}
+                </span>
               </div>
-            ))}
+            )}
+            <ul className="flex flex-col gap-1">
+              {group.apps.map((app) => (
+                <AppRow
+                  key={app.slug}
+                  app={app}
+                  selected={view.kind === "app" && view.slug === app.slug}
+                  onSelect={onSelectApp}
+                  onToggle={onToggleApp}
+                />
+              ))}
+            </ul>
           </div>
-        </div>
+        ))}
       </div>
     </nav>
   );
@@ -276,7 +278,10 @@ function OrgSwitcher({ name, onClick }: { name: string; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center justify-between rounded-sm border border-base-input bg-base-card px-1.5 py-2 shadow-base-2xs"
+      // Radius 4 (`rounded-control`) on a `base/input` line, drawn by all three
+      // set variants. Padding is 6/8 per the settings and app variants; the
+      // overview one draws p-8 and loses 2 to 1.
+      className="flex w-full items-center justify-between rounded-control border border-base-input bg-base-card px-1.5 py-2 shadow-base-2xs"
     >
       <span className="flex items-center gap-2">
         <Icon name="usersRound" size={16} />
@@ -303,9 +308,14 @@ function NavItem({
       type="button"
       onClick={onClick}
       aria-current={active ? "page" : undefined}
-      className={`flex w-full items-center gap-2 rounded-sm px-1.5 py-2 text-base-xs font-medium leading-4 ${
+      // Radius 4, 6px uniform padding, and an active fill under `shadow/2xs` -
+      // the settings and app variants' reading (the overview one pads 8/6 and
+      // loses 2 to 1). Active text is `base/primary` on `base/background`,
+      // which is the same #f9fafb the set's `sidebar-primary-foreground`
+      // variable resolves to.
+      className={`flex w-full items-center gap-2 rounded-control p-1.5 text-base-xs font-medium leading-4 ${
         active
-          ? "border border-base-border bg-base-background text-base-primary shadow-base-xs"
+          ? "border border-base-border bg-base-background text-base-primary shadow-base-2xs"
           : "text-base-foreground"
       }`}
     >
@@ -449,8 +459,9 @@ function AppRow({
       // inside a 1px `base/border` under `shadow/xs`. That replaces the
       // neutral-100/200 pairing the retired row-hover variant drew. The border
       // is reserved while at rest so rows do not shift on hover. Drawn radius
-      // is 4px, which the radius scale maps onto `sm`; padding is 4px uniform.
-      className={`group flex w-full items-center gap-4 rounded-sm border p-1 ${
+      // is 4px (`rounded-control`); padding is the drawn `spacing/1-5`, 6px
+      // uniform.
+      className={`group flex w-full items-center gap-4 rounded-control border p-1.5 ${
         selected
           ? "border-base-border bg-base-background shadow-base-xs"
           : "border-transparent hover:border-base-border hover:bg-base-background"
@@ -464,7 +475,7 @@ function AppRow({
       >
         <span
           aria-hidden
-          className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
+          className="flex size-8 shrink-0 items-center justify-center rounded-control border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
           // `logo-wrapper` (408:14180): the overlay pair is 24%, not the 32%
           // this had.
           style={{
@@ -484,7 +495,7 @@ function AppRow({
           </span>
           <span className="truncate text-base-2xs font-medium leading-4">
             <span className={status.className}>{status.label}</span>
-            {suffix && <span className="text-neutral-500"> - {suffix}</span>}
+            {suffix && <span className="text-base-muted-foreground"> - {suffix}</span>}
           </span>
         </span>
       </button>
