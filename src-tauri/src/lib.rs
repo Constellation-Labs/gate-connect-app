@@ -1348,15 +1348,14 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
         "[gate] challenge-solve window opening as {}",
         app_user_agent.as_deref().unwrap_or("<platform default UA>")
     );
-    let window = match builder.build() {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("[gate] opening the challenge-solve window failed: {e}");
-            report_backend_error("cf_challenge_window", format!("{e}"));
-            gate_connect_core::proxy::cf_challenge_solve_finished(false);
-            return;
-        }
-    };
+    // Built for its side effect; the poll thread below re-resolves the window
+    // by label, so there is nothing to hold on to here.
+    if let Err(e) = builder.build() {
+        eprintln!("[gate] opening the challenge-solve window failed: {e}");
+        report_backend_error("cf_challenge_window", format!("{e}"));
+        gate_connect_core::proxy::cf_challenge_solve_finished(false);
+        return;
+    }
     // Deliberately no `set_focus` here: the window is hidden, and the whole
     // point of starting it that way is to not interrupt someone mid-sentence
     // for a challenge that may well solve itself. Focus is taken at the

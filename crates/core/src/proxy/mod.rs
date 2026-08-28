@@ -244,9 +244,17 @@ pub fn cf_challenge_solve_finished(captured: bool) {
 static CHATGPT_APP_USER_AGENT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Remember the app's user-agent for the solve webview. Called by the engine
-/// on intercepted chatgpt.com app requests; empty values are ignored.
+/// on intercepted chatgpt.com app requests.
+///
+/// Only browser-shaped shell UAs are kept. The app emits several: the shell's
+/// `CodexBrowser Mozilla/5.0 …` and the native agent's `Codex Desktop/…`,
+/// which is not a browser string at all. Recording the last one seen let the
+/// agent's UA win a race and opened a solve webview claiming to be a CLI -
+/// observed 2026-08-28, and precisely the client shape Cloudflare is least
+/// likely to hand a `cf_clearance` to. The shell is the surface being
+/// impersonated, so it is the only one worth recording.
 pub(crate) fn record_chatgpt_app_user_agent(user_agent: &str) {
-    if user_agent.is_empty() {
+    if browser_ua_without_product_token(user_agent).is_none() {
         return;
     }
     if let Ok(mut held) = CHATGPT_APP_USER_AGENT.lock() {
@@ -1751,6 +1759,23 @@ mod tests {
                 "{ua}"
             );
         }
+    }
+
+    #[test]
+    fn only_the_browser_shaped_shell_user_agent_is_offered_to_the_solve_webview() {
+        // The app emits both, and the webview must impersonate the shell: a
+        // window claiming to be a CLI agent is the client shape Cloudflare is
+        // least likely to hand a cf_clearance to. Both strings captured
+        // 2026-08-28 from one session, where the agent's UA won the race and
+        // the solve window opened wearing it.
+        let shell = "CodexBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                     (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+        record_chatgpt_app_user_agent(shell);
+        record_chatgpt_app_user_agent(
+            "Codex Desktop/0.150.0-alpha.12.2 (Windows 10.0.26200; x86_64) unknown",
+        );
+        record_chatgpt_app_user_agent("");
+        assert_eq!(chatgpt_app_user_agent().as_deref(), Some(shell));
     }
 
     #[test]
