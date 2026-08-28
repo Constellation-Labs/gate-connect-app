@@ -1706,25 +1706,19 @@ fn install_id() -> Result<String, String> {
 
 /// What to call this machine: the person's own name for it, or the hostname.
 ///
-/// Resolved here rather than in the window so there is one answer to show and one
-/// place that decides what an absent override means. The stored value stays an
-/// `Option` (see `preferences::device_name`), so clearing the name goes back to
-/// following the hostname instead of freezing today's.
+/// Resolved in core (`preferences::device_name`) so one place decides what an
+/// absent override means. The stored value stays an `Option` (see
+/// `preferences::device_name`), so clearing the name goes back to following the
+/// hostname instead of freezing today's.
+///
+/// The *display* answer, and the hostname fallback is the reason it is not also
+/// the wire answer: `preferences::device_label` sends nothing at all for a
+/// device the user never named, so a person who skipped the naming step does not
+/// have their hostname on every request. The window and the wire agree wherever
+/// there is a name to agree on, and the Settings row says which case it is in.
 #[tauri::command]
 fn device_name() -> String {
-    gate_connect_core::preferences::load()
-        .device_name
-        .unwrap_or_else(host_name)
-}
-
-/// The machine's own name, or a neutral stand-in.
-///
-/// "This device" rather than "Unknown": the string is a label in a row, not a
-/// diagnostic, and a machine whose hostname cannot be read is still the machine
-/// the user is looking at. The diagnostics report is where an unreadable value
-/// has to say so.
-fn host_name() -> String {
-    sysinfo::System::host_name().unwrap_or_else(|| "This device".to_string())
+    gate_connect_core::preferences::device_name()
 }
 
 /// Rename this device, or clear the name and follow the hostname again.

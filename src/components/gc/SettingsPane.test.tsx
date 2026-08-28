@@ -174,6 +174,33 @@ describe("buildSettingsSections", () => {
   });
 });
 
+describe("what the Device row says about the wire", () => {
+  const deviceRow = (deviceNamed?: boolean) =>
+    sections({ deviceNamed })
+      .find((s) => s.id === "device")!
+      .rows.find((r) => r.id === "device")!;
+
+  it("tells a named device its name is sent", () => {
+    // The name rides every proxied request as `x-gate-device-name`. The row is
+    // where the user finds that out; principle 1 is that reassurance comes from
+    // saying what goes over the wire, not from omitting it.
+    expect(deviceRow(true).description).toMatch(/[Ss]ent with this device's traffic/);
+  });
+
+  it("tells an unnamed device that nothing is sent", () => {
+    // The value shown is the hostname, and the hostname is a display fallback
+    // that stops at the window - skipping the naming step really does skip it.
+    // Saying "sent" here would be a false claim about the user's traffic.
+    expect(deviceRow(false).description).toMatch(/^Not sent\./);
+  });
+
+  it("says nothing until it knows which is true", () => {
+    // Undefined is the preferences read still in flight. Either sentence would
+    // be a guess, and both are claims about where a person's machine name goes.
+    expect(deviceRow(undefined).description).toBeUndefined();
+  });
+});
+
 describe("buildSettingsSections: rows with nothing behind them", () => {
   // The alternative is a control that visibly does nothing, which the user
   // cannot tell from broken. Regressing this looks like "add a noop handler".

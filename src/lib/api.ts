@@ -544,7 +544,12 @@ export interface Preferences {
   share_diagnostics_recorded: boolean;
   /** The person's own name for this machine, or null when it follows the
    * hostname. Read {@link deviceName} to display it - this is the override, not
-   * the resolved value. */
+   * the resolved value.
+   *
+   * Also decides whether this device's traffic is labelled at all: only a name
+   * the user chose is sent as `x-gate-device-name`. Null means the hostname is a
+   * display fallback and goes no further, so skipping the naming step really
+   * does skip it. */
   device_name: string | null;
 }
 
@@ -558,12 +563,25 @@ export const getPreferences = () => invoke<Preferences>("get_preferences");
 export const installId = () => invoke<string>("install_id");
 
 /** What to call this machine: the stored name, or the hostname when there is
- *  none. Resolved by the backend so there is one answer, not two. */
+ *  none. Resolved by the backend so there is one answer, not two.
+ *
+ *  A display answer. What goes on the wire is the stored name only - see
+ *  {@link Preferences.device_name}. */
 export const deviceName = () => invoke<string>("device_name");
 
 /** Rename this device. An empty or blank name clears the override, which puts
  *  the row back to following the hostname. */
 export const setDeviceName = (name: string) => invoke<void>("set_device_name", { name });
+
+/** How long a device name may be, matching `preferences::DEVICE_NAME_MAX_BYTES`.
+ *
+ *  The backend truncates anyway - the name is stamped on every proxied request,
+ *  and an unbounded header block is a request the gateway refuses. This caps the
+ *  inputs so the user sees the limit while typing instead of discovering it
+ *  after saving. ASCII in practice, so a `maxLength` in UTF-16 units is the same
+ *  number; a name of 128 multi-byte characters is cut server-side, which is the
+ *  correct place for the byte count to be decided. */
+export const DEVICE_NAME_MAX_LENGTH = 128;
 
 export const setRoutingHealthNotifications = (enabled: boolean) =>
   invoke<void>("set_routing_health_notifications", { enabled });

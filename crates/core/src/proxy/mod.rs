@@ -589,6 +589,15 @@ pub(crate) const GATE_INSTALL_ID_HEADER: &str = "x-gate-install-id";
 /// Which tool sent the request, when we can tell. Feeds the per-tool series in
 /// the activity view.
 pub(crate) const GATE_CLIENT_HEADER: &str = "x-gate-client";
+/// What the user calls this machine, so the gateway can show traffic under a
+/// human name rather than an install id. Self-asserted and non-secret, like the
+/// two above.
+///
+/// Sent only when the user actually named the device. There is no hostname
+/// fallback on the wire - see `preferences::device_label` - because onboarding
+/// offers to skip naming, and a hostname usually carries a person's name. An
+/// unnamed device is attributed by its install id alone.
+pub(crate) const GATE_DEVICE_NAME_HEADER: &str = "x-gate-device-name";
 /// The models the user chose for this tool, comma-separated and in preference
 /// order (AG-588 / AG-590).
 ///
@@ -602,7 +611,7 @@ pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 ///
 /// Deliberately infallible. These headers exist so a dashboard can say "this
 /// machine, this tool"; the request they ride on is carrying the user's actual
-/// work. Anything we can't determine - no install id, an id the header codec
+/// work. Anything we can't determine - no install id, a value the header codec
 /// rejects, an unrecognised client - is simply left off, and the gateway
 /// records that request as unattributed exactly as it did before attribution
 /// existed. Failing a request to protect a chart would be the wrong trade.
@@ -612,7 +621,7 @@ pub(crate) const GATE_MODEL_HEADER: &str = "x-gate-model";
 /// serve something the user did not choose.
 ///
 /// **The model header is not attribution and does not follow its rules.** The
-/// other two are labels: leaving one off costs a chart a data point. This one
+/// other three are labels: leaving one off costs a chart a data point. This one
 /// decides what the user is billed for, so it is stamped only from stored intent
 /// and only when a tool was positively identified. An unrecognised tool sends no
 /// override at all rather than a best guess, because guessing here would serve -
@@ -623,6 +632,16 @@ fn inject_attribution(headers: &mut HeaderMap) {
         if let Ok(value) = HeaderValue::from_str(id) {
             headers.insert(HeaderName::from_static(GATE_INSTALL_ID_HEADER), value);
         }
+    }
+    // Absent unless the user named this device, and a name the header codec
+    // rejects (a rename can be any Unicode) is left off rather than escaped, per
+    // the rule above. The length is bounded at the preferences layer, so this
+    // cannot be the header that blows the block size.
+    headers.remove(GATE_DEVICE_NAME_HEADER);
+    if let Some(value) =
+        crate::preferences::device_label().and_then(|name| HeaderValue::from_str(&name).ok())
+    {
+        headers.insert(HeaderName::from_static(GATE_DEVICE_NAME_HEADER), value);
     }
     let tool = client_tool(headers);
     headers.remove(GATE_CLIENT_HEADER);
@@ -685,6 +704,9 @@ pub mod testing {
 
     /// The header name, so a test asserts on the same constant the code sends.
     pub const GATE_MODEL_HEADER_NAME: &str = super::GATE_MODEL_HEADER;
+
+    /// Same, for the device-name label.
+    pub const GATE_DEVICE_NAME_HEADER_NAME: &str = super::GATE_DEVICE_NAME_HEADER;
 
     pub fn inject_attribution_for_tests(headers: &mut HeaderMap) {
         super::inject_attribution(headers);
