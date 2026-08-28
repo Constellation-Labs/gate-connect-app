@@ -314,50 +314,6 @@ pub(crate) fn responses_ws_downgrade() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_WS_DOWNGRADE").is_some())
 }
 
-/// EXPERIMENT, default-OFF: drop the app shell's product token from the
-/// `user-agent` on chatgpt.com turns we forward through the gateway, leaving
-/// the browser-shaped remainder the token was prefixed to.
-///
-/// What this is testing. Measured 2026-08-28 on one machine, same endpoint,
-/// same gateway, same Cloudflare datacenter (`cf-ray` colo `IAD`):
-/// `POST /backend-api/f/conversation` from the website answered 200 carrying a
-/// single `oai-did` cookie, while the same path from the app answered
-/// `cf-mitigated: challenge` carrying MORE cookies, including a freshly solved
-/// `cf_clearance`. So neither the cookie nor Gate's egress IP explains the
-/// difference, and the app's user-agent is character-for-character the
-/// website's with `CodexBrowser ` prefixed. This flag exists to confirm or
-/// refute that the prefix is what the challenge rule keys on.
-///
-/// Default-OFF is not a formality. Leaving it on ships a request that names a
-/// different client than the one that sent it, to a third party's bot
-/// management, which is a product decision rather than a bugfix: it is fragile
-/// (Cloudflare fingerprints far more than this header, so a result today says
-/// nothing about next month) and it erases the signal the vendor uses to tell
-/// its own clients apart. Do not promote it to default without deciding that
-/// deliberately.
-pub(crate) fn strip_app_product_token() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        let enabled = std::env::var_os("GATE_PROXY_STRIP_APP_UA").is_some();
-        // Announced once, the first time a chatgpt.com app turn consults it,
-        // because whether the experiment was live is not otherwise visible on
-        // the wire: the strip rewrites a header we no longer log, so a run
-        // where the flag was simply absent from the shell reads exactly like
-        // a run where it was set. That ambiguity made a green result
-        // uninterpretable - it could not be told from the cookie doing all
-        // the work on its own.
-        eprintln!(
-            "[gate-proxy] chatgpt app user-agent strip is {}",
-            if enabled {
-                "ON (GATE_PROXY_STRIP_APP_UA set)"
-            } else {
-                "off"
-            }
-        );
-        enabled
-    })
-}
-
 /// Wire hudsucker's internal `tracing` events (TLS handshake / HTTP2 errors)
 /// to stderr once, when debug logging is on. Without this, MITM failures
 /// inside hudsucker are silent. Overridable via `RUST_LOG`. Idempotent.
@@ -830,11 +786,27 @@ impl HttpHandler for GateHandler {
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or_default(),
                 );
-                // Experiment, scoped to the turns that egress from Gate -
-                // where the challenge fires and where the website's
-                // equivalent request succeeds. See
-                // `strip_app_product_token`.
-                if rewritten && strip_app_product_token() {
+
+/// drop the app shell's product token from the
+/// `user-agent` on chatgpt.com turns we forward through the gateway, leaving
+/// the browser-shaped remainder the token was prefixed to.
+///
+/// What this is testing. Measured 2026-08-28 on one machine, same endpoint,
+/// same gateway, same Cloudflare datacenter (`cf-ray` colo `IAD`):
+/// `POST /backend-api/f/conversation` from the website answered 200 carrying a
+/// single `oai-did` cookie, while the same path from the app answered
+/// `cf-mitigated: challenge` carrying MORE cookies, including a freshly solved
+/// `cf_clearance`. So neither the cookie nor Gate's egress IP explains the
+/// difference, and the app's user-agent is character-for-character the
+/// website's with `CodexBrowser ` prefixed. This flag exists to confirm or
+/// refute that the prefix is what the challenge rule keys on.
+///
+/// Careful: leaving it on ships a request that names a
+/// different client than the one that sent it, to a third party's bot
+/// management, it is fragile (Cloudflare fingerprints far more than this header, so a result today says
+/// nothing about next month) and it erases the signal the vendor uses to tell
+/// its own clients apart.
+                if rewritten  {
                     let stripped = req
                         .headers()
                         .get(hudsucker::hyper::header::USER_AGENT)
