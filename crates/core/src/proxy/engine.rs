@@ -742,6 +742,38 @@ impl HttpHandler for GateHandler {
                 host.as_deref().unwrap_or("?"),
                 path,
             );
+            // Which cookies ride a chatgpt.com request, by NAME only - the
+            // values are live session credentials (Cloudflare clearance,
+            // OpenAI session), and gate redacts this same header at rest for
+            // that reason.
+            //
+            // Printed as forwarded, i.e. AFTER any injection above, and for
+            // every client class, because the open question it exists to
+            // answer is a diff: the browser succeeds on a rewritten chat turn
+            // from Gate's egress IP where the app is challenged, and the
+            // browser is the one carrying a full Cloudflare set (`__cf_bm`,
+            // `_cfuvid`, `cf_clearance`) that Gate forwards verbatim, while
+            // the app carries only what we hold. Compare the App line against
+            // the Web line on the same endpoint and the difference is the
+            // answer.
+            if host.as_deref() == Some("chatgpt.com") {
+                let names: Vec<&str> = req
+                    .headers()
+                    .get(hudsucker::hyper::header::COOKIE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|cookies| {
+                        cookies
+                            .split(';')
+                            .filter_map(|c| c.split_once('=').map(|(name, _)| name.trim()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                eprintln!(
+                    "[gate-proxy]   cookies client={client:?} n={} [{}]",
+                    names.len(),
+                    names.join(",")
+                );
+            }
             // Dump x-goog-* request headers as forwarded to the gateway.
             // The Code Assist project rides in `x-goog-user-project` (when
             // not in the JSON body); present here but missing at Google
