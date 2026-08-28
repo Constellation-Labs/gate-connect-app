@@ -759,6 +759,29 @@ impl HttpHandler for GateHandler {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
             );
+            // On a chatgpt.com app turn, print the two Cloudflare markers the
+            // gateway relays (`CHALLENGE_RELAY_HEADERS` in gate's
+            // proxy-helpers.ts). This is what tells a managed challenge
+            // (`cf-mitigated: challenge`, which the solve webview fixes) apart
+            // from a plain WAF block (a 403 with no `cf-mitigated`, which a
+            // captured cookie would not), and confirms the header survived the
+            // gateway - the response line above shows neither. Printed only
+            // for the surface `cf_challenge_detected` keys on, so it stays
+            // quiet on every other host.
+            if self.last_turn_was_chatgpt_app {
+                let header = |name: &str| {
+                    res.headers()
+                        .get(name)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("<absent>")
+                        .to_owned()
+                };
+                eprintln!(
+                    "[gate-proxy]   chatgpt-app turn: cf-mitigated={:?} cf-ray={:?}",
+                    header("cf-mitigated"),
+                    header("cf-ray"),
+                );
+            }
         }
         res
     }
