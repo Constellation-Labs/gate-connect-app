@@ -314,6 +314,32 @@ pub(crate) fn responses_ws_downgrade() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_WS_DOWNGRADE").is_some())
 }
 
+/// EXPERIMENT, default-OFF: drop the app shell's product token from the
+/// `user-agent` on chatgpt.com turns we forward through the gateway, leaving
+/// the browser-shaped remainder the token was prefixed to.
+///
+/// What this is testing. Measured 2026-08-28 on one machine, same endpoint,
+/// same gateway, same Cloudflare datacenter (`cf-ray` colo `IAD`):
+/// `POST /backend-api/f/conversation` from the website answered 200 carrying a
+/// single `oai-did` cookie, while the same path from the app answered
+/// `cf-mitigated: challenge` carrying MORE cookies, including a freshly solved
+/// `cf_clearance`. So neither the cookie nor Gate's egress IP explains the
+/// difference, and the app's user-agent is character-for-character the
+/// website's with `CodexBrowser ` prefixed. This flag exists to confirm or
+/// refute that the prefix is what the challenge rule keys on.
+///
+/// Default-OFF is not a formality. Leaving it on ships a request that names a
+/// different client than the one that sent it, to a third party's bot
+/// management, which is a product decision rather than a bugfix: it is fragile
+/// (Cloudflare fingerprints far more than this header, so a result today says
+/// nothing about next month) and it erases the signal the vendor uses to tell
+/// its own clients apart. Do not promote it to default without deciding that
+/// deliberately.
+pub(crate) fn strip_app_product_token() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_STRIP_APP_UA").is_some())
+}
+
 /// Wire hudsucker's internal `tracing` events (TLS handshake / HTTP2 errors)
 /// to stderr once, when debug logging is on. Without this, MITM failures
 /// inside hudsucker are silent. Overridable via `RUST_LOG`. Idempotent.
@@ -718,22 +744,40 @@ impl HttpHandler for GateHandler {
         // and `inject_cf_clearance` never clobbers a cookie the client sent
         // itself.
         if host.as_deref() == Some("chatgpt.com") && self.peer_allowed(ctx) {
+            let rewritten = action == "rewrite->gateway";
             self.chatgpt_turn = Some(ChatgptTurn {
                 client,
                 method: req.method().clone(),
                 path: path.clone(),
-                rewritten: action == "rewrite->gateway",
+                rewritten,
             });
             if client == crate::proxy::ClientClass::App {
                 // The solve webview wears this UA, or Cloudflare never
-                // challenges it and there is no cookie to capture. See
-                // `record_chatgpt_app_user_agent`.
+                // challenges it and there is no cookie to capture. Recorded
+                // BEFORE any strip below, so the webview keeps wearing what
+                // the app actually sends.
                 crate::proxy::record_chatgpt_app_user_agent(
                     req.headers()
                         .get(hudsucker::hyper::header::USER_AGENT)
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or_default(),
                 );
+                // Experiment, scoped to the turns that egress from Gate -
+                // where the challenge fires and where the website's
+                // equivalent request succeeds. See
+                // `strip_app_product_token`.
+                if rewritten && strip_app_product_token() {
+                    let stripped = req
+                        .headers()
+                        .get(hudsucker::hyper::header::USER_AGENT)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(browser_ua_without_product_token)
+                        .and_then(|ua| HeaderValue::from_str(ua).ok());
+                    if let Some(ua) = stripped {
+                        req.headers_mut()
+                            .insert(hudsucker::hyper::header::USER_AGENT, ua);
+                    }
+                }
                 let cf = self.cf_clearance.borrow().clone();
                 if !cf.is_empty() {
                     inject_cf_clearance(&mut req, &cf);
@@ -968,6 +1012,23 @@ fn cf_challenge_detected<T>(
             .get("cf-mitigated")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.eq_ignore_ascii_case("challenge"))
+}
+
+/// The browser-shaped remainder of an app shell's user-agent, or `None` when
+/// there is no product token to drop.
+///
+/// App shells prefix their own token to an otherwise ordinary browser UA
+/// (`CodexBrowser Mozilla/5.0 …`), so the remainder starting at `Mozilla/` is
+/// exactly what the vendor's own website sends. Returns `None` for a UA that
+/// already starts with `Mozilla/` (a real browser - nothing to strip) and for
+/// anything with no `Mozilla/` token at all (`Codex Desktop/…`, a CLI agent:
+/// there is no browser string hiding inside it to fall back to).
+fn browser_ua_without_product_token(user_agent: &str) -> Option<&str> {
+    if user_agent.starts_with("Mozilla/") {
+        return None;
+    }
+    let (token, rest) = user_agent.split_once(' ')?;
+    (!token.is_empty() && rest.starts_with("Mozilla/")).then_some(rest)
 }
 
 /// Merge a `cf_clearance` value into the request's `cookie` header without
@@ -1850,6 +1911,36 @@ mod tests {
             .body(())
             .unwrap();
         assert!(!cf_challenge_detected(Some(&app), &other));
+    }
+
+    #[test]
+    fn stripping_the_product_token_leaves_the_website_user_agent() {
+        // Both strings captured 2026-08-28 from one machine, one session: the
+        // app's rewritten chat turn was challenged and the website's was
+        // answered 200. The app's UA is the website's with a token prefixed,
+        // which is the whole basis of the experiment - assert it, so a future
+        // build where that stops holding fails here rather than silently
+        // forwarding a UA that matches nothing.
+        let app = "CodexBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                   (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+        let website = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                       (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+        assert_eq!(browser_ua_without_product_token(app), Some(website));
+        // A real browser has no token to drop.
+        assert_eq!(browser_ua_without_product_token(website), None);
+        // Neither do the non-browser-shaped agents: there is no browser string
+        // hiding inside them, so leaving them alone is the only option.
+        assert_eq!(
+            browser_ua_without_product_token(
+                "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)"
+            ),
+            None
+        );
+        assert_eq!(
+            browser_ua_without_product_token("codex-mcp-client/0.148.0-alpha.9"),
+            None
+        );
+        assert_eq!(browser_ua_without_product_token(""), None);
     }
 
     /// Serialize the tests that bind real listeners in [`STABLE_PORT_RANGE`].
