@@ -70,20 +70,58 @@ fn the_users_name_for_the_machine_is_sent() {
 }
 
 #[test]
-fn an_unnamed_device_still_sends_a_label() {
-    // No override means the hostname (or its neutral stand-in), never an absent
-    // header: the gateway's per-device view is the feature, and most users never
-    // rename. The exact value is the machine's own, so assert presence and that
-    // it matches what the Settings row would show.
+fn an_unnamed_device_sends_no_label() {
+    // Skipping the naming step means skipping the header. The Settings row still
+    // shows the hostname, but the hostname is a display fallback and stops
+    // there: it usually carries a person's name, and a skip that sent it anyway
+    // would mean nothing. Such a device is attributed by its install id alone.
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _tmp = TempHome::set();
 
     let mut h = headers();
     inject_attribution_for_tests(&mut h);
 
-    let sent = device_header(&h);
-    assert_eq!(sent, Some(preferences::device_name()));
-    assert!(!sent.expect("present").is_empty());
+    assert_eq!(device_header(&h), None);
+    // The window still has something to show, which is the whole reason the two
+    // reads are separate functions.
+    assert!(!preferences::device_name().is_empty());
+}
+
+#[test]
+fn clearing_a_name_stops_sending_it() {
+    // The other half of the skip: a user who named the device and then deleted
+    // the text is asking to stop labelling their traffic, and must not be left
+    // sending the last name they typed.
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _tmp = TempHome::set();
+    preferences::set_device_name("Studio Mac").expect("save");
+
+    let mut named = headers();
+    inject_attribution_for_tests(&mut named);
+    assert_eq!(device_header(&named).as_deref(), Some("Studio Mac"));
+
+    preferences::set_device_name("   ").expect("save");
+
+    let mut cleared = headers();
+    inject_attribution_for_tests(&mut cleared);
+    assert_eq!(device_header(&cleared), None);
+}
+
+#[test]
+fn an_enormous_name_cannot_blow_the_header_block() {
+    // A name is free text and both inputs accept a paste, so the bound is the
+    // code's job. Truncated rather than dropped: the request must still be
+    // attributed, and it must still be a request the gateway will accept.
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _tmp = TempHome::set();
+    preferences::set_device_name(&"M".repeat(64 * 1024)).expect("save");
+
+    let mut h = headers();
+    inject_attribution_for_tests(&mut h);
+
+    let sent = device_header(&h).expect("still attributed");
+    assert!(sent.len() <= 128, "sent {} bytes", sent.len());
+    assert!(sent.starts_with("MMMM"));
 }
 
 #[test]

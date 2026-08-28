@@ -82,6 +82,7 @@ export interface SettingsSection {
  */
 export function buildSettingsSections({
   deviceName,
+  deviceNamed,
   installId,
   loginId,
   plan,
@@ -119,6 +120,15 @@ export function buildSettingsSections({
   onReviewReset,
 }: {
   deviceName: string;
+  /**
+   * Whether that name is the user's own, rather than the hostname standing in.
+   *
+   * Not cosmetic: it decides which sentence the row tells the user about their
+   * traffic. Undefined until the preferences read lands, which withholds the
+   * sentence rather than guessing at it - the same call `preferencesUnavailable`
+   * makes for the two switches below.
+   */
+  deviceNamed?: boolean;
   installId: string;
   loginId: string;
   plan: string;
@@ -201,6 +211,19 @@ export function buildSettingsSections({
           icon: "monitor",
           label: "Device",
           value: deviceName,
+          // Says where the name goes, and it has to say two different things,
+          // because a named device and an unnamed one send different requests.
+          // A name the user chose rides every proxied request as
+          // `x-gate-device-name`; the hostname shown for a device that was never
+          // named is a display fallback and goes nowhere. Undefined while the
+          // preferences read is still in flight: which sentence is true is not
+          // yet known, and the wrong one is a claim about the user's traffic.
+          description:
+            deviceNamed === undefined
+              ? undefined
+              : deviceNamed
+                ? "Sent with this device's traffic so activity can be grouped by device."
+                : "Not sent. Name this device to group its activity by device.",
           action: onRenameDevice
             ? { label: "Rename device", onClick: onRenameDevice }
             : undefined,

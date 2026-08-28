@@ -1706,11 +1706,16 @@ fn install_id() -> Result<String, String> {
 
 /// What to call this machine: the person's own name for it, or the hostname.
 ///
-/// Resolved in core (`preferences::device_name`) so the window shows the same
-/// answer the proxy stamps on `x-gate-device-name`, and one place decides what
-/// an absent override means. The stored value stays an `Option` (see
+/// Resolved in core (`preferences::device_name`) so one place decides what an
+/// absent override means. The stored value stays an `Option` (see
 /// `preferences::device_name`), so clearing the name goes back to following the
 /// hostname instead of freezing today's.
+///
+/// The *display* answer, and the hostname fallback is the reason it is not also
+/// the wire answer: `preferences::device_label` sends nothing at all for a
+/// device the user never named, so a person who skipped the naming step does not
+/// have their hostname on every request. The window and the wire agree wherever
+/// there is a name to agree on, and the Settings row says which case it is in.
 #[tauri::command]
 fn device_name() -> String {
     gate_connect_core::preferences::device_name()

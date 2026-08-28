@@ -410,6 +410,7 @@ export function ModalField({
   mono,
   placeholder,
   inputRef,
+  maxLength,
 }: {
   label: string;
   value: string;
@@ -420,6 +421,8 @@ export function ModalField({
   mono?: boolean;
   placeholder?: string;
   inputRef?: RefObject<HTMLInputElement>;
+  /** Stops a paste the backend would only truncate. */
+  maxLength?: number;
 }) {
   const id = useId();
   return (
@@ -437,6 +440,7 @@ export function ModalField({
           value={value}
           readOnly={readOnly}
           placeholder={placeholder}
+          maxLength={maxLength}
           onChange={(e) => onChange?.(e.target.value)}
           className={`h-9 w-full rounded-sm border pl-3 text-sm placeholder:text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
             readOnly

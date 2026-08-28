@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
 import { Skeleton } from "./base";
+import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
 import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
 import type { PillTone } from "./Modal";
 import {
@@ -24,7 +25,10 @@ import {
  * Settings flows: rename device, replace API key, disconnect Gate, reset, and
  * the diagnostics report.
  *
- * Presentational throughout: nothing here talks to `lib/api`.
+ * Presentational throughout: nothing here calls `lib/api`. The one value it
+ * takes from there is `DEVICE_NAME_MAX_LENGTH`, a number the backend owns -
+ * a second copy of it here would be a limit that could drift out of step
+ * with the one that actually truncates.
  */
 
 export interface DialogApp {
@@ -985,6 +989,7 @@ export function RenameDeviceDialog({
         label="New device name"
         value={newName}
         onChange={onNewNameChange}
+        maxLength={DEVICE_NAME_MAX_LENGTH}
         inputRef={field}
       />
     </Modal>

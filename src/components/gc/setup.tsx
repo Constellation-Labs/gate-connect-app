@@ -1,5 +1,6 @@
 import { useId } from "react";
 import type { ReactNode } from "react";
+import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
 import { ConstellationHexMark } from "./ConstellationHexMark";
 import { Icon } from "./Icon";
 import { ModalOption } from "./Modal";
@@ -267,6 +268,7 @@ function TextField({
   mono,
   type = "text",
   clearable,
+  maxLength,
 }: {
   label: string;
   value: string;
@@ -276,6 +278,8 @@ function TextField({
   type?: "text" | "password";
   /** Draws the frame's trailing clear button once there is something to clear. */
   clearable?: boolean;
+  /** Stops a paste the backend would only truncate. */
+  maxLength?: number;
 }) {
   const id = useId();
   return (
@@ -289,6 +293,7 @@ function TextField({
           type={type}
           value={value}
           placeholder={placeholder}
+          maxLength={maxLength}
           onChange={(e) => onChange(e.target.value)}
           className={`h-11 w-full rounded-md border border-base-input bg-base-background px-3 text-sm text-base-foreground shadow-base-xs placeholder:text-base-muted-foreground focus:border-base-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
             mono ? "font-mono" : ""
@@ -544,6 +549,7 @@ export function NameDevicePane({
           value={value}
           onChange={onChange}
           placeholder="Enter a device name"
+          maxLength={DEVICE_NAME_MAX_LENGTH}
           clearable
         />
         <PrimaryButton onClick={onContinue} busy={busy} disabled={!value.trim()} arrow>
