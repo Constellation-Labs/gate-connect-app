@@ -1,9 +1,9 @@
 # Gate Connect security notes: the loopback trust boundary
 
-Status: accepted posture, written down as part of addressing the whole-app
-security review (`review-whole-app-security.md`, findings H1/H2/M2). This is
-the reference for what the loopback listeners do and do not defend against,
-so the next review starts from the decision instead of rediscovering it.
+Status: accepted posture, written down as part of addressing an internal
+whole-app security review (findings H1/H2/M2 there). This is the reference
+for what the loopback listeners do and do not defend against, so the next
+review starts from the decision instead of rediscovering it.
 
 ## What the listeners are
 
