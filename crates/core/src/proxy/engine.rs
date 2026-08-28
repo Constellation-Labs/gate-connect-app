@@ -32,8 +32,9 @@ use tokio::sync::{oneshot, watch};
 
 use crate::proxy::cert_authority::GateCa;
 use crate::proxy::{
-    browser_ua_without_product_token, classify_client, decide, rules_for_client,
-    should_decline_upgrade, should_intercept_host, Decision, ProxyDomain,
+    browser_ua_without_product_token, classify_client, decide, domain_claiming_host,
+    is_non_browser_ua, rules_for_client, should_decline_upgrade, should_intercept_host,
+    ClientClass, Decision, ProxyDomain,
 };
 
 /// Everything the engine needs to run one session. The account + CA are
@@ -404,9 +405,9 @@ struct GateHandler {
     /// `should_intercept`. Shared across handler clones, so an engine run
     /// reports it once instead of once per connection.
     anthropic_unselected_logged: Arc<AtomicBool>,
-    /// One-shot latch for the unrecognised-chatgpt-client line. Same sharing
-    /// and same reason as `anthropic_unselected_logged`.
-    chatgpt_unclassified_logged: Arc<AtomicBool>,
+    /// One-shot latch for the "unrecognised app shell" line in
+    /// `handle_request`, shared across handler clones for the same reason.
+    app_shell_unrecognised_logged: Arc<AtomicBool>,
 }
 
 impl GateHandler {
@@ -464,52 +465,68 @@ impl GateHandler {
         );
     }
 
-    /// Report an authenticated chatgpt.com request whose client we could not
-    /// identify.
+    /// Report a ChatGPT request from a client that is neither the website nor
+    /// anything `classify_client` recognises as the app.
     ///
-    /// Outside `debug_log`, for the same reason as the line above: the wire is
-    /// the only witness. The app's Cloudflare handling - challenge detection,
-    /// the captured-cookie injection, the user-agent experiment - is all gated
-    /// on [`crate::proxy::ClientClass::App`], so a build whose signals we stop
-    /// recognising does not fail loudly, it silently stops being handled, and
-    /// the result is indistinguishable from "Cloudflare did not challenge us".
-    /// That already happened once: the vendor renamed the app shell's UA token
-    /// and the fallback quietly matched nothing.
+    /// Outside `debug_log`, for the reason above: the wire is the only witness.
+    /// The app shell's user-agent has been renamed once already
+    /// (`ChatGPTBrowser` -> `CodexBrowser`), and the roster it was matched
+    /// against went stale without a single symptom - the app simply classified
+    /// as `Unknown`, which routes identically, so nothing looked wrong. This
+    /// line is what makes the next rename arrive as a message naming the new
+    /// token instead of as app-only handling quietly ceasing to apply.
     ///
-    /// Keyed on an `authorization` header because that is what separates a
-    /// first-party client from the site's own asset and telemetry fetches,
-    /// which are legitimately unclassified and would otherwise bury this.
-    /// Latched to one line per engine run - a third-party client calling
-    /// chatgpt.com under its own bearer is an ordinary, harmless reason to see
-    /// this once, and a per-request warning would become the noise that stops
-    /// a real regression being read.
-    fn warn_if_chatgpt_client_is_unrecognised<T>(
+    /// The trigger is deliberately wider than the classifier's own
+    /// [`super::browser_ua_without_product_token`]: any non-browser user-agent
+    /// will do, so a rename that also drops the wrapped `Mozilla/` still
+    /// surfaces. That width is why it is latched to one line per engine run -
+    /// an unrecognised non-browser client here is the ordinary, harmless state
+    /// for anything third-party, and a per-request warning would be noise.
+    fn warn_if_an_app_shell_is_unrecognised(
         &self,
+        client: ClientClass,
+        rules: &[ProxyDomain],
         host: Option<&str>,
-        client: crate::proxy::ClientClass,
-        req: &Request<T>,
+        ua: &str,
     ) {
-        if host != Some("chatgpt.com")
-            || client != crate::proxy::ClientClass::Unknown
-            || !req
-                .headers()
-                .contains_key(hudsucker::hyper::header::AUTHORIZATION)
+        if !app_shell_is_unrecognised(client, rules, host, ua)
             || self
-                .chatgpt_unclassified_logged
+                .app_shell_unrecognised_logged
                 .swap(true, Ordering::Relaxed)
         {
             return;
         }
         eprintln!(
-            "[gate-proxy] authenticated chatgpt.com request from an unrecognised client \
-             (ua={:?}). If this is the ChatGPT/Codex app, its client signals have changed \
-             and its Cloudflare handling is inactive - see `classify_client`.",
-            req.headers()
-                .get(hudsucker::hyper::header::USER_AGENT)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("<absent>"),
+            "[gate-proxy] {} request from an unrecognised client: user-agent {ua:?} \
+             classifies as Unknown. Expected for third-party clients; if this is the \
+             ChatGPT/Codex app, its shell has been renamed again and app-only handling \
+             no longer applies to it (see `classify_client`).",
+            host.unwrap_or("?")
         );
     }
+}
+
+/// The gating condition of `warn_if_an_app_shell_is_unrecognised`, kept free of
+/// the latch and the printing so it can be tested: an `Unknown` classification,
+/// a non-browser user-agent, and a host claimed by the `chatgpt-apps` entry.
+///
+/// Checked against the unnarrowed live rules, and [`domain_claiming_host`]
+/// includes disabled entries: this reports on a client, not on a route. Note
+/// the reach that buys is bounded by `should_intercept` - a request only gets
+/// here when some enabled entry MITMs the host - so with every chatgpt.com
+/// entry off the warning cannot fire; the disabled-entry width matters when a
+/// sibling entry on the same host is the one switched on.
+fn app_shell_is_unrecognised(
+    client: ClientClass,
+    rules: &[ProxyDomain],
+    host: Option<&str>,
+    ua: &str,
+) -> bool {
+    client == ClientClass::Unknown
+        && is_non_browser_ua(ua)
+        && host
+            .and_then(|h| domain_claiming_host(rules, h))
+            .is_some_and(|d| d.slug == "chatgpt-apps")
 }
 
 /// The rule set a connection's requests must be decided against: the live
@@ -659,23 +676,30 @@ impl HttpHandler for GateHandler {
         // Fresh verdict per request; only the chatgpt.com block below sets it.
         self.chatgpt_turn = None;
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
-        // website, which shares their host (see `BROWSER_EXCLUDED_SLUGS`).
+        // website, which shares their host (see `BROWSER_ROUTED`).
         // Classify before `decide` and hand it a narrowed rule set, so the
         // client filter composes with the `enabled` one instead of adding a
         // second kind of veto inside the routing decision.
-        let client = classify_client(|name| req.headers().get(name).and_then(|v| v.to_str().ok()));
+        let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+        let client = classify_client(header);
+        let ua = header("user-agent").unwrap_or_default();
         let host = req.uri().host().map(str::to_owned);
         let live_rules = self.rules.borrow().clone();
         let rules = rules_for_client(
             &route_rules(&live_rules, self.claude_code_route, host.as_deref()),
             client,
         );
+        // Gated like the rewrite below: a plain-HTTP request from a non-owner
+        // local peer reaches here without passing `should_intercept`, and its
+        // user-agent does not belong in the owner's log.
+        if self.peer_allowed(ctx) {
+            self.warn_if_an_app_shell_is_unrecognised(client, &live_rules, host.as_deref(), ua);
+        }
         // Path only, never `path_and_query()`: some providers pass the API key
         // as a URL query param (e.g. Google `...?key=...`), and this value is
         // written to the debug log below. `Uri::path()` excludes the query, so
         // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
-        self.warn_if_chatgpt_client_is_unrecognised(host.as_deref(), client, &req);
         let mut action = "passthrough";
         // A protocol upgrade is never rewritten to the gateway. This is the end
         // state, not a holding position: Gate does not carry upgraded protocols,
@@ -1552,7 +1576,7 @@ where
         peer_verdict: None,
         claude_code_route: false,
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
-        chatgpt_unclassified_logged: Arc::new(AtomicBool::new(false)),
+        app_shell_unrecognised_logged: Arc::new(AtomicBool::new(false)),
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -1782,6 +1806,48 @@ mod tests {
             .header("sec-websocket-version", "13")
             .body(())
             .unwrap()
+    }
+
+    #[test]
+    fn the_app_shell_drift_warning_gates_on_all_three_signals() {
+        // The latch and the printing live on the handler; this is the condition
+        // that decides whether a request is a drift worth naming.
+        let rules = crate::proxy::default_domains();
+        let shell = "SomeNewShell Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+        assert!(app_shell_is_unrecognised(
+            ClientClass::Unknown,
+            &rules,
+            Some("chatgpt.com"),
+            shell
+        ));
+        // Each leg of the condition, dropped one at a time.
+        assert!(
+            !app_shell_is_unrecognised(ClientClass::App, &rules, Some("chatgpt.com"), shell),
+            "a recognised app is not a drift"
+        );
+        assert!(
+            !app_shell_is_unrecognised(
+                ClientClass::Unknown,
+                &rules,
+                Some("chatgpt.com"),
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            ),
+            "the browser's own user-agent is the other ordinary state"
+        );
+        assert!(
+            !app_shell_is_unrecognised(ClientClass::Unknown, &rules, Some("chatgpt.com"), ""),
+            "an absent user-agent names nothing"
+        );
+        assert!(
+            !app_shell_is_unrecognised(ClientClass::Unknown, &rules, Some("api.openai.com"), shell),
+            "only the app's own host is watched"
+        );
+        assert!(!app_shell_is_unrecognised(
+            ClientClass::Unknown,
+            &rules,
+            None,
+            shell
+        ));
     }
 
     #[test]
