@@ -315,6 +315,15 @@ export function formatCredits(credits: Credits | null): string | null {
  * Gate model turns on spending. Not polled: it changes as requests are served,
  * but a timer here would spend the gateway's address-keyed rate limit on a
  * number that only matters when someone is looking at it.
+ *
+ * Re-read when the window becomes visible, which is that same argument followed
+ * through. The balance moves while the user is elsewhere - running the very tool
+ * this pane is about - so a figure read once when the pane opened is stale by
+ * the time they come back to check what it cost. It showed `$9.99 available`
+ * after eight cents had been spent, which is not a stale number so much as a
+ * wrong one: principle 6 asks that a figure on screen be something Gate actually
+ * measured, and this is the screen someone opens to see spending. Costs nothing
+ * while the window is hidden, and one read on return.
  */
 export function useCredits(
   enabled: boolean,
@@ -348,6 +357,15 @@ export function useCredits(
   }, [credential]);
 
   useEffect(reload, [reload]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const onVisible = () => {
+      if (!document.hidden) reload();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [enabled, reload]);
 
   return { credits, failure, reload };
 }
