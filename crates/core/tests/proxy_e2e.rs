@@ -1051,6 +1051,7 @@ async fn crl_endpoint_serves_a_der_crl() {
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
             org_id: String::new(),
+            billing_mode: Default::default(),
             domains: default_domains(),
             ca_cert_pem,
             ca_key_pem,
