@@ -350,8 +350,9 @@ struct GateHandler {
     org: watch::Receiver<Arc<str>>,
     /// Live-updatable chatgpt.com `cf_clearance` cookie, captured by the GUI's
     /// challenge-solve webview. Empty string means "none held"; merged into
-    /// the `cookie` header on rewritten chatgpt.com app turns (see
-    /// [`inject_cf_clearance`]).
+    /// the `cookie` header on every intercepted chatgpt.com app request,
+    /// rewritten and passthrough alike (see [`inject_cf_clearance`] and the
+    /// injection site's comment for why passthrough needs it too).
     cf_clearance: watch::Receiver<Arc<str>>,
     /// Per-connection memo: whether the request this connection last rewrote
     /// targeted the chatgpt.com app surface. `handle_response` reads it to
@@ -675,14 +676,11 @@ impl HttpHandler for GateHandler {
                         // chatgpt.com app turns egress from the gateway's IP
                         // with no browsing cookie, so Cloudflare may answer
                         // them with a managed challenge. Remember the surface
-                        // for `handle_response` and attach whatever clearance
-                        // the GUI's solve webview has captured.
+                        // for `handle_response`; the clearance itself is
+                        // attached below, on rewritten and passthrough
+                        // requests alike.
                         if host == "chatgpt.com" {
                             self.last_turn_was_chatgpt_app = true;
-                            let cf = self.cf_clearance.borrow().clone();
-                            if !cf.is_empty() {
-                                inject_cf_clearance(&mut req, &cf);
-                            }
                         }
                     }
                     Err(e) => {
@@ -692,6 +690,27 @@ impl HttpHandler for GateHandler {
                         }
                     }
                 }
+            }
+        }
+        // Attach the captured clearance to EVERY intercepted chatgpt.com app
+        // request, not only the rewritten turns. The app has no cookie jar of
+        // its own, so its passthrough calls (settings, models, sentinel) go
+        // out bare through the engine's TLS stack and Cloudflare challenges
+        // those too - observed as 403 text/html across the whole warm-up
+        // sequence, which kills the app before it ever sends the chat turn
+        // that rewrite-only injection would have fixed. The browser survives
+        // the identical path because its own jar carries `cf_clearance` on
+        // every request to the host; this does for the app what the jar does
+        // for the browser. App-client only, gated on `peer_allowed` like the
+        // rewrite above, and `inject_cf_clearance` never clobbers a cookie
+        // the client sent itself, so browser traffic is untouched either way.
+        if host.as_deref() == Some("chatgpt.com")
+            && client == crate::proxy::ClientClass::App
+            && self.peer_allowed(ctx)
+        {
+            let cf = self.cf_clearance.borrow().clone();
+            if !cf.is_empty() {
+                inject_cf_clearance(&mut req, &cf);
             }
         }
         if debug_log() {
@@ -1588,7 +1607,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only the tests name this type; the handler infers it from `classify_client`.
     use crate::proxy::ClientClass;
 
     /// Cowork's turn, as captured: a GET on a path the `chatgpt` entry claims,
