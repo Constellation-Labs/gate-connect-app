@@ -1335,7 +1335,7 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
         Err(e) => {
             eprintln!("[gate] opening the challenge-solve window failed: {e}");
             report_backend_error("cf_challenge_window", format!("{e}"));
-            gate_connect_core::proxy::cf_challenge_solve_finished();
+            gate_connect_core::proxy::cf_challenge_solve_finished(false);
             return;
         }
     };
@@ -1351,14 +1351,28 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             .lock()
             .map(|v| v.clone())
             .unwrap_or_default();
+        // Bounded, because the window can sit on a challenge it will never
+        // clear: the poll would otherwise log a jar line every two seconds
+        // for as long as the app runs. Generous enough for a person to read
+        // an interstitial and click through it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
             // Window gone: the user gave up (or the capture below already
-            // closed it). Clear the latch so the next challenge re-opens.
+            // closed it). Release the latch, reporting no capture so the
+            // cooldown keeps the next challenge from reopening immediately.
             let Some(window) = app.get_webview_window(CF_CHALLENGE_WINDOW) else {
-                gate_connect_core::proxy::cf_challenge_solve_finished();
+                gate_connect_core::proxy::cf_challenge_solve_finished(false);
                 return;
             };
+            if std::time::Instant::now() >= deadline {
+                eprintln!(
+                    "[gate] challenge-solve: no cf_clearance after 3 minutes, giving up on this attempt"
+                );
+                let _ = window.close();
+                gate_connect_core::proxy::cf_challenge_solve_finished(false);
+                return;
+            }
             let cookies = window.cookies_for_url(url.clone()).unwrap_or_default();
             // Which cookies the jar holds, by NAME only - the values are
             // session credentials. Without this the window's behaviour is the
@@ -1389,7 +1403,7 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
             gate_connect_core::proxy::manager().refresh_cf_clearance(&value);
             eprintln!("[gate] challenge-solve: captured cf_clearance, fed to the engine");
             let _ = window.close();
-            gate_connect_core::proxy::cf_challenge_solve_finished();
+            gate_connect_core::proxy::cf_challenge_solve_finished(true);
             return;
         }
     });

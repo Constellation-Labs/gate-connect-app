@@ -32,8 +32,8 @@ use tokio::sync::{oneshot, watch};
 
 use crate::proxy::cert_authority::GateCa;
 use crate::proxy::{
-    classify_client, decide, rules_for_client, should_decline_upgrade, should_intercept_host,
-    Decision, ProxyDomain,
+    browser_ua_without_product_token, classify_client, decide, rules_for_client,
+    should_decline_upgrade, should_intercept_host, Decision, ProxyDomain,
 };
 
 /// Everything the engine needs to run one session. The account + CA are
@@ -425,6 +425,9 @@ struct GateHandler {
     /// `should_intercept`. Shared across handler clones, so an engine run
     /// reports it once instead of once per connection.
     anthropic_unselected_logged: Arc<AtomicBool>,
+    /// One-shot latch for the unrecognised-chatgpt-client line. Same sharing
+    /// and same reason as `anthropic_unselected_logged`.
+    chatgpt_unclassified_logged: Arc<AtomicBool>,
 }
 
 impl GateHandler {
@@ -449,8 +452,7 @@ impl GateHandler {
     }
 
     /// Report a tunnelled CONNECT to Claude Code's own destination that carried
-    /// no route selector.
-    ///
+    /// no route selector.    ///
     /// Outside `debug_log`, unlike every other line here, because this is the
     /// only place in the app that can observe the regression it names: Claude
     /// Code's `status()` compares `settings.json` against our own write and
@@ -479,6 +481,53 @@ impl GateHandler {
              Expected for other Anthropic clients while their domain is off; if this \
              is a connected Claude Code, it is bypassing Gate.",
             host.unwrap_or("?")
+        );
+    }
+
+    /// Report an authenticated chatgpt.com request whose client we could not
+    /// identify.
+    ///
+    /// Outside `debug_log`, for the same reason as the line above: the wire is
+    /// the only witness. The app's Cloudflare handling - challenge detection,
+    /// the captured-cookie injection, the user-agent experiment - is all gated
+    /// on [`crate::proxy::ClientClass::App`], so a build whose signals we stop
+    /// recognising does not fail loudly, it silently stops being handled, and
+    /// the result is indistinguishable from "Cloudflare did not challenge us".
+    /// That already happened once: the vendor renamed the app shell's UA token
+    /// and the fallback quietly matched nothing.
+    ///
+    /// Keyed on an `authorization` header because that is what separates a
+    /// first-party client from the site's own asset and telemetry fetches,
+    /// which are legitimately unclassified and would otherwise bury this.
+    /// Latched to one line per engine run - a third-party client calling
+    /// chatgpt.com under its own bearer is an ordinary, harmless reason to see
+    /// this once, and a per-request warning would become the noise that stops
+    /// a real regression being read.
+    fn warn_if_chatgpt_client_is_unrecognised<T>(
+        &self,
+        host: Option<&str>,
+        client: crate::proxy::ClientClass,
+        req: &Request<T>,
+    ) {
+        if host != Some("chatgpt.com")
+            || client != crate::proxy::ClientClass::Unknown
+            || !req
+                .headers()
+                .contains_key(hudsucker::hyper::header::AUTHORIZATION)
+            || self
+                .chatgpt_unclassified_logged
+                .swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        eprintln!(
+            "[gate-proxy] authenticated chatgpt.com request from an unrecognised client \
+             (ua={:?}). If this is the ChatGPT/Codex app, its client signals have changed \
+             and its Cloudflare handling is inactive - see `classify_client`.",
+            req.headers()
+                .get(hudsucker::hyper::header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("<absent>"),
         );
     }
 }
@@ -646,6 +695,7 @@ impl HttpHandler for GateHandler {
         // written to the debug log below. `Uri::path()` excludes the query, so
         // URL-embedded keys never reach the log. Keep it that way.
         let path = req.uri().path().to_owned();
+        self.warn_if_chatgpt_client_is_unrecognised(host.as_deref(), client, &req);
         let mut action = "passthrough";
         // A protocol upgrade is never rewritten to the gateway. This is the end
         // state, not a holding position: Gate does not carry upgraded protocols,
@@ -1012,23 +1062,6 @@ fn cf_challenge_detected<T>(
             .get("cf-mitigated")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.eq_ignore_ascii_case("challenge"))
-}
-
-/// The browser-shaped remainder of an app shell's user-agent, or `None` when
-/// there is no product token to drop.
-///
-/// App shells prefix their own token to an otherwise ordinary browser UA
-/// (`CodexBrowser Mozilla/5.0 …`), so the remainder starting at `Mozilla/` is
-/// exactly what the vendor's own website sends. Returns `None` for a UA that
-/// already starts with `Mozilla/` (a real browser - nothing to strip) and for
-/// anything with no `Mozilla/` token at all (`Codex Desktop/…`, a CLI agent:
-/// there is no browser string hiding inside it to fall back to).
-fn browser_ua_without_product_token(user_agent: &str) -> Option<&str> {
-    if user_agent.starts_with("Mozilla/") {
-        return None;
-    }
-    let (token, rest) = user_agent.split_once(' ')?;
-    (!token.is_empty() && rest.starts_with("Mozilla/")).then_some(rest)
 }
 
 /// Merge a `cf_clearance` value into the request's `cookie` header without
@@ -1545,6 +1578,7 @@ where
         peer_verdict: None,
         claude_code_route: false,
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
+        chatgpt_unclassified_logged: Arc::new(AtomicBool::new(false)),
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -1911,36 +1945,6 @@ mod tests {
             .body(())
             .unwrap();
         assert!(!cf_challenge_detected(Some(&app), &other));
-    }
-
-    #[test]
-    fn stripping_the_product_token_leaves_the_website_user_agent() {
-        // Both strings captured 2026-08-28 from one machine, one session: the
-        // app's rewritten chat turn was challenged and the website's was
-        // answered 200. The app's UA is the website's with a token prefixed,
-        // which is the whole basis of the experiment - assert it, so a future
-        // build where that stops holding fails here rather than silently
-        // forwarding a UA that matches nothing.
-        let app = "CodexBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                   (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
-        let website = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                       (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
-        assert_eq!(browser_ua_without_product_token(app), Some(website));
-        // A real browser has no token to drop.
-        assert_eq!(browser_ua_without_product_token(website), None);
-        // Neither do the non-browser-shaped agents: there is no browser string
-        // hiding inside them, so leaving them alone is the only option.
-        assert_eq!(
-            browser_ua_without_product_token(
-                "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)"
-            ),
-            None
-        );
-        assert_eq!(
-            browser_ua_without_product_token("codex-mcp-client/0.148.0-alpha.9"),
-            None
-        );
-        assert_eq!(browser_ua_without_product_token(""), None);
     }
 
     /// Serialize the tests that bind real listeners in [`STABLE_PORT_RANGE`].
