@@ -337,7 +337,25 @@ pub(crate) fn responses_ws_downgrade() -> bool {
 /// deliberately.
 pub(crate) fn strip_app_product_token() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_STRIP_APP_UA").is_some())
+    *ENABLED.get_or_init(|| {
+        let enabled = std::env::var_os("GATE_PROXY_STRIP_APP_UA").is_some();
+        // Announced once, the first time a chatgpt.com app turn consults it,
+        // because whether the experiment was live is not otherwise visible on
+        // the wire: the strip rewrites a header we no longer log, so a run
+        // where the flag was simply absent from the shell reads exactly like
+        // a run where it was set. That ambiguity made a green result
+        // uninterpretable - it could not be told from the cookie doing all
+        // the work on its own.
+        eprintln!(
+            "[gate-proxy] chatgpt app user-agent strip is {}",
+            if enabled {
+                "ON (GATE_PROXY_STRIP_APP_UA set)"
+            } else {
+                "off"
+            }
+        );
+        enabled
+    })
 }
 
 /// Wire hudsucker's internal `tracing` events (TLS handshake / HTTP2 errors)
