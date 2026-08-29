@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { App } from "./App";
 import { NewUiApp } from "./NewUiApp";
+import { TrayApp } from "./TrayApp";
 import { newUiEnabled } from "./lib/newUi";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Onboarding } from "./screens/Onboarding";
@@ -42,25 +43,30 @@ window.addEventListener("unhandledrejection", (e) => {
   logError(`unhandled rejection: ${describe(e.reason)}`);
 });
 
-// The same bundle backs both windows: the tray popover ("main") renders the
-// app, the full-size intro window ("onboarding") renders only the intro.
-// getCurrentWindow() throws outside Tauri (plain-browser dev), so fall back
-// to the popover app there.
-const isOnboardingWindow = (() => {
+// The same bundle backs all three windows: "main" renders the app, "tray"
+// renders the compact tray popover, and the full-size intro window
+// ("onboarding") renders only the intro. getCurrentWindow() throws outside
+// Tauri (plain-browser dev), so `?window=tray` picks the surface there - the
+// same escape the e2e suite uses to reach it.
+const windowKind = (() => {
   try {
-    return getCurrentWindow().label === "onboarding";
+    return getCurrentWindow().label;
   } catch {
-    return false;
+    return new URLSearchParams(window.location.search).get("window") ?? "main";
   }
 })();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {/* The onboarding window keeps its own content whatever the shell flag
-        says - it is a separate window with a separate job. */}
-    {isOnboardingWindow ? (
+    {/* The onboarding and tray windows keep their own content whatever the
+        shell flag says - each is a separate window with a separate job. */}
+    {windowKind === "onboarding" ? (
       <ErrorBoundary>
         <Onboarding />
+      </ErrorBoundary>
+    ) : windowKind === "tray" ? (
+      <ErrorBoundary>
+        <TrayApp />
       </ErrorBoundary>
     ) : newUiEnabled() ? (
       <ErrorBoundary>

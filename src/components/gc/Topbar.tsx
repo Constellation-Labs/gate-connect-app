@@ -74,9 +74,10 @@ export function Topbar({
 /**
  * shadcn's outline icon button. The paired inset shadows are what give it its
  * slightly domed face - a top white bloom and a bottom shade - over the 1px
- * `base/input` border.
+ * `base/input` border. Exported for the tray popover's footer, which draws the
+ * same 32px ellipsis button in front of its own menu.
  */
-function OutlineIconButton({
+export function OutlineIconButton({
   icon,
   label,
   onClick,
