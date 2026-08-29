@@ -50,17 +50,25 @@ const TONE_STYLES: Record<ModalTone, string> = {
 };
 
 /**
- * The four widths the file draws. Not a size scale invented here: 480 is the
+ * The widths the file draws. Not a size scale invented here: 480 is the
  * Settings form and confirm dialogs (`143:67735`, `143:70617`), 512 the
  * organization and model confirmations (`130:55314`, `134:61659`, `130:48278`),
- * 544 the reset dialog alone (`177:74223`), and 600 everything that carries a
- * subject card, a report or a model list.
+ * 536 the quit confirmation (`694:33002`, `694:33340`), 544 the reset dialog
+ * alone (`177:74223`), and 600 everything that carries a subject card, a
+ * report, a model list or the quit chooser.
+ *
+ * 536 is the odd one and is drawn rather than derived: both frames sit with
+ * their left edge at 255.64, which is exactly where a *512* dialog centred in
+ * 1024 would start, and their right edge 24px past centre. That reads like a
+ * stretched edge rather than a chosen number, so it is worth a designer
+ * question - but the file says 536 and the file wins.
  */
-export type ModalWidth = 480 | 512 | 544 | 600;
+export type ModalWidth = 480 | 512 | 536 | 544 | 600;
 
 const WIDTH_STYLES: Record<ModalWidth, string> = {
   480: "w-[480px]",
   512: "w-[512px]",
+  536: "w-[536px]",
   544: "w-[544px]",
   600: "w-[600px]",
 };
@@ -78,13 +86,16 @@ export function Modal({
   onDismiss,
   onClose,
   width = 600,
+  tile = "default",
   edge = "default",
   initialFocus,
 }: {
   tone?: ModalTone;
   icon: IconName;
   title: string;
-  subtitle?: string;
+  /** ReactNode, not a string: the quit chooser's subtitle sets its count in
+   * Medium inside an otherwise regular sentence (`694:32278`). */
+  subtitle?: ReactNode;
   children?: ReactNode;
   secondary?: ModalButton;
   /** A third action, between the safe one and the primary, for the rare dialog
@@ -104,9 +115,18 @@ export function Modal({
   closeButton?: boolean;
   /** Escape and scrim clicks. Omit to make the dialog unskippable. */
   onDismiss?: () => void;
-  /** Which of the file's four widths this dialog is drawn at. Defaults to the
+  /** Which of the file's widths this dialog is drawn at. Defaults to the
    * widest, which is what an undrawn dialog gets. */
   width?: ModalWidth;
+  /**
+   * The tone tile's size. `default` is the pair the four dialogs measured on
+   * 2026-08-26 draw - 44px with a 24px glyph on a toned dialog, 40px with a
+   * 20px glyph on a neutral one. `sm` is the 32px/radius-6 tile with a 20px
+   * glyph that the quit confirmation draws (`694:33004`), which is a *toned*
+   * dialog at the small size - so size does not follow from tone and has to be
+   * said.
+   */
+  tile?: "default" | "sm";
   /**
    * The card's own border. `danger` is `custom/destructive\40` (#dc262666), a
    * named variable rather than a one-off, which is why the Disconnect dialog
@@ -161,14 +181,19 @@ export function Modal({
         )}
         <div className="flex items-center gap-3">
           {/* 44px on a toned dialog, 40px on a neutral one, which is the size
-           * difference the frames draw rather than a rounding of one number. */}
+           * difference the frames draw rather than a rounding of one number -
+           * except where `tile="sm"` says otherwise. */}
           <span
             aria-hidden
-            className={`flex shrink-0 items-center justify-center rounded-md border shadow-base-2xs ${
-              tone === "neutral" ? "size-10" : "size-11"
+            className={`flex shrink-0 items-center justify-center border shadow-base-2xs ${
+              tile === "sm"
+                ? "size-8 rounded-sm"
+                : tone === "neutral"
+                  ? "size-10 rounded-md"
+                  : "size-11 rounded-md"
             } ${TONE_STYLES[tone]}`}
           >
-            <Icon name={icon} size={tone === "neutral" ? 20 : 24} />
+            <Icon name={icon} size={tile !== "sm" && tone !== "neutral" ? 24 : 20} />
           </span>
           <div className="min-w-0 flex-1">
             <h2
@@ -324,12 +349,94 @@ export function ModalSubject({
   );
 }
 
-/** The tinted block explaining what the action will actually do. */
-export function ModalNote({ children }: { children: ReactNode }) {
+/**
+ * The tinted block explaining what the action will actually do.
+ *
+ * Three tones, all drawn. `muted` is the original gray-50 block the Settings
+ * and reset dialogs carry. The quit flow adds two, both on the same bordered
+ * 12px box at radius 8: `info` is `blue-ribbon/50` under `blue-ribbon/900` ink
+ * for the aside about closing the window (`694:32290`), and `neutral` is
+ * `base/background` under full-foreground ink for the confirmation's report of
+ * what happened (`694:33020`). The two new ones state facts rather than
+ * qualify an action, which is why neither is muted.
+ */
+export function ModalNote({
+  children,
+  tone = "muted",
+}: {
+  children: ReactNode;
+  tone?: "muted" | "info" | "neutral";
+}) {
+  if (tone === "muted") {
+    return (
+      <div className="rounded-md bg-gray-50 p-4 text-sm leading-5 text-neutral-600">
+        {children}
+      </div>
+    );
+  }
   return (
-    <div className="rounded-md bg-gray-50 p-4 text-sm leading-5 text-neutral-600">
+    <div
+      className={`rounded-md border border-base-border p-3 text-sm leading-5 ${
+        tone === "info"
+          ? "bg-blue-ribbon-50 text-blue-ribbon-900"
+          : "bg-base-background text-base-foreground"
+      }`}
+    >
       {children}
     </div>
+  );
+}
+
+/**
+ * One row of a "pick how this happens" choice: a title, the consequence under
+ * it, and an optional pill recommending one of them.
+ *
+ * Distinct from `ModalOption`, which is the organization switcher's row and
+ * leads with an initials avatar. This one is drawn by the quit chooser
+ * (`694:32280` / `694:32456`): 12px padding at radius 8, and unlike the org
+ * picker *both* states carry `shadow/sm` - only the hairline moves, from
+ * `base/input` to `base/primary`.
+ */
+export function ModalChoice({
+  title,
+  description,
+  pill,
+  selected,
+  onSelect,
+}: {
+  title: string;
+  description: string;
+  /** The drawn recommendation ("SAFEST"). Green-200 on green-800 at radius 4 -
+   * a third pairing beside the Overview pills' 200/900 and the App table's
+   * 100/700, so it is spelled out here rather than folded into `PillTone`. */
+  pill?: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onSelect}
+      className={`flex w-full items-center gap-3 rounded-md border bg-base-card p-3 text-left shadow-base-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+        selected ? "border-base-primary" : "border-base-input hover:bg-gray-50"
+      }`}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium leading-5 text-base-foreground">
+          {title}
+        </span>
+        <span className="block text-base-xs font-medium leading-4 text-base-muted-foreground">
+          {description}
+        </span>
+      </span>
+      {pill && (
+        <span className="shrink-0 rounded-control bg-green-200 px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label text-green-800">
+          {pill}
+        </span>
+      )}
+    </button>
   );
 }
 
