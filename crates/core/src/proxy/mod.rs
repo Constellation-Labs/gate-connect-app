@@ -142,6 +142,154 @@ pub(crate) fn notify_engine_crash_observer() {
     }
 }
 
+/// Observer the desktop shell registers to hear that a rewritten chatgpt.com
+/// app turn was answered with a Cloudflare managed challenge
+/// (`cf-mitigated: challenge`). The app shell has no HTML/JS surface to run
+/// the interstitial, so the GUI opens a one-time solve webview, captures the
+/// resulting `cf_clearance` cookie, and feeds it back through
+/// [`engine::RunningEngine::update_cf_clearance`]. Set once at startup. Not
+/// cfg-gated like the crash observer above: the notify below is called from
+/// `engine::handle_response`, which compiles on every desktop OS (the Linux
+/// helper daemon hosts the same engine); a daemon-hosted engine simply has no
+/// observer registered, so the notify is a no-op there.
+static CF_CHALLENGE_OBSERVER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// Debounce latch: set by the notify that fired the observer, cleared by
+/// [`cf_challenge_solve_finished`]. While a solve webview is open (or a
+/// captured cookie is being fed back) every further challenged turn would
+/// otherwise re-fire the observer and stack webviews.
+static CF_CHALLENGE_SOLVING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// How long to wait before the solve webview may reopen after an attempt that
+/// captured nothing. Without it, a challenge our webview cannot clear reopens
+/// the window on every challenged request forever - observed as the window
+/// coming back repeatedly while the poll thread logged `cf_clearance present
+/// but unchanged`. Long enough to stop being a nag, short enough that a user
+/// who fixed the underlying problem is not locked out for the session.
+const CF_CHALLENGE_RETRY_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// How long the observer stays quiet after an attempt that DID capture a
+/// cookie. Responses to turns sent before the cookie was injected can still
+/// be in flight carrying `cf-mitigated: challenge`; without a grace the first
+/// of them re-fires the observer the moment the latch clears, reopening the
+/// window on a cookie that will never change until the poll's deadline gives
+/// up and starts the long cooldown above. Long enough for stale responses to
+/// drain, short enough that a genuinely re-challenged user is not left
+/// waiting.
+const CF_CHALLENGE_SUCCESS_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Earliest instant at which the observer may fire again; `None` means "no
+/// cooldown running". Set by every finished attempt: the long cooldown after
+/// one that captured nothing, the short grace after one that captured.
+static CF_CHALLENGE_NEXT_ALLOWED: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
+/// Register the challenge observer. First registration wins; later calls are
+/// ignored (the shell registers exactly once at setup).
+pub fn set_cf_challenge_observer(observer: impl Fn() + Send + Sync + 'static) {
+    let _ = CF_CHALLENGE_OBSERVER.set(Box::new(observer));
+}
+
+/// Invoke the registered challenge observer, if any, unless a solve is
+/// already in flight or a finished attempt's cooldown is still running. Called
+/// by the engine's `handle_response` when a chatgpt.com app turn comes back
+/// `cf-mitigated: challenge`.
+pub(crate) fn notify_cf_challenge_observer() {
+    let Some(observer) = CF_CHALLENGE_OBSERVER.get() else {
+        return;
+    };
+    let cooling = CF_CHALLENGE_NEXT_ALLOWED
+        .lock()
+        .ok()
+        .and_then(|next| *next)
+        .is_some_and(|next| std::time::Instant::now() < next);
+    if cooling {
+        // Say so. A suppressed challenge is otherwise indistinguishable from
+        // a challenge that was never detected - both are silence followed by
+        // the app showing Cloudflare's page - and telling those apart is the
+        // first question anyone debugging this asks.
+        if engine::debug_log() {
+            eprintln!(
+                "[gate-proxy] challenge detected but the previous solve attempt's \
+                 cooldown is still running"
+            );
+        }
+        return;
+    }
+    if CF_CHALLENGE_SOLVING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if engine::debug_log() {
+            eprintln!("[gate-proxy] challenge detected while a solve is already in flight");
+        }
+        return;
+    }
+    observer();
+}
+
+/// Release the solve latch and start the cooldown for the next attempt.
+/// `captured` reports whether the attempt actually produced a cookie: `false`
+/// starts the long cooldown, so a challenge the webview cannot clear stops
+/// reopening the window on every subsequent request; `true` starts the short
+/// grace, so challenged responses already in flight when the cookie landed
+/// cannot immediately reopen the window it just closed. The GUI calls this
+/// exactly once per attempt.
+pub fn cf_challenge_solve_finished(captured: bool) {
+    let cooldown = if captured {
+        CF_CHALLENGE_SUCCESS_GRACE
+    } else {
+        CF_CHALLENGE_RETRY_COOLDOWN
+    };
+    if let Ok(mut next) = CF_CHALLENGE_NEXT_ALLOWED.lock() {
+        *next = Some(std::time::Instant::now() + cooldown);
+    }
+    CF_CHALLENGE_SOLVING.store(false, std::sync::atomic::Ordering::Release);
+}
+
+/// The `user-agent` last seen on an intercepted chatgpt.com app request.
+///
+/// The solve webview adopts it, for two reasons that both bite. Cloudflare
+/// waves a stock WebView2 through - the observed solve window loads the
+/// ordinary chat prompt, never an interstitial - and `cf_clearance` exists
+/// ONLY as the result of a challenge, so a webview that is never challenged
+/// mints nothing to capture. And the cookie is bound to the user-agent it was
+/// issued to, so one minted under the webview's own UA would be refused when
+/// replayed under the app's. Wearing the app's UA is what makes the challenge
+/// fire in a surface that can solve it, and what makes the result usable.
+///
+/// Read from the wire rather than hardcoded: the app's UA carries its build
+/// (`ChatGPTBrowser/<version> …`) and a pinned guess would drift out of date
+/// silently, which is the failure this whole flow is least able to diagnose.
+static CHATGPT_APP_USER_AGENT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Remember the app's user-agent for the solve webview. Called by the engine
+/// on intercepted chatgpt.com app requests.
+///
+/// Only browser-shaped shell UAs are kept. The app emits several: the shell's
+/// `CodexBrowser Mozilla/5.0 …` and the native agent's `Codex Desktop/…`,
+/// which is not a browser string at all. Recording the last one seen let the
+/// agent's UA win a race and opened a solve webview claiming to be a CLI -
+/// observed 2026-08-28, and precisely the client shape Cloudflare is least
+/// likely to hand a `cf_clearance` to. The shell is the surface being
+/// impersonated, so it is the only one worth recording.
+pub(crate) fn record_chatgpt_app_user_agent(user_agent: &str) {
+    if browser_ua_without_product_token(user_agent).is_none() {
+        return;
+    }
+    if let Ok(mut held) = CHATGPT_APP_USER_AGENT.lock() {
+        if held.as_deref() != Some(user_agent) {
+            *held = Some(user_agent.to_owned());
+        }
+    }
+}
+
+/// The app's user-agent, if the engine has seen an app request this run.
+/// `None` before the first one, in which case the solve webview keeps its
+/// platform default.
+pub fn chatgpt_app_user_agent() -> Option<String> {
+    CHATGPT_APP_USER_AGENT.lock().ok().and_then(|v| v.clone())
+}
+
 /// Whether an HTTP authority (`host` or `host:port`, IPv6 in brackets) names
 /// this machine's loopback - the only place our plain-HTTP loopback listeners
 /// (the relay, the PAC responder) may be addressed from.
@@ -854,37 +1002,50 @@ const BROWSER_UA_PREFIX: &str = "Mozilla/";
 /// True for a user-agent that is not a browser's own. Non-empty, and it does
 /// not open with `Mozilla/`.
 ///
-/// Wider than [`is_wrapped_browser_ua`] on purpose: the reporting net has to be
-/// wider than the classifier's for a rename to show up in it at all.
-/// Deliberately not a classification signal on its own - plenty of third-party
-/// clients look exactly like this and they are ordinary. The classifier only
-/// consumes it through [`is_wrapped_browser_ua`], which additionally demands
-/// the wrapped shape.
+/// Wider than [`browser_ua_without_product_token`] on purpose: the reporting
+/// net has to be wider than the classifier's for a rename to show up in it at
+/// all. Deliberately not a classification signal on its own - plenty of
+/// third-party clients look exactly like this and they are ordinary. The
+/// classifier only consumes it through [`browser_ua_without_product_token`],
+/// which additionally demands the wrapped shape.
 pub(crate) fn is_non_browser_ua(ua: &str) -> bool {
     let ua = ua.trim_start();
     !ua.is_empty() && !ua.starts_with(BROWSER_UA_PREFIX)
 }
 
-/// True for an app shell's user-agent: a product token, then an otherwise
-/// browser-shaped UA (`ChatGPTBrowser Mozilla/5.0 ...`, `CodexBrowser
-/// Mozilla/5.0 ...`).
+/// The browser-shaped remainder of an app shell's user-agent, or `None` when
+/// there is no product token in front of one.
 ///
-/// Keyed on the SHAPE because the vendor has renamed this token once already
-/// and a roster of names cannot survive the next rename; a browser's own UA
-/// starts with `Mozilla/`, so it can never match. Also deliberately NOT keyed
-/// on the substrings `codex`/`chatgpt`: that is the same roster problem one
-/// level down.
+/// This is both the app-shell SIGNAL for [`classify_client`] and the value the
+/// chatgpt.com strip experiment forwards, deliberately one function: the thing
+/// that makes a UA recognisable as an app shell is exactly the thing being
+/// removed, and two definitions of that could drift apart.
+///
+/// Keyed on the SHAPE - a product token, then an otherwise ordinary browser UA
+/// (`CodexBrowser Mozilla/5.0 …`) - rather than on a roster of names. The
+/// vendor has already renamed this token once (`ChatGPTBrowser` ->
+/// `CodexBrowser`, observed 2026-08-28) and the fixed list silently stopped
+/// matching, which is the failure this shape avoids repeating. Also
+/// deliberately NOT keyed on the substrings `codex`/`chatgpt`: that is the
+/// same roster problem one level down.
+///
+/// `None` for a UA that already starts with `Mozilla/` - a real browser, and
+/// the direction that must never match, since mistaking the website for the
+/// app would cost it the `BROWSER_ROUTED` narrowing. Also `None` for anything
+/// with no `Mozilla/` token at all (`Codex Desktop/…`, `codex-mcp-client/…`):
+/// those are app clients too, but they are matched by their own exact
+/// prefixes and have no browser string hiding inside them to fall back to.
 ///
 /// A third-party client that prepends its own token to a browser UA reads as
 /// `App` here rather than `Unknown`. Both route identically, so that costs
 /// nothing, and the direction that matters holds: the browser cannot be
 /// mistaken for the app.
-pub(crate) fn is_wrapped_browser_ua(ua: &str) -> bool {
-    is_non_browser_ua(ua)
-        && ua
-            .split_whitespace()
-            .skip(1)
-            .any(|token| token.starts_with(BROWSER_UA_PREFIX))
+pub(crate) fn browser_ua_without_product_token(user_agent: &str) -> Option<&str> {
+    if user_agent.starts_with(BROWSER_UA_PREFIX) {
+        return None;
+    }
+    let (token, rest) = user_agent.split_once(' ')?;
+    (!token.is_empty() && rest.starts_with(BROWSER_UA_PREFIX)).then_some(rest)
 }
 
 /// Classify a request from its headers.
@@ -893,13 +1054,17 @@ pub(crate) fn is_wrapped_browser_ua(ua: &str) -> bool {
 /// is this" field, it was present on EVERY app request to a routed path in the
 /// captures, and on none of the web ones. The user-agent is the fallback,
 /// because a build that drops `originator` but still names itself should keep
-/// routing.
+/// routing - and because that fallback is load-bearing in a way it was not
+/// when it was written: the Cloudflare handling in `engine` is gated on
+/// [`ClientClass::App`], so a missed app signal now silently disables it.
 ///
-/// That fallback is matched by SHAPE, not by a roster of product names. It was
-/// originally a list of prefixes led by `ChatGPTBrowser`, and the vendor then
-/// renamed the shell: the Windows build captured 2026-08-28 sends `CodexBrowser
-/// Mozilla/5.0 ...`, which matched nothing, so the fallback had silently stopped
-/// covering the app it was written for. See [`is_wrapped_browser_ua`].
+/// The fallback is matched by SHAPE, not by product name. The first version
+/// listed `ChatGPTBrowser`; the vendor renamed the shell to `CodexBrowser` and
+/// the check quietly stopped covering the app it was written for, leaving
+/// `originator` as the single point of failure it exists to remove. Observed
+/// 2026-08-28 in the wire log, where the same app produced both `App`
+/// (`originator` present) and `Unknown` (absent) on one session, and only the
+/// former got its Cloudflare cookie. See [`browser_ua_without_product_token`].
 ///
 /// The web markers are what routing actually keys on, so they are matched
 /// POSITIVELY: `Web` means "this is the website", never "no app signal found".
@@ -947,10 +1112,11 @@ pub fn classify_client<'a>(header: impl Fn(&str) -> Option<&'a str>) -> ClientCl
         return ClientClass::App;
     }
     let ua = header("user-agent").unwrap_or_default();
-    // The app shell wraps a browser UA; the other two are Codex's native agent
-    // and its MCP client, neither of which is browser-shaped, so no shape rule
-    // covers them and they keep their exact prefixes.
-    if is_wrapped_browser_ua(ua)
+    // An app shell wraps an ordinary browser UA in its own product token; the
+    // other two are Codex's native agent and its MCP client, neither of which
+    // is browser-shaped. See `browser_ua_without_product_token` for why the
+    // shell is matched by shape rather than by name.
+    if browser_ua_without_product_token(ua).is_some()
         || ua.starts_with("Codex Desktop/")
         || ua.starts_with("codex-mcp-client/")
     {
@@ -1629,6 +1795,7 @@ mod tests {
             // The older shipped build. The rename is additive; it must not regress.
             "ChatGPTBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/151.0.0.0",
             "Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200; x86_64)",
+            "Codex Desktop/26.825.32147 (Windows NT 10.0; x64)",
             "codex-mcp-client/0.148.0-alpha.9",
         ] {
             assert_eq!(
@@ -1650,6 +1817,55 @@ mod tests {
                 "{ua}"
             );
         }
+    }
+
+    #[test]
+    fn only_the_browser_shaped_shell_user_agent_is_offered_to_the_solve_webview() {
+        // The app emits both, and the webview must impersonate the shell: a
+        // window claiming to be a CLI agent is the client shape Cloudflare is
+        // least likely to hand a cf_clearance to. Both strings captured
+        // 2026-08-28 from one session, where the agent's UA won the race and
+        // the solve window opened wearing it.
+        let shell = "CodexBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                     (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+        record_chatgpt_app_user_agent(shell);
+        record_chatgpt_app_user_agent(
+            "Codex Desktop/0.150.0-alpha.12.2 (Windows 10.0.26200; x86_64) unknown",
+        );
+        record_chatgpt_app_user_agent("");
+        assert_eq!(chatgpt_app_user_agent().as_deref(), Some(shell));
+    }
+
+    #[test]
+    fn stripping_the_product_token_leaves_the_website_user_agent() {
+        // Both captured 2026-08-28 from one machine, one session: the app's
+        // rewritten chat turn was challenged and the website's was answered
+        // 200. The app's UA is the website's with a token prefixed, which is
+        // what makes the shape match sound AND what the strip forwards -
+        // assert it, so a build where that stops holding fails here.
+        let app = "CodexBrowser Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                   (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+        let website = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                       (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+        assert_eq!(browser_ua_without_product_token(app), Some(website));
+        // A real browser has no token to drop - and must never read as an app,
+        // or the website would lose its BROWSER_ROUTED narrowing.
+        assert_eq!(browser_ua_without_product_token(website), None);
+        assert_eq!(
+            classify_client(hdrs(&[("user-agent", website)])),
+            ClientClass::Unknown
+        );
+        // Neither do the non-browser-shaped agents: there is no browser string
+        // hiding inside them, so leaving them alone is the only option.
+        assert_eq!(
+            browser_ua_without_product_token("Codex Desktop/0.148.0-alpha.9 (Windows 10.0.26200)"),
+            None
+        );
+        assert_eq!(
+            browser_ua_without_product_token("codex-mcp-client/0.148.0-alpha.9"),
+            None
+        );
+        assert_eq!(browser_ua_without_product_token(""), None);
     }
 
     #[test]
