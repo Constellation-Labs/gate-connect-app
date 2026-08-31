@@ -33,11 +33,13 @@ describe("MessagesChart tooltip", () => {
 
     // The heading names the column; it is not a fifth figure. 8/2/2/0 sum to
     // 12 here only by coincidence of the design's own sample numbers, which is
-    // exactly the confusion this asserts against.
+    // exactly the confusion this asserts against - and which the redrawn axis
+    // settles by heading the column "12:00" rather than "12".
     const tip = screen.getByText("Total messages", {
       selector: "div > span > span",
     }).closest("div[class*='absolute']") as HTMLElement;
-    expect(within(tip).getByText("12")).toBeTruthy();
+    expect(within(tip).getByText("12:00")).toBeTruthy();
+    expect(within(tip).queryByText("12")).toBeNull();
     expect(within(tip).getByText("8")).toBeTruthy();
     expect(within(tip).getAllByText("2")).toHaveLength(2);
     expect(within(tip).getByText("0")).toBeTruthy();

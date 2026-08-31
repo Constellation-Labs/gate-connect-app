@@ -20,7 +20,7 @@ import type { IconName } from "./Icon";
  */
 
 /**
- * The design draws a third entry, Contact support, and it is not here.
+ * The design draws a fourth entry, Contact support, and it is not here.
  *
  * `GATE_SUPPORT_URL` does exist in `lib/config.ts`, and it 404s - so there is
  * still nothing to open. An entry that cannot do anything is worse than an
@@ -29,12 +29,17 @@ import type { IconName } from "./Icon";
  * for the same reason. Add both back together once there is a real address; see
  * that constant for what has to change (AG-598).
  */
-export type TopnavAction = "dashboard" | "docs";
+export type TopnavAction = "dashboard" | "docs" | "quit";
 
 const MENU_ITEMS: { action: TopnavAction; icon: IconName; label: string }[] = [
   { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
   { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
 ];
+
+/** Quit, drawn into the menu on 2026-08-28 (`116:27225`) and the one entry that
+ *  does not leave the app - so it carries destructive ink and no external-link
+ *  glyph, which is how the frame renders it. */
+const QUIT_ITEM = { action: "quit" as const, icon: "logOut" as IconName, label: "Quit Gate Connect" };
 
 export function Topbar({
   menuOpen,
@@ -106,8 +111,8 @@ export function OutlineIconButton({
   );
 }
 
-/** The 224px overflow menu. Every destination opens outside the app, so each
- *  row carries the external-link glyph. */
+/** The 224px overflow menu. Every destination but Quit opens outside the app,
+ *  so those rows carry the external-link glyph and Quit does not. */
 export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => void }) {
   return (
     <div
@@ -129,6 +134,15 @@ export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => v
           <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
         </button>
       ))}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => onSelect(QUIT_ITEM.action)}
+        className="flex h-8 w-full items-center gap-2 rounded-sm px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      >
+        <Icon name={QUIT_ITEM.icon} size={16} />
+        <span className="text-base-xs font-medium leading-4">{QUIT_ITEM.label}</span>
+      </button>
     </div>
   );
 }

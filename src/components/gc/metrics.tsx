@@ -56,12 +56,30 @@ export interface MessagesBucket {
    * contract's 24 distinct UTC hours are the thing that is actually unique.
    */
   id: string;
-  /** X-axis tick, e.g. an hour ("14"). Display only; see `id`. */
+  /** The bucket's local hour, as a number ("14"). Display only; see `id`.
+   *  Rendered through {@link hourTick} rather than printed raw. */
   label: string;
   total: number;
   blocked: number;
   flagged: number;
   redacted: number;
+}
+
+/**
+ * A bucket's hour as the axis draws it: zero-padded, on the hour ("00:00").
+ *
+ * The redrawn chart (`706:9997`, read 2026-08-28) labels every tick this way;
+ * it used to draw a bare hour, which is what `label` still carries and what the
+ * accessible table used to suffix by hand. One function so the axis, the
+ * tooltip heading and that table cannot phrase one bucket three ways.
+ *
+ * The `chart/tooltip` card is the exception the file has not caught up on: it
+ * is an older node (`191:*`) than the redrawn axis around it and still heads
+ * itself with a bare hour. A heading that names a column has to match the
+ * column, so it follows the axis here.
+ */
+export function hourTick(label: string): string {
+  return `${label.padStart(2, "0")}:00`;
 }
 
 const SERIES = [
@@ -274,9 +292,9 @@ export function MessagesChart({
         {buckets.map((bucket) => (
           <span
             key={bucket.id}
-            className="w-5 text-center font-mono text-base-2xs text-base-muted-foreground"
+            className="w-8 text-center font-mono text-base-2xs text-base-muted-foreground"
           >
-            {bucket.label}
+            {hourTick(bucket.label)}
           </span>
         ))}
       </div>
@@ -305,7 +323,7 @@ export function MessagesChart({
         <tbody>
           {buckets.map((b) => (
             <tr key={b.id}>
-              <th scope="row">{b.label}:00</th>
+              <th scope="row">{hourTick(b.label)}</th>
               <td>{b.total}</td>
               <td>{b.blocked}</td>
               <td>{b.flagged}</td>
@@ -316,11 +334,11 @@ export function MessagesChart({
         </tbody>
       </table>
 
-      <ul className="mt-4 flex items-center gap-4">
+      <ul className="mt-4 flex items-center gap-6 border-t border-base-border pt-4">
         {SERIES.map(({ key, label, className }) => (
-          <li key={key} className="flex items-center gap-1.5">
+          <li key={key} className="flex items-center gap-2">
             <span aria-hidden className={`size-3 rounded-xs ${className}`} />
-            <span className="text-base-xs text-neutral-600">{label}</span>
+            <span className="text-base-xs text-base-foreground">{label}</span>
           </li>
         ))}
       </ul>
@@ -349,17 +367,20 @@ function PendingChart() {
         {PENDING_HOURS.map((hour) => (
           <span
             key={hour}
-            className="w-5 text-center font-mono text-base-2xs text-base-muted-foreground"
+            // The tick box is the loaded axis's, not this frame's: a narrower
+            // placeholder would let the axis jump sideways the moment the
+            // reading lands, which is the one thing a placeholder must not do.
+            className="w-8 text-center font-mono text-base-2xs text-base-muted-foreground"
           >
             {hour}
           </span>
         ))}
       </div>
-      <ul className="mt-4 flex items-center gap-4">
+      <ul className="mt-4 flex items-center gap-6 border-t border-base-border pt-4">
         {SERIES.map(({ key, label, className }) => (
-          <li key={key} className="flex items-center gap-1.5">
+          <li key={key} className="flex items-center gap-2">
             <span aria-hidden className={`size-3 rounded-xs ${className}`} />
-            <span className="text-base-xs text-neutral-600">{label}</span>
+            <span className="text-base-xs text-base-foreground">{label}</span>
           </li>
         ))}
       </ul>
@@ -403,7 +424,7 @@ function ChartTooltip({
       }
     >
       <p className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-base-foreground">
-        {bucket.label}
+        {hourTick(bucket.label)}
       </p>
       <div className="mt-2 flex flex-col gap-1">
         {SERIES.map(({ key, label, className }) => (

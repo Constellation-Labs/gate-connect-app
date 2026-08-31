@@ -8,6 +8,7 @@ import type { PillTone } from "./Modal";
 import {
   Modal,
   ModalCheckbox,
+  ModalChoice,
   ModalField,
   ModalNote,
   ModalOption,
@@ -1394,71 +1395,152 @@ function joinNames(names: string[]): string {
 }
 
 /**
- * Quit, with the three outcomes AG-596 names: disconnect the tools first, quit
- * and leave them pointing at Gate, or don't quit.
+ * Quit, step one: choose *how*, from the two outcomes AG-596 names.
  *
- * **Provisional layout.** The Figma draws no quit dialog for the window shell
- * (AG-595 is still To Do), so the structure here comes from the acceptance
- * criteria and the popover's `QuitConfirm`, which already implements the same
- * three choices. The copy is deliberately shared with that panel: a user who has
- * seen one should not have to work out whether the other means something else.
+ * Drawn at last (`Flows / Overview`, `overview-quit` 694:31955, read
+ * 2026-08-28), and the drawing replaces the three-button dialog this shipped as.
+ * The two outcomes are selectable rows now, with the safe one recommended by a
+ * pill and preselected, and the primary carries out the choice; the third
+ * outcome, not quitting, stays a Cancel button because it is not a way to quit.
  *
- * Three buttons rather than two because the outcomes genuinely differ. Collapsing
- * "quit without disconnecting" into the primary would hide the consequence that
- * makes it different, and collapsing Cancel would leave no way out.
+ * The step after this is `QuitSafeToCloseDialog`, which is what actually
+ * closes the app. So neither button here exits: `Disconnect` puts the tools
+ * back and reports, `Continue` goes straight to the same report. That is what
+ * lets the confirmation speak in the past tense, as drawn.
  *
- * Cancel takes focus, not the primary: the user asked to quit, but Enter on a
- * panel they have not read should not decide *how*.
+ * Focus opens on the recommended choice rather than on a button: the user asked
+ * to quit, but Enter on a panel they have not read should not decide *how*, and
+ * from the radio it can only re-select what is already selected.
+ *
+ * The popover's `QuitConfirm` keeps the older three-button shape. The two
+ * shells disagree until the popover retires, the same way they already disagree
+ * about the org-picker dead end - this is the drawn one.
  */
+export type QuitChoice = "disconnect" | "leave";
+
 export function QuitDialog({
   tools,
+  choice,
+  onChoose,
   busy,
-  onDisconnectAndQuit,
-  onQuitAnyway,
+  onContinue,
   onCancel,
 }: {
   /** Config-routed tools still pointed at Gate. Never empty - the shell only
    * raises this dialog when the backend reports at least one. */
   tools: string[];
+  choice: QuitChoice;
+  onChoose: (next: QuitChoice) => void;
   busy?: boolean;
-  onDisconnectAndQuit: () => void;
-  onQuitAnyway: () => void;
+  onContinue: () => void;
   onCancel: () => void;
 }) {
-  const names = joinNames(tools);
   const plural = tools.length > 1;
   return (
     <Modal
       tone="warning"
-      icon="logOut"
+      icon="triangleAlert"
       title="Quit Gate Connect?"
+      subtitle={
+        <>
+          {/* The count is drawn in Medium inside a regular sentence: it is the
+              figure the sentence is about. */}
+          <span className="font-medium">{tools.length}</span> protected app
+          {plural ? "s are" : " is"} still routed through Gate
+        </>
+      }
       secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
-      middle={{
-        label: "Quit without disconnecting",
-        onClick: onQuitAnyway,
-        disabled: busy,
-      }}
       primary={{
-        label: busy ? "Working…" : "Disconnect tools and quit",
-        onClick: onDisconnectAndQuit,
+        // Named for what it does, which is why it changes with the choice: the
+        // drawn "Disconnect" belongs to the drawn selection, and leaving it
+        // there under "Quit without disconnecting" would label a button with
+        // the opposite of its action. The second label is inferred - the frame
+        // draws only the first row selected.
+        label: busy
+          ? "Working…"
+          : choice === "disconnect"
+            ? "Disconnect"
+            : "Continue",
+        onClick: onContinue,
         disabled: busy,
       }}
       onDismiss={busy ? undefined : onCancel}
     >
-      <p className="text-sm leading-5 text-neutral-600">
-        {names} still {plural ? "route" : "routes"} through Gate. Quitting stops
-        the local relay {plural ? "they" : "it"} points at, so{" "}
-        {plural ? "they" : "it"} {plural ? "cannot" : "cannot"} reach a model
-        until Gate Connect runs again.
+      <p className="text-sm font-medium leading-5 text-base-muted-foreground">
+        Select how you want to quit the app
       </p>
-      <p className="text-sm leading-5 text-neutral-600">
-        {/* "when Gate Connect starts again", not "at the next start": the next
-            start of *what* was the ambiguity, and the tool's own launch is the
-            wrong answer. Same phrasing as the notification this fires. */}
-        Disconnecting puts {plural ? "their" : "its"} own settings back for the
-        meantime, then reconnects {plural ? "them" : "it"} when Gate Connect
-        starts again. Routing stays switched on either way.
-      </p>
+      <div role="radiogroup" aria-label="How to quit" className="flex flex-col gap-2">
+        <ModalChoice
+          title="Disconnect tools and quit"
+          description="Restore saved configurations, turn routing off, then quit."
+          pill="Safest"
+          selected={choice === "disconnect"}
+          onSelect={() => onChoose("disconnect")}
+        />
+        <ModalChoice
+          title="Quit without disconnecting"
+          description="Leave configurations pointed at Gate. Requests that depend on the local proxy may pause."
+          selected={choice === "leave"}
+          onSelect={() => onChoose("leave")}
+        />
+      </div>
+      <ModalNote tone="info">
+        <span className="font-medium">
+          Closing the main window is a different action.
+        </span>{" "}
+        You can safely <span className="font-medium">minimize</span> this app to
+        the menu bar to keep protection running quietly.
+      </ModalNote>
+    </Modal>
+  );
+}
+
+/**
+ * Quit, step two: what happened, and the button that actually closes the app
+ * (`694:33002` after disconnecting, `694:33340` after leaving things in place).
+ *
+ * The two notes are the drawn copy for the two branches, and they are reports
+ * rather than promises - which is why this dialog is only reached when the
+ * branch it describes has already run. A teardown that left something behind
+ * gets `QuitLeftBehindDialog` instead: "their previous settings are restored"
+ * would be exactly the claim AG-596 forbids.
+ *
+ * Cancel stays as drawn even though the work is done by now. Someone who
+ * changes their mind here keeps a running app whose tools have been
+ * disconnected, which the note has just told them in as many words.
+ */
+export function QuitSafeToCloseDialog({
+  disconnected,
+  busy,
+  onClose,
+  onCancel,
+}: {
+  /** Which branch got here: the teardown ran cleanly, or nothing was touched. */
+  disconnected: boolean;
+  busy?: boolean;
+  onClose: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <Modal
+      tone="success"
+      icon="circleCheck"
+      tile="sm20"
+      width={536}
+      title="Safe to close Gate Connect"
+      secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
+      primary={{
+        label: busy ? "Working…" : "Close Gate Connect",
+        onClick: onClose,
+        disabled: busy,
+      }}
+      onDismiss={busy ? undefined : onCancel}
+    >
+      <ModalNote tone="neutral">
+        {disconnected
+          ? "Tools are disconnected and their previous settings are restored. Setup will be waiting the next time you open the app."
+          : "Routing settings were left in place. Some tools may need Gate Connect running to complete requests."}
+      </ModalNote>
     </Modal>
   );
 }

@@ -1356,6 +1356,90 @@ reaches `connect_tool`, Expand reaches `reveal_popover`, Quit reaches
 macOS/Windows anchor branches reasoned about, not compiled, same as c63e1880
 noted when it deleted them.
 
+### Sync 2026-08-28: the Overview page, and the quit flow drawn at last
+
+Re-read `Flows / Overview` (116:26381) over MCP, the first look since
+2026-08-21. The page still carries the check and its sections are unchanged,
+but three things moved, all in the same batch of node ids as the Tray page
+(694:*) or later (706:*, 751:*).
+
+**The quit flow is drawn**, in three new frames under a section whose label is
+a copy-paste of the routing-ON section's ("Overview / Turn routing ON for an
+app that was OFF", `694:33533` - worth a designer fix, since it is how the flow
+is catalogued). It replaces the three-button dialog AG-596 shipped:
+
+- **Step one, the chooser** (`694:32272`, 600px, warning tile): "Quit Gate
+  Connect?" over "**N** protected apps are still routed through Gate", the
+  count in Medium inside a regular sentence. Then "Select how you want to quit
+  the app" and two selectable rows - "Disconnect tools and quit" / "Restore
+  saved configurations, turn routing off, then quit." carrying a green
+  **SAFEST** pill, and "Quit without disconnecting" / "Leave configurations
+  pointed at Gate. Requests that depend on the local proxy may pause." Under
+  them a `blue-ribbon/50` note: "**Closing the main window is a different
+  action.** You can safely **minimize** this app to the menu bar to keep
+  protection running quietly." Buttons Cancel / Disconnect.
+- **Step two, the confirmation** (`694:33002` and `694:33340`, 536px, success):
+  "Safe to close Gate Connect" over a `base/background` note that reports the
+  branch - "Tools are disconnected and their previous settings are restored.
+  Setup will be waiting the next time you open the app." or "Routing settings
+  were left in place. Some tools may need Gate Connect running to complete
+  requests." Buttons Cancel / Close Gate Connect.
+
+So the exit moved: step one *carries out* the choice and step two is what
+actually quits, which is what lets the confirmation speak in the past tense.
+Built that way. **AG-596 survives the redraw and is the reason the flow is not
+just two dialogs**: a teardown that leaves a tool behind goes to
+`QuitLeftBehindDialog` instead of the confirmation, whose "their previous
+settings are restored" would be exactly the claim the ticket forbids. The
+left-behind dialog is still undrawn.
+
+`Modal` gained `ModalChoice` (the selectable row: title, consequence, optional
+pill - distinct from `ModalOption`, which leads with an org avatar), two more
+`ModalNote` tones (`info` and `neutral`, both the drawn bordered 12px box),
+a `tile="sm"` for the confirmation's 32px/radius-6 tile - a *toned* dialog at
+the small size, so tile size does not follow from tone after all - and
+`subtitle` now takes a `ReactNode` for that Medium count. `ModalWidth` gained
+**536**, which is the one value worth questioning: both frames sit with their
+left edge exactly where a *512* dialog centred in 1024 would start and their
+right edge 24px past centre, which reads as a stretched edge rather than a
+chosen number. Shipped as drawn, raised as a question.
+
+**The topnav menu gained Quit** (`116:27225`, now 4 items at 146px): red ink,
+`LogOut`, and no external-link glyph, since it is the one entry that does not
+leave the app. Wired to the same chooser, with the routed tools derived from
+`tools` rather than swept from the backend buffer - that buffer only fills when
+the *tray* deferred a quit. With nothing routed it exits outright, which is the
+rule Rust's own `request_quit` already follows. Contact support stays omitted
+for want of an address, as everywhere else.
+
+**The Messages chart was redrawn** (`706:*`, ~1,950 nodes) and three things
+changed:
+
+- **Ticks read `HH:00`**, not a bare hour. `hourTick` now formats them, and the
+  tooltip heading and the accessible table go through it too, so one bucket
+  cannot be phrased three ways. The `chart/tooltip` card itself is an older
+  node (`191:*`) still headed with a bare hour; the redrawn axis around it
+  wins, and the test that pins the heading is better for it - "12:00" cannot be
+  mistaken for the 8+2+2+0 sum the way "12" could.
+- **The legend sits under a full-width rule** in the loaded state now, which
+  retires the discrepancy 2026-08-21 left alone (only the loading frame drew
+  one). Measured with it: legend items at 24px, swatch-to-label at 8px, and the
+  label ink is `base/foreground`, not the muted grey the build had.
+- **The drawn chart has 12 hourly columns** (00:00-11:00) under a header that
+  still says "Last 24 hours", and the endpoint's contract is 24 dense hourly
+  buckets. Not followed: the column count is data, and reshaping the client to
+  12 would misreport the reading. Raised rather than built. The placeholder
+  keeps its 24 positional ticks and only widens its tick box to the loaded
+  axis's, so the axis cannot jump sideways when a reading lands.
+
+`dialogs.quit.test.tsx` pins the two dialogs' copy and the primary's label
+following the selection; `new-ui-quit.spec.ts` follows the new flow and gains
+the menu entry's two cases. 620 unit tests and the 188-test e2e suite pass.
+
+**The popover keeps the old three-button quit** (`components/QuitConfirm.tsx`).
+The two shells disagree until the popover retires, the same standing divergence
+as the org-picker dead end - this is the drawn one.
+
 
 ## Branching model
 
