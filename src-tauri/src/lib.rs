@@ -1774,9 +1774,7 @@ fn security_feed() -> &'static std::sync::Arc<gate_connect_core::security_feed::
     static FEED: std::sync::OnceLock<
         std::sync::Arc<gate_connect_core::security_feed::client::Feed>,
     > = std::sync::OnceLock::new();
-    FEED.get_or_init(|| {
-        std::sync::Arc::new(gate_connect_core::security_feed::client::Feed::new())
-    })
+    FEED.get_or_init(|| std::sync::Arc::new(gate_connect_core::security_feed::client::Feed::new()))
 }
 
 /// How often to retire closed notification-grouping windows.

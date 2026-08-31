@@ -5,9 +5,9 @@
 //! can be read on its own. The parent owns *what* an event is and *how long* to
 //! wait; this owns *when* to do which.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::collections::VecDeque;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -207,7 +207,7 @@ async fn connect_once(
                 // about to leave, not errors to retry against.
                 FailureCode::SignedOut | FailureCode::NoOrg => Outcome::NotReady,
                 _ => Outcome::Disconnected,
-            }
+            };
         }
     };
 

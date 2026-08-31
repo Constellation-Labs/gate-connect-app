@@ -197,7 +197,11 @@ fn split_lines(frame: &[u8]) -> Vec<&[u8]> {
         if frame[i] == b'\r' {
             lines.push(&frame[start..i]);
             // `\r\n` is one terminator, not two.
-            i += if frame[i..].starts_with(b"\r\n") { 2 } else { 1 };
+            i += if frame[i..].starts_with(b"\r\n") {
+                2
+            } else {
+                1
+            };
             start = i;
         } else if frame[i] == b'\n' {
             lines.push(&frame[start..i]);

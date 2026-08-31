@@ -234,7 +234,10 @@ pub fn endpoint() -> String {
         .flatten()
         .map(|a| a.gateway_base_url)
         .unwrap_or_default();
-    format!("{}/v1/me/security-events/stream", base.trim_end_matches('/'))
+    format!(
+        "{}/v1/me/security-events/stream",
+        base.trim_end_matches('/')
+    )
 }
 
 /// The credential headers this account should send, resolved fresh.

@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 use super::{Action, SecurityEvent};
 use crate::preferences;
 
-
 /// How long events with the same cause collapse into one notification.
 ///
 /// A minute, because that is roughly the span over which a person reads a
@@ -183,7 +182,12 @@ impl Grouper {
                     Action::Block => "More requests blocked".to_string(),
                     Action::Flag => "More requests flagged".to_string(),
                 },
-                body: summary_body(key.0, bucket.category.as_deref(), bucket.tool.as_deref(), bucket.suppressed),
+                body: summary_body(
+                    key.0,
+                    bucket.category.as_deref(),
+                    bucket.tool.as_deref(),
+                    bucket.suppressed,
+                ),
                 sound: prefs.security_notification_sound,
             });
         }
@@ -239,7 +243,9 @@ fn summary_body(action: Action, category: Option<&str>, tool: Option<&str>, coun
     // one is common enough to be worth the branch.
     let plural = if count == 1 { "" } else { "es" };
     match (category, tool) {
-        (Some(cat), Some(tool)) => format!("Gate {verb} {count} more {cat} match{plural} in {tool}."),
+        (Some(cat), Some(tool)) => {
+            format!("Gate {verb} {count} more {cat} match{plural} in {tool}.")
+        }
         (Some(cat), None) => format!("Gate {verb} {count} more {cat} match{plural}."),
         (None, Some(tool)) => {
             let plural = if count == 1 { "" } else { "s" };
@@ -275,7 +281,11 @@ mod tests {
     #[test]
     fn the_body_names_what_it_knows_and_no_more() {
         assert_eq!(
-            body_for(&event(Action::Block, Some("credential"), Some("claude-code"))),
+            body_for(&event(
+                Action::Block,
+                Some("credential"),
+                Some("claude-code")
+            )),
             "Gate blocked a credential match in claude-code."
         );
         assert_eq!(
@@ -293,7 +303,10 @@ mod tests {
     /// The single notification `admit` produced, or None. Panics if it produced
     /// two, which in these tests always means a sweep fired unexpectedly.
     fn one(out: Vec<Notification>) -> Option<Notification> {
-        assert!(out.len() <= 1, "expected at most one notification, got {out:?}");
+        assert!(
+            out.len() <= 1,
+            "expected at most one notification, got {out:?}"
+        );
         out.into_iter().next()
     }
 
@@ -334,7 +347,10 @@ mod tests {
         let p = prefs(true, true, true);
         assert!(fired(g.admit(&e, &p, now)));
         for i in 1..=5 {
-            assert!(g.admit(&e, &p, now).is_empty(), "repeat {i} should be swallowed");
+            assert!(
+                g.admit(&e, &p, now).is_empty(),
+                "repeat {i} should be swallowed"
+            );
         }
         assert_eq!(g.suppressed(&e), 5);
     }
@@ -446,7 +462,9 @@ mod tests {
         let e = event(Action::Block, Some("credential"), Some("codex"));
         let start = Instant::now();
         g.admit(&e, &p, start);
-        assert!(g.sweep(&p, start + GROUP_WINDOW + Duration::from_secs(1)).is_empty());
+        assert!(g
+            .sweep(&p, start + GROUP_WINDOW + Duration::from_secs(1))
+            .is_empty());
     }
 
     #[test]
@@ -490,7 +508,9 @@ mod tests {
         g.admit(&e, &on, start);
 
         let off = prefs(false, true, true);
-        assert!(g.sweep(&off, start + GROUP_WINDOW + Duration::from_secs(1)).is_empty());
+        assert!(g
+            .sweep(&off, start + GROUP_WINDOW + Duration::from_secs(1))
+            .is_empty());
     }
 
     #[test]
@@ -510,8 +530,12 @@ mod tests {
         let due = g.sweep(&p, start + GROUP_WINDOW + Duration::from_secs(1));
         let bodies: Vec<&str> = due.iter().map(body_of).collect();
         assert_eq!(due.len(), 2, "one per cause, got {bodies:?}");
-        assert!(bodies.iter().any(|b| *b == "Gate blocked 3 more credential matches in codex."));
-        assert!(bodies.iter().any(|b| *b == "Gate flagged 2 more pii matches in codex."));
+        assert!(bodies
+            .iter()
+            .any(|b| *b == "Gate blocked 3 more credential matches in codex."));
+        assert!(bodies
+            .iter()
+            .any(|b| *b == "Gate flagged 2 more pii matches in codex."));
     }
 
     #[test]
@@ -541,7 +565,10 @@ mod tests {
         // Same guard as `body_for`: this string reaches a lock screen too.
         let body = summary_body(Action::Block, Some("credential"), Some("codex"), 12);
         for forbidden in ["prompt", "response", "sk-", "secret", "evidence"] {
-            assert!(!body.to_lowercase().contains(forbidden), "leaked {forbidden}: {body}");
+            assert!(
+                !body.to_lowercase().contains(forbidden),
+                "leaked {forbidden}: {body}"
+            );
         }
     }
 

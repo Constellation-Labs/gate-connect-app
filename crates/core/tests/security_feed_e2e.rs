@@ -137,9 +137,8 @@ fn mock_status(status_line: &'static str) {
     thread::spawn(move || {
         while let Ok((mut stream, _)) = listener.accept() {
             drain_request_head(&mut stream);
-            let response = format!(
-                "HTTP/1.1 {status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            );
+            let response =
+                format!("HTTP/1.1 {status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             stream.write_all(response.as_bytes()).ok();
         }
     });
@@ -245,7 +244,11 @@ async fn a_replayed_event_after_reconnect_is_not_delivered_twice() {
     );
     // And the client must have asked to resume rather than starting over.
     let heads = heads.lock().unwrap().clone();
-    assert!(heads.len() >= 2, "expected a reconnect, saw {}", heads.len());
+    assert!(
+        heads.len() >= 2,
+        "expected a reconnect, saw {}",
+        heads.len()
+    );
     assert!(
         heads[1].to_lowercase().contains("last-event-id: 01a"),
         "the reconnect must carry Last-Event-ID, got: {}",
