@@ -1165,8 +1165,12 @@ run_engine_tools() {
   #     Nothing dials Anthropic: /v1/messages is a rewrite prefix, so the engine
   #     never opens the upstream leg.
   #
-  #     Needle stays /v1/messages: the anthropic catalog entry's upstream is the
-  #     bare host, so the forwarded path is the app's own.
+  #     Needle is /v1/chat/completions: the anthropic catalog entry's upstream
+  #     is the bare host, so the forwarded path is the app's own, and since
+  #     2026.8.1 openclaw's anthropic transport is the OpenAI-compatible
+  #     endpoint (`api=openai-completions`) rather than /v1/messages. The
+  #     catalog names that path, so a capture here also proves the intercept
+  #     still covers it; a pass on /v1/messages would mean openclaw reverted.
   #
   #     We seed a minimal anthropic provider block (with a dummy apiKey so
   #     openclaw actually fires the call): gate-connect detects OpenClaw off the
@@ -1185,7 +1189,7 @@ run_engine_tools() {
     mkdir -p "$HOME/.openclaw"
     printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1","apiKey":"sk-ant-e2e-dummy"}}}}' \
       > "$HOME/.openclaw/openclaw.json"
-    run_tool "openclaw" "openclaw" "/v1/messages" "$mode" -- \
+    run_tool "openclaw" "openclaw" "/v1/chat/completions" "$mode" -- \
       openclaw infer model run --local --model "anthropic/$OPENCLAW_MODEL" --prompt "ping"
   fi
 

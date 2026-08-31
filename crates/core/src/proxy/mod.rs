@@ -2032,6 +2032,22 @@ mod tests {
         );
     }
 
+    /// Anthropic's OpenAI-compatible endpoint is inference like the other two
+    /// and must reach the gateway. openclaw 2026.8.1 sends its anthropic
+    /// traffic here rather than to /v1/messages; while the path was missing
+    /// from `rewrite_prefixes` it passed through to the real API with the
+    /// switch on, which is a silent bypass rather than a visible failure.
+    #[test]
+    fn rewrites_openai_compatible_completions() {
+        let d = anthropic();
+        assert_eq!(
+            decide(&d, "api.anthropic.com", "/v1/chat/completions"),
+            Decision::Rewrite {
+                upstream_url: "https://api.anthropic.com".into(),
+            }
+        );
+    }
+
     #[test]
     fn ignores_unmatched_host() {
         let d = anthropic();
