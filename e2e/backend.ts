@@ -40,6 +40,21 @@ export interface ToolFixture {
   status: ToolStatus;
 }
 
+/** One event as the gateway sends it. Mirrors `SecurityEvent` in `lib/api.ts`,
+    and carries no content for the same reason: the fields AC3 forbids are absent
+    from the payload, so a fixture that had them would be testing a wire shape
+    that does not exist. */
+export interface SecurityEventFixture {
+  id: string;
+  requestId: string;
+  at: string;
+  action: "block" | "flag";
+  category: string | null;
+  tool: string | null;
+  model: string | null;
+  provider: string | null;
+}
+
 export interface ProviderFixture {
   slug: string;
   display_name: string;
@@ -115,8 +130,20 @@ export interface BackendState {
   launchAtLogin: { enabled: boolean; pending_disable: boolean };
   /** Settings preferences, as `preferences.json` holds them. Both default on,
       which is what lets a switch read On before anything has been written. */
+  /** What the live security-event feed (AG-578) has when the window mounts.
+      A spec pushes further events with `app.emit("security-event", ...)`, which
+      is what the real backend does once connected. */
+  securityFeed: {
+    state: "live" | "reconnecting" | "offline";
+    events: SecurityEventFixture[];
+  };
   preferences: {
     routing_health_notifications: boolean;
+    /** AG-578's per-category switches, and the sound they make. Default on, like
+        every other preference. */
+    blocked_event_notifications: boolean;
+    flagged_event_notifications: boolean;
+    security_notification_sound: boolean;
     share_diagnostics: boolean;
     /** Whether the diagnostic-data question has been ANSWERED, as opposed to
         defaulted. False sends first run through the diagnostics step; the
@@ -390,8 +417,12 @@ export function defaultState(): BackendState {
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
+    securityFeed: { state: "live", events: [] },
     preferences: {
       routing_health_notifications: true,
+      blocked_event_notifications: true,
+      flagged_event_notifications: true,
+      security_notification_sound: true,
       share_diagnostics: true,
       share_diagnostics_recorded: true,
       device_name: null,

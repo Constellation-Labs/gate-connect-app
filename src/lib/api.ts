@@ -534,14 +534,70 @@ export const pendingRestore = () => invoke<PendingRestore>("pending_restore");
  * Returns the remaining state rather than void, because a partial success is the
  * interesting case and must not read as done. */
 export const resumeRestore = () => invoke<PendingRestore>("resume_restore");
+/** What the live security-event feed says about its *own* connection (AG-578).
+ *
+ * Deliberately separate from anything routing reports, and read from its own
+ * backend channel. A tool can be routing perfectly while the feed is offline, and
+ * the reverse: the events come from the gateway, not from local traffic. Driving
+ * one indicator from the other is the observed-state-versus-intent mistake
+ * `lib/groups.ts` documents, in a new place. */
+export type FeedState = "live" | "reconnecting" | "offline";
+
+/** What the guardrails did to a request. Only these two reach the live feed:
+ *  `redact` is high-volume and low-signal, and `allow` is not a verdict. The
+ *  Overview counters and the per-tool table still carry all four. */
+export type SecurityAction = "block" | "flag";
+
+/** One blocked or flagged event.
+ *
+ * **What is absent is the point.** No prompt text, no response text, no matched
+ * credential, no evidence blob, no conversation title, no session reference. The
+ * gateway omits them from the payload rather than the client hiding them, so a
+ * field that never crosses the wire cannot leak through a log or a crash report.
+ * If a field appears here that names content, the contract was widened upstream
+ * and that is worth stopping over. */
+export interface SecurityEvent {
+  /** Stream position and dedupe key (a ULID). Not `requestId`: one request
+   *  records a decision per phase, so two events can share a request id. */
+  id: string;
+  /** What the dashboard deep link is keyed on. */
+  requestId: string;
+  at: string;
+  action: SecurityAction;
+  /** `credential | phi | pii | injection | other`, derived gateway-side. Null
+   *  when nothing fired under a name its rules recognise. */
+  category: string | null;
+  /** Null is ordinary, not exceptional: an agent whose User-Agent is not on the
+   *  gateway's allowlist is recorded unattributed rather than guessed at. */
+  tool: string | null;
+  model: string | null;
+  provider: string | null;
+}
+
+/** What the feed is doing right now. Read on mount; afterwards follow the
+ *  `security-feed-state` event. */
+export const securityFeedState = () => invoke<FeedState>("security_feed_state");
+
+/** The events the feed has buffered, oldest first.
+ *
+ * A window only receives Tauri events while it is listening, and the tray window
+ * is created and destroyed on demand - so a popover opened after ten blocked
+ * requests would otherwise show an empty list and call it "No security events",
+ * which is a different claim entirely. */
+export const securityFeedRecent = () => invoke<SecurityEvent[]>("security_feed_recent");
+
+/** The "Try again" behind an Unavailable feed. Wakes the connection out of its
+ *  backoff so the click does something visible rather than waiting out a sleep. */
+export const securityFeedRetry = () => invoke<void>("security_feed_retry");
+
 /** Non-secret Settings choices. Every field defaults to `true`, and an absent
  * field in the stored file loads as `true` - so a switch reads On before anything
  * has ever been written, which is what lets Settings show a truthful default.
  *
- * Only the preferences that currently gate something are here. Per-category
- * security-event notifications and a sound toggle belong with the live event feed,
- * which does not exist yet; a switch that gates nothing would tell the user they
- * had turned something off. */
+ * Only the preferences that currently gate something are here. The per-category
+ * security-event switches gate the notifications the live feed (AG-578) fires;
+ * they arrived with it, because a switch that gates nothing would tell the user
+ * they had turned something off. */
 export interface Preferences {
   /** Native notifications about routing itself - an expired session, a quit that
    * could not put a tool back. The two the app actually fires. */
@@ -563,6 +619,14 @@ export interface Preferences {
    * display fallback and goes no further, so skipping the naming step really
    * does skip it. */
   device_name: string | null;
+  /** Notify when a request is blocked. Gated per category rather than as one
+   *  switch because the two differ in weight: a block stopped something, a flag
+   *  only noted it. */
+  blocked_event_notifications: boolean;
+  /** Notify when a request is flagged. */
+  flagged_event_notifications: boolean;
+  /** Whether those notifications make a sound. */
+  security_notification_sound: boolean;
 }
 
 export const getPreferences = () => invoke<Preferences>("get_preferences");
@@ -600,6 +664,15 @@ export const setRoutingHealthNotifications = (enabled: boolean) =>
 
 export const setShareDiagnostics = (enabled: boolean) =>
   invoke<void>("set_share_diagnostics", { enabled });
+
+export const setBlockedEventNotifications = (enabled: boolean) =>
+  invoke<void>("set_blocked_event_notifications", { enabled });
+
+export const setFlaggedEventNotifications = (enabled: boolean) =>
+  invoke<void>("set_flagged_event_notifications", { enabled });
+
+export const setSecurityNotificationSound = (enabled: boolean) =>
+  invoke<void>("set_security_notification_sound", { enabled });
 
 /** What a restore did to one entry on its last attempt. Closed set, mirroring
  * `recovery::Outcome`, and every member comes from the restore's own control flow

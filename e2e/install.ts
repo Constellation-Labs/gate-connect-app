@@ -314,6 +314,24 @@ export function installFakeTauri(state: BackendState): void {
       state.preferences.routing_health_notifications = enabled as boolean;
       return null;
     },
+    set_blocked_event_notifications: ({ enabled }) => {
+      state.preferences.blocked_event_notifications = enabled as boolean;
+      return null;
+    },
+    set_flagged_event_notifications: ({ enabled }) => {
+      state.preferences.flagged_event_notifications = enabled as boolean;
+      return null;
+    },
+    set_security_notification_sound: ({ enabled }) => {
+      state.preferences.security_notification_sound = enabled as boolean;
+      return null;
+    },
+    // The live security-event feed (AG-578). The real backend holds the
+    // connection and pushes; here a spec pushes with `app.emit`, which is the
+    // same thing from the window's side.
+    security_feed_state: () => state.securityFeed.state,
+    security_feed_recent: () => state.securityFeed.events.map((e) => ({ ...e })),
+    security_feed_retry: () => null,
     set_share_diagnostics: ({ enabled }) => {
       state.preferences.share_diagnostics = enabled as boolean;
       // Answering is what the real command records too, and it is what dismisses

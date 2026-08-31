@@ -1,3 +1,4 @@
+import type { FeedState } from "../../lib/api";
 import type { ReactNode } from "react";
 import { BaseSwitch, StatusTile } from "./base";
 import { GateAiLogoMark } from "./GateAiLogoMark";
@@ -68,6 +69,7 @@ export function Tray({
   menuOpen,
   onMenuToggle,
   onMenuSelect,
+  security,
   dialog,
 }: {
   /** The engine's observed state. Omit while the first proxy read is in
@@ -92,6 +94,12 @@ export function Tray({
   menuOpen: boolean;
   onMenuToggle: () => void;
   onMenuSelect: (action: TrayMenuAction) => void;
+  /** The live security-event feed, compacted to what fits a 400px popover
+   * (AG-578): how many blocked or flagged events this session has seen, and
+   * whether the feed is actually connected. Omitted while the first read is in
+   * flight, and the card is omitted with it - a count with no reading behind it
+   * would be a claim, which is the same rule `master` follows one prop up. */
+  security?: { state: FeedState; count: number; onOpen: () => void };
   /** The dialog covering the popover, if any - drift review, close-apps
    * offer. Same slot contract as `AppShell`. */
   dialog?: ReactNode;
@@ -124,6 +132,7 @@ export function Tray({
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 pt-4">
           {master && <MasterCard on={master.on} groups={groups} />}
+          {security && <SecurityCard security={security} />}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-4">
             {groups.map((group) => (
@@ -431,3 +440,54 @@ function SignedOutNote({ onExpand }: { onExpand: () => void }) {
     </div>
   );
 }
+
+/** The security feed, at popover size.
+ *
+ * A count and a connection state, and a way into the pane that has the detail.
+ * Deliberately not a list: at 400px a row would have to drop either the category
+ * or the tool, and an event that cannot say what fired or where is not worth the
+ * space - the full feed is one click away and says both.
+ *
+ * The count is "this session", not "today". The feed buffers what it has received
+ * since the app started, and calling that a daily total would be a claim about
+ * traffic the app was not running for.
+ */
+function SecurityCard({
+  security,
+}: {
+  security: { state: FeedState; count: number; onOpen: () => void };
+}) {
+  const feed = FEED_LABEL[security.state];
+  return (
+    <button
+      type="button"
+      onClick={security.onOpen}
+      className="flex w-full items-center justify-between gap-3 rounded-md border border-base-border bg-base-card p-3 text-left shadow-base-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+    >
+      <span className="flex items-center gap-2.5">
+        <Icon name="shieldCheck" size={20} />
+        <span className="text-sm font-medium leading-5 text-base-foreground">
+          {security.count === 0
+            ? "No security events"
+            : `${security.count} security event${security.count === 1 ? "" : "s"}`}
+        </span>
+      </span>
+      <span
+        role="status"
+        aria-label={`Event feed ${feed.label}`}
+        className={`inline-block rounded-xs px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${feed.className}`}
+      >
+        {feed.label}
+      </span>
+    </button>
+  );
+}
+
+/** Same three states and the same colours the pane draws. Duplicated as a
+ *  constant rather than imported from `SecurityPane`, which would pull the whole
+ *  window pane into the tray bundle for three strings. */
+const FEED_LABEL: Record<FeedState, { label: string; className: string }> = {
+  live: { label: "Live", className: "bg-green-100 text-green-900" },
+  reconnecting: { label: "Reconnecting", className: "bg-amber-100 text-amber-900" },
+  offline: { label: "Offline", className: "bg-gray-100 text-neutral-700" },
+};

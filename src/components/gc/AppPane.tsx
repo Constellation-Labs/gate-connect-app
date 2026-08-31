@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { BaseSwitch, Card, EmptyNote, Skeleton } from "./base";
+import { BADGE_STYLES, BaseSwitch, Card, EmptyNote, Pill, Skeleton } from "./base";
 import { Icon } from "./Icon";
 import { MessagesChart, StatTiles } from "./metrics";
 import type { MessagesBucket, UsageStats } from "./metrics";
@@ -25,11 +25,7 @@ export type {
   ActivitySecurity,
   ActivityStatus,
 } from "../../lib/toolEventRow";
-import type {
-  ActivityEntry,
-  ActivitySecurity,
-  ActivityStatus,
-} from "../../lib/toolEventRow";
+import type { ActivityEntry } from "../../lib/toolEventRow";
 
 export interface GateModel {
   /** Model vendor, e.g. "anthropic". */
@@ -48,45 +44,6 @@ export interface GateModel {
   alsoEnabled?: number;
 }
 
-/**
- * One badge per row, under a single Security column (`table/recent-activity`,
- * 272:3150, sampled from the properties panel 2026-08-21).
- *
- * Status and security used to be two columns; the design merged them, so a row
- * that failed reads ERROR and every other row reads what the guardrails did.
- * `error` is in this map rather than a second one because they now compete for one
- * cell and the precedence has to live somewhere the reader can see it.
- *
- * `allow` is grey, not green, which is the change worth noticing: green reads as
- * "good", and the useful signal in this column is when something was *acted on*.
- * A wall of green ticks is what makes the one amber row easy to miss. It is the
- * one entry that is not a verdict, so it takes a neutral over `gray/100` rather
- * than a coloured pair.
- *
- * That neutral is `gray/600`, not the design's `base/muted-foreground`. The
- * sampled pair is 4.39:1 on `gray/100` and this text is 12px medium, so it misses
- * AA by a hair - on the badge that will sit in almost every row. `gray/600` is
- * 6.87:1 and reads as the same grey. The same call the `gc` switch track made
- * when 2.98:1 turned up on a hovered row.
- *
- * The 100 stop with 700 text, deliberately quieter than `Overview`'s 200/900
- * action pills: those name a policy, these report what happened to one request,
- * and a table of them should not shout. REDACTED's text sits at the 800 - the
- * design's own exception, not a rounding of ours - and ERROR and BLOCKED sample
- * identically. Redacted is violet, matching `chart.redacted`; purple here was a
- * slip, and this was the app's last use of it.
- */
-const BADGE_STYLES: Record<ActivitySecurity | ActivityStatus, string> = {
-  allow: "bg-gray-100 text-gray-600",
-  flagged: "bg-amber-100 text-amber-700",
-  redacted: "bg-violet-100 text-violet-800",
-  blocked: "bg-red-100 text-red-700",
-  error: "bg-red-100 text-red-700",
-  // Never rendered: a successful request shows its security action instead. Here
-  // so the map stays exhaustive over both unions and a new status cannot be added
-  // without deciding what it looks like. Matches `allow`, the other non-verdict.
-  success: "bg-gray-100 text-gray-600",
-};
 
 export function AppPane({
   name,
@@ -796,23 +753,3 @@ function PendingRows() {
   );
 }
 
-function Pill({
-  className,
-  title,
-  children,
-}: {
-  className: string;
-  /** Hover detail, for a badge that stands in for more than it says - the merged
-   *  security column uses it to keep the guardrail verdict on a failed row. */
-  title?: string;
-  children: ReactNode;
-}) {
-  return (
-    <span
-      title={title}
-      className={`inline-block rounded-xs px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
-    >
-      {children}
-    </span>
-  );
-}

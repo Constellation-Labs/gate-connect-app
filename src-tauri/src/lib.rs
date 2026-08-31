@@ -1740,6 +1740,144 @@ fn set_routing_health_notifications(enabled: bool) -> Result<(), String> {
         .map_err(|e| format!("{e:#}"))
 }
 
+/// Turn blocked-request notifications on or off (AG-578).
+///
+/// Separate from the flagged switch because the two differ in weight: a block
+/// stopped something the user was doing, a flag only noted it.
+#[tauri::command]
+fn set_blocked_event_notifications(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_blocked_event_notifications(enabled)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Turn flagged-request notifications on or off (AG-578).
+#[tauri::command]
+fn set_flagged_event_notifications(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_flagged_event_notifications(enabled)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Turn the sound on security notifications on or off (AG-578).
+#[tauri::command]
+fn set_security_notification_sound(enabled: bool) -> Result<(), String> {
+    gate_connect_core::preferences::set_security_notification_sound(enabled)
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// The live security-event feed (AG-578), one per process.
+///
+/// A singleton because the connection is a shared resource, not a per-window
+/// one: the main window and the tray popover both read it, and two windows
+/// holding two streams would double the org's fan-out and show each of them half
+/// the dedupe state.
+fn security_feed() -> &'static std::sync::Arc<gate_connect_core::security_feed::client::Feed> {
+    static FEED: std::sync::OnceLock<
+        std::sync::Arc<gate_connect_core::security_feed::client::Feed>,
+    > = std::sync::OnceLock::new();
+    FEED.get_or_init(|| {
+        std::sync::Arc::new(gate_connect_core::security_feed::client::Feed::new())
+    })
+}
+
+/// How often to retire closed notification-grouping windows.
+///
+/// Ten seconds against the grouper's 60s window: short enough that a trailing
+/// summary reads as part of the same incident, long enough that an idle machine
+/// is doing nothing measurable.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const SECURITY_SWEEP_INTERVAL_SECS: u64 = 10;
+
+/// Fire a desktop notification for one security event, if the user asked for one.
+///
+/// Everything interesting is in `security_feed::notify`: which switch gates this
+/// action, and whether an identical event has already spoken inside the grouping
+/// window. This function's only job is the side effect.
+///
+/// Best-effort throughout. A notification that cannot be shown must not affect the
+/// feed, and the event is already on its way to the window regardless - the
+/// in-app feed is the record, the notification is the interruption.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn notify_for_event(
+    app: &tauri::AppHandle,
+    grouper: &std::sync::Mutex<gate_connect_core::security_feed::notify::Grouper>,
+    event: &gate_connect_core::security_feed::SecurityEvent,
+) {
+    let prefs = gate_connect_core::preferences::load();
+    let due = {
+        let Ok(mut g) = grouper.lock() else {
+            // A poisoned grouper means an earlier panic while holding it. Saying
+            // nothing is the safe direction: the alternative is un-grouped
+            // notifications, which is the failure this exists to prevent.
+            return;
+        };
+        g.admit(event, &prefs, std::time::Instant::now())
+    };
+    for notification in due {
+        fire_notification(app, notification);
+    }
+}
+
+/// Show one notification the grouper decided on.
+///
+/// Split from the decision so the event path and the sweep timer cannot drift on
+/// how a notification is presented.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn fire_notification(
+    app: &tauri::AppHandle,
+    notification: gate_connect_core::security_feed::notify::Notification,
+) {
+    use gate_connect_core::security_feed::notify::Notification;
+    use tauri_plugin_notification::NotificationExt;
+
+    let Notification::Fire { title, body, sound } = notification else {
+        return;
+    };
+    let mut builder = app.notification().builder().title(title).body(body);
+    if sound {
+        // The platform default rather than a bundled asset: a sound the user
+        // already recognises as "your computer wants you" beats one they have to
+        // learn, and it follows their Do Not Disturb settings.
+        //
+        // `sound` is one of the four fields the plugin's desktop path actually
+        // forwards (title, body, icon, sound) - `id`, `group` and `group_summary`
+        // exist on the builder but are mobile-only and are dropped here without
+        // error, which is why the trailing summary is a second notification
+        // rather than an update to the first.
+        builder = builder.sound("default");
+    }
+    let _ = builder.show();
+}
+
+/// What the feed is doing: `live`, `reconnecting` or `offline` (AC4).
+///
+/// Read on mount. Afterwards the window follows the `security-feed-state` event,
+/// but a window that opened mid-session has missed every event so far and needs
+/// somewhere to start.
+#[tauri::command]
+fn security_feed_state() -> gate_connect_core::security_feed::FeedState {
+    security_feed().state()
+}
+
+/// The events the feed has buffered, oldest first.
+///
+/// Tauri events only reach a window that is already listening, and the tray
+/// window is created and destroyed on demand - so without this a popover opened
+/// after ten blocked requests would show an empty feed and call it "no security
+/// events", which is a different claim entirely.
+#[tauri::command]
+fn security_feed_recent() -> Vec<gate_connect_core::security_feed::SecurityEvent> {
+    security_feed().recent()
+}
+
+/// AC6's recovery action: the "Try again" behind an Unavailable feed.
+///
+/// Wakes the connection loop out of whatever backoff it is sitting in, so a user
+/// who clicks Retry sees something happen instead of waiting out a 60s sleep.
+#[tauri::command]
+fn security_feed_retry() {
+    security_feed().retry_now();
+}
+
 /// Record whether Gate Connect may send diagnostic data. Onboarding records the
 /// first answer; this is Settings changing it. Nothing is uploaded here - the
 /// send path is its own story.
@@ -2549,6 +2687,12 @@ pub fn run() {
                     running_agents,
                     close_running_agents,
                     drain_backend_errors,
+                    security_feed_state,
+                    security_feed_recent,
+                    security_feed_retry,
+                    set_blocked_event_notifications,
+                    set_flagged_event_notifications,
+                    set_security_notification_sound,
                 ]
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -2905,6 +3049,82 @@ pub fn run() {
             // the browser - a failed refresh just lets the token lapse to the
             // "sign in" state the UI derives from oauth_status. Best-effort, off
             // the tray thread.
+            // The live security-event feed (AG-578). Spawned beside the token
+            // refresh loop above because it depends on the same thing: a live
+            // credential. It reads one per connect attempt through
+            // `live_session`, so a token this loop replaces mid-stream is picked
+            // up by the next reconnect with no coordination between the two.
+            //
+            // Deliberately started unconditionally, not gated on routing being
+            // on. The events come from the gateway, not from local traffic, and
+            // AC4 requires the feed's state to be independent of routing's - a
+            // feed that only ran while routing was on would be reporting routing.
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            {
+                let feed_handle = app.handle().clone();
+                let feed = security_feed().clone();
+                // One grouper for the process, so a burst of identical blocks
+                // collapses into a single notification however many windows are
+                // open. See `security_feed::notify` for why that is required
+                // rather than polite.
+                let grouper = std::sync::Arc::new(std::sync::Mutex::new(
+                    gate_connect_core::security_feed::notify::Grouper::new(),
+                ));
+
+                // A storm ends by events *stopping*, so the moment worth
+                // reporting - "and 29 more" - is precisely the moment nothing
+                // arrives to drive a decision. Without this timer the count is
+                // collected and never spoken, which is where this started: one
+                // notification saying a request was blocked, for thirty.
+                //
+                // Every 10s against a 60s window, so a summary lands within ten
+                // seconds of the window closing. Cheap: it walks a map that is
+                // empty on an ordinary machine.
+                let sweep_handle = app.handle().clone();
+                let sweep_grouper = grouper.clone();
+                // A plain thread, matching the token-refresh loop below rather
+                // than the async runtime: `tokio` is not a direct dependency
+                // here, and this wants a sleep, not a scheduler.
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(
+                            SECURITY_SWEEP_INTERVAL_SECS,
+                        ));
+                        let prefs = gate_connect_core::preferences::load();
+                        let due = {
+                            let Ok(mut g) = sweep_grouper.lock() else {
+                                // Poisoned by a panic elsewhere. Stop sweeping
+                                // rather than spin: the feed itself is unaffected
+                                // and the in-app pane still has every event.
+                                return;
+                            };
+                            g.sweep(&prefs, std::time::Instant::now())
+                        };
+                        for notification in due {
+                            fire_notification(&sweep_handle, notification);
+                        }
+                    }
+                });
+                tauri::async_runtime::spawn(async move {
+                    gate_connect_core::security_feed::client::run(feed, move |update| {
+                        use gate_connect_core::security_feed::Update;
+                        // Failing to emit means no window is listening, which is
+                        // ordinary: the feed keeps its own buffer and a window
+                        // asks for it on mount.
+                        match update {
+                            Update::State(state) => {
+                                let _ = feed_handle.emit("security-feed-state", state);
+                            }
+                            Update::Event(event) => {
+                                let _ = feed_handle.emit("security-event", &*event);
+                                notify_for_event(&feed_handle, &grouper, &event);
+                            }
+                        }
+                    })
+                    .await;
+                });
+            }
+
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
                 let refresh_handle = app.handle().clone();

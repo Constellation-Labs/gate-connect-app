@@ -15,10 +15,11 @@
 //! default.
 //!
 //! Scope note. Only the preferences that currently gate something live here.
-//! Per-category security-event notifications (blocked / flagged) and a sound
-//! toggle are specified alongside the live event feed, and there is no feed yet -
-//! a switch that gates nothing is worse than a missing switch, because it tells
-//! the user they have turned something off.
+//! The per-category security-event switches (blocked / flagged) and the sound
+//! toggle arrived with the live event feed they gate (AG-578) and not before,
+//! for the reason that kept them out until then: a switch that gates nothing is
+//! worse than a missing switch, because it tells the user they have turned
+//! something off.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,20 @@ pub struct Preferences {
     /// every request - see `proxy`'s attribution injection.
     #[serde(default)]
     pub device_name: Option<String>,
+    /// Notify when a request is **blocked**.
+    ///
+    /// Split from the flagged switch rather than shipped as one security toggle
+    /// because the two differ in weight: a block stopped something the user was
+    /// trying to do, a flag only noted it. Someone who wants to hear about the
+    /// first and not the second is asking for something reasonable.
+    #[serde(default = "default_true")]
+    pub blocked_event_notifications: bool,
+    /// Notify when a request is **flagged**.
+    #[serde(default = "default_true")]
+    pub flagged_event_notifications: bool,
+    /// Whether those notifications make a sound.
+    #[serde(default = "default_true")]
+    pub security_notification_sound: bool,
     /// Which model each tool should run on, keyed by tool slug (AG-588).
     ///
     /// **Local by decision, not by omission.** An earlier revision stored this on
@@ -158,6 +173,9 @@ impl Default for Preferences {
             share_diagnostics: true,
             share_diagnostics_recorded: false,
             device_name: None,
+            blocked_event_notifications: true,
+            flagged_event_notifications: true,
+            security_notification_sound: true,
             tool_models: BTreeMap::new(),
             gate_model_paid_ack_unix: None,
         }
@@ -297,6 +315,27 @@ pub fn reset_cache_for_tests() {
 pub fn set_routing_health_notifications(enabled: bool) -> Result<()> {
     let mut prefs = load();
     prefs.routing_health_notifications = enabled;
+    save(&prefs)
+}
+
+/// Turn blocked-request notifications on or off. Read-modify-write, as above.
+pub fn set_blocked_event_notifications(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.blocked_event_notifications = enabled;
+    save(&prefs)
+}
+
+/// Turn flagged-request notifications on or off.
+pub fn set_flagged_event_notifications(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.flagged_event_notifications = enabled;
+    save(&prefs)
+}
+
+/// Turn the sound on those notifications on or off.
+pub fn set_security_notification_sound(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.security_notification_sound = enabled;
     save(&prefs)
 }
 
