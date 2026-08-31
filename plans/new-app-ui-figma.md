@@ -1192,6 +1192,79 @@ simply never updates, which is what kept the waiting note from ever appearing.
   end, because by then the session is already spent and dropping it is the only
   move. Both are drawn; worth asking whether one was meant to do something else.
 
+### Audit 2026-08-30, and what it corrected 2026-08-31
+
+Four parallel reads of the whole file against the build - Settings, App, Setup +
+Onboarding, and the shared component set - written up in
+`docs/review-figma-{settings,app,setup-onboarding,components}.md`. Overview and
+Tray had been read that same week and are not repeated there. What the audit
+turned up and this pass fixed:
+
+**The switch was 11% undersized, everywhere.** The `Switch` set (`408:14253`)
+draws a 36x20 track with a 16px knob at a 2px inset; `BaseSwitch` rendered
+32x18 with a 14px knob. The 2026-08-26 measurement had been taken off an
+instance **scaled 1.125x**, and all four of its numbers divide back exactly
+(36/1.125 = 32, 20/1.125 = 17.78, 16/1.125 = 14.22, 2/1.125 = 1.78).
+`base.tsx`'s own docstring had said "36x20 track, 16px thumb" the whole time;
+only the code below it disagreed. The knob's travel moves with it, to 18px.
+
+**`mono/eyebrow` is 8% tracking, not 10%.** `437:161`'s variables give
+`letterSpacing: 8`. `Sidebar.tsx` had been carrying a hardcoded
+`tracking-[0.96px]` to get the drawn value, so one Figma variable rendered two
+ways - 0.96px in the rail, 1.2px at every site that named the token. The token
+moved to 0.96px (and `eyebrow-14` to 1.12px) and the hardcode is gone.
+
+**Tone-tile size follows the dialog's width, not its tone.** The three 480px
+Settings dialogs draw a 32px tile with a 16px glyph - `danger` Disconnect
+(`143:70620`) included, where the build drew a 44px red one - and the 600px
+Diagnostics report is *neutral* yet draws 44px with a 24px glyph
+(`363:9029`). The glyph does not track the box either, so `TILE_SIZES` names
+both and each drawn dialog declares which it takes. The old tone-derived pair
+stays as the default, so every undrawn dialog is untouched.
+
+**Smaller, all measured:** the diagnostics report body is `mono/body-14`, not
+the 12/16 it rendered (`363:9120`) - the one screen a user reads a wall of text
+on; the rename dialog draws `Monitor` and the diagnostics dialog
+`ClipboardList`, both of which the 2026-08-26 glyph sweep fixed on the Settings
+rows and never followed into `dialogs.tsx`; dialog body blocks stack at 16px,
+not 12; the reset dialog's numbered tiles are 36px; the Settings value column
+starts at 233, so its label gutter is 189 rather than 184; and the unavailable
+counter renders lowercase **`n/a`** (`272:1728`), which the plan had
+transcribed as `N/A` from the same frame.
+
+**The setup rail runs on quarters.** Measured off each pane's `prog-track` fill
+against the 1024 track: sign-in 256, API key 512, org picker 512, name device
+768, diagnostics 1024. The two second-step panes share a stop because they are
+alternatives rather than a sequence. Six invented fractions until now.
+
+**The onboarding art was stale, and step 2's was wrong.** Steps 2 and 3 were
+redrawn as live mockups in the `710:*` batch, and the shipped step-2 capture
+showed the **retired** popover (Proxy / Direct Gateway rows) inside a desktop
+mockup - first run was teaching a UI the product no longer has. Both are
+re-exported from `710:36505` and `710:36133` at 3x through
+`download_assets`, which the earlier captures could not use. Step 2 loses its
+per-platform mockups with the redraw: the frame draws the popover panel itself
+rather than its place on a desktop, so the three `where-is-gate-connect-*.png`
+files are gone and one asset replaces them. The platform-specific *sentence*
+(`whereItLives`) still carries where the icon lives, which is the recorded
+deviation it always was.
+
+**Checked and deliberately not changed.** The org picker's header tile is 44px
+(`686:23559`) while the name-device pane's is **48** (`209:84721`) - the panes
+disagree with each other, so the build's uniform 48 stays and the file gets the
+question. `brand=moonshot` exists in the `logo` set with no Moonshot provider
+anywhere in the product, so nothing is added for it. Four docstrings citing the
+now-deleted Components-page nodes were repointed at the live flow frames rather
+than at ids that no longer resolve.
+
+**Left for their own PRs:** the App page, which moved more than any other and
+whose findings land squarely on the files PR #208 is reworking - the OpenCode
+model card, the enabled-set grid, the picker's copy and checkbox shape - plus
+the redrawn Recent activity table, which is blocked on data: its new `Type`
+column needs a guardrail category no gateway field carries
+(`lib/toolEventRow.ts`). And the org picker's many-orgs scroll, which is a
+`SetupLayout` change rather than a value.
+
 ### Sync 2026-08-28: the Tray page, and Built the same day
 
 The file gained a nested page under Flows, **`↳ Tray` (694:34005)**, carrying

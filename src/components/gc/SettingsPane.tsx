@@ -595,18 +595,20 @@ function Row({ row }: { row: SettingsRow }) {
 
       {/* Two row shapes, which is all the design draws. A *value* row -
         * Device, Install ID, Gate plan, Version - sets its label in a fixed
-        * 184px column so the values line up down the card. A *description* row
+        * 189px column so the values line up down the card, which puts the value
+        * at x=233 as every drawn value row does (`116:28991` and siblings). A
+        * *description* row
         * - Launch at login, Notifications, Diagnostics report, Reset - gives the
         * text the full width and puts its control at the end.
         *
         * A row carrying both is ours, not the file's: Sign-in method and Gate
-        * certificate. They take the description shape, because the 184px column
-        * is a gutter and a sentence in it wrapped to six lines. */}
+        * certificate. They take the description shape, because that column is a
+        * gutter and a sentence in it wrapped to six lines. */}
       <div
         className={`min-w-0 ${
           row.description !== undefined || (row.value === undefined && !row.unavailable)
             ? "flex-1"
-            : "w-[184px] shrink-0"
+            : "w-[189px] shrink-0"
         }`}
       >
         <p className="truncate text-sm font-medium leading-5 text-base-foreground">

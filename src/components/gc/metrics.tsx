@@ -71,9 +71,12 @@ const SERIES = [
   { key: "redacted", label: "Redacted", className: "bg-chart-redacted" },
 ] as const;
 
-/** What any counter reads with no figure behind it (Figma 228:89341, where
- *  Tokens saved is the one with nothing to report). */
-const UNAVAILABLE = "N/A";
+/** What any counter reads with no figure behind it.
+ *
+ *  Lowercase, as `228:89343` and `272:1728` render it - the tile's label above
+ *  is the uppercase half, and the value is not. The plan had transcribed this
+ *  as `N/A` from the same frames; the 2026-08-30 screenshot settles it. */
+const UNAVAILABLE = "n/a";
 
 export function StatTiles({
   stats,

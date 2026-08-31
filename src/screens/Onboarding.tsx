@@ -10,20 +10,11 @@ import type { IconName } from "../components/gc/Icon";
 import { secretStoreName, usePlatform, type Platform } from "../lib/platform";
 import whatIsGateConnect from "../assets/onboarding-what-is-gate-connect.png";
 import seeWhatGateIsDoing from "../assets/onboarding-see-what-gate-is-doing.png";
-import whereMacos from "../assets/where-is-gate-connect-macos.png";
-import whereLinux from "../assets/where-is-gate-connect-linux.png";
-import whereWindows from "../assets/where-is-gate-connect-windows.png";
+import whereIsGateConnect from "../assets/onboarding-where-is-gate-connect.png";
 
 /** Broadcast when the intro is completed, so the popover window can record
  * the seen-flag in its own storage without waiting for a restart. */
 export const TOUR_SEEN_EVENT = "gc:tour-seen";
-
-const WHERE_IMAGE: Record<Platform, string> = {
-  macos: whereMacos,
-  linux: whereLinux,
-  windows: whereWindows,
-  unknown: whereMacos,
-};
 
 /** Where the tray icon lives, in this OS's own vocabulary. */
 function whereItLives(platform: Platform): string {
@@ -99,24 +90,16 @@ function buildSteps(platform: Platform): Step[] {
     {
       hero: (
         <img
-          src={WHERE_IMAGE[platform]}
-          alt="The Gate Connect icon sits in the system status area; clicking it opens the status popover"
-          className={`mx-auto block w-full max-w-[540px] object-cover ${
-            platform === "windows" ? "object-bottom" : "object-top"
-          }`}
-          // Crop the 1920x1120 mockup toward the tray icon and fade the cut edge.
-          // Windows' tray is at the bottom right, so keep the bottom and cut the
-          // top; macOS/Linux menu bars are at the top, so keep the top.
+          src={whereIsGateConnect}
+          alt="The Gate Connect popover: a routing summary over the list of apps, with an Expand app button"
+          width={1770}
+          height={660}
+          className="mx-auto block h-auto w-full max-w-[540px]"
+          // Cropped mid-row in the frame, like the dashboard art below, so it
+          // takes the same bottom fade rather than a hard cut edge.
           style={{
-            aspectRatio: "1920 / 840",
-            maskImage:
-              platform === "windows"
-                ? "linear-gradient(0deg,#000 88%,transparent 100%)"
-                : "linear-gradient(180deg,#000 88%,transparent 100%)",
-            WebkitMaskImage:
-              platform === "windows"
-                ? "linear-gradient(0deg,#000 88%,transparent 100%)"
-                : "linear-gradient(180deg,#000 88%,transparent 100%)",
+            maskImage: "linear-gradient(180deg,#000 92%,transparent 100%)",
+            WebkitMaskImage: "linear-gradient(180deg,#000 92%,transparent 100%)",
           }}
         />
       ),
@@ -136,11 +119,11 @@ function buildSteps(platform: Platform): Step[] {
         <img
           src={seeWhatGateIsDoing}
           alt="The Overview dashboard: messages, blocked and flagged counts, tokens saved, and a bar chart of message volume"
-          width={1000}
-          height={376}
+          width={1770}
+          height={660}
           className="mx-auto block h-auto w-full max-w-[540px]"
           // The design crops this one mid-chart, so a square bottom edge reads
-          // as a rendering bug. Same fade the platform mockups use.
+          // as a rendering bug. Same fade the popover art above takes.
           style={{
             maskImage: "linear-gradient(180deg,#000 92%,transparent 100%)",
             WebkitMaskImage: "linear-gradient(180deg,#000 92%,transparent 100%)",

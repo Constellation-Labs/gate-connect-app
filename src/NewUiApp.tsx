@@ -1608,21 +1608,22 @@ export function NewUiApp() {
         menuOpen={menuOpen}
         onMenuToggle={() => setMenuOpen((v) => !v)}
         onMenuSelect={onMenuSelect}
-        // Positional: how far along the drawn flow this pane sits. Every Setup
-        // frame carries the rail; the exact fractions are the flow's own order
-        // rather than sampled stops.
+        // The stops the frames draw, measured off each pane's `prog-track` fill
+        // against the 1024 track (2026-08-30): sign-in 256, API key 512, org
+        // picker 512, name device 768, diagnostics 1024. Quarters, with the two
+        // second-step panes sharing one - they are alternatives, not a sequence,
+        // so the rail does not advance between them. These were six invented
+        // fractions until that read.
         progress={
           stage.kind === "welcome"
-            ? 0.1
+            ? 0.25
             : stage.kind === "api-key"
-              ? 0.25
+              ? 0.5
               : stage.kind === "org-picker"
-                ? 0.4
+                ? 0.5
                 : stage.kind === "name-device"
-                  ? 0.6
-                  : stage.kind === "diagnostics"
-                    ? 0.8
-                    : 1
+                  ? 0.75
+                  : 1
         }
       >
         {stage.kind === "welcome" ? (
