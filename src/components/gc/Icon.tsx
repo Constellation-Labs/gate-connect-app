@@ -62,7 +62,10 @@ export type IconName =
   | "arrowRight"
   | "focus"
   | "bellDot"
-  | "creditCard";
+  | "creditCard"
+  | "users"
+  | "expand"
+  | "chevronDown";
 
 const PATHS: Record<IconName, JSX.Element> = {
   shieldCheck: (
@@ -448,6 +451,31 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M2 10h20" />
     </>
   ),
+  // Lucide `Users`, `Expand` and `ChevronDown` - the tray popover's footer
+  // draws Users beside the organization name, its header button carries
+  // Expand, and the collapsed "Not installed" section carries the chevron
+  // (Figma `Flows / Tray`, read 2026-08-28).
+  users: (
+    <>
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </>
+  ),
+  expand: (
+    <>
+      <path d="m21 21-6-6" />
+      <path d="M16.2 21H21v-4.8" />
+      <path d="M7.8 21H3v-4.8" />
+      <path d="m3 21 6-6" />
+      <path d="M16.2 3H21v4.8" />
+      <path d="m21 3-6 6" />
+      <path d="M7.8 3H3v4.8" />
+      <path d="m3 3 6 6" />
+    </>
+  ),
+  chevronDown: <path d="m6 9 6 6 6-6" />,
 };
 
 export function Icon({

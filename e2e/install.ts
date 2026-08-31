@@ -417,6 +417,11 @@ export function installFakeTauri(state: BackendState): void {
       return n;
     },
     quit_app: () => null,
+    // Window choreography the tray popover invokes: revealing the main window
+    // and requesting the tray-menu quit are Rust-side effects with nothing to
+    // model here - the call log is what a spec asserts on.
+    reveal_popover: () => null,
+    request_app_quit: () => null,
     pending_quit_tools: () => {
       const pending = state.pendingQuitTools;
       state.pendingQuitTools = null;
@@ -516,8 +521,8 @@ export function installFakeTauri(state: BackendState): void {
     },
     convertFileSrc: (path: string) => path,
     metadata: {
-      currentWindow: { label: "main" },
-      currentWebview: { windowLabel: "main", label: "main" },
+      currentWindow: { label: state.windowLabel },
+      currentWebview: { windowLabel: state.windowLabel, label: state.windowLabel },
     },
   };
 

@@ -1192,6 +1192,97 @@ simply never updates, which is what kept the waiting note from ever appearing.
   end, because by then the session is already spent and dropping it is the only
   move. Both are drawn; worth asking whether one was meant to do something else.
 
+### Sync 2026-08-28: the Tray page, and Built the same day
+
+The file gained a nested page under Flows, **`↳ Tray` (694:34005)**, carrying
+the ready check: four 400x700 frames redrawing the compact popover in the new
+language. Read over MCP (metadata, design context for `Connect/partial`,
+variable defs on the routing card and the menu) plus screenshots of all four.
+
+**What the frames draw.** `Connect/partial` and `Connect/routing` are the two
+master states; `Connect/full frame` is the unclipped scroll content;
+`Connect/menu` opens the footer menu. Anatomy: a 64px header with the **Gate AI
+lockup** (the `gate-ai-logo-mark` vector, "Gate" `#002554` / "Connect"
+`#3646e7` - the mark's own inks, not tokens) and a `sm` outline **Expand app**
+button; a master card (white, r8, p12) with the banner tile recipe at 36px -
+amber-50→200 on an amber-300 border with `ShieldBan` for "Partially routed",
+the green set with `ShieldCheck` for "Gate is protecting you" - over a muted
+"On · 6 of 8 tools routing" line; the rail's groups as bordered cards
+(`shadow/xs`, rows divided by rules) under `mono/eyebrow` at **14px** (the
+rail's is 12) with the same protected-over-total counter; a collapsed **"Not
+installed" section** ("NOT INSTALLED · 8 ˅"); a **Command-line tools** card
+carrying the env-export switch with its own copy ("Sets HTTPS_PROXY for your
+whole shell, so OpenCode and other terminal tools route too."); and a 56px
+footer naming the org beside a 32px ellipsis button whose menu adds **Quit
+Gate Connect** (red, `LogOut`, no external glyph in the render) to the
+topbar's dashboard/docs pair. Rows are drawn twice: 64px three-liners
+(name, status with qualifier, "345 messages · 23 alerts" / "No recent
+messages" / "Off") and 40px two-liners on the routing frame's Other tools.
+The master card's switch is drawn at **opacity 0** in every frame. The frame
+window itself is r16 under `shadow/md` on a dark backdrop.
+
+**Built as a third window.** `tauri.conf.json` declares `tray` (400x700,
+undecorated, always-on-top, skip-taskbar, hidden); `main.tsx` routes on the
+label, with `?window=tray` as the plain-browser fallback the e2e suite and dev
+use. `components/gc/Tray.tsx` is the surface (header, master card, groups,
+not-installed, CLI card, footer + menu, dialog slot), `TrayApp.tsx` the shell:
+its own slim load + 5s detection poll, and the same `useRouting` /
+`useRunningApps` dispatch as the window, with the drift review, trust prompt
+and close-apps dialogs rendered in-window (`Modal` is `max-w-full`, so the
+480-600 widths shrink to fit). `proxyMemberStatus` moved to `lib/verdict.ts`
+so the rail and the tray derive a domain's line from one function.
+`GateAiLogoMark` holds the exported vector; `Icon` gained `users`, `expand`,
+`chevronDown`. Rust: tray left-click now toggles the tray window (plain
+`hide()` everywhere - the Linux minimize dance protected decorations this
+window does not have), the menu gained **Quick status** (Linux trays never
+fire the click path, so without it the flow would be unreachable there),
+`request_app_quit` exposes the tray-menu quit to the popover's own Quit entry,
+and the c63e1880 anchoring helpers (`anchor_under_tray`, `monitor_at`,
+`anchor_at_cursor`) are resurrected verbatim, scoped to this window - it is a
+popover again, so placement is correct here. The Linux decoration repair in
+`on_window_event` is now gated to the main window so the tray cannot consume
+its pending flags and get resized to the main window's bounds.
+
+**Deviations, each recorded at the component:**
+
+- **The master card renders no switch** - matching what the frames render
+  (opacity 0). If that was reserved space, the designer should say so.
+- **No activity line on rows.** No per-tool reading exists (the endpoint is
+  org-scoped and rate-limited per address), and "No recent messages" is itself
+  a measurement claim. Rows take the drawn two-line shape until a reading
+  exists; the drawn counts are recorded above for whoever lands it.
+- **Master off / none-routing state inferred** ("Not protected" + the drawn
+  sub-line format) - the page draws only partial and full.
+- **Signed-out state inferred**: a hand-over card to the full window, where
+  setup lives.
+- **Not-installed rows when expanded are inferred** - only the collapsed
+  header is drawn - and carry no switch: a connect would materialise a config
+  for a tool the user does not have.
+- **Contact support stays omitted** from the menu (same reason as `Topbar`),
+  and the Quit entry drops the external-link glyph its metadata carries
+  because the render does.
+- **Switch size is the component set's 32x18** (`BaseSwitch`); the tray frames
+  disagree with themselves (36x20 on config rows, 32x17.78 on Other tools).
+- **The window ships square-cornered and opaque.** The drawn r16-on-shadow
+  needs per-platform transparency work (the old popover's CALayer path);
+  deferred, recorded here.
+- **Blur-to-dismiss is not built.** Click-away is the popover convention, but
+  it needs the pin coordination around OS dialogs (cert trust) and a
+  tray-click race guard, none of it verifiable from this machine. The tray
+  icon toggles; Expand and Quit hide.
+- The master sub-line uses single spaces around its dot; the frame draws
+  doubles, which HTML collapses anyway.
+
+Covered by `Tray.test.tsx` (16 tests: the three master states, counter
+derivation, intent-driven switches, collapsed/expanded not-installed, CLI
+dispatch, menu contents, hand-overs) and `e2e/new-ui-tray.spec.ts` (the
+fake window label is `BackendState.windowLabel`; pins that a row switch
+reaches `connect_tool`, Expand reaches `reveal_popover`, Quit reaches
+`request_app_quit`, and signed-out hands over). 628 unit tests and the
+190-test e2e suite pass; `cargo check` and `fmt` are clean, with the
+macOS/Windows anchor branches reasoned about, not compiled, same as c63e1880
+noted when it deleted them.
+
 ### Sync 2026-08-28: the Overview page, and the quit flow drawn at last
 
 Re-read `Flows / Overview` (116:26381) over MCP, the first look since

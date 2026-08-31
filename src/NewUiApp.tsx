@@ -52,8 +52,8 @@ import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import { MULTI_PROVIDER_ID, buildGroups } from "./lib/groups";
-import { verdictStatus, verdictsBySlug } from "./lib/verdict";
-import type { Group, GroupMember } from "./lib/groups";
+import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
+import type { Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import {
   GATEWAY_SERVERS,
@@ -131,7 +131,6 @@ import {
 } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type {
-  AppStatus,
   InventoryState,
   SidebarApp,
   SidebarGroup,
@@ -2522,20 +2521,9 @@ function initialsOf(name: string): string {
  * undone: `routing_verdicts` covers registry integrations, and a catalog domain
  * routes through the engine rather than the relay, so its observation is
  * certificate trust plus the master switch - which is exactly what `routed`
- * already folds in.
+ * already folds in. `proxyMemberStatus` in `lib/verdict.ts` carries the
+ * derivation, shared with the tray popover.
  */
-/**
- * The status line for a proxy-routed member, shared by the rail rows and the
- * family panel so the two cannot phrase one domain two ways. No verdict exists
- * for these - the sweep is per tool - so observation is the domain's own state:
- * carrying traffic, switched on but blocked (master off, certificate
- * untrusted), or off.
- */
-function proxyMemberStatus(m: GroupMember): AppStatus {
-  return m.routed
-    ? { kind: "protected" }
-    : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
-}
 
 /** Placeholder while the probes run, and what a copy taken mid-collection would
  *  hand over - so it says what it is rather than looking like a report. */

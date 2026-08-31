@@ -212,6 +212,10 @@ export interface BackendState {
    *  onboarding window - the first-launch path, which one spec asks for
    *  explicitly. */
   localStorage: Record<string, string>;
+  /** What `getCurrentWindow().label` reports, picking the surface `main.tsx`
+   *  renders: "main" (the default), "tray" for the tray popover, "onboarding"
+   *  for the intro window. */
+  windowLabel: string;
 }
 
 const CLAUDE_CODE: ToolFixture = {
@@ -418,6 +422,7 @@ export function defaultState(): BackendState {
     hostName: "e2e-macbook",
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
+    windowLabel: "main",
   };
 }
 

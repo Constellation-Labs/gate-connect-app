@@ -23,8 +23,12 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Manager, PhysicalPosition, WindowEvent,
 };
+// For anchoring the tray popover under the clicked tray icon; Linux trays
+// (SNI/AppIndicator) report no icon rect, so it anchors at the cursor there.
+#[cfg(not(target_os = "linux"))]
+use tauri::{Position, Size};
 // Used by the startup auto-enable to nudge the popover to re-read state, and
 // by `report_backend_error` to nudge a drain.
 use tauri::Emitter;
@@ -2161,6 +2165,157 @@ fn reveal_popover(app: tauri::AppHandle) {
     reveal_popover_window(&app);
 }
 
+/// Show the tray popover (window label `tray`), anchored to the tray icon
+/// where the platform reports a rect and at the cursor on Linux, where the
+/// SNI/AppIndicator protocol does not. Placement is correct *here*, unlike
+/// the main window's reveal, which deliberately stopped repositioning
+/// (c63e1880): this window is a popover again, and a popover that opens
+/// wherever it was last left reads as detached from the icon that summoned it.
+fn reveal_tray_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("tray") else {
+        return;
+    };
+    #[cfg(not(target_os = "linux"))]
+    if let Some(rect) = app.tray_by_id("main").and_then(|t| t.rect().ok().flatten()) {
+        anchor_under_tray(&window, rect.position, rect.size);
+    }
+    #[cfg(target_os = "linux")]
+    if let Ok(cursor) = app.cursor_position() {
+        anchor_at_cursor(&window, cursor);
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    #[cfg(target_os = "macos")]
+    order_front_regardless(&window);
+}
+
+/// Position the tray popover centered horizontally on the tray icon and just
+/// above or below it, whichever side has room on the icon's monitor - macOS's
+/// menu bar is at the top so the popover lands below, Windows' taskbar is
+/// typically at the bottom so it flips above. X is clamped to the monitor so
+/// an icon near an edge doesn't push the popover past it. Resurrected from
+/// c63e1880, where it served the old popover, scoped to the tray window now.
+#[cfg(not(target_os = "linux"))]
+fn anchor_under_tray(window: &tauri::WebviewWindow, tray_pos: Position, tray_size: Size) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let pos = tray_pos.to_physical::<f64>(scale);
+    let size = tray_size.to_physical::<f64>(scale);
+
+    let window_w_px = window
+        .outer_size()
+        .map(|s| s.width as f64)
+        .unwrap_or(400.0 * scale);
+    let window_h_px = window
+        .outer_size()
+        .map(|s| s.height as f64)
+        .unwrap_or(700.0 * scale);
+
+    let tray_center_x = pos.x + size.width / 2.0;
+    let tray_top_y = pos.y;
+    let tray_bottom_y = pos.y + size.height;
+    let gap = 6.0 * scale;
+
+    // Fall back to the unbounded below-icon placement if we can't read the
+    // monitor - better than refusing to show the window.
+    let (mon_x, mon_y, mon_w, mon_h) = match monitor_at(window, tray_center_x, tray_top_y) {
+        Some(m) => {
+            let p = m.position();
+            let s = m.size();
+            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
+        }
+        None => {
+            let x = (tray_center_x - window_w_px / 2.0).round() as i32;
+            let y = (tray_bottom_y + gap).round() as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+            return;
+        }
+    };
+
+    let space_below = (mon_y + mon_h) - tray_bottom_y;
+    let y = if space_below >= window_h_px + gap {
+        tray_bottom_y + gap
+    } else {
+        tray_top_y - window_h_px - gap
+    };
+
+    let x = (tray_center_x - window_w_px / 2.0)
+        .max(mon_x + 4.0)
+        .min(mon_x + mon_w - window_w_px - 4.0);
+
+    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+}
+
+/// Pick the monitor whose physical bounds contain point (x, y) - the display
+/// the clicked tray icon is on, not whichever one the window was on last.
+/// Falls back to the window's current monitor, then the primary, so there is
+/// always somewhere to show. Resurrected from c63e1880 with `anchor_under_tray`.
+#[cfg(not(target_os = "linux"))]
+fn monitor_at(window: &tauri::WebviewWindow, x: f64, y: f64) -> Option<tauri::Monitor> {
+    let contains = |m: &tauri::Monitor| {
+        let p = m.position();
+        let s = m.size();
+        x >= p.x as f64
+            && x < p.x as f64 + s.width as f64
+            && y >= p.y as f64
+            && y < p.y as f64 + s.height as f64
+    };
+    window
+        .available_monitors()
+        .ok()
+        .and_then(|ms| ms.into_iter().find(contains))
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten())
+}
+
+/// Position the tray popover above or below the cursor on Linux, where the
+/// tray protocol exposes no usable icon rect - and on GNOME, where the
+/// left-click event often never fires, so the menu's Quick status entry is
+/// how users get here. On Wayland the compositor may ignore `set_position`
+/// outright; on X11 this lands the popover near the click. Resurrected from
+/// c63e1880 with `anchor_under_tray`.
+#[cfg(target_os = "linux")]
+fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+
+    let window_w_px = window
+        .outer_size()
+        .map(|s| s.width as f64)
+        .unwrap_or(400.0 * scale);
+    let window_h_px = window
+        .outer_size()
+        .map(|s| s.height as f64)
+        .unwrap_or(700.0 * scale);
+
+    let gap = 6.0 * scale;
+
+    let (mon_x, mon_y, mon_w, mon_h) = match window.current_monitor().ok().flatten() {
+        Some(m) => {
+            let p = m.position();
+            let s = m.size();
+            (p.x as f64, p.y as f64, s.width as f64, s.height as f64)
+        }
+        None => {
+            let x = (cursor.x - window_w_px / 2.0).round() as i32;
+            let y = (cursor.y + gap).round() as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+            return;
+        }
+    };
+
+    let space_below = (mon_y + mon_h) - cursor.y;
+    let y = if space_below >= window_h_px + gap {
+        cursor.y + gap
+    } else {
+        cursor.y - window_h_px - gap
+    };
+
+    let x = (cursor.x - window_w_px / 2.0)
+        .max(mon_x + 4.0)
+        .min(mon_x + mon_w - window_w_px - 4.0);
+
+    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+}
+
 /// Tray "Quit": exit immediately unless config-routed CLI tools are still
 /// managed (Connected, or Drifted - either way their configs point at the
 /// loopback relay). macOS / Windows only: there the relay lives in this
@@ -2221,6 +2376,14 @@ fn pending_quit_tools() -> Option<Vec<String>> {
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// The tray popover's own Quit entry: the same three-way quit the tray menu's
+/// item runs, so both entrances exit outright or defer to the main window's
+/// dialog when config-routed tools would be left pointing at a dead relay.
+#[tauri::command]
+fn request_app_quit(app: tauri::AppHandle) {
+    request_quit(&app);
 }
 
 /// Quit-time integration teardown (the "turn off integrations" quit choice):
@@ -2357,6 +2520,7 @@ pub fn run() {
                     reveal_popover,
                     quit_app,
                     pending_quit_tools,
+                    request_app_quit,
                     disconnect_tools_for_quit,
                     list_providers,
                     proxy_status,
@@ -2424,6 +2588,7 @@ pub fn run() {
                     reveal_popover,
                     quit_app,
                     pending_quit_tools,
+                    request_app_quit,
                     disconnect_tools_for_quit,
                     list_providers,
                     set_updater_relaunching,
@@ -2459,13 +2624,18 @@ pub fn run() {
                 return;
             }
             // First post-map event after a maximised map: geometry is settled,
-            // so put the window back to its configured size.
+            // so put the window back to its configured size. Main window only:
+            // the repair's pending flags are the main reveal's, and the tray
+            // popover - undecorated, so never repaired - must not consume them
+            // and get resized to the main window's bounds.
             #[cfg(target_os = "linux")]
-            match event {
-                WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
-                    restore_after_repair(window);
+            if window.label() == "main" {
+                match event {
+                    WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
+                        restore_after_repair(window);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
             // X-button on the popover should hide it, not quit the app.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -2813,10 +2983,11 @@ pub fn run() {
 
             let tray_icon = Image::from_bytes(TRAY_ICON_PNG)?;
 
+            let tray_item = MenuItemBuilder::with_id("tray", "Quick status").build(app)?;
             let show_item = MenuItemBuilder::with_id("show", "Open Gate Connect").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Gate Connect").build(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&show_item, &quit_item])
+                .items(&[&tray_item, &show_item, &quit_item])
                 .build()?;
 
             TrayIconBuilder::with_id("main")
@@ -2826,6 +2997,12 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(false) // left-click toggles window; right-click shows menu
                 .on_menu_event(|app, event| match event.id().as_ref() {
+                    // The compact popover, for platforms where the left-click
+                    // path never fires: Linux trays (SNI/AppIndicator) only
+                    // raise this menu, so without an entry the tray flow
+                    // would be unreachable there. Onboarding calls the same
+                    // surface "the compact popover for a quick status check".
+                    "tray" => reveal_tray_window(app),
                     "show" => {
                         // On Linux the SNI/AppIndicator tray hands us no click
                         // rect and GNOME often never fires the left-click path,
@@ -2851,27 +3028,21 @@ pub fn run() {
                     } = event
                     {
                         let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            // is_focused() is unreliable for a non-activating panel.
-                            // On Linux the popover is dismissed by minimizing, so a
-                            // minimized window counts as "away" and should restore,
-                            // not toggle off.
+                        // The click toggles the compact tray popover (Figma
+                        // `Flows / Tray`), not the main window - the menu's
+                        // "Open Gate Connect" still reveals that one. Plain
+                        // hide() on every platform: the old Linux
+                        // minimize-to-dismiss dance existed to keep window
+                        // decorations alive across hide/show, and this window
+                        // is undecorated.
+                        if let Some(window) = app.get_webview_window("tray") {
                             let is_visible = window.is_visible().unwrap_or(false);
                             let is_minimized = window.is_minimized().unwrap_or(false);
                             if is_visible && !is_minimized {
-                                #[cfg(target_os = "linux")]
-                                let _ = window.minimize();
-                                #[cfg(not(target_os = "linux"))]
                                 let _ = window.hide();
                                 POPOVER_VISIBLE.store(false, Ordering::Release);
                             } else {
-                                // No repositioning: the tray toggles
-                                // visibility now, it does not own placement. A
-                                // window that jumped under the menu bar on every
-                                // tray click would lose wherever the user had
-                                // put it - which is why the click rect is no
-                                // longer even read.
-                                reveal_popover_window(app);
+                                reveal_tray_window(app);
                             }
                         }
                     }

@@ -1,0 +1,433 @@
+import type { ReactNode } from "react";
+import { BaseSwitch, StatusTile } from "./base";
+import { GateAiLogoMark } from "./GateAiLogoMark";
+import { Icon } from "./Icon";
+import type { IconName } from "./Icon";
+import { OutlineIconButton } from "./Topbar";
+import { STATUS_TEXT, statusDetail } from "./Sidebar";
+import type { SidebarGroup } from "./Sidebar";
+
+/**
+ * The tray popover (Figma `Flows / Tray` 694:34005, read 2026-08-28): a
+ * 400x700 quick-status surface the tray icon toggles, beside the full 1024x720
+ * window. Header lockup with an "Expand app" hand-off, one master status card,
+ * the same grouped rows the window's rail draws - at tray width, with a
+ * status line per row - a collapsed "Not installed" section, the command-line
+ * tools switch, and a footer naming the organization in front of an overflow
+ * menu.
+ *
+ * Presentational, like `Sidebar`: every piece of state arrives as a prop so
+ * the tray shell (`TrayApp`) owns data fetching and dispatch. Row and group
+ * types are the rail's own (`SidebarGroup` / `SidebarApp`) so the two
+ * surfaces cannot describe one app two ways.
+ *
+ * Deviations from the drawn frames, each deliberate:
+ *
+ * - **The master card renders no switch.** Every tray frame draws that switch
+ *   at opacity 0, so what the frame *renders* is a status card; the switches
+ *   that act live on the rows, and the engine's own control stays in the full
+ *   app. If the invisible switch was reserved space rather than a decision,
+ *   that is the designer's to say.
+ * - **Rows carry no activity line.** The frames draw "345 messages · 23
+ *   alerts" under each status, but no per-tool reading exists (the activity
+ *   endpoint is org-scoped and rate-limited per address; see `lib/activity`),
+ *   and the drawn "No recent messages" fallback is itself a measurement claim
+ *   this surface cannot make. The design draws the two-line row too (the
+ *   compact `Other tools` rows in `Connect/routing`), which is the shape
+ *   every row takes here until a reading exists.
+ * - **The master card's off state is inferred** - only "Partially routed" and
+ *   "Gate is protecting you" are drawn - following the status vocabulary:
+ *   "Not protected" in amber, with the drawn "On/Off · N of M tools routing"
+ *   sub-line carrying the intent.
+ * - **Contact support is omitted from the menu** for the reason `Topbar`
+ *   records: there is still no address behind it.
+ */
+
+export type TrayMenuAction = "dashboard" | "docs" | "quit";
+
+/** A tool the detection scan saw but found not installed - the collapsed
+ * "Not installed" section's rows. No switch: there is nothing to route, and a
+ * connect would materialise a config for a tool the user does not have. */
+export interface TrayNotInstalledApp {
+  slug: string;
+  name: string;
+  logo?: ReactNode;
+}
+
+export function Tray({
+  master,
+  groups,
+  notInstalled,
+  notInstalledOpen,
+  onToggleNotInstalled,
+  cli,
+  orgName,
+  signedOut,
+  onToggleApp,
+  onExpand,
+  menuOpen,
+  onMenuToggle,
+  onMenuSelect,
+  dialog,
+}: {
+  /** The engine's observed state. Omit while the first proxy read is in
+   * flight, and the card is omitted with it - a status card with no reading
+   * behind it would be a claim. */
+  master?: { on: boolean };
+  groups: SidebarGroup[];
+  notInstalled: TrayNotInstalledApp[];
+  notInstalledOpen: boolean;
+  onToggleNotInstalled: () => void;
+  /** The shell-environment channel, drawn as its own card ("Command-line
+   * tools"). Absent on Linux, where those variables are the system proxy and
+   * cannot be declined separately. */
+  cli?: { on: boolean; busy?: boolean; onToggle: (next: boolean) => void };
+  orgName: string;
+  /** No usable credential: the tray cannot route anything, so it says so and
+   * hands over to the full app, where setup lives. Not drawn; inferred. */
+  signedOut?: boolean;
+  onToggleApp: (slug: string, next: boolean) => void;
+  /** The header's "Expand app": reveal the full window and dismiss the tray. */
+  onExpand: () => void;
+  menuOpen: boolean;
+  onMenuToggle: () => void;
+  onMenuSelect: (action: TrayMenuAction) => void;
+  /** The dialog covering the popover, if any - drift review, close-apps
+   * offer. Same slot contract as `AppShell`. */
+  dialog?: ReactNode;
+}) {
+  return (
+    <div className="flex h-screen w-full flex-col bg-base-background">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-base-border bg-base-card px-4">
+        <span className="flex items-center gap-2.5">
+          <GateAiLogoMark height={27} />
+          {/* The Gate AI lockup, not the topbar's: the frame inks "Gate" in
+           * the mark's own navy and "Connect" in its accent blue
+           * (694:34020/21), neither of which is a `base.*` or ramp token. */}
+          <span className="flex items-center gap-[2px] text-base font-semibold leading-6 tracking-[-0.16px]">
+            <span className="text-[#002554]">Gate</span>
+            <span className="text-[#3646e7]">Connect</span>
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={onExpand}
+          className="flex h-8 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          <Icon name="expand" size={16} />
+          Expand app
+        </button>
+      </header>
+
+      {signedOut ? (
+        <SignedOutNote onExpand={onExpand} />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 pt-4">
+          {master && <MasterCard on={master.on} groups={groups} />}
+
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-4">
+            {groups.map((group) => (
+              <TrayGroup key={group.id} group={group} onToggleApp={onToggleApp} />
+            ))}
+
+            {notInstalled.length > 0 && (
+              <NotInstalledSection
+                apps={notInstalled}
+                open={notInstalledOpen}
+                onToggle={onToggleNotInstalled}
+              />
+            )}
+
+            {cli && <CliCard cli={cli} />}
+          </div>
+        </div>
+      )}
+
+      <footer className="relative flex h-14 shrink-0 items-center justify-between border-t border-base-border bg-base-card px-4">
+        <span className="flex items-center gap-2 text-sm font-medium leading-5 text-base-foreground">
+          <Icon name="users" size={20} />
+          <span className="truncate">{orgName}</span>
+        </span>
+        <OutlineIconButton
+          icon="ellipsis"
+          label="More"
+          onClick={onMenuToggle}
+          expanded={menuOpen}
+        />
+        {menuOpen && <TrayMenu onSelect={onMenuSelect} />}
+      </footer>
+
+      {dialog}
+    </div>
+  );
+}
+
+/**
+ * The engine's observed state over the rows it carries, drawn as the success
+ * tile recipe on green or amber (`Connect/routing` 694:34185 vs
+ * `Connect/partial` 694:34024). Counts derive from the rows so the card can
+ * never disagree with the switches under it; "tools routing" is the drawn
+ * phrase, and it counts every row - chat domains included.
+ */
+function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
+  const apps = groups.flatMap((g) => g.apps);
+  const routed = apps.filter((a) => a.status.kind === "protected").length;
+  const all = apps.length > 0 && routed === apps.length;
+  const { tone, icon, title } = all
+    ? { tone: "green" as const, icon: "shieldCheck" as IconName, title: "Gate is protecting you" }
+    : routed > 0
+      ? { tone: "amber" as const, icon: "shieldBan" as IconName, title: "Partially routed" }
+      : // Not drawn: the page stops at "partially". The vocabulary's amber
+        // phrase covers it, and the sub-line below carries whether that is
+        // intent (Off) or circumstance (On with nothing routing).
+        { tone: "amber" as const, icon: "shieldBan" as IconName, title: "Not protected" };
+  return (
+    <div
+      className={`flex shrink-0 items-center gap-3 rounded-md border bg-base-card p-3 ${
+        all ? "border-green-300" : "border-amber-300"
+      }`}
+    >
+      <StatusTile tone={tone} icon={icon} size={36} />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <h1 className="text-sm font-medium leading-5 text-base-foreground">{title}</h1>
+        <p className="text-base-xs leading-4 text-base-muted-foreground">
+          {on ? "On" : "Off"} · {routed} of {apps.length} tools routing
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** One eyebrow-labelled card of rows - the rail's grouping at tray width, with
+ * the rows inside one bordered card under a rule apiece rather than the rail's
+ * free-standing hover rows (738:37552). */
+function TrayGroup({
+  group,
+  onToggleApp,
+}: {
+  group: SidebarGroup;
+  onToggleApp: (slug: string, next: boolean) => void;
+}) {
+  return (
+    <section className="flex shrink-0 flex-col gap-2">
+      {group.label && (
+        <div className="flex items-baseline justify-between gap-2">
+          {/* `mono/eyebrow` at the tray's drawn 14px (738:37554), against the
+           * rail's 12. Tracking is the same 8%. */}
+          <h2 className="truncate font-mono text-sm font-medium uppercase leading-5 tracking-[1.12px] text-base-muted-foreground">
+            {group.label}
+          </h2>
+          <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
+            {group.apps.filter((a) => a.status.kind === "protected").length} of{" "}
+            {group.apps.length}
+          </span>
+        </div>
+      )}
+      <ul className="divide-y divide-base-border overflow-hidden rounded-md border border-base-border bg-base-card shadow-base-xs">
+        {group.apps.map((app) => (
+          <li key={app.slug} className="flex items-center gap-4 p-2">
+            <span className="flex min-w-0 flex-1 items-center gap-3">
+              <AppTile name={app.name} logo={app.logo} />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-base-xs font-medium leading-4 text-base-foreground">
+                  {app.name}
+                </span>
+                <StatusLine app={app} />
+              </span>
+            </span>
+            <BaseSwitch
+              on={app.on}
+              label={app.name}
+              busy={app.busy}
+              onClick={() => onToggleApp(app.slug, !app.on)}
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** The coloured phrase plus grey qualifier, in the tray's own type. Uses
+ * `statusDetail` rather than the rail's suffix: the frames draw the
+ * "Not protected" qualifier too ("- 3d ago", 738:37562), and 368px rows have
+ * the room the 250px rail does not. */
+function StatusLine({ app }: { app: SidebarGroup["apps"][number] }) {
+  const status = STATUS_TEXT[app.status.kind];
+  const suffix = statusDetail(app.status);
+  return (
+    <span className="truncate text-base-2xs font-medium leading-4">
+      <span className={status.className}>{status.label}</span>
+      {suffix && <span className="text-base-muted-foreground"> - {suffix}</span>}
+    </span>
+  );
+}
+
+/** The 32px `logo-wrapper` tile, treatment shared with the rail's `AppRow`. */
+function AppTile({ name, logo }: { name: string; logo?: ReactNode }) {
+  return (
+    <span
+      aria-hidden
+      className="flex size-8 shrink-0 items-center justify-center rounded-control border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
+      style={{
+        backgroundImage:
+          "linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(0,0,0,0.24) 100%)",
+      }}
+    >
+      {logo ?? name.charAt(0)}
+    </span>
+  );
+}
+
+/**
+ * The tools detection saw and found absent, collapsed to a count
+ * (`Connect/full frame` 738:37377: "Not installed · 8 ˅"). Only the collapsed
+ * state is drawn; expanding lists the same row anatomy without a switch,
+ * because there is nothing to route and a connect would write a config for a
+ * tool the user does not have.
+ */
+function NotInstalledSection({
+  apps,
+  open,
+  onToggle,
+}: {
+  apps: TrayNotInstalledApp[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <section className="flex shrink-0 flex-col gap-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-baseline justify-between gap-2 rounded-sm text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      >
+        <span className="font-mono text-sm font-medium uppercase leading-5 tracking-[1.12px]">
+          Not installed
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="font-mono text-base-xs font-normal leading-4">{apps.length}</span>
+          <Icon
+            name="chevronDown"
+            size={20}
+            className={`transition-transform ${open ? "rotate-180" : ""}`}
+          />
+        </span>
+      </button>
+      {open && (
+        <ul className="divide-y divide-base-border overflow-hidden rounded-md border border-base-border bg-base-card shadow-base-xs">
+          {apps.map((app) => (
+            <li key={app.slug} className="flex items-center gap-3 p-2">
+              <AppTile name={app.name} logo={app.logo} />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-base-xs font-medium leading-4 text-base-foreground">
+                  {app.name}
+                </span>
+                <span className="truncate text-base-2xs font-medium leading-4 text-base-muted-foreground">
+                  Not installed
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** The shell-environment switch as the tray draws it (735:37341), with the
+ * frame's own copy - shorter than the rail card's, and naming the mechanism
+ * (`HTTPS_PROXY`) outright. */
+function CliCard({
+  cli,
+}: {
+  cli: { on: boolean; busy?: boolean; onToggle: (next: boolean) => void };
+}) {
+  return (
+    <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border border-base-border bg-base-card p-3 shadow-base-xs">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <p className="text-sm font-medium leading-5 text-base-foreground">Command-line tools</p>
+        <p className="text-base-xs leading-4 text-base-muted-foreground">
+          Sets HTTPS_PROXY for your whole shell, so OpenCode and other terminal tools route too.
+        </p>
+      </div>
+      <BaseSwitch
+        on={cli.on}
+        label="Command-line tools"
+        busy={cli.busy}
+        onClick={() => cli.onToggle(!cli.on)}
+      />
+    </div>
+  );
+}
+
+/** The footer's overflow menu (744:38192), opening upward over the list. Same
+ * anatomy as the topbar's, plus the Quit entry the tray owes its users - it is
+ * the popover surface, and the drawn menu carries it in destructive ink with
+ * no external-link glyph (the rendered frame drops the one its metadata
+ * carries: quitting does not leave the app). */
+function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) {
+  const external: { action: TrayMenuAction; icon: IconName; label: string }[] = [
+    { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
+    { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
+  ];
+  return (
+    <div
+      role="menu"
+      className="absolute bottom-12 right-4 z-10 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-lg"
+    >
+      {external.map(({ action, icon, label }) => (
+        <button
+          key={action}
+          type="button"
+          role="menuitem"
+          onClick={() => onSelect(action)}
+          className="flex h-8 w-full items-center justify-between rounded-sm px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        >
+          <span className="flex items-center gap-2">
+            <Icon name={icon} size={16} />
+            <span className="text-base-xs font-medium leading-4">{label}</span>
+          </span>
+          <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
+        </button>
+      ))}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => onSelect("quit")}
+        className="flex h-8 w-full items-center gap-2 rounded-sm px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      >
+        <Icon name="logOut" size={16} />
+        <span className="text-base-xs font-medium leading-4">Quit Gate Connect</span>
+      </button>
+    </div>
+  );
+}
+
+/**
+ * What the tray says with no usable credential. Not drawn - the Tray page
+ * assumes a signed-in install - but a popover that painted empty groups over
+ * "No organization" would read as broken rather than signed out. Setup lives
+ * in the full window, so the card hands over rather than reproducing it.
+ */
+function SignedOutNote({ onExpand }: { onExpand: () => void }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
+      <h1 className="text-sm font-medium leading-5 text-base-foreground">
+        Sign in to get started
+      </h1>
+      <p className="text-base-xs leading-4 text-base-muted-foreground">
+        Gate Connect needs a Gate account or API key before it can route your
+        tools. Sign in from the app window.
+      </p>
+      <button
+        type="button"
+        onClick={onExpand}
+        className="flex h-8 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      >
+        Open Gate Connect
+      </button>
+    </div>
+  );
+}
