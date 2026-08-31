@@ -33,8 +33,9 @@ use tokio::sync::{oneshot, watch};
 use crate::account::BillingMode;
 use crate::proxy::cert_authority::GateCa;
 use crate::proxy::{
-    classify_client, decide, effective_billing_mode, rules_for_client, should_decline_upgrade,
-    should_intercept_host, Decision, ProxyDomain,
+    browser_ua_without_product_token, classify_client, decide, domain_claiming_host,
+    effective_billing_mode, is_non_browser_ua, rules_for_client, should_decline_upgrade,
+    should_intercept_host, ClientClass, Decision, ProxyDomain,
 };
 
 /// Everything the engine needs to run one session. The account + CA are
@@ -126,6 +127,9 @@ pub struct RunningEngine {
     token_tx: watch::Sender<Arc<str>>,
     org_tx: watch::Sender<Arc<str>>,
     mode_tx: watch::Sender<BillingMode>,
+    /// Captured chatgpt.com `cf_clearance` cookie for app turns; empty when
+    /// none is held. See [`update_cf_clearance`](Self::update_cf_clearance).
+    cf_clearance_tx: watch::Sender<Arc<str>>,
     /// Whether the relay rewrites inference to the gateway (true) or forwards
     /// everything straight to the real upstream (false). See
     /// [`set_relay_intercept`](Self::set_relay_intercept).
@@ -199,6 +203,13 @@ impl RunningEngine {
     /// without reconnecting every tool.
     pub fn update_mode(&self, mode: BillingMode) {
         let _ = self.mode_tx.send(mode);
+    }
+
+    /// Push a captured chatgpt.com `cf_clearance` cookie to the live engine.
+    /// Empty string clears it. Cheap - no restart; this is how a freshly
+    /// solved Cloudflare challenge reaches in-flight app turns.
+    pub fn update_cf_clearance(&self, cf_clearance: &str) {
+        let _ = self.cf_clearance_tx.send(Arc::from(cf_clearance));
     }
 
     /// Flip the relay between gateway interception (rewrite inference and
@@ -339,6 +350,24 @@ fn init_tracing() {
     });
 }
 
+/// One intercepted chatgpt.com request, as `handle_request` saw it. Carried on
+/// the handler so the response hook can name what it is answering; see
+/// [`GateHandler::chatgpt_turn`].
+#[derive(Clone)]
+struct ChatgptTurn {
+    client: crate::proxy::ClientClass,
+    method: Method,
+    path: String,
+    /// Whether it was rewritten to the gateway (so it egresses from Gate's IP)
+    /// or passed through to chatgpt.com (the user's own IP). The distinction
+    /// the Cloudflare investigation turns on.
+    rewritten: bool,
+    /// Whether a captured `cf_clearance` was merged into this request. Reads
+    /// as "our cookie was on the wire" without putting a credential-bearing
+    /// header anywhere near the log.
+    cf_injected: bool,
+}
+
 #[derive(Clone)]
 struct GateHandler {
     /// Live-updatable set of enabled domains.
@@ -356,6 +385,29 @@ struct GateHandler {
     /// Live-updatable billing mode. Resolved per domain before it is applied -
     /// see [`effective_billing_mode`].
     mode: watch::Receiver<BillingMode>,
+    /// Live-updatable chatgpt.com `cf_clearance` cookie, captured by the GUI's
+    /// challenge-solve webview. Empty string means "none held"; merged into
+    /// the `cookie` header on every intercepted chatgpt.com app request,
+    /// rewritten and passthrough alike (see [`inject_cf_clearance`] and the
+    /// injection site's comment for why passthrough needs it too).
+    cf_clearance: watch::Receiver<Arc<str>>,
+    /// What `handle_request` saw on an intercepted chatgpt.com request, kept
+    /// so the response hook can name what it is answering: a response arrives
+    /// with no host, path, or client context of its own. `None` on every
+    /// other host.
+    ///
+    /// Recorded for every client class, not just the app. Arming the solve
+    /// webview stays app-only (see [`cf_challenge_detected`]) - a browser
+    /// runs its own interstitial - but keeping the browser's turns in the
+    /// memo is what let the app's challenged turn be compared against the
+    /// website's succeeding one on the same endpoint, which is how the
+    /// user-agent finding was made.
+    ///
+    /// Reliable per request: hudsucker clones the handler per request and
+    /// runs both hooks on that clone (`internal.rs`: `service_fn` ->
+    /// `self.clone().proxy(req)`), so the memo cannot leak across requests,
+    /// HTTP/2 multiplexing included.
+    chatgpt_turn: Option<ChatgptTurn>,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
@@ -371,6 +423,9 @@ struct GateHandler {
     /// `should_intercept`. Shared across handler clones, so an engine run
     /// reports it once instead of once per connection.
     anthropic_unselected_logged: Arc<AtomicBool>,
+    /// One-shot latch for the "unrecognised app shell" line in
+    /// `handle_request`, shared across handler clones for the same reason.
+    app_shell_unrecognised_logged: Arc<AtomicBool>,
 }
 
 impl GateHandler {
@@ -427,6 +482,69 @@ impl GateHandler {
             host.unwrap_or("?")
         );
     }
+
+    /// Report a ChatGPT request from a client that is neither the website nor
+    /// anything `classify_client` recognises as the app.
+    ///
+    /// Outside `debug_log`, for the reason above: the wire is the only witness.
+    /// The app shell's user-agent has been renamed once already
+    /// (`ChatGPTBrowser` -> `CodexBrowser`), and the roster it was matched
+    /// against went stale without a single symptom - the app simply classified
+    /// as `Unknown`, which routes identically, so nothing looked wrong. This
+    /// line is what makes the next rename arrive as a message naming the new
+    /// token instead of as app-only handling quietly ceasing to apply.
+    ///
+    /// The trigger is deliberately wider than the classifier's own
+    /// [`super::browser_ua_without_product_token`]: any non-browser user-agent
+    /// will do, so a rename that also drops the wrapped `Mozilla/` still
+    /// surfaces. That width is why it is latched to one line per engine run -
+    /// an unrecognised non-browser client here is the ordinary, harmless state
+    /// for anything third-party, and a per-request warning would be noise.
+    fn warn_if_an_app_shell_is_unrecognised(
+        &self,
+        client: ClientClass,
+        rules: &[ProxyDomain],
+        host: Option<&str>,
+        ua: &str,
+    ) {
+        if !app_shell_is_unrecognised(client, rules, host, ua)
+            || self
+                .app_shell_unrecognised_logged
+                .swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        eprintln!(
+            "[gate-proxy] {} request from an unrecognised client: user-agent {ua:?} \
+             classifies as Unknown. Expected for third-party clients; if this is the \
+             ChatGPT/Codex app, its shell has been renamed again and app-only handling \
+             no longer applies to it (see `classify_client`).",
+            host.unwrap_or("?")
+        );
+    }
+}
+
+/// The gating condition of `warn_if_an_app_shell_is_unrecognised`, kept free of
+/// the latch and the printing so it can be tested: an `Unknown` classification,
+/// a non-browser user-agent, and a host claimed by the `chatgpt-apps` entry.
+///
+/// Checked against the unnarrowed live rules, and [`domain_claiming_host`]
+/// includes disabled entries: this reports on a client, not on a route. Note
+/// the reach that buys is bounded by `should_intercept` - a request only gets
+/// here when some enabled entry MITMs the host - so with every chatgpt.com
+/// entry off the warning cannot fire; the disabled-entry width matters when a
+/// sibling entry on the same host is the one switched on.
+fn app_shell_is_unrecognised(
+    client: ClientClass,
+    rules: &[ProxyDomain],
+    host: Option<&str>,
+    ua: &str,
+) -> bool {
+    client == ClientClass::Unknown
+        && is_non_browser_ua(ua)
+        && host
+            .and_then(|h| domain_claiming_host(rules, h))
+            .is_some_and(|d| d.slug == "chatgpt-apps")
 }
 
 /// The rule set a connection's requests must be decided against: the live
@@ -573,18 +691,28 @@ impl HttpHandler for GateHandler {
             req.headers_mut().remove("proxy-authorization");
             return req.into();
         }
+        // Fresh verdict per request; only the chatgpt.com block below sets it.
+        self.chatgpt_turn = None;
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
-        // website, which shares their host (see `BROWSER_EXCLUDED_SLUGS`).
+        // website, which shares their host (see `BROWSER_ROUTED`).
         // Classify before `decide` and hand it a narrowed rule set, so the
         // client filter composes with the `enabled` one instead of adding a
         // second kind of veto inside the routing decision.
-        let client = classify_client(|name| req.headers().get(name).and_then(|v| v.to_str().ok()));
+        let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+        let client = classify_client(header);
+        let ua = header("user-agent").unwrap_or_default();
         let host = req.uri().host().map(str::to_owned);
         let live_rules = self.rules.borrow().clone();
         let rules = rules_for_client(
             &route_rules(&live_rules, self.claude_code_route, host.as_deref()),
             client,
         );
+        // Gated like the rewrite below: a plain-HTTP request from a non-owner
+        // local peer reaches here without passing `should_intercept`, and its
+        // user-agent does not belong in the owner's log.
+        if self.peer_allowed(ctx) {
+            self.warn_if_an_app_shell_is_unrecognised(client, &live_rules, host.as_deref(), ua);
+        }
         // Path only, never `path_and_query()`: some providers pass the API key
         // as a URL query param (e.g. Google `...?key=...`), and this value is
         // written to the debug log below. `Uri::path()` excludes the query, so
@@ -674,6 +802,92 @@ impl HttpHandler for GateHandler {
                 }
             }
         }
+        // EVERY intercepted chatgpt.com app request - not only the rewritten
+        // turns - arms challenge detection and carries the captured
+        // clearance. The app has no cookie jar of its own, so its passthrough
+        // calls (settings, models, sentinel) go out bare through the engine's
+        // TLS stack and Cloudflare challenges those too - observed as 403
+        // text/html across the whole warm-up sequence, which kills the app
+        // before it ever issues a rewritten turn. Scoping either half to the
+        // rewrite path deadlocks: no rewritten turn, so no solve webview, so
+        // no cookie, so the warm-up keeps 403ing. The browser survives the
+        // identical path because its own jar carries `cf_clearance` on every
+        // request to the host (and it can render a challenge itself, which is
+        // why Web is excluded here); this does for the app what the jar does
+        // for the browser. Gated on `peer_allowed` like the rewrite above,
+        // and `inject_cf_clearance` never clobbers a cookie the client sent
+        // itself.
+        if host.as_deref() == Some("chatgpt.com") && self.peer_allowed(ctx) {
+            let rewritten = action == "rewrite->gateway";
+            let mut cf_injected = false;
+            if client == crate::proxy::ClientClass::App {
+                // The solve webview wears this UA, or Cloudflare never
+                // challenges it and there is no cookie to capture. Recorded
+                // BEFORE any strip below, so the webview keeps wearing what
+                // the app actually sends.
+                crate::proxy::record_chatgpt_app_user_agent(
+                    req.headers()
+                        .get(hudsucker::hyper::header::USER_AGENT)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default(),
+                );
+
+                let cf = self.cf_clearance.borrow().clone();
+                // Strip the app shell's product token from the `user-agent`
+                // on chatgpt.com turns we forward through the gateway,
+                // leaving the browser-shaped remainder the token was
+                // prefixed to.
+                //
+                // What this is testing. Measured 2026-08-28 on one machine,
+                // same endpoint, same gateway, same Cloudflare datacenter
+                // (`cf-ray` colo `IAD`): `POST /backend-api/f/conversation`
+                // from the website answered 200 carrying a single `oai-did`
+                // cookie, while the same path from the app answered
+                // `cf-mitigated: challenge` carrying MORE cookies, including
+                // a freshly solved `cf_clearance`. So neither the cookie nor
+                // Gate's egress IP explains the difference, and the app's
+                // user-agent is character-for-character the website's with
+                // `CodexBrowser ` prefixed. The strip exists to confirm or
+                // refute that the prefix is what the challenge rule keys on.
+                //
+                // Careful: it ships a request that names a different client
+                // than the one that sent it, to a third party's bot
+                // management; it is fragile (Cloudflare fingerprints far
+                // more than this header, so a result today says nothing
+                // about next month); and it erases the signal the vendor
+                // uses to tell its own clients apart.
+                //
+                // Skipped whenever a captured `cf_clearance` is about to be
+                // injected below: the cookie is bound to the user-agent it
+                // was minted under - the full shell UA the solve webview
+                // wears - so stripping here would replay it under a UA
+                // Cloudflare never issued it to, and the challenge the
+                // cookie exists to clear would just fire again.
+                if rewritten && cf.is_empty() {
+                    let stripped = req
+                        .headers()
+                        .get(hudsucker::hyper::header::USER_AGENT)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(browser_ua_without_product_token)
+                        .and_then(|ua| HeaderValue::from_str(ua).ok());
+                    if let Some(ua) = stripped {
+                        req.headers_mut()
+                            .insert(hudsucker::hyper::header::USER_AGENT, ua);
+                    }
+                }
+                if !cf.is_empty() {
+                    inject_cf_clearance(&mut req, &cf);
+                    cf_injected = true;
+                }
+            }
+            self.chatgpt_turn = Some(ChatgptTurn {
+                client,
+                method: req.method().clone(),
+                path: path.clone(),
+                rewritten,
+                cf_injected,
+            });
+        }
         if debug_log() {
             let auth = if req
                 .headers()
@@ -723,6 +937,13 @@ impl HttpHandler for GateHandler {
         _ctx: &HttpContext,
         res: hudsucker::hyper::Response<Body>,
     ) -> hudsucker::hyper::Response<Body> {
+        // A Cloudflare managed challenge answering a chatgpt.com app turn:
+        // the app shell has no HTML/JS surface to run the interstitial, so
+        // notify the GUI to open the one-time solve webview. Side-channel
+        // notification only - the response is returned unchanged either way.
+        if cf_challenge_detected(self.chatgpt_turn.as_ref(), &res) {
+            crate::proxy::notify_cf_challenge_observer();
+        }
         if debug_log() {
             eprintln!(
                 "[gate-proxy] <- {} ct={:?}",
@@ -732,6 +953,58 @@ impl HttpHandler for GateHandler {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
             );
+            // One correlated line per chatgpt.com surface we handle. The
+            // status line above cannot be paired with its request - responses
+            // arrive interleaved under HTTP/2 and name neither path nor
+            // client - which made every capture a guess about which 403
+            // belonged to what.
+            //
+            // Scoped to the turns we route or inject into, so a page load's
+            // hundred asset fetches stay out of it. `rewritten` says which
+            // egress answered (Gate's IP or the user's) and `cf-ray`'s colo
+            // suffix corroborates it; `cf-injected` says whether our captured
+            // cookie rode along; `cf-mitigated` is Cloudflare's own marker,
+            // relayed by the gateway (`CHALLENGE_RELAY_HEADERS` in gate's
+            // proxy-helpers.ts), and its absence on a 403 means a plain WAF
+            // block that no cookie would fix. `set-cookie` is NAMES only -
+            // the values are session credentials. Gate's provenance headers
+            // separate a relayed Cloudflare 403 from one the gateway raised.
+            if let Some(turn) = self
+                .chatgpt_turn
+                .as_ref()
+                .filter(|t| t.rewritten || t.client == crate::proxy::ClientClass::App)
+            {
+                let header = |name: &str| {
+                    res.headers()
+                        .get(name)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("<absent>")
+                        .to_owned()
+                };
+                let set_cookies: Vec<&str> = res
+                    .headers()
+                    .get_all(hudsucker::hyper::header::SET_COOKIE)
+                    .iter()
+                    .filter_map(|v| v.to_str().ok())
+                    .filter_map(|c| c.split_once('=').map(|(name, _)| name.trim()))
+                    .collect();
+                eprintln!(
+                    "[gate-proxy]   <- {} for {} {} client={:?} rewritten={} \
+                     cf-injected={} cf-mitigated={:?} cf-ray={:?} set-cookie=[{}] \
+                     gate-error-source={:?} gate-upstream-status={:?}",
+                    res.status(),
+                    turn.method,
+                    turn.path,
+                    turn.client,
+                    turn.rewritten,
+                    turn.cf_injected,
+                    header("cf-mitigated"),
+                    header("cf-ray"),
+                    set_cookies.join(","),
+                    header("x-gate-error-source"),
+                    header("x-gate-upstream-status"),
+                );
+            }
         }
         res
     }
@@ -775,6 +1048,49 @@ pub(crate) fn is_upgrade_request<T>(req: &Request<T>) -> bool {
             v.split(',')
                 .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
         })
+}
+
+/// Whether `res` is a Cloudflare managed challenge answering a chatgpt.com
+/// **app** request. `turn` is the per-request memo set by `handle_request`
+/// (see [`GateHandler::chatgpt_turn`]) - a response on any other host never
+/// triggers, whatever headers it carries, and neither does the browser's:
+/// it can run an interstitial itself, so opening our webview for it would be
+/// a window the user never needed. `cf-mitigated` is Cloudflare's own marker
+/// that the body is its interstitial rather than the origin's answer.
+fn cf_challenge_detected<T>(
+    turn: Option<&ChatgptTurn>,
+    res: &hudsucker::hyper::Response<T>,
+) -> bool {
+    turn.is_some_and(|t| t.client == crate::proxy::ClientClass::App)
+        && res
+            .headers()
+            .get("cf-mitigated")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("challenge"))
+}
+
+/// Merge a `cf_clearance` value into the request's `cookie` header without
+/// disturbing cookies the client already sent (append with `; ` when a
+/// header is present, set it when none is). No-op if the client already
+/// carries its own `cf_clearance`.
+fn inject_cf_clearance<T>(req: &mut Request<T>, cf_clearance: &str) {
+    use hudsucker::hyper::header::COOKIE;
+    let merged = match req.headers().get(COOKIE).and_then(|v| v.to_str().ok()) {
+        Some(cookies) => {
+            let has_own = cookies.split(';').any(|c| {
+                c.split_once('=')
+                    .is_some_and(|(name, _)| name.trim() == "cf_clearance")
+            });
+            if has_own {
+                return;
+            }
+            format!("{cookies}; cf_clearance={cf_clearance}")
+        }
+        None => format!("cf_clearance={cf_clearance}"),
+    };
+    if let Ok(value) = HeaderValue::from_str(&merged) {
+        req.headers_mut().insert(COOKIE, value);
+    }
 }
 
 /// Repoint a request at the gateway: swap scheme + authority for the
@@ -1281,6 +1597,9 @@ where
     let (token_tx, token_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.oauth_token.as_str()));
     let (org_tx, org_rx) = watch::channel::<Arc<str>>(Arc::from(cfg.org_id.as_str()));
     let (mode_tx, mode_rx) = watch::channel(cfg.billing_mode);
+    // Starts empty: a cf_clearance only exists once the GUI's challenge-solve
+    // webview captures one (memory-only; a restart re-solves on demand).
+    let (cf_clearance_tx, cf_clearance_rx) = watch::channel::<Arc<str>>(Arc::from(""));
     // Intercepting until told otherwise: the engine only starts on an explicit
     // enable / SetIntercept, both of which mean "route through Gate".
     let (relay_intercept_tx, relay_intercept_rx) = watch::channel(true);
@@ -1301,10 +1620,13 @@ where
         token: token_rx,
         org: org_rx,
         mode: mode_rx,
+        cf_clearance: cf_clearance_rx,
+        chatgpt_turn: None,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
         claude_code_route: false,
         anthropic_unselected_logged: Arc::new(AtomicBool::new(false)),
+        app_shell_unrecognised_logged: Arc::new(AtomicBool::new(false)),
     };
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -1511,6 +1833,7 @@ where
             token_tx,
             org_tx,
             mode_tx,
+            cf_clearance_tx,
             relay_intercept_tx,
             stopping,
         }),
@@ -1522,7 +1845,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only the tests name this type; the handler infers it from `classify_client`.
     use crate::proxy::ClientClass;
 
     /// Cowork's turn, as captured: a GET on a path the `chatgpt` entry claims,
@@ -1536,6 +1858,48 @@ mod tests {
             .header("sec-websocket-version", "13")
             .body(())
             .unwrap()
+    }
+
+    #[test]
+    fn the_app_shell_drift_warning_gates_on_all_three_signals() {
+        // The latch and the printing live on the handler; this is the condition
+        // that decides whether a request is a drift worth naming.
+        let rules = crate::proxy::default_domains();
+        let shell = "SomeNewShell Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+        assert!(app_shell_is_unrecognised(
+            ClientClass::Unknown,
+            &rules,
+            Some("chatgpt.com"),
+            shell
+        ));
+        // Each leg of the condition, dropped one at a time.
+        assert!(
+            !app_shell_is_unrecognised(ClientClass::App, &rules, Some("chatgpt.com"), shell),
+            "a recognised app is not a drift"
+        );
+        assert!(
+            !app_shell_is_unrecognised(
+                ClientClass::Unknown,
+                &rules,
+                Some("chatgpt.com"),
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            ),
+            "the browser's own user-agent is the other ordinary state"
+        );
+        assert!(
+            !app_shell_is_unrecognised(ClientClass::Unknown, &rules, Some("chatgpt.com"), ""),
+            "an absent user-agent names nothing"
+        );
+        assert!(
+            !app_shell_is_unrecognised(ClientClass::Unknown, &rules, Some("api.openai.com"), shell),
+            "only the app's own host is watched"
+        );
+        assert!(!app_shell_is_unrecognised(
+            ClientClass::Unknown,
+            &rules,
+            None,
+            shell
+        ));
     }
 
     #[test]
@@ -1593,6 +1957,88 @@ mod tests {
                 slug: "chatgpt".into()
             },
         );
+    }
+
+    /// The chat turn the challenge fix exists for, cookie header as given.
+    fn app_chat_turn(cookie: Option<&str>) -> Request<()> {
+        let builder = Request::builder()
+            .method("POST")
+            .uri("https://chatgpt.com/backend-api/f/conversation");
+        let builder = match cookie {
+            Some(c) => builder.header("cookie", c),
+            None => builder,
+        };
+        builder.body(()).unwrap()
+    }
+
+    fn cookie_header(req: &Request<()>) -> Option<&str> {
+        req.headers()
+            .get(hudsucker::hyper::header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+    }
+
+    #[test]
+    fn inject_cf_clearance_sets_the_header_when_none_is_present() {
+        let mut req = app_chat_turn(None);
+        inject_cf_clearance(&mut req, "abc123");
+        assert_eq!(cookie_header(&req), Some("cf_clearance=abc123"));
+    }
+
+    #[test]
+    fn inject_cf_clearance_appends_without_disturbing_existing_cookies() {
+        let mut req = app_chat_turn(Some(
+            "__Secure-next-auth.session-token=s3ss10n; oai-did=dev",
+        ));
+        inject_cf_clearance(&mut req, "abc123");
+        assert_eq!(
+            cookie_header(&req),
+            Some("__Secure-next-auth.session-token=s3ss10n; oai-did=dev; cf_clearance=abc123")
+        );
+    }
+
+    #[test]
+    fn inject_cf_clearance_never_clobbers_a_client_supplied_cf_clearance() {
+        let original = "oai-did=dev; cf_clearance=client-owned";
+        let mut req = app_chat_turn(Some(original));
+        inject_cf_clearance(&mut req, "ours");
+        assert_eq!(cookie_header(&req), Some(original));
+    }
+
+    #[test]
+    fn a_challenge_is_detected_only_on_a_chatgpt_app_turn() {
+        let turn = |client| ChatgptTurn {
+            client,
+            method: Method::POST,
+            path: "/backend-api/f/conversation".into(),
+            rewritten: true,
+            cf_injected: false,
+        };
+        let app = turn(ClientClass::App);
+        let challenge = hudsucker::hyper::Response::builder()
+            .status(403)
+            .header("cf-mitigated", "challenge")
+            .body(())
+            .unwrap();
+        assert!(cf_challenge_detected(Some(&app), &challenge));
+        // No memo means the response answered some other host.
+        assert!(!cf_challenge_detected(None, &challenge));
+        // The browser runs its own interstitial, so the same challenge on the
+        // website must not open a webview the user never needed.
+        let web = turn(ClientClass::Web);
+        assert!(!cf_challenge_detected(Some(&web), &challenge));
+        // And an app turn answered normally (or with a non-challenge
+        // mitigation) must not either.
+        let plain = hudsucker::hyper::Response::builder()
+            .status(200)
+            .body(())
+            .unwrap();
+        assert!(!cf_challenge_detected(Some(&app), &plain));
+        let other = hudsucker::hyper::Response::builder()
+            .status(403)
+            .header("cf-mitigated", "block")
+            .body(())
+            .unwrap();
+        assert!(!cf_challenge_detected(Some(&app), &other));
     }
 
     /// Serialize the tests that bind real listeners in [`STABLE_PORT_RANGE`].
