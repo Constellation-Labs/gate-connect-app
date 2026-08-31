@@ -1,4 +1,5 @@
 import type { Verdict, VerdictNextAction, VerdictReason } from "./api";
+import type { GroupMember } from "./groups";
 import type { AppStatus } from "../components/gc/Sidebar";
 
 /**
@@ -98,4 +99,17 @@ export function verdictStatus(
 /** Index a sweep by slug, so a row can look itself up. */
 export function verdictsBySlug(verdicts: Verdict[]): Map<string, Verdict> {
   return new Map(verdicts.map((v) => [v.slug, v]));
+}
+
+/**
+ * The status line for a proxy-routed member, shared by the window shell's rail,
+ * the tray popover and the family panel so no two surfaces can phrase one
+ * domain two ways. No verdict exists for these - the sweep is per tool - so
+ * observation is the domain's own state: carrying traffic, switched on but
+ * blocked (master off, certificate untrusted), or off.
+ */
+export function proxyMemberStatus(m: GroupMember): AppStatus {
+  return m.routed
+    ? { kind: "protected" }
+    : { kind: "not-routed", detail: m.desired ? "Blocked" : "Off" };
 }

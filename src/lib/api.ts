@@ -478,6 +478,18 @@ export const closeRunningAgents = (only?: string[]) =>
  * when config-routed tools would be left pointing at the dead relay. */
 export const quitApp = () => invoke<void>("quit_app");
 
+/** Ask to quit the way the tray menu's Quit does: exit outright unless
+ * config-routed tools are still managed, in which case the backend reveals the
+ * main window and defers the decision there via `quit-requested`. The tray
+ * popover's own Quit entry goes through this so both entrances raise the same
+ * three-way dialog. */
+export const requestQuit = () => invoke<void>("request_app_quit");
+
+/** Reveal (or refocus) the main window, wherever the user left it. The tray
+ * popover's "Expand app" is the caller; the command is the same one the
+ * onboarding window's close handler uses. */
+export const revealMainWindow = () => invoke<void>("reveal_popover");
+
 /** Hand over (and clear) the buffered quit request: the connected tool names
  * to show in the quit takeover, or null when no quit is pending. Swept once
  * at mount and again on each `quit-requested` nudge, so a Quit clicked
