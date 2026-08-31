@@ -2138,6 +2138,192 @@ async fn open_onboarding_window(app: tauri::AppHandle, source: String) -> Result
     Ok(())
 }
 
+/// Label of the Cloudflare challenge-solve webview (see
+/// [`open_cf_challenge_window`]). Named because the window-event handler must
+/// recognise it too.
+const CF_CHALLENGE_WINDOW: &str = "cf-challenge";
+
+/// The last `cf_clearance` value fed into the engine. Lets the solve window
+/// tell a pre-existing still-good cookie in the webview store (feed it
+/// straight away with no user action - the engine value is memory-only, so
+/// this is the normal case right after an app restart) from the very cookie
+/// Cloudflare just challenged (wait for the solve to mint a new value;
+/// re-feeding the stale one would loop: inject -> challenge -> reopen).
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+static LAST_CF_CLEARANCE: Mutex<String> = Mutex::new(String::new());
+
+/// Open (or refocus) the Cloudflare challenge-solve webview at the real
+/// chatgpt.com and poll its cookie store for the `cf_clearance` a solved
+/// interstitial mints. On capture: feed the cookie into the running engine,
+/// close the window, and clear the solve latch. If the user closes the window
+/// first, just clear the latch - the next challenged turn re-opens it.
+///
+/// The webview loads the live site the way the browser does (it honours the
+/// system proxy, and `/` is not a rewritten path, so the interstitial itself
+/// egresses from the user's IP) - the browser path is the one empirically
+/// proven to mint a cookie Cloudflare then accepts from Gate's IP.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn open_cf_challenge_window(app: &tauri::AppHandle) {
+    // A window from a previous attempt should not exist here - the observer
+    // is latched, so only one attempt runs at a time, and every exit path
+    // closes its window. If one survived anyway, destroy it and start over
+    // rather than adopting it: the poll thread is what reveals the window,
+    // captures the cookie, and releases the latch, so a window with no live
+    // poll behind it is a wedge that suppresses every later challenge for
+    // the rest of the session. Since the window is now built hidden, such an
+    // orphan would also be invisible - the exact failure this avoids.
+    // `destroy`, not `close`: close is asynchronous, so the build below
+    // would race the teardown and fail on the still-taken label.
+    if let Some(stale) = app.get_webview_window(CF_CHALLENGE_WINDOW) {
+        eprintln!("[gate] challenge-solve: destroying an orphaned solve window");
+        let _ = stale.destroy();
+    }
+    let url: tauri::Url = "https://chatgpt.com"
+        .parse()
+        // Infallible: static, pre-validated URL.
+        .expect("static chatgpt.com URL parses");
+    let builder = tauri::WebviewWindowBuilder::new(
+        app,
+        CF_CHALLENGE_WINDOW,
+        tauri::WebviewUrl::External(url.clone()),
+    )
+    .title("Verify ChatGPT connection")
+    .inner_size(480.0, 640.0)
+    .center()
+    // Starts hidden. A non-interactive managed challenge is pure JavaScript
+    // and resolves on its own, so the common case should cost the user no
+    // window at all; the poll below reveals it only when a cookie has not
+    // appeared, which is the signature of the kind that wants a click.
+    //
+    // Hidden is not free: a window the platform considers invisible can have
+    // its rendering and timers throttled, and the challenge leans on exactly
+    // that work, so it may simply not complete while concealed. The reveal is
+    // the safety net either way - the worst case is that the window appears a
+    // few seconds later and behaves as it always did.
+    .visible(false);
+    // Wear the app's own user-agent: a stock webview is waved through without
+    // a challenge, and `cf_clearance` only exists as the result of one, so
+    // without this there is nothing to capture. See
+    // `proxy::chatgpt_app_user_agent`. Absent until the engine has seen an app
+    // request, in which case the platform default stands.
+    let app_user_agent = gate_connect_core::proxy::chatgpt_app_user_agent();
+    let builder = match app_user_agent.as_deref() {
+        Some(ua) => builder.user_agent(ua),
+        None => builder,
+    };
+    eprintln!(
+        "[gate] challenge-solve window opening as {}",
+        app_user_agent.as_deref().unwrap_or("<platform default UA>")
+    );
+    // Built for its side effect; the poll thread below re-resolves the window
+    // by label, so there is nothing to hold on to here.
+    if let Err(e) = builder.build() {
+        eprintln!("[gate] opening the challenge-solve window failed: {e}");
+        report_backend_error("cf_challenge_window", format!("{e}"));
+        gate_connect_core::proxy::cf_challenge_solve_finished(false);
+        return;
+    }
+    // Deliberately no `set_focus` here: the window is hidden, and the whole
+    // point of starting it that way is to not interrupt someone mid-sentence
+    // for a challenge that may well solve itself. Focus is taken at the
+    // reveal below, where a human genuinely has to act.
+
+    // Poll for the cookie rather than hooking navigation: the challenge
+    // round-trips within one page, so the cookie can land without any
+    // navigation event. A separate thread is also what the cookie API needs
+    // on Windows - reading cookies from an event handler deadlocks WebView2.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let challenged = LAST_CF_CLEARANCE
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        let mut last_names = String::new();
+        let mut reported_unchanged = false;
+        // Bounded, because the window can sit on a challenge it will never
+        // clear: the poll would otherwise log a jar line every two seconds
+        // for as long as the app runs. Generous enough for a person to read
+        // an interstitial and click through it.
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(180);
+        // How long a non-interactive challenge gets to resolve unseen before
+        // we assume it wants a human. Short enough that an interactive one
+        // does not feel stalled, long enough to cover a page load plus the
+        // challenge round trip on a slow link.
+        let reveal_at = started + std::time::Duration::from_secs(8);
+        let mut revealed = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            // Window gone: the user gave up (or the capture below already
+            // closed it). Release the latch, reporting no capture so the
+            // cooldown keeps the next challenge from reopening immediately.
+            let Some(window) = app.get_webview_window(CF_CHALLENGE_WINDOW) else {
+                gate_connect_core::proxy::cf_challenge_solve_finished(false);
+                return;
+            };
+            if std::time::Instant::now() >= deadline {
+                eprintln!(
+                    "[gate] challenge-solve: no cf_clearance after 3 minutes, giving up on this attempt"
+                );
+                let _ = window.close();
+                gate_connect_core::proxy::cf_challenge_solve_finished(false);
+                return;
+            }
+            // Nothing captured while hidden: either the challenge wants a
+            // click, or being concealed stopped it running. Both are fixed by
+            // putting it in front of the user, and this is the one moment in
+            // the flow where taking focus is warranted.
+            if !revealed && std::time::Instant::now() >= reveal_at {
+                eprintln!("[gate] challenge-solve: not resolved on its own, showing the window");
+                let _ = window.show();
+                let _ = window.set_focus();
+                revealed = true;
+            }
+            let cookies = window.cookies_for_url(url.clone()).unwrap_or_default();
+            // Which cookies the jar holds, by NAME only - the values are
+            // session credentials. Without this, the window's behaviour is
+            // the only signal, and "Cloudflare never minted a cf_clearance"
+            // looks identical to "capture is broken", which cost a build to
+            // tell apart. Logged only when the set CHANGES: it is polled
+            // every two seconds and the jar is usually static.
+            let names = cookies
+                .iter()
+                .map(|c| c.name())
+                .collect::<Vec<_>>()
+                .join(",");
+            if names != last_names {
+                eprintln!("[gate] challenge-solve jar: [{names}]");
+                last_names = names;
+            }
+            let captured = cookies
+                .into_iter()
+                .find(|c| c.name() == "cf_clearance")
+                .map(|c| c.value().to_string());
+            let Some(value) = captured else { continue };
+            if value.is_empty() || value == challenged {
+                // A cookie identical to the one just challenged is not a
+                // solve; re-feeding it would loop the window open. Said once
+                // - the poll re-reads the same jar until the deadline.
+                if !reported_unchanged {
+                    eprintln!(
+                        "[gate] challenge-solve: cf_clearance present but unchanged, waiting"
+                    );
+                    reported_unchanged = true;
+                }
+                continue;
+            }
+            if let Ok(mut last) = LAST_CF_CLEARANCE.lock() {
+                *last = value.clone();
+            }
+            gate_connect_core::proxy::manager().refresh_cf_clearance(&value);
+            eprintln!("[gate] challenge-solve: captured cf_clearance, fed to the engine");
+            let _ = window.close();
+            gate_connect_core::proxy::cf_challenge_solve_finished(true);
+            return;
+        }
+    });
+}
+
 /// Bring the main window back on screen, wherever the user left it. The
 /// onboarding flow calls this from its "locate Gate Connect" button and on
 /// close, so the handoff always ends at the app.
@@ -2623,6 +2809,13 @@ pub fn run() {
                 }
                 return;
             }
+            // The challenge-solve webview is a regular window too: closing it
+            // really closes it (the capture thread notices and clears the
+            // solve latch), and the popover's blur-dismiss below must not
+            // hide it mid-solve.
+            if window.label() == CF_CHALLENGE_WINDOW {
+                return;
+            }
             // First post-map event after a maximised map: geometry is settled,
             // so put the window back to its configured size. Main window only:
             // the repair's pending flags are the main reveal's, and the tray
@@ -2689,6 +2882,23 @@ pub fn run() {
                             report_backend_error("restore_routing", format!("{e:#}"));
                         }
                     }
+                });
+
+                // ChatGPT app Cloudflare-challenge fix: the engine detects
+                // `cf-mitigated: challenge` on a rewritten chatgpt.com app
+                // turn (the app shell can't render the interstitial) and this
+                // observer opens a one-time solve webview at the real host;
+                // the captured `cf_clearance` is fed back into the engine and
+                // merged into subsequent app turns. Off-thread because the
+                // observer fires on the engine thread mid-response and must
+                // not block it on window creation. The event mirrors
+                // `proxy-state-changed` so a mounted popover can react;
+                // opening the window does not depend on it.
+                let challenge_handle = app.handle().clone();
+                gate_connect_core::proxy::set_cf_challenge_observer(move || {
+                    let _ = challenge_handle.emit("cf-challenge-required", ());
+                    let handle = challenge_handle.clone();
+                    std::thread::spawn(move || open_cf_challenge_window(&handle));
                 });
             }
 
