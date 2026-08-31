@@ -348,12 +348,18 @@ export default {
         full: "9999px",
       },
       letterSpacing: {
-        // New app UI `mono/eyebrow`: Geist Mono Medium 12/16 at 10% tracking.
-        eyebrow: "1.2px",
-        // The same 10% at 14px, which is the size `mono/eyebrow` takes on the
+        // New app UI `mono/eyebrow`: Geist Mono Medium 12/16 at 8% tracking.
+        //
+        // 8%, not the 10% this said until 2026-08-30: the `sidebar` component's
+        // own variables (437:161) resolve `mono/eyebrow` to `letterSpacing: 8`.
+        // `Sidebar.tsx` had been carrying a hardcoded `tracking-[0.96px]` to get
+        // the drawn value, so one Figma variable was rendering two ways - 0.96px
+        // in the rail and 1.2px everywhere else that names the token.
+        eyebrow: "0.96px",
+        // The same 8% at 14px, which is the size `mono/eyebrow` takes on the
         // chart tooltip's bucket heading. Tracking is absolute in Figma, so the
-        // 12px value would read as 8.6% here.
-        "eyebrow-14": "1.4px",
+        // 12px value would read as 6.9% here.
+        "eyebrow-14": "1.12px",
         // `mono/label-12`: same face at 6% - the action pills (BLOCK/FLAG/REDACT).
         label: "0.72px",
         // `heading/32`: Geist Medium 32/36 at -4% - the intro's welcome title,

@@ -73,6 +73,36 @@ const WIDTH_STYLES: Record<ModalWidth, string> = {
   600: "w-[600px]",
 };
 
+/**
+ * The tone tile's geometry, which does **not** follow from the tone.
+ *
+ * The 2026-08-26 pass read four dialogs and concluded "44px on a toned dialog,
+ * 40px on a neutral one". The Settings frames say otherwise: the three 480px
+ * dialogs draw a 32px tile with a 16px glyph - `danger` Disconnect
+ * (`143:70620`) among them - while the 600px Diagnostics report
+ * (`363:9029`) is *neutral* and draws 44px with a 24px glyph. Size tracks the
+ * dialog's width, and the glyph does not track the box, so both are named here
+ * and each dialog says which it draws.
+ *
+ * `md` is the 40/20 pair the earlier pass measured. No frame has been shown to
+ * draw it since, but it is the default for every undrawn dialog, so changing
+ * those is not this pass's business.
+ */
+const TILE_SIZES = {
+  /** 480px Settings dialogs: rename, replace key, disconnect. */
+  sm: { box: "size-8 rounded-sm", glyph: 16 as const },
+  /** The 536px quit dialogs, which draw the same 32px box on a 20px glyph
+   * (`694:33004`). Same box as `sm`, one step up on the glyph, which is the
+   * clearest case there is of the glyph not tracking the box. */
+  sm20: { box: "size-8 rounded-sm", glyph: 20 as const },
+  /** Undrawn dialogs, and what the 2026-08-26 read recorded as "neutral". */
+  md: { box: "size-10 rounded-md", glyph: 20 as const },
+  /** 600px dialogs, toned or not: the drift review, the diagnostics report. */
+  lg: { box: "size-11 rounded-md", glyph: 24 as const },
+} as const;
+
+export type ModalTile = keyof typeof TILE_SIZES;
+
 export function Modal({
   tone = "neutral",
   icon,
@@ -86,7 +116,7 @@ export function Modal({
   onDismiss,
   onClose,
   width = 600,
-  tile = "default",
+  tile,
   edge = "default",
   initialFocus,
 }: {
@@ -118,15 +148,10 @@ export function Modal({
   /** Which of the file's widths this dialog is drawn at. Defaults to the
    * widest, which is what an undrawn dialog gets. */
   width?: ModalWidth;
-  /**
-   * The tone tile's size. `default` is the pair the four dialogs measured on
-   * 2026-08-26 draw - 44px with a 24px glyph on a toned dialog, 40px with a
-   * 20px glyph on a neutral one. `sm` is the 32px/radius-6 tile with a 20px
-   * glyph that the quit confirmation draws (`694:33004`), which is a *toned*
-   * dialog at the small size - so size does not follow from tone and has to be
-   * said.
-   */
-  tile?: "default" | "sm";
+  /** Which tone-tile geometry this dialog draws - see `TILE_SIZES`, and set it
+   * from the frame rather than inferring it from the tone. Defaults to what the
+   * 2026-08-26 read recorded, so every undrawn dialog keeps the size it had. */
+  tile?: ModalTile;
   /**
    * The card's own border. `danger` is `custom/destructive\40` (#dc262666), a
    * named variable rather than a one-off, which is why the Disconnect dialog
@@ -146,6 +171,10 @@ export function Modal({
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const safeRef = useRef<HTMLButtonElement>(null);
+  // The pre-2026-08-30 rule, kept as the default so an undrawn dialog draws
+  // exactly what it drew before. Every dialog the file actually draws names its
+  // own tile.
+  const tileSize = tile ?? (tone === "neutral" ? "md" : "lg");
 
   // When the primary action is destructive, focus opens on the secondary
   // button: otherwise a keyboard user who opened this with Enter destroys
@@ -180,20 +209,11 @@ export function Modal({
           </button>
         )}
         <div className="flex items-center gap-3">
-          {/* 44px on a toned dialog, 40px on a neutral one, which is the size
-           * difference the frames draw rather than a rounding of one number -
-           * except where `tile="sm"` says otherwise. */}
           <span
             aria-hidden
-            className={`flex shrink-0 items-center justify-center border shadow-base-2xs ${
-              tile === "sm"
-                ? "size-8 rounded-sm"
-                : tone === "neutral"
-                  ? "size-10 rounded-md"
-                  : "size-11 rounded-md"
-            } ${TONE_STYLES[tone]}`}
+            className={`flex shrink-0 items-center justify-center border shadow-base-2xs ${TILE_SIZES[tileSize].box} ${TONE_STYLES[tone]}`}
           >
-            <Icon name={icon} size={tile !== "sm" && tone !== "neutral" ? 24 : 20} />
+            <Icon name={icon} size={TILE_SIZES[tileSize].glyph} />
           </span>
           <div className="min-w-0 flex-1">
             <h2
@@ -220,7 +240,10 @@ export function Modal({
           )}
         </div>
 
-        {children && <div className="mt-6 flex flex-col gap-3">{children}</div>}
+        {/* 16px between body blocks, measured on the rename fields
+         * (`143:67460` -> `143:67465`) and the reset steps -> checkbox
+         * (`177:73952` -> `177:73976`). This was 12px. */}
+        {children && <div className="mt-6 flex flex-col gap-4">{children}</div>}
 
         {(secondary || middle || primary) && (
           <div className="mt-6 flex justify-end gap-3">
@@ -596,7 +619,9 @@ export function ModalSteps({
           >
             <span
               aria-hidden
-              className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-sm font-medium text-neutral-700"
+              // 36px, as `177:73957` draws it - the text group starts at 48,
+              // which is the tile plus this row's 12px gap.
+              className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-sm font-medium text-neutral-700"
             >
               {i + 1}
             </span>

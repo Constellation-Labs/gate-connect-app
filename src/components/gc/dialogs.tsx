@@ -483,7 +483,13 @@ export function DiagnosticsDialog({
 }) {
   return (
     <Modal
-      icon="info"
+      // `ClipboardList`, as `363:9030` draws it and as the Settings row that
+      // opens this dialog already used. The 2026-08-26 glyph sweep corrected
+      // the rows and never followed into the dialogs.
+      icon="clipboardList"
+      // Neutral, but drawn at the 600px tile (`363:9029`): 44px with a 24px
+      // glyph. Tile size follows the width here, not the tone.
+      tile="lg"
       title="Diagnostics report"
       // The drawn subtitle reads "this installed" - a typo, kept corrected.
       subtitle="The state of this install, as text you can hand to someone else"
@@ -491,7 +497,9 @@ export function DiagnosticsDialog({
       primary={{ label: copied ? "Copied" : "Copy report", onClick: onCopy }}
       onDismiss={onClose}
     >
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-base-xs leading-4 text-neutral-700">
+      {/* `mono/body-14` (`363:9120`), not the 12/16 this rendered: the report is
+       * the one screen a user reads a wall of text on. */}
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-sm leading-5 text-neutral-700">
         {report}
       </pre>
     </Modal>
@@ -973,7 +981,10 @@ export function RenameDeviceDialog({
   const field = useRef<HTMLInputElement>(null);
   return (
     <Modal
-      icon="monitorSmartphone"
+      // `Monitor` (`143:70310`), matching the Device row that opens this. The
+      // 2026-08-26 sweep fixed the row and left the dialog on the near-miss.
+      icon="monitor"
+      tile="sm"
       title="Rename your device"
       width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
@@ -1023,6 +1034,7 @@ export function ReplaceApiKeyDialog({
   return (
     <Modal
       icon="key"
+      tile="sm"
       title="Replace API key"
       width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
@@ -1074,6 +1086,9 @@ export function DisconnectGateDialog({
     <Modal
       tone="danger"
       icon="triangleAlert"
+      // 32px with a 16px glyph (`143:70620`), like its two 480px siblings -
+      // the red tile the build drew at 44 was the loudest of the tile misses.
+      tile="sm"
       title="Disconnect Gate?"
       width={480}
       secondary={{ label: "Cancel", onClick: onCancel }}
@@ -1510,7 +1525,7 @@ export function QuitSafeToCloseDialog({
     <Modal
       tone="success"
       icon="circleCheck"
-      tile="sm"
+      tile="sm20"
       width={536}
       title="Safe to close Gate Connect"
       secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}

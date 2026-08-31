@@ -3,9 +3,13 @@ import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 
 /**
- * Window chrome for the new app UI (Figma `nav/topbar` 113:16763 and
- * `topnav/menu` 116:17428). A 48px strip: brand lockup centred, overflow menu
- * on the right.
+ * Window chrome for the new app UI: a 48px strip, brand lockup centred,
+ * overflow menu on the right.
+ *
+ * Drawn as `nav/topbar` and `topnav/menu` on the Components page, which the
+ * file has since emptied - both nodes are gone. The live sources are the
+ * topbar and menu instances inside the flow frames (the Overview page's
+ * `116:27225` is the menu).
  *
  * Two things the design draws are deliberately absent. The traffic lights are
  * the operating system's, so we only reserve the space. The Minimize2 button

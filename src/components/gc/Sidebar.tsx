@@ -4,9 +4,10 @@ import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 
 /**
- * Left navigation rail for the new app UI (Figma `nav/sidebar/overview`,
- * node 408:15625, `Sidenav`). 256px wide, fixed, sits beside a scrolling pane -
- * it is not one of the popover's sliding panels and carries no back affordance.
+ * Left navigation rail for the new app UI (Figma `Components / Sidenav`, node
+ * 408:15625; the `sidebar` set is `437:161`). 256px wide, fixed, sits beside a
+ * scrolling pane - it is not one of the popover's sliding panels and carries no
+ * back affordance.
  *
  * Presentational: every piece of state arrives as a prop so the shell can own
  * data fetching. Nothing here talks to `lib/api`.
@@ -241,9 +242,7 @@ export function Sidebar({
               // over the same traffic the row switches and the master switch
               // already cover, on a rail the design draws without one.
               <div className="flex items-baseline justify-between gap-2">
-                {/* 0.96px is the redrawn `mono/eyebrow` (8%), not the 1.2px
-                 * the shared `tracking-eyebrow` token still carries. */}
-                <h2 className="truncate font-mono text-base-xs font-medium uppercase leading-4 tracking-[0.96px] text-base-muted-foreground">
+                <h2 className="truncate font-mono text-base-xs font-medium uppercase leading-4 tracking-eyebrow text-base-muted-foreground">
                   {group.label}
                 </h2>
                 {/* Protected over total, drawn on every eyebrow

@@ -4,9 +4,13 @@ import { Icon } from "./Icon";
 
 /**
  * The banner stack that sits between the topbar and the content pane
- * (Figma `banner/update`, `banner/routing`, `banner/partly-routing`,
+ * (`banner/update`, `banner/routing`, `banner/partly-routing`,
  * `banner/alert/*`). Update and routing banners are full-bleed 1024px strips
  * with a hairline bottom border; the alert is an inset card.
+ *
+ * Those component frames lived on the Components page, which the file has since
+ * emptied; the live sources are the banner instances inside the flow frames,
+ * which is where the 2026-08-28 re-validation read them.
  *
  * All presentational - the shell owns dismissal and retry state.
  */

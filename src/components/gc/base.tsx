@@ -43,7 +43,11 @@ export function Card({
 /**
  * The 28x28 status chip that fronts the routing banners, and at 36px the alert
  * banner. One shape, two palettes: a vertical 50 -> 200 gradient, a 300 border
- * and a 600 icon, all on Tailwind's default ramps (Figma 113:16788 / 113:16891).
+ * and a 600 icon, all on Tailwind's default ramps.
+ *
+ * Sampled from the `113:*` banner components, which the file has since deleted
+ * along with the rest of the Components page; the live sources are the banner
+ * instances inside the flow frames.
  *
  * The icon step is 600, not 700: the ShieldBan inside the Overview frame's
  * routing banner reads `tailwind colors/amber/600` #D97706, which is also the
@@ -85,11 +89,11 @@ export function StatusTile({
 }
 
 /**
- * 36x20 track, 16px thumb (Figma 113:16827). Geometry differs from the
- * popover's `gc/ui.tsx` Switch (38x22 with a check glyph), so the two coexist
- * until the popover screens migrate; the accessibility contract is carried
- * over unchanged, including the `before:` hit-area expansion that takes the
- * target past 24px without moving the visible track.
+ * 36x20 track, 16px thumb (`Switch` component set, `408:14253`). Geometry
+ * differs from the popover's `gc/ui.tsx` Switch (38x22 with a check glyph), so
+ * the two coexist until the popover screens migrate; the accessibility
+ * contract is carried over unchanged, including the `before:` hit-area
+ * expansion that takes the target past 24px without moving the visible track.
  */
 export function BaseSwitch({
   on,
@@ -113,17 +117,24 @@ export function BaseSwitch({
       aria-busy={busy || undefined}
       aria-disabled={busy || undefined}
       onClick={busy ? undefined : onClick}
-      // 32 x 17.78 with a 14.22 knob at 1.78 inset (`Switch` component set,
-      // 408:14253, re-read 2026-08-26), rounded to whole pixels. The off track
-      // is `neutral-400` at 50%, which lands within a hair of the `base/input`
-      // it replaces - no contrast change, just the design's own value.
-      className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+      // 36 x 20 with a 16px knob at a 2px inset, straight off the component set
+      // and off every instance in `sidebar-menu-item` (434:128).
+      //
+      // This carried 32 x 17.78 / 14.22 / 1.78 from 2026-08-26 until the
+      // 2026-08-30 audit: those numbers were measured off an instance scaled
+      // 1.125x, and each one divides back exactly (36/1.125 = 32,
+      // 20/1.125 = 17.78, 16/1.125 = 14.22, 2/1.125 = 1.78). The docstring
+      // above had said 36x20 all along; only the code disagreed.
+      //
+      // The off track is `neutral-400` at 50%, which is `custom/outline`
+      // (#a3a3a380) to the byte - the design's own value.
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         busy ? "opacity-70" : ""
       } ${on ? "bg-blue-ribbon-700" : "bg-neutral-400/50"}`}
     >
       <span
-        className={`absolute size-3.5 rounded-full bg-base-background shadow-base-lg transition-transform ${
-          on ? "translate-x-4" : "translate-x-[2px]"
+        className={`absolute size-4 rounded-full bg-base-background shadow-base-lg transition-transform ${
+          on ? "translate-x-[18px]" : "translate-x-[2px]"
         }`}
       />
     </button>
