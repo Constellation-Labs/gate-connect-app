@@ -315,6 +315,51 @@ pub(crate) fn responses_ws_downgrade() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("GATE_PROXY_WS_DOWNGRADE").is_some())
 }
 
+/// Whether to drop the app shell's product token from the `user-agent` on
+/// chatgpt.com turns forwarded through the gateway. Default-ON; set
+/// `GATE_PROXY_STRIP_APP_UA=0` (or `off`/`false`) to turn it off.
+///
+/// This is still the experiment described at the strip site: measured
+/// 2026-08-28, same machine, endpoint, gateway and Cloudflare colo,
+/// `POST /backend-api/f/conversation` answered 200 from the website and
+/// `cf-mitigated: challenge` from the app, whose user-agent is
+/// character-for-character the website's with `CodexBrowser ` prefixed. So
+/// neither the cookie nor Gate's egress IP explains the difference. The strip
+/// exists to confirm or refute that the prefix is what the challenge rule keys
+/// on - and that question is only answerable if the strip can be turned OFF.
+///
+/// It shipped default-on, and the same commit deleted the toggle, which left
+/// the two mechanisms in #206 inseparable: a green chat turn could not be told
+/// from the captured `cf_clearance` doing all the work on its own. This restores
+/// the off switch without changing the default, so the three-way run (strip
+/// only / cookie only / neither) is possible again.
+///
+/// Announced once, the first time a chatgpt.com app turn consults it, because
+/// the state is not otherwise visible: the strip rewrites a header the log does
+/// not print, so a run with the flag unset reads exactly like a run with it set.
+pub(crate) fn strip_app_product_token() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let enabled = !matches!(
+            std::env::var("GATE_PROXY_STRIP_APP_UA")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "0" | "off" | "false" | "no"
+        );
+        eprintln!(
+            "[gate-proxy] chatgpt app user-agent strip is {}",
+            if enabled {
+                "ON (default; GATE_PROXY_STRIP_APP_UA=0 turns it off)"
+            } else {
+                "off (GATE_PROXY_STRIP_APP_UA)"
+            }
+        );
+        enabled
+    })
+}
+
 /// Wire hudsucker's internal `tracing` events (TLS handshake / HTTP2 errors)
 /// to stderr once, when debug logging is on. Without this, MITM failures
 /// inside hudsucker are silent. Overridable via `RUST_LOG`. Idempotent.
@@ -843,7 +888,7 @@ impl HttpHandler for GateHandler {
                 // wears - so stripping here would replay it under a UA
                 // Cloudflare never issued it to, and the challenge the
                 // cookie exists to clear would just fire again.
-                if rewritten && cf.is_empty() {
+                if rewritten && cf.is_empty() && strip_app_product_token() {
                     let stripped = req
                         .headers()
                         .get(hudsucker::hyper::header::USER_AGENT)
