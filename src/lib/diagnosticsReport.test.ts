@@ -20,6 +20,7 @@ const backend: Diagnostics = {
   data_dir: "/home/x/.local/share/Gate Connect",
   ca_cert_path: "/home/x/.local/share/Gate Connect/proxy/ca-cert.pem",
   ca_cert_present: true,
+  ca_nss_trusted: true,
   routing_intent: true,
   persisted_engine_proxy_url: "http://127.0.0.1:45981",
   relay_base_url: "http://127.0.0.1:45982",
@@ -230,6 +231,19 @@ describe("buildDiagnosticsReport", () => {
   it("flags a trusted certificate whose file has gone missing", () => {
     const text = report({ backend: { ...backend, ca_cert_present: false } });
     expect(text).toContain("cert file       MISSING on disk");
+  });
+
+  it("flags a CA the browser's own store is missing", () => {
+    // The certificate line still says trusted, because the OS store holds it.
+    // Only this line explains why Chrome rejects what Firefox accepts.
+    const text = report({ backend: { ...backend, ca_nss_trusted: false } });
+    expect(text).toContain("certificate     trusted");
+    expect(text).toContain("browser store   CA MISSING (chromium)");
+  });
+
+  it("says nothing about the browser store where the question does not apply", () => {
+    const text = report({ backend: { ...backend, ca_nss_trusted: null } });
+    expect(text).not.toContain("browser store");
   });
 
   it("survives a first-run popover with no account and no proxy", () => {

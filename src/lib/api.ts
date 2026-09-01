@@ -344,6 +344,11 @@ export interface Diagnostics {
   /** Whether the CA's public cert is actually on disk. Trusted-but-absent is
    * a real state and otherwise invisible. */
   ca_cert_present: boolean;
+  /** Linux only: whether the per-user NSS store Chromium reads holds the CA.
+   * Chromium never reads the system store, so this and `ca_trusted`
+   * disagreeing is the whole of "Firefox works, Chrome doesn't". `null` where
+   * the question does not apply (not Linux, or no such browser here). */
+  ca_nss_trusted: boolean | null;
   /** The persisted "routing should be on" intent, as opposed to whether it
    * is on now. The two disagreeing is the commonest report we get. */
   routing_intent: boolean;
