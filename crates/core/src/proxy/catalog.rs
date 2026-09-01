@@ -41,11 +41,27 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // OAuth + account calls on this same host under /v1/ (e.g.
             // /v1/oauth/*, /v1/organizations/*), and those carry no model, so
             // the gateway can't classify them and rejects them 503 ("AI
-            // unknown"). Rewriting only /v1/messages (covers count_tokens +
-            // batches sub-paths) and legacy /v1/complete lets every other /v1/
-            // path fall through to `decide`'s default Passthrough and reach the
-            // real host unchanged. Do NOT widen this back to "/v1/".
-            rewrite_prefixes: vec!["/v1/messages".into(), "/v1/complete".into()],
+            // unknown"). Naming the three inference paths one by one lets every
+            // other /v1/ path fall through to `decide`'s default Passthrough and
+            // reach the real host unchanged. Do NOT widen this back to "/v1/".
+            //
+            // - /v1/messages is the native Messages API, and the prefix covers
+            //   its count_tokens + batches sub-paths.
+            // - /v1/complete is the legacy text-completions endpoint.
+            // - /v1/chat/completions is Anthropic's OpenAI-compatible endpoint.
+            //   It carries a model in the body like the other two, so it is
+            //   inference by the same test, and it was missing here until
+            //   2026-08-31: openclaw 2026.8.1 switched its anthropic transport
+            //   to it (`api=openai-completions`), and because the path fell
+            //   through to Passthrough its traffic went to the real API with
+            //   Gate's switch on and nothing in the gateway to show for it. A
+            //   silent bypass is the one failure this entry exists to prevent,
+            //   so the path is named rather than left to the default.
+            rewrite_prefixes: vec![
+                "/v1/messages".into(),
+                "/v1/complete".into(),
+                "/v1/chat/completions".into(),
+            ],
             // Paths outside the inference set already pass through; this keeps
             // the Squirrel auto-updater explicit. Other /api/* paths
             // (claude_code, event_logging, bootstrap) also reach the real host
