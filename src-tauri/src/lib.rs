@@ -477,11 +477,33 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
 }
 
 /// List the orgs the signed-in user may act on (for the org picker). Reads the
-/// current gateway + stored OAuth token and calls the gateway's `/v1/me/orgs`.
+/// current gateway + live OAuth session and calls the gateway's `/v1/me/orgs`.
+///
+/// `list_current` renews a refused token and retries before giving up, and
+/// records the session as rejected when even the renewed one is refused. The
+/// screen that made this call shows the error either way, but a rejection is
+/// news for the whole app - so raise the same signal the refresh loop would
+/// have raised on its next tick, rather than leaving the tray green for up to
+/// 30s behind a popover that has already given up.
+///
+/// Gated on `session_rejected()`, the recorded gateway verdict, and not on a
+/// `live_session()` of `None`: an offline user with a locally-expired token
+/// reads as `None` too, and answering that with a red tray and an expired-
+/// session notification would be the app crying wolf about a dropped Wi-Fi.
+///
+/// All of it inside the blocking closure. The signal does blocking
+/// engine-status IPC, and this is an `async fn` command, so its body is on a
+/// tokio worker rather than the blocking pool.
 #[tauri::command]
 async fn oauth_list_orgs() -> Result<Vec<gate_connect_core::org::Org>, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::org::list_current().map_err(|e| format!("{e:#}"))
+        let listed = gate_connect_core::org::list_current().map_err(|e| format!("{e:#}"));
+        if listed.is_err() && gate_connect_core::oauth::session_rejected() {
+            if let Some(app) = APP_HANDLE.get() {
+                signal_session_dead(app);
+            }
+        }
+        listed
     })
     .await
     .map_err(|e| format!("list orgs join error: {e}"))?
@@ -1215,6 +1237,47 @@ fn set_updater_relaunching(relaunching: bool) {
 /// gates a cosmetic redraw. Starts false (assume signed in until proven dead).
 static SESSION_NEEDS_SIGNIN: AtomicBool = AtomicBool::new(false);
 
+/// How far the wall clock may drift from elapsed monotonic time across one
+/// refresh tick before the background loop treats it as a jump rather than
+/// drift. Ordinary NTP slew across 30s is milliseconds; a resume or a stepped
+/// correction is minutes to hours. Wide enough that nothing renews for a
+/// well-behaved clock, narrow enough to catch a sleep short of the token's own
+/// lifetime.
+const CLOCK_JUMP_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Raise the dead-session signal from somewhere other than the refresh loop:
+/// the gateway-auth observer, which learns from a refused request that the
+/// session is gone without waiting up to 30s for the next tick.
+///
+/// Edge-guarded on the same flag the loop swaps, so the two can't both react
+/// to one death - whichever gets there first does the work and the other sees
+/// the flag already set. Repaints the tray, nudges a mounted popover (which
+/// re-reads `oauth_status` and routes to sign-in; the frontend has no status
+/// poll by design), and posts the same notification the refresh loop would
+/// have, on the same platforms it notifies on - the tray dot alone is out of
+/// the user's eyeline while they sit watching a tool fail.
+fn signal_session_dead(app: &tauri::AppHandle) {
+    if SESSION_NEEDS_SIGNIN.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let running = gate_connect_core::proxy::manager()
+        .status()
+        .map(|s| s.running)
+        .unwrap_or(false);
+    update_tray_status(app, running);
+    let _ = app.emit("session-signin-required", ());
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = app
+            .notification()
+            .builder()
+            .title("Gate Connect")
+            .body("Your session expired. Open Gate Connect to sign in again and keep routing.")
+            .show();
+    }
+}
+
 /// Stop pinning the popover open. The frontend calls this on the user's
 /// first interaction with the first-launch window, switching the popover
 /// back to normal click-outside-to-dismiss behavior.
@@ -1816,6 +1879,60 @@ pub fn run() {
                 });
             }
 
+            // Dead-session detection on the data plane: the engine reports
+            // a 401 the gateway gave a call we authenticated, and this
+            // observer decides what it meant. Until now nothing did - the
+            // 401 went to the tool that made the call and Gate kept
+            // showing a green dot while every request failed, which is how
+            // a resume-from-sleep clock jump (locally-fresh token, expired
+            // as far as the gateway is concerned) could persist until a
+            // restart.
+            //
+            // Off-thread: the observer fires on the engine thread
+            // mid-response, and the re-verification makes its own blocking
+            // HTTP calls. The `GateAuthCheck` guard releases the debounce
+            // latch when the thread ends, panic included - a latch left set
+            // would leave 401-driven recovery dead for the rest of the
+            // process.
+            //
+            // Registered on every desktop OS, unlike the two observers above:
+            // there is no window to create here, so nothing is
+            // platform-specific, and keeping it off the cfg gate is what lets
+            // it be type-checked on any of them. On Linux it simply never
+            // fires - the engine lives in the helper daemon, so the notify
+            // happens in a process that registered no observer.
+            let auth_handle = app.handle().clone();
+            gate_connect_core::proxy::set_gate_auth_observer(move || {
+                let handle = auth_handle.clone();
+                std::thread::spawn(move || {
+                    let _release = gate_connect_core::proxy::GateAuthCheck;
+                    match gate_connect_core::startup::reverify_session() {
+                        // The session was alive and the local clock was
+                        // simply wrong about it. The forced refresh minted
+                        // a token that works; push it into the running
+                        // engine so in-flight tools recover without a
+                        // restart, and take back any dead-session signal.
+                        gate_connect_core::startup::Recheck::Recovered(token) => {
+                            gate_connect_core::proxy::manager().refresh_token(&token);
+                            if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
+                                let running = gate_connect_core::proxy::manager()
+                                    .status()
+                                    .map(|s| s.running)
+                                    .unwrap_or(false);
+                                update_tray_status(&handle, running);
+                            }
+                        }
+                        gate_connect_core::startup::Recheck::Dead => {
+                            signal_session_dead(&handle);
+                        }
+                        // No verdict (offline, or the 401 belonged to the
+                        // client's own upstream credential rather than to
+                        // us): change nothing.
+                        gate_connect_core::startup::Recheck::Unchanged => {}
+                    }
+                });
+            });
+
             // Hide the dock icon - Gate Connect lives in the menu bar.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -2036,10 +2153,39 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
                 let refresh_handle = app.handle().clone();
+                // Previous tick's paired clock readings, for the jump check
+                // below. `None` until the first tick has one to compare with.
+                let mut last_tick: Option<(std::time::Instant, std::time::SystemTime)> = None;
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(
                         gate_connect_core::oauth::REFRESH_INTERVAL_SECS,
                     ));
+                    // Did the wall clock move by something other than the time
+                    // that actually passed? `Instant` is monotonic and stops
+                    // while the machine is suspended; `SystemTime` is the wall
+                    // clock and can be stepped by the time service. When the
+                    // two disagree across one tick, the machine resumed from
+                    // sleep or the clock was corrected - and either way the
+                    // token's `expires_at_unix`, stamped from a reading of the
+                    // wall clock that no longer relates to this one, has
+                    // stopped meaning anything. Renew now rather than let the
+                    // gateway be the one to notice.
+                    //
+                    // This is the preventive half. It cannot catch a guest
+                    // clock that froze *with* the machine (both readings stall
+                    // together, so nothing here looks wrong while the token
+                    // silently ages out); that case has no local signal at all
+                    // and is what the gateway-auth observer recovers from
+                    // after the fact.
+                    let now_mono = std::time::Instant::now();
+                    let now_wall = std::time::SystemTime::now();
+                    let clock_jumped = last_tick.is_some_and(|(mono, wall)| {
+                        let elapsed = now_mono.saturating_duration_since(mono);
+                        now_wall.duration_since(wall).map_or(true, |moved| {
+                            moved.max(elapsed) - moved.min(elapsed) > CLOCK_JUMP_TOLERANCE
+                        })
+                    });
+                    last_tick = Some((now_mono, now_wall));
                     if gate_connect_core::account::auth_mode().unwrap_or_default()
                         != gate_connect_core::account::AuthMode::OAuth
                     {
@@ -2054,6 +2200,26 @@ pub fn run() {
                             update_tray_status(&refresh_handle, running);
                         }
                         continue;
+                    }
+                    // A clock jump invalidates the local expiry test that
+                    // `live_session` trusts, so renew unconditionally on the
+                    // tick that saw one. Skipped once the session is known
+                    // dead: a forced refresh stores whatever it gets and
+                    // clears the gateway's rejection with it, which would
+                    // report a refused session as signed in again.
+                    if clock_jumped && !SESSION_NEEDS_SIGNIN.load(Ordering::Relaxed) {
+                        eprintln!(
+                            "[gate] the system clock moved out of step with elapsed time \
+                             (sleep/resume or a time correction); renewing the access token"
+                        );
+                        if let Some(cfg) = gate_connect_core::oauth::OAuthConfig::from_build_env() {
+                            if let Err(e) = gate_connect_core::oauth::force_refresh(&cfg) {
+                                // Not a verdict on its own - the gateway has
+                                // said nothing. Leave the session alone; the
+                                // read below reports what it can.
+                                eprintln!("[gate] renewing after a clock jump failed: {e:#}");
+                            }
+                        }
                     }
                     // `live_session` silently refreshes a stale token (persisting
                     // it) and yields None when the session is dead; push the

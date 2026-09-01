@@ -246,6 +246,110 @@ pub fn cf_challenge_solve_finished(captured: bool) {
     CF_CHALLENGE_SOLVING.store(false, std::sync::atomic::Ordering::Release);
 }
 
+/// Observer the desktop shell registers to hear that the gateway refused a
+/// request the engine had injected the OAuth bearer into (HTTP 401 on a
+/// rewritten call - see `engine::handle_response`).
+///
+/// Without it a dead session is invisible to the app that owns the credential:
+/// the 401 is handed to whichever tool made the call, and Gate goes on showing
+/// a green tray dot, reporting `signed_in`, and injecting the refused token
+/// until something restarts. The observed case was a machine resuming from
+/// sleep with a guest clock that had stopped - the local expiry check saw a
+/// token minutes old, so nothing refreshed, while the gateway had considered
+/// it expired for hours. No local signal exists for that state; this is it.
+///
+/// The 401 is a suspicion, never a verdict. A rewritten request also carries
+/// the client's own upstream credential, so the refusal may belong to that
+/// instead - which is why the shell answers this by re-verifying against the
+/// gateway (`startup::reverify_session`) rather than by signing anyone out.
+///
+/// Not cfg-gated, for the same reason the challenge observer above isn't: the
+/// notify is called from `engine::handle_response`, which compiles on every
+/// desktop OS, and a Linux daemon-hosted engine simply has no observer
+/// registered, so it is a no-op there.
+static GATE_AUTH_OBSERVER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// Debounce latch: set by the notify that fired the observer, cleared by
+/// [`gate_auth_check_finished`]. A refused session 401s *every* request from
+/// every routed tool, so without this one bad token would start a re-verify
+/// per request.
+static GATE_AUTH_CHECKING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// How long the observer stays quiet after a finished check. Covers both
+/// outcomes: responses to requests sent before a recovered token landed are
+/// still in flight carrying 401s that must not re-run the check, and a session
+/// that really is dead keeps 401ing for as long as the user leaves their tools
+/// running. One re-verification a minute is enough to notice a session that
+/// comes back some other way.
+const GATE_AUTH_RECHECK_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Earliest instant at which the observer may fire again; `None` means "no
+/// cooldown running".
+static GATE_AUTH_NEXT_ALLOWED: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
+/// Register the gateway-auth observer. First registration wins; later calls
+/// are ignored (the shell registers exactly once at setup).
+pub fn set_gate_auth_observer(observer: impl Fn() + Send + Sync + 'static) {
+    let _ = GATE_AUTH_OBSERVER.set(Box::new(observer));
+}
+
+/// Invoke the registered gateway-auth observer, if any, unless a check is
+/// already in flight or the last one's cooldown is still running. Called by
+/// the engine's `handle_response` on a 401 to a request we authenticated.
+pub(crate) fn notify_gate_auth_observer() {
+    let Some(observer) = GATE_AUTH_OBSERVER.get() else {
+        return;
+    };
+    let cooling = GATE_AUTH_NEXT_ALLOWED
+        .lock()
+        .ok()
+        .and_then(|next| *next)
+        .is_some_and(|next| std::time::Instant::now() < next);
+    if cooling {
+        if engine::debug_log() {
+            eprintln!(
+                "[gate-proxy] gateway rejected our bearer, but the previous \
+                 session re-check's cooldown is still running"
+            );
+        }
+        return;
+    }
+    if GATE_AUTH_CHECKING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if engine::debug_log() {
+            eprintln!(
+                "[gate-proxy] gateway rejected our bearer while a session re-check is in flight"
+            );
+        }
+        return;
+    }
+    observer();
+}
+
+/// Holds the re-check latch for the life of one check and releases it on
+/// drop. The host takes one at the top of the thread it does the check on, so
+/// the release survives a panic anywhere in that thread - a latch left set is
+/// 401-driven recovery silently dead for the rest of the process, which is
+/// the failure this whole path exists to prevent.
+pub struct GateAuthCheck;
+
+impl Drop for GateAuthCheck {
+    fn drop(&mut self) {
+        gate_auth_check_finished();
+    }
+}
+
+/// Release the re-check latch and start the cooldown. Called for you by
+/// [`GateAuthCheck`]'s drop; prefer holding the guard to calling this.
+pub fn gate_auth_check_finished() {
+    if let Ok(mut next) = GATE_AUTH_NEXT_ALLOWED.lock() {
+        *next = Some(std::time::Instant::now() + GATE_AUTH_RECHECK_COOLDOWN);
+    }
+    GATE_AUTH_CHECKING.store(false, std::sync::atomic::Ordering::Release);
+}
+
 /// The `user-agent` last seen on an intercepted chatgpt.com app request.
 ///
 /// The solve webview adopts it, for two reasons that both bite. Cloudflare
@@ -701,9 +805,13 @@ pub(crate) fn inject_gate_credential(
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     if headers.contains_key(GATE_KEY_HEADER) {
-        return Ok(());
+        // The caller brought its own Gate key, so nothing of ours goes on
+        // this request - including any `x-gate-authorization` it may have set
+        // itself, which is why the answer here is a report of what *we* did
+        // rather than a look at the headers afterwards.
+        return Ok(false);
     }
     headers.remove(GATE_AUTHORIZATION_HEADER);
     headers.remove(GATE_ORG_HEADER);
@@ -720,6 +828,7 @@ pub(crate) fn inject_gate_credential(
                     HeaderValue::from_str(org).context("building x-gate-org-id header")?,
                 );
             }
+            return Ok(true);
         }
         None => {
             headers.insert(
@@ -728,7 +837,7 @@ pub(crate) fn inject_gate_credential(
             );
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// One routable provider. The built-in set is defined by
@@ -1362,6 +1471,45 @@ pub fn resolve_endpoint(endpoint: &str) -> Option<ResolvedEndpoint> {
 
 #[cfg(test)]
 mod tests {
+    /// The engine calls the gateway-auth notify once per refused request, and
+    /// a dead session refuses *every* request from every routed tool. Both
+    /// latches exist to keep that flood down to one re-verification: the
+    /// in-flight latch while a check runs, the cooldown after it finishes.
+    /// Without them a user with three tools open would have the app opening a
+    /// re-verification per failed call.
+    #[test]
+    fn gate_auth_notifies_once_per_check_and_then_cools_down() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static FIRED: AtomicUsize = AtomicUsize::new(0);
+        super::set_gate_auth_observer(|| {
+            FIRED.fetch_add(1, Ordering::SeqCst);
+        });
+
+        super::notify_gate_auth_observer();
+        assert_eq!(
+            FIRED.load(Ordering::SeqCst),
+            1,
+            "the first refusal starts a check"
+        );
+
+        super::notify_gate_auth_observer();
+        assert_eq!(
+            FIRED.load(Ordering::SeqCst),
+            1,
+            "further refusals while the check is in flight must not start another"
+        );
+
+        // The check finished; the cooldown it starts covers the responses
+        // still in flight when it did, which all carry the same 401.
+        super::gate_auth_check_finished();
+        super::notify_gate_auth_observer();
+        assert_eq!(
+            FIRED.load(Ordering::SeqCst),
+            1,
+            "a refusal inside the cooldown must not re-check"
+        );
+    }
+
     use super::*;
 
     /// The loopback boundary the relay and the PAC responder share: loopback

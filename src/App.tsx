@@ -563,6 +563,29 @@ export function App() {
     };
   }, [account]);
 
+  // Same landing as the focus check above, but for a death the backend
+  // noticed on its own: the gateway refused a routed call, the shell
+  // re-verified the session and found it gone. Without this the popover would
+  // sit on home - showing routing as fine - until the window happened to lose
+  // and regain focus, which for a window that's already open and being watched
+  // may be a long time.
+  useEffect(() => {
+    if (account?.auth_mode !== "oauth") return;
+    let alive = true;
+    const unlisten = listen("session-signin-required", async () => {
+      const oauthState = await oauthStatus().catch(() => null);
+      if (!alive) return;
+      setOAuth(oauthState);
+      if (!isSignedIn(account, oauthState) && !needsOrg(account, oauthState)) {
+        setScreen("firstrun");
+      }
+    });
+    return () => {
+      alive = false;
+      void unlisten.then((f) => f());
+    };
+  }, [account]);
+
   // The onboarding window announces completion; record the seen-flag in this
   // webview's storage too so the intro doesn't re-gate the next launch on
   // platforms where the two webviews don't share localStorage.
