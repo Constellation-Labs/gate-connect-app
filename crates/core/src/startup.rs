@@ -127,14 +127,24 @@ pub fn reverify_session() -> Recheck {
         // No stored bundle: signed out, nothing to recover.
         Ok(None) => return Recheck::Unchanged,
         Ok(Some(tokens)) => tokens,
-        Err(e) => {
-            // The refresh token is dead (revoked, expired, or minted by
-            // another app client) - the session cannot come back without an
-            // interactive sign-in. That is a verdict, and the same one a
-            // rejected probe gives.
-            eprintln!("[gate] re-verifying the session: refresh failed: {e:#}");
+        // Cognito refused the grant: the refresh token is dead (revoked,
+        // expired, or minted by another app client) and the session cannot
+        // come back without an interactive sign-in. That is a verdict, and
+        // the same one a rejected probe gives.
+        Err(e) if e.is_refusal() => {
+            eprintln!("[gate] re-verifying the session: the refresh was refused: {e}");
             oauth::mark_session_rejected();
             return Recheck::Dead;
+        }
+        // Cognito could not be reached at all. This is the likeliest thing
+        // to happen at exactly the moment that brought us here - a machine
+        // that just woke up 401s on the first requests out while its network
+        // is still coming up - so it must stay a non-verdict. Signing out on
+        // it would turn the failure this whole path exists to recover from
+        // into a permanent one.
+        Err(e) => {
+            eprintln!("[gate] re-verifying the session: the refresh could not be reached: {e}");
+            return Recheck::Unchanged;
         }
     };
     let Ok(Some(gateway)) = account::load_base_url() else {

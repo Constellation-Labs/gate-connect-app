@@ -780,19 +780,17 @@ impl HttpHandler for GateHandler {
                     oauth_token,
                     org_id,
                 ) {
-                    Ok(()) => {
+                    Ok(injected_oauth) => {
                         action = "rewrite->gateway";
                         // Remember that the gateway is answering *our*
                         // credential, so a 401 on the way back can be read as
                         // evidence about the session (see `handle_response`).
-                        // Read back what actually went on the wire rather than
-                        // what we offered: holding a token is not the same as
-                        // sending it, and `inject_gate_credential` leaves a
-                        // request alone when the client brought its own
-                        // `x-gate-api-key`.
-                        self.injected_oauth = req
-                            .headers()
-                            .contains_key(crate::proxy::GATE_AUTHORIZATION_HEADER);
+                        // Taken from the injection itself: holding a token is
+                        // not the same as sending it, and a client that
+                        // brought its own `x-gate-api-key` gets nothing of
+                        // ours - not even when it also sent an
+                        // `x-gate-authorization` of its own.
+                        self.injected_oauth = injected_oauth;
                     }
                     Err(e) => {
                         action = "rewrite-FAILED";
@@ -1122,6 +1120,9 @@ fn inject_cf_clearance<T>(req: &mut Request<T>, cf_clearance: &str) {
     }
 }
 
+/// Rewrite a request to the gateway. Returns whether *our* OAuth bearer went
+/// on it, which is what makes a 401 on the way back evidence about the
+/// session (see [`GateHandler::injected_oauth`]).
 pub(crate) fn apply_rewrite<T>(
     req: &mut Request<T>,
     gateway: &Uri,
@@ -1129,7 +1130,7 @@ pub(crate) fn apply_rewrite<T>(
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     let gw = gateway.clone().into_parts();
     let mut parts = req.uri().clone().into_parts();
     parts.scheme = gw.scheme;
@@ -1154,12 +1155,12 @@ pub(crate) fn apply_rewrite<T>(
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
     let headers = req.headers_mut();
-    super::inject_gate_credential(headers, api_key, oauth_token, org_id)?;
+    let injected_oauth = super::inject_gate_credential(headers, api_key, oauth_token, org_id)?;
     headers.insert(
         super::UPSTREAM_URL_HEADER,
         HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
     );
-    Ok(())
+    Ok(injected_oauth)
 }
 
 /// Bind a loopback listener and return it together with the port it landed on.

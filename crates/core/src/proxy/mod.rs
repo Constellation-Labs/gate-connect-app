@@ -328,8 +328,21 @@ pub(crate) fn notify_gate_auth_observer() {
     observer();
 }
 
-/// Release the re-check latch and start the cooldown. The shell calls this
-/// exactly once per check, whatever the verdict.
+/// Holds the re-check latch for the life of one check and releases it on
+/// drop. The host takes one at the top of the thread it does the check on, so
+/// the release survives a panic anywhere in that thread - a latch left set is
+/// 401-driven recovery silently dead for the rest of the process, which is
+/// the failure this whole path exists to prevent.
+pub struct GateAuthCheck;
+
+impl Drop for GateAuthCheck {
+    fn drop(&mut self) {
+        gate_auth_check_finished();
+    }
+}
+
+/// Release the re-check latch and start the cooldown. Called for you by
+/// [`GateAuthCheck`]'s drop; prefer holding the guard to calling this.
 pub fn gate_auth_check_finished() {
     if let Ok(mut next) = GATE_AUTH_NEXT_ALLOWED.lock() {
         *next = Some(std::time::Instant::now() + GATE_AUTH_RECHECK_COOLDOWN);
@@ -792,9 +805,13 @@ pub(crate) fn inject_gate_credential(
     api_key: &str,
     oauth_token: Option<&str>,
     org_id: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     if headers.contains_key(GATE_KEY_HEADER) {
-        return Ok(());
+        // The caller brought its own Gate key, so nothing of ours goes on
+        // this request - including any `x-gate-authorization` it may have set
+        // itself, which is why the answer here is a report of what *we* did
+        // rather than a look at the headers afterwards.
+        return Ok(false);
     }
     headers.remove(GATE_AUTHORIZATION_HEADER);
     headers.remove(GATE_ORG_HEADER);
@@ -811,6 +828,7 @@ pub(crate) fn inject_gate_credential(
                     HeaderValue::from_str(org).context("building x-gate-org-id header")?,
                 );
             }
+            return Ok(true);
         }
         None => {
             headers.insert(
@@ -819,7 +837,7 @@ pub(crate) fn inject_gate_credential(
             );
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// One routable provider. The built-in set is defined by

@@ -10,6 +10,13 @@
 //! from the refusal until it has forced a refresh past that check and asked
 //! again; only a second refusal means sign-in.
 //!
+//! And "the renewal failed" is not "the session is dead". The machine that
+//! just woke up is also the machine whose network is still coming up, so the
+//! renewal attempt is *likelier* than usual to fail on connect at exactly
+//! this moment. Steps 3 and 4 pin that: an unreachable identity provider
+//! leaves the session alone, because latching a rejection there would turn
+//! the outage this path exists to recover from into a permanent sign-out.
+//!
 //! Fully hermetic, on the same seams as `oauth_session_e2e`: a file-backed
 //! secret store, a loopback Cognito mock, a loopback `/v1/me/orgs` mock, and
 //! `GATE_COGNITO_*` so `OAuthConfig::from_build_env()` returns `Some`. One
@@ -112,6 +119,15 @@ fn read_request_head(stream: &mut TcpStream) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// A loopback address with nothing listening: bind, read the port, drop. The
+/// faithful shape of "the network is not up yet" - connect fails outright.
+fn dead_endpoint() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind for a dead port");
+    let addr = listener.local_addr().expect("dead addr");
+    drop(listener);
+    format!("http://{addr}/oauth2/token")
+}
+
 fn temp_secrets_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "gate-connect-session-recovery-{}-{}",
@@ -171,7 +187,9 @@ fn a_refused_bearer_is_renewed_before_it_is_believed() {
         ("200 OK", ORGS_BODY),
         // Step 2: the data-plane re-verification's probe.
         ("200 OK", ORGS_BODY),
-        // Step 3: refused twice - the session really is gone.
+        // Step 3: refused while the identity provider is unreachable.
+        ("401 Unauthorized", REFUSED),
+        // Step 5: refused twice - the session really is gone.
         ("401 Unauthorized", REFUSED),
         ("401 Unauthorized", REFUSED),
     ]);
@@ -233,13 +251,55 @@ fn a_refused_bearer_is_renewed_before_it_is_believed() {
     }
     assert_eq!(cognito.hits.load(Ordering::SeqCst), 2);
 
-    // 3. Refused again with a token minted seconds ago: no clock explains
+    // 3. The 401 arrives while the identity provider cannot be reached - the
+    //    resume-from-sleep case, where the network is still coming up. The
+    //    call fails, but nothing may be concluded: a network that is down
+    //    cannot testify about a credential.
+    std::env::set_var("GATE_CONNECT_TEST_TOKEN_ENDPOINT", dead_endpoint());
+    let err = gate_connect_core::org::list_current()
+        .expect_err("a 401 the renewal could not answer still fails the call");
+    assert!(
+        format!("{err:#}").contains("401 Unauthorized"),
+        "the user is still shown what the gateway said: {err:#}"
+    );
+    assert!(
+        !oauth::session_rejected(),
+        "an unreachable identity provider must not latch the session as rejected"
+    );
+    assert!(
+        oauth::live_session().is_some(),
+        "the session must keep reading as live: nothing has refused it"
+    );
+
+    // 4. Same rule on the data plane's path. `Unchanged`, not `Dead` - a
+    //    verdict needs the gateway or Cognito to have actually answered.
+    match reverify_session() {
+        Recheck::Unchanged => {}
+        Recheck::Dead => panic!("an unreachable identity provider is not a dead session"),
+        Recheck::Recovered(_) => panic!("nothing was renewed; there is nothing to recover with"),
+    }
+    assert!(!oauth::session_rejected());
+    assert_eq!(
+        cognito.hits.load(Ordering::SeqCst),
+        2,
+        "steps 3 and 4 never reached the token endpoint"
+    );
+
+    // 5. Refused again with a token minted seconds ago: no clock explains
     //    that, so the session is dead and the app must be told - this is what
     //    drops the tray, the status and the injector to signed-out together.
+    std::env::set_var(
+        "GATE_CONNECT_TEST_TOKEN_ENDPOINT",
+        format!("{}/oauth2/token", cognito.base),
+    );
     let err = gate_connect_core::org::list_current().expect_err("a twice-refused session fails");
     assert!(
         format!("{err:#}").contains("401 Unauthorized"),
         "the gateway's refusal is what the user is shown: {err:#}"
+    );
+    assert!(
+        oauth::session_rejected(),
+        "the gateway's verdict is recorded"
     );
     assert!(
         oauth::live_session().is_none(),
@@ -249,5 +309,32 @@ fn a_refused_bearer_is_renewed_before_it_is_believed() {
         oauth::current().expect("bundle readable").is_some(),
         "rejection is a live-session verdict, not a reason to delete the user's tokens"
     );
-    assert_eq!(orgs.hits.load(Ordering::SeqCst), 5, "no extra calls");
+    assert_eq!(orgs.hits.load(Ordering::SeqCst), 6, "no extra calls");
+
+    // 6. The other verdict: Cognito itself refuses the renewal (a revoked or
+    //    expired refresh token). That is an answer, not silence, so it is a
+    //    verdict - the half of the distinction step 3 must not blur.
+    //    Storing a bundle clears the latch step 5 set, the way a re-login
+    //    would, so this step asserts something.
+    oauth::store(&tokens("at-fresh", "rt-revoked", now + 3600)).expect("store");
+    assert!(
+        !oauth::session_rejected(),
+        "a stored bundle clears the latch"
+    );
+    let refusing = spawn_mock(vec![("400 Bad Request", r#"{"error":"invalid_grant"}"#)]);
+    std::env::set_var(
+        "GATE_CONNECT_TEST_TOKEN_ENDPOINT",
+        format!("{}/oauth2/token", refusing.base),
+    );
+    match reverify_session() {
+        Recheck::Dead => {}
+        Recheck::Unchanged => panic!("a refused refresh token is a verdict, not an outage"),
+        Recheck::Recovered(_) => panic!("nothing was renewed"),
+    }
+    assert!(oauth::session_rejected());
+    assert_eq!(
+        orgs.hits.load(Ordering::SeqCst),
+        6,
+        "a refused renewal never gets as far as probing the gateway"
+    );
 }

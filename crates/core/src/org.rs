@@ -66,6 +66,12 @@ fn call_orgs(gateway_base_url: &str, access_token: &str) -> OrgsCall {
     let call = || -> Result<(reqwest::StatusCode, String)> {
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
+            // Bounded like `probe_session`, and for a sharper reason here:
+            // `list_current` can make two of these plus a token refresh
+            // inside one Tauri command, and a black-holed gateway would
+            // otherwise hang the org picker until the OS gives up on the
+            // socket, with nothing to cancel it.
+            .timeout(std::time::Duration::from_secs(10))
             .build()
             .context("building the orgs HTTP client")?;
         let resp = client
@@ -140,12 +146,22 @@ pub fn list_current() -> Result<Vec<Org>> {
     };
     let renewed = match crate::oauth::force_refresh(&cfg) {
         Ok(Some(tokens)) => tokens.access_token,
-        // No bundle to refresh, or the refresh token itself is dead: the
-        // gateway's refusal stands and only an interactive sign-in clears it.
+        // Nothing stored to renew: the gateway's refusal stands as reported.
         Ok(None) => bail!("gateway /v1/me/orgs returned 401 Unauthorized: {refused}"),
-        Err(e) => {
+        // Cognito refused the renewal too, so the refusal is about the
+        // session and only an interactive sign-in clears it.
+        Err(e) if e.is_refusal() => {
             crate::oauth::mark_session_rejected();
             return Err(e).context("the gateway rejected the session and it could not be renewed");
+        }
+        // Cognito was unreachable. The gateway's 401 stands as an error to
+        // report, but nothing here proves the session is dead - a network
+        // that is down cannot testify about a credential.
+        Err(e) => {
+            return Err(e).context(format!(
+                "gateway /v1/me/orgs returned 401 Unauthorized: {refused}; \
+                 renewing the session could not reach the identity provider"
+            ));
         }
     };
     match call_orgs(&gateway, &renewed) {

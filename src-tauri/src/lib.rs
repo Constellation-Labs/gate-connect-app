@@ -485,19 +485,28 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
 /// news for the whole app - so raise the same signal the refresh loop would
 /// have raised on its next tick, rather than leaving the tray green for up to
 /// 30s behind a popover that has already given up.
+///
+/// Gated on `session_rejected()`, the recorded gateway verdict, and not on a
+/// `live_session()` of `None`: an offline user with a locally-expired token
+/// reads as `None` too, and answering that with a red tray and an expired-
+/// session notification would be the app crying wolf about a dropped Wi-Fi.
+///
+/// All of it inside the blocking closure. The signal does blocking
+/// engine-status IPC, and this is an `async fn` command, so its body is on a
+/// tokio worker rather than the blocking pool.
 #[tauri::command]
 async fn oauth_list_orgs() -> Result<Vec<gate_connect_core::org::Org>, String> {
-    let listed = tauri::async_runtime::spawn_blocking(|| {
-        gate_connect_core::org::list_current().map_err(|e| format!("{e:#}"))
+    tauri::async_runtime::spawn_blocking(|| {
+        let listed = gate_connect_core::org::list_current().map_err(|e| format!("{e:#}"));
+        if listed.is_err() && gate_connect_core::oauth::session_rejected() {
+            if let Some(app) = APP_HANDLE.get() {
+                signal_session_dead(app);
+            }
+        }
+        listed
     })
     .await
-    .map_err(|e| format!("list orgs join error: {e}"))?;
-    if listed.is_err() && gate_connect_core::oauth::live_session().is_none() {
-        if let Some(app) = APP_HANDLE.get() {
-            signal_session_dead(app);
-        }
-    }
-    listed
+    .map_err(|e| format!("list orgs join error: {e}"))?
 }
 
 /// Persist the selected org and push it into a running engine/relay so
@@ -1881,8 +1890,10 @@ pub fn run() {
             //
             // Off-thread: the observer fires on the engine thread
             // mid-response, and the re-verification makes its own blocking
-            // HTTP calls. `gate_auth_check_finished` releases the debounce
-            // latch, so it must run on every path out of the thread.
+            // HTTP calls. The `GateAuthCheck` guard releases the debounce
+            // latch when the thread ends, panic included - a latch left set
+            // would leave 401-driven recovery dead for the rest of the
+            // process.
             //
             // Registered on every desktop OS, unlike the two observers above:
             // there is no window to create here, so nothing is
@@ -1894,6 +1905,7 @@ pub fn run() {
             gate_connect_core::proxy::set_gate_auth_observer(move || {
                 let handle = auth_handle.clone();
                 std::thread::spawn(move || {
+                    let _release = gate_connect_core::proxy::GateAuthCheck;
                     match gate_connect_core::startup::reverify_session() {
                         // The session was alive and the local clock was
                         // simply wrong about it. The forced refresh minted
@@ -1918,7 +1930,6 @@ pub fn run() {
                         // us): change nothing.
                         gate_connect_core::startup::Recheck::Unchanged => {}
                     }
-                    gate_connect_core::proxy::gate_auth_check_finished();
                 });
             });
 
