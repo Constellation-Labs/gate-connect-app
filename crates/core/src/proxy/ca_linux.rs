@@ -4,13 +4,21 @@
 //! trust store so the MITM engine can mint per-host leaf certs that the OS - and
 //! command-line tools that read the system bundle (curl, git, openssl) - accept.
 //!
-//! Unlike macOS/Windows, Linux has no per-user root store: trust is system-wide
-//! and the install needs root. We support the two common layouts:
+//! Unlike macOS/Windows, Linux has no per-user root store *for the OS*: trust is
+//! system-wide and the install needs root. We support the two common layouts:
 //!
 //! - Debian/Ubuntu/Arch: drop the PEM in `/usr/local/share/ca-certificates/`
 //!   and run `update-ca-certificates`.
 //! - Fedora/RHEL/openSUSE: drop it in `/etc/pki/ca-trust/source/anchors/` and
 //!   run `update-ca-trust extract`.
+//!
+//! The system store is not the whole job, though. Chromium-based browsers on
+//! Linux never read it - they use their own built-in roots plus a per-user NSS
+//! database at `~/.pki/nssdb` - so a system-only install leaves Chrome and
+//! Chromium failing every intercepted host with `ERR_CERT_AUTHORITY_INVALID`
+//! while Firefox works, because Firefox picks the system anchors up through
+//! p11-kit. So [`ensure_trusted`] writes that database too, unprivileged and
+//! best-effort, via `certutil`.
 //!
 //! The privileged step is performed via [`crate::primitives::run_as_admin`]
 //! (sudo in a terminal, polkit/`pkexec` in a GUI session). Tools that ship their
@@ -24,7 +32,8 @@
 //! store. Linux counterpart of the macOS [`super::ca`] module.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result};
 use hudsucker::rcgen::KeyPair;
@@ -182,12 +191,18 @@ pub fn is_trusted() -> Result<bool> {
 /// invocation (so the user authenticates once). The private key is never
 /// touched here - only the public cert leaves the secret store.
 pub fn ensure_trusted() -> Result<()> {
-    if is_trusted()? {
-        return Ok(());
+    if !is_trusted()? {
+        let store = trust_store()?;
+        run_as_admin(&anchor_install_script(&store, &cert_path()?))
+            .context("installing the proxy CA into the system trust store")?;
     }
-    let store = trust_store()?;
-    run_as_admin(&anchor_install_script(&store, &cert_path()?))
-        .context("installing the proxy CA into the system trust store")?;
+    // Deliberately outside the `is_trusted` short-circuit above. That check
+    // reads the system anchor and nothing else, so every machine whose anchor
+    // is already current - which includes every install predating this call -
+    // would otherwise never reach the NSS store, and Chromium would keep
+    // rejecting intercepted hosts with no way to recover short of removing and
+    // re-adding trust.
+    ensure_trusted_nss();
     Ok(())
 }
 
@@ -223,6 +238,7 @@ pub fn untrust() -> Result<()> {
         run_as_admin(&anchor_remove_script(&store))
             .context("removing the proxy CA from the system trust store")?;
     }
+    untrust_nss();
     remove_ca_material()
 }
 
@@ -261,6 +277,125 @@ fn anchor_remove_script(store: &TrustStore) -> String {
         dst = sh_quote(&store.anchor.display().to_string()),
         refresh = store.refresh_cmd,
     )
+}
+
+/// What to tell the user when `certutil` is not installed. Naming the package
+/// matters: without it the message is a bare "no such file" for a binary most
+/// people have never heard of, attached to a browser failure that looks like a
+/// certificate bug.
+const NSS_TOOLS_HINT: &str =
+    "install certutil (Debian/Ubuntu: libnss3-tools, Fedora/RHEL: nss-tools) and enable routing \
+     again to retry";
+
+/// Every per-user NSS database a Chromium-based browser might read user-added
+/// roots from, whether or not it exists. Pure, and split from [`nss_db_dirs`]
+/// so the path set is testable without a browser installed.
+///
+/// Chromium on Linux does not consult the system CA bundle at all: it uses its
+/// own built-in root store plus this database. So the system anchor the rest of
+/// this module installs leaves every Chromium browser failing the handshake on
+/// intercepted hosts with `ERR_CERT_AUTHORITY_INVALID`, while Firefox works,
+/// because Firefox picks the same system anchors up through p11-kit. That
+/// asymmetry is the whole reason this exists.
+fn nss_db_candidates(home: &Path) -> Vec<PathBuf> {
+    [
+        // Distro packages (.deb/.rpm) and anything else running with the real
+        // HOME, which is the common case.
+        ".pki/nssdb",
+        // Snap and Flatpak confine the browser to a HOME of their own, so the
+        // database is not the one above and each has to be named separately.
+        "snap/chromium/current/.pki/nssdb",
+        ".var/app/org.chromium.Chromium/.pki/nssdb",
+        ".var/app/com.google.Chrome/.pki/nssdb",
+    ]
+    .iter()
+    .map(|rel| home.join(rel))
+    .collect()
+}
+
+/// The subset of [`nss_db_candidates`] that exists. Empty when no Chromium
+/// browser has ever run for this user - the database is created on first
+/// launch, so there is nothing to trust into and nothing to warn about.
+fn nss_db_dirs() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    nss_db_candidates(&home)
+        .into_iter()
+        .filter(|dir| dir.is_dir())
+        .collect()
+}
+
+/// One `certutil` invocation against a database. Unprivileged by construction:
+/// these are per-user stores, and running them under the escalation the system
+/// anchor needs would write into root's HOME instead of the user's.
+fn certutil(db: &Path, args: &[&str]) -> Result<()> {
+    let out = Command::new("certutil")
+        .arg("-d")
+        // `sql:` selects the modern cert9.db format. Chromium has written that
+        // format for years, and naming it explicitly avoids certutil falling
+        // back to the legacy cert8.db pair on an empty directory.
+        .arg(format!("sql:{}", db.display()))
+        .args(args)
+        .output()
+        .context("running certutil")?;
+    if out.status.success() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "certutil {} exited {}: {}",
+        args.join(" "),
+        out.status,
+        String::from_utf8_lossy(&out.stderr).trim()
+    )
+}
+
+/// Add the CA to every per-user NSS database found, so Chromium accepts the
+/// leaves the engine mints.
+///
+/// Best-effort and infallible by design: the system anchor is what trust really
+/// rests on, and a browser-specific store that cannot be written must not fail
+/// enabling the proxy. Failures are reported rather than swallowed, because the
+/// symptom otherwise lands in the browser as a certificate error with nothing
+/// connecting it to Gate.
+fn ensure_trusted_nss() {
+    let dirs = nss_db_dirs();
+    if dirs.is_empty() {
+        return;
+    }
+    let cert = match cert_path() {
+        Ok(c) => c.display().to_string(),
+        Err(e) => {
+            eprintln!("gate proxy: no CA cert path for the NSS trust store ({e})");
+            return;
+        }
+    };
+    for dir in dirs {
+        // Delete first. `certutil -A` appends under a duplicate nickname rather
+        // than replacing, so a regenerated CA would leave the stale root sitting
+        // in the database beside the new one, and the browser would keep
+        // offering both. A missing entry fails here, harmlessly.
+        let _ = certutil(&dir, &["-D", "-n", CA_COMMON_NAME]);
+        // `-t "C,,"`: trusted to issue SSL server certs, with no S/MIME and no
+        // object-signing trust. The same flags mkcert uses for the same job.
+        let args = ["-A", "-t", "C,,", "-n", CA_COMMON_NAME, "-i", &cert];
+        if let Err(e) = certutil(&dir, &args) {
+            eprintln!(
+                "gate proxy: could not add the CA to the NSS store at {} ({e}); \
+                 Chromium-based browsers will reject intercepted hosts - {NSS_TOOLS_HINT}",
+                dir.display()
+            );
+        }
+    }
+}
+
+/// Drop the CA from every per-user NSS database. Best-effort for the same
+/// reason as the install, and additionally because the desired end state - the
+/// root absent - is already true when the entry or `certutil` is missing.
+fn untrust_nss() {
+    for dir in nss_db_dirs() {
+        let _ = certutil(&dir, &["-D", "-n", CA_COMMON_NAME]);
+    }
 }
 
 /// Full teardown for an explicit removal: drop the private key from the secret
@@ -336,5 +471,46 @@ mod tests {
             script.ends_with("&& update-ca-certificates --fresh"),
             "{script}"
         );
+    }
+
+    /// The plain `~/.pki/nssdb` is the one that matters on a distro-packaged
+    /// browser, and it is the case this whole path exists to fix, so pin it
+    /// rather than only asserting the list is non-empty.
+    #[test]
+    fn the_nss_candidates_lead_with_the_unconfined_database() {
+        let dirs = nss_db_candidates(std::path::Path::new("/home/u"));
+        assert_eq!(
+            dirs.first().unwrap(),
+            std::path::Path::new("/home/u/.pki/nssdb")
+        );
+    }
+
+    /// Snap and Flatpak browsers read a database under their own confined HOME,
+    /// so the unconfined path alone would silently miss them - the failure would
+    /// look identical to the bug this fixes.
+    #[test]
+    fn the_nss_candidates_cover_the_confined_browser_homes() {
+        let dirs = nss_db_candidates(std::path::Path::new("/home/u"));
+        for expected in [
+            "/home/u/snap/chromium/current/.pki/nssdb",
+            "/home/u/.var/app/org.chromium.Chromium/.pki/nssdb",
+            "/home/u/.var/app/com.google.Chrome/.pki/nssdb",
+        ] {
+            assert!(
+                dirs.iter().any(|d| d == std::path::Path::new(expected)),
+                "{expected} missing from {dirs:?}"
+            );
+        }
+    }
+
+    /// Every candidate has to hang off the home passed in. A hardcoded `/home`
+    /// or a stray absolute path would write into another user's store, which is
+    /// the one outcome worse than not writing at all.
+    #[test]
+    fn the_nss_candidates_are_all_under_the_given_home() {
+        let home = std::path::Path::new("/tmp/someone");
+        for dir in nss_db_candidates(home) {
+            assert!(dir.starts_with(home), "{dir:?} escaped {home:?}");
+        }
     }
 }
