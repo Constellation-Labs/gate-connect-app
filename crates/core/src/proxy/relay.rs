@@ -646,7 +646,9 @@ fn inject_credential(headers: &mut HeaderMap, state: &RelayState, mode: BillingM
     let org: Arc<str> = state.org.borrow().clone();
     let oauth_token = (!token.is_empty()).then(|| token.as_ref());
     let org_id = (!org.is_empty()).then(|| org.as_ref());
-    inject_gate_credential(headers, &api_key, oauth_token, org_id, mode)
+    // The relay has no response hook to feed, so what was injected is not
+    // news here.
+    inject_gate_credential(headers, &api_key, oauth_token, org_id, mode).map(|_| ())
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM
