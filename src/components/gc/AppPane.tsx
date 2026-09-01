@@ -89,6 +89,7 @@ export function AppPane({
   credits,
   plan,
   onAddCredits,
+  onManageBilling,
   activity,
   pending,
   eventsPending,
@@ -144,6 +145,9 @@ export function AppPane({
   /** The org's plan, or null when the gateway did not name one (AG-592). */
   plan: string | null;
   onAddCredits: () => void;
+  /** Absent when the gateway named no billing destination, which removes the
+   *  control entirely rather than drawing a dead one. */
+  onManageBilling?: () => void;
   activity: ActivityEntry[];
   /** The first reading for this tool has not landed. Draws skeletons rather than
    *  answers, per AG-576. */
@@ -224,6 +228,7 @@ export function AppPane({
         credits={credits}
         plan={plan}
         onAddCredits={onAddCredits}
+        onManageBilling={onManageBilling}
       />
 
       <RecentActivity
@@ -299,6 +304,7 @@ function ModelSelection({
   credits,
   plan,
   onAddCredits,
+  onManageBilling,
 }: {
   appName: string;
   choice: ModelChoice | null;
@@ -312,6 +318,9 @@ function ModelSelection({
   /** The org's plan, or null when the gateway did not name one (AG-592). */
   plan: string | null;
   onAddCredits: () => void;
+  /** Absent when the gateway named no billing destination, which removes the
+   *  control entirely rather than drawing a dead one. */
+  onManageBilling?: () => void;
 }) {
   // Under App default a chosen model is remembered, not served. Kept as one
   // named value because three places below depend on it and they must agree.
@@ -413,7 +422,7 @@ function ModelSelection({
                     ? (gateModel.logo ?? <Icon name="cube" size={16} />)
                     : undefined
                 }
-                action={{ label: "Change model", onClick: onChangeModel, disabled: busy }}
+                actions={[{ label: "Change model", onClick: onChangeModel, disabled: busy }]}
               >
                 {gateModel.ids.length === 1 ? (
                   <>
@@ -442,7 +451,16 @@ function ModelSelection({
       <div className="mt-2 flex flex-col gap-2">
         <InfoRow
           icon={<Icon name="creditCard" size={16} />}
-          action={{ label: "Add credits", onClick: onAddCredits, external: true }}
+          actions={[
+            // AG-592 asks for Manage billing "when available to the account".
+            // Availability is answered by the gateway naming a destination: no
+            // URL, no button. A disabled one would be a control the user has to
+            // click to learn is not for them.
+            ...(onManageBilling
+              ? [{ label: "Manage billing", onClick: onManageBilling, external: true }]
+              : []),
+            { label: "Add credits", onClick: onAddCredits, external: true },
+          ]}
         >
           {/* AG-592 asks the tool detail to show the plan alongside the
            *  balance. Drawn only when the gateway named one: a plan is the
@@ -519,14 +537,23 @@ function ModelOption({
 function InfoRow({
   icon,
   children,
-  action,
+  actions,
 }: {
   /** Omitted for a row about a set, where no one mark could stand for it. */
   icon?: ReactNode;
   children: ReactNode;
   /** Omitted when there is nothing to do here, which removes the button rather
    *  than leaving a dead one on screen. */
-  action?: { label: string; onClick: () => void; external?: boolean; disabled?: boolean };
+  /** A list because the credits row carries two once a billing destination
+   *  exists. Rightmost is the primary one, which is the order the eye lands in.
+   *  An empty list draws nothing, which is how an absent destination removes
+   *  its button rather than disabling it. */
+  actions?: ReadonlyArray<{
+    label: string;
+    onClick: () => void;
+    external?: boolean;
+    disabled?: boolean;
+  }>;
   /** Drawn as present but not in force. Opacity rather than a grey palette so
    *  the row reads as the same thing, dimmed - which is what it is. */
 }) {
@@ -541,8 +568,9 @@ function InfoRow({
         {icon}
       </span>
       <div className="min-w-0 flex-1">{children}</div>
-      {action && (
+      {actions?.map((action) => (
         <button
+          key={action.label}
           type="button"
           onClick={action.onClick}
           disabled={action.disabled}
@@ -551,7 +579,7 @@ function InfoRow({
           {action.label}
           {action.external && <Icon name="squareArrowOutUpRight" size={12} />}
         </button>
-      )}
+      ))}
     </div>
   );
 }

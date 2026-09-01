@@ -20,6 +20,7 @@ const FUNDED: Credits = {
   paygEnabled: true,
   balanceCents: 1025,
   lowBalanceThresholdCents: 500,
+  billingUrl: null,
   autoTopupArmed: false,
 };
 

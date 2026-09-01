@@ -1843,9 +1843,18 @@ export function NewUiApp() {
           credits={formatCredits(credits.credits)}
           // Null when unread, which the row omits rather than guessing at.
           plan={credits.credits?.plan ?? null}
-          // No billing endpoint, but the row's own glyph promises an external
-          // link, and the dashboard is where credits are actually bought.
+          // No dedicated credits endpoint, but the row's own glyph promises an
+          // external link, and the dashboard is where credits are actually
+          // bought.
           onAddCredits={() => openLink(GATE_DASHBOARD_URL)}
+          // AG-729 gave this a destination. Undefined when the gateway named
+          // none, which removes the control rather than drawing a dead one -
+          // the state every gateway was in before that field existed.
+          onManageBilling={
+            credits.credits?.billingUrl
+              ? () => openLink(credits.credits!.billingUrl!)
+              : undefined
+          }
           activity={toolEventRows}
           eventsPending={
             !installsResolved || (toolEvents.view === null && toolEvents.failure === null)

@@ -342,9 +342,19 @@ export interface Credits {
   balanceCents: number | null;
   lowBalanceThresholdCents: number | null;
   autoTopupArmed: boolean;
+  /**
+   * Where this org manages billing, or null when the gateway named no
+   * destination (AG-592, AG-729).
+   *
+   * Null is a real answer and the one every gateway gave until now. A control
+   * pointing nowhere is worse than no control, because the user has to click it
+   * to discover that, so a null here means the action is not drawn at all
+   * rather than drawn disabled.
+   */
+  billingUrl: string | null;
 }
 
-export function adaptCredits(raw: Partial<Credits>): Credits {
+export function adaptCredits(raw: Partial<Credits> & { billing?: unknown }): Credits {
   return {
     plan: typeof raw?.plan === "string" && raw.plan.length > 0 ? raw.plan : null,
     paygEnabled: raw?.paygEnabled === true,
@@ -352,7 +362,28 @@ export function adaptCredits(raw: Partial<Credits>): Credits {
     lowBalanceThresholdCents:
       typeof raw?.lowBalanceThresholdCents === "number" ? raw.lowBalanceThresholdCents : null,
     autoTopupArmed: raw?.autoTopupArmed === true,
+    billingUrl: adaptBillingUrl(raw?.billing),
   };
+}
+
+/**
+ * Read the billing destination off the credits payload.
+ *
+ * Anything that is not a usable http(s) URL reads as null, which is the state
+ * the app already handles. The scheme check is not paranoia: this value is
+ * handed to the system opener, and that is not somewhere to forward an
+ * arbitrary string a response happened to contain.
+ */
+function adaptBillingUrl(billing: unknown): string | null {
+  if (typeof billing !== "object" || billing === null) return null;
+  const url = (billing as { manageUrl?: unknown }).manageUrl;
+  if (typeof url !== "string" || url.length === 0) return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

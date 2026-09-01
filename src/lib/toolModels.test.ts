@@ -201,6 +201,7 @@ describe("formatCredits", () => {
     balanceCents: 1025,
     lowBalanceThresholdCents: 500,
     autoTopupArmed: false,
+    billingUrl: null,
   };
 
   it("formats a real balance the way the design words it", () => {
@@ -240,5 +241,35 @@ describe("adaptCredits", () => {
 
   it("keeps a zero balance as a reading", () => {
     expect(adaptCredits({ balanceCents: 0, paygEnabled: true }).balanceCents).toBe(0);
+  });
+
+  describe("the billing destination (AG-729)", () => {
+    it("reads the URL the gateway named", () => {
+      expect(adaptCredits({ billing: { manageUrl: "https://dashboard.example.com/billing" } }).billingUrl).toBe(
+        "https://dashboard.example.com/billing",
+      );
+    });
+
+    it("reads a gateway that named none as null, which draws no control", () => {
+      // Every gateway answered this way until AG-729, so it is the common path
+      // rather than an edge case, and it must stay indistinguishable from today.
+      expect(adaptCredits({}).billingUrl).toBeNull();
+      expect(adaptCredits({ billing: { manageUrl: null } } as never).billingUrl).toBeNull();
+      expect(adaptCredits({ billing: {} } as never).billingUrl).toBeNull();
+    });
+
+    it("refuses anything that is not an http(s) URL", () => {
+      // This value is handed to the system opener. A response is not somewhere
+      // to take an arbitrary string and open it.
+      for (const bad of ["javascript:alert(1)", "file:///etc/passwd", "not a url", "", 42, {}, []]) {
+        expect(adaptCredits({ billing: { manageUrl: bad } } as never).billingUrl, String(bad)).toBeNull();
+      }
+    });
+
+    it("survives a malformed billing block without losing the rest of the reading", () => {
+      const c = adaptCredits({ balanceCents: 1025, paygEnabled: true, billing: "nonsense" } as never);
+      expect(c.billingUrl).toBeNull();
+      expect(c.balanceCents).toBe(1025);
+    });
   });
 });
