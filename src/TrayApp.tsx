@@ -27,6 +27,7 @@ import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict"
 import { openExternal } from "./lib/openExternal";
 import { GATE_DASHBOARD_URL, GATE_DOCS_URL } from "./lib/config";
 import { trustPromptHint, usePlatform } from "./lib/platform";
+import { useSecurityFeed } from "./lib/securityFeed";
 import { Tray } from "./components/gc/Tray";
 import type { TrayMenuAction, TrayNotInstalledApp } from "./components/gc/Tray";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
@@ -277,6 +278,13 @@ export function TrayApp() {
     return grouped;
   }, [groups, apps, routingBusy]);
 
+  // The live security-event feed (AG-578). Keyed on the org so a switch does not
+  // leave the previous org's count on screen, matching the window shell.
+  const securityFeed = useSecurityFeed(
+    account !== null,
+    account ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}` : "",
+  );
+
   const notInstalled = useMemo<TrayNotInstalledApp[]>(
     () =>
       tools
@@ -362,6 +370,18 @@ export function TrayApp() {
       signedOut={account === null}
       onToggleApp={toggleApp}
       onExpand={expand}
+      security={
+        securityFeed.loading
+          ? undefined
+          : {
+              state: securityFeed.state,
+              count: securityFeed.events.length,
+              // The popover has room for a count, not a feed. Expanding is the
+              // whole affordance: the pane it opens has the detail this card
+              // deliberately does not try to fit.
+              onOpen: expand,
+            }
+      }
       menuOpen={menuOpen}
       onMenuToggle={() => setMenuOpen((v) => !v)}
       onMenuSelect={onMenuSelect}

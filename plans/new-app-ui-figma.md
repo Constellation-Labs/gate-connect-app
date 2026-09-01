@@ -721,8 +721,10 @@ says `#030712` (gray-950): that is the whole shell's convention, not this
 screen's, and moving one pane would split it. The outline button's inset
 highlight pair is likewise a Button-component treatment nothing in the new UI
 reproduces yet. The destructive button's `#FEF2F2` label stays white, matching
-`Modal`. The Notifications description keeps the honest routing-health copy
-over the drawn "blocked or flagged" for the reason recorded on 2026-08-21, and
+`Modal`. The Notifications description kept the honest routing-health copy
+over the drawn "blocked or flagged" for the reason recorded on 2026-08-21 - since
+superseded by AG-578, which built the feed and gave the drawn sentence its own
+rows - and
 the Help section and the Sign-in method / certificate / What-is-collected rows
 remain the standing undrawn deviations. 548 unit tests and the 169-test e2e
 suite pass.
@@ -981,10 +983,12 @@ on the same screen. Everything else the file says about those two dialogs - the
 480px width, the danger edge, the `base/foreground` ink on that paragraph -
 stands; only the sentences are ours.
 
-**The third stands as drawn**: the Notifications row says "Alert me when a
-request is blocked or flagged". The events behind it need the live security feed
-(AG-578), which does not exist, so the row promises more than it fires. Left as
-the file has it, unlike the two above.
+**The third stood as drawn until AG-578 landed**: the Notifications row said
+"Alert me when a request is blocked or flagged" while the events behind it needed
+a live security feed that did not exist, so the row promised more than it fired.
+Left as the file had it at the time, unlike the two above. Resolved 2026-08-31,
+and not by editing the copy: the feed was built, and the drawn sentence moved to
+the Blocked/Flagged rows it was describing.
 
 **Smaller, all measured.** The Settings page title takes the frame's 20/**24**
 rather than the token export's 20/28. The rail's right edge is `base/border`,
@@ -2206,12 +2210,14 @@ respectively.
 
 ### Rows deliberately not built, and why
 
-- **Blocked-event, flagged-event and sound switches.** The criteria list four
-  notification switches. The app fires exactly two notifications, both about
-  routing (an expired session; a quit that could not put a tool back), and both
-  now ride the one `Routing health` switch. Blocked and flagged notifications
-  need the live security-event feed (AG-578), which does not exist. A switch for
-  an event that cannot arrive tells the user they turned something off.
+- ~~**Blocked-event, flagged-event and sound switches.**~~ **Built 2026-08-31
+  with AG-578.** The entry is kept rather than deleted because the reason it gave
+  is the reason they waited: a switch for an event that cannot arrive tells the
+  user they turned something off, so they landed with the feed that fires them
+  and not before. All four AG-594 switches now exist. The `Notifications` row
+  keeps its narrower routing wording and the drawn "Alert me when a request is
+  blocked or flagged" moved to the two rows that actually gate that - see the
+  2026-08-31 sync below.
 - **The permission row.** `tauri-plugin-notification` hardcodes
   `PermissionState::Granted` on desktop - `desktop.rs` returns it unconditionally,
   the state is only real on mobile. A permission row built on that would report
@@ -2578,3 +2584,42 @@ messages were sent. The feed deliberately outlives the chart's window.
 
 Still open: the skeleton silhouettes. No frame draws a loading state, so the
 placeholder columns and rows are inferred from the shapes they stand in for.
+
+### Sync 2026-08-31: the live security-event feed (AG-578)
+
+**A third rail entry, and it is undrawn.** `Security events` now sits between
+Overview and Settings in the nav block. The Sidenav page (408:15625) draws two
+entries, not three, and no frame draws this pane at all - so it is built from the
+component set, which is what this file's own rule asks for where no frame draws
+the thing. Recorded here as a deviation rather than slipped in. If the designer
+draws it later, the frame wins and this entry gets rebuilt to match.
+
+What it is made of, all existing pieces:
+
+- The pane layout is `Overview`'s (`flex flex-1 flex-col gap-4 overflow-auto
+  bg-base-background p-6`, header with a right-hand cluster).
+- The table is `AppPane`'s recent-activity table, columns Time / Security /
+  Category / Tool / Model / Action.
+- The badges are the same `BADGE_STYLES` pair - BLOCKED `red/100`-`700`, FLAGGED
+  `amber/100`-`700`. **`Pill` and `BADGE_STYLES` moved from `AppPane` into
+  `base.tsx`** as part of this: two surfaces draw them now, and a second copy is
+  how the two drift into disagreeing about what BLOCKED looks like.
+- The empty and unavailable states are `EmptyNote`, the loading state `Skeleton`,
+  per the three-way split every other card implements.
+- The event detail is a 512px `Modal`.
+
+**One new vocabulary, deliberately not reusing the status one.** The feed's
+connection reads `Live` / `Reconnecting` / `Offline` as a `Pill` in the header,
+green / amber / neutral. It does **not** reuse `STATUS_TEXT`: that vocabulary is
+about one app's traffic, and driving a feed indicator from it would conflate "is
+this app routed" with "is the feed connected" - the exact conflation this file and
+`lib/groups.ts` keep warning about, in a new place. Offline is neutral rather than
+red for the same reason: a feed that is not running is not an error, and painting
+it red beside a healthy routing switch invites the reading that routing broke too.
+
+**Settings gained three rows** under the existing Notifications row: Blocked
+requests, Flagged requests, Notification sound. That is AG-594's four switches
+complete. The Notifications row's description changed from the drawn "Alert me
+when a request is blocked or flagged" to "Alert me about routing problems",
+because the drawn sentence now belongs to the two rows that gate exactly that and
+one switch cannot honestly claim both.

@@ -15,6 +15,10 @@ import type { IconName } from "./Icon";
 
 export type SidebarView =
   | { kind: "overview" }
+  /** The live security-event feed (AG-578). Undrawn: the Sidenav frame
+   *  (408:15625) draws Overview and Settings only, so this entry is built from
+   *  the `NavItem` component set rather than copied from a frame. */
+  | { kind: "security" }
   | { kind: "settings" }
   /** An app row is selected and its detail pane is open. */
   | { kind: "app"; slug: string };
@@ -210,6 +214,12 @@ export function Sidebar({
           label="Overview"
           active={view.kind === "overview"}
           onClick={() => onNavigate({ kind: "overview" })}
+        />
+        <NavItem
+          icon="shieldCheck"
+          label="Security events"
+          active={view.kind === "security"}
+          onClick={() => onNavigate({ kind: "security" })}
         />
         <NavItem
           icon="settings2"

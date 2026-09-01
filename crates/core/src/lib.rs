@@ -42,6 +42,7 @@ pub mod routing;
 /// What a tool is *doing*, as opposed to what its config says. Kept separate
 /// from [`registry::Status`] on purpose - see the module docs.
 pub mod routing_health;
+pub mod security_feed;
 pub mod startup;
 
 pub mod integrations {

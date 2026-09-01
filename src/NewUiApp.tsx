@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import { SecurityEventDialog, SecurityPane } from "./components/gc/SecurityPane";
+import { useSecurityFeed } from "./lib/securityFeed";
+import type { SecurityEvent } from "./lib/api";
 import type {
   Account,
   OAuthStatus,
@@ -37,6 +40,9 @@ import {
   resumeRestore,
   restoreJournal,
   getPreferences,
+  setBlockedEventNotifications,
+  setFlaggedEventNotifications,
+  setSecurityNotificationSound,
   setRoutingHealthNotifications,
   setShareDiagnostics,
 } from "./lib/api";
@@ -382,6 +388,23 @@ export function NewUiApp() {
   const credential = account
     ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}|${keyPrefix ?? ""}`
     : "";
+  // The live security-event feed (AG-578). Keyed on `credential` for the reason
+  // every other reading here is: events belonging to the org the user just left
+  // must not stay on screen under the new org's name.
+  //
+  // Not gated on routing. The events come from the gateway, not from local
+  // traffic, and AC4 requires the feed's state to be independent of routing's -
+  // a feed that only ran while routing was on would be reporting routing.
+  const securityFeed = useSecurityFeed(Boolean(credential), credential);
+
+  /** The event whose summary is open, or null.
+   *
+   * Held here rather than in the pane because AC7 turns on it *surviving* the
+   * click that opens the dashboard: the summary stays up until the browser has
+   * it, so a failed open leaves the user looking at the event rather than at
+   * nothing. */
+  const [openEvent, setOpenEvent] = useState<SecurityEvent | null>(null);
+
   // One fetch per account, plus the pane's own refresh. Not polled: the endpoint's
   // throttle bucket is keyed on the source address, so a timer here would spend
   // a budget shared with every other Gate Connect user on the same network.
@@ -1437,6 +1460,9 @@ export function NewUiApp() {
         launchAtLogin,
         launchAtLoginUnavailable,
         routingHealthNotifications: prefs?.routing_health_notifications,
+        blockedEventNotifications: prefs?.blocked_event_notifications,
+        flaggedEventNotifications: prefs?.flagged_event_notifications,
+        securityNotificationSound: prefs?.security_notification_sound,
         shareDiagnostics: prefs?.share_diagnostics,
         preferencesUnavailable: prefsUnavailable,
         version: version ? `v${version}` : "-",
@@ -1491,6 +1517,30 @@ export function NewUiApp() {
             p ? { ...p, routing_health_notifications: next } : p,
           );
           void setRoutingHealthNotifications(next)
+            .catch((e) => setActionError(classifyError(e, "generic")))
+            .finally(() => void loadPreferences());
+        },
+        // Same optimistic-then-re-read shape as the routing switch above: the
+        // switch has to move on click, and the re-read is what surfaces a failed
+        // write instead of leaving the UI asserting a value the file lacks.
+        onToggleBlockedEventNotifications: () => {
+          const next = !(prefs?.blocked_event_notifications ?? true);
+          setPrefs((p) => (p ? { ...p, blocked_event_notifications: next } : p));
+          void setBlockedEventNotifications(next)
+            .catch((e) => setActionError(classifyError(e, "generic")))
+            .finally(() => void loadPreferences());
+        },
+        onToggleFlaggedEventNotifications: () => {
+          const next = !(prefs?.flagged_event_notifications ?? true);
+          setPrefs((p) => (p ? { ...p, flagged_event_notifications: next } : p));
+          void setFlaggedEventNotifications(next)
+            .catch((e) => setActionError(classifyError(e, "generic")))
+            .finally(() => void loadPreferences());
+        },
+        onToggleSecurityNotificationSound: () => {
+          const next = !(prefs?.security_notification_sound ?? true);
+          setPrefs((p) => (p ? { ...p, security_notification_sound: next } : p));
+          void setSecurityNotificationSound(next)
             .catch((e) => setActionError(classifyError(e, "generic")))
             .finally(() => void loadPreferences());
         },
@@ -2100,6 +2150,28 @@ export function NewUiApp() {
             onCancel={settings.dismissPrompt}
             onReset={() => void settings.confirmReset()}
           />
+        ) : openEvent ? (
+          // Above the offer, below everything the user is in the middle of: they
+          // clicked this row, so it outranks anything unsolicited.
+          <SecurityEventDialog
+            event={openEvent}
+            onClose={() => setOpenEvent(null)}
+            onOpenDashboard={() => {
+              const requestId = openEvent.requestId;
+              void openExternal(
+                `${GATE_DASHBOARD_URL}messages/${encodeURIComponent(requestId)}`,
+              ).then((err) => {
+                if (err) {
+                  // The browser never opened, so AC7's "until the matching
+                  // dashboard detail opens" has not been met: leave the summary
+                  // up and report the failure in the banner stack.
+                  setActionError(err);
+                  return;
+                }
+                setOpenEvent(null);
+              });
+            }}
+          />
         ) : offerOpen ? (
           // Lowest precedence in the stack: anything the user just did, a pending
           // quit, or an update outranks an offer they did not ask for.
@@ -2125,6 +2197,15 @@ export function NewUiApp() {
     >
       {view.kind === "settings" ? (
         <SettingsPane sections={settingsSections} />
+      ) : view.kind === "security" ? (
+        <SecurityPane
+          events={securityFeed.events}
+          state={securityFeed.state}
+          loading={securityFeed.loading}
+          unavailable={securityFeed.unavailable}
+          onRetry={securityFeed.retry}
+          onOpenEvent={setOpenEvent}
+        />
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
