@@ -398,6 +398,28 @@ impl ProxyManager {
         }
     }
 
+    /// How many times the daemon's engine has seen the gateway refuse a request
+    /// carrying our OAuth bearer, or `None` when there is no reading: this
+    /// process holds no control connection, or the round trip failed.
+    ///
+    /// `None` is not zero, and the caller must not treat it as "no refusals" -
+    /// it means nobody answered. The GUI polls this because on Linux the engine
+    /// runs in the daemon, so the 401 that means "this session is dead" is
+    /// observed in a different process from the shell that can recover it.
+    ///
+    /// Deliberately does not adopt or reconnect to a daemon the way
+    /// [`Self::status`] does. The only caller is the GUI's own session loop,
+    /// which holds the connection for as long as routing is on; a tick with no
+    /// handle has nothing to recover and should cost nothing.
+    pub fn gate_auth_refusals(&self) -> Option<u64> {
+        self.client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()?
+            .gate_auth_refusals()
+            .ok()
+    }
+
     /// Push a refreshed OAuth access token into the running daemon, if any.
     /// Empty string reverts to the API key. Re-sends the current account/CA
     /// so the live update carries the new token to in-flight routing.

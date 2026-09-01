@@ -196,7 +196,25 @@ impl HelperClient {
                 running,
                 port,
                 intercepting,
+                ..
             } => Ok((running, port, intercepting)),
+            other => anyhow::bail!("unexpected Status reply: {other:?}"),
+        }
+    }
+
+    /// How many times the daemon's engine has seen the gateway refuse a request
+    /// carrying our OAuth bearer. Monotone for the daemon's life; see
+    /// [`Response::Status`]'s `gate_auth_refusals`.
+    ///
+    /// Its own round trip rather than a fourth element on [`Self::status`],
+    /// which nine of its ten call sites would discard. One request per GUI
+    /// refresh tick over a Unix socket costs nothing worth shaping the API
+    /// around.
+    pub fn gate_auth_refusals(&mut self) -> Result<u64> {
+        match self.round_trip(&Request::Status, CONTROL_TIMEOUT)? {
+            Response::Status {
+                gate_auth_refusals, ..
+            } => Ok(gate_auth_refusals),
             other => anyhow::bail!("unexpected Status reply: {other:?}"),
         }
     }

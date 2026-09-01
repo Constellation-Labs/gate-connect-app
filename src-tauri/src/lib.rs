@@ -2257,6 +2257,46 @@ const CLOCK_JUMP_TOLERANCE: std::time::Duration = std::time::Duration::from_secs
 /// poll by design), and posts the same notification the refresh loop would
 /// have, on the same platforms it notifies on - the tray dot alone is out of
 /// the user's eyeline while they sit watching a tool fail.
+/// Re-verify a session the gateway has just refused, and react to the verdict.
+///
+/// Shared by the two triggers, which differ only in how the refusal reaches us:
+/// the in-process engine's observer on macOS/Windows, and the session loop's
+/// poll of the helper daemon's refusal counter on Linux. The response to a
+/// verdict is not platform-specific, so it lives in one place.
+///
+/// Says nothing itself about whether the session is dead - that is
+/// [`gate_connect_core::startup::reverify_session`]'s call, made with our own
+/// token against the gateway. This only carries out what it decided.
+///
+/// Does NOT take the [`gate_connect_core::proxy::GateAuthCheck`] debounce
+/// guard: the engine-side latch belongs to whichever process saw the 401, which
+/// on Linux is the daemon, and the observer path takes it at the top of its own
+/// thread so a panic still releases it.
+fn recheck_gate_session(app: &tauri::AppHandle) {
+    match gate_connect_core::startup::reverify_session() {
+        // The session was alive and the local clock was simply wrong about it.
+        // The forced refresh minted a token that works; push it into the
+        // running engine so in-flight tools recover without a restart, and take
+        // back any dead-session signal.
+        gate_connect_core::startup::Recheck::Recovered(token) => {
+            gate_connect_core::proxy::manager().refresh_token(&token);
+            if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
+                let running = gate_connect_core::proxy::manager()
+                    .status()
+                    .map(|s| s.running)
+                    .unwrap_or(false);
+                update_tray_status(app, running);
+            }
+        }
+        gate_connect_core::startup::Recheck::Dead => {
+            signal_session_dead(app);
+        }
+        // No verdict (offline, or the 401 belonged to the client's own upstream
+        // credential rather than to us): change nothing.
+        gate_connect_core::startup::Recheck::Unchanged => {}
+    }
+}
+
 fn signal_session_dead(app: &tauri::AppHandle) {
     if SESSION_NEEDS_SIGNIN.swap(true, Ordering::Relaxed) {
         return;
@@ -3134,30 +3174,7 @@ pub fn run() {
                 let handle = auth_handle.clone();
                 std::thread::spawn(move || {
                     let _release = gate_connect_core::proxy::GateAuthCheck;
-                    match gate_connect_core::startup::reverify_session() {
-                        // The session was alive and the local clock was
-                        // simply wrong about it. The forced refresh minted
-                        // a token that works; push it into the running
-                        // engine so in-flight tools recover without a
-                        // restart, and take back any dead-session signal.
-                        gate_connect_core::startup::Recheck::Recovered(token) => {
-                            gate_connect_core::proxy::manager().refresh_token(&token);
-                            if SESSION_NEEDS_SIGNIN.swap(false, Ordering::Relaxed) {
-                                let running = gate_connect_core::proxy::manager()
-                                    .status()
-                                    .map(|s| s.running)
-                                    .unwrap_or(false);
-                                update_tray_status(&handle, running);
-                            }
-                        }
-                        gate_connect_core::startup::Recheck::Dead => {
-                            signal_session_dead(&handle);
-                        }
-                        // No verdict (offline, or the 401 belonged to the
-                        // client's own upstream credential rather than to
-                        // us): change nothing.
-                        gate_connect_core::startup::Recheck::Unchanged => {}
-                    }
+                    recheck_gate_session(&handle);
                 });
             });
 
@@ -3456,6 +3473,11 @@ pub fn run() {
                 // Previous tick's paired clock readings, for the jump check
                 // below. `None` until the first tick has one to compare with.
                 let mut last_tick: Option<(std::time::Instant, std::time::SystemTime)> = None;
+                // Previous reading of the helper daemon's gateway-refusal
+                // counter (Linux only; see the poll at the end of the tick).
+                // `None` until a tick has read one.
+                #[cfg(target_os = "linux")]
+                let mut last_refusals: Option<u64> = None;
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(
                         gate_connect_core::oauth::REFRESH_INTERVAL_SECS,
@@ -3566,6 +3588,53 @@ pub fn run() {
                                 .title("Gate Connect")
                                 .body("Your session expired. Open Gate Connect to sign in again and keep routing.")
                                 .show();
+                        }
+                    }
+
+                    // Linux's substitute for the in-process 401 observer the
+                    // other platforms register at setup. The engine lives in the
+                    // helper daemon here, so a gateway refusal of our bearer is
+                    // seen in another process; the daemon counts them and this
+                    // asks for the count.
+                    //
+                    // Why this needs to exist at all: everything above is the
+                    // *preventive* half, and it is blind to one case by
+                    // construction. The clock-jump check compares a monotonic
+                    // reading against a wall-clock one, and a guest clock that
+                    // froze together with the machine stalls both, so nothing
+                    // looks wrong locally while the token ages out. The
+                    // gateway's refusal is the only signal that state produces.
+                    //
+                    // Acted on as an EDGE, not a level: the count only rises, so
+                    // a move means at least one new refusal since the last look,
+                    // and a tick that could not read it loses nothing. The first
+                    // reading only seeds the baseline - a daemon can outlive
+                    // several GUI runs, and launch-time `refresh_session` has
+                    // already probed for a session that died while we were gone.
+                    // A restarted daemon counts from zero again, which reads as
+                    // no increase and simply re-seeds.
+                    //
+                    // `None` means nobody answered (routing off, so no control
+                    // connection, or a failed round trip). It is not zero, and
+                    // it must not overwrite the baseline with a value we never
+                    // read.
+                    //
+                    // Runs even when the session is already known dead, matching
+                    // the other platforms: the daemon's own cooldown throttles
+                    // the counter to about one bump a minute, so this becomes a
+                    // once-a-minute check for a session that came back some
+                    // other way.
+                    #[cfg(target_os = "linux")]
+                    if let Some(refusals) = gate_connect_core::proxy::manager().gate_auth_refusals()
+                    {
+                        let refused_since_last_tick =
+                            last_refusals.is_some_and(|seen| refusals > seen);
+                        last_refusals = Some(refusals);
+                        if refused_since_last_tick {
+                            eprintln!(
+                                "[gate] the helper daemon's engine reports the gateway refusing                                  our bearer; re-verifying the session"
+                            );
+                            recheck_gate_session(&refresh_handle);
                         }
                     }
                 });

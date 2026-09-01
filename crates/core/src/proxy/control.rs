@@ -198,6 +198,23 @@ pub enum Response {
         port: Option<u16>,
         /// Number of domains currently intercepted (0 == pass-through).
         intercepting: usize,
+        /// Times the engine has seen the gateway refuse a request carrying
+        /// *our* OAuth bearer, since this daemon started. Monotone, so the GUI
+        /// acts on the edge (the count moved) rather than on a level, and a
+        /// missed poll cannot lose the signal.
+        ///
+        /// This is how 401-driven session recovery reaches Linux at all. On the
+        /// other platforms the engine is in-process and notifies the shell
+        /// directly (`proxy::set_gate_auth_observer`); here it lives in this
+        /// daemon, so the observation has to survive a trip over the control
+        /// socket. The daemon deliberately draws no conclusion from it - see
+        /// `startup::reverify_session` for why only a probe with our own token
+        /// may call a session dead.
+        ///
+        /// `serde(default)` keeps an older daemon's reply parseable, reading as
+        /// "never refused", which is the pre-feature behaviour.
+        #[serde(default)]
+        gate_auth_refusals: u64,
     },
     /// Something went wrong; `message` is human-readable.
     Error { message: String },
@@ -286,6 +303,18 @@ mod tests {
                 assert_eq!(billing_mode, BillingMode::Byok)
             }
             other => panic!("expected SetIntercept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_without_a_refusal_count_parses_as_never_refused() {
+        let line = r#"{"Status":{"running":true,"port":45981,"intercepting":7}}"#;
+        let back: Response = serde_json::from_str(line).expect("an older daemon must still parse");
+        match back {
+            Response::Status {
+                gate_auth_refusals, ..
+            } => assert_eq!(gate_auth_refusals, 0),
+            other => panic!("expected Status, got {other:?}"),
         }
     }
 
