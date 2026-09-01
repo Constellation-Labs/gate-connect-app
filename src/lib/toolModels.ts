@@ -109,6 +109,26 @@ export interface GateModel {
    * absent tag list as unknown rather than as a denial, for that reason.
    */
   tags: string[];
+  /**
+   * Which wire form of tool definition this model accepts (AG-729).
+   *
+   * Answers the question `tags` cannot: `openai/gpt-4o` carries `tool-use` and
+   * still rejects Codex's freeform tools. A shape the gateway said nothing
+   * about is absent here, and absent means unknown, never "no". The whole field
+   * is absent when talking to a gateway that predates it, which
+   * `modelCompatibility` handles with a dated local fallback.
+   */
+  toolShapes?: Partial<Record<ToolShape, ToolShapeReport>>;
+}
+
+/** The wire forms a client can send tool definitions in. */
+export type ToolShape = "function" | "freeform";
+
+/** What the gateway knows about one (model, shape) pair. */
+export interface ToolShapeReport {
+  verdict: "works" | "fails" | "unknown";
+  /** ISO date of the evidence, present only for a curated verdict. */
+  checked?: string;
 }
 
 interface RawModel {
@@ -116,6 +136,32 @@ interface RawModel {
   owned_by?: unknown;
   name?: unknown;
   tags?: unknown;
+  tool_shapes?: unknown;
+}
+
+/**
+ * Read the tool-shape block off one catalogue row.
+ *
+ * Defensive in the same spirit as the tag filter above: a malformed field costs
+ * the field, never the model, because the id is what a preference stores and
+ * dropping the row would make a saved choice look unavailable. An unrecognised
+ * verdict string becomes `unknown` rather than being discarded, so a gateway
+ * that grows a fourth verdict degrades to "no opinion" instead of to a denial.
+ */
+function adaptToolShapes(raw: unknown): Partial<Record<ToolShape, ToolShapeReport>> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+
+  const out: Partial<Record<ToolShape, ToolShapeReport>> = {};
+  for (const shape of ["function", "freeform"] as const) {
+    const entry = (raw as Record<string, unknown>)[shape];
+    if (typeof entry !== "object" || entry === null) continue;
+    const { verdict, checked } = entry as { verdict?: unknown; checked?: unknown };
+    out[shape] = {
+      verdict: verdict === "works" || verdict === "fails" ? verdict : "unknown",
+      ...(typeof checked === "string" ? { checked } : {}),
+    };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -134,6 +180,7 @@ export function adaptModels(raw: { data?: unknown }): GateModel[] {
   const models: GateModel[] = [];
   for (const m of list) {
     if (typeof m.id !== "string" || m.id.length === 0) continue;
+    const toolShapes = adaptToolShapes(m.tool_shapes);
     models.push({
       id: m.id,
       vendor: typeof m.owned_by === "string" ? m.owned_by : m.id.split("/")[0],
@@ -141,6 +188,7 @@ export function adaptModels(raw: { data?: unknown }): GateModel[] {
       // Only the string entries: a malformed row should lose a tag, not the
       // whole model, because the id is what a preference stores.
       tags: Array.isArray(m.tags) ? m.tags.filter((t): t is string => typeof t === "string") : [],
+      ...(toolShapes ? { toolShapes } : {}),
     });
   }
   return models;

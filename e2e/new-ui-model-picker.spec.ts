@@ -1,4 +1,5 @@
 import { test, expect } from "./fixtures";
+import type { Page } from "@playwright/test";
 
 /**
  * Choosing which model an app runs on (AG-588).
@@ -669,13 +670,18 @@ test.describe("new UI model feedback", () => {
 });
 
 /**
- * Only the models this app can actually be served with (AG-590).
+ * Only the models this app can actually be served with (AG-590, AG-729).
  *
  * The case that cost a real prompt on staging: Codex was offered `gpt-4o`, which
  * carries the `tool-use` tag and still cannot serve it, because Codex sends
- * freeform tools and only OpenAI's GPT-5 family accepts those. The provider's
- * refusal - `Missing required parameter: 'tools[0].custom'` - is not something a
- * user can act on, so the picker answers first.
+ * freeform tools. The provider's refusal - `Missing required parameter:
+ * 'tools[0].custom'` - is not something a user can act on, so the picker
+ * answers first.
+ *
+ * AG-729 split the answer into three. Only a model MEASURED failing is held
+ * back; a model nobody ever tried is offered below an "Unverified" divider,
+ * because the old boolean called that a refusal and quietly shrank the
+ * catalogue to the one family anybody had swept.
  */
 test.describe("new UI model picker compatibility", () => {
   const codexTools = [
@@ -688,32 +694,73 @@ test.describe("new UI model picker compatibility", () => {
       status: { kind: "connected" as const },
     },
   ];
+  /**
+   * Rows as a gateway serving AG-729's `tool_shapes` sends them, covering all
+   * three states: verified, refuted, and never tried.
+   */
   const mixed = [
-    { id: "openai/gpt-5-3-codex", owned_by: "openai", name: "GPT-5.3 Codex", tags: ["tool-use"] },
-    { id: "openai/gpt-4o", owned_by: "openai", name: "GPT-4o", tags: ["tool-use"] },
+    {
+      id: "openai/gpt-5-3-codex",
+      owned_by: "openai",
+      name: "GPT-5.3 Codex",
+      tags: ["tool-use"],
+      tool_shapes: { freeform: { verdict: "works", checked: "2026-08-28" } },
+    },
+    {
+      id: "openai/gpt-4o",
+      owned_by: "openai",
+      name: "GPT-4o",
+      tags: ["tool-use"],
+      tool_shapes: { freeform: { verdict: "fails", checked: "2026-08-28" } },
+    },
     { id: "openai/gpt-3-5-turbo-instruct", owned_by: "openai", name: "Instruct", tags: ["vision"] },
+    // Nothing known about this one. It must be OFFERED, below the divider.
+    { id: "mistralai/mistral-large", owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
   ];
 
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
   });
 
-  test("offers Codex only what can serve it, and says what it held back", async ({ boot }) => {
+  /** Open Codex's picker. Four tests below need the same three clicks. */
+  const openPicker = async (app: { page: Page }) => {
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
+    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    return app.page.getByRole("dialog");
+  };
+
+  test("leads with the verified model and offers the unverified one below it", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: codexTools,
       toolModels: { catalogue: mixed },
     });
-    await app.page.getByRole("button", { name: "Codex" }).first().click();
-    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    const dialog = await openPicker(app);
 
-    const dialog = app.page.getByRole("dialog");
-    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
+    // Verified plus unverified. Only the two MEASURED failures are held back.
+    await expect(dialog.getByRole("checkbox")).toHaveCount(2);
     await expect(dialog.getByRole("checkbox", { name: "openai/gpt-5-3-codex" })).toBeVisible();
+    await expect(dialog.getByRole("checkbox", { name: "mistralai/mistral-large" })).toBeVisible();
 
-    // Held back, not hidden. Two different causes here - one model lacks tools
-    // outright, the other lacks the freeform kind - so the count is stated
-    // without a reason: two reasons in one sentence would explain neither.
+    // The verified one leads. The order is the recommendation.
+    const rows = await dialog.getByRole("checkbox").all();
+    await expect(rows[0]!).toHaveAccessibleName("openai/gpt-5-3-codex");
+
+    // The divider says which is which, in words that do not overclaim.
+    await expect(dialog.getByText("Unverified")).toBeVisible();
+    await expect(dialog.getByText(/Not yet tested with Codex/)).toBeVisible();
+  });
+
+  test("counts only the measured failures as held back", async ({ boot }) => {
+    // The count line must not include unverified models: they are visibly
+    // sitting in the list, so calling them "not shown" would be false.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: codexTools,
+      toolModels: { catalogue: mixed },
+    });
+    const dialog = await openPicker(app);
+
     await expect(dialog.getByText(/2 models are not shown/)).toBeVisible();
   });
 
@@ -721,15 +768,36 @@ test.describe("new UI model picker compatibility", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: codexTools,
-      // Both refused for the same cause, so there is one sentence worth saying.
-      toolModels: { catalogue: mixed.filter((m) => m.tags.includes("tool-use")) },
+      // Only the freeform refusal remains, so there is one sentence worth saying.
+      toolModels: { catalogue: mixed.filter((m) => m.id !== "openai/gpt-3-5-turbo-instruct") },
     });
-    await app.page.getByRole("button", { name: "Codex" }).first().click();
-    await app.page.getByRole("radio", { name: /Gate model/ }).click();
+    const dialog = await openPicker(app);
 
-    const dialog = app.page.getByRole("dialog");
     await expect(dialog.getByText(/1 model is not shown/)).toBeVisible();
-    await expect(dialog.getByText(/only OpenAI's GPT-5 models accept/)).toBeVisible();
+    // The copy no longer names a family, which stops being true the moment the
+    // verdict table grows. It states what was measured.
+    await expect(dialog.getByText(/verified to reject/)).toBeVisible();
+  });
+
+  test("treats an older gateway's silence as unverified, not as a refusal", async ({ boot }) => {
+    // No `tool_shapes` anywhere: the local fallback answers, and everything
+    // outside the families it knows about is OFFERED rather than hidden.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: codexTools,
+      toolModels: {
+        catalogue: [
+          { id: "openai/gpt-5-3-codex", owned_by: "openai", name: "GPT-5.3 Codex", tags: ["tool-use"] },
+          { id: "mistralai/mistral-large", owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
+        ],
+      },
+    });
+    const dialog = await openPicker(app);
+
+    await expect(dialog.getByRole("checkbox")).toHaveCount(2);
+    await expect(dialog.getByText("Unverified")).toBeVisible();
+    // Nothing was measured failing, so nothing is held back.
+    await expect(dialog.getByText(/not shown/)).toHaveCount(0);
   });
 
   test("lets the user overrule it, because the rule will date", async ({ boot }) => {
@@ -745,7 +813,13 @@ test.describe("new UI model picker compatibility", () => {
 
     const dialog = app.page.getByRole("dialog");
     await dialog.getByRole("button", { name: "Show anyway" }).click();
-    await expect(dialog.getByRole("checkbox")).toHaveCount(3);
+    await expect(dialog.getByRole("checkbox")).toHaveCount(4);
     await expect(dialog.getByRole("checkbox", { name: "openai/gpt-4o" })).toBeVisible();
+
+    // Even under the override the refuted rows go last, so turning it on never
+    // buries a working model under one that was measured failing.
+    const rows = await dialog.getByRole("checkbox").all();
+    await expect(rows[0]!).toHaveAccessibleName("openai/gpt-5-3-codex");
+    await expect(dialog.getByText("Not compatible")).toBeVisible();
   });
 });

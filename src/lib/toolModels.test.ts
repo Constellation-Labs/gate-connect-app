@@ -127,6 +127,65 @@ describe("adaptModels", () => {
     expect(adaptModels({ data: [] })).toEqual([]);
     expect(adaptModels({})).toEqual([]);
   });
+
+  describe("tool_shapes (AG-729)", () => {
+    const one = (tool_shapes: unknown) =>
+      adaptModels({ data: [{ id: "openai/gpt-5", tags: ["tool-use"], tool_shapes }] })[0]!;
+
+    it("reads a served verdict, keeping the evidence date", () => {
+      // The date is what lets a surface judge how stale a verdict is, so it
+      // survives the boundary rather than being flattened away.
+      expect(one({ freeform: { verdict: "works", checked: "2026-08-28", source: "probe" } }).toolShapes).toEqual({
+        freeform: { verdict: "works", checked: "2026-08-28" },
+      });
+    });
+
+    it("reads both shapes independently", () => {
+      expect(
+        one({ function: { verdict: "works" }, freeform: { verdict: "fails", checked: "2026-08-28" } }).toolShapes,
+      ).toEqual({
+        function: { verdict: "works" },
+        freeform: { verdict: "fails", checked: "2026-08-28" },
+      });
+    });
+
+    it("leaves the field off entirely for an older gateway that sends none", () => {
+      // Absence is the wire spelling of unknown, and `modelCompatibility` has a
+      // dated local fallback for exactly this case.
+      expect(one(undefined).toolShapes).toBeUndefined();
+      expect(one({}).toolShapes).toBeUndefined();
+    });
+
+    it("coerces an unrecognised verdict to unknown rather than dropping it", () => {
+      // A gateway that grows a fourth verdict must degrade to "no opinion",
+      // never to a denial.
+      expect(one({ freeform: { verdict: "probably" } }).toolShapes).toEqual({
+        freeform: { verdict: "unknown" },
+      });
+    });
+
+    it("ignores a non-string checked date instead of carrying it through", () => {
+      expect(one({ freeform: { verdict: "works", checked: 20260828 } }).toolShapes).toEqual({
+        freeform: { verdict: "works" },
+      });
+    });
+
+    it("drops a malformed field, never the model", () => {
+      // The id is what a preference stores. Losing the row would make a saved
+      // choice look unavailable and offer to remove it.
+      for (const bad of ["nonsense", 42, [], null, { freeform: "works" }]) {
+        const m = one(bad);
+        expect(m.id, JSON.stringify(bad)).toBe("openai/gpt-5");
+        expect(m.toolShapes, JSON.stringify(bad)).toBeUndefined();
+      }
+    });
+
+    it("keeps a well-formed shape while discarding a malformed sibling", () => {
+      expect(one({ function: null, freeform: { verdict: "works" } }).toolShapes).toEqual({
+        freeform: { verdict: "works" },
+      });
+    });
+  });
 });
 
 /**

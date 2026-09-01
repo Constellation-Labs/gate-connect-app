@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
 import { Skeleton } from "./base";
-import { compatibility, explain, needsOf } from "../../lib/modelCompatibility";
+import { compatibility, explain, needsOf, unverifiedNote } from "../../lib/modelCompatibility";
 import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
 import type { PillTone } from "./Modal";
 import {
@@ -489,6 +489,44 @@ export interface GateModelOption {
  * older state rather than a divergence - everything around the control still
  * comes from it.
  */
+/**
+ * A labelled break in the model list.
+ *
+ * Sticky, because the list scrolls inside a fixed-height card and a divider
+ * that scrolled away would leave the rows beneath it unattributed: a user who
+ * scrolled past "Unverified" would read the rows under it as verified. The
+ * label is what those rows mean, so it stays on screen for as long as they do.
+ *
+ * `first` drops the leading spacing when the divider opens the list, which
+ * happens whenever the section above it is empty (a search that matches only
+ * unverified models, most often).
+ */
+function SectionDivider({
+  label,
+  note,
+  first,
+}: {
+  label: string;
+  note?: string;
+  first?: boolean;
+}) {
+  return (
+    <div
+      className={`sticky top-0 z-10 flex shrink-0 flex-col gap-0.5 bg-white px-2 pb-1 ${first ? "pt-0" : "pt-3"}`}
+    >
+      <div className="flex items-center gap-2">
+        {/* Mono, because it labels a machine-decided grouping rather than
+         *  speaking to the user - the same rule the status pills follow. */}
+        <span className="shrink-0 font-mono text-base-2xs uppercase leading-4 tracking-label text-base-muted-foreground">
+          {label}
+        </span>
+        <span aria-hidden className="h-px flex-1 bg-base-border" />
+      </div>
+      {note && <p className="text-base-xs leading-4 text-base-muted-foreground">{note}</p>}
+    </div>
+  );
+}
+
 export function ModelPickerDialog({
   appName,
   appSlug,
@@ -563,29 +601,124 @@ export function ModelPickerDialog({
   // rather than the filtered view, so the count of what was set aside is about
   // the app and not about the current search.
   const needs = useMemo(() => needsOf(appSlug), [appSlug]);
-  const usable = useMemo(
-    () => models.filter((m) => compatibility(m, needs).ok),
-    [models, needs],
-  );
-  const setAside = models.length - usable.length;
-  // The reason to name, when there is one shared reason worth naming. Two
-  // different causes in one sentence would explain neither.
-  const asideReason = useMemo(() => {
-    const reasons = new Set(
-      models.map((m) => compatibility(m, needs).reason).filter((r) => r !== undefined),
-    );
-    return reasons.size === 1 ? [...reasons][0]! : null;
+
+  /**
+   * The catalogue in the three states AG-729 distinguishes.
+   *
+   * `verified` was confirmed to work, `unverified` has simply never been tried,
+   * and `refuted` was tested and failed. Only the last is held back, because it
+   * is the only one anything is actually known against. Splitting once here
+   * keeps every count and every section reading from the same partition, which
+   * is what stopped the old count line and the old list disagreeing.
+   */
+  const { verified, unverified, refuted, asideReason } = useMemo(() => {
+    const verified: typeof models = [];
+    const unverified: typeof models = [];
+    const refuted: typeof models = [];
+    const reasons = new Set<ReturnType<typeof compatibility>["reason"]>();
+
+    for (const m of models) {
+      const c = compatibility(m, needs);
+      if (!c.ok) {
+        refuted.push(m);
+        reasons.add(c.reason);
+      } else if (c.unverified) unverified.push(m);
+      else verified.push(m);
+    }
+
+    // The reason to name, when there is one shared reason worth naming. Two
+    // different causes in one sentence would explain neither.
+    const only = [...reasons].filter((r) => r !== undefined);
+    return { verified, unverified, refuted, asideReason: only.length === 1 ? only[0]! : null };
   }, [models, needs]);
 
+  const usable = useMemo(() => [...verified, ...unverified], [verified, unverified]);
+  // Counted from the refuted set alone. An unverified model is offered, so
+  // calling it "not shown" would be false on a list it is visibly sitting in.
+  const setAside = refuted.length;
+
+  /**
+   * The filtered list, still partitioned.
+   *
+   * Verified rows lead in BOTH modes. Under "Show anyway" the refuted rows join
+   * the end rather than interleaving, so turning the override on never buries a
+   * working model underneath one that was measured failing.
+   */
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const base = showAll ? models : usable;
-    return base.filter(
-      (m) =>
-        (vendor === "all" || m.vendor === vendor) &&
-        (q === "" || m.id.toLowerCase().includes(q) || m.vendor.toLowerCase().includes(q)),
+    const match = (m: (typeof models)[number]) =>
+      (vendor === "all" || m.vendor === vendor) &&
+      (q === "" || m.id.toLowerCase().includes(q) || m.vendor.toLowerCase().includes(q));
+    return {
+      verified: verified.filter(match),
+      unverified: unverified.filter(match),
+      refuted: showAll ? refuted.filter(match) : [],
+    };
+  }, [verified, unverified, refuted, showAll, query, vendor]);
+
+  const shownCount = shown.verified.length + shown.unverified.length + shown.refuted.length;
+
+  /**
+   * One selectable row.
+   *
+   * A function rather than three copies of the markup: the list is rendered in
+   * up to three sections now, and a row that drifted between them would be a
+   * silent inconsistency in the one control this dialog exists for.
+   *
+   * The row is deliberately IDENTICAL in every section. A verified and an
+   * unverified model are equally selectable, and drawing the second as degraded
+   * would imply a restriction that does not exist. The section it sits in, and
+   * the divider above that section, carry the whole of the distinction.
+   */
+  const renderRow = (model: (typeof models)[number]) => {
+    const selected = chosen.includes(model.id);
+    return (
+      <button
+        key={model.id}
+        type="button"
+        role="checkbox"
+        aria-checked={selected}
+        onClick={() => {
+          setDraft((d) =>
+            d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
+          );
+        }}
+        className={`flex h-10 shrink-0 items-center gap-2 border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+          // The frame marks the chosen row with the muted ground and a
+          // real border rather than a primary outline, and tightens its
+          // radius against the looser one the other rows carry.
+          selected
+            ? "rounded-base border-base-border bg-gray-50"
+            : "rounded-lg border-transparent hover:bg-gray-50"
+        }`}
+      >
+        <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
+          {model.logo ?? <Icon name="cube" size={16} />}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-neutral-900">
+          {model.id}
+        </span>
+        {selected ? (
+          // Square, as the frame draws it - and square is what a
+          // multi-select reads as. A round mark is the shape a radio
+          // uses for a choice that excludes the others, which this
+          // list stopped being when AG-590 made it a set.
+          <span
+            aria-hidden
+            className="flex size-5 shrink-0 items-center justify-center rounded-base border border-base-primary"
+          >
+            <Icon name="check" size={14} className="text-base-primary" />
+          </span>
+        ) : (
+          <span
+            aria-hidden
+            className="size-5 shrink-0 rounded-base border border-base-input"
+          />
+        )}
+      </button>
     );
-  }, [models, usable, showAll, query, vendor]);
+  };
+
 
   const chosen = draft;
   /**
@@ -708,7 +841,7 @@ export function ModelPickerDialog({
            *  and the clause would restate the number it sits next to. */}
           <div className="flex items-start justify-between text-base-xs leading-4">
             <p className="text-base-muted-foreground">
-              Showing {shown.length} of {showAll ? models.length : usable.length} models
+              Showing {shownCount} of {showAll ? models.length : usable.length} models
               {!showAll && setAside > 0 && `・${models.length} in Gate AI`}
             </p>
             {/* Figma 682:20043. It takes the slot the earlier frame drew a "3
@@ -778,7 +911,7 @@ export function ModelPickerDialog({
             </ul>
           )}
 
-          {shown.length === 0 ? (
+          {shownCount === 0 ? (
             <ModalNote>
               <p>No model matches that search.</p>
             </ModalNote>
@@ -793,54 +926,33 @@ export function ModelPickerDialog({
                 aria-label="Gate model"
                 className="flex max-h-[22rem] flex-col overflow-y-auto"
               >
-                {shown.map((model) => {
-                  const selected = chosen.includes(model.id);
-                  return (
-                    <button
-                      key={model.id}
-                      type="button"
-                      role="checkbox"
-                      aria-checked={selected}
-                      onClick={() => {
-                        setDraft((d) =>
-                          d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
-                        );
-                      }}
-                      className={`flex h-10 shrink-0 items-center gap-2 border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-                        // The frame marks the chosen row with the muted ground and a
-                        // real border rather than a primary outline, and tightens its
-                        // radius against the looser one the other rows carry.
-                        selected
-                          ? "rounded-base border-base-border bg-gray-50"
-                          : "rounded-lg border-transparent hover:bg-gray-50"
-                      }`}
-                    >
-                      <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
-                        {model.logo ?? <Icon name="cube" size={16} />}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-neutral-900">
-                        {model.id}
-                      </span>
-                      {selected ? (
-                        // Square, as the frame draws it - and square is what a
-                        // multi-select reads as. A round mark is the shape a radio
-                        // uses for a choice that excludes the others, which this
-                        // list stopped being when AG-590 made it a set.
-                        <span
-                          aria-hidden
-                          className="flex size-5 shrink-0 items-center justify-center rounded-base border border-base-primary"
-                        >
-                          <Icon name="check" size={14} className="text-base-primary" />
-                        </span>
-                      ) : (
-                        <span
-                          aria-hidden
-                          className="size-5 shrink-0 rounded-base border border-base-input"
-                        />
-                      )}
-                    </button>
-                  );
-                })}
+                {/* Verified rows lead. The divider below them is a real
+                  * statement rather than a separator: the rows under it have
+                  * not been shown to fail, they have simply never been tried,
+                  * and the user is told which is which instead of one being
+                  * silently mixed into the other. */}
+                {shown.verified.map(renderRow)}
+
+                {shown.unverified.length > 0 && (
+                  <SectionDivider
+                    label="Unverified"
+                    note={unverifiedNote(appName)}
+                    first={shown.verified.length === 0}
+                  />
+                )}
+                {shown.unverified.map(renderRow)}
+
+                {/* Only reachable under "Show anyway". These were measured
+                  * failing, so they go last: the override must never bury a
+                  * working model under one that is known not to work. */}
+                {shown.refuted.length > 0 && (
+                  <SectionDivider
+                    label="Not compatible"
+                    note={asideReason ? explain(asideReason, appName) : undefined}
+                    first={shown.verified.length === 0 && shown.unverified.length === 0}
+                  />
+                )}
+                {shown.refuted.map(renderRow)}
               </div>
             </div>
           )}
