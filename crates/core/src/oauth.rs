@@ -464,6 +464,35 @@ pub fn access_token_for_injection() -> String {
 ///   new bundle. A failed refresh (revoked / expired refresh token) surfaces as
 ///   `Err` so the caller can drop to the interactive sign-in prompt.
 pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
+    refresh_stored(cfg, false)
+}
+
+/// Refresh the stored bundle **whatever the local clock says** about its
+/// expiry. Same contract as [`ensure_fresh`] otherwise.
+///
+/// [`is_expired`](OAuthTokens::is_expired) compares two readings of the local
+/// clock: `expires_at_unix` is stamped as `local_now + expires_in` when the
+/// token is minted, and checked against `local_now` later. A constant offset
+/// cancels out, but a clock that *moves between the two readings* makes the
+/// answer wrong - and sleep/resume is exactly that move. A guest clock that
+/// stops while the machine is suspended comes back reading minutes past the
+/// mint of a token the gateway has considered expired for hours: locally
+/// fresh, refused on every request, and no local check can tell.
+///
+/// So the gateway's 401 is the only evidence that exists, and acting on it
+/// means refreshing past a local expiry check that is lying. The refresh grant
+/// itself is clock-independent (Cognito validates the refresh token, not our
+/// notion of now), so this succeeds precisely when the session is still alive.
+/// Callers: the control-plane retry in [`crate::org::list_current`] and the
+/// data-plane recovery in [`crate::startup::reverify_session`].
+pub fn force_refresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
+    refresh_stored(cfg, true)
+}
+
+/// Shared body of [`ensure_fresh`] / [`force_refresh`]: `force` skips only the
+/// expiry test, never the client-id check (a bundle from another Cognito pool
+/// is not refreshable here at any freshness).
+fn refresh_stored(cfg: &OAuthConfig, force: bool) -> Result<Option<OAuthTokens>> {
     let Some(tokens) = current()? else {
         return Ok(None);
     };
@@ -474,7 +503,7 @@ pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
             cfg.client_id
         );
     }
-    if !tokens.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
+    if !force && !tokens.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
         return Ok(Some(tokens));
     }
     let refreshed =

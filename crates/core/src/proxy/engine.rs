@@ -390,6 +390,14 @@ struct GateHandler {
     /// `self.clone().proxy(req)`), so the memo cannot leak across requests,
     /// HTTP/2 multiplexing included.
     chatgpt_turn: Option<ChatgptTurn>,
+    /// Whether *this* request was rewritten to the gateway carrying our OAuth
+    /// bearer. Memoed like [`chatgpt_turn`](Self::chatgpt_turn) and for the
+    /// same reason: the response hook has no request context of its own, and a
+    /// 401 only implicates our session if we were the ones who authenticated
+    /// the call. False for API-key routing (a refused `sk-gw-*` key is a
+    /// different problem, with a different fix) and for everything we passed
+    /// through untouched.
+    injected_oauth: bool,
     /// When `Some`, only intercept connections from this local UID (see
     /// [`EngineConfig::owner_uid`]).
     owner_uid: Option<u32>,
@@ -675,6 +683,8 @@ impl HttpHandler for GateHandler {
         }
         // Fresh verdict per request; only the chatgpt.com block below sets it.
         self.chatgpt_turn = None;
+        // Likewise: only a successful OAuth-bearing rewrite below sets this.
+        self.injected_oauth = false;
         // Some entries route every proxy-honouring client EXCEPT the vendor's own
         // website, which shares their host (see `BROWSER_ROUTED`).
         // Classify before `decide` and hand it a narrowed rule set, so the
@@ -772,6 +782,17 @@ impl HttpHandler for GateHandler {
                 ) {
                     Ok(()) => {
                         action = "rewrite->gateway";
+                        // Remember that the gateway is answering *our*
+                        // credential, so a 401 on the way back can be read as
+                        // evidence about the session (see `handle_response`).
+                        // Read back what actually went on the wire rather than
+                        // what we offered: holding a token is not the same as
+                        // sending it, and `inject_gate_credential` leaves a
+                        // request alone when the client brought its own
+                        // `x-gate-api-key`.
+                        self.injected_oauth = req
+                            .headers()
+                            .contains_key(crate::proxy::GATE_AUTHORIZATION_HEADER);
                     }
                     Err(e) => {
                         action = "rewrite-FAILED";
@@ -923,6 +944,21 @@ impl HttpHandler for GateHandler {
         // notification only - the response is returned unchanged either way.
         if cf_challenge_detected(self.chatgpt_turn.as_ref(), &res) {
             crate::proxy::notify_cf_challenge_observer();
+        }
+        // The gateway refused a call we authenticated with the OAuth bearer.
+        // Tell the shell so it can re-verify the session; the response is
+        // returned unchanged either way, exactly like the challenge notify
+        // above - a tool that can handle its own 401 must still see it.
+        //
+        // Status only: the error code that names the reason
+        // (`invalid_gate_token`) is in the body, and the body is a stream we
+        // must not consume on its way to the client. The status alone is
+        // deliberately a weak signal - a rewritten request also carries the
+        // client's own upstream credential, so this 401 may not be about us at
+        // all - which is why the observer's job is to go and ask the gateway
+        // directly rather than to conclude anything from here.
+        if self.injected_oauth && res.status() == hudsucker::hyper::StatusCode::UNAUTHORIZED {
+            crate::proxy::notify_gate_auth_observer();
         }
         if debug_log() {
             eprintln!(
@@ -1572,6 +1608,7 @@ where
         org: org_rx,
         cf_clearance: cf_clearance_rx,
         chatgpt_turn: None,
+        injected_oauth: false,
         owner_uid: cfg.owner_uid,
         peer_verdict: None,
         claude_code_route: false,
