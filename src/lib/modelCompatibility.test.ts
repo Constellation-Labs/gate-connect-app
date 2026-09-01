@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compatibility, explain, needsOf, unverifiedNote } from "./modelCompatibility";
+import { compatibility, explain, needsOf, refutedLabel, unverifiedLabel } from "./modelCompatibility";
 import type { GateModel } from "./toolModels";
 
 /**
@@ -192,7 +192,24 @@ describe("what the picker will say", () => {
   it("names the app, because the limit is about that app and not the model", () => {
     expect(explain("no-freeform-tools", "Codex")).toMatch(/Codex/);
     expect(explain("no-tool-use", "Codex")).toMatch(/Codex/);
-    expect(unverifiedNote("Codex")).toMatch(/Codex/);
+    expect(unverifiedLabel("Codex")).toMatch(/Codex/);
+    expect(refutedLabel("Codex")).toMatch(/Codex/);
+  });
+
+  it("does not call an untested model unavailable, because it is selectable", () => {
+    // The section heading labels rows the user can pick and that mostly work.
+    // Saying "unavailable" would state the opposite of what the list does, and
+    // would collapse the distinction between "nobody checked" and "measured
+    // failing" that the rest of this module exists to keep apart.
+    expect(unverifiedLabel("Codex")).toBe("Not tested with Codex");
+    expect(unverifiedLabel("Codex")).not.toMatch(/unavailable|incompatible|cannot/i);
+  });
+
+  it("keeps the headings short, because they label a collapsed row", () => {
+    // They sit in an accordion header beside a count, not in a paragraph.
+    for (const s of [unverifiedLabel("Claude Code"), refutedLabel("Claude Code")]) {
+      expect(s.length).toBeLessThan(40);
+    }
   });
 
   it("says the refused models were actually tested, rather than blaming a family", () => {
@@ -205,7 +222,8 @@ describe("what the picker will say", () => {
     for (const s of [
       explain("no-tool-use", "Codex"),
       explain("no-freeform-tools", "Codex"),
-      unverifiedNote("Codex"),
+      unverifiedLabel("Codex"),
+      refutedLabel("Codex"),
     ]) {
       expect(s).not.toContain("—");
     }

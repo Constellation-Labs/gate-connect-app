@@ -198,11 +198,22 @@ export function explain(reason: Incompatibility, appName: string): string {
 }
 
 /**
- * The note above the unverified section.
+ * The heading on the unverified section.
  *
- * Says what is true - nobody checked - rather than implying a risk nobody
- * measured. The user can pick one, and most of them work.
+ * Says what is true, that nobody checked, rather than that the models are
+ * unavailable. They are selectable and most of them work; the ones actually
+ * measured failing sit in their own section. Calling these "unavailable" would
+ * state the opposite of what the list does, and would undo the distinction the
+ * tri-state exists to draw.
+ *
+ * Short because it labels a collapsed row rather than explaining itself in
+ * prose. The count beside it carries the rest.
  */
-export function unverifiedNote(appName: string): string {
-  return `Not yet tested with ${appName}. These are likely to work, and Gate will tell you if one does not.`;
+export function unverifiedLabel(appName: string): string {
+  return `Not tested with ${appName}`;
+}
+
+/** The heading on the section of models measured failing for this app. */
+export function refutedLabel(appName: string): string {
+  return `Not compatible with ${appName}`;
 }
