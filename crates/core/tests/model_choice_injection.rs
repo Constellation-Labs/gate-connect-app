@@ -16,8 +16,7 @@ use gate_connect_core::env;
 use gate_connect_core::preferences::{self, ModelSource};
 use gate_connect_core::proxy::testing::{
     apply_rewrite_for_tests, inject_attribution_for_tests, serve_path, serves_gate_model,
-    strip_tool_credential_for_tests,
-    GATE_MODEL_HEADER_NAME,
+    strip_tool_credential_for_tests, GATE_MODEL_HEADER_NAME,
 };
 
 use hyper::header::{HeaderMap, HeaderValue, USER_AGENT};
@@ -352,8 +351,7 @@ mod where_a_served_request_goes {
     }
 
     #[test]
-    fn both_spellings_of_the_codex_path_map(
-    ) {
+    fn both_spellings_of_the_codex_path_map() {
         // The relay sees the short path Codex builds from its own base URL; the
         // engine sees the real one off a bare host. A tool can reach Gate
         // through either, so the two must agree.

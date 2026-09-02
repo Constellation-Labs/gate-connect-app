@@ -571,7 +571,9 @@ async fn proxy(
             let (req_path, req_query) = routed
                 .path_and_query
                 .split_once('?')
-                .map_or((routed.path_and_query.as_str(), None), |(p, q)| (p, Some(q)));
+                .map_or((routed.path_and_query.as_str(), None), |(p, q)| {
+                    (p, Some(q))
+                });
             let model_serve_path = if super::serves_gate_model(&headers) {
                 super::serve_path(req_path)
             } else {
