@@ -14,8 +14,8 @@ use futures_util::StreamExt;
 
 use super::sse;
 use super::{
-    backoff_delay, credential_headers, endpoint, Dedupe, FeedState, Hello, SecurityEvent, Update,
-    BACKOFF_FLOOR_MS, DEDUPE_CAPACITY, RECENT_CAPACITY,
+    backoff_delay, credential_headers, endpoint, history_endpoint, Dedupe, FeedState, Hello,
+    HistoryPage, SecurityEvent, Update, BACKOFF_FLOOR_MS, DEDUPE_CAPACITY, RECENT_CAPACITY,
 };
 use crate::gateway_api::FailureCode;
 
@@ -117,9 +117,9 @@ impl Feed {
     }
 
     /// Record and forward one event, unless it is one we have already delivered.
-    fn deliver(&self, ev: SecurityEvent, sink: &dyn Fn(Update)) {
+    fn deliver(&self, ev: SecurityEvent, sink: &dyn Fn(Update)) -> bool {
         if !self.dedupe.lock().expect("feed dedupe lock").admit(&ev.id) {
-            return;
+            return false;
         }
         {
             let mut recent = self.recent.lock().expect("feed buffer lock");
@@ -136,6 +136,51 @@ impl Feed {
             ),
         );
         sink(Update::Event(Box::new(ev)));
+        true
+    }
+
+    /// The `at` of the newest event held, for a backfill's `since`.
+    ///
+    /// Asking for everything on every reconnect would re-fetch a window the
+    /// buffer already has, and on a long-lived window that is most of it. The
+    /// newest event is the honest boundary, and the overlap it leaves is
+    /// deliberate - see [`Self::merge_history`].
+    pub fn newest_at(&self) -> Option<String> {
+        self.recent
+            .lock()
+            .expect("feed buffer lock")
+            .back()
+            .map(|e| e.at.clone())
+    }
+
+    /// Merge a page of history into the buffer, returning how much was new.
+    ///
+    /// **Keyed on `request_id`, not on `id`.** The history route cannot
+    /// reproduce the id the live stream minted for the same request: the live
+    /// one is `new Date()` at publish time plus a random suffix, the historical
+    /// one derives from `gateway_requests.created_at`, and the server's
+    /// `history-event-id.ts` records why unifying them would mean reading every
+    /// row back after insert to serve a notification. So the id dedupe alone
+    /// would let a backfilled row through as a second copy of an event already
+    /// on screen, which is the one outcome a catch-up must not produce.
+    ///
+    /// Oldest first, as the route returns them, so they append in order to a
+    /// buffer whose newest event is last.
+    fn merge_history(&self, events: Vec<SecurityEvent>, sink: &dyn Fn(Update)) -> usize {
+        let mut merged = 0;
+        for ev in events {
+            let already = {
+                let recent = self.recent.lock().expect("feed buffer lock");
+                recent.iter().any(|e| e.request_id == ev.request_id)
+            };
+            if already {
+                continue;
+            }
+            if self.deliver(ev, sink) {
+                merged += 1;
+            }
+        }
+        merged
     }
 }
 
@@ -212,6 +257,114 @@ async fn wait(feed: &Feed, delay: Duration) {
     tokio::select! {
         _ = tokio::time::sleep(delay) => {}
         _ = wake.notified() => {}
+    }
+}
+
+/// Fetch the events this client could not have received, and merge them.
+///
+/// Exists because the stream has no replay: the server reports
+/// `recovery: false` on every deployment, so a client that was away for any
+/// reason has a hole, and `/v1/me/tool-events` cannot fill it - that route
+/// reports on one tool at a time, so no single call answers "what did I miss
+/// across every tool" (Constellation-Labs/gate#990).
+///
+/// **Best-effort, and never fails the stream.** A live connection that works is
+/// worth more than a catch-up that did not, and the next reconnect tries again.
+/// Every failure is logged rather than swallowed, because a silent catch-up that
+/// never ran is indistinguishable from one that found nothing.
+async fn backfill(feed: &Arc<Feed>, sink: &(dyn Fn(Update) + Send + Sync)) {
+    let headers = match credential_headers() {
+        Ok(h) => h,
+        Err(e) => {
+            crate::logging::log(
+                crate::logging::Level::Warn,
+                &format!(
+                    "security feed: backfill skipped, no credential: {}",
+                    e.message
+                ),
+            );
+            return;
+        }
+    };
+    // A total timeout, unlike the stream's read timeout: this is an ordinary
+    // request that must finish, and the read loop is waiting on it.
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    // Built through `Url` rather than `RequestBuilder::query`, which this
+    // build's reqwest features do not include, and which would also leave the
+    // encoding of a timestamp to a `format!`.
+    let mut url = match reqwest::Url::parse(&history_endpoint()) {
+        Ok(u) => u,
+        Err(e) => {
+            crate::logging::log(
+                crate::logging::Level::Warn,
+                &format!("security feed: backfill url unusable: {e}"),
+            );
+            return;
+        }
+    };
+    // The newest event already held. Absent on a first connect, which asks for
+    // the server's whole window instead.
+    if let Some(since) = feed.newest_at() {
+        url.query_pairs_mut().append_pair("since", &since);
+    }
+    let mut req = client.get(url).header("accept", "application/json");
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            crate::logging::log(
+                crate::logging::Level::Warn,
+                &format!("security feed: backfill failed: {e}"),
+            );
+            return;
+        }
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        crate::logging::log(
+            crate::logging::Level::Warn,
+            &format!("security feed: backfill answered {status}"),
+        );
+        return;
+    }
+    let page = match resp.json::<HistoryPage>().await {
+        Ok(p) => p,
+        Err(e) => {
+            crate::logging::log(
+                crate::logging::Level::Warn,
+                &format!("security feed: backfill body unreadable: {e}"),
+            );
+            return;
+        }
+    };
+
+    let found = page.events.len();
+    let merged = feed.merge_history(page.events, sink);
+    crate::logging::log(
+        crate::logging::Level::Info,
+        &format!(
+            "security feed: backfilled {merged} new of {found} (truncated={})",
+            page.truncated
+        ),
+    );
+    if page.truncated {
+        // The window held more than one page. Worth saying: the pane is showing
+        // a partial history, and nothing else in the app will mention it.
+        crate::logging::log(
+            crate::logging::Level::Warn,
+            "security feed: backfill was truncated; older events are only on the dashboard",
+        );
     }
 }
 
@@ -300,6 +453,9 @@ async fn connect_once(
     decoder.seed_last_id(last_id.clone());
     let mut stream = resp.bytes_stream();
     let mut saw_hello = false;
+    // One catch-up per connection. A server that sent a second hello on one
+    // socket would otherwise re-fetch the same window.
+    let mut backfilled = false;
 
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
@@ -329,6 +485,23 @@ async fn connect_once(
                     // and claiming otherwise is the reassurance this app is not
                     // allowed to fake.
                     feed.set_state(FeedState::Live, sink);
+                    // Catch up on whatever the stream could not replay, now that
+                    // the server has blessed this connection.
+                    //
+                    // Gated on the server's own answer: when `recovery` is true
+                    // the stream honours `Last-Event-ID` and re-sends the gap
+                    // itself, and running both would be a second fetch to
+                    // discard. It is false on every deployment today.
+                    //
+                    // Here rather than before the read loop so the sequence a
+                    // window sees is hello, then Live, then history, then live
+                    // events. An event published during the call is still in the
+                    // socket buffer and gets read straight after, where the
+                    // dedupe collapses it against whatever this added.
+                    if !hello.recovery && !backfilled {
+                        backfilled = true;
+                        backfill(feed, sink).await;
+                    }
                 }
                 Some("security-event") => {
                     match serde_json::from_str::<SecurityEvent>(&frame.data) {
@@ -357,5 +530,110 @@ async fn connect_once(
         Outcome::Streamed
     } else {
         Outcome::Disconnected
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::security_feed::Action;
+
+    fn ev(id: &str, request_id: &str, at: &str) -> SecurityEvent {
+        SecurityEvent {
+            id: id.to_string(),
+            request_id: request_id.to_string(),
+            at: at.to_string(),
+            action: Action::Flag,
+            category: Some("credential".to_string()),
+            tool: Some("claude-code".to_string()),
+            model: None,
+            provider: None,
+        }
+    }
+
+    /// A sink that records the ids it was handed, in order.
+    fn recorder() -> (Arc<Mutex<Vec<String>>>, impl Fn(Update) + Send + Sync) {
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let handle = seen.clone();
+        let sink = move |u: Update| {
+            if let Update::Event(e) = u {
+                handle.lock().expect("test sink").push(e.id.clone());
+            }
+        };
+        (seen, sink)
+    }
+
+    #[test]
+    fn merge_history_admits_events_the_buffer_has_not_seen() {
+        let feed = Feed::new();
+        let (seen, sink) = recorder();
+
+        let merged = feed.merge_history(
+            vec![
+                ev("h1", "req-a", "2026-09-02T13:00:00.000Z"),
+                ev("h2", "req-b", "2026-09-02T13:01:00.000Z"),
+            ],
+            &sink,
+        );
+
+        assert_eq!(merged, 2);
+        assert_eq!(*seen.lock().unwrap(), vec!["h1", "h2"]);
+    }
+
+    #[test]
+    fn merge_history_skips_a_request_already_on_screen() {
+        // The whole reason the merge is keyed on `request_id`: the history route
+        // cannot reproduce the id the live stream minted for the same request,
+        // so an id-only dedupe would show the user one event twice.
+        let feed = Feed::new();
+        let (seen, sink) = recorder();
+        feed.deliver(ev("live-1", "req-a", "2026-09-02T13:00:00.000Z"), &sink);
+
+        let merged = feed.merge_history(
+            vec![
+                ev("hist-1", "req-a", "2026-09-02T13:00:00.000Z"),
+                ev("hist-2", "req-b", "2026-09-02T13:01:00.000Z"),
+            ],
+            &sink,
+        );
+
+        assert_eq!(
+            merged, 1,
+            "req-a was already delivered under a different id"
+        );
+        assert_eq!(*seen.lock().unwrap(), vec!["live-1", "hist-2"]);
+    }
+
+    #[test]
+    fn newest_at_is_the_boundary_a_backfill_asks_from() {
+        let feed = Feed::new();
+        let (_seen, sink) = recorder();
+        assert_eq!(
+            feed.newest_at(),
+            None,
+            "nothing held means ask for the window"
+        );
+
+        feed.deliver(ev("a", "req-a", "2026-09-02T13:00:00.000Z"), &sink);
+        feed.deliver(ev("b", "req-b", "2026-09-02T13:05:00.000Z"), &sink);
+
+        // The buffer is oldest-first, so the boundary is its back, not its front.
+        assert_eq!(
+            feed.newest_at().as_deref(),
+            Some("2026-09-02T13:05:00.000Z")
+        );
+    }
+
+    #[test]
+    fn a_cleared_feed_asks_for_the_whole_window_again() {
+        // An org switch drops the buffer, and a `since` from the previous org's
+        // events would silently narrow the new org's catch-up.
+        let feed = Feed::new();
+        let (_seen, sink) = recorder();
+        feed.deliver(ev("a", "req-a", "2026-09-02T13:00:00.000Z"), &sink);
+
+        feed.reset_for_account_change();
+
+        assert_eq!(feed.newest_at(), None);
     }
 }
