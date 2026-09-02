@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compatibility, explain, needsOf, refutedLabel, unverifiedLabel } from "./modelCompatibility";
+import { compatibility, explain, isPinned, knownGoodFor, needsOf } from "./modelCompatibility";
 import type { GateModel } from "./toolModels";
 
 /**
@@ -47,15 +47,14 @@ describe("tool support, which the catalogue does report", () => {
     });
   });
 
-  it("accepts a tagged model cleanly, with nothing left unverified", () => {
+  it("accepts a tagged model", () => {
     expect(compatibility(model("openai/gpt-4o"), needs)).toEqual({ ok: true });
   });
 
   it("treats no tags at all as unknown rather than as a denial", () => {
     // A terse catalogue row has not said the model lacks tools. Reading silence
-    // as "no" would hide models that work. It is offered, but marked unverified
-    // rather than presented as confirmed.
-    expect(compatibility(model("some/model", []), needs)).toEqual({ ok: true, unverified: true });
+    // as "no" would hide models that work, so the model is offered.
+    expect(compatibility(model("some/model", []), needs)).toEqual({ ok: true });
   });
 });
 
@@ -72,21 +71,20 @@ describe("freeform tools, answered by the served verdict when there is one", () 
     expect(compatibility(m, needs)).toEqual({ ok: false, reason: "no-freeform-tools" });
   });
 
-  it("offers a model the gateway had no opinion on, marked unverified", () => {
-    // The state most of the catalogue is in. Offering it is the point: it has
-    // not been shown to fail.
+  it("offers a model the gateway had no opinion on", () => {
+    // The state most of the catalogue is in, and the reason silence is not a
+    // denial: it has not been shown to fail.
     expect(compatibility(served("vendor/anything", { function: { verdict: "works" } }), needs)).toEqual({
       ok: true,
-      unverified: true,
     });
   });
 
-  it("coerces a verdict it does not recognise into unverified, never a refusal", () => {
+  it("coerces a verdict it does not recognise into silence, never a refusal", () => {
     // `adaptModels` already maps an unknown string to "unknown"; this asserts
     // the consequence, which is that a future fourth verdict degrades to "no
     // opinion" rather than to a denial.
     const m = served("openai/gpt-4o", { freeform: { verdict: "unknown" } });
-    expect(compatibility(m, needs)).toEqual({ ok: true, unverified: true });
+    expect(compatibility(m, needs)).toEqual({ ok: true });
   });
 });
 
@@ -151,15 +149,15 @@ describe("the fallback, for a gateway that predates tool_shapes", () => {
     // these read as a refusal despite nobody ever having tried them. A model
     // nobody swept is offered, below the divider.
     for (const id of ["mistralai/mistral-large", "qwen/qwen3-max", "x-ai/grok-4", "openai/gpt-4-5"]) {
-      expect(compatibility(model(id), needs), id).toEqual({ ok: true, unverified: true });
+      expect(compatibility(model(id), needs), id).toEqual({ ok: true });
     }
   });
 
   it("does not let a lookalike id inherit the GPT-5 verdict", () => {
     // A different vendor path is a different model, and it was refused when it
-    // was tried. It is now unverified rather than refused, because this build
-    // has no evidence of its own about that id.
-    expect(compatibility(model("openrouter/openai-gpt-5"), needs).unverified).toBe(true);
+    // was tried. It is offered rather than refused, because this build has no
+    // evidence of its own about that id.
+    expect(compatibility(model("openrouter/openai-gpt-5"), needs).ok).toBe(true);
   });
 
   it("says nothing about freeform tools to an app that sends none", () => {
@@ -180,9 +178,7 @@ describe("the function shape, when the gateway reports it", () => {
     expect(compatibility(m, needs)).toEqual({ ok: false, reason: "no-tool-use" });
   });
 
-  it("believes a verdict over an empty tag list, and stops calling it unverified", () => {
-    // Empty tags alone mean unknown. A served `works` is a real answer, so the
-    // model is offered as confirmed rather than below the divider.
+  it("offers a model on a served works, even with no tags at all", () => {
     const m = served("some/model", { function: { verdict: "works" } }, []);
     expect(compatibility(m, needs)).toEqual({ ok: true });
   });
@@ -192,25 +188,9 @@ describe("what the picker will say", () => {
   it("names the app, because the limit is about that app and not the model", () => {
     expect(explain("no-freeform-tools", "Codex")).toMatch(/Codex/);
     expect(explain("no-tool-use", "Codex")).toMatch(/Codex/);
-    expect(unverifiedLabel("Codex")).toMatch(/Codex/);
-    expect(refutedLabel("Codex")).toMatch(/Codex/);
   });
 
-  it("does not call an untested model unavailable, because it is selectable", () => {
-    // The section heading labels rows the user can pick and that mostly work.
-    // Saying "unavailable" would state the opposite of what the list does, and
-    // would collapse the distinction between "nobody checked" and "measured
-    // failing" that the rest of this module exists to keep apart.
-    expect(unverifiedLabel("Codex")).toBe("Not tested with Codex");
-    expect(unverifiedLabel("Codex")).not.toMatch(/unavailable|incompatible|cannot/i);
-  });
 
-  it("keeps the headings short, because they label a collapsed row", () => {
-    // They sit in an accordion header beside a count, not in a paragraph.
-    for (const s of [unverifiedLabel("Claude Code"), refutedLabel("Claude Code")]) {
-      expect(s.length).toBeLessThan(40);
-    }
-  });
 
   it("says the refused models were actually tested, rather than blaming a family", () => {
     // The old copy named the GPT-5 family, which stops being true the moment
@@ -222,10 +202,70 @@ describe("what the picker will say", () => {
     for (const s of [
       explain("no-tool-use", "Codex"),
       explain("no-freeform-tools", "Codex"),
-      unverifiedLabel("Codex"),
-      refutedLabel("Codex"),
     ]) {
       expect(s).not.toContain("—");
     }
+  });
+});
+
+
+
+describe("the dev pin list", () => {
+  it("floats the models a developer has actually run", () => {
+    const pinned = knownGoodFor("codex");
+    expect(pinned.length).toBeGreaterThan(0);
+    expect(isPinned(model("openai/gpt-5.6-terra"), pinned)).toBe(true);
+  });
+
+  it("covers both published spellings of that generation", () => {
+    // The catalogue carries `gpt-5.6-terra` and `gpt-5-6-terra` as separate
+    // ids, and the config on a real machine used the dashed one. A rule written
+    // for one spelling silently matches none of the other.
+    const pinned = knownGoodFor("codex");
+    for (const id of ["openai/gpt-5.6-terra", "openai/gpt-5-6-terra"]) {
+      expect(isPinned(model(id), pinned), id).toBe(true);
+    }
+  });
+
+  it("does not pin the older GPT-5 generations, which real traffic refuted", () => {
+    // They accept Codex's freeform tool and still 400 on
+    // `reasoning.context: "all_turns"`. Pinning them would put a model that
+    // fails every request at the top of a developer's list.
+    const pinned = knownGoodFor("codex");
+    for (const id of ["openai/gpt-5", "openai/gpt-5-1", "openai/gpt-5-3-codex"]) {
+      expect(isPinned(model(id), pinned), id).toBe(false);
+    }
+  });
+
+  it("uses exact ids, so no entry widens by accident", () => {
+    for (const rule of knownGoodFor("codex")) {
+      expect(rule.match.endsWith("*"), rule.match).toBe(false);
+    }
+  });
+
+  it("carries a date and a traceable note on every entry", () => {
+    for (const slug of ["codex", "claude-code"]) {
+      for (const rule of knownGoodFor(slug)) {
+        expect(rule.checked, rule.match).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(rule.note.length, rule.match).toBeGreaterThan(20);
+      }
+    }
+  });
+
+  it("is empty for a tool nobody has run, which is a fine answer", () => {
+    // An empty list means the picker is simply not reordered. Nothing is
+    // hidden and nothing is claimed.
+    expect(knownGoodFor("claude-code")).toEqual([]);
+    expect(knownGoodFor("opencode")).toEqual([]);
+    expect(knownGoodFor(null)).toEqual([]);
+  });
+
+  it("decides nothing about compatibility", () => {
+    // The separation that keeps this safe to ship: a pinned model and an
+    // unpinned one get identical verdicts. The list only reorders.
+    const codex = needsOf("codex");
+    expect(compatibility(model("openai/gpt-5.6-terra"), codex)).toEqual(
+      compatibility(model("qwen/qwen3-max"), codex),
+    );
   });
 });

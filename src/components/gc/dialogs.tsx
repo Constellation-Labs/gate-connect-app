@@ -2,13 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
 import { Skeleton } from "./base";
-import {
-  compatibility,
-  explain,
-  needsOf,
-  refutedLabel,
-  unverifiedLabel,
-} from "../../lib/modelCompatibility";
+import { compatibility, explain, isPinned, needsOf, pinnedModels } from "../../lib/modelCompatibility";
 import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
 import type { PillTone } from "./Modal";
 import {
@@ -495,64 +489,6 @@ export interface GateModelOption {
  * older state rather than a divergence - everything around the control still
  * comes from it.
  */
-/**
- * A collapsed section of the model list, with its own count.
- *
- * The picker leads with the models verified to work, and everything else is
- * secondary: models nobody tested, and models measured failing. Both used to be
- * flat dividers, which meant a 344-model catalogue put 200+ untested rows
- * between the user and the Save button. Collapsing them keeps the recommended
- * set the thing you actually see.
-
- * The count lives in the header because a collapsed section that does not say
- * how much it hides reads as a dead control. It is mono: it is a figure, and
- * the sidebar eyebrow and status pills follow the same rule.
- *
- * Sticky, so the label stays attached to its rows once they are open and the
- * list scrolls. A user who scrolled past "Not tested with Codex" would
- * otherwise read the rows under it as verified.
- */
-function SectionAccordion({
-  label,
-  count,
-  open,
-  onToggle,
-  first,
-  children,
-}: {
-  label: string;
-  count: number;
-  open: boolean;
-  onToggle: () => void;
-  /** Drops the leading gap when this section opens the list. */
-  first?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <div className={`flex shrink-0 flex-col ${first ? "" : "pt-3"}`}>
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        className="sticky top-0 z-10 flex items-center gap-2 rounded-base bg-white px-2 py-1 text-left hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-      >
-        <Icon
-          name="chevronDown"
-          size={14}
-          aria-hidden
-          className={`shrink-0 text-base-muted-foreground transition-transform ${open ? "" : "-rotate-90"}`}
-        />
-        <span className="shrink-0 text-base-xs font-medium leading-4 text-neutral-900">{label}</span>
-        <span aria-hidden className="h-px flex-1 bg-base-border" />
-        <span className="shrink-0 font-mono text-base-2xs leading-4 text-base-muted-foreground">
-          {count}
-        </span>
-      </button>
-      {open && children}
-    </div>
-  );
-}
-
 export function ModelPickerDialog({
   appName,
   appSlug,
@@ -597,19 +533,6 @@ export function ModelPickerDialog({
    * tell us the list is wrong.
    */
   const [showAll, setShowAll] = useState(false);
-  /**
-   * Which secondary section is expanded, if any (AG-741).
-   *
-   * One at a time rather than two independent toggles. Each section can hold
-   * hundreds of rows on a full catalogue, and both open at once is a wall of
-   * models that buries the verified set the picker is meant to lead with.
-   *
-   * Starts closed, and deliberately does not auto-open when a search leaves no
-   * verified match: the header still names the section and carries its count,
-   * so the list is never silently empty, and a section that opened itself would
-   * move the rows under the user's cursor as they typed.
-   */
-  const [openSection, setOpenSection] = useState<"unverified" | "refuted" | null>(null);
   /** Seeded from the stored set so Cancel is a real cancel. */
   const [draft, setDraft] = useState<string[]>(selectedIds);
 
@@ -640,85 +563,44 @@ export function ModelPickerDialog({
   // rather than the filtered view, so the count of what was set aside is about
   // the app and not about the current search.
   const needs = useMemo(() => needsOf(appSlug), [appSlug]);
-
   /**
-   * The catalogue in the three states AG-729 distinguishes.
+   * Models to float to the top, in development only.
    *
-   * `verified` was confirmed to work, `unverified` has simply never been tried,
-   * and `refuted` was tested and failed. Only the last is held back, because it
-   * is the only one anything is actually known against. Splitting once here
-   * keeps every count and every section reading from the same partition, which
-   * is what stopped the old count line and the old list disagreeing.
+   * A convenience for whoever is testing: reach a model known to work without
+   * scrolling the catalogue. `pinnedModels` returns nothing in a shipped build,
+   * so a released app orders the list exactly as the gateway returned it.
    */
-  const { verified, unverified, refuted, asideReason } = useMemo(() => {
-    const verified: typeof models = [];
-    const unverified: typeof models = [];
-    const refuted: typeof models = [];
-    const reasons = new Set<ReturnType<typeof compatibility>["reason"]>();
+  const pinned = useMemo(() => pinnedModels(appSlug), [appSlug]);
 
-    for (const m of models) {
-      const c = compatibility(m, needs);
-      if (!c.ok) {
-        refuted.push(m);
-        reasons.add(c.reason);
-      } else if (c.unverified) unverified.push(m);
-      else verified.push(m);
-    }
+  // What this app can be served with, computed over the whole catalogue rather
+  // than the filtered view, so the count of what was set aside is about the app
+  // and not about the current search.
+  const usable = useMemo(() => models.filter((m) => compatibility(m, needs).ok), [models, needs]);
+  const setAside = models.length - usable.length;
 
-    // The reason to name, when there is one shared reason worth naming. Two
-    // different causes in one sentence would explain neither.
-    const only = [...reasons].filter((r) => r !== undefined);
-    return { verified, unverified, refuted, asideReason: only.length === 1 ? only[0]! : null };
+  // The reason to name, when there is one shared reason worth naming. Two
+  // different causes in one sentence would explain neither.
+  const asideReason = useMemo(() => {
+    const reasons = new Set(
+      models.map((m) => compatibility(m, needs).reason).filter((r) => r !== undefined),
+    );
+    return reasons.size === 1 ? [...reasons][0]! : null;
   }, [models, needs]);
 
-  const usable = useMemo(() => [...verified, ...unverified], [verified, unverified]);
-  // Counted from the refuted set alone. An unverified model is offered, so
-  // calling it "not shown" would be false on a list it is visibly sitting in.
-  const setAside = refuted.length;
-
-  /**
-   * The filtered list, still partitioned.
-   *
-   * Verified rows lead in BOTH modes. Under "Show anyway" the refuted rows join
-   * the end rather than interleaving, so turning the override on never buries a
-   * working model underneath one that was measured failing.
-   */
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const match = (m: (typeof models)[number]) =>
-      (vendor === "all" || m.vendor === vendor) &&
-      (q === "" || m.id.toLowerCase().includes(q) || m.vendor.toLowerCase().includes(q));
-    return {
-      verified: verified.filter(match),
-      unverified: unverified.filter(match),
-      refuted: showAll ? refuted.filter(match) : [],
-    };
-  }, [verified, unverified, refuted, showAll, query, vendor]);
-
-  const shownCount = shown.verified.length + shown.unverified.length + shown.refuted.length;
-
-  /**
-   * The section that IS the whole list, if one is.
-   *
-   * Sections start closed so the verified models lead. When there are no
-   * verified models the closed state has nothing above it, and the picker draws
-   * a single collapsed header over blank space, which reads as "no models" on
-   * the one screen whose job is to offer them. That is not hypothetical: a
-   * gateway that reports no capabilities at all leaves every row unverified,
-   * which is exactly the state a freshly seeded catalogue is in.
-   *
-   * So a lone section is forced open. This is narrower than opening on every
-   * empty search: with two sections present the user still gets the collapsed
-   * default and the counts to navigate by.
-   */
-  const onlySection =
-    shown.verified.length > 0
-      ? null
-      : shown.unverified.length > 0 && shown.refuted.length === 0
-        ? "unverified"
-        : shown.refuted.length > 0 && shown.unverified.length === 0
-          ? "refuted"
-          : null;
+    const base = showAll ? models : usable;
+    const matched = base.filter(
+      (m) =>
+        (vendor === "all" || m.vendor === vendor) &&
+        (q === "" || m.id.toLowerCase().includes(q) || m.vendor.toLowerCase().includes(q)),
+    );
+    // Stable: a plain partition, so within each group the catalogue's own order
+    // survives. Sorting on a boolean with `Array.sort` would not guarantee that.
+    if (pinned.length === 0) return matched;
+    const top = matched.filter((m) => isPinned(m, pinned));
+    return top.length === 0 ? matched : [...top, ...matched.filter((m) => !isPinned(m, pinned))];
+  }, [models, usable, showAll, query, vendor, pinned]);
 
   /**
    * One selectable row.
@@ -727,10 +609,9 @@ export function ModelPickerDialog({
    * up to three sections now, and a row that drifted between them would be a
    * silent inconsistency in the one control this dialog exists for.
    *
-   * The row is deliberately IDENTICAL in every section. A verified and an
-   * unverified model are equally selectable, and drawing the second as degraded
-   * would imply a restriction that does not exist. The section it sits in, and
-   * the divider above that section, carry the whole of the distinction.
+   * Every row is identical. The list carries no ranking of its own: what the
+   * catalogue offers is offered, and the dev pin list changes the order without
+   * changing how a row is drawn.
    */
   const renderRow = (model: (typeof models)[number]) => {
     const selected = chosen.includes(model.id);
@@ -903,7 +784,7 @@ export function ModelPickerDialog({
            *  and the clause would restate the number it sits next to. */}
           <div className="flex items-start justify-between text-base-xs leading-4">
             <p className="text-base-muted-foreground">
-              Showing {shownCount} of {showAll ? models.length : usable.length} models
+              Showing {shown.length} of {showAll ? models.length : usable.length} models
               {!showAll && setAside > 0 && `・${models.length} in Gate AI`}
             </p>
             {/* Figma 682:20043. It takes the slot the earlier frame drew a "3
@@ -973,7 +854,7 @@ export function ModelPickerDialog({
             </ul>
           )}
 
-          {shownCount === 0 ? (
+          {shown.length === 0 ? (
             <ModalNote>
               <p>No model matches that search.</p>
             </ModalNote>
@@ -988,41 +869,11 @@ export function ModelPickerDialog({
                 aria-label="Gate model"
                 className="flex max-h-[22rem] flex-col overflow-y-auto"
               >
-                {/* Verified rows lead, uncollapsed. The sections below them
-                  * are secondary and start closed: on a 344-model catalogue
-                  * they would otherwise put hundreds of rows between the user
-                  * and the Save button. Neither is hidden - each says how many
-                  * it holds - and the rows inside stay fully selectable. */}
-                {shown.verified.map(renderRow)}
-
-                {shown.unverified.length > 0 && (
-                  <SectionAccordion
-                    label={unverifiedLabel(appName)}
-                    count={shown.unverified.length}
-                    open={openSection === "unverified" || onlySection === "unverified"}
-                    onToggle={() =>
-                      setOpenSection((s) => (s === "unverified" ? null : "unverified"))
-                    }
-                    first={shown.verified.length === 0}
-                  >
-                    {shown.unverified.map(renderRow)}
-                  </SectionAccordion>
-                )}
-
-                {/* Only reachable under "Show anyway". These were measured
-                  * failing, so they go last: the override must never bury a
-                  * working model under one that is known not to work. */}
-                {shown.refuted.length > 0 && (
-                  <SectionAccordion
-                    label={refutedLabel(appName)}
-                    count={shown.refuted.length}
-                    open={openSection === "refuted" || onlySection === "refuted"}
-                    onToggle={() => setOpenSection((s) => (s === "refuted" ? null : "refuted"))}
-                    first={shown.verified.length === 0 && shown.unverified.length === 0}
-                  >
-                    {shown.refuted.map(renderRow)}
-                  </SectionAccordion>
-                )}
+                {/* One flat list, in the order the gateway returned it, with
+                  * the dev pin list floated to the top when there is one. No
+                  * headings: the catalogue decides what is offered, and this
+                  * dialog does not second-guess it. */}
+                {shown.map(renderRow)}
               </div>
             </div>
           )}

@@ -35,7 +35,7 @@ const tools = [
  *
  *  They carry `tool-use` because real catalogue rows do. A row with no tags at
  *  all is a terse gateway rather than a typical one, and leaving these bare made
- *  every model read as unverified, which is a different test than the ones below
+ *  every model read as untagged, which is a different test than the ones below
  *  mean to be running. */
 const catalogue = [
   { id: "anthropic/claude-opus-5", owned_by: "anthropic", name: "Claude Opus 5", tags: ["tool-use"] },
@@ -710,9 +710,12 @@ test.describe("new UI model picker compatibility", () => {
    */
   const mixed = [
     {
-      id: "openai/gpt-5-3-codex",
+      // In KNOWN_GOOD: a real Codex request was run against this one. Shape
+      // evidence alone no longer promotes a model, so a fixture that wants a
+      // VERIFIED row has to name a pairing somebody actually ran.
+      id: "openai/gpt-5.6-terra",
       owned_by: "openai",
-      name: "GPT-5.3 Codex",
+      name: "GPT-5.6 Terra",
       tags: ["tool-use"],
       tool_shapes: { freeform: { verdict: "works", checked: "2026-08-28" } },
     },
@@ -739,58 +742,9 @@ test.describe("new UI model picker compatibility", () => {
     return app.page.getByRole("dialog");
   };
 
-  test("leads with the verified model and collapses the untested one below it", async ({ boot }) => {
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: codexTools,
-      toolModels: { catalogue: mixed },
-    });
-    const dialog = await openPicker(app);
-
-    // Only the verified model is on screen. The untested one is behind a
-    // collapsed header, and the two MEASURED failures are held back entirely.
-    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
-    await expect(dialog.getByRole("checkbox", { name: "openai/gpt-5-3-codex" })).toBeVisible();
-
-    // The section names itself and says how much it holds, so nothing is
-    // hidden silently.
-    const untested = dialog.getByRole("button", { name: /Not tested with Codex/ });
-    await expect(untested).toBeVisible();
-    await expect(untested).toHaveAttribute("aria-expanded", "false");
-
-    // It does NOT claim the models are unavailable. They are selectable.
-    await expect(dialog.getByText(/unavailable/i)).toHaveCount(0);
-
-    await untested.click();
-    await expect(untested).toHaveAttribute("aria-expanded", "true");
-    await expect(dialog.getByRole("checkbox", { name: "mistralai/mistral-large" })).toBeVisible();
-
-    // The verified one still leads. The order is the recommendation.
-    const rows = await dialog.getByRole("checkbox").all();
-    await expect(rows[0]!).toHaveAccessibleName("openai/gpt-5-3-codex");
-  });
-
-  test("an untested model can actually be selected, which is why it is offered", async ({
-    boot,
-  }) => {
-    // The heading says "not tested", not "unavailable", and this is the
-    // assertion that keeps those from drifting apart.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: codexTools,
-      toolModels: { catalogue: mixed },
-    });
-    const dialog = await openPicker(app);
-
-    await dialog.getByRole("button", { name: /Not tested with Codex/ }).click();
-    const row = dialog.getByRole("checkbox", { name: "mistralai/mistral-large" });
-    await row.click();
-    await expect(row).toHaveAttribute("aria-checked", "true");
-  });
-
-  test("counts only the measured failures as held back", async ({ boot }) => {
-    // The count line must not include unverified models: they are visibly
-    // sitting in the list, so calling them "not shown" would be false.
+      test("counts only the measured failures as held back", async ({ boot }) => {
+    // The count line covers only what was measured failing. Anything offered is
+    // visibly in the list, so calling it "not shown" would be false.
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: codexTools,
@@ -816,7 +770,7 @@ test.describe("new UI model picker compatibility", () => {
     await expect(dialog.getByText(/verified to reject/)).toBeVisible();
   });
 
-  test("treats an older gateway's silence as unverified, not as a refusal", async ({ boot }) => {
+  test("treats an older gateway's silence as offered, not as a refusal", async ({ boot }) => {
     // No `tool_shapes` anywhere: the local fallback answers, and everything
     // outside the families it knows about is OFFERED rather than hidden.
     const app = await boot({
@@ -824,17 +778,16 @@ test.describe("new UI model picker compatibility", () => {
       tools: codexTools,
       toolModels: {
         catalogue: [
-          { id: "openai/gpt-5-3-codex", owned_by: "openai", name: "GPT-5.3 Codex", tags: ["tool-use"] },
+          { id: "openai/gpt-5.6-terra", owned_by: "openai", name: "GPT-5.6 Terra", tags: ["tool-use"] },
           { id: "mistralai/mistral-large", owned_by: "mistralai", name: "Mistral Large", tags: ["tool-use"] },
         ],
       },
     });
     const dialog = await openPicker(app);
 
-    // The known-good one is on screen; the rest is behind the collapsed header.
-    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
-    await expect(dialog.getByRole("button", { name: /Not tested with Codex/ })).toBeVisible();
-    // Nothing was measured failing, so nothing is held back.
+    // Both offered. Nothing was measured failing, so nothing is held back, and
+    // a shape nobody has a verdict on is not a refusal.
+    await expect(dialog.getByRole("checkbox")).toHaveCount(2);
     await expect(dialog.getByText(/not shown/)).toHaveCount(0);
   });
 
@@ -852,36 +805,8 @@ test.describe("new UI model picker compatibility", () => {
     const dialog = app.page.getByRole("dialog");
     await dialog.getByRole("button", { name: "Show anyway" }).click();
 
-    // The refuted models get their own collapsed section, named for the app.
-    const refuted = dialog.getByRole("button", { name: /Not compatible with Codex/ });
-    await expect(refuted).toBeVisible();
-    await refuted.click();
+    await expect(dialog.getByRole("checkbox")).toHaveCount(4);
     await expect(dialog.getByRole("checkbox", { name: "openai/gpt-4o" })).toBeVisible();
-
-    // Even under the override the refuted rows go last, so turning it on never
-    // buries a working model under one that was measured failing.
-    const rows = await dialog.getByRole("checkbox").all();
-    await expect(rows[0]!).toHaveAccessibleName("openai/gpt-5-3-codex");
   });
 
-  test("opening one secondary section closes the other", async ({ boot }) => {
-    // Both hold hundreds of rows on a real catalogue, and both open at once
-    // buries the verified set the picker is meant to lead with.
-    const app = await boot({
-      proxy: { running: true, ca_trusted: true },
-      tools: codexTools,
-      toolModels: { catalogue: mixed },
     });
-    const dialog = await openPicker(app);
-    await dialog.getByRole("button", { name: "Show anyway" }).click();
-
-    const untested = dialog.getByRole("button", { name: /Not tested with Codex/ });
-    const refuted = dialog.getByRole("button", { name: /Not compatible with Codex/ });
-
-    await untested.click();
-    await expect(untested).toHaveAttribute("aria-expanded", "true");
-    await refuted.click();
-    await expect(refuted).toHaveAttribute("aria-expanded", "true");
-    await expect(untested).toHaveAttribute("aria-expanded", "false");
-  });
-});

@@ -24,12 +24,12 @@
  * date attached. This module prefers that verdict and falls back to
  * {@link FALLBACK_FREEFORM_RULES} when talking to a gateway that predates it.
  *
- * **Three states, not two.** The reason this file stopped answering yes/no is
- * that "nobody has checked" is the most common answer and it is not a "no".
- * Reporting it as one would hide every model that works but was never swept, and
- * the table would quietly shrink the catalogue as the world moved on. So a model
- * is compatible, refuted, or unverified - and the picker renders the three
- * differently rather than hiding two of them.
+ * **Only refusals are asserted.** "Nobody has checked" is the most common
+ * answer and it is not a "no". Reporting it as one would hide every model that
+ * works but was never swept, and the local table would quietly shrink the
+ * catalogue as the world moved on. So this answers what can be shown to be
+ * false and offers everything else, which leaves filtering where it belongs: on
+ * the catalogue, not in a hand-maintained list in the client.
  */
 
 import type { GateModel, ToolShape } from "./toolModels";
@@ -81,6 +81,108 @@ const NEEDS: Record<string, ToolNeeds> = {
 
 export function needsOf(slug: string | null | undefined): ToolNeeds {
   return (slug && NEEDS[slug]) || { tools: false, freeformTools: false };
+}
+
+/** A model somebody has actually run this tool against, with the date. */
+export interface KnownGoodRule {
+  /** Exact public id, or a family written with a trailing `*`. */
+  match: string;
+  /** ISO date the pairing was last confirmed by hand. */
+  checked: string;
+  /** What was actually done. An entry nobody can trace is not evidence. */
+  note: string;
+}
+
+/**
+ * Model and tool pairings a developer has actually run, per tool.
+ *
+ * **This is a development aid and it is inert in a shipped build.** It changes
+ * the ORDER of the picker and nothing else: entries are floated to the top so
+ * whoever is testing reaches a model they know works without scrolling a
+ * 344-model catalogue. It grants nothing, hides nothing, and no verdict depends
+ * on it. See {@link pinnedModels} for the gate.
+
+ * Deliberately not a product claim. An earlier revision let this table decide
+ * which models the picker recommended, which made a hand-maintained list into a
+ * user-facing guarantee that only a person could keep true. Filtering is the
+ * catalogue's job and this is a shortcut for the person testing it.
+ *
+ * Hardcoded on purpose. A file read at runtime would need a schema, a parse and
+ * a decision about what a malformed one means, all to serve a convenience that
+ * never reaches a user.
+ */
+const KNOWN_GOOD: Record<string, readonly KnownGoodRule[]> = {
+  codex: [
+    // Exact ids, not a `gpt-5.6*` prefix. The generation is published under two
+    // spellings (`gpt-5.6-terra` and `gpt-5-6-terra`) and a prefix on either one
+    // silently misses the other, which is how the first draft of this entry
+    // matched none of the ids actually configured on this machine. A prefix
+    // would also sweep in the `-pro` variants, which nobody has run.
+    {
+      match: "openai/gpt-5.6-terra",
+      checked: "2026-09-01",
+      note: "Logged a successful Codex request end to end through Gate. The generation older models fail against; see the note on the sibling entries.",
+    },
+    {
+      match: "openai/gpt-5-6-terra",
+      checked: "2026-09-01",
+      note: "Same model as openai/gpt-5.6-terra, published under the dashed spelling. Both are live in the catalogue.",
+    },
+    {
+      match: "openai/gpt-5.6-sol",
+      checked: "2026-09-01",
+      note: "Same generation as gpt-5.6-terra and configured alongside it. Confirm or drop if it was never actually driven.",
+    },
+    {
+      match: "openai/gpt-5-6-sol",
+      checked: "2026-09-01",
+      note: "Dashed spelling of openai/gpt-5.6-sol.",
+    },
+    {
+      match: "openai/gpt-5.6-luna",
+      checked: "2026-09-01",
+      note: "Same generation as gpt-5.6-terra and configured alongside it. Confirm or drop if it was never actually driven.",
+    },
+    {
+      match: "openai/gpt-5-6-luna",
+      checked: "2026-09-01",
+      note: "Dashed spelling of openai/gpt-5.6-luna.",
+    },
+  ],
+  // Deliberately empty until somebody runs it. Claude Code sends ordinary
+  // function tools, which most of the catalogue accepts, so the temptation is
+  // to list the Anthropic family here on the strength of that. Accepting the
+  // shape is not the same as serving the tool well, this file's own doc says so,
+  // and an unrun entry at the top of the picker is a recommendation nobody made.
+  "claude-code": [],
+};
+
+/**
+ * The raw table for this tool. Exported for tests; call {@link pinnedModels}
+ * from the UI so the production gate is never accidentally skipped.
+ */
+export function knownGoodFor(slug: string | null | undefined): readonly KnownGoodRule[] {
+  return (slug && KNOWN_GOOD[slug]) || [];
+}
+
+/**
+ * Models to float to the top of the picker, or nothing outside development.
+ *
+ * The gate is the whole reason this is safe to keep in the tree. A released app
+ * orders the catalogue exactly as the gateway returns it, so a stale entry here
+ * can never put a model in front of a user, and nobody has to remember to empty
+ * the table before a release.
+ */
+export function pinnedModels(slug: string | null | undefined): readonly KnownGoodRule[] {
+  if (!import.meta.env.DEV) return [];
+  return knownGoodFor(slug);
+}
+
+/** Is this model on the dev pin list? Used for ordering only. */
+export function isPinned(model: ModelFacts, pinned: readonly KnownGoodRule[]): boolean {
+  return pinned.some((r) =>
+    r.match.endsWith("*") ? model.id.startsWith(r.match.slice(0, -1)) : model.id === r.match,
+  );
 }
 
 /** A verdict for one (model, shape) pair, from wherever it was learned. */
@@ -143,48 +245,39 @@ export interface Compatibility {
   ok: boolean;
   /** Set only when `ok` is false. */
   reason?: Incompatibility;
-  /**
-   * True when this model can be offered but nothing has actually confirmed it.
-   *
-   * Only ever set alongside `ok: true`. The picker shows these below a divider
-   * rather than hiding them: an unverified model is a model that probably works
-   * and definitely has not been shown not to.
-   */
-  unverified?: boolean;
 }
 
 /**
  * Can this app be served with this model?
  *
- * An empty tag list is treated as unknown, not as a denial: a catalogue row that
- * carries no tags has not said it lacks tools, and refusing every such model
- * would hide models that work because the gateway was terse about them. That
- * stance predates AG-729 and survives it unchanged.
+ * Answers only what can be shown to be false. A model is refused when something
+ * MEASURED says the request would fail, and offered otherwise. There is no
+ * third "probably fine" state on the wire or on screen: the picker lists what
+ * the catalogue offers, and the ordering aid above decides nothing.
+ *
+ * **Silence is never a denial.** A row with no tags has not said it lacks
+ * tools, and a shape the gateway holds no verdict on has not been shown to
+ * fail. Reading either as "no" would hide models that work, which is what the
+ * `acceptsFreeformTools` regex this replaced did to every model outside one
+ * family: it answered a bare boolean, so hundreds nobody had ever tried read as
+ * refusals.
  */
 export function compatibility(model: ModelFacts, needs: ToolNeeds): Compatibility {
-  let unverified = false;
-
   if (needs.tools) {
-    // A served verdict for the ordinary function shape is a better answer than
-    // the tag, because it distinguishes "declared unsupported" from "never
-    // said". Fall back to the tag when the gateway offered no verdict.
     const fn = toolShapeVerdict(model, "function");
+    // A served verdict beats the tag, because it separates "declared
+    // unsupported" from "never said". The tag answers only when there is none.
     if (fn === "fails") return { ok: false, reason: "no-tool-use" };
-    if (fn === "unknown") {
-      if (model.tags.length > 0 && !model.tags.includes("tool-use")) {
-        return { ok: false, reason: "no-tool-use" };
-      }
-      if (model.tags.length === 0) unverified = true;
+    if (fn === "unknown" && model.tags.length > 0 && !model.tags.includes("tool-use")) {
+      return { ok: false, reason: "no-tool-use" };
     }
   }
 
-  if (needs.freeformTools) {
-    const freeform = toolShapeVerdict(model, "freeform");
-    if (freeform === "fails") return { ok: false, reason: "no-freeform-tools" };
-    if (freeform === "unknown") unverified = true;
+  if (needs.freeformTools && toolShapeVerdict(model, "freeform") === "fails") {
+    return { ok: false, reason: "no-freeform-tools" };
   }
 
-  return unverified ? { ok: true, unverified: true } : { ok: true };
+  return { ok: true };
 }
 
 /** One sentence naming what would go wrong, for the app this is about. */
@@ -195,25 +288,4 @@ export function explain(reason: Incompatibility, appName: string): string {
     case "no-freeform-tools":
       return `These models were tested and verified to reject the form ${appName} sends its tools in.`;
   }
-}
-
-/**
- * The heading on the unverified section.
- *
- * Says what is true, that nobody checked, rather than that the models are
- * unavailable. They are selectable and most of them work; the ones actually
- * measured failing sit in their own section. Calling these "unavailable" would
- * state the opposite of what the list does, and would undo the distinction the
- * tri-state exists to draw.
- *
- * Short because it labels a collapsed row rather than explaining itself in
- * prose. The count beside it carries the rest.
- */
-export function unverifiedLabel(appName: string): string {
-  return `Not tested with ${appName}`;
-}
-
-/** The heading on the section of models measured failing for this app. */
-export function refutedLabel(appName: string): string {
-  return `Not compatible with ${appName}`;
 }
