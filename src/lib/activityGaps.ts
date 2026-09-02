@@ -107,6 +107,56 @@ export function failureNotice(failure: ActivityFailure): GapNotice {
   }
 }
 
+/**
+ * Collapse notices that say exactly the same thing.
+ *
+ * Some causes are properties of the READING, not of the section reporting them.
+ * `attribution` is the clearest: a credential with no user attached defeats
+ * every section at once, so the gateway marks all five as unavailable for the
+ * same reason and the Overview printed one identical sentence per section, five
+ * times, each with its own pair of identical links. Ten controls, one remedy.
+ * It reads as a malfunction rather than as an explanation, which is the
+ * opposite of what AG-576 asks this surface to do.
+ *
+ * Grouped on cause AND actions, never on cause alone: two sections that fail
+ * for the same reason but can be fixed differently are two different notices,
+ * and merging them would offer an action that does nothing for one of them.
+ *
+ * A group that covers every gap in the reading is attributed to the reading as
+ * a whole. A group that covers only some names them, because saying "Activity"
+ * there would claim the rest of the pane is broken too.
+ */
+export function mergeNotices(notices: GapNotice[]): GapNotice[] {
+  const groups = new Map<string, GapNotice[]>();
+  for (const n of notices) {
+    const key = `${n.cause}|${n.actions.map((a) => a.kind).join(",")}`;
+    const group = groups.get(key);
+    if (group) group.push(n);
+    else groups.set(key, [n]);
+  }
+
+  const merged: GapNotice[] = [];
+  for (const group of groups.values()) {
+    const first = group[0]!;
+    if (group.length === 1) {
+      merged.push(first);
+      continue;
+    }
+    merged.push({
+      ...first,
+      subject: group.length === notices.length ? "Activity" : listSubjects(group),
+    });
+  }
+  return merged;
+}
+
+/** "Messages and Savings", "Messages, Savings and Tokens saved". */
+function listSubjects(group: GapNotice[]): string {
+  const names = group.map((n) => n.subject);
+  const last = names.pop()!;
+  return `${names.join(", ")} and ${last}`;
+}
+
 /** One section of an otherwise good reading is missing. */
 export function sectionNotice(section: string, reason: UnavailableReason): GapNotice {
   switch (reason) {

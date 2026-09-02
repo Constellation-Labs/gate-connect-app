@@ -81,7 +81,7 @@ import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
-import { failureNotice, sectionNotice } from "./lib/activityGaps";
+import { failureNotice, mergeNotices, sectionNotice } from "./lib/activityGaps";
 import type { GapActionKind } from "./lib/activityGaps";
 import { SettingsPane, buildSettingsSections } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
@@ -2196,10 +2196,13 @@ function ActivityGaps({
   // A failed fetch outranks per-section gaps: if nothing landed there is nothing
   // to itemise, and the sections listed in the held view describe the *previous*
   // reading, not this one.
-  const notices = (
+  // Merged before the subject override: a caller that owns one read renames the
+  // notice, and renaming five identical ones first would produce five rows all
+  // headed the same thing with nothing to tell them apart.
+  const notices = mergeNotices(
     failure
       ? [failureNotice(failure)]
-      : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason))
+      : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason)),
   ).map((n) => (subject ? { ...n, subject } : n));
   if (notices.length === 0) return null;
 
@@ -2213,7 +2216,7 @@ function ActivityGaps({
           actually happened to their traffic. The notices below still name the
           cause and offer the action, which is the part that is actionable. */}
       {notices.map((n) => (
-        <p key={n.subject} className="text-base-xs text-base-muted-foreground">
+        <p key={`${n.subject}|${n.cause}`} className="text-base-xs text-base-muted-foreground">
           <span className="font-medium">{n.subject}:</span> {n.cause}
           {n.actions.map((a) => (
             <button
