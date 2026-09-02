@@ -9,9 +9,11 @@
 //! failing silently (AC6).
 //!
 //! The one behaviour worth stating plainly, because getting it wrong logs the
-//! user out of a working app: **only a definite 401 ends the loop.** Everything
-//! else retries. `org.rs`'s `SessionProbe` makes the same distinction and
-//! `docs/ag-572-activity-api-contract.md` §11 requires it of every consumer.
+//! user out of a working app: **nothing but `stop` ends the loop.** A definite
+//! 401 is the only thing that stops retrying on a timer, and it holds *alive*
+//! rather than returning, so a recovery signal has a feed to bring back.
+//! Everything else retries. `org.rs`'s `SessionProbe` makes the same distinction
+//! and `docs/ag-572-activity-api-contract.md` §11 requires it of every consumer.
 //!
 //! Each test runs its own loopback mock, but the account lives behind the
 //! process-global `GATE_CONNECT_TEST_HOME` seam plus an in-memory keychain, so a
@@ -127,22 +129,36 @@ fn mock_stream(bodies: Vec<&'static str>) -> Arc<Mutex<Vec<String>>> {
     heads
 }
 
-/// Answer every connection with one status and no stream.
-fn mock_status(status_line: &'static str) {
+/// Answer every connection with one status and no stream, recording the request
+/// heads so a test can count how many times the client came back.
+fn mock_status(status_line: &'static str) -> Arc<Mutex<Vec<String>>> {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
     let url = format!(
         "http://{}/v1/me/security-events/stream",
         listener.local_addr().expect("mock addr")
     );
+    let heads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = heads.clone();
     thread::spawn(move || {
         while let Ok((mut stream, _)) = listener.accept() {
-            drain_request_head(&mut stream);
+            let head = drain_request_head(&mut stream);
+            sink.lock().unwrap().push(head);
             let response =
                 format!("HTTP/1.1 {status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             stream.write_all(response.as_bytes()).ok();
         }
     });
     std::env::set_var("GATE_CONNECT_TEST_SECURITY_EVENTS_ENDPOINT", url);
+    heads
+}
+
+/// Poll `done` until it holds or the deadline passes. For the tests that watch
+/// the loop from outside instead of driving it through `collect`.
+async fn wait_until(deadline: Duration, done: impl Fn() -> bool) {
+    let started = std::time::Instant::now();
+    while started.elapsed() < deadline && !done() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// Drive the feed until `want` updates have arrived or the deadline passes, then
@@ -257,28 +273,50 @@ async fn a_replayed_event_after_reconnect_is_not_delivered_twice() {
 }
 
 #[tokio::test]
-async fn a_401_ends_the_loop_rather_than_retrying() {
+async fn a_401_holds_the_loop_open_for_a_recovery_signal() {
     let _g = LOCK.lock().await;
     let _data = TempDataDir::set();
     with_key_account();
-    mock_status("401 Unauthorized");
+    let heads = mock_status("401 Unauthorized");
 
     let feed = Arc::new(Feed::new());
     let driver = feed.clone();
-    // Deliberately not driven through `collect`: the property under test is that
-    // the loop returns *on its own*, and a helper that stops it cannot tell that
-    // apart from a loop that was still retrying when we gave up on it.
+    // Deliberately not driven through `collect`: the properties under test are
+    // what the loop does *while* it is refused, and a helper that stops it can
+    // observe neither of them.
     let task = tokio::spawn(async move {
         run(driver, |_| {}).await;
     });
 
-    let finished = tokio::time::timeout(Duration::from_secs(10), task).await;
-    assert!(
-        finished.is_ok(),
-        "a refused credential must end the loop; retrying cannot fix it and \
-         spends a throttle bucket shared across the whole office"
-    );
+    // The refusal lands.
+    wait_until(Duration::from_secs(10), || {
+        !heads.lock().unwrap().is_empty()
+    })
+    .await;
+    assert_eq!(heads.lock().unwrap().len(), 1, "expected one attempt");
     assert_eq!(feed.state(), FeedState::Offline);
+
+    // No retry cadence: retrying cannot fix a refused credential and spends a
+    // throttle bucket shared across the whole office.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        heads.lock().unwrap().len(),
+        1,
+        "a refused credential must not be retried on a timer"
+    );
+
+    // But the loop is still there to hear a recovery. Returning was the bug: it
+    // left `retry_now` - the pane's own "Try again", and the org-switch reset -
+    // pushing against a task that had already exited.
+    feed.retry_now();
+    wait_until(Duration::from_secs(10), || heads.lock().unwrap().len() >= 2).await;
+    assert!(
+        heads.lock().unwrap().len() >= 2,
+        "the loop must survive a refusal so a recovery signal can revive it"
+    );
+
+    feed.stop();
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
 }
 
 #[tokio::test]
@@ -356,7 +394,7 @@ async fn no_account_rests_at_offline_without_hammering() {
     let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
     // Deliberately no account saved.
-    mock_status("200 OK");
+    let _heads = mock_status("200 OK");
 
     let feed = Arc::new(Feed::new());
     let updates = collect(feed, 1, Duration::from_secs(4)).await;

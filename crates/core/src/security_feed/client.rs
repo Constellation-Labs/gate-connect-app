@@ -144,11 +144,13 @@ impl Feed {
 /// `sink` carries updates to whoever is driving this; `crates/core` has no
 /// `tauri` dependency, so the transport to the window is the caller's business.
 ///
-/// The loop never returns on a transport failure. It returns on `stop`, and on
-/// one other thing: a definite 401. That distinction is the `SessionProbe`
-/// discipline from [`crate::org`] - **a feed failure must never sign the user
-/// out**, so only a credential the gateway actually refused ends the loop, and
-/// an unreachable gateway is retried forever.
+/// The loop returns on `stop`, and on nothing else. A definite 401 is still the
+/// one outcome treated differently from every other failure - it holds rather
+/// than retrying on a timer - but it holds *alive*, so the recovery that
+/// [`crate::oauth::mark_session_rejected`] starts has a feed to bring back. That
+/// distinction is the `SessionProbe` discipline from [`crate::org`] - **a feed
+/// failure must never sign the user out** - and an unreachable gateway is
+/// retried forever.
 pub async fn run<F>(feed: Arc<Feed>, sink: F)
 where
     F: Fn(Update) + Send + Sync + 'static,
