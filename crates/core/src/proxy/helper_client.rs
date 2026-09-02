@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::account::BillingMode;
 use crate::proxy::control::{self, Request, Response};
 use crate::proxy::ProxyDomain;
 
@@ -151,6 +152,7 @@ impl HelperClient {
         api_key: &str,
         oauth_token: &str,
         org_id: &str,
+        billing_mode: BillingMode,
         ca_cert_pem: &str,
         ca_key_pem: &str,
         domains: &[ProxyDomain],
@@ -163,6 +165,7 @@ impl HelperClient {
             api_key: api_key.to_string(),
             oauth_token: oauth_token.to_string(),
             org_id: org_id.to_string(),
+            billing_mode,
             ca_cert_pem: ca_cert_pem.to_string(),
             ca_key_pem: ca_key_pem.to_string(),
             domains: domains.to_vec(),
@@ -193,7 +196,25 @@ impl HelperClient {
                 running,
                 port,
                 intercepting,
+                ..
             } => Ok((running, port, intercepting)),
+            other => anyhow::bail!("unexpected Status reply: {other:?}"),
+        }
+    }
+
+    /// How many times the daemon's engine has seen the gateway refuse a request
+    /// carrying our OAuth bearer. Monotone for the daemon's life; see
+    /// [`Response::Status`]'s `gate_auth_refusals`.
+    ///
+    /// Its own round trip rather than a fourth element on [`Self::status`],
+    /// which nine of its ten call sites would discard. One request per GUI
+    /// refresh tick over a Unix socket costs nothing worth shaping the API
+    /// around.
+    pub fn gate_auth_refusals(&mut self) -> Result<u64> {
+        match self.round_trip(&Request::Status, CONTROL_TIMEOUT)? {
+            Response::Status {
+                gate_auth_refusals, ..
+            } => Ok(gate_auth_refusals),
             other => anyhow::bail!("unexpected Status reply: {other:?}"),
         }
     }

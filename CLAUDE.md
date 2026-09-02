@@ -37,7 +37,8 @@ right."
 topbar; navigation is a persistent 250px sidebar; content is a pane that
 scrolls independently. Window controls belong to the operating system, so
 the topbar only reserves space for them. Secondary flows are centred
-dialogs at 600px, not stacked panels.
+dialogs, not stacked panels; their width is per dialog - the file draws
+480, 512, 544 and 600, and `Modal`'s `width` prop is typed to those four.
 
 Theme: **light only**. Dark mode is not on the roadmap for the first
 release.
@@ -45,7 +46,27 @@ release.
 ### Aesthetic Direction
 
 **The Figma is the source of truth**, not this file and not the older
-`cg/` ink system:
+`cg/` ink system. Where the file and a local judgement disagree, the file
+wins, including on copy - standing instruction, 2026-08-26. Where the file
+disagrees with *itself*, **match what the frame renders** for the surface
+you are building - that is what "looks like the design" means, and it is
+what a designer checks against. Reach for the component set only where no
+frame draws the thing. Buttons are the worked example: the `Button`
+component says radius 8 on a `base.input` line, and every pane instance
+draws radius 4 on a `base.border` one, so panes get 4. Dialogs draw 8, and
+get 8. Say which you took and why.
+
+Two copy exceptions are decided and stay decided, both because the drawn
+words describe something the action does not do. Do not "fix" either back
+to match its frame:
+
+- **Replace API key** labels its field `New API key`, not the drawn `New
+  device name`.
+- **Disconnect Gate?** says the session ends and configs are kept, not the
+  drawn sentence about the keychain, which describes Reset.
+
+If you find a third of these, raise it rather than deciding it.
+
 `https://www.figma.com/design/9FrccCojXy0f8QD8Wm5Lln/Gate-Connect`
 
 It is shadcn-flavoured on Tailwind's default palette. Tokens live in
@@ -58,9 +79,29 @@ one-to-one so any value can be traced back without guessing.
 - **Borders are real 1px lines.** `base.border #e5e7eb` on cards and
   dividers, `base.input #d1d5db` on controls. Cards additionally carry
   `shadow-base-sm`.
-- **Radii: 4px** (`rounded-base`) on controls, nav items and pills, **8px**
-  (`rounded-lg`) on cards and rows, **12px** (`rounded-xl`) on dialogs.
-- **Ground is `gray-100`**, cards and chrome are white.
+- **Ink is `base.foreground #030712`**, not `neutral-900`. The three
+  foreground tokens the Figma variables name are the only ones to use:
+  `base.foreground` on body and headings, `base.primary-foreground
+  #f9fafb` on a filled primary button, `base.destructive-foreground
+  #fef2f2` on a filled destructive one. Never `text-white` on a button.
+- **Buttons have exactly two sizes**, from the `Button` component set:
+  `default` (h36, 10/12 padding) and `sm` (h32, 8/12). All carry a moulded
+  elevation - `shadow-base-btn`, `-btn-sm`, `-btn-primary`,
+  `-btn-destructive` - never a flat `shadow-base-2xs`, and a filled primary
+  also takes the white/black 8% vertical gradient over `base.primary`.
+  Radius and edge follow the surface: **panes** draw `rounded-control`
+  (4px) on a `base.border` line, **dialogs** draw `rounded-md` (8px) on a
+  `base.input` one.
+- **Row icons are `base.foreground`**, not a grey. A 20px glyph at
+  `neutral-500` beside a `#030712` label reads as disabled.
+- **Radii** come from `tailwind.config.ts`'s own scale, not from Tailwind's:
+  `rounded-sm` (6px) on controls and nav items, `rounded-md` (8px) on cards,
+  rows and buttons, `rounded-2xl` (**16px**) on dialogs. The 16px is measured -
+  every dialog frame in Settings, Overview and App carries it - and it replaces
+  the 12px this file used to call locked.
+- **Ground is `base.background #f9fafb`**, cards and chrome are white. Not
+  `gray-100`: the window frames fill `#F9FAFB`, and the darker grey read as
+  the single most obviously wrong thing on screen.
 - **Geist + Geist Mono.** Mono is for identifiers (URLs, hosts, keys,
   model ids, install ids, versions, status pill labels, the sidebar
   eyebrow), never for body copy.

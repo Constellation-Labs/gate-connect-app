@@ -79,6 +79,7 @@ fn connect_opencode() {
         .connect(&ConnectInput {
             gateway_base_url: "https://gateway.example.com".into(),
             upstream_url: integ.default_upstream_url().to_string(),
+            billing_mode: Default::default(),
             relay_base_url: Some("http://127.0.0.1:8402".into()),
             engine_proxy_url: Some("http://127.0.0.1:8403".into()),
         })

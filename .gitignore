@@ -10,13 +10,20 @@
 # cannot be committed by accident again.
 .idea/
 
-# Impeccable live-overlay working state (transient; snapshots in critique/ are tracked)
-.impeccable/live/
+# Impeccable working state (live overlay, local config, hook cache) plus the
+# critique/audit snapshots, which were internal working notes and left the
+# repo with the rest of the internal docs. design.json is the design-system
+# definition and stays tracked.
+.impeccable/*
+!.impeccable/design.json
 
 # Playwright e2e output (traces, screenshots, HTML report).
 /test-results/
 /playwright-report/
 /blob-report/
+
+.figma-mcp/.env
+.figma-mcp/assets/
 
 # TypeScript incremental build stamp (tsc -b). Machine-local, never reviewable.
 /*.tsbuildinfo

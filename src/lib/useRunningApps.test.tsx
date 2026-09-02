@@ -197,27 +197,60 @@ describe("useRunningApps: closing takes two answers", () => {
  * change never touched - and it is the kind of thing a user reads as the app not
  * understanding what it just did.
  */
-describe("offerAfterChange scope", () => {
-  it("asks only for the tools that changed", async () => {
+describe("useRunningApps: which tool it is talking about", () => {
+  it("asks only about the tools whose configs were written", async () => {
     const { api } = harness();
-    (runningAgents as Mock).mockResolvedValue({ scanned_names: [], agents: [] });
 
     await act(async () => {
       await api.current!.offerAfterChange(["codex"]);
     });
 
-    expect(runningAgents as Mock).toHaveBeenCalledWith(["codex"]);
+    expect(runningAgents).toHaveBeenCalledWith(["codex"]);
   });
 
-  it("asks for everything when nothing is named, which is the master toggle", async () => {
-    // A master toggle moved every tool's route, so every running tool is stale.
+  it("asks about every tool when the caller names none", async () => {
+    // The master toggle: every routed tool is on its old route, so all of them
+    // are fair game.
     const { api } = harness();
-    (runningAgents as Mock).mockResolvedValue({ scanned_names: [], agents: [] });
 
     await act(async () => {
       await api.current!.offerAfterChange();
     });
 
-    expect(runningAgents as Mock).toHaveBeenCalledWith(undefined);
+    expect(runningAgents).toHaveBeenCalledWith(undefined);
+  });
+
+  it("closes exactly the set it offered", async () => {
+    // The regression this guards: the offer was scoped to one tool and the
+    // close was not, so confirming a Codex change SIGTERMed a running `claude`
+    // that nothing had reconfigured and the user was never shown.
+    const { api } = harness();
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"]);
+    });
+    act(() => api.current!.goToConfirm());
+
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(closeRunningAgents).toHaveBeenCalledWith(["codex"]);
+  });
+
+  it("keeps the filter across a trip back to the offer", async () => {
+    // Backing out and confirming again must not widen the set.
+    const { api } = harness();
+    await act(async () => {
+      await api.current!.offerAfterChange(["codex"]);
+    });
+    act(() => api.current!.goToConfirm());
+    act(() => api.current!.goBack());
+    act(() => api.current!.goToConfirm());
+
+    await act(async () => {
+      await api.current!.closeApps();
+    });
+
+    expect(closeRunningAgents).toHaveBeenCalledWith(["codex"]);
   });
 });

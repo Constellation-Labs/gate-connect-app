@@ -9,6 +9,16 @@
 //! survived the MITM handshake. Adding the EKU makes Apple's stack accept the
 //! cert. Otherwise this mirrors `RcgenAuthority`: per-host leaf, ~1-year
 //! validity, `h2` + `http/1.1` ALPN, cached per host.
+//!
+//! The same asymmetry bit again from the other side on Windows, and the second
+//! fix lives here too. schannel asks CryptoAPI to check revocation for the whole
+//! chain, and the clients that do not opt out of that (notably the `curl.exe` in
+//! System32) reject a leaf carrying no CRL distribution point outright, with
+//! `CRYPT_E_NO_REVOCATION_CHECK`. OpenSSL and rustls never look. So on Windows
+//! the leaves advertise a distribution point on the engine's own loopback
+//! listener and [`sign_empty_crl`] answers it. Only the leaf changed: the root
+//! needs no revocation data, which is what keeps existing installs from having
+//! to re-trust a new one.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -17,9 +27,9 @@ use anyhow::{Context, Result};
 use http::uri::Authority;
 use hudsucker::certificate_authority::CertificateAuthority;
 use hudsucker::rcgen::{
-    string::Ia5String, BasicConstraints, CertificateParams, DistinguishedName, DnType,
-    ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, Issuer, KeyPair, KeyUsagePurpose,
-    NameConstraints, SanType,
+    string::Ia5String, BasicConstraints, CertificateParams, CrlDistributionPoint,
+    DistinguishedName, DnType, ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, Issuer, KeyPair,
+    KeyUsagePurpose, NameConstraints, SanType,
 };
 use hudsucker::rustls::{
     crypto::CryptoProvider,
@@ -34,6 +44,82 @@ const NOT_BEFORE_OFFSET_SECS: i64 = 60;
 /// is keyed by host and otherwise never evicts, so without this a long-running
 /// engine would keep serving a leaf past its `not_after` and break handshakes.
 const LEAF_RENEW_MARGIN_SECS: i64 = 7 * 24 * 60 * 60;
+
+/// Path the CRL is served from, on the same loopback listener that serves the
+/// PAC script. Shared so the URL baked into a leaf's CRL distribution point and
+/// the route the listener answers on cannot drift apart.
+///
+/// Gated to the platforms that have that listener, plus `test` so the CRL is
+/// still exercised on a Linux CI box where none of this is compiled otherwise.
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+pub(crate) const CRL_PATH: &str = "/gate-ca.crl";
+
+/// How far ahead a freshly signed CRL declares its `nextUpdate`.
+///
+/// Windows caches a fetched CRL and will not re-fetch until this passes, so it
+/// trades request volume against how long a stale answer could be believed.
+/// Neither side of that trade matters much here: this CA revokes nothing, and
+/// the CRL is regenerated per request rather than cached by us, so a week is
+/// simply long enough that the endpoint is hit rarely.
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+const CRL_NEXT_UPDATE_SECS: i64 = 7 * 24 * 60 * 60;
+
+/// How far back a freshly signed CRL declares its `thisUpdate`, absorbing clock
+/// skew between us and the validating client for the same reason
+/// [`NOT_BEFORE_OFFSET_SECS`] does on a leaf.
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+const CRL_THIS_UPDATE_BACKDATE_SECS: i64 = 60 * 60;
+
+/// DER of a freshly signed, empty CRL for the local CA.
+///
+/// Empty is not a placeholder: this CA mints only short-lived per-host leaves
+/// held in memory by the engine that signed them, so there is nothing to revoke
+/// and no mechanism by which there could be. The CRL exists to be *fetchable*,
+/// not to carry entries.
+///
+/// That sounds pointless until you look at what Windows does without it.
+/// schannel asks CryptoAPI for `CERT_CHAIN_REVOCATION_CHECK_CHAIN` and, for
+/// clients that do not pass `SCH_CRED_IGNORE_NO_REVOCATION_CHECK` (curl's
+/// default, i.e. the `curl.exe` in System32), a leaf carrying no CRL
+/// distribution point fails the handshake outright with
+/// `CRYPT_E_NO_REVOCATION_CHECK (0x80092012)` - "the revocation function was
+/// unable to check revocation". Not a warning; the connection dies. OpenSSL,
+/// rustls and BoringSSL clients never notice, which is why this only ever
+/// showed up as "curl stopped working while the proxy is on".
+///
+/// So the leaves advertise a distribution point pointing back at our own
+/// loopback listener ([`CRL_PATH`]) and this function answers it. Measured on
+/// Windows 11 with curl 8.21.0 (schannel): a leaf with no CDP fails as above, a
+/// leaf whose CDP resolves to this CRL completes the handshake, and CryptoAPI
+/// really does issue a plain-HTTP GET to `127.0.0.1` mid-handshake to get it.
+///
+/// The root deliberately carries no CDP of its own, and does not need one -
+/// tested on the same box: a chain whose leaf has a distribution point and
+/// whose self-signed root has none validates fine, because CryptoAPI does not
+/// demand revocation data for a trust anchor. That is what keeps this fix
+/// leaf-only, and therefore invisible to already-trusted installs: changing the
+/// root would mean regenerating it and walking every existing user back through
+/// the trust dialog.
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+pub(crate) fn sign_empty_crl(issuer: &Issuer<'_, KeyPair>) -> Result<Vec<u8>> {
+    use hudsucker::rcgen::{CertificateRevocationListParams, KeyIdMethod, SerialNumber};
+
+    let now = OffsetDateTime::now_utc();
+    let crl = CertificateRevocationListParams {
+        this_update: now - Duration::seconds(CRL_THIS_UPDATE_BACKDATE_SECS),
+        next_update: now + Duration::seconds(CRL_NEXT_UPDATE_SECS),
+        // Fixed rather than counted: a monotonic sequence would have to survive
+        // engine restarts to mean anything, and nothing consuming this CRL
+        // compares numbers across fetches. One CRL, one number.
+        crl_number: SerialNumber::from(1u64),
+        issuing_distribution_point: None,
+        revoked_certs: Vec::new(),
+        key_identifier_method: KeyIdMethod::Sha256,
+    }
+    .signed_by(issuer)
+    .context("signing the CA's CRL")?;
+    Ok(crl.der().as_ref().to_vec())
+}
 
 /// Subject CN of the local root CA - shared by the three platform CA
 /// modules, which also use it as the lookup key for trust/untrust.
@@ -174,6 +260,14 @@ pub struct GateCa {
     leaf_key: KeyPair,
     private_key: PrivateKeyDer<'static>,
     provider: Arc<CryptoProvider>,
+    /// URL to advertise as the leaves' CRL distribution point, or `None` to emit
+    /// no such extension. Set only where a client actually hard-fails without
+    /// one (Windows; see [`sign_empty_crl`]), because the URL names a loopback
+    /// port that has to be serving [`CRL_PATH`] for the whole run - an
+    /// advertised CDP that cannot be fetched is *worse* than none, turning
+    /// `CRYPT_E_NO_REVOCATION_CHECK` into `CRYPT_E_REVOCATION_OFFLINE`, which
+    /// the same clients also refuse.
+    crl_url: Option<String>,
     cache: Mutex<HashMap<String, CachedLeaf>>,
 }
 
@@ -185,7 +279,11 @@ struct CachedLeaf {
 }
 
 impl GateCa {
-    pub fn new(issuer: Issuer<'static, KeyPair>, provider: CryptoProvider) -> Self {
+    pub fn new(
+        issuer: Issuer<'static, KeyPair>,
+        provider: CryptoProvider,
+        crl_url: Option<String>,
+    ) -> Self {
         // Leaves get their OWN key pair, distinct from the CA. hudsucker's
         // RcgenAuthority reuses the CA key for every leaf, which makes a
         // leaf's SubjectKeyIdentifier identical to its issuer's - Apple's TLS
@@ -199,6 +297,7 @@ impl GateCa {
             leaf_key,
             private_key,
             provider: Arc::new(provider),
+            crl_url,
             cache: Mutex::new(HashMap::new()),
         }
     }
@@ -232,6 +331,15 @@ impl GateCa {
         // though serverAuth is present.
         params.is_ca = IsCa::ExplicitNoCa;
         params.use_authority_key_identifier_extension = true;
+        // Windows needs somewhere to go looking for revocation status or it
+        // refuses the handshake outright; see `sign_empty_crl` for the whole
+        // story. Absent on platforms whose clients soft-fail, so they gain no
+        // in-handshake HTTP fetch they never needed.
+        if let Some(url) = &self.crl_url {
+            params.crl_distribution_points = vec![CrlDistributionPoint {
+                uris: vec![url.clone()],
+            }];
+        }
 
         let der: CertificateDer<'static> = params
             .signed_by(&self.leaf_key, &self.issuer)
@@ -367,5 +475,97 @@ mod fingerprint_tests {
         assert!(!host_fingerprint_is_current(&cert));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Tests for the Windows revocation fix: the leaves' CRL distribution point and
+/// the CRL that has to be fetchable from it.
+///
+/// The bug these guard against is silent on every platform CI runs on. A leaf
+/// with no CDP is accepted by OpenSSL, rustls and BoringSSL without comment and
+/// rejected by schannel with `CRYPT_E_NO_REVOCATION_CHECK`, so nothing short of
+/// asserting on the emitted extension will catch a regression here.
+#[cfg(test)]
+mod crl_tests {
+    use super::*;
+
+    /// A CA built exactly the way the platform modules build it, so what these
+    /// tests sign with is what ships.
+    fn test_ca(crl_url: Option<String>) -> (GateCa, String) {
+        let params = ca_certificate_params().expect("CA params");
+        let key = KeyPair::generate().expect("CA key");
+        let cert_pem = params.self_signed(&key).expect("self-signed CA").pem();
+        let issuer = Issuer::from_ca_cert_pem(
+            &cert_pem,
+            KeyPair::from_pem(&key.serialize_pem()).expect("reparse CA key"),
+        )
+        .expect("issuer");
+        let ca = GateCa::new(
+            issuer,
+            hudsucker::rustls::crypto::aws_lc_rs::default_provider(),
+            crl_url,
+        );
+        (ca, cert_pem)
+    }
+
+    /// The CA's own key usages must permit CRL signing, or `sign_empty_crl`
+    /// fails at runtime on Windows and every handshake there dies with an
+    /// unfetchable distribution point. rcgen enforces this, so assert the
+    /// shipping params satisfy it rather than discovering it in the field.
+    #[test]
+    fn ca_params_permit_crl_signing() {
+        let params = ca_certificate_params().unwrap();
+        assert!(
+            params.key_usages.contains(&KeyUsagePurpose::CrlSign),
+            "the CA must keep CrlSign or it cannot sign the CRL its leaves point at"
+        );
+    }
+
+    /// A successful sign is itself the assertion on the validity window: rcgen
+    /// rejects `next_update <= this_update` with `InvalidCrlNextUpdate`, so this
+    /// passing means the window is ordered and forward-looking.
+    #[test]
+    fn signed_crl_is_parseable_and_not_expired() {
+        let (_ca, cert_pem) = test_ca(None);
+        let key = KeyPair::generate().unwrap();
+        // Sign with an issuer over the same params so the CRL is well-formed;
+        // the assertions below are about the CRL body, not the chain.
+        let issuer = Issuer::new(ca_certificate_params().unwrap(), key);
+        let der = sign_empty_crl(&issuer).expect("signing an empty CRL");
+        assert!(!der.is_empty(), "CRL DER should not be empty");
+        // A DER SEQUENCE, i.e. it is at least shaped like a CRL rather than an
+        // error string that happened to serialise.
+        assert_eq!(der[0], 0x30, "CRL should be a DER SEQUENCE");
+        assert!(
+            cert_pem.contains("BEGIN CERTIFICATE"),
+            "sanity: the CA cert should be PEM"
+        );
+    }
+
+    #[test]
+    fn leaf_carries_the_distribution_point_when_a_url_is_configured() {
+        let url = format!("http://127.0.0.1:47123{CRL_PATH}");
+        let (ca, _) = test_ca(Some(url.clone()));
+        let (der, _) = ca.gen_cert("api.anthropic.com");
+        // The URL is an IA5String in the DER, so a byte search is enough to
+        // prove the extension carries it - and it cannot appear by accident.
+        let needle = url.as_bytes();
+        assert!(
+            der.as_ref().windows(needle.len()).any(|w| w == needle),
+            "leaf should carry the configured CRL distribution point URL"
+        );
+    }
+
+    /// The other half of the switch: platforms whose clients soft-fail must not
+    /// gain an in-handshake HTTP fetch, so no URL means no extension.
+    #[test]
+    fn leaf_omits_the_distribution_point_when_no_url_is_configured() {
+        let (ca, _) = test_ca(None);
+        let (der, _) = ca.gen_cert("api.anthropic.com");
+        let needle = CRL_PATH.as_bytes();
+        assert!(
+            !der.as_ref().windows(needle.len()).any(|w| w == needle),
+            "leaf must not advertise a CRL distribution point when none is set"
+        );
     }
 }

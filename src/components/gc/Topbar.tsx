@@ -3,9 +3,13 @@ import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 
 /**
- * Window chrome for the new app UI (Figma `nav/topbar` 113:16763 and
- * `topnav/menu` 116:17428). A 48px strip: brand lockup centred, overflow menu
- * on the right.
+ * Window chrome for the new app UI: a 48px strip, brand lockup centred,
+ * overflow menu on the right.
+ *
+ * Drawn as `nav/topbar` and `topnav/menu` on the Components page, which the
+ * file has since emptied - both nodes are gone. The live sources are the
+ * topbar and menu instances inside the flow frames (the Overview page's
+ * `116:27225` is the menu).
  *
  * Two things the design draws are deliberately absent. The traffic lights are
  * the operating system's, so we only reserve the space. The Minimize2 button
@@ -16,7 +20,7 @@ import type { IconName } from "./Icon";
  */
 
 /**
- * The design draws a third entry, Contact support, and it is not here.
+ * The design draws a fourth entry, Contact support, and it is not here.
  *
  * `GATE_SUPPORT_URL` does exist in `lib/config.ts`, and it 404s - so there is
  * still nothing to open. An entry that cannot do anything is worse than an
@@ -25,12 +29,17 @@ import type { IconName } from "./Icon";
  * for the same reason. Add both back together once there is a real address; see
  * that constant for what has to change (AG-598).
  */
-export type TopnavAction = "dashboard" | "docs";
+export type TopnavAction = "dashboard" | "docs" | "quit";
 
 const MENU_ITEMS: { action: TopnavAction; icon: IconName; label: string }[] = [
   { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
   { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
 ];
+
+/** Quit, drawn into the menu on 2026-08-28 (`116:27225`) and the one entry that
+ *  does not leave the app - so it carries destructive ink and no external-link
+ *  glyph, which is how the frame renders it. */
+const QUIT_ITEM = { action: "quit" as const, icon: "logOut" as IconName, label: "Quit Gate Connect" };
 
 export function Topbar({
   menuOpen,
@@ -74,9 +83,10 @@ export function Topbar({
 /**
  * shadcn's outline icon button. The paired inset shadows are what give it its
  * slightly domed face - a top white bloom and a bottom shade - over the 1px
- * `base/input` border.
+ * `base/input` border. Exported for the tray popover's footer, which draws the
+ * same 32px ellipsis button in front of its own menu.
  */
-function OutlineIconButton({
+export function OutlineIconButton({
   icon,
   label,
   onClick,
@@ -94,20 +104,20 @@ function OutlineIconButton({
       aria-label={label}
       aria-haspopup={expanded === undefined ? undefined : "menu"}
       aria-expanded={expanded}
-      className="flex size-8 items-center justify-center rounded-base border border-base-input bg-base-card text-neutral-900 shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.06)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      className="flex size-8 items-center justify-center rounded-sm border border-base-input bg-base-card text-base-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.06)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
     >
       <Icon name={icon} size={16} />
     </button>
   );
 }
 
-/** The 224px overflow menu. Every destination opens outside the app, so each
- *  row carries the external-link glyph. */
+/** The 224px overflow menu. Every destination but Quit opens outside the app,
+ *  so those rows carry the external-link glyph and Quit does not. */
 export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => void }) {
   return (
     <div
       role="menu"
-      className="absolute right-0 top-10 z-10 w-56 rounded-lg border border-base-border bg-base-card p-[9px] shadow-base-lg"
+      className="absolute right-0 top-10 z-10 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-lg"
     >
       {MENU_ITEMS.map(({ action, icon, label }) => (
         <button
@@ -115,7 +125,7 @@ export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => v
           type="button"
           role="menuitem"
           onClick={() => onSelect(action)}
-          className="flex h-8 w-full items-center justify-between rounded-base px-1.5 text-neutral-900 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className="flex h-8 w-full items-center justify-between rounded-sm px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           <span className="flex items-center gap-2">
             <Icon name={icon} size={16} />
@@ -124,6 +134,15 @@ export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => v
           <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
         </button>
       ))}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => onSelect(QUIT_ITEM.action)}
+        className="flex h-8 w-full items-center gap-2 rounded-sm px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      >
+        <Icon name={QUIT_ITEM.icon} size={16} />
+        <span className="text-base-xs font-medium leading-4">{QUIT_ITEM.label}</span>
+      </button>
     </div>
   );
 }

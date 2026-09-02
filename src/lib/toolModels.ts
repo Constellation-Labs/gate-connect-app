@@ -321,8 +321,12 @@ export function useGateModels(enabled: boolean): {
       });
   }, [enabled]);
 
-  useEffect(reload, [reload]);
-
+  // Once per session, not once per opening: the catalogue is large and
+  // unchanging within a session (see the doc above), so re-fetching 300+ models
+  // every time the picker is raised buys nothing.
+  useEffect(() => {
+    if (enabled && models === null) reload();
+  }, [enabled, models, reload]);
   return { models, failure, loading, reload };
 }
 

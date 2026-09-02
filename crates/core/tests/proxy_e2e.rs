@@ -154,7 +154,8 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
             gateway_base_url: gateway.base_url.clone(), // http://127.0.0.1:<port>
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(), // legacy API-key path
-            org_id: String::new(),      // no org on the legacy path
+            billing_mode: Default::default(),
+            org_id: String::new(), // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -179,6 +180,10 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
     let resp = client
         .post("https://api.anthropic.com/v1/messages")
         .header("authorization", "Bearer app-token")
+        .header(
+            "anthropic-beta",
+            "claude-code-20250219,context-1m-2025-08-07",
+        )
         .json(&serde_json::json!({ "model": "claude", "messages": [] }))
         .send()
         .await
@@ -212,6 +217,245 @@ async fn proxy_rewrites_intercepted_request_to_gateway() {
         Some("Bearer app-token"),
         "the client's own credential must be forwarded untouched"
     );
+    assert_eq!(
+        r.header("anthropic-beta"),
+        Some("claude-code-20250219,context-1m-2025-08-07"),
+        "the model-selected 1M capability must survive the forward proxy"
+    );
+}
+
+/// Claude Code has its own explicit proxy selector because the Desktop domain
+/// is independently switchable. Even with that catalog entry off, a connected
+/// Claude Code process must still be intercepted instead of silently reaching
+/// Anthropic directly.
+#[tokio::test]
+async fn claude_code_selector_routes_when_desktop_domain_is_off() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let mut domains = default_domains();
+    for domain in &mut domains {
+        domain.enabled = false;
+    }
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            billing_mode: Default::default(),
+            domains,
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let proxy_url = format!("http://gate-claude-code:route@127.0.0.1:{}", engine.port());
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(proxy_url).unwrap())
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_cert_pem.as_bytes()).unwrap())
+        .build()
+        .unwrap();
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("anthropic-beta", "context-1m-2025-08-07")
+        .json(&serde_json::json!({ "model": "claude-opus-4-1[1m]", "messages": [] }))
+        .send()
+        .await
+        .expect("Claude Code selector must reach Gate with the Desktop domain off");
+    assert!(resp.status().is_success());
+    engine.stop();
+
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1, "request must not blind-tunnel around Gate");
+    assert_eq!(reqs[0].header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        reqs[0].header("anthropic-beta"),
+        Some("context-1m-2025-08-07"),
+        "Claude Code's model-selected 1M beta must survive the forced route"
+    );
+    assert_eq!(
+        reqs[0].header("proxy-authorization"),
+        None,
+        "the local route selector must not be forwarded"
+    );
+}
+
+/// Whether the `curl` on PATH was built with HTTP/2, read off its `Features:`
+/// line. Windows ships a Schannel build with no nghttp2, which rejects
+/// `--http2` outright.
+fn curl_supports_http2() -> bool {
+    std::process::Command::new("curl")
+        .arg("-V")
+        .output()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| line.strip_prefix("Features:"))
+                .any(|features| features.split_whitespace().any(|f| f == "HTTP2"))
+        })
+        .unwrap_or(false)
+}
+
+/// A request whose header block exceeds 16 KiB must still be intercepted and
+/// rewritten, not answered `431` by our own listener.
+///
+/// The engine's h2 server is where this regresses, and it regresses by
+/// OMISSION: hyper's HTTP/2 side inherits the `h2` crate's
+/// `SETTINGS_MAX_HEADER_LIST_SIZE` default of 16 KiB, and hudsucker's fallback
+/// server builder configures only `http1()`, so unless `engine::start` supplies
+/// its own builder the limit is silently ours. It cost us the browser surfaces:
+/// chatgpt.com's web client sends ~8.3 KB of its own headers
+/// (`x-oai-is-pending-updates` alone measured 5446 B, and it grows until the
+/// server acks it) plus a session cookie jar, so every call - including the
+/// `/f/conversation/prepare` that precedes the first chat turn - came back a
+/// bare `431`, no headers and no body. The chat wedges before it sends a turn,
+/// and because the refusal is ours nothing reaches the gateway to explain why.
+///
+/// HTTP/2 is forced and then verified, rather than assumed. The same request
+/// passes over h1 on hyper's far more generous limits (measured: 20 KB fine), so
+/// a client that quietly negotiated HTTP/1.1 would keep this test green while
+/// the regression was back for every browser. That rules out the in-process
+/// `reqwest` client the tests above use: this workspace pins it with
+/// `default-features = false` and no `http2` feature, so it cannot speak h2 at
+/// all. `curl` can, and `%{http_version}` is asserted so a curl built without
+/// HTTP/2 fails loudly instead of silently covering nothing.
+///
+/// Windows is the one exception: its bundled Schannel `curl.exe` has no nghttp2
+/// and cannot drive h2 at all, so the test skips there rather than report a
+/// limit it never reached. What is under test is the engine's own
+/// `ServerBuilder` config, which is not platform-specific, and the Linux and
+/// macOS legs still cover it.
+#[tokio::test]
+async fn proxy_accepts_oversized_h2_request_headers() {
+    if !curl_supports_http2() {
+        // Only Windows gets the pass. Anywhere else, a curl without HTTP/2
+        // would negotiate h1, sail past a limit h1 does not have, and leave the
+        // test green over nothing - the exact hole the version assert guards.
+        assert!(
+            cfg!(windows),
+            "curl must be built with HTTP/2 for this test to cover anything; an \
+             h1 run would pass without ever reaching the header limit"
+        );
+        eprintln!(
+            "skipping proxy_accepts_oversized_h2_request_headers: this curl has \
+             no HTTP/2 support (expected on Windows, whose bundled Schannel \
+             build has no nghttp2)"
+        );
+        return;
+    }
+
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            billing_mode: Default::default(),
+            org_id: String::new(),
+            domains: default_domains(),
+            ca_cert_pem: ca_cert_pem.clone(),
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let ca_path = std::env::temp_dir().join(format!(
+        "gate-proxy-e2e-bighdr-ca-{}-{}.pem",
+        std::process::id(),
+        engine.port()
+    ));
+    std::fs::write(&ca_path, &ca_cert_pem).expect("writing CA to temp file");
+
+    // 20 KB in one header: over the 16 KiB default, under the 64 KiB the engine
+    // now sets. Sized from the traffic that broke this rather than to the
+    // boundary - the ChatGPT state blob grows across a session.
+    let big = "a".repeat(20 * 1024);
+    let proxy_url = format!("http://127.0.0.1:{}", engine.port());
+    let ca_arg = ca_path.clone();
+    let big_header = format!("x-big: {big}");
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("curl")
+            .arg("-sS")
+            // Deliberately NOT --ssl-no-revoke. The engine's leaves now carry a
+            // CRL distribution point served off its own loopback listener, so
+            // schannel can complete a revocation check on its own; leaving the
+            // opt-out in would hide a regression in exactly that mechanism.
+            .arg("--http2") // the whole point: h1 does not exercise the limit
+            // No `--fail`: the refusal we are guarding against IS an HTTP
+            // status, so it has to be read rather than turned into an exit code.
+            // The mock gateway answers with an empty body, so stdout is exactly
+            // this template.
+            .arg("-w")
+            .arg("%{http_code} %{http_version}")
+            .arg("--cacert")
+            .arg(&ca_arg)
+            .arg("-X")
+            .arg("POST")
+            .arg("-H")
+            .arg("authorization: Bearer app-token")
+            .arg("-H")
+            .arg(&big_header)
+            .arg("-H")
+            .arg("content-type: application/json")
+            .arg("--data")
+            .arg(r#"{"model":"claude","messages":[]}"#)
+            .arg("https://api.anthropic.com/v1/messages")
+            .env("https_proxy", &proxy_url)
+            .env("HTTPS_PROXY", &proxy_url)
+            .env("no_proxy", "")
+            .env("NO_PROXY", "")
+            .output()
+    })
+    .await
+    .expect("joining the curl task")
+    .expect("curl must be installed to run this test");
+
+    engine.stop();
+    let _ = std::fs::remove_file(&ca_path);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    assert_eq!(
+        stdout,
+        "200 2",
+        "expected 200 over HTTP/2; got `{stdout}` (a `431 2` here is the engine \
+         refusing the header block, `200 1.1` means curl fell back to h1 and the \
+         test no longer covers the limit)\nstderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // The rewrite still happened, and the oversized header rode along rather
+    // than being dropped somewhere in the middle.
+    let reqs = gateway.captured.lock().unwrap().clone();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "gateway should have received exactly one request"
+    );
+    let r = &reqs[0];
+    assert_eq!(r.path, "/v1/messages");
+    assert_eq!(r.header("x-gate-api-key"), Some("sk-gw-test"));
+    assert_eq!(
+        r.header("x-big").map(str::len),
+        Some(big.len()),
+        "the oversized header must reach the gateway intact"
+    );
 }
 
 /// The same rewrite guarantee, but for a **real external process** routed
@@ -235,7 +479,8 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(), // legacy API-key path
-            org_id: String::new(),      // no org on the legacy path
+            billing_mode: Default::default(),
+            org_id: String::new(), // no org on the legacy path
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
             ca_key_pem,
@@ -266,10 +511,12 @@ async fn proxy_intercepts_external_process_routed_by_proxy_env() {
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new("curl")
             .arg("-sS")
-            // (schannel/Windows) the MITM leaf has no CRL/OCSP endpoint, so
-            // schannel returns CERT_TRUST_REVOCATION_STATUS_UNKNOWN and fails
-            // verification (exit 60). No-op on OpenSSL/SecureTransport builds.
-            .arg("--ssl-no-revoke")
+            // No --ssl-no-revoke: on Windows this is the regression test for
+            // the CRL distribution point. Without one, schannel fails the
+            // handshake with CRYPT_E_NO_REVOCATION_CHECK (exit 35) before the
+            // request is ever sent, so a green run here means the CDP resolved
+            // and the CRL was served. A no-op on OpenSSL builds, which never
+            // check revocation.
             .arg("--fail") // nonzero exit unless the gateway answers 2xx
             .arg("--cacert")
             .arg(&ca_arg)
@@ -373,6 +620,7 @@ async fn exported_proxy_env_routes_an_external_process() {
             gateway_base_url: gateway.base_url.clone(),
             api_key: "sk-gw-test".into(),
             oauth_token: String::new(),
+            billing_mode: Default::default(),
             org_id: String::new(),
             domains: default_domains(),
             ca_cert_pem: ca_cert_pem.clone(),
@@ -451,8 +699,8 @@ async fn exported_proxy_env_routes_an_external_process() {
             cmd.env(name, value);
         }
         cmd.arg("-sS")
-            // (schannel/Windows) the MITM leaf has no CRL/OCSP endpoint.
-            .arg("--ssl-no-revoke")
+            // No --ssl-no-revoke, same reason as above: on Windows the leaf's
+            // CRL distribution point has to resolve for this to pass.
             .arg("--fail")
             // curl has no NODE_EXTRA_CA_CERTS; feed it the exported value.
             .arg("--cacert")
@@ -537,6 +785,7 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
             // as x-gate-authorization instead of the API key, with the selected
             // org on x-gate-org-id.
             oauth_token: "cognito-access-token".into(),
+            billing_mode: Default::default(),
             org_id: "org-uuid-1".into(),
             domains,
             ca_cert_pem: ca_cert_pem.clone(),
@@ -624,7 +873,7 @@ async fn proxy_rewrites_openrouter_request_to_gateway() {
 /// proxy once at their own launch): an engine restarted with the
 /// previously-bound port as `preferred_port` must come back on the same
 /// address and still rewrite to the gateway, and a taken preferred port must
-/// fall back to an ephemeral one instead of failing the start.
+/// fall back to another port instead of failing the start.
 #[tokio::test]
 async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     let _serial = SERIAL.lock().await;
@@ -635,6 +884,7 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
         api_key: "sk-gw-test".into(),
         oauth_token: String::new(), // legacy API-key path
         org_id: String::new(),      // no org on the legacy path
+        billing_mode: Default::default(),
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
@@ -645,9 +895,10 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
         upstream_proxy: None,
     };
 
-    // First run: ephemeral bind, note where it landed.
-    let engine = engine::start(config(None), || {}).expect("first engine start");
-    let port = engine.port();
+    // First run on a port of our own choosing (see `seed_preferred_port`).
+    let port = seed_preferred_port();
+    let engine = engine::start(config(Some(port)), || {}).expect("first engine start");
+    assert_eq!(engine.port(), port, "first run must take the seeded port");
     engine.stop();
 
     // Restart preferring that port: same address, and it still routes.
@@ -673,17 +924,39 @@ async fn engine_restart_reuses_preferred_port_and_falls_back_when_taken() {
     );
     engine.stop();
 
-    // Preferred port taken by someone else: fall back to an ephemeral port
-    // rather than failing the start.
-    let blocker = std::net::TcpListener::bind(("127.0.0.1", port)).expect("occupying the port");
-    let engine = engine::start(config(Some(port)), || {}).expect("fallback engine start");
+    // Preferred port taken by someone else: fall back to another port rather
+    // than failing the start. The blocker holds a port of its own instead of
+    // the one just freed above: a freed port can be picked up by anything else
+    // on the machine (including this suite's other test binaries) between the
+    // stop and the rebind, which would make this bind flaky.
+    let blocker = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupying a port");
+    let taken = blocker.local_addr().unwrap().port();
+    let engine = engine::start(config(Some(taken)), || {}).expect("fallback engine start");
     assert_ne!(
         engine.port(),
-        port,
-        "a taken preferred port must fall back to an ephemeral one"
+        taken,
+        "a taken preferred port must fall back to another one"
     );
     engine.stop();
     drop(blocker);
+}
+
+/// A port from the OS's ephemeral range, released before it is returned, for
+/// the restart tests to hand back as a *preferred* port.
+///
+/// They cannot let the engine pick its own: a fresh pick comes from
+/// `engine::bind_fresh`'s 100-port band, and a band port freed between the stop
+/// and the restart is fair game for anything else scanning that band - a live
+/// Gate Connect install on the same machine, or another engine-starting test
+/// binary under a runner that executes binaries in parallel (plain `cargo
+/// test` runs them one at a time, but nothing pins the project to that).
+/// Seeding from the ephemeral range instead keeps these tests out
+/// of that shared namespace while still exercising the real reclaim path
+/// (`bind_preferred`, including the `SO_REUSEADDR` rebind over the first run's
+/// TIME_WAIT remnants).
+fn seed_preferred_port() -> u16 {
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("seeding a preferred port");
+    probe.local_addr().unwrap().port()
 }
 
 /// Same restart contract for the PAC listener (PAC-driven platforms only):
@@ -701,6 +974,7 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
         api_key: "sk-gw-test".into(),
         oauth_token: String::new(), // legacy API-key path
         org_id: String::new(),      // no org on the legacy path
+        billing_mode: Default::default(),
         domains: default_domains(),
         ca_cert_pem: ca_cert_pem.clone(),
         ca_key_pem: ca_key_pem.clone(),
@@ -711,9 +985,14 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
         upstream_proxy: None,
     };
 
-    // First run: note the PAC port.
-    let engine = engine::start(config(None), || {}).expect("first engine start");
-    let pac_port = engine.pac_port();
+    // First run on a PAC port of our own choosing (see `seed_preferred_port`).
+    let pac_port = seed_preferred_port();
+    let engine = engine::start(config(Some(pac_port)), || {}).expect("first engine start");
+    assert_eq!(
+        engine.pac_port(),
+        pac_port,
+        "first run must take the seeded PAC port"
+    );
     engine.stop();
 
     // Restart preferring it: same address, and the served PAC points at the
@@ -736,15 +1015,94 @@ async fn pac_restart_reuses_preferred_port_and_serves_live_engine_port() {
     );
     engine.stop();
 
-    // Taken PAC port: fall back rather than failing the start.
-    let blocker =
-        std::net::TcpListener::bind(("127.0.0.1", pac_port)).expect("occupying the PAC port");
-    let engine = engine::start(config(Some(pac_port)), || {}).expect("fallback engine start");
+    // Taken PAC port: fall back rather than failing the start. As above, the
+    // blocker holds a port of its own rather than racing to reclaim the one
+    // just freed.
+    let blocker = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupying a port");
+    let taken = blocker.local_addr().unwrap().port();
+    let engine = engine::start(config(Some(taken)), || {}).expect("fallback engine start");
     assert_ne!(
         engine.pac_port(),
-        pac_port,
-        "a taken preferred PAC port must fall back to an ephemeral one"
+        taken,
+        "a taken preferred PAC port must fall back to another one"
     );
     engine.stop();
     drop(blocker);
+}
+
+/// The loopback listener must serve a real CRL at the path the engine's leaves
+/// advertise as their distribution point.
+///
+/// Windows-only because that is the only platform where leaves carry the
+/// extension at all - and the only one where getting this wrong is fatal rather
+/// than unnoticed. schannel fetches this URL *during* the TLS handshake, so if
+/// it 404s or returns the PAC script instead, every intercepted connection dies
+/// with CRYPT_E_REVOCATION_OFFLINE. The other tests in this file would catch
+/// that too, but only as "curl failed"; this one names the cause.
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn crl_endpoint_serves_a_der_crl() {
+    let _serial = SERIAL.lock().await;
+    let gateway = start_mock_gateway().await;
+    let (ca_cert_pem, ca_key_pem) = mint_ca();
+    let engine = engine::start(
+        EngineConfig {
+            gateway_base_url: gateway.base_url.clone(),
+            api_key: "sk-gw-test".into(),
+            oauth_token: String::new(),
+            org_id: String::new(),
+            billing_mode: Default::default(),
+            domains: default_domains(),
+            ca_cert_pem,
+            ca_key_pem,
+            preferred_port: None,
+            preferred_pac_port: None,
+            preferred_relay_port: None,
+            owner_uid: None,
+            upstream_proxy: None,
+        },
+        || {},
+    )
+    .expect("proxy engine should start");
+
+    let url = format!("http://127.0.0.1:{}/gate-ca.crl", engine.pac_port());
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .expect("CRL endpoint should answer");
+    assert!(
+        resp.status().is_success(),
+        "CRL endpoint returned {:?}",
+        resp.status()
+    );
+    let ctype = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        ctype, "application/pkix-crl",
+        "CryptoAPI is fed this as a CRL, so it must not be served as the PAC script"
+    );
+    let body = resp.bytes().await.expect("CRL body");
+    assert!(!body.is_empty(), "CRL body should not be empty");
+    // DER SEQUENCE tag: proves we served the signed structure and not, say, an
+    // error page that happened to have the right content type.
+    assert_eq!(body[0], 0x30, "CRL should be a DER SEQUENCE");
+
+    // The PAC route must still work on the same listener.
+    let pac = reqwest::get(format!("http://127.0.0.1:{}/proxy.pac", engine.pac_port()))
+        .await
+        .expect("PAC endpoint should answer")
+        .text()
+        .await
+        .expect("PAC body");
+    assert!(
+        pac.contains("FindProxyForURL"),
+        "PAC route regressed while adding the CRL route: {pac}"
+    );
+
+    engine.stop();
 }

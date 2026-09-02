@@ -32,6 +32,9 @@ test.describe("new UI settings", () => {
     await expect(launch).toHaveAttribute("aria-checked", "true");
   });
 
+  // Figma labels this field "New device name", copy-pasted from the rename
+  // dialog. "New API key" is a decided exception to "the file wins" - see
+  // `ReplaceApiKeyDialog`. Do not "fix" this back to match the frame.
   test("replacing the API key saves against the current gateway", async ({ boot }) => {
     const app = await boot({
       account: {
@@ -138,7 +141,6 @@ test.describe("new UI settings", () => {
     for (const gone of ["Upgrade plan", "Contact support"]) {
       await expect(app.page.getByRole("button", { name: gone })).toHaveCount(0);
     }
-    await expect(app.page.getByRole("switch", { name: "Notifications" })).toHaveCount(0);
     await expect(app.page.getByRole("heading", { name: "Danger zone" })).toBeVisible();
   });
 
@@ -190,7 +192,7 @@ test.describe("new UI settings preferences", () => {
     const app = await boot({});
     await app.page.getByRole("button", { name: "Settings" }).click();
 
-    await expect(app.page.getByRole("switch", { name: "Routing health" })).toHaveAttribute(
+    await expect(app.page.getByRole("switch", { name: "Notifications" })).toHaveAttribute(
       "aria-checked",
       "true",
     );
@@ -203,7 +205,7 @@ test.describe("new UI settings preferences", () => {
     const app = await boot({});
     await app.page.getByRole("button", { name: "Settings" }).click();
 
-    const sw = app.page.getByRole("switch", { name: "Routing health" });
+    const sw = app.page.getByRole("switch", { name: "Notifications" });
     await sw.click();
 
     await expect
@@ -229,7 +231,7 @@ test.describe("new UI settings preferences", () => {
     const app = await boot({ failures: { get_preferences: "config directory unreadable" } });
     await app.page.getByRole("button", { name: "Settings" }).click();
 
-    await expect(app.page.getByRole("switch", { name: "Routing health" })).toHaveCount(0);
+    await expect(app.page.getByRole("switch", { name: "Notifications" })).toHaveCount(0);
     await expect(
       app.page.getByRole("switch", { name: "Share diagnostic data" }),
     ).toHaveCount(0);
@@ -244,7 +246,7 @@ test.describe("new UI settings preferences", () => {
 
     await expect(app.page.getByRole("switch", { name: "Launch at login" })).toHaveCount(0);
     // Different command, so it keeps its switch.
-    await expect(app.page.getByRole("switch", { name: "Routing health" })).toBeVisible();
+    await expect(app.page.getByRole("switch", { name: "Notifications" })).toBeVisible();
   });
 
   test("Settings carries the sections the criteria name", async ({ boot }) => {
@@ -256,7 +258,6 @@ test.describe("new UI settings preferences", () => {
       "Account",
       "Connection",
       "Startup",
-      "Notifications",
       "Diagnostics",
       "About",
       "Help",
@@ -268,6 +269,10 @@ test.describe("new UI settings preferences", () => {
 
 /**
  * AG-603: "What is collected opens the field list WITHOUT changing the setting."
+ *
+ * It opens from a link inside the share-diagnostics row's own description, not
+ * from a row of its own: Diagnostics draws two rows and the file gives it no
+ * third, so the disclosure lives in the sentence it qualifies.
  *
  * The read-only half is the testable half here: whether the opt-out actually
  * stops PostHog is pinned in `lib/analytics.test.ts`, since the e2e build has no
@@ -282,7 +287,7 @@ test.describe("new UI: what diagnostics collects", () => {
     const app = await boot({});
     await app.page.getByRole("button", { name: "Settings" }).click();
 
-    await app.page.getByRole("button", { name: "View list" }).click();
+    await app.page.getByRole("button", { name: "See what is collected" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -302,7 +307,7 @@ test.describe("new UI: what diagnostics collects", () => {
     // rather than left to the copy drifting.
     const app = await boot({});
     await app.page.getByRole("button", { name: "Settings" }).click();
-    await app.page.getByRole("button", { name: "View list" }).click();
+    await app.page.getByRole("button", { name: "See what is collected" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog.getByText(/Prompts or model responses/)).toBeVisible();

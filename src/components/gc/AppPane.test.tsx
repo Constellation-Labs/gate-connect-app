@@ -60,6 +60,33 @@ function pane(props: Partial<Parameters<typeof AppPane>[0]> = {}) {
   );
 }
 
+describe("AppPane model card", () => {
+  it("draws the model card when the app has one model family", () => {
+    render(pane());
+    expect(screen.getByRole("heading", { name: "Model selection" })).toBeTruthy();
+  });
+
+  /**
+   * The multi-provider tools - OpenCode, OpenClaw, Hermes - route whichever of
+   * their configured providers Gate covers, so "what does this app use on Gate
+   * model" has no single answer for them. `main` never asks it: it has no model
+   * UI at all and these appear only as routing targets.
+   *
+   * The Figma's answer is a multi-select picker, which needs a model list no
+   * endpoint reports yet and a selection shape `ModelChoice` cannot hold. Until
+   * then the card is withheld, which is a decision and not an oversight -
+   * regressing it looks like "the model card is missing on OpenCode".
+   */
+  it("omits it entirely when there is no single model family", () => {
+    render(pane({ onChooseModel: undefined }));
+    expect(screen.queryByRole("heading", { name: "Model selection" })).toBeNull();
+    expect(screen.queryByText("Change model")).toBeNull();
+    expect(screen.queryByText("App default")).toBeNull();
+    // The rest of the pane is untouched: it still routes, and still reports.
+    expect(screen.getByRole("heading", { name: "Recent activity" })).toBeTruthy();
+  });
+});
+
 /**
  * The three states AG-576 established, now on the per-tool feed. The middle one
  * is the whole point: an unattributed tool is not an idle tool, and this pane is
@@ -96,11 +123,22 @@ describe("AppPane recent activity", () => {
     const feed = card("Recent activity");
 
     // Status and security share a column now, so the row cannot show both. The
-    // failure wins, and the verdict it displaced stays reachable on hover rather
-    // than being dropped.
+    // failure wins, and the verdict it displaced stays reachable rather than being
+    // dropped - on hover for pointer users, and as `sr-only` text for everyone
+    // else, since a tooltip alone would leave keyboard and screen reader users
+    // with no route to it at all.
     expect(within(feed).getByText("error")).toBeTruthy();
     expect(within(feed).queryByText("flagged")).toBeNull();
     expect(within(feed).getByTitle("Request failed. Guardrails: flagged.")).toBeTruthy();
+    expect(within(feed).getByText("Guardrails: flagged.")).toBeTruthy();
+  });
+
+  it("adds no displaced verdict when a failed row had none", () => {
+    render(pane({ activity: [{ ...entry, status: "error", security: null }] }));
+    const feed = card("Recent activity");
+
+    expect(within(feed).getByTitle("Request failed.")).toBeTruthy();
+    expect(within(feed).queryByText(/Guardrails:/)).toBeNull();
   });
 
   it("shows the guardrail verdict when the request succeeded", () => {
@@ -109,16 +147,41 @@ describe("AppPane recent activity", () => {
     expect(within(card("Recent activity")).getByText("redacted")).toBeTruthy();
   });
 
+  it("wears one pill per row, with no column left for a status", () => {
+    render(
+      pane({
+        activity: [
+          { ...entry, id: "req-flagged", status: "error", security: "flagged" },
+          { ...entry, id: "req-error", status: "error", security: null },
+        ],
+      }),
+    );
+    const feed = card("Recent activity");
+
+    // The design merged the old Status column into Security, so there is no
+    // second cell to put a transport outcome in and no SUCCESS pill at all.
+    // Which of the two facts a row shows when it has both is the precedence
+    // question, pinned above; what this pins is that it only ever shows one.
+    expect(within(feed).queryByRole("columnheader", { name: "Status" })).toBeNull();
+    expect(within(feed).queryByText("success")).toBeNull();
+    // Both rows failed, so under the precedence above both wear ERROR: the
+    // first displaced its `flagged` into the tooltip, the second never had a
+    // verdict to displace.
+    expect(within(feed).getAllByText("error")).toHaveLength(2);
+  });
+
   it("marks a row whose security detail is absent, without inventing a verdict", () => {
     render(pane({ activity: [{ ...entry, security: null }] }));
     const feed = card("Recent activity");
 
     // Absence of a verdict is not enough: a cell that rendered nothing at all
-    // would satisfy that, and the point is that the row says so.
+    // would satisfy that, and the point is that the row says so. `status` is
+    // "success" here, so no ERROR pill stands in either.
     const cell = within(feed).getByTitle("No security action recorded, or not your request");
     expect(cell.textContent).toBe("\u2014");
     expect(within(feed).queryByText("allow")).toBeNull();
     expect(within(feed).queryByText("flagged")).toBeNull();
+    expect(within(feed).queryByText("error")).toBeNull();
   });
 
   it("offers a per-row action when the surface supplies a destination", () => {
@@ -145,6 +208,9 @@ describe("AppPane recent activity", () => {
     expect(within(feed).getByText("824bd2c0-4123")).toBeTruthy();
     expect(within(feed).getByText("claude-opus-4")).toBeTruthy();
     expect(within(feed).getByTitle("anthropic")).toBeTruthy();
+    // The monogram is decorative, so the provider has to be named in text too -
+    // otherwise the one-letter glyph is all a screen reader gets.
+    expect(within(feed).getByText("anthropic")).toBeTruthy();
     expect(within(feed).getByRole("columnheader", { name: "Message" })).toBeTruthy();
   });
 

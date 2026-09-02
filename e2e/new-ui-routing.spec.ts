@@ -28,7 +28,6 @@ test.describe("new UI routing", () => {
         name: "Codex",
         upstream_provider_name: "OpenAI",
         default_upstream_url: "https://gw.example/codex",
-        requires_upstream_credential: false,
         status: { kind: "drifted" as const, reason: "API base URL: https://api.openai.com/v1" },
       },
     ],
@@ -61,7 +60,7 @@ test.describe("new UI routing", () => {
     // that re-adopts, and the only one that reaches the review gate. Its
     // accessible name is the notice's own ("Let Gate Connect manage Codex"),
     // which is what distinguishes it from the sidebar row's switch.
-    await expect(app.page.getByText(/isn't protected/)).toBeVisible();
+    await expect(app.page.getByText("Reconnect to restore protection")).toBeVisible();
     const cardSwitch = app.page.getByRole("switch", { name: "Let Gate Connect manage Codex" });
     await expect(cardSwitch).toHaveAttribute("aria-checked", "false");
 
@@ -99,7 +98,6 @@ test.describe("new UI routing", () => {
           name: "Claude Code",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
       ],
@@ -120,6 +118,33 @@ test.describe("new UI routing", () => {
     expect(await callsFor(app.page, "connect_tool")).toEqual([]);
   });
 
+  test("the certificate gate names the system dialog Windows is about to raise", async ({
+    boot,
+  }) => {
+    // AG-534. `proxy_trust_ca` shells out to `certutil -user -addstore Root`,
+    // which raises a red "Security Warning" quoting the CA's name - unexplained,
+    // that reads as malware rather than as the step the user just asked for.
+    const app = await boot({
+      platform: "windows",
+      proxy: { running: true, ca_trusted: false },
+      tools: [
+        {
+          slug: "claude-code",
+          name: "Claude Code",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://gw.example/claude-code",
+          status: { kind: "detected" },
+        },
+      ],
+    });
+
+    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+
+    await expect(
+      app.page.getByText("Windows will show a security warning: that’s expected, choose Yes."),
+    ).toBeVisible();
+  });
+
   test("turning an app off needs no gate at all", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
@@ -129,7 +154,6 @@ test.describe("new UI routing", () => {
           name: "Claude Code",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
-          requires_upstream_credential: false,
           status: { kind: "connected" },
         },
       ],
@@ -151,7 +175,6 @@ test.describe("new UI routing", () => {
           name: "Claude Code",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
       ],
@@ -193,7 +216,6 @@ test.describe("new UI drift repair", () => {
     name: "Codex",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://gw.example/codex",
-    requires_upstream_credential: false,
   };
   const drifted = {
     proxy: { running: true, ca_trusted: true },
@@ -242,7 +264,7 @@ test.describe("new UI drift repair", () => {
     await expect(dialog.getByText("What Gate would write instead")).toHaveCount(0);
   });
 
-  test("a failed write says so on the row, not only in a banner", async ({ boot }) => {
+  test("a failed write says so in the pane header, not only in a banner", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],
@@ -252,10 +274,14 @@ test.describe("new UI drift repair", () => {
     const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
     await sidebarSwitch.click();
 
+    // The rail row keeps the phrase and drops the reason, which does not fit
+    // 250px. The pane header is the surface with room for the sentence, and it
+    // outlives the banner - which is the half of this that still matters.
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
     await expect(app.page.getByText("Configuration update failed")).toBeVisible();
   });
 
-  test("a retry that succeeds clears the failure from the row", async ({ boot }) => {
+  test("a retry that succeeds clears the failure from the pane header", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [{ ...codex, status: { kind: "detected" as const } }],
@@ -264,6 +290,11 @@ test.describe("new UI drift repair", () => {
 
     const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
     await sidebarSwitch.click();
+
+    // Opened before the retry, not after: with the pane closed the reason is
+    // nowhere on the page and the count below would pass without the retry ever
+    // having cleared anything.
+    await app.page.getByRole("button", { name: "Codex" }).first().click();
     await expect(app.page.getByText("Configuration update failed")).toBeVisible();
 
     // Clear the injected failure, then click again - the switch is the retry.
@@ -323,7 +354,10 @@ test.describe("new UI: refreshing the inventory", () => {
   test("a tool installed while the window was open appears on its own", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
-    await expect(app.page.getByRole("switch", { name: "Codex" })).toHaveCount(0);
+    // `exact`: the rail's ChatGPT (Codex subscription) row is drawn from the
+    // catalog whether or not any tool is installed, and its switch's name
+    // would otherwise substring-match "Codex".
+    await expect(app.page.getByRole("switch", { name: "Codex", exact: true })).toHaveCount(0);
     const sweeps = await countOf(app, "routing_verdicts");
 
     await app.patch({
@@ -333,13 +367,14 @@ test.describe("new UI: refreshing the inventory", () => {
           name: "Codex",
           upstream_provider_name: "OpenAI",
           default_upstream_url: "https://gw.example/codex",
-          requires_upstream_credential: false,
           status: { kind: "detected" },
         },
       ],
     });
 
-    await expect(app.page.getByRole("switch", { name: "Codex" }).first()).toBeVisible({
+    await expect(
+      app.page.getByRole("switch", { name: "Codex", exact: true }).first(),
+    ).toBeVisible({
       timeout: 20_000,
     });
     await expect(app.page.getByText("No apps detected")).toHaveCount(0);
@@ -673,7 +708,6 @@ test.describe("new UI: the review names the file it will change", () => {
         name: "Codex",
         upstream_provider_name: "OpenAI",
         default_upstream_url: "https://gw.example/codex",
-        requires_upstream_credential: false,
         config_location: "/Users/someone/.codex/config.toml",
         status: {
           kind: "drifted" as const,
@@ -706,5 +740,86 @@ test.describe("new UI: the review names the file it will change", () => {
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText("The file that changes:")).toHaveCount(0);
+  });
+});
+
+/**
+ * The rail as `Components / Sidenav` draws it (read 2026-08-23): proxy-routed
+ * members are rows beside the config tools, every eyebrow carries its
+ * protected-over-total counter, and the multi-provider tools share one
+ * "Other tools" group. Hook tests cannot see whether a row's switch reaches
+ * the right command, which is what the first of these pins.
+ */
+test.describe("new UI sidebar rail", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k.gc, "1"), useNewUi);
+  });
+
+  test("a proxy domain is a rail row whose switch routes it", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await app.page
+      .getByRole("switch", { name: "ChatGPT (Codex subscription)" })
+      .first()
+      .click();
+
+    // A domain routes through the engine's flag, never a config write.
+    await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
+      slug: "chatgpt",
+      enabled: true,
+    });
+    expect(await callsFor(app.page, "connect_tool")).toEqual([]);
+  });
+
+  test("a domain row opens a pane that says its activity can't be attributed", async ({
+    boot,
+  }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await app.page.getByRole("button", { name: "ChatGPT (Codex subscription)" }).click();
+
+    await expect(
+      app.page.getByRole("heading", { name: "ChatGPT (Codex subscription)" }),
+    ).toBeVisible();
+    // The gateway attributes requests to config tools only, so the pane says
+    // why its sections are empty rather than reporting a quiet day.
+    await expect(app.page.getByText(/aren't attributed to a single app/)).toBeVisible();
+
+    // The pane's own switch routes the domain, same as the rail row's.
+    await app.page
+      .getByRole("switch", { name: "Route ChatGPT (Codex subscription)" })
+      .click();
+    await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
+      slug: "chatgpt",
+      enabled: true,
+    });
+    expect(await callsFor(app.page, "connect_tool")).toEqual([]);
+  });
+
+  test("a group's eyebrow counts protected rows over rows", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    // OPEN AI holds Codex (detected, off) plus the OpenAI apps, ChatGPT and
+    // ChatGPT-app-chat domains (all off). Read off this group's own eyebrow
+    // rather than by text: every group draws one, and the Anthropic group's
+    // happens to carry the same count.
+    const openAiEyebrow = app.page
+      .getByRole("heading", { name: "OpenAI", exact: true })
+      .locator("xpath=following-sibling::span");
+    await expect(openAiEyebrow).toHaveText("0 of 4");
+
+    // Routing the OpenAI apps domain with the engine up and the certificate
+    // trusted makes it the group's one protected row.
+    await app.page.getByRole("switch", { name: "OpenAI apps" }).click();
+    await expect(openAiEyebrow).toHaveText("1 of 4");
+  });
+
+  test("the multi-provider tools share one Other tools eyebrow", async ({ boot }) => {
+    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+
+    await expect(app.page.getByRole("heading", { name: "Other tools" })).toBeVisible();
+    // Not one eyebrow per tool - the 2026-08-21 read drew that, and the
+    // Sidenav page reversed it.
+    await expect(app.page.getByRole("heading", { name: "OpenCode" })).toHaveCount(0);
   });
 });

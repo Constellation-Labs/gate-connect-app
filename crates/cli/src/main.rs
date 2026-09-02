@@ -54,6 +54,17 @@ enum Command {
     },
     /// Sign out. Removes the stored base URL and the keychain entry.
     Logout,
+    /// Show or change who pays the upstream provider.
+    ///
+    /// `byok` (the default) forwards each tool's own provider credential and
+    /// the provider bills you directly. `payg` sends neither, so Gate routes
+    /// through your workspace's provider accounts and debits its prepaid
+    /// balance - top up in the dashboard first, since a funded balance is what
+    /// activates it. Run with no argument to print the current mode.
+    BillingMode {
+        /// `byok` or `payg`. Omit to print the current mode.
+        mode: Option<String>,
+    },
     /// Show the currently signed-in gateway URL, if any.
     Whoami,
     /// List supported tools and their current state.
@@ -198,6 +209,7 @@ fn main() -> Result<()> {
             api_key_file,
         } => cmd_set_upstream(&tool, api_key, api_key_file),
         Command::ClearUpstream { tool } => cmd_clear_upstream(&tool),
+        Command::BillingMode { mode } => cmd_billing_mode(mode),
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         Command::Proxy { command } => cmd_proxy(command),
     };
@@ -365,8 +377,63 @@ fn cmd_logout() -> Result<()> {
 
 fn cmd_whoami() -> Result<()> {
     match account::load_base_url()? {
-        Some(url) => println!("Signed in: {url}"),
+        Some(url) => {
+            println!("Signed in: {url}");
+            // Who pays is not visible anywhere else on a headless machine, and
+            // it decides whether traffic spends the workspace balance.
+            println!(
+                "Billing:   {}",
+                billing_mode_label(account::billing_mode()?)
+            );
+        }
         None => println!("Not signed in. Run `gate-connect login --base-url … --api-key …`."),
+    }
+    Ok(())
+}
+
+fn billing_mode_label(mode: account::BillingMode) -> &'static str {
+    match mode {
+        account::BillingMode::Byok => "byok (your own provider keys)",
+        account::BillingMode::Payg => "payg (billed to your Gate balance)",
+    }
+}
+
+/// Print or switch the account's billing mode.
+///
+/// Switching rewrites nothing on its own beyond the account file: the relay and
+/// the MITM engine read the mode per request, so routing follows immediately in
+/// whichever process hosts them - except that Codex's provider block encodes
+/// the mode, so it needs a reconnect, and this says so rather than silently
+/// leaving it on the old shape.
+fn cmd_billing_mode(mode: Option<String>) -> Result<()> {
+    let Some(requested) = mode else {
+        println!("{}", billing_mode_label(account::billing_mode()?));
+        return Ok(());
+    };
+    let mode = match requested.to_ascii_lowercase().as_str() {
+        "byok" => account::BillingMode::Byok,
+        "payg" => account::BillingMode::Payg,
+        other => anyhow::bail!("unknown billing mode {other:?} - expected `byok` or `payg`"),
+    };
+    account::set_billing_mode(mode)?;
+    println!("Billing mode: {}", billing_mode_label(mode));
+
+    // Codex is the one config integration whose file depends on the mode.
+    if matches!(
+        registry::find(ToolId::Codex).map(|i| i.status()),
+        Some(Ok(Status::Connected)) | Some(Ok(Status::Drifted(_)))
+    ) {
+        println!(
+            "note: run `gate-connect connect codex` to rewrite its provider block for this mode."
+        );
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        if proxy::engine_likely_running() {
+            println!(
+                "note: the Gate proxy appears to be enabled (likely in the menubar app); it keeps using the previous mode until it is toggled off and on."
+            );
+        }
     }
     Ok(())
 }
@@ -434,6 +501,7 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
     let input = ConnectInput {
         gateway_base_url: acct.gateway_base_url,
         upstream_url,
+        billing_mode: acct.billing_mode,
         relay_base_url: gate_connect_core::proxy::relay_base_url(),
         engine_proxy_url: gate_connect_core::proxy::engine_proxy_url(),
     };
@@ -447,9 +515,9 @@ fn cmd_connect(tool: &str, upstream_url: Option<String>) -> Result<()> {
                 "  1. Quit any running `claude` sessions (they cache settings.json at launch)."
             );
             println!(
-                "  2. Re-run `claude` - it picks up ANTHROPIC_BASE_URL and ANTHROPIC_CUSTOM_HEADERS from ~/.claude/settings.json."
+                "  2. Re-run `claude` - it picks up HTTPS_PROXY from ~/.claude/settings.json while keeping Anthropic's canonical base URL."
             );
-            println!("  3. Verify with `claude /status` (look for the gateway URL).");
+            println!("  3. Select models normally: standard variants stay 200K and (1M) variants keep their 1M context through Gate.");
         }
         ToolId::Codex => {
             println!("  1. Quit any running `codex` sessions.");
@@ -569,18 +637,14 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
     match command {
         ProxyCmd::Status => print_proxy_state(&mgr.status()?),
         ProxyCmd::Enable { foreground } => {
-            // Restore providers a prior master-off disabled, before enabling -
-            // otherwise the all-off state trips `enable`'s "at least one
-            // provider" precondition (mirrors the app's proxy_enable flow).
-            if let Err(e) = gate_connect_core::provider::restore_all() {
-                eprintln!("note: restoring providers failed: {e}");
-            }
-            let state = mgr.enable()?;
-            // Second restore pass: domain-only providers have nothing to
-            // configure until the proxy is running, so the pre-enable pass
-            // leaves them in the snapshot.
-            if let Err(e) = gate_connect_core::provider::restore_all() {
-                eprintln!("note: restoring providers after enable failed: {e}");
+            // The same master-ON ceremony as the app (`routing::enable`):
+            // persist the intent, restore providers around the engine start
+            // (the all-off state would otherwise trip `enable`'s "at least
+            // one provider" precondition), and keep best-effort hiccups as
+            // notes.
+            let (state, warnings) = gate_connect_core::routing::enable()?;
+            for w in warnings {
+                eprintln!("note: {} failed: {:#}", w.component, w.error);
             }
             println!("Proxy enabled.");
             print_proxy_state(&state);
@@ -594,12 +658,23 @@ fn cmd_proxy(command: ProxyCmd) -> Result<()> {
                 // sends SIGTERM, and an engine that vanished without reverting
                 // would leave the machine pointed at a dead loopback port.
                 println!();
-                mgr.disable()?;
+                let (_, warnings) = gate_connect_core::routing::disable()?;
+                for w in warnings {
+                    eprintln!("note: {} failed: {:#}", w.component, w.error);
+                }
                 println!("Proxy disabled; prior system-proxy state restored.");
             }
         }
         ProxyCmd::Disable => {
-            mgr.disable()?;
+            // The app's master-OFF ceremony (`routing::disable`), not a bare
+            // engine stop: the sweep unpoints managed tool configs from the
+            // relay this kills (they would otherwise dial a dead loopback
+            // port), and clearing the intent keeps a later app launch from
+            // silently re-routing what the operator just turned off.
+            let (_, warnings) = gate_connect_core::routing::disable()?;
+            for w in warnings {
+                eprintln!("note: {} failed: {:#}", w.component, w.error);
+            }
             println!("Proxy disabled; prior system-proxy state restored.");
         }
         ProxyCmd::Relay => {

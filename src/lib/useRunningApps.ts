@@ -23,17 +23,22 @@ import { track, trackError } from "./analytics";
 
 export type RunningAppsStage =
   /** Affected apps are running; offer to close them. */
-  | { kind: "offer"; apps: string[] }
+  | { kind: "offer"; apps: string[]; slugs?: string[] }
   /** "Close affected apps" pressed; confirm before signalling anything. */
-  | { kind: "confirm"; apps: string[] }
+  | { kind: "confirm"; apps: string[]; slugs?: string[] }
   /** Closed. Names what was closed so the copy is not a guess. */
   | { kind: "done"; apps: string[] };
 
 export interface RunningApps {
   stage: RunningAppsStage | null;
   busy: boolean;
-  /** Probe, and open the sequence only if something is actually running. */
-  offerAfterChange: (tools?: string[]) => Promise<void>;
+  /**
+   * Probe, and open the sequence only if something is actually running.
+   *
+   * `slugs` are the tools whose configs the write actually touched. Omitting
+   * them asks about every tool, which only the master toggle means.
+   */
+  offerAfterChange: (slugs?: string[]) => Promise<void>;
   goToConfirm: () => void;
   goBack: () => void;
   closeApps: () => Promise<void>;
@@ -54,18 +59,18 @@ export function useRunningApps({ onError }: { onError?: (err: unknown) => void }
    * this sequence offers to kill processes. Guessing wrong here means offering
    * to close apps that may not be open.
    */
-  const offerAfterChange = useCallback(async (tools?: string[]) => {
+  const offerAfterChange = useCallback(async (slugs?: string[]) => {
     try {
       // Narrowed to what actually changed. A master toggle passes nothing and
       // still offers everything, because it moved every tool's route; a single
       // app's toggle moved only its own, and naming the others would ask to
       // kill work for no reason.
-      const { agents } = await runningAgents(tools);
+      const { agents } = await runningAgents(slugs);
       if (agents.length === 0) return;
       // Process names, deduplicated: two `claude` processes are one app to the
       // person reading this, and the pid is not something they can act on.
       const apps = [...new Set(agents.map((a) => a.name))];
-      setStage({ kind: "offer", apps });
+      setStage({ kind: "offer", apps, slugs });
       track("routing_notice_shown");
     } catch (err) {
       trackError(err, "close_agents");
@@ -73,18 +78,20 @@ export function useRunningApps({ onError }: { onError?: (err: unknown) => void }
   }, []);
 
   const goToConfirm = useCallback(() => {
-    setStage((s) => (s?.kind === "offer" ? { kind: "confirm", apps: s.apps } : s));
+    setStage((s) => (s?.kind === "offer" ? { kind: "confirm", apps: s.apps, slugs: s.slugs } : s));
   }, []);
 
   const goBack = useCallback(() => {
-    setStage((s) => (s?.kind === "confirm" ? { kind: "offer", apps: s.apps } : s));
+    setStage((s) => (s?.kind === "confirm" ? { kind: "offer", apps: s.apps, slugs: s.slugs } : s));
   }, []);
 
   const closeApps = useCallback(async () => {
     if (stage?.kind !== "confirm" || busy) return;
     setBusy(true);
     try {
-      const closed = await closeRunningAgents();
+      // The same filter the offer was built from. Killing a wider set than the
+      // one on screen would signal processes the user never agreed to.
+      const closed = await closeRunningAgents(stage.slugs);
       track("agents_closed", { count: closed });
       // Report what was asked for rather than the count: the backend signals
       // processes, and a name the user recognises beats a number they cannot

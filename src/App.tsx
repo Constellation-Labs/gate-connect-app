@@ -212,6 +212,13 @@ export function App() {
   const [openFamily, setOpenFamily] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
+  // Synchronous twin of `proxyBusy`, checked-and-set at the top of every
+  // mutation callback. The state alone can't guard a double-submit: two
+  // activations delivered before React re-renders both read the stale
+  // closure's `false` and both pass. One shared ref, because the mutation
+  // callbacks are mutually exclusive operations; the state stays for
+  // rendering disabled buttons.
+  const proxyBusyRef = useRef(false);
   // Whether we are blocked on the OS certificate-trust dialog. Distinct from
   // `proxyBusy` because it is the only busy state with something to say: the
   // screens swap in per-platform copy naming the dialog that is on screen (see
@@ -308,12 +315,11 @@ export function App() {
   // The backend can flip routing on by itself at startup (restart
   // persistence: it re-enables what the user last left on) and announces it
   // with a single `proxy-state-changed` nudge. Reopening the popover from the
-  // tray also re-reads, via `refreshState` below - it used to do neither, and
-  // this comment used to claim a status poll that had never existed.
-  // Registering the listener *before* the first
-  // status read (and awaiting the registration) closes the gap where the
-  // enable lands after the read but before the listener is live - that
-  // one-shot nudge would otherwise be missed for the webview's lifetime.
+  // tray also re-reads, via `refreshState` below. Registering the listener
+  // *before* the first status read (and awaiting the registration) closes the
+  // gap where the enable lands after the read but before the listener is
+  // live - that one-shot nudge would otherwise be missed for the webview's
+  // lifetime.
   // Re-read everything the ledger renders. Nothing else in the app does this:
   // the mount effect reads once, and the mutation callbacks only re-read what
   // they just changed. So without a caller here, a webview that has been alive
@@ -402,15 +408,9 @@ export function App() {
       if (isSignedIn(acct, oauthState)) {
         resolved = "home";
         // Offer OAuth once to a working key-based account. Gated on being
-        // signed in so it never lands over first-run.
-        //
-        // This used to also test hasSeenTour(), with a comment claiming it
-        // spared someone who had just chosen the key on FirstRun. It did not:
-        // the tour window opens and completes before FirstRun renders, so the
-        // flag is already set by the time they paste a key, and they got the
-        // offer on their next launch anyway. FirstRun stamps the seen flag
-        // itself now, which is the only place that knows the choice was
-        // deliberate.
+        // signed in so it never lands over first-run. No tour gate here:
+        // FirstRun stamps the seen flag itself, the one place that knows
+        // choosing the key was deliberate.
         if (acct?.auth_mode === "api_key" && acct.has_api_key && !hasSeenOAuthOffer()) {
           setOAuthOffer(true);
         }
@@ -522,6 +522,29 @@ export function App() {
     return () => {
       alive = false;
       void unlisten.then((f) => f()).catch(() => {});
+    };
+  }, [account]);
+
+  // Same landing as the focus check above, but for a death the backend
+  // noticed on its own: the gateway refused a routed call, the shell
+  // re-verified the session and found it gone. Without this the popover would
+  // sit on home - showing routing as fine - until the window happened to lose
+  // and regain focus, which for a window that's already open and being watched
+  // may be a long time.
+  useEffect(() => {
+    if (account?.auth_mode !== "oauth") return;
+    let alive = true;
+    const unlisten = listen("session-signin-required", async () => {
+      const oauthState = await oauthStatus().catch(() => null);
+      if (!alive) return;
+      setOAuth(oauthState);
+      if (!isSignedIn(account, oauthState) && !needsOrg(account, oauthState)) {
+        setScreen("firstrun");
+      }
+    });
+    return () => {
+      alive = false;
+      void unlisten.then((f) => f());
     };
   }, [account]);
 
@@ -711,12 +734,31 @@ export function App() {
     }
   }, [proxy, runTrustCa]);
 
+  // Re-read what a routing mutation may have changed: the tool ledger and the
+  // proxy state. A transient listTools failure keeps the previous list rather
+  // than blanking the ledger. Returns whether the engine is running (false
+  // when the proxy subsystem is absent), for the callers' change notice.
+  const resyncLedger = useCallback(async () => {
+    const toolList = await listTools().catch(() => null);
+    if (toolList !== null) setTools(toolList);
+    let running = false;
+    try {
+      const fresh = await proxyStatus();
+      setProxy(fresh);
+      running = fresh.running;
+    } catch {
+      /* non-macOS: no proxy subsystem */
+    }
+    return running;
+  }, []);
+
   // `takeover: true` (the home-screen toggle) surfaces the result as the
   // full-popover routing notice; the Routing screen's toggle keeps its
   // inline hints instead.
   const toggleProxy = useCallback(
     async (takeover: boolean) => {
-      if (proxyBusy) return;
+      if (proxyBusyRef.current) return;
+      proxyBusyRef.current = true;
       setProxyBusy(true);
       setProviderError(null);
       try {
@@ -748,7 +790,7 @@ export function App() {
         // snapshots what was on and disables all; turning on restores that
         // snapshot. Just reflect the result (the returned ProxyState already
         // carries the restored domains) and refresh the tool ledger.
-        setTools(await listTools().catch(() => []));
+        await resyncLedger();
       } catch (e) {
         // The user pressed Not now on the pre-flight: the switch stays off and
         // that is the whole story. Nothing was attempted, so there is no failure
@@ -766,17 +808,19 @@ export function App() {
           /* noop */
         }
       } finally {
+        proxyBusyRef.current = false;
         setProxyBusy(false);
       }
     },
-    [proxy, proxyBusy, ensureCaTrusted],
+    [proxy, ensureCaTrusted, account, resyncLedger],
   );
 
   // Toggle one proxy domain (an "Apps" ledger row). Applied live by the
   // engine - no agent restart involved, so no hint.
   const setDomain = useCallback(
     async (slug: string, enabled: boolean) => {
-      if (proxyBusy) return;
+      if (proxyBusyRef.current) return;
+      proxyBusyRef.current = true;
       setProxyBusy(true);
       setProviderError(null);
       try {
@@ -794,10 +838,11 @@ export function App() {
         // to the member it belongs to, rather than in a screen-level note.
         throw e;
       } finally {
+        proxyBusyRef.current = false;
         setProxyBusy(false);
       }
     },
-    [proxyBusy],
+    [],
   );
 
   // Connect or disconnect one tool from its detail screen. Rethrows so the
@@ -806,7 +851,8 @@ export function App() {
   // provider headline, and connect auto-enables the proxy engine).
   const setToolRouted = useCallback(
     async (slug: string, routed: boolean) => {
-      if (proxyBusy) return;
+      if (proxyBusyRef.current) return;
+      proxyBusyRef.current = true;
       const wasRunning = proxy?.running ?? false;
       // Set when the user declines the certificate pre-flight, because the
       // `finally` below runs on that path too and its notice would announce a
@@ -835,20 +881,13 @@ export function App() {
         trackError(e, "connect", { tool: slug, routed });
         throw e;
       } finally {
-        setTools(await listTools().catch(() => tools));
-        let running = false;
-        try {
-          const fresh = await proxyStatus();
-          setProxy(fresh);
-          running = fresh.running;
-        } catch {
-          /* non-macOS: no proxy subsystem */
-        }
+        const running = await resyncLedger();
         if (!declined) setChangeNotice(noticeFor(routed, running, wasRunning));
+        proxyBusyRef.current = false;
         setProxyBusy(false);
       }
     },
-    [proxyBusy, tools, proxy, ensureCaTrusted],
+    [tools, proxy, ensureCaTrusted, resyncLedger],
   );
 
   // Route (or unroute) a whole model family from one switch. Runs the same
@@ -862,13 +901,14 @@ export function App() {
   // routing.
   const setGroupRouted = useCallback(
     async (id: string, on: boolean) => {
-      if (proxyBusy) return;
+      if (proxyBusyRef.current) return;
       const group = buildGroups(providers, tools, proxy?.domains ?? [], {
         proxyOn: proxy?.running ?? false,
         caTrusted: proxy?.ca_trusted ?? false,
       }).find((g) => g.id === id);
       if (!group) return;
       const wasRunning = proxy?.running ?? false;
+      proxyBusyRef.current = true;
       setProxyBusy(true);
       setProviderError(null);
       // Ahead of the loop, not inside it: a config member's connect auto-enables
@@ -880,6 +920,7 @@ export function App() {
         try {
           await ensureCaTrusted();
         } catch (e) {
+          proxyBusyRef.current = false;
           setProxyBusy(false);
           // A declined pre-flight aborts the family the same way, minus the
           // note: the user just chose this on our own screen.
@@ -926,19 +967,12 @@ export function App() {
               : `Couldn’t ${on ? "connect" : "disconnect"} ${failed.length} of ${cascade.length}: ${failed.join(", ")}`,
         });
       }
-      setTools(await listTools().catch(() => tools));
-      let running = false;
-      try {
-        const fresh = await proxyStatus();
-        setProxy(fresh);
-        running = fresh.running;
-      } catch {
-        /* non-macOS: no proxy subsystem */
-      }
+      const running = await resyncLedger();
       setChangeNotice(noticeFor(on, running, wasRunning));
+      proxyBusyRef.current = false;
       setProxyBusy(false);
     },
-    [proxyBusy, providers, tools, proxy, account, ensureCaTrusted],
+    [providers, tools, proxy, account, ensureCaTrusted, resyncLedger],
   );
 
   /** Toggle the shell-environment channel, the master's sub-setting. Its own
@@ -947,7 +981,8 @@ export function App() {
    * user's environment - a machine-wide change that reaches git and curl, not
    * just the AI tools. */
   const toggleEnvExport = useCallback(async () => {
-    if (proxyBusy) return;
+    if (proxyBusyRef.current) return;
+    proxyBusyRef.current = true;
     setProviderError(null);
     setProxyBusy(true);
     try {
@@ -963,12 +998,14 @@ export function App() {
         /* noop */
       }
     } finally {
+      proxyBusyRef.current = false;
       setProxyBusy(false);
     }
-  }, [proxyBusy, proxy]);
+  }, [proxy]);
 
   const trustCa = useCallback(async () => {
-    if (proxyBusy) return;
+    if (proxyBusyRef.current) return;
+    proxyBusyRef.current = true;
     setProviderError(null);
     setProxyBusy(true);
     try {
@@ -983,12 +1020,14 @@ export function App() {
       setProviderError(classifyError(err, "trust_ca"));
       throw err;
     } finally {
+      proxyBusyRef.current = false;
       setProxyBusy(false);
     }
-  }, [proxyBusy, runTrustCa]);
+  }, [runTrustCa]);
 
   const untrustCa = useCallback(async () => {
-    if (proxyBusy) return;
+    if (proxyBusyRef.current) return;
+    proxyBusyRef.current = true;
     setProviderError(null);
     setProxyBusy(true);
     try {
@@ -1004,9 +1043,10 @@ export function App() {
         /* noop */
       }
     } finally {
+      proxyBusyRef.current = false;
       setProxyBusy(false);
     }
-  }, [proxyBusy]);
+  }, []);
 
   // Legacy key accounts can switch to Constellation sign-in from Settings; the
   // OAuth flow flips auth_mode to OAuth on success, then onConnected routes to

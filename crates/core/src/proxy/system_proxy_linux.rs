@@ -28,6 +28,17 @@
 //! the drop-in still applies at the next login. Either way, already-running
 //! processes keep their environment until relaunched - nothing can change that.
 //!
+//! Second channel: **GNOME's own proxy setting**
+//! (`org.gnome.system.proxy` via `gsettings`). The variables above can only
+//! reach a process at launch, which makes "off" invisible to anything already
+//! running: a browser started while routing was on keeps its `https_proxy`
+//! pointer for its whole life, and once the engine stops answering, every page
+//! it loads is a proxy error. GNOME's keys are re-read live (Firefox and
+//! everything else on GLib's proxy resolver watch them), so enabling and
+//! disabling both take effect *now* for GUI apps. Those keys belong to the user
+//! rather than to us - a hand-configured corporate proxy lives there - so
+//! enable captures them and off puts them back; see [`GNOME_KEYS`].
+//!
 //! Pairs with a *stable* engine port (persisted via [`load_port`]/[`save_port`]):
 //! a session freezes the proxy pointer at login, so the engine must come back on
 //! the same port across restarts or that frozen pointer dangles at a dead port.
@@ -52,16 +63,37 @@ fn dropin_path() -> Result<PathBuf> {
         .join(DROPIN_NAME))
 }
 
-/// Marker recorded on enable. The drop-in design needs no captured prior state
-/// to revert (we just delete our file), so this only notes whether the drop-in
-/// was already present when we looked - and, more importantly, its existence on
-/// disk is what tells [`super::manager`] a previous session left the proxy on
-/// (crash reconcile).
+/// State recorded on enable, so disable can undo exactly what enable did.
+///
+/// The drop-in half needs nothing captured - we own that file outright, so "off"
+/// is a plain delete - and its existence on disk is what tells
+/// [`super::manager`] a previous session left the proxy on (crash reconcile).
+/// GNOME's proxy keys are the opposite: they are the user's, so their prior
+/// values have to be carried across the toggle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxySnapshot {
     /// Whether our drop-in was already present when we snapshotted (i.e. an
     /// earlier unclean session left it behind).
     pub block_present: bool,
+    /// GNOME's proxy keys as they were before we first pointed them at the
+    /// engine, captured by [`snapshot`] and written back by [`gsettings_off`].
+    /// `None` on a session without `gsettings` (KDE, a bare WM) and on
+    /// snapshots written before this field existed - both mean "switch the
+    /// proxy mode off" rather than "restore".
+    #[serde(default)]
+    pub gnome_proxy: Option<Vec<GsettingsEntry>>,
+}
+
+/// One GNOME proxy key with its value as literal GVariant text, exactly as
+/// `gsettings get` printed it. Kept verbatim so `gsettings set` can hand it
+/// straight back: the printed form round-trips for every type we touch (strings
+/// come back quoted, ports bare, `ignore-hosts` as a `['a', 'b']` array), so
+/// nothing here has to model GVariant types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GsettingsEntry {
+    pub schema: String,
+    pub key: String,
+    pub value: String,
 }
 
 fn snapshot_path() -> Result<PathBuf> {
@@ -124,6 +156,36 @@ fn build_dropin(assignments: &[(&'static str, String)]) -> String {
     body
 }
 
+/// True when a test seam has redirected this process's per-user paths.
+///
+/// The drop-in, the snapshot and the port file all move with that seam; the
+/// login session does not. Its environment and GNOME's dconf database sit
+/// outside the redirected filesystem, so a unit test calling [`enable`] would
+/// reconfigure the developer's own desktop and leave it that way. Every
+/// session-facing side effect below is skipped under the seam.
+fn session_effects_suppressed() -> bool {
+    crate::env::test_seam("GATE_CONNECT_TEST_HOME").is_some()
+}
+
+/// Run a session-facing command for its effect only: silent on success, silent
+/// when the binary simply is not there (a desktop that ships neither systemd nor
+/// GNOME), a diagnostic on anything else. Never fails the caller - the drop-in
+/// and the GNOME keys are the durable state, and these commands only carry "on"
+/// and "off" into the session that is already running.
+fn run_best_effort(program: &str, args: &[&str]) {
+    match std::process::Command::new(program).args(args).output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!(
+            "[gate] {program} {} exited {}: {}",
+            args.first().copied().unwrap_or(""),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // tool absent; fine
+        Err(e) => eprintln!("[gate] could not run {program}: {e}"),
+    }
+}
+
 /// Push proxy variable assignments into the *running* login session so tools
 /// launched (or relaunched) now pick them up without waiting for the next
 /// login. `dbus-update-activation-environment --systemd` updates both the D-Bus
@@ -133,6 +195,9 @@ fn build_dropin(assignments: &[(&'static str, String)]) -> String {
 /// instead. Already-running processes keep their old environment until
 /// relaunched - nothing can change that.
 fn push_to_session(assignments: &[(&'static str, String)]) {
+    if session_effects_suppressed() {
+        return;
+    }
     if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
         return; // no graphical session bus to update; drop-in covers next login
     }
@@ -153,10 +218,175 @@ fn push_to_session(assignments: &[(&'static str, String)]) {
     }
 }
 
-/// Note whether our drop-in is currently present. Non-privileged.
+/// Take our proxy variables *out* of the running login session.
+///
+/// `dbus-update-activation-environment` can only assign, so the only way "off"
+/// used to reach the session was a push of empty values - which left
+/// `http_proxy=` (present, but empty) in the `systemd --user` manager that GNOME
+/// launches desktop apps from. `systemctl --user unset-environment` genuinely
+/// removes them, so an app started after "off" inherits no proxy pointer at all
+/// rather than an empty one. The blanking push stays for the D-Bus activation
+/// environment, which has no unset and which non-systemd activation still reads.
+///
+/// Best-effort, and - like the enable-time push - powerless over processes that
+/// are already running: those keep the pointer they launched with until they are
+/// restarted. Reaching *them* is what [`gsettings_off`] is for.
+fn unset_from_session() {
+    if !session_effects_suppressed() {
+        let mut args = vec!["--user", "unset-environment"];
+        args.extend(PROXY_VARS);
+        run_best_effort("systemctl", &args);
+    }
+    let cleared: Vec<(&'static str, String)> = PROXY_VARS
+        .into_iter()
+        .map(|key| (key, String::new()))
+        .collect();
+    push_to_session(&cleared);
+}
+
+/// The GNOME proxy keys we overwrite while routing is on, and therefore the ones
+/// [`snapshot`] captures beforehand and [`gsettings_off`] writes back.
+///
+/// Why this channel exists at all: see the second-channel paragraph in the
+/// module docs. The engine only speaks HTTP and HTTPS, so we set exactly those
+/// two protocols and leave `use-same-proxy`, `ftp` and `socks` as the user has
+/// them.
+///
+/// `mode` comes first so the off path stops routing before it moves the host and
+/// port back underneath it; [`gsettings_apply`] writes them in the opposite
+/// order, for the same reason.
+const GNOME_KEYS: [(&str, &str); 6] = [
+    ("org.gnome.system.proxy", "mode"),
+    ("org.gnome.system.proxy", "ignore-hosts"),
+    ("org.gnome.system.proxy.http", "host"),
+    ("org.gnome.system.proxy.http", "port"),
+    ("org.gnome.system.proxy.https", "host"),
+    ("org.gnome.system.proxy.https", "port"),
+];
+
+/// The engine's loopback host as GVariant text - the same `127.0.0.1` the
+/// variables point at (see [`super::proxy_env`]).
+const ENGINE_HOST_GVARIANT: &str = "'127.0.0.1'";
+
+/// Read one key, or `None` if `gsettings` or the schema is missing (i.e. not a
+/// GNOME session).
+fn gsettings_get(schema: &str, key: &str) -> Option<String> {
+    let out = std::process::Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Capture [`GNOME_KEYS`] so the off path can put them back verbatim.
+///
+/// `None` when this is not a GNOME session, or when any single key won't read: a
+/// partial record would restore some keys and leave others pointing at an engine
+/// that has stopped answering, which is worse than falling back to mode-off.
+fn gsettings_capture() -> Option<Vec<GsettingsEntry>> {
+    if session_effects_suppressed() {
+        return None;
+    }
+    let mut entries = Vec::with_capacity(GNOME_KEYS.len());
+    for (schema, key) in GNOME_KEYS {
+        entries.push(GsettingsEntry {
+            schema: schema.to_string(),
+            key: key.to_string(),
+            value: gsettings_get(schema, key)?,
+        });
+    }
+    Some(entries)
+}
+
+/// Render `no_proxy`'s host list as the GVariant string array `ignore-hosts`
+/// wants, so both channels exempt exactly the same hosts. The hosts are our own
+/// literals, so there are no quotes to escape.
+fn gvariant_string_array(hosts: &str) -> String {
+    let quoted: Vec<String> = hosts
+        .split(',')
+        .map(|host| format!("'{}'", host.trim()))
+        .collect();
+    format!("[{}]", quoted.join(", "))
+}
+
+/// Point GNOME's proxy setting at the loopback engine, so apps that are already
+/// running follow the toggle instead of waiting to be relaunched. Best-effort: a
+/// session without `gsettings` is still routed by the drop-in, so nothing here
+/// may fail [`enable`].
+fn gsettings_apply(port: u16) {
+    if session_effects_suppressed() {
+        return;
+    }
+    let ignore = gvariant_string_array(super::proxy_env::NO_PROXY_VALUE);
+    let port = port.to_string();
+    // `mode` last: until it flips to manual the host and port keys are inert, so
+    // nothing can route at a half-written pointer.
+    for (schema, key, value) in [
+        ("org.gnome.system.proxy", "ignore-hosts", ignore.as_str()),
+        ("org.gnome.system.proxy.http", "host", ENGINE_HOST_GVARIANT),
+        ("org.gnome.system.proxy.http", "port", port.as_str()),
+        ("org.gnome.system.proxy.https", "host", ENGINE_HOST_GVARIANT),
+        ("org.gnome.system.proxy.https", "port", port.as_str()),
+        ("org.gnome.system.proxy", "mode", "'manual'"),
+    ] {
+        run_best_effort("gsettings", &["set", schema, key, value]);
+    }
+}
+
+/// Put GNOME's proxy keys back as [`gsettings_capture`] found them, or - with
+/// nothing recorded - just switch the proxy mode off.
+///
+/// Restoring rather than blanket-clearing because these keys are the user's:
+/// someone with a hand-configured proxy would otherwise lose it the first time
+/// they toggled ours.
+fn gsettings_off(prior: Option<&[GsettingsEntry]>) {
+    if session_effects_suppressed() {
+        return;
+    }
+    match prior {
+        // Recorded `mode` first (see [`GNOME_KEYS`]), so routing stops before
+        // the host and port move back.
+        Some(entries) => {
+            for entry in entries {
+                run_best_effort(
+                    "gsettings",
+                    &["set", &entry.schema, &entry.key, &entry.value],
+                );
+            }
+        }
+        // Nothing recorded: a pre-upgrade snapshot, a non-GNOME session, or a
+        // capture that failed. The mode is what makes the host and port live, so
+        // clearing it stops routing and leaves the rest for the user to inspect.
+        None => run_best_effort(
+            "gsettings",
+            &["set", "org.gnome.system.proxy", "mode", "'none'"],
+        ),
+    }
+}
+
+/// Note whether our drop-in is currently present, and what GNOME's proxy keys
+/// held before we touched them. Non-privileged.
 pub fn snapshot() -> Result<ProxySnapshot> {
+    let block_present = dropin_present()?;
+    // With our drop-in already on disk, "prior" means what an *earlier* session
+    // recorded, never what `gsettings` says now: reading now would record our
+    // own manual pointer as the user's setting and make every later restore
+    // leave the machine routed at a port that is about to die. This is the
+    // normal case rather than a corner - the startup re-honor calls `enable`,
+    // and so `snapshot`, with the crashed session's wiring still in place.
+    let gnome_proxy = if block_present {
+        load_snapshot()
+            .unwrap_or(None)
+            .and_then(|previous| previous.gnome_proxy)
+    } else {
+        gsettings_capture()
+    };
     Ok(ProxySnapshot {
-        block_present: dropin_present()?,
+        block_present,
+        gnome_proxy,
     })
 }
 
@@ -194,9 +424,10 @@ pub fn clear_snapshot() -> Result<()> {
 /// The proxy URL currently exported to the environment, read back from the
 /// drop-in rather than from anything we remember writing.
 ///
-/// On Linux this is the same file that *is* the system proxy: there is no PAC,
-/// so the env channel and the OS setting are one mechanism and cannot be
-/// toggled apart (see `ENV_CHANNEL_SEPARABLE`).
+/// The drop-in is the readback source even though [`gsettings_apply`] mirrors
+/// the same pointer into GNOME: the file is ours alone, while GNOME's keys are
+/// the user's and may hold their proxy rather than ours. There is no PAC on this
+/// platform either way (see `ENV_CHANNEL_SEPARABLE`).
 pub fn exported_proxy() -> Result<Option<String>> {
     let path = dropin_path()?;
     let body = match fs::read_to_string(&path) {
@@ -210,9 +441,12 @@ pub fn exported_proxy() -> Result<Option<String>> {
         .map(|v| v.trim().trim_matches('"').to_string()))
 }
 
-/// The environment variables are the whole mechanism here, so turning them off
-/// independently would mean turning routing off. macOS and Windows can separate
-/// the two because their OS proxy setting is a PAC.
+/// Still false now that [`gsettings_apply`] drives GNOME's setting as well. That
+/// channel reaches GUI apps, but the tools this product exists to route are CLIs
+/// on Node, Bun and Python, and they read the variables and nothing else - so
+/// declining the variables would still mean declining routing. macOS and Windows
+/// can separate the two because their OS proxy setting is a PAC that every
+/// platform HTTP stack honours.
 pub const ENV_CHANNEL_SEPARABLE: bool = false;
 
 /// Point the system proxy at the loopback engine: write our `environment.d`
@@ -225,20 +459,37 @@ pub fn enable(port: u16) -> Result<()> {
     crate::primitives::write_file(&path, build_dropin(&assignments).as_bytes(), 0o644)
         .with_context(|| format!("writing {}", path.display()))?;
     push_to_session(&assignments);
+    // GNOME's own setting, so apps that are already running pick the proxy up
+    // (see [`GNOME_KEYS`]). Last and best-effort: the drop-in above is the part
+    // that must not fail.
+    gsettings_apply(port);
     Ok(())
 }
 
-/// Delete our drop-in, restoring the user environment to its prior (proxy-free)
-/// state. Restore and force-off are identical here - both just remove our file -
-/// so `snapshot` is unused. Unprivileged.
-pub fn restore(_snapshot: &ProxySnapshot) -> Result<()> {
-    force_off()
+/// Turn routing off, putting GNOME's proxy keys back to the values [`snapshot`]
+/// captured. The drop-in half needs no captured state - we own that file
+/// outright, so "off" there is a plain delete. Unprivileged.
+pub fn restore(snapshot: &ProxySnapshot) -> Result<()> {
+    off(snapshot.gnome_proxy.as_deref())
 }
 
-/// Remove our drop-in. Fail-safe used when no snapshot is available, so a dead
-/// engine never strands new shells at an unreachable proxy. Unprivileged.
+/// Turn routing off with no snapshot in hand. Fail-safe used when none is
+/// available, so a dead engine never strands new shells at an unreachable proxy.
+/// Still restores GNOME's keys exactly when an earlier session left a record of
+/// them on disk; without one it only clears the proxy mode. Unprivileged.
 pub fn force_off() -> Result<()> {
+    let recorded = load_snapshot()
+        .unwrap_or(None)
+        .and_then(|snapshot| snapshot.gnome_proxy);
+    off(recorded.as_deref())
+}
+
+/// Shared body of [`restore`] and [`force_off`]: delete the drop-in, take the
+/// variables out of the running session, and hand GNOME's keys back.
+fn off(prior_gnome: Option<&[GsettingsEntry]>) -> Result<()> {
     let path = dropin_path()?;
+    // Evidence that we are the ones routing: our drop-in is still on disk.
+    let was_routing = path.exists();
     let result = match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -247,11 +498,14 @@ pub fn force_off() -> Result<()> {
     // Blank the vars in the running session too, so tools launched after turning
     // the proxy off stop routing through a possibly-dead engine without waiting
     // for the next login. (Already-running processes keep them until relaunched.)
-    let cleared: Vec<(&'static str, String)> = PROXY_VARS
-        .into_iter()
-        .map(|key| (key, String::new()))
-        .collect();
-    push_to_session(&cleared);
+    unset_from_session();
+    // GNOME's keys only when there is evidence we wrote them: the drop-in was
+    // still there, or a session recorded the prior values. App exit runs this
+    // path unconditionally, including when the proxy was never on, and a blanket
+    // mode 'none' would flatten a proxy the user configured themselves.
+    if was_routing || prior_gnome.is_some() {
+        gsettings_off(prior_gnome);
+    }
     result
 }
 
@@ -264,10 +518,11 @@ mod tests {
         // GATE_CONNECT_TEST_HOME data-dir seam) and share a single temp dir, so
         // they must not run concurrently: otherwise one test's teardown
         // `remove_dir_all` races another's writes and the atomic rename fails
-        // with ENOENT. Serialize them. (`unwrap_or_else` swallows a poisoned
-        // lock from an earlier panicking test so the rest still run.)
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        // with ENOENT. Serialize them - and not only against each other: this
+        // sets `GATE_CONNECT_TEST_HOME` for the whole process, so the exclusion
+        // has to cover every test that reads a per-user path, not just this
+        // module's. See `crate::env::path_env_lock`.
+        let _lock = crate::env::path_env_lock();
 
         // `dropin_path` keys off `dirs::config_dir()` (XDG_CONFIG_HOME), and the
         // snapshot/port paths off `app_support_dir`; point both at a throwaway
@@ -312,5 +567,32 @@ mod tests {
         with_temp_env(|| {
             assert!(force_off().is_ok());
         });
+    }
+
+    #[test]
+    fn gnome_keys_start_with_mode_so_off_stops_routing_first() {
+        assert_eq!(GNOME_KEYS[0], ("org.gnome.system.proxy", "mode"));
+    }
+
+    #[test]
+    fn ignore_hosts_renders_no_proxy_as_a_gvariant_array() {
+        assert_eq!(
+            gvariant_string_array("localhost,127.0.0.1,::1"),
+            "['localhost', '127.0.0.1', '::1']"
+        );
+    }
+
+    #[test]
+    fn ignore_hosts_covers_every_no_proxy_host() {
+        // The two channels have to exempt the same hosts: a host the variables
+        // keep off the proxy but GNOME sends through it is a loop (OpenCode's
+        // TUI talking to its own local server) that only GUI-launched tools hit.
+        let rendered = gvariant_string_array(super::super::proxy_env::NO_PROXY_VALUE);
+        for host in super::super::proxy_env::NO_PROXY_VALUE.split(',') {
+            assert!(
+                rendered.contains(&format!("'{host}'")),
+                "{rendered} is missing {host}"
+            );
+        }
     }
 }

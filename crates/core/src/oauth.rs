@@ -47,6 +47,16 @@ pub fn mark_session_rejected() {
     SESSION_REJECTED_BY_GATEWAY.store(true, Ordering::Relaxed);
 }
 
+/// Whether the gateway has been recorded as rejecting the stored session
+/// ([`mark_session_rejected`]). The narrow question "is this session known
+/// dead", which a `live_session()` of `None` does not answer - that is also
+/// what a signed-out user, an unreachable identity provider, or a keychain
+/// read failure looks like. Callers that raise a "sign in again" signal need
+/// the narrow one, or they cry wolf on a network blip.
+pub fn session_rejected() -> bool {
+    SESSION_REJECTED_BY_GATEWAY.load(Ordering::Relaxed)
+}
+
 /// Refresh once the access token is within this many seconds of expiry, to
 /// cover clock skew and requests already in flight.
 const EXPIRY_SKEW_SECS: i64 = 60;
@@ -56,15 +66,10 @@ const EXPIRY_SKEW_SECS: i64 = 60;
 /// background loop both tick on this interval, calling [`ensure_fresh`].
 pub const REFRESH_INTERVAL_SECS: u64 = 30;
 
-/// The gateway host that selects the **staging** Cognito pool. Every other
-/// host (production, self-hosted, unknown, or no account yet) uses the prod
-/// pool. Keep in sync with `GATEWAY_SERVERS` in `src/lib/config.ts`.
-const STAGING_GATEWAY_HOST: &str = "gateway-staging.constellationgate.ai";
-
 /// OAuth client configuration, resolved for the **currently selected
 /// gateway**. Both the production and staging Cognito pools are baked in at
 /// build time; [`OAuthConfig::from_build_env`] picks the pair matching the
-/// active gateway host (see [`STAGING_GATEWAY_HOST`]). Set
+/// active gateway host (see [`crate::account::gateway_is_staging`]). Set
 /// `GATE_COGNITO_HOSTED_DOMAIN` / `GATE_COGNITO_CLIENT_ID` /
 /// `GATE_COGNITO_SCOPES` (and their `_STAGING` variants) at build time, or
 /// override any of them via the process env at runtime.
@@ -89,21 +94,6 @@ fn config_value(name: &str, baked: Option<&str>) -> Option<String> {
         .or_else(|| baked.map(str::to_string))
 }
 
-/// Whether the currently-selected gateway is the known staging host, which
-/// decides which Cognito pool [`OAuthConfig::from_build_env`] resolves. Reads
-/// the gateway URL from `account.json` (no keychain touch); a missing account
-/// or any parse failure falls back to production.
-fn active_gateway_is_staging() -> bool {
-    crate::account::load_base_url()
-        .ok()
-        .flatten()
-        .as_deref()
-        .and_then(|u| reqwest::Url::parse(u).ok())
-        .and_then(|u| u.host_str().map(str::to_owned))
-        .map(|h| h == STAGING_GATEWAY_HOST)
-        .unwrap_or(false)
-}
-
 impl OAuthConfig {
     /// Resolve the OAuth client config for the gateway currently on disk. The
     /// active gateway host (`account.json`) selects the production or staging
@@ -115,7 +105,7 @@ impl OAuthConfig {
     /// of panicking. All values are public client config (no secret), so a
     /// runtime override is safe.
     pub fn from_build_env() -> Option<Self> {
-        let (hosted_domain, client_id, scopes_raw) = if active_gateway_is_staging() {
+        let (hosted_domain, client_id, scopes_raw) = if crate::account::gateway_is_staging() {
             (
                 config_value(
                     "GATE_COGNITO_HOSTED_DOMAIN_STAGING",
@@ -162,7 +152,7 @@ impl OAuthConfig {
     fn token_endpoint(&self) -> String {
         // Test seam mirroring `GATE_CONNECT_TEST_*` elsewhere: point the token
         // exchange at a loopback mock. Unset in real builds.
-        if let Some(o) = std::env::var_os("GATE_CONNECT_TEST_TOKEN_ENDPOINT") {
+        if let Some(o) = crate::env::test_seam("GATE_CONNECT_TEST_TOKEN_ENDPOINT") {
             return o.to_string_lossy().into_owned();
         }
         format!("https://{}/oauth2/token", self.hosted_domain)
@@ -317,12 +307,65 @@ fn parse_token_response(
     })
 }
 
+/// Why a token grant did not produce tokens. The distinction the session
+/// verdicts turn on: "the identity provider refused us" is evidence about the
+/// session, "we could not reach it" is evidence about the network and must
+/// never sign anyone out. Both used to arrive as one opaque error, so a failed
+/// connect on a machine whose network was still coming up after resume read
+/// exactly like a revoked refresh token.
+#[derive(Debug)]
+pub enum RefreshError {
+    /// Cognito answered and said no (4xx), or the stored bundle was minted by
+    /// a different app client. Only an interactive sign-in clears this.
+    Refused(anyhow::Error),
+    /// No answer worth believing: DNS, connect, TLS, timeout, a 5xx, an
+    /// unreadable body, or a local keychain failure. Says nothing about
+    /// whether the session is alive.
+    Unavailable(anyhow::Error),
+}
+
+impl RefreshError {
+    /// Whether the identity provider refused the grant, as opposed to not
+    /// answering. The only question a caller deciding "is this session dead"
+    /// may ask.
+    pub fn is_refusal(&self) -> bool {
+        matches!(self, RefreshError::Refused(_))
+    }
+
+    fn inner(&self) -> &anyhow::Error {
+        match self {
+            RefreshError::Refused(e) | RefreshError::Unavailable(e) => e,
+        }
+    }
+
+    /// Unwrap to the underlying error, for callers that only report it.
+    pub fn into_error(self) -> anyhow::Error {
+        match self {
+            RefreshError::Refused(e) | RefreshError::Unavailable(e) => e,
+        }
+    }
+}
+
+impl std::fmt::Display for RefreshError {
+    /// Always the alternate (full chain) form: these errors exist to be read
+    /// in logs, where the context is the diagnosis.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.inner())
+    }
+}
+
+impl std::error::Error for RefreshError {}
+
 /// POST a form-encoded grant to the token endpoint and parse the result.
+///
+/// Classifies every failure on the way ([`RefreshError`]): only Cognito
+/// answering with a 4xx is a refusal. A 5xx is an outage, and everything
+/// before a status arrives is the network.
 fn post_token(
     cfg: &OAuthConfig,
     params: &[(&str, &str)],
     fallback_refresh: Option<&str>,
-) -> Result<OAuthTokens> {
+) -> std::result::Result<OAuthTokens, RefreshError> {
     // Build the `application/x-www-form-urlencoded` body via `Url`'s
     // serializer so keys/values are percent-encoded correctly.
     let mut serializer = reqwest::Url::parse("http://token.local/").expect("static base URL");
@@ -336,7 +379,8 @@ fn post_token(
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
         .build()
-        .context("building the Cognito token HTTP client")?;
+        .context("building the Cognito token HTTP client")
+        .map_err(RefreshError::Unavailable)?;
     let resp = client
         .post(cfg.token_endpoint())
         .header(
@@ -345,19 +389,30 @@ fn post_token(
         )
         .body(body)
         .send()
-        .context("calling Cognito token endpoint")?;
+        .context("calling Cognito token endpoint")
+        .map_err(RefreshError::Unavailable)?;
     let status = resp.status();
     let body = resp
         .text()
-        .context("reading Cognito token endpoint response body")?;
+        .context("reading Cognito token endpoint response body")
+        .map_err(RefreshError::Unavailable)?;
     if !status.is_success() {
-        bail!("Cognito token endpoint returned {status}: {body}");
+        let e = anyhow::anyhow!("Cognito token endpoint returned {status}: {body}");
+        // 4xx is Cognito's verdict on the grant itself (`invalid_grant` for a
+        // revoked or expired refresh token). 5xx is Cognito having a bad day,
+        // which tells us nothing about the session.
+        return Err(if status.is_client_error() {
+            RefreshError::Refused(e)
+        } else {
+            RefreshError::Unavailable(e)
+        });
     }
     let mut tokens = parse_token_response(
         &body,
         OffsetDateTime::now_utc().unix_timestamp(),
         fallback_refresh,
-    )?;
+    )
+    .map_err(RefreshError::Unavailable)?;
     tokens.client_id = cfg.client_id.clone();
     Ok(tokens)
 }
@@ -380,6 +435,7 @@ pub fn complete_login(
         ],
         None,
     )
+    .map_err(RefreshError::into_error)
 }
 
 /// Exchange a refresh token for a fresh access token.
@@ -393,6 +449,7 @@ pub fn refresh(cfg: &OAuthConfig, refresh_token: &str) -> Result<OAuthTokens> {
         ],
         Some(refresh_token),
     )
+    .map_err(RefreshError::into_error)
 }
 
 fn service() -> String {
@@ -484,22 +541,73 @@ pub fn access_token_for_injection() -> String {
 ///   new bundle. A failed refresh (revoked / expired refresh token) surfaces as
 ///   `Err` so the caller can drop to the interactive sign-in prompt.
 pub fn ensure_fresh(cfg: &OAuthConfig) -> Result<Option<OAuthTokens>> {
-    let Some(tokens) = current()? else {
+    refresh_stored(cfg, false).map_err(RefreshError::into_error)
+}
+
+/// Refresh the stored bundle **whatever the local clock says** about its
+/// expiry. Same contract as [`ensure_fresh`] otherwise.
+///
+/// [`is_expired`](OAuthTokens::is_expired) compares two readings of the local
+/// clock: `expires_at_unix` is stamped as `local_now + expires_in` when the
+/// token is minted, and checked against `local_now` later. A constant offset
+/// cancels out, but a clock that *moves between the two readings* makes the
+/// answer wrong - and sleep/resume is exactly that move. A guest clock that
+/// stops while the machine is suspended comes back reading minutes past the
+/// mint of a token the gateway has considered expired for hours: locally
+/// fresh, refused on every request, and no local check can tell.
+///
+/// So the gateway's 401 is the only evidence that exists, and acting on it
+/// means refreshing past a local expiry check that is lying. The refresh grant
+/// itself is clock-independent (Cognito validates the refresh token, not our
+/// notion of now), so this succeeds precisely when the session is still alive.
+/// Callers: the control-plane retry in [`crate::org::list_current`] and the
+/// data-plane recovery in [`crate::startup::reverify_session`].
+pub fn force_refresh(cfg: &OAuthConfig) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
+    refresh_stored(cfg, true)
+}
+
+/// Shared body of [`ensure_fresh`] / [`force_refresh`]: `force` skips only the
+/// expiry test, never the client-id check (a bundle from another Cognito pool
+/// is not refreshable here at any freshness).
+fn refresh_stored(
+    cfg: &OAuthConfig,
+    force: bool,
+) -> std::result::Result<Option<OAuthTokens>, RefreshError> {
+    let Some(tokens) = current().map_err(RefreshError::Unavailable)? else {
         return Ok(None);
     };
     if tokens.client_id != cfg.client_id {
-        bail!(
+        return Err(RefreshError::Refused(anyhow::anyhow!(
             "stored tokens were minted by app client {:?}, but this build uses {:?}; sign in again",
             tokens.client_id,
             cfg.client_id
-        );
+        )));
     }
-    if !tokens.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
+    if !force && !tokens.is_expired(OffsetDateTime::now_utc().unix_timestamp()) {
         return Ok(Some(tokens));
     }
-    let refreshed =
-        refresh(cfg, &tokens.refresh_token).context("refreshing expired access token")?;
-    store(&refreshed)?;
+    let refreshed = post_token(
+        cfg,
+        &[
+            ("grant_type", "refresh_token"),
+            ("client_id", cfg.client_id.as_str()),
+            ("refresh_token", tokens.refresh_token.as_str()),
+        ],
+        Some(&tokens.refresh_token),
+    )
+    .map_err(|e| match e {
+        // Keep the classification while adding the context: which half of
+        // this the caller may act on is the whole point of the type.
+        RefreshError::Refused(e) => {
+            RefreshError::Refused(e.context("refreshing expired access token"))
+        }
+        RefreshError::Unavailable(e) => {
+            RefreshError::Unavailable(e.context("refreshing expired access token"))
+        }
+    })?;
+    // A keychain write failing says nothing about the session: the token in
+    // hand is good, it just will not survive a restart.
+    store(&refreshed).map_err(RefreshError::Unavailable)?;
     Ok(Some(refreshed))
 }
 

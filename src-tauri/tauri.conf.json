@@ -24,6 +24,20 @@
         "skipTaskbar": false,
         "visible": false,
         "focus": true
+      },
+      {
+        "label": "tray",
+        "title": "Gate Connect",
+        "width": 400,
+        "height": 700,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false
       }
     ],
     "security": {
@@ -49,6 +63,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "linux": {
+      "deb": {
+        "depends": ["libnss3-tools"]
+      }
+    },
     "macOS": {
       "signingIdentity": "-",
       "minimumSystemVersion": "11.0"

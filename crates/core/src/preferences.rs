@@ -15,10 +15,11 @@
 //! default.
 //!
 //! Scope note. Only the preferences that currently gate something live here.
-//! Per-category security-event notifications (blocked / flagged) and a sound
-//! toggle are specified alongside the live event feed, and there is no feed yet -
-//! a switch that gates nothing is worse than a missing switch, because it tells
-//! the user they have turned something off.
+//! The per-category security-event switches (blocked / flagged) and the sound
+//! toggle arrived with the live event feed they gate (AG-578) and not before,
+//! for the reason that kept them out until then: a switch that gates nothing is
+//! worse than a missing switch, because it tells the user they have turned
+//! something off.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -64,17 +65,35 @@ pub struct Preferences {
     pub share_diagnostics_recorded: bool,
     /// What the person calls this machine, when they have renamed it.
     ///
-    /// `None` is the normal state and is **not** a blank name: the command layer
+    /// `None` is the normal state and is **not** a blank name: [`device_name`]
     /// resolves it to the machine's own hostname, which is what Settings shows.
     /// Storing the override rather than the resolved value is what lets a
     /// renamed-then-cleared device go back to following the hostname, and keeps
     /// "the user chose this" distinguishable from "this is what the OS reports" -
     /// the same argument `share_diagnostics_recorded` makes one field up.
     ///
-    /// Local. Nothing sends it anywhere yet; it labels this install in its own
-    /// window.
+    /// Read two ways, and the difference is the point. [`device_name`] resolves
+    /// it for the window, falling back to the hostname so the Settings row
+    /// always has something to show. [`device_label`] resolves it for the wire
+    /// and does **not** fall back: `None` sends no `x-gate-device-name` at all,
+    /// so a user who skipped naming does not have their hostname stamped on
+    /// every request - see `proxy`'s attribution injection.
     #[serde(default)]
     pub device_name: Option<String>,
+    /// Notify when a request is **blocked**.
+    ///
+    /// Split from the flagged switch rather than shipped as one security toggle
+    /// because the two differ in weight: a block stopped something the user was
+    /// trying to do, a flag only noted it. Someone who wants to hear about the
+    /// first and not the second is asking for something reasonable.
+    #[serde(default = "default_true")]
+    pub blocked_event_notifications: bool,
+    /// Notify when a request is **flagged**.
+    #[serde(default = "default_true")]
+    pub flagged_event_notifications: bool,
+    /// Whether those notifications make a sound.
+    #[serde(default = "default_true")]
+    pub security_notification_sound: bool,
     /// Which model each tool should run on, keyed by tool slug (AG-588).
     ///
     /// **Local by decision, not by omission.** An earlier revision stored this on
@@ -154,6 +173,9 @@ impl Default for Preferences {
             share_diagnostics: true,
             share_diagnostics_recorded: false,
             device_name: None,
+            blocked_event_notifications: true,
+            flagged_event_notifications: true,
+            security_notification_sound: true,
             tool_models: BTreeMap::new(),
             gate_model_paid_ack_unix: None,
         }
@@ -164,8 +186,8 @@ fn config_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("preferences.json"))
 }
 
-/// Hot-path cache for [`gate_models_for`], stamped with the file it was read
-/// from.
+/// Hot-path cache for [`gate_models_for`] and [`device_label`], stamped with the
+/// file it was read from.
 ///
 /// The model choice is consulted on **every proxied request**, and a parse per
 /// request is not a cost the user's actual work should pay. Unlike
@@ -296,6 +318,27 @@ pub fn set_routing_health_notifications(enabled: bool) -> Result<()> {
     save(&prefs)
 }
 
+/// Turn blocked-request notifications on or off. Read-modify-write, as above.
+pub fn set_blocked_event_notifications(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.blocked_event_notifications = enabled;
+    save(&prefs)
+}
+
+/// Turn flagged-request notifications on or off.
+pub fn set_flagged_event_notifications(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.flagged_event_notifications = enabled;
+    save(&prefs)
+}
+
+/// Turn the sound on those notifications on or off.
+pub fn set_security_notification_sound(enabled: bool) -> Result<()> {
+    let mut prefs = load();
+    prefs.security_notification_sound = enabled;
+    save(&prefs)
+}
+
 /// Record the diagnostic-data choice, and that it *was* a choice.
 ///
 /// Both callers - the onboarding step's Continue and the Settings switch - are the
@@ -356,13 +399,118 @@ pub fn set_device_name(name: &str) -> Result<()> {
     save(&prefs)
 }
 
-/// What a typed name means, with the file left out of it: a real name trimmed, or
-/// `None` for anything blank. Separated so the decision is testable without a
-/// process-global directory override - the rest of this module's tests stay off
-/// the filesystem for the same reason.
+/// What to call this machine on the wire, or `None` to send no label at all.
+///
+/// `None` is the user who never named this device, and it is deliberately *not*
+/// the hostname. Onboarding's naming step offers "Skip naming", and a hostname
+/// commonly carries a person's legal name ("gabriels-macbook-pro"); sending it
+/// anyway would make the skip mean nothing. An unnamed device is attributed by
+/// [`crate::primitives::install_id_cached`] alone, exactly as it was before this
+/// header existed. Naming the device is what opts its traffic into a human
+/// label, and the Settings row says so.
+///
+/// Separate from [`device_name`] because the two questions differ: the window
+/// always has something to *show*, and the wire only ever sends something the
+/// user chose.
+///
+/// Consulted on every proxied request, hence the same stamped [`CACHE`] read as
+/// [`gate_models_for`] and for the same reasons: a parse per request is a cost
+/// the user's work should not pay, and a rename must reach the Linux helper
+/// daemon's requests without a restart.
+pub fn device_label() -> Option<String> {
+    let current = stamp();
+    let cached = CACHE.read().ok().and_then(|cache| {
+        cache
+            .as_ref()
+            .filter(|(stamped, _)| *stamped == current)
+            .map(|(_, prefs)| prefs.device_name.clone())
+    });
+    let named = cached.unwrap_or_else(|| {
+        let prefs = load();
+        let name = prefs.device_name.clone();
+        if let Ok(mut cache) = CACHE.write() {
+            *cache = Some((current, prefs));
+        }
+        name
+    });
+    // Capped on the way out as well as on the way in, so a hand-edited
+    // preferences file cannot put an oversized value on the wire. Same helper
+    // both times: two truncations that could disagree would show one name in
+    // Settings and send another.
+    named.map(|name| capped(&name))
+}
+
+/// What to call this machine in the window: the person's own name for it, or the
+/// hostname.
+///
+/// The hostname fallback is a *display* answer and stops here - see
+/// [`device_label`] for why it is not what the proxy sends. The stored value
+/// stays an `Option` (see [`Preferences::device_name`]), so clearing the name
+/// goes back to following the hostname instead of freezing today's.
+///
+/// Not itself on the request path, so the hostname read is not cached: this runs
+/// when Settings asks, and a machine renamed at the OS level should show its new
+/// name without restarting the app.
+pub fn device_name() -> String {
+    device_label().unwrap_or_else(host_name)
+}
+
+/// The machine's own name, or a neutral stand-in.
+///
+/// "This device" rather than "Unknown": the string is a label in a row, not a
+/// diagnostic, and a machine whose hostname is unreadable is still the machine
+/// the user is looking at.
+///
+/// A blank answer counts as unreadable. `sysinfo` reports an unset hostname as
+/// `Some("")` rather than `None` on Linux - `gethostname` succeeds into a zeroed
+/// buffer, which truncates to the empty string - and an empty Device row is the
+/// thing the stand-in exists to prevent.
+fn host_name() -> String {
+    sysinfo::System::host_name()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "This device".to_string())
+}
+
+/// How much device name may ride on a request.
+///
+/// A name is free text with no other bound: both inputs that write one accept a
+/// paste, and the value is stamped on **every** proxied request. Header blocks
+/// are not free - the engine's own h2 server had to be raised to 64 KiB because
+/// the `h2` default of 16 KiB was refusing browser traffic (`proxy_e2e.rs`), and
+/// the gateway advertises a limit of its own that we do not control. An
+/// oversized name would fail every request the user makes, with nothing to
+/// connect the failure to the rename that caused it.
+///
+/// 128 bytes is far above any name a person types and far below any limit worth
+/// worrying about. Truncated rather than rejected: a rename that silently does
+/// nothing is worse than one that keeps the first hundred-odd characters, and
+/// the label is a display string, not an identifier.
+const DEVICE_NAME_MAX_BYTES: usize = 128;
+
+/// The name, cut to [`DEVICE_NAME_MAX_BYTES`] on a character boundary.
+///
+/// Bytes rather than characters because it is the header block that is bounded,
+/// and the cut lands on a `char` boundary because a `String` cannot hold half of
+/// one. Trailing whitespace exposed by the cut goes too, so a truncated name
+/// does not end in a space.
+fn capped(name: &str) -> String {
+    if name.len() <= DEVICE_NAME_MAX_BYTES {
+        return name.to_string();
+    }
+    let end = (0..=DEVICE_NAME_MAX_BYTES)
+        .rev()
+        .find(|&i| name.is_char_boundary(i))
+        .unwrap_or(0);
+    name[..end].trim_end().to_string()
+}
+
+/// What a typed name means, with the file left out of it: a real name trimmed and
+/// capped, or `None` for anything blank. Separated so the decision is testable
+/// without a process-global directory override - the rest of this module's tests
+/// stay off the filesystem for the same reason.
 fn device_name_override(name: &str) -> Option<String> {
     let trimmed = name.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    (!trimmed.is_empty()).then(|| capped(trimmed))
 }
 
 #[cfg(test)]
@@ -460,6 +608,36 @@ mod tests {
             device_name_override("Gabriel's MacBook Pro").as_deref(),
             Some("Gabriel's MacBook Pro")
         );
+    }
+
+    /// A pasted name is cut, not refused. The bound exists because the value
+    /// rides every proxied request; see `DEVICE_NAME_MAX_BYTES`.
+    #[test]
+    fn an_oversized_device_name_is_capped() {
+        let long = "M".repeat(1000);
+        let stored = device_name_override(&long).expect("a long name is still a name");
+        assert_eq!(stored.len(), DEVICE_NAME_MAX_BYTES);
+        assert!(long.starts_with(&stored));
+        // A name that fits is untouched, including at the boundary itself.
+        let exact = "M".repeat(DEVICE_NAME_MAX_BYTES);
+        assert_eq!(
+            device_name_override(&exact).as_deref(),
+            Some(exact.as_str())
+        );
+    }
+
+    /// The cut lands on a character boundary, and does not leave a trailing
+    /// space where it landed mid-word.
+    #[test]
+    fn capping_does_not_split_a_character() {
+        // Four bytes each, so the limit falls inside the 32nd emoji.
+        let emoji = "\u{1f5a5}".repeat(40);
+        let stored = device_name_override(&emoji).expect("still a name");
+        assert!(stored.len() <= DEVICE_NAME_MAX_BYTES);
+        assert_eq!(stored.chars().count(), DEVICE_NAME_MAX_BYTES / 4);
+        // Whitespace exposed by the cut goes with it.
+        let spaced = format!("{} tail", "M".repeat(DEVICE_NAME_MAX_BYTES - 1));
+        assert_eq!(capped(&spaced), "M".repeat(DEVICE_NAME_MAX_BYTES - 1));
     }
 
     /// An absent name must survive a round trip as absent. Written as `null` and

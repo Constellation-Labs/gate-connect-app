@@ -14,7 +14,14 @@ const CLAUDE_CODE = {
   name: "Claude Code",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://gw.example/claude-code",
-  requires_upstream_credential: false,
+  status: { kind: "detected" as const },
+};
+
+const CODEX = {
+  slug: "codex",
+  name: "Codex",
+  upstream_provider_name: "OpenAI",
+  default_upstream_url: "https://gw.example/codex",
   status: { kind: "detected" as const },
 };
 
@@ -64,13 +71,13 @@ test.describe("new UI running apps", () => {
     });
 
     await app.page.getByRole("switch", { name: "Claude Code" }).click();
-    await app.page.getByRole("button", { name: "Close affected apps" }).click();
+    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
 
     // Still nothing closed: this is the confirmation, not the action.
     await expect(app.page.getByRole("heading", { name: "Close affected apps now?" })).toBeVisible();
     expect(await app.lastCall("close_running_agents")).toBeNull();
 
-    await app.page.getByRole("button", { name: /^Close claude$/ }).click();
+    await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
 
     await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
     await expect(app.page.getByRole("heading", { name: "Change is ready" })).toBeVisible();
@@ -84,8 +91,8 @@ test.describe("new UI running apps", () => {
     });
 
     await app.page.getByRole("switch", { name: "Claude Code" }).click();
-    await app.page.getByRole("button", { name: "Close affected apps" }).click();
-    await app.page.getByRole("button", { name: "Go back" }).click();
+    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
+    await app.page.getByRole("button", { name: "No, I will close later" }).click();
 
     await expect(
       app.page.getByRole("heading", { name: "Apply changes to running apps" }),
@@ -103,11 +110,45 @@ test.describe("new UI running apps", () => {
     });
 
     await app.page.getByRole("switch", { name: "Claude Code" }).click();
-    await app.page.getByRole("button", { name: "I will reopen later" }).click();
+    await app.page.getByRole("button", { name: "No, I will reopen later" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
     expect(await app.lastCall("close_running_agents")).toBeNull();
     expect(await app.lastCall("connect_tool")).not.toBeNull();
+  });
+
+  test("says nothing about a tool whose config was not touched", async ({ boot }) => {
+    // The regression: the probe asked about every tool, so switching Codex on
+    // offered to close a running `claude` that nothing had reconfigured - and
+    // the confirmation behind that offer would have killed it.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CLAUDE_CODE, CODEX],
+      runningAgentNames: ["claude"],
+    });
+
+    // Exact: "Codex" is a substring of the ChatGPT domain rows' labels too, and
+    // those route through the proxy rather than a config file.
+    await app.page.getByRole("switch", { name: "Codex", exact: true }).click();
+
+    await expect
+      .poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool")))
+      .toBe(true);
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("offers only the app that was reconfigured", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CLAUDE_CODE, CODEX],
+      runningAgentNames: ["claude", "codex"],
+    });
+
+    await app.page.getByRole("switch", { name: "Codex", exact: true }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toContainText("codex");
+    await expect(dialog).not.toContainText("claude");
   });
 
   test("a declined review never reaches the sequence", async ({ boot }) => {
@@ -121,7 +162,6 @@ test.describe("new UI running apps", () => {
           name: "Codex",
           upstream_provider_name: "OpenAI",
           default_upstream_url: "https://gw.example/codex",
-          requires_upstream_credential: false,
           status: { kind: "drifted" as const, reason: "API base URL: https://api.openai.com/v1" },
         },
       ],

@@ -43,5 +43,10 @@ export function describe(err: unknown): string {
   if (err instanceof Error) {
     return err.stack ? `${err.message}\n${err.stack}` : err.message;
   }
-  return typeof err === "string" ? err : JSON.stringify(err);
+  if (typeof err === "string") return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
 }

@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 /// Keep loopback off the proxy. Required, not merely polite: OpenCode's TUI
 /// talks to its own local HTTP server, and routing that through the engine
 /// forms a loop (their own docs call this out).
-const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
+pub(crate) const NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
 
 /// The variables we manage on platforms whose environment is case-sensitive
 /// (Linux, macOS), in a stable order. Both cases of the proxy trio are set
@@ -258,8 +258,15 @@ mod tests {
 
     #[test]
     fn the_two_var_sets_agree_on_values() {
-        // No temp home needed: `app_support_dir` is pure path construction, so
-        // nothing here touches the disk or the process environment.
+        // `app_support_dir` is pure path construction and touches no disk, but
+        // it *reads* the `GATE_CONNECT_TEST_HOME` seam - so a test that
+        // redirects that seam can move the root between the two calls below,
+        // leaving them disagreeing about a path neither is really testing.
+        // Observed on macOS: one side resolved the runner's real Application
+        // Support, the other a `manager_core` temp home. Hence the lock its own
+        // rule asks for - anything reading these paths that would be wrong to
+        // see another test's home takes it.
+        let _lock = crate::env::path_env_lock();
         let sensitive: BTreeMap<_, _> = case_sensitive(4321).unwrap().into_iter().collect();
         let insensitive: BTreeMap<_, _> = case_insensitive(4321).unwrap().into_iter().collect();
 

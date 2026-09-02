@@ -14,12 +14,23 @@ import { test, expect } from "./fixtures";
  */
 const useNewUi = { gc: "gc.newUi" };
 
+/**
+ * Where a verdict's reason is asserted, and why it is not the rail.
+ *
+ * A 250px row cannot fit "Not protected - Configuration update failed" and
+ * truncates the reason mid-word, so the rail prints the coloured phrase alone
+ * and the app pane's header carries the reason in full. A spec that wants the
+ * phrase reads the row; one that wants the reason opens the pane.
+ */
+async function openApp(app: { page: import("@playwright/test").Page }, name: string) {
+  await app.page.getByRole("button", { name }).first().click();
+}
+
 const connectedCodex = {
   slug: "codex",
   name: "Codex",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://gw.example/codex",
-  requires_upstream_credential: false,
   status: { kind: "connected" as const },
 };
 
@@ -45,7 +56,7 @@ test.describe("new UI routing verdict", () => {
    * nothing was written - but with the engine down the relay cannot carry
    * anything, so the row must not claim protection.
    */
-  test("a connected app whose relay is down reads Connection problem, not Protected", async ({
+  test("a connected app whose relay is down reads Not protected, and says why in the pane", async ({
     boot,
   }) => {
     const app = await boot({
@@ -53,8 +64,12 @@ test.describe("new UI routing verdict", () => {
       tools: [connectedCodex],
     });
 
-    await expect(app.page.getByText("Connection problem")).toBeVisible();
+    // The row's job is to stop claiming protection. Its reason is the pane's.
+    await expect(app.page.getByText("Not protected").first()).toBeVisible();
     await expect(app.page.getByText("Protected", { exact: true })).toHaveCount(0);
+
+    await openApp(app, "Codex");
+    await expect(app.page.getByText("Connection problem")).toBeVisible();
   });
 
   /**
@@ -68,18 +83,22 @@ test.describe("new UI routing verdict", () => {
       tools: [connectedCodex],
     });
 
-    await expect(app.page.getByText("Connection problem")).toBeVisible();
+    // Waits for the sweep to have landed before reading the switch.
+    await expect(app.page.getByText("Not protected").first()).toBeVisible();
     const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
     await expect(sidebarSwitch).toHaveAttribute("aria-checked", "true");
   });
 
-  test("a tool whose process predates the routing change is told to reopen", async ({ boot }) => {
+  test("a tool whose process predates the routing change is told to reopen, in the pane", async ({
+    boot,
+  }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: [connectedCodex],
       staleAgents: 1,
     });
 
+    await openApp(app, "Codex");
     await expect(app.page.getByText("Reopen required")).toBeVisible();
   });
 
@@ -89,7 +108,12 @@ test.describe("new UI routing verdict", () => {
       tools: [{ ...connectedCodex, status: { kind: "detected" as const } }],
     });
 
-    await expect(app.page.getByText("Not routed")).toBeVisible();
+    // Scoped to the Codex row: the catalog's proxy domains are rail rows too
+    // now, and while disabled they read "Not routed" as well.
+    const row = app.page
+      .getByRole("listitem")
+      .filter({ has: app.page.getByRole("switch", { name: "Codex", exact: true }) });
+    await expect(row.getByText("Not routed")).toBeVisible();
   });
 
   test("a drifted config keeps the design's own phrase", async ({ boot }) => {

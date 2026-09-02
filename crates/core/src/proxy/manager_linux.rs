@@ -53,6 +53,18 @@ pub fn manager() -> &'static ProxyManager {
 }
 
 impl ProxyManager {
+    /// Whether *this* process is holding routing open on the helper daemon.
+    ///
+    /// The free half of [`crate::proxy::engine_listening`], and here the handle
+    /// is the control connection rather than an engine: it is `Some` for
+    /// exactly as long as this process has the daemon intercepting, so the GUI
+    /// answers without a syscall and only a handle-less caller (the CLI) probes
+    /// the port. `try_lock` for the same reason as the other platforms - a
+    /// missed lock means "ask the port", not "nothing is running".
+    pub(crate) fn hosts_live_engine(&self) -> bool {
+        self.client.try_lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
     /// Current subsystem snapshot for the UI.
     pub fn status(&self) -> Result<ProxyState> {
         let mut guard = self.client.lock().expect("proxy client mutex poisoned");
@@ -181,6 +193,7 @@ impl ProxyManager {
             &account.api_key,
             &crate::oauth::access_token_for_injection(),
             &crate::account::org_id_for_injection(),
+            account.billing_mode,
             ca.cert_pem(),
             ca.key_pem(),
             &domains,
@@ -373,6 +386,7 @@ impl ProxyManager {
                     api_key,
                     &crate::oauth::access_token_for_injection(),
                     &crate::account::org_id_for_injection(),
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -382,6 +396,28 @@ impl ProxyManager {
                 );
             }
         }
+    }
+
+    /// How many times the daemon's engine has seen the gateway refuse a request
+    /// carrying our OAuth bearer, or `None` when there is no reading: this
+    /// process holds no control connection, or the round trip failed.
+    ///
+    /// `None` is not zero, and the caller must not treat it as "no refusals" -
+    /// it means nobody answered. The GUI polls this because on Linux the engine
+    /// runs in the daemon, so the 401 that means "this session is dead" is
+    /// observed in a different process from the shell that can recover it.
+    ///
+    /// Deliberately does not adopt or reconnect to a daemon the way
+    /// [`Self::status`] does. The only caller is the GUI's own session loop,
+    /// which holds the connection for as long as routing is on; a tick with no
+    /// handle has nothing to recover and should cost nothing.
+    pub fn gate_auth_refusals(&self) -> Option<u64> {
+        self.client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()?
+            .gate_auth_refusals()
+            .ok()
     }
 
     /// Push a refreshed OAuth access token into the running daemon, if any.
@@ -404,6 +440,7 @@ impl ProxyManager {
                     &account.api_key,
                     oauth_token,
                     &crate::account::org_id_for_injection(),
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -435,6 +472,7 @@ impl ProxyManager {
                     &account.api_key,
                     &crate::oauth::access_token_for_injection(),
                     org_id,
+                    account.billing_mode,
                     ca.cert_pem(),
                     ca.key_pem(),
                     &domains,
@@ -443,6 +481,27 @@ impl ProxyManager {
                     crate::proxy::relay::load_persisted_port(),
                 );
             }
+        }
+    }
+
+    /// Push a changed billing mode into the running daemon, if any. There is no
+    /// separate update message on Linux: `SetIntercept` carries the mode, and
+    /// the daemon applies it live to an already-running engine, so this folds
+    /// into the same re-send the other refreshers use. Reads the mode from disk
+    /// rather than taking it as an argument, so the daemon can never be told a
+    /// mode the account does not actually hold.
+    pub fn refresh_mode(&self) {
+        if let Some(client) = self
+            .client
+            .lock()
+            .expect("proxy client mutex poisoned")
+            .as_mut()
+        {
+            let domains = match config::load_domains() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            self.push_intercept(client, &domains);
         }
     }
 
@@ -462,6 +521,7 @@ impl ProxyManager {
             &account.api_key,
             &crate::oauth::access_token_for_injection(),
             &crate::account::org_id_for_injection(),
+            account.billing_mode,
             ca.cert_pem(),
             ca.key_pem(),
             domains,

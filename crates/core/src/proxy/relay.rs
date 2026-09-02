@@ -40,20 +40,21 @@ use futures_util::TryStreamExt;
 use http::Uri;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
-use hyper::header::{HeaderMap, HeaderName, HOST};
+use hyper::header::{HeaderMap, HeaderName, HOST, ORIGIN};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+use crate::account::BillingMode;
 use crate::proxy::{default_domains, ProxyDomain};
 
 /// Where the stable relay port is persisted. CLI tool configs bake
 /// `http://127.0.0.1:<port>`, so the port must survive restarts: the manager
 /// reuses it as the engine's `preferred_relay_port` and only falls back to a
-/// fresh ephemeral port if it's taken. Cross-platform (unlike the MITM port,
-/// which only Linux persists), since every platform's CLI configs need it.
+/// fresh band port if it's taken. All three platforms persist it, since every
+/// platform's CLI configs need it.
 pub(crate) fn port_path() -> Result<std::path::PathBuf> {
     Ok(crate::env::app_support_dir()?
         .join("proxy")
@@ -87,7 +88,7 @@ pub(crate) fn base_url(port: u16) -> String {
 /// file path). Test seam for the e2e's self-signed mock gateway; unset in real
 /// builds, where the default roots cover the gateway's public cert.
 fn test_extra_ca() -> Option<reqwest::Certificate> {
-    let path = std::env::var_os("GATE_CONNECT_TEST_CA")?;
+    let path = crate::env::test_seam("GATE_CONNECT_TEST_CA")?;
     let pem = std::fs::read(path).ok()?;
     reqwest::Certificate::from_pem(&pem).ok()
 }
@@ -100,7 +101,9 @@ fn test_extra_ca() -> Option<reqwest::Certificate> {
 /// inference prefix so the same request rewrites to the gateway when
 /// intercepting and forwards direct when not.
 fn test_extra_upstream() -> Option<ProxyDomain> {
-    let url = std::env::var("GATE_CONNECT_TEST_UPSTREAM").ok()?;
+    let url = crate::env::test_seam("GATE_CONNECT_TEST_UPSTREAM")?
+        .to_string_lossy()
+        .into_owned();
     Some(ProxyDomain {
         slug: "test-upstream".into(),
         display_name: "Test upstream".into(),
@@ -108,25 +111,26 @@ fn test_extra_upstream() -> Option<ProxyDomain> {
         upstream_url: url,
         rewrite_prefixes: vec!["/v1/".into()],
         passthrough_prefixes: Vec::new(),
+        rewrite_suffixes: Vec::new(),
         enabled: true,
         supported: true,
     })
 }
 
-/// Bind the relay's loopback listener, reusing `preferred` (the persisted port)
-/// when free, else an ephemeral port. Non-blocking so tokio can adopt it.
 /// Bind the relay's loopback port, reusing `preferred` (the persisted port) when
 /// there is one.
 ///
-/// A taken preferred port is an error rather than a fall back to an ephemeral
+/// A taken preferred port is an error rather than a fall back to a fresh
 /// one. The fallback looks harmless and is not: the caller persists whatever
 /// port it ends up with, so a second host started while the first is live
 /// repoints the persisted port at itself, and the next `connect` bakes that
 /// into every tool config - while the process actually serving traffic is the
 /// other one, on the old port. Measured: a `proxy relay` run alongside the
 /// desktop app moved the persisted port from 45981 to 44225 while the app kept
-/// serving 45981. Ephemeral is still right when there is no preferred port
-/// (first run), where there is no baked URL to invalidate.
+/// serving 45981. A freshly picked port is still right when there is no
+/// preferred port (first run), where there is no baked URL to invalidate;
+/// [`super::engine::bind_fresh`] takes it from a band outside the OS's
+/// ephemeral range so the next run can actually rebind it.
 ///
 /// [`super::engine::bind_preferred`] does the binding so this agrees with the
 /// engine on what "taken" means: a live listener, not a TIME_WAIT remnant of a
@@ -141,9 +145,7 @@ fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
                  moving to another would silently take them off the running host."
             )
         })?,
-        None => {
-            std::net::TcpListener::bind(("127.0.0.1", 0)).context("binding relay loopback port")?
-        }
+        None => super::engine::bind_fresh().context("binding relay loopback port")?,
     };
     let port = listener
         .local_addr()
@@ -178,6 +180,11 @@ struct RelayState {
     /// Live selected org UUID; empty means "none selected". Injected only when
     /// a token is present.
     org: watch::Receiver<Arc<str>>,
+    /// Live billing mode. `Payg` drops the upstream hint and the tool's own
+    /// credential on a rewrite, so the gateway bills the org's balance; `Byok`
+    /// is today's shape. Resolved per domain - see
+    /// [`effective_billing_mode`](super::effective_billing_mode).
+    mode: watch::Receiver<BillingMode>,
     /// The built-in domain catalog. Used to (a) resolve the leading path segment
     /// of a request to a known upstream - so a local process can't aim the relay
     /// at an arbitrary host - and (b) classify the remaining path the way the
@@ -202,6 +209,7 @@ impl RelayState {
         api_key: watch::Receiver<Arc<str>>,
         token: watch::Receiver<Arc<str>>,
         org: watch::Receiver<Arc<str>>,
+        mode: watch::Receiver<BillingMode>,
         intercept: watch::Receiver<bool>,
         owner_uid: Option<u32>,
     ) -> Self {
@@ -235,6 +243,7 @@ impl RelayState {
             api_key,
             token,
             org,
+            mode,
             domains,
             intercept,
             owner_uid,
@@ -259,22 +268,26 @@ impl RelayState {
 /// Adopt a pre-bound loopback listener and start serving on the current tokio
 /// runtime. The accept loop lives until the runtime is dropped (engine stop),
 /// mirroring the PAC responder's lifetime.
+// The engine's live channels passed straight through to [`RelayState`]; bundling
+// them into a struct would just restate that struct's fields at the one call
+// site. Same reasoning as `helper_client::set_intercept`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn(
     std_listener: std::net::TcpListener,
     gateway: Uri,
     api_key: watch::Receiver<Arc<str>>,
     token: watch::Receiver<Arc<str>>,
     org: watch::Receiver<Arc<str>>,
+    mode: watch::Receiver<BillingMode>,
     intercept: watch::Receiver<bool>,
     owner_uid: Option<u32>,
-) -> Result<()> {
+) -> Result<tokio::task::JoinHandle<()>> {
     let listener =
         TcpListener::from_std(std_listener).context("adopting relay loopback listener")?;
     let state = Arc::new(RelayState::new(
-        &gateway, api_key, token, org, intercept, owner_uid,
+        &gateway, api_key, token, org, mode, intercept, owner_uid,
     ));
-    tokio::spawn(accept_loop(listener, state));
-    Ok(())
+    Ok(tokio::spawn(accept_loop(listener, state)))
 }
 
 /// Accept connections forever, serving each on the relay handler. Shared by the
@@ -283,7 +296,14 @@ async fn accept_loop(listener: TcpListener, state: Arc<RelayState>) {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
-            Err(_) => continue,
+            // Transient accept errors (ECONNABORTED, fd exhaustion) resolve
+            // on their own; the pause keeps a *permanently* failing listener
+            // from turning this loop into a silent 100% CPU spin for the
+            // engine's lifetime.
+            Err(_) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
         };
         // Only the owner may spend the host's Gate credential. Drop a non-owner
         // (or UID-unresolvable) peer before serving it - unlike the MITM engine,
@@ -360,6 +380,11 @@ pub fn serve() -> Result<()> {
         ));
         let (org_tx, org_rx) =
             watch::channel::<Arc<str>>(Arc::from(crate::account::org_id_for_injection().as_str()));
+        // Refreshed in the same loop as the org below: a headless host is
+        // long-lived, and `gate-connect billing-mode` writes the account file
+        // from a different process, so re-reading is the only way this host
+        // learns of a switch.
+        let (mode_tx, mode_rx) = watch::channel(account.billing_mode);
         // The standalone host always intercepts - routing through Gate is the
         // whole point of `proxy relay`, and its own loop below keeps the token
         // fresh. The sender lives for the whole (never-ending) block.
@@ -379,6 +404,7 @@ pub fn serve() -> Result<()> {
             key_rx,
             token_rx,
             org_rx,
+            mode_rx,
             intercept_rx,
             owner_uid,
         ));
@@ -411,6 +437,7 @@ pub fn serve() -> Result<()> {
                 crate::oauth::access_token_for_injection().as_str(),
             ));
             let _ = org_tx.send(Arc::from(crate::account::org_id_for_injection().as_str()));
+            let _ = mode_tx.send(crate::account::billing_mode_for_injection());
         }
     })
 }
@@ -431,6 +458,41 @@ async fn proxy(
     req: Request<Incoming>,
     state: &RelayState,
 ) -> Result<Response<BoxBody<Bytes, std::io::Error>>, (StatusCode, String)> {
+    // Browser boundary, before anything is resolved or injected: the relay is
+    // a plain-HTTP loopback responder, so a web page can drive it with no
+    // local foothold - a "simple" cross-origin fetch to
+    // `http://127.0.0.1:<port>` is delivered without a preflight (CORS only
+    // blocks the *read*), and DNS rebinding delivers the same request under
+    // an attacker hostname. Either way billed inference would run on the
+    // owner's credential. A browser always names its target in `Host` and
+    // stamps cross-site requests with `Origin`; the CLI tools this relay
+    // serves dial 127.0.0.1 directly and send no `Origin`. See
+    // `authority_is_loopback` / `origin_is_loopback` in the parent module.
+    if let Some(host) = req.headers().get(HOST) {
+        let ok = host
+            .to_str()
+            .map(super::authority_is_loopback)
+            .unwrap_or(false);
+        if !ok {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "the Gate relay only serves requests addressed to 127.0.0.1/localhost".into(),
+            ));
+        }
+    }
+    if let Some(origin) = req.headers().get(ORIGIN) {
+        let ok = origin
+            .to_str()
+            .map(super::origin_is_loopback)
+            .unwrap_or(false);
+        if !ok {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "the Gate relay does not serve cross-origin browser requests".into(),
+            ));
+        }
+    }
+
     let method = req.method().clone();
     let path_and_query = req
         .uri()
@@ -472,54 +534,50 @@ async fn proxy(
     headers.remove(HOST);
     let target = match route {
         Route::Rewrite => {
-            inject_credential(&mut headers, state).map_err(|e| {
+            let mode = super::effective_billing_mode(*state.mode.borrow(), &routed.slug);
+            inject_credential(&mut headers, state, mode).map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("injecting Gate credential: {e:#}"),
                 )
             })?;
-            // The serve decision turns on the path as well as the header: Gate
-            // can only answer a request itself on a path it implements, and
-            // withholding the upstream hint on any other path leaves the gateway
-            // with nothing to do and the caller waiting. See `serve_path`.
+            // Forwarded: we set the upstream hint, overwriting anything the
+            // caller sent. The value comes from the catalog entry we resolved,
+            // so a local process can't aim the gateway at a host of its
+            // choosing.
+            //
+            // Served: the hint's ABSENCE is the whole switch, so it is removed
+            // instead - including anything the caller sent, which would
+            // otherwise be a way for a local process to force a forward and
+            // spend the tool's own credential.
+            //
+            // Two independent things ask Gate to serve, and either is enough.
+            // The org routes this domain pay-as-you-go, so the gateway resolves
+            // a provider and debits its balance. Or the user put this tool on a
+            // Gate model, which is why a chosen model had no effect until this
+            // branch existed: with the hint present the gateway forwards to the
+            // tool's own provider and never reaches the override. That half is
+            // read back from the header `inject_credential` has just stamped
+            // rather than derived a second time - two computations of "is this
+            // served?" could disagree, and the disagreement would be a request
+            // billed one way and routed the other.
+            //
+            // The Gate-model half also turns on the PATH: Gate can only answer
+            // on a route it implements, and withholding the hint on any other
+            // leaves the gateway with nothing to do and the caller waiting. PAYG
+            // is not gated that way - the org routes that domain and its
+            // forwarded path is already a shape the gateway serves. See
+            // `serve_path`.
             let (req_path, req_query) = routed
                 .path_and_query
                 .split_once('?')
                 .map_or((routed.path_and_query.as_str(), None), |(p, q)| (p, Some(q)));
-            let served = if super::serves_gate_model(&headers) {
+            let model_serve_path = if super::serves_gate_model(&headers) {
                 super::serve_path(req_path)
             } else {
                 None
             };
-            if let Some(gateway_path) = served {
-                // The user put this tool on a Gate model, so Gate picks the
-                // provider and pays for it. Withholding the upstream hint is
-                // what asks for that: the gateway treats the hint as "the caller
-                // brought their own upstream" and, with it present, forwards
-                // there instead of resolving a provider of its own - which is
-                // why a chosen model had no effect until this branch existed.
-                //
-                // REMOVED, not merely skipped. The other branch overwrites this
-                // header precisely so a caller-supplied value can never reach the
-                // gateway; skipping the write here would let one through, which
-                // would both escape the serve routing and aim the gateway at a
-                // host of the caller's choosing.
-                headers.remove(UPSTREAM_URL_HEADER);
-                // The tool's own key goes with it. On a served request the
-                // model, the provider and the bill are all Gate's.
-                super::strip_tool_credential(&mut headers);
-                // Onto the path that can answer, which is not always the one the
-                // tool asked on: Codex's `/codex/responses` is served at
-                // `/v1/responses`, the same wire format under a route the
-                // gateway implements.
-                match req_query {
-                    Some(q) => format!("{}{gateway_path}?{q}", state.gateway_base),
-                    None => format!("{}{gateway_path}", state.gateway_base),
-                }
-            } else {
-                // We set the upstream hint, overwriting anything the caller sent.
-                // The value comes from the catalog entry we resolved, so a local
-                // process can't aim the gateway at a host of its choosing.
+            if mode == BillingMode::Byok && model_serve_path.is_none() {
                 set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -527,6 +585,25 @@ async fn proxy(
                     )
                 })?;
                 format!("{}{}", state.gateway_base, routed.path_and_query)
+            } else {
+                headers.remove(UPSTREAM_URL_HEADER);
+                // The tool's own key goes with it - on a served request the
+                // model, the provider and the bill are all Gate's.
+                // `inject_credential` has already done this for PAYG; this
+                // covers the Gate-model case, where the org is still BYOK.
+                super::strip_client_auth(&mut headers);
+                // Onto the path that can answer, which is not always the one the
+                // tool asked on: Codex's `/codex/responses` is served at
+                // `/v1/responses`, the same wire format under a route the
+                // gateway implements. A PAYG request with no model override
+                // keeps the path it arrived on.
+                match model_serve_path {
+                    Some(gateway_path) => match req_query {
+                        Some(q) => format!("{}{gateway_path}?{q}", state.gateway_base),
+                        None => format!("{}{gateway_path}", state.gateway_base),
+                    },
+                    None => format!("{}{}", state.gateway_base, routed.path_and_query),
+                }
             }
         }
         Route::Passthrough => {
@@ -588,15 +665,18 @@ async fn proxy(
 
 /// Inject the live Gate credential, via the rule shared with the MITM engine
 /// ([`inject_gate_credential`]): a caller-supplied `x-gate-api-key` is left
-/// untouched; otherwise an OAuth token wins over the legacy key.
-fn inject_credential(headers: &mut HeaderMap, state: &RelayState) -> Result<()> {
+/// untouched; otherwise an OAuth token wins over the legacy key. In `Payg` the
+/// same helper also strips the tool's own upstream credential.
+fn inject_credential(headers: &mut HeaderMap, state: &RelayState, mode: BillingMode) -> Result<()> {
     // Clone the values out of the watch guards so no lock is held.
     let token: Arc<str> = state.token.borrow().clone();
     let api_key: Arc<str> = state.api_key.borrow().clone();
     let org: Arc<str> = state.org.borrow().clone();
     let oauth_token = (!token.is_empty()).then(|| token.as_ref());
     let org_id = (!org.is_empty()).then(|| org.as_ref());
-    inject_gate_credential(headers, &api_key, oauth_token, org_id)
+    // The relay has no response hook to feed, so what was injected is not
+    // news here.
+    inject_gate_credential(headers, &api_key, oauth_token, org_id, mode).map(|_| ())
 }
 
 /// Where a relayed request should go. The relay's analogue of the MITM
@@ -615,9 +695,12 @@ enum Route {
 /// whether that path rewrites to the gateway.
 #[derive(Debug)]
 struct Routed {
-    /// The catalog upstream. Sent on as `x-gate-upstream-url` when rewriting,
-    /// and used as the base of the direct hop when passing through.
+    /// The catalog upstream. Sent on as `x-gate-upstream-url` when rewriting
+    /// under BYOK, and used as the base of the direct hop when passing through.
     upstream_url: String,
+    /// Catalog slug that owns the request, so the caller can resolve the
+    /// billing shape for it ([`effective_billing_mode`](super::effective_billing_mode)).
+    slug: String,
     /// Path + query **relative to `upstream_url`** - our own slug segment
     /// removed. Both the gateway and the direct upstream append this to their
     /// own base, so it must not carry anything Gate-internal.
@@ -672,6 +755,7 @@ fn resolve_route(
         if let Some(d) = domains.iter().find(|d| d.slug == segment) {
             return Ok(Routed {
                 upstream_url: d.upstream_url.clone(),
+                slug: d.slug.clone(),
                 route: classify(d, &inner),
                 path_and_query: inner,
             });
@@ -700,6 +784,7 @@ fn resolve_route(
         })?;
     Ok(Routed {
         upstream_url: d.upstream_url.clone(),
+        slug: d.slug.clone(),
         route: classify(d, path_and_query),
         path_and_query: path_and_query.to_string(),
     })

@@ -367,11 +367,11 @@ stop_relay() {
 }
 
 # ---------------------------------------------------------------------------
-# Engine host. OpenClaw and Hermes are PROXY-routed: they take a forward proxy
-# (`proxy.proxyUrl` and `HTTPS_PROXY`) rather than a base URL, so `connect`
+# Engine host. Claude Code, OpenClaw, and Hermes are PROXY-routed: they take a
+# forward proxy rather than a provider base URL, so `connect`
 # refuses unless `proxy::engine_proxy_url()` is Some. Only `proxy enable`
 # makes it so - it writes the system-proxy snapshot and the engine port, and
-# `proxy relay` (the relay) writes neither. The other three tools keep using
+# `proxy relay` (the relay) writes neither. The other two tools keep using
 # the relay and are untouched by this: the exported NO_PROXY is
 # `localhost,127.0.0.1,::1`, which exempts both the relay and the mocks.
 #
@@ -1017,10 +1017,21 @@ oauth_login() {
   wait "$lpid"
 }
 
-# run_tool <label> <slug> <path-needle> <mode> -- <invoke cmd...>
+# run_tool <label> <slug> <path-needle> <mode> [expected-context] -- <invoke cmd...>
+#
+# `expected-context` is positional rather than an `EXPECTED_CONTEXT=... run_tool`
+# prefix: on bash < 5.1 (macOS ships 3.2.57 as /bin/bash) an assignment prefix on
+# a FUNCTION call persists after the function returns, so the value would leak
+# into every later call in the same shell and demand the 1M beta of tools that
+# never send it.
 run_tool() {
   local label="$1" slug="$2" needle="$3" mode="$4"
   shift 4
+  local expected_context=""
+  if [ "$1" != "--" ]; then
+    expected_context="$1"
+    shift
+  fi
   [ "$1" = "--" ] && shift
   echo "::group::$label ($mode)"
   TOOL_OUT="$WORK/$slug-$mode.out" # per-tool/phase so the diagnostics step keeps each one
@@ -1034,7 +1045,8 @@ run_tool() {
     ckpt "[$label/$mode] disconnect"
     "$CLI" disconnect "$slug" >/dev/null 2>&1
     ckpt "[$label/$mode] asserting capture"
-    if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" "$(winpath "$CAPTURE")" "$needle" "$mode"; then
+    if node "$(winpath "$ROOT/ci/e2e/assert-capture.mjs")" \
+      "$(winpath "$CAPTURE")" "$needle" "$mode" "$expected_context"; then
       echo "PASS: $label reached the gateway with the $mode Gate headers"
       PASS=$((PASS + 1))
     else
@@ -1076,15 +1088,6 @@ fi
 # just points at the relay); the relay injects the differing credential.
 run_relay_tools() {
   local mode="$1"
-
-  # --- Claude Code: gate-connect writes the relay base URL + upstream headers
-  #     into the env block of ~/.claude/settings.json; claude POSTs /v1/messages
-  #     to the relay. We run `--bare` (the documented CI mode - it skips the
-  #     OAuth/keychain read that otherwise hangs headless macOS) and feed it that
-  #     exact settings file via `--settings` so the env block applies.
-  mkdir -p "$HOME/.claude"
-  run_tool "claude-code" "claude-code" "/v1/messages" "$mode" -- \
-    claude --bare -p "ping" --settings "$(winpath "$HOME/.claude/settings.json")"
 
   # --- Codex: apikey mode → relay base + /v1, POSTs /v1/responses. Talks to the
   #     relay over plaintext http now, so the old custom-CA problem
@@ -1128,6 +1131,31 @@ run_relay_tools() {
 run_engine_tools() {
   local mode="$1"
 
+  # --- Claude Code: Gate Connect writes HTTPS_PROXY but deliberately leaves
+  #     ANTHROPIC_BASE_URL absent. The real Claude CLI therefore keeps its
+  #     first-party model-capability path (including standard vs [1m] context
+  #     selection), while the engine intercepts the canonical
+  #     api.anthropic.com socket and rewrites /v1/messages to the mock gateway.
+  #     --bare avoids an OAuth/keychain read that hangs on headless macOS.
+  if [ -z "$ENGINE_ON" ]; then
+    echo "::notice::skipping claude-code - proxy-routed, and the engine is not up"
+  else
+    mkdir -p "$HOME/.claude"
+    # Prove Claude Code's explicit route is independent from the Desktop app's
+    # domain switch. Without the selector in HTTPS_PROXY this state would
+    # silently blind-tunnel both model variants around Gate.
+    "$CLI" proxy domain anthropic off
+    run_tool \
+      "claude-code-standard" "claude-code" "/v1/messages" "$mode" standard -- \
+      claude --bare -p "ping" --model opus \
+        --settings "$(winpath "$HOME/.claude/settings.json")"
+    run_tool \
+      "claude-code-1m" "claude-code" "/v1/messages" "$mode" 1m -- \
+      claude --bare -p "ping" --model "opus[1m]" \
+        --settings "$(winpath "$HOME/.claude/settings.json")"
+    "$CLI" proxy domain anthropic on
+  fi
+
   # --- OpenClaw: PROXY-routed since the harnesses moved off per-provider
   #     baseUrl edits. gate-connect writes `proxy.proxyUrl` (a process-wide
   #     interceptor over OpenClaw's HTTP clients) plus NODE_EXTRA_CA_CERTS, and
@@ -1137,8 +1165,12 @@ run_engine_tools() {
   #     Nothing dials Anthropic: /v1/messages is a rewrite prefix, so the engine
   #     never opens the upstream leg.
   #
-  #     Needle stays /v1/messages: the anthropic catalog entry's upstream is the
-  #     bare host, so the forwarded path is the app's own.
+  #     Needle is /v1/chat/completions: the anthropic catalog entry's upstream
+  #     is the bare host, so the forwarded path is the app's own, and since
+  #     2026.8.1 openclaw's anthropic transport is the OpenAI-compatible
+  #     endpoint (`api=openai-completions`) rather than /v1/messages. The
+  #     catalog names that path, so a capture here also proves the intercept
+  #     still covers it; a pass on /v1/messages would mean openclaw reverted.
   #
   #     We seed a minimal anthropic provider block (with a dummy apiKey so
   #     openclaw actually fires the call): gate-connect detects OpenClaw off the
@@ -1157,7 +1189,7 @@ run_engine_tools() {
     mkdir -p "$HOME/.openclaw"
     printf '{"models":{"providers":{"anthropic":{"baseUrl":"https://api.anthropic.com/v1","apiKey":"sk-ant-e2e-dummy"}}}}' \
       > "$HOME/.openclaw/openclaw.json"
-    run_tool "openclaw" "openclaw" "/v1/messages" "$mode" -- \
+    run_tool "openclaw" "openclaw" "/v1/chat/completions" "$mode" -- \
       openclaw infer model run --local --model "anthropic/$OPENCLAW_MODEL" --prompt "ping"
   fi
 
@@ -1211,9 +1243,9 @@ start_relay || exit 1
 run_relay_tools "api-key"
 stop_relay
 # Best-effort, like the per-tool guards: a runner that cannot bring the engine
-# up should still prove the three relay-routed tools rather than failing the
-# whole phase. The two proxy-routed tools skip with a notice in that case.
-start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
+# up should still prove the two relay-routed tools rather than failing the
+# whole phase. The three proxy-routed tools skip with a notice in that case.
+start_engine || echo "::warning::engine unavailable - claude-code, openclaw and hermes will be skipped"
 os_channel_checks
 run_engine_tools "api-key"
 stop_engine
@@ -1230,7 +1262,7 @@ if oauth_login; then
   start_relay || exit 1
   run_relay_tools "oauth"
   stop_relay
-  start_engine || echo "::warning::engine unavailable - openclaw and hermes will be skipped"
+  start_engine || echo "::warning::engine unavailable - claude-code, openclaw and hermes will be skipped"
   run_engine_tools "oauth"
   stop_engine
   "$CLI" logout >/dev/null 2>&1 || true

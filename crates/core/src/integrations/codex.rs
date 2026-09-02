@@ -45,6 +45,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{value, DocumentMut, Item, Table, Value};
 
+use crate::account::BillingMode;
 use crate::env;
 use crate::primitives;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
@@ -219,10 +220,6 @@ impl Integration for Codex {
         DEFAULT_UPSTREAM_URL
     }
 
-    fn requires_upstream_credential(&self) -> bool {
-        false
-    }
-
     fn config_location(&self) -> Option<String> {
         config_path().ok().map(|p| p.display().to_string())
     }
@@ -275,17 +272,36 @@ impl Integration for Codex {
             )));
         }
 
-        // Require `requires_openai_auth = true`. A block without it is the
-        // old `[auth] command` shape that left ChatGPT-mode Codex bypassing
-        // the gateway - report drift so the user reconnects into the fix.
+        // What the block should say about auth depends on who pays, so the two
+        // modes have opposite expectations here and each reads the other's
+        // shape as drift - which is right: a mode switch has to reconnect
+        // Codex, and status is how the app knows to.
+        let billing_mode = crate::account::billing_mode().unwrap_or_default();
         let requires_openai_auth = provider_block
             .get("requires_openai_auth")
             .and_then(|i| i.as_bool())
             .unwrap_or(false);
-        if !requires_openai_auth {
-            return Ok(Status::Drifted(format!(
-                "[model_providers.{PROVIDER_ID}] is missing requires_openai_auth = true"
-            )));
+        match billing_mode {
+            // BYOK requires `requires_openai_auth = true`. A block without it
+            // is the old `[auth] command` shape that left ChatGPT-mode Codex
+            // bypassing the gateway - report drift so the user reconnects into
+            // the fix.
+            BillingMode::Byok if !requires_openai_auth => {
+                return Ok(Status::Drifted(format!(
+                    "[model_providers.{PROVIDER_ID}] is missing requires_openai_auth = true"
+                )));
+            }
+            // PAYG requires its ABSENCE: with it, Codex attaches its own
+            // credential, the gateway reads that as a passthrough token, and
+            // the request is refused for want of an upstream URL. A block
+            // carrying it is a BYOK config the account has since moved off.
+            BillingMode::Payg if requires_openai_auth => {
+                return Ok(Status::Drifted(format!(
+                    "[model_providers.{PROVIDER_ID}] carries requires_openai_auth = true, which \
+                     Codex cannot use while this account bills through Gate"
+                )));
+            }
+            _ => {}
         }
 
         // The provider points at the relay's loopback base; the relay only
@@ -301,8 +317,12 @@ impl Integration for Codex {
         // Accept whichever auth-mode shape is currently written. If auth.json
         // can't be read, fall back to ChatGPT (the only mode where the bug
         // bites - wrong base_url shape causes 404s; API-key mode just needs
-        // an OPENAI_API_KEY to authenticate).
-        let mode = read_auth_mode().unwrap_or(AuthMode::Chatgpt);
+        // an OPENAI_API_KEY to authenticate). In PAYG there is no login to
+        // read and `connect` pinned the apikey shape, so expect that.
+        let mode = match billing_mode {
+            BillingMode::Payg => AuthMode::Apikey,
+            BillingMode::Byok => read_auth_mode().unwrap_or(AuthMode::Chatgpt),
+        };
         let expected_base = relay_base_url_for(&relay_base, mode)?;
         let base_url = provider_block
             .get("base_url")
@@ -319,6 +339,20 @@ impl Integration for Codex {
         // or credential is written alongside it. An `http_headers` table left by
         // an older build is not drift - the next connect rewrites the block
         // wholesale, and disconnect drops it either way.
+
+        // Identity matched; now liveness, the way Hermes does it. The
+        // persisted relay port survives restarts precisely so configs stay
+        // valid, which means the identity check alone reads Connected while
+        // Codex dials a dead loopback port (engine crash-reverted, or routing
+        // never restored). Drift rather than Connected also keeps the
+        // master-off sweep repairing it.
+        if !crate::proxy::relay_listening() {
+            return Ok(Status::Drifted(format!(
+                "the Gate proxy is not running, so Codex cannot reach its provider \
+                 ({expected_base:?} is a dead address) - turn the proxy on, or disconnect Codex \
+                 to restore it"
+            )));
+        }
 
         Ok(Status::Connected)
     }
@@ -339,7 +373,17 @@ impl Integration for Codex {
         // of trusting whatever value flowed through the UI/Advanced
         // field. This mirrors what Codex itself would have done in its
         // native (non-Gate) routing.
-        let mode = read_auth_mode()?;
+        //
+        // PAYG has no login state to read: the whole point is that Codex sends
+        // no credential of its own, so `auth.json` may not exist at all and
+        // `read_auth_mode` would hard-fail on a user who never ran
+        // `codex login`. The apikey shape is the only one PAYG can use anyway -
+        // the ChatGPT route is a subscription, which is by definition not
+        // pay-as-you-go - so pin it rather than asking.
+        let mode = match input.billing_mode {
+            BillingMode::Payg => AuthMode::Apikey,
+            BillingMode::Byok => read_auth_mode()?,
+        };
 
         let path = config_path()?;
         let mut doc = if path.exists() {
@@ -400,14 +444,27 @@ impl Integration for Codex {
         provider.insert("name", value(PROVIDER_DISPLAY_NAME));
         provider.insert("base_url", value(base_url.as_str()));
         provider.insert("wire_api", value("responses"));
-        // Codex sources the upstream bearer from its own `codex login`
+        // BYOK: Codex sources the upstream bearer from its own `codex login`
         // session (ChatGPT OAuth token or API key in ~/.codex/auth.json)
         // and attaches it to this provider. This is the only mechanism
         // that carries a ChatGPT-subscription login through a custom
         // base_url - without it, ChatGPT-mode Codex ignores this provider
         // and hits chatgpt.com directly. Mutually exclusive with `env_key`
         // and `[auth] command` per the Codex docs, so we set neither.
-        provider.insert("requires_openai_auth", value(true));
+        //
+        // PAYG: set NEITHER `requires_openai_auth` nor `env_key`, which the
+        // Codex docs define as the third, unauthenticated provider case -
+        // "Codex assumes the provider doesn't require authentication", offered
+        // for local models, and our `base_url` is a loopback address. Codex
+        // then sends no `Authorization` at all, which is exactly what PAYG
+        // needs: the gateway reads any non-`sk-gw-` token in that slot as a
+        // passthrough credential, which forces BYOK and is then refused for
+        // want of an upstream URL. Sending nothing is the only shape that
+        // cannot be misread, and it keeps us from writing a credential (real
+        // or placeholder) into the user's Codex config.
+        if input.billing_mode == BillingMode::Byok {
+            provider.insert("requires_openai_auth", value(true));
+        }
 
         // No `http_headers` at all: the relay reads the upstream off the slug
         // segment in `base_url` and injects the hint itself, and the Gate

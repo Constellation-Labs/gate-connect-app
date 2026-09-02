@@ -32,13 +32,27 @@ export interface ToolFixture {
   name: string;
   upstream_provider_name: string;
   default_upstream_url: string;
-  requires_upstream_credential: boolean;
   /** The file Gate rewrites for this tool. Optional: absent and null both mean
       "no single file names it", which is what the real backend reports for the
       environment channel. A spec that cares about the drift review's copy sets
       it; `list_tools` fills the default so nothing else has to. */
   config_location?: string | null;
   status: ToolStatus;
+}
+
+/** One event as the gateway sends it. Mirrors `SecurityEvent` in `lib/api.ts`,
+    and carries no content for the same reason: the fields AC3 forbids are absent
+    from the payload, so a fixture that had them would be testing a wire shape
+    that does not exist. */
+export interface SecurityEventFixture {
+  id: string;
+  requestId: string;
+  at: string;
+  action: "block" | "flag";
+  category: string | null;
+  tool: string | null;
+  model: string | null;
+  provider: string | null;
 }
 
 export interface ProviderFixture {
@@ -116,8 +130,20 @@ export interface BackendState {
   launchAtLogin: { enabled: boolean; pending_disable: boolean };
   /** Settings preferences, as `preferences.json` holds them. Both default on,
       which is what lets a switch read On before anything has been written. */
+  /** What the live security-event feed (AG-578) has when the window mounts.
+      A spec pushes further events with `app.emit("security-event", ...)`, which
+      is what the real backend does once connected. */
+  securityFeed: {
+    state: "live" | "reconnecting" | "offline";
+    events: SecurityEventFixture[];
+  };
   preferences: {
     routing_health_notifications: boolean;
+    /** AG-578's per-category switches, and the sound they make. Default on, like
+        every other preference. */
+    blocked_event_notifications: boolean;
+    flagged_event_notifications: boolean;
+    security_notification_sound: boolean;
     share_diagnostics: boolean;
     /** Whether the diagnostic-data question has been ANSWERED, as opposed to
         defaulted. False sends first run through the diagnostics step; the
@@ -220,6 +246,10 @@ export interface BackendState {
    *  onboarding window - the first-launch path, which one spec asks for
    *  explicitly. */
   localStorage: Record<string, string>;
+  /** What `getCurrentWindow().label` reports, picking the surface `main.tsx`
+   *  renders: "main" (the default), "tray" for the tray popover, "onboarding"
+   *  for the intro window. */
+  windowLabel: string;
 }
 
 const CLAUDE_CODE: ToolFixture = {
@@ -227,8 +257,7 @@ const CLAUDE_CODE: ToolFixture = {
   name: "Claude Code",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",
-  requires_upstream_credential: false,
-    config_location: null,
+  config_location: null,
   status: { kind: "detected" },
 };
 
@@ -237,8 +266,7 @@ const CODEX: ToolFixture = {
   name: "Codex",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://api.openai.com/v1",
-  requires_upstream_credential: false,
-    config_location: null,
+  config_location: null,
   status: { kind: "detected" },
 };
 
@@ -247,8 +275,7 @@ const OPENCODE: ToolFixture = {
   name: "OpenCode",
   upstream_provider_name: "your existing providers",
   default_upstream_url: "https://api.anthropic.com",
-  requires_upstream_credential: false,
-    config_location: null,
+  config_location: null,
   status: { kind: "detected" },
 };
 
@@ -266,7 +293,18 @@ const ANTHROPIC_DOMAIN: DomainFixture = {
 /** Claude Desktop's chat surface. Off, supported, and reached only through its
  *  own row: it carries the user's claude.ai session cookie rather than a
  *  brokered key. In `defaultState`'s domain list because the shipped catalog
- *  always carries it: the row exists on every ledger, switched off. */
+ *  always carries it: the row exists on every ledger, switched off.
+ *
+ *  "Every ledger" means every STAGING ledger, and this fixture and
+ *  `CHATGPT_APPS_DOMAIN` are both the staging shape. `proxy::config`'s
+ *  `STAGING_ONLY_SLUGS` clears `supported` on these two unless the account
+ *  points at the staging gateway, and `defaultState`'s account names the
+ *  production host - the fixture is deliberately inconsistent with it, because
+ *  the gate lives entirely in the backend. What the frontend does with a
+ *  gated-off domain is already covered without a special case: `buildGroups`
+ *  filters on `supported`, so the row is simply absent, which is what an
+ *  unsupported domain has always meant here. Flip `supported` to false in a
+ *  spec's `merge` to render that. */
 export const CLAUDE_WEB_DOMAIN: DomainFixture = {
   slug: "claude-web",
   display_name: "Claude Desktop chat",
@@ -300,6 +338,25 @@ export const CHATGPT_DOMAIN: DomainFixture = {
   upstream_url: "https://chatgpt.com/backend-api",
   rewrite_prefixes: ["/codex/responses"],
   passthrough_prefixes: [],
+  enabled: false,
+  supported: true,
+};
+
+/** The ChatGPT app's own chat turn plus Codex's tool plane, sharing chatgpt.com
+ *  with the entry above under a different URL split. Same deal as the two rows
+ *  above - off, supported, its own row - because the chat half carries the
+ *  user's session cookie. Present here because the provider names it in
+ *  `chat_domain_slugs`, and a slug named there with no domain to match is a row
+ *  the ledger promises and never renders; `provider.rs`'s
+ *  `chat_domains_reach_the_ledger_without_reaching_the_cascade` asserts the same
+ *  pairing on the backend catalog. */
+export const CHATGPT_APPS_DOMAIN: DomainFixture = {
+  slug: "chatgpt-apps",
+  display_name: "ChatGPT app chat + Codex tools",
+  hosts: ["chatgpt.com"],
+  upstream_url: "https://chatgpt.com",
+  rewrite_prefixes: ["/backend-api/f/conversation", "/backend-api/ps/mcp", "/backend-api/wham/"],
+  passthrough_prefixes: ["/backend-api/f/conversation/prepare"],
   enabled: false,
   supported: true,
 };
@@ -340,6 +397,7 @@ export function defaultState(): BackendState {
         { ...CLAUDE_WEB_DOMAIN },
         { ...OPENAI_DOMAIN },
         { ...CHATGPT_DOMAIN },
+        { ...CHATGPT_APPS_DOMAIN },
       ],
     },
     tools: [{ ...CLAUDE_CODE }, { ...CODEX }, { ...OPENCODE }],
@@ -352,7 +410,7 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["claude-code"],
         domain_slugs: ["anthropic"],
-        chat_domain_slugs: [],
+        chat_domain_slugs: ["claude-web"],
       },
       {
         slug: "openai",
@@ -362,12 +420,16 @@ export function defaultState(): BackendState {
         available: true,
         tool_slugs: ["codex"],
         domain_slugs: ["openai"],
-        chat_domain_slugs: ["chatgpt"],
+        chat_domain_slugs: ["chatgpt", "chatgpt-apps"],
       },
     ],
     launchAtLogin: { enabled: false, pending_disable: false },
+    securityFeed: { state: "live", events: [] },
     preferences: {
       routing_health_notifications: true,
+      blocked_event_notifications: true,
+      flagged_event_notifications: true,
+      security_notification_sound: true,
       share_diagnostics: true,
       share_diagnostics_recorded: true,
       device_name: null,
@@ -398,6 +460,7 @@ export function defaultState(): BackendState {
     hostName: "e2e-macbook",
     failures: {},
     localStorage: { "gc.tour.v3.seen": "1", "gc.oauth-offer.v1.seen": "1" },
+    windowLabel: "main",
   };
 }
 

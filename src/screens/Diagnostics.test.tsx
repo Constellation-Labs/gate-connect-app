@@ -33,6 +33,7 @@ const backend: BackendDiagnostics = {
   data_dir: "/home/x/.local/share/Gate Connect",
   ca_cert_path: "/home/x/.local/share/Gate Connect/proxy/ca-cert.pem",
   ca_cert_present: true,
+  ca_nss_trusted: true,
   routing_intent: true,
   persisted_engine_proxy_url: "http://127.0.0.1:45981",
   relay_base_url: "http://127.0.0.1:45982",
@@ -44,6 +45,7 @@ const account: Account = {
   gateway_base_url: "https://gateway.constellationgate.ai",
   has_api_key: true,
   auth_mode: "api_key",
+  billing_mode: "byok",
   org_id: null,
   org_name: null,
 };

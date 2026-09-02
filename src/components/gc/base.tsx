@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
+import type { ActivitySecurity, ActivityStatus } from "../../lib/toolEventRow";
 import type { IconName } from "./Icon";
 import { Icon } from "./Icon";
 
@@ -33,7 +34,7 @@ export function Card({
     <section
       id={id}
       aria-busy={busy || undefined}
-      className={`rounded-lg border border-base-border bg-base-card shadow-base-sm ${className}`}
+      className={`rounded-md border border-base-border bg-base-card shadow-base-sm ${className}`}
     >
       {children}
     </section>
@@ -43,17 +44,25 @@ export function Card({
 /**
  * The 28x28 status chip that fronts the routing banners, and at 36px the alert
  * banner. One shape, two palettes: a vertical 50 -> 200 gradient, a 300 border
- * and a 700 icon, all on Tailwind's default ramps (Figma 113:16788 / 113:16891).
+ * and a 600 icon, all on Tailwind's default ramps.
+ *
+ * Sampled from the `113:*` banner components, which the file has since deleted
+ * along with the rest of the Components page; the live sources are the banner
+ * instances inside the flow frames.
+ *
+ * The icon step is 600, not 700: the ShieldBan inside the Overview frame's
+ * routing banner reads `tailwind colors/amber/600` #D97706, which is also the
+ * amber `tailwind.config.ts` records as the design's own.
  *
  * Tone classes are spelled out rather than interpolated - Tailwind only sees
  * literal class names at build time.
  */
 const TILE_TONES = {
-  green: "from-green-50 to-green-200 border-green-300 text-green-700",
-  amber: "from-amber-50 to-amber-200 border-amber-300 text-amber-700",
+  green: "from-green-50 to-green-200 border-green-300 text-green-600",
+  amber: "from-amber-50 to-amber-200 border-amber-300 text-amber-600",
   // Not in the Figma, which draws no failure state. Follows the same 50 -> 200
-  // gradient, 300 border, 700 icon pattern as the two that are.
-  red: "from-red-50 to-red-200 border-red-300 text-red-700",
+  // gradient, 300 border, 600 icon pattern as the two that are.
+  red: "from-red-50 to-red-200 border-red-300 text-red-600",
 } as const;
 
 export function StatusTile({
@@ -63,13 +72,16 @@ export function StatusTile({
 }: {
   tone: keyof typeof TILE_TONES;
   icon: IconName;
-  size?: 28 | 36;
+  size?: 28 | 32 | 36;
 }) {
   return (
     <span
       aria-hidden
-      className={`flex shrink-0 items-center justify-center rounded-base border bg-gradient-to-b ${TILE_TONES[tone]} ${
-        size === 36 ? "size-9" : "size-7"
+      // Drawn radius is 4px on both banner tiles (228:85985 reads 3.5, the
+      // alert's 228:90546 reads 4; both round to `control`, not the 6px `sm`
+      // this used to carry).
+      className={`flex shrink-0 items-center justify-center rounded-control border bg-gradient-to-b ${TILE_TONES[tone]} ${
+        size === 36 ? "size-9" : size === 32 ? "size-8" : "size-7"
       }`}
     >
       <Icon name={icon} size={size === 36 ? 20 : 16} />
@@ -78,11 +90,11 @@ export function StatusTile({
 }
 
 /**
- * 36x20 track, 16px thumb (Figma 113:16827). Geometry differs from the
- * popover's `gc/ui.tsx` Switch (38x22 with a check glyph), so the two coexist
- * until the popover screens migrate; the accessibility contract is carried
- * over unchanged, including the `before:` hit-area expansion that takes the
- * target past 24px without moving the visible track.
+ * 36x20 track, 16px thumb (`Switch` component set, `408:14253`). Geometry
+ * differs from the popover's `gc/ui.tsx` Switch (38x22 with a check glyph), so
+ * the two coexist until the popover screens migrate; the accessibility
+ * contract is carried over unchanged, including the `before:` hit-area
+ * expansion that takes the target past 24px without moving the visible track.
  */
 export function BaseSwitch({
   on,
@@ -106,13 +118,24 @@ export function BaseSwitch({
       aria-busy={busy || undefined}
       aria-disabled={busy || undefined}
       onClick={busy ? undefined : onClick}
+      // 36 x 20 with a 16px knob at a 2px inset, straight off the component set
+      // and off every instance in `sidebar-menu-item` (434:128).
+      //
+      // This carried 32 x 17.78 / 14.22 / 1.78 from 2026-08-26 until the
+      // 2026-08-30 audit: those numbers were measured off an instance scaled
+      // 1.125x, and each one divides back exactly (36/1.125 = 32,
+      // 20/1.125 = 17.78, 16/1.125 = 14.22, 2/1.125 = 1.78). The docstring
+      // above had said 36x20 all along; only the code disagreed.
+      //
+      // The off track is `neutral-400` at 50%, which is `custom/outline`
+      // (#a3a3a380) to the byte - the design's own value.
       className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
         busy ? "opacity-70" : ""
-      } ${on ? "bg-blue-ribbon-700" : "bg-base-input"}`}
+      } ${on ? "bg-blue-ribbon-700" : "bg-neutral-400/50"}`}
     >
       <span
         className={`absolute size-4 rounded-full bg-base-background shadow-base-lg transition-transform ${
-          on ? "translate-x-4" : "translate-x-1"
+          on ? "translate-x-[18px]" : "translate-x-[2px]"
         }`}
       />
     </button>
@@ -146,7 +169,7 @@ export function Skeleton({
     <span
       aria-hidden
       style={style}
-      className={`block animate-pulse rounded-base bg-gray-200 ${className}`}
+      className={`block animate-pulse rounded-sm bg-gray-200 ${className}`}
     />
   );
 }
@@ -185,7 +208,7 @@ export function EmptyNote({
     <div className={`flex flex-col items-center gap-3 py-6 ${className}`}>
       <span
         aria-hidden
-        className="flex size-9 items-center justify-center rounded-base border border-base-border text-base-muted-foreground"
+        className="flex size-9 items-center justify-center rounded-sm border border-base-border text-base-muted-foreground"
       >
         <Icon name={icon} size={20} />
       </span>
@@ -193,3 +216,72 @@ export function EmptyNote({
     </div>
   );
 }
+
+/**
+ * The small uppercase mono badge the feed tables draw.
+ *
+ * Lives here rather than in `AppPane` because two surfaces now draw it - the
+ * per-app recent-activity table and the live security feed - and a second copy is
+ * how the two drift into disagreeing about what BLOCKED looks like. The colour
+ * pair stays the caller's: this owns the shape, not the vocabulary.
+ */
+export function Pill({
+  className,
+  title,
+  children,
+}: {
+  className: string;
+  /** Hover detail, for a badge that stands in for more than it says - the merged
+   *  security column uses it to keep the guardrail verdict on a failed row. */
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <span
+      title={title}
+      className={`inline-block rounded-xs px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * One badge per row, under a single Security column (`table/recent-activity`,
+ * 272:3150, sampled from the properties panel 2026-08-21).
+ *
+ * Status and security used to be two columns; the design merged them, so a row
+ * that failed reads ERROR and every other row reads what the guardrails did.
+ * `error` is in this map rather than a second one because they now compete for one
+ * cell and the precedence has to live somewhere the reader can see it.
+ *
+ * `allow` is grey, not green, which is the change worth noticing: green reads as
+ * "good", and the useful signal in this column is when something was *acted on*.
+ * A wall of green ticks is what makes the one amber row easy to miss. It is the
+ * one entry that is not a verdict, so it takes a neutral over `gray/100` rather
+ * than a coloured pair.
+ *
+ * That neutral is `gray/600`, not the design's `base/muted-foreground`. The
+ * sampled pair is 4.39:1 on `gray/100` and this text is 12px medium, so it misses
+ * AA by a hair - on the badge that will sit in almost every row. `gray/600` is
+ * 6.87:1 and reads as the same grey. The same call the `gc` switch track made
+ * when 2.98:1 turned up on a hovered row.
+ *
+ * The 100 stop with 700 text, deliberately quieter than `Overview`'s 200/900
+ * action pills: those name a policy, these report what happened to one request,
+ * and a table of them should not shout. REDACTED's text sits at the 800 - the
+ * design's own exception, not a rounding of ours - and ERROR and BLOCKED sample
+ * identically. Redacted is violet, matching `chart.redacted`; purple here was a
+ * slip, and this was the app's last use of it.
+ */
+export const BADGE_STYLES: Record<ActivitySecurity | ActivityStatus, string> = {
+  allow: "bg-gray-100 text-gray-600",
+  flagged: "bg-amber-100 text-amber-700",
+  redacted: "bg-violet-100 text-violet-800",
+  blocked: "bg-red-100 text-red-700",
+  error: "bg-red-100 text-red-700",
+  // Never rendered: a successful request shows its security action instead. Here
+  // so the map stays exhaustive over both unions and a new status cannot be added
+  // without deciding what it looks like. Matches `allow`, the other non-verdict.
+  success: "bg-gray-100 text-gray-600",
+};

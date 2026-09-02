@@ -56,12 +56,30 @@ export interface MessagesBucket {
    * contract's 24 distinct UTC hours are the thing that is actually unique.
    */
   id: string;
-  /** X-axis tick, e.g. an hour ("14"). Display only; see `id`. */
+  /** The bucket's local hour, as a number ("14"). Display only; see `id`.
+   *  Rendered through {@link hourTick} rather than printed raw. */
   label: string;
   total: number;
   blocked: number;
   flagged: number;
   redacted: number;
+}
+
+/**
+ * A bucket's hour as the axis draws it: zero-padded, on the hour ("00:00").
+ *
+ * The redrawn chart (`706:9997`, read 2026-08-28) labels every tick this way;
+ * it used to draw a bare hour, which is what `label` still carries and what the
+ * accessible table used to suffix by hand. One function so the axis, the
+ * tooltip heading and that table cannot phrase one bucket three ways.
+ *
+ * The `chart/tooltip` card is the exception the file has not caught up on: it
+ * is an older node (`191:*`) than the redrawn axis around it and still heads
+ * itself with a bare hour. A heading that names a column has to match the
+ * column, so it follows the axis here.
+ */
+export function hourTick(label: string): string {
+  return `${label.padStart(2, "0")}:00`;
 }
 
 const SERIES = [
@@ -71,9 +89,12 @@ const SERIES = [
   { key: "redacted", label: "Redacted", className: "bg-chart-redacted" },
 ] as const;
 
-/** What any counter reads with no figure behind it (Figma 228:89341, where
- *  Tokens saved is the one with nothing to report). */
-const UNAVAILABLE = "N/A";
+/** What any counter reads with no figure behind it.
+ *
+ *  Lowercase, as `228:89343` and `272:1728` render it - the tile's label above
+ *  is the uppercase half, and the value is not. The plan had transcribed this
+ *  as `N/A` from the same frames; the 2026-08-30 screenshot settles it. */
+const UNAVAILABLE = "n/a";
 
 export function StatTiles({
   stats,
@@ -153,7 +174,7 @@ function Stat({
           // resize under the user when the reading lands.
           <Skeleton className="my-1 h-6 w-16" />
         ) : (
-          <span className="text-2xl font-semibold leading-8 text-neutral-900">{value}</span>
+          <span className="text-2xl font-semibold leading-8 text-base-foreground">{value}</span>
         )}
         {delta && (
           <span className="text-base-xs font-medium text-green-600">{delta}</span>
@@ -201,7 +222,7 @@ export function MessagesChart({
   const empty = !pending && !unavailable && highest === 0;
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-neutral-900">Messages</h2>
+      <h2 className="text-sm font-medium leading-5 text-base-foreground">Messages</h2>
 
       {pending ? (
         <PendingChart />
@@ -209,9 +230,9 @@ export function MessagesChart({
         // Not a sentence about their traffic. The pane's gap notice carries the
         // cause and the retry; this only refuses to draw a plot for a series
         // nobody sent us.
-        <EmptyNote>Messages couldn&apos;t be read</EmptyNote>
+        <EmptyNote icon="chartColumn">Messages couldn&apos;t be read</EmptyNote>
       ) : empty ? (
-        <EmptyNote>No messages sent in the last 24hrs</EmptyNote>
+        <EmptyNote icon="chartColumn">No messages sent in the last 24hrs</EmptyNote>
       ) : (
         <>
       {/* The bars are decoration for assistive tech; the table below carries the
@@ -271,9 +292,9 @@ export function MessagesChart({
         {buckets.map((bucket) => (
           <span
             key={bucket.id}
-            className="w-5 text-center font-mono text-base-2xs text-base-muted-foreground"
+            className="w-8 text-center font-mono text-base-2xs text-base-muted-foreground"
           >
-            {bucket.label}
+            {hourTick(bucket.label)}
           </span>
         ))}
       </div>
@@ -302,7 +323,7 @@ export function MessagesChart({
         <tbody>
           {buckets.map((b) => (
             <tr key={b.id}>
-              <th scope="row">{b.label}:00</th>
+              <th scope="row">{hourTick(b.label)}</th>
               <td>{b.total}</td>
               <td>{b.blocked}</td>
               <td>{b.flagged}</td>
@@ -313,11 +334,11 @@ export function MessagesChart({
         </tbody>
       </table>
 
-      <ul className="mt-4 flex items-center justify-center gap-4">
+      <ul className="mt-4 flex items-center gap-6 border-t border-base-border pt-4">
         {SERIES.map(({ key, label, className }) => (
-          <li key={key} className="flex items-center gap-1.5">
-            <span aria-hidden className={`size-3 rounded-sm ${className}`} />
-            <span className="text-base-xs text-neutral-600">{label}</span>
+          <li key={key} className="flex items-center gap-2">
+            <span aria-hidden className={`size-3 rounded-xs ${className}`} />
+            <span className="text-base-xs text-base-foreground">{label}</span>
           </li>
         ))}
       </ul>
@@ -328,35 +349,48 @@ export function MessagesChart({
 }
 
 /**
- * The chart's placeholder: one column per hour of the period it is about to
- * draw, at heights that do not change between renders.
- *
- * Fixed heights and not random ones. A skeleton is a promise about shape, and a
- * silhouette that reshuffles on every repaint is read as data arriving - which
- * is the one thing it must not claim.
+ * The chart's placeholder, as `overview-loading` (228:85602) draws it: one
+ * uniform full-height column per hour of the period, over the real numbered
+ * ticks and the real legend - the card keeps its shape and only the readings
+ * are missing. An earlier version drew a fixed silhouette at varied heights,
+ * which read as data that had already arrived.
  */
 function PendingChart() {
   return (
     <>
       <div aria-hidden className="mt-4 flex h-28 items-end justify-between gap-1">
-        {PENDING_HEIGHTS.map((height, i) => (
-          <Skeleton key={i} className="w-5" style={{ height: `${height}%` }} />
+        {PENDING_HOURS.map((hour) => (
+          <Skeleton key={hour} className="h-full w-5" />
         ))}
       </div>
       <div aria-hidden className="mt-1 flex justify-between gap-1">
-        {PENDING_HEIGHTS.map((_, i) => (
-          <Skeleton key={i} className="h-3 w-5" />
+        {PENDING_HOURS.map((hour) => (
+          <span
+            key={hour}
+            // The tick box is the loaded axis's, not this frame's: a narrower
+            // placeholder would let the axis jump sideways the moment the
+            // reading lands, which is the one thing a placeholder must not do.
+            className="w-8 text-center font-mono text-base-2xs text-base-muted-foreground"
+          >
+            {hour}
+          </span>
         ))}
       </div>
+      <ul className="mt-4 flex items-center gap-6 border-t border-base-border pt-4">
+        {SERIES.map(({ key, label, className }) => (
+          <li key={key} className="flex items-center gap-2">
+            <span aria-hidden className={`size-3 rounded-xs ${className}`} />
+            <span className="text-base-xs text-base-foreground">{label}</span>
+          </li>
+        ))}
+      </ul>
     </>
   );
 }
 
-/** 24 columns, one per hour, in a shape that reads as a plot without asserting
- *  one. Written out rather than generated so the silhouette is reviewable. */
-const PENDING_HEIGHTS = [
-  22, 30, 26, 18, 24, 34, 46, 58, 52, 64, 70, 62, 74, 66, 56, 60, 48, 54, 42, 38, 44, 32, 28, 20,
-];
+/** Positional ticks for the placeholder, 1..24 as the frame draws them. Indexes,
+ *  not hours-ago: the real axis replaces them with the data's own labels. */
+const PENDING_HOURS = Array.from({ length: 24 }, (_, i) => i + 1);
 
 /**
  * The hovered bucket's four figures (Figma `chart/tooltip`).
@@ -382,24 +416,24 @@ function ChartTooltip({
 }) {
   return (
     <div
-      className="pointer-events-none absolute top-1/2 z-10 w-[12.5rem] -translate-y-1/2 rounded-lg border border-base-border bg-base-card p-2 shadow-base-md"
+      className="pointer-events-none absolute top-1/2 z-10 w-[12.5rem] -translate-y-1/2 rounded-md border border-base-border bg-base-card p-2 shadow-base-md"
       style={
         side === "right"
           ? { left: `calc(${offset * 100}% + 0.75rem)` }
           : { right: `calc(${(1 - offset) * 100}% + 0.75rem)` }
       }
     >
-      <p className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-neutral-900">
-        {bucket.label}
+      <p className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-base-foreground">
+        {hourTick(bucket.label)}
       </p>
       <div className="mt-2 flex flex-col gap-1">
         {SERIES.map(({ key, label, className }) => (
           <div key={key} className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
-              <span className={`size-3 rounded-sm ${className}`} />
-              <span className="text-base-xs leading-4 text-neutral-900">{label}</span>
+              <span className={`size-3 rounded-xs ${className}`} />
+              <span className="text-base-xs leading-4 text-base-foreground">{label}</span>
             </span>
-            <span className="text-base-xs font-medium leading-4 text-neutral-900">
+            <span className="text-base-xs font-medium leading-4 text-base-foreground">
               {bucket[key].toLocaleString()}
             </span>
           </div>

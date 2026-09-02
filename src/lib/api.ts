@@ -13,7 +13,6 @@ export interface Tool {
   name: string;
   upstream_provider_name: string;
   default_upstream_url: string;
-  requires_upstream_credential: boolean;
   /** The file Gate rewrites for this tool, so the confirmation can say what is
    * about to change. Null where no single file names it (the environment
    * channel). Not a secret - it is a path in the user's own home directory, and
@@ -24,12 +23,20 @@ export interface Tool {
 
 export type AuthMode = "api_key" | "oauth";
 
+/** Who pays the upstream provider. `byok` forwards each tool's own provider
+ * credential; `payg` sends none, so Gate routes through the workspace's
+ * provider accounts and debits its prepaid balance. */
+export type BillingMode = "byok" | "payg";
+
 export interface Account {
   gateway_base_url: string;
   has_api_key: boolean;
   /** Which credential the account authenticates with. Drives sign-in routing
    * and whether the legacy key controls show in Settings. */
   auth_mode: AuthMode;
+  /** Who pays the upstream provider. No UI surfaces this yet - the backend
+   * mechanism landed first (see docs/payg-implementation-plan.md §3). */
+  billing_mode: BillingMode;
   /** Selected org (OAuth mode). Both null until the user picks one; an OAuth
    * account with no org routes to the picker. */
   org_id: string | null;
@@ -62,13 +69,6 @@ export const connectTool = (slug: string, upstreamUrl: string) =>
 
 /** Revert one tool's config to its pre-Gate state. */
 export const disconnectTool = (slug: string) => invoke<Status>("disconnect_tool", { slug });
-
-export const hasUpstreamCredential = (slug: string) => invoke<boolean>("has_upstream_credential", { slug });
-
-export const saveUpstreamApiKey = (slug: string, apiKey: string) =>
-  invoke<void>("save_upstream_api_key", { slug, apiKey });
-
-export const clearUpstreamCredential = (slug: string) => invoke<void>("clear_upstream_credential", { slug });
 
 export const getAccount = () => invoke<Account | null>("get_account");
 
@@ -109,6 +109,11 @@ export const oauthSignOut = () => invoke<void>("oauth_sign_out");
 /** Set the auth mode explicitly. Used when choosing the legacy pasted-key path
  * from the sign-in screen; OAuth sign-in sets it implicitly. */
 export const setAuthMode = (oauth: boolean) => invoke<void>("set_auth_mode", { oauth });
+
+/** Switch who pays the upstream provider. The relay and the MITM engine read
+ * the mode per request, so routing follows immediately; a connected Codex is
+ * re-applied on the Rust side, since its provider block encodes the mode. */
+export const setBillingMode = (payg: boolean) => invoke<void>("set_billing_mode", { payg });
 
 /** List the orgs the signed-in user may act on, for the picker. */
 export const oauthListOrgs = () => invoke<Org[]>("oauth_list_orgs");
@@ -279,8 +284,6 @@ export interface ProxyState {
 
 export const proxyStatus = () => invoke<ProxyState>("proxy_status");
 
-export const proxyListDomains = () => invoke<ProxyDomain[]>("proxy_list_domains");
-
 /** Turn the proxy on: starts the loopback engine, trusts the CA (the one
  * step that prompts, and only when not already trusted), and points the
  * system proxy at it. */
@@ -336,15 +339,6 @@ export interface ProviderState {
 
 export const listProviders = () => invoke<ProviderState[]>("list_providers");
 
-/** Turn a provider on: configures installed tools and, if the proxy is already
- * running, enables its proxy domain(s) (macOS / Windows / Linux). Never
- * triggers an admin prompt. */
-export const providerEnable = (slug: string) => invoke<ProviderState>("provider_enable", { slug });
-
-/** Turn a provider off: reverts the tool config and disables its proxy
- * domain(s) if the proxy is running. */
-export const providerDisable = (slug: string) => invoke<ProviderState>("provider_disable", { slug });
-
 // ---- Launch at login ----
 //
 // Standalone user setting that owns the OS login item directly. Decoupled from
@@ -367,10 +361,11 @@ export const setLaunchAtLogin = (enabled: boolean) =>
   invoke<void>("set_launch_at_login", { enabled });
 
 /** Mark (or unmark) the next exit as an updater-driven relaunch, so the exit
- * handler keeps the routing intent and the relaunched app restores routing.
- * Set after the update download completes, right before `install()` (Windows
- * exits from inside it); a quit while the download is still running is a
- * genuine user exit and must not carry the mark. Reset if the install fails. */
+ * handler leaves a pending launch-at-login opt-out (and its login item) in
+ * place for the relaunched app instead of completing it. Set after the update
+ * download completes, right before `install()` (Windows exits from inside
+ * it); a quit while the download is still running is a genuine user exit and
+ * must not carry the mark. Reset if the install fails. */
 export const setUpdaterRelaunching = (relaunching: boolean) =>
   invoke<void>("set_updater_relaunching", { relaunching });
 
@@ -455,27 +450,45 @@ export interface RunningAgents {
 
 /** The running agents themselves rather than a count: name, pid, start time,
  * and whether each predates routing. Same process set and staleness rule as
- * the two count probes above. */
-/** Running agent processes, optionally narrowed to the ones belonging to
- *  `tools`.
+ * the two count probes above.
  *
- *  Omitting `tools` scans for every agent, which is right after a master toggle
- *  - it changed the route for all of them. After a single app's toggle it is
- *  wrong: offering to close Claude because someone switched Codex names
- *  processes the change never touched. */
-export const runningAgents = (tools?: string[]) =>
-  invoke<RunningAgents>("running_agents", { tools });
+ * `only` narrows the scan to the tools whose configs were just rewritten - a
+ * per-app switch passes its own slug, a family cascade the slugs it touched.
+ * Omitting it asks about every tool, which is what diagnostics and the master
+ * toggle mean. Narrowing matters because offering to close Claude when someone
+ * switched Codex names processes the change never touched. Slugs with no process
+ * name of their own (`hermes`, `openclaw`, `env-proxy`, a proxy domain key)
+ * match nothing rather than everything. */
+export const runningAgents = (only?: string[]) =>
+  invoke<RunningAgents>("running_agents", { only: only ?? null });
 
 /** Terminate running AI tools (agent CLIs and the desktop apps sharing their
  * binary name, e.g. Claude Desktop's `Claude`) so their next launch picks up
  * the routing change. Resolves to how many processes were signalled; 0 means
- * none were running. */
-export const closeRunningAgents = () => invoke<number>("close_running_agents");
+ * none were running.
+ *
+ * `only` is the same filter {@link runningAgents} takes, and the caller is
+ * expected to pass back exactly what it offered: this signals processes, so the
+ * set it kills has to be the set the user was shown and agreed to. */
+export const closeRunningAgents = (only?: string[]) =>
+  invoke<number>("close_running_agents", { only: only ?? null });
 
 /** Finish a quit the tray deferred to the popover: the backend buffers the
  * connected tool names and emits a `quit-requested` nudge instead of exiting
  * when config-routed tools would be left pointing at the dead relay. */
 export const quitApp = () => invoke<void>("quit_app");
+
+/** Ask to quit the way the tray menu's Quit does: exit outright unless
+ * config-routed tools are still managed, in which case the backend reveals the
+ * main window and defers the decision there via `quit-requested`. The tray
+ * popover's own Quit entry goes through this so both entrances raise the same
+ * three-way dialog. */
+export const requestQuit = () => invoke<void>("request_app_quit");
+
+/** Reveal (or refocus) the main window, wherever the user left it. The tray
+ * popover's "Expand app" is the caller; the command is the same one the
+ * onboarding window's close handler uses. */
+export const revealMainWindow = () => invoke<void>("reveal_popover");
 
 /** Hand over (and clear) the buffered quit request: the connected tool names
  * to show in the quit takeover, or null when no quit is pending. Swept once
@@ -521,14 +534,70 @@ export const pendingRestore = () => invoke<PendingRestore>("pending_restore");
  * Returns the remaining state rather than void, because a partial success is the
  * interesting case and must not read as done. */
 export const resumeRestore = () => invoke<PendingRestore>("resume_restore");
+/** What the live security-event feed says about its *own* connection (AG-578).
+ *
+ * Deliberately separate from anything routing reports, and read from its own
+ * backend channel. A tool can be routing perfectly while the feed is offline, and
+ * the reverse: the events come from the gateway, not from local traffic. Driving
+ * one indicator from the other is the observed-state-versus-intent mistake
+ * `lib/groups.ts` documents, in a new place. */
+export type FeedState = "live" | "reconnecting" | "offline";
+
+/** What the guardrails did to a request. Only these two reach the live feed:
+ *  `redact` is high-volume and low-signal, and `allow` is not a verdict. The
+ *  Overview counters and the per-tool table still carry all four. */
+export type SecurityAction = "block" | "flag";
+
+/** One blocked or flagged event.
+ *
+ * **What is absent is the point.** No prompt text, no response text, no matched
+ * credential, no evidence blob, no conversation title, no session reference. The
+ * gateway omits them from the payload rather than the client hiding them, so a
+ * field that never crosses the wire cannot leak through a log or a crash report.
+ * If a field appears here that names content, the contract was widened upstream
+ * and that is worth stopping over. */
+export interface SecurityEvent {
+  /** Stream position and dedupe key (a ULID). Not `requestId`: one request
+   *  records a decision per phase, so two events can share a request id. */
+  id: string;
+  /** What the dashboard deep link is keyed on. */
+  requestId: string;
+  at: string;
+  action: SecurityAction;
+  /** `credential | phi | pii | injection | other`, derived gateway-side. Null
+   *  when nothing fired under a name its rules recognise. */
+  category: string | null;
+  /** Null is ordinary, not exceptional: an agent whose User-Agent is not on the
+   *  gateway's allowlist is recorded unattributed rather than guessed at. */
+  tool: string | null;
+  model: string | null;
+  provider: string | null;
+}
+
+/** What the feed is doing right now. Read on mount; afterwards follow the
+ *  `security-feed-state` event. */
+export const securityFeedState = () => invoke<FeedState>("security_feed_state");
+
+/** The events the feed has buffered, oldest first.
+ *
+ * A window only receives Tauri events while it is listening, and the tray window
+ * is created and destroyed on demand - so a popover opened after ten blocked
+ * requests would otherwise show an empty list and call it "No security events",
+ * which is a different claim entirely. */
+export const securityFeedRecent = () => invoke<SecurityEvent[]>("security_feed_recent");
+
+/** The "Try again" behind an Unavailable feed. Wakes the connection out of its
+ *  backoff so the click does something visible rather than waiting out a sleep. */
+export const securityFeedRetry = () => invoke<void>("security_feed_retry");
+
 /** Non-secret Settings choices. Every field defaults to `true`, and an absent
  * field in the stored file loads as `true` - so a switch reads On before anything
  * has ever been written, which is what lets Settings show a truthful default.
  *
- * Only the preferences that currently gate something are here. Per-category
- * security-event notifications and a sound toggle belong with the live event feed,
- * which does not exist yet; a switch that gates nothing would tell the user they
- * had turned something off. */
+ * Only the preferences that currently gate something are here. The per-category
+ * security-event switches gate the notifications the live feed (AG-578) fires;
+ * they arrived with it, because a switch that gates nothing would tell the user
+ * they had turned something off. */
 export interface Preferences {
   /** Native notifications about routing itself - an expired session, a quit that
    * could not put a tool back. The two the app actually fires. */
@@ -543,8 +612,21 @@ export interface Preferences {
   share_diagnostics_recorded: boolean;
   /** The person's own name for this machine, or null when it follows the
    * hostname. Read {@link deviceName} to display it - this is the override, not
-   * the resolved value. */
+   * the resolved value.
+   *
+   * Also decides whether this device's traffic is labelled at all: only a name
+   * the user chose is sent as `x-gate-device-name`. Null means the hostname is a
+   * display fallback and goes no further, so skipping the naming step really
+   * does skip it. */
   device_name: string | null;
+  /** Notify when a request is blocked. Gated per category rather than as one
+   *  switch because the two differ in weight: a block stopped something, a flag
+   *  only noted it. */
+  blocked_event_notifications: boolean;
+  /** Notify when a request is flagged. */
+  flagged_event_notifications: boolean;
+  /** Whether those notifications make a sound. */
+  security_notification_sound: boolean;
 }
 
 export const getPreferences = () => invoke<Preferences>("get_preferences");
@@ -557,18 +639,40 @@ export const getPreferences = () => invoke<Preferences>("get_preferences");
 export const installId = () => invoke<string>("install_id");
 
 /** What to call this machine: the stored name, or the hostname when there is
- *  none. Resolved by the backend so there is one answer, not two. */
+ *  none. Resolved by the backend so there is one answer, not two.
+ *
+ *  A display answer. What goes on the wire is the stored name only - see
+ *  {@link Preferences.device_name}. */
 export const deviceName = () => invoke<string>("device_name");
 
 /** Rename this device. An empty or blank name clears the override, which puts
  *  the row back to following the hostname. */
 export const setDeviceName = (name: string) => invoke<void>("set_device_name", { name });
 
+/** How long a device name may be, matching `preferences::DEVICE_NAME_MAX_BYTES`.
+ *
+ *  The backend truncates anyway - the name is stamped on every proxied request,
+ *  and an unbounded header block is a request the gateway refuses. This caps the
+ *  inputs so the user sees the limit while typing instead of discovering it
+ *  after saving. ASCII in practice, so a `maxLength` in UTF-16 units is the same
+ *  number; a name of 128 multi-byte characters is cut server-side, which is the
+ *  correct place for the byte count to be decided. */
+export const DEVICE_NAME_MAX_LENGTH = 128;
+
 export const setRoutingHealthNotifications = (enabled: boolean) =>
   invoke<void>("set_routing_health_notifications", { enabled });
 
 export const setShareDiagnostics = (enabled: boolean) =>
   invoke<void>("set_share_diagnostics", { enabled });
+
+export const setBlockedEventNotifications = (enabled: boolean) =>
+  invoke<void>("set_blocked_event_notifications", { enabled });
+
+export const setFlaggedEventNotifications = (enabled: boolean) =>
+  invoke<void>("set_flagged_event_notifications", { enabled });
+
+export const setSecurityNotificationSound = (enabled: boolean) =>
+  invoke<void>("set_security_notification_sound", { enabled });
 
 /** What a restore did to one entry on its last attempt. Closed set, mirroring
  * `recovery::Outcome`, and every member comes from the restore's own control flow
@@ -635,6 +739,11 @@ export interface Diagnostics {
   /** Whether the CA's public cert is actually on disk. Trusted-but-absent is
    * a real state and otherwise invisible. */
   ca_cert_present: boolean;
+  /** Linux only: whether the per-user NSS store Chromium reads holds the CA.
+   * Chromium never reads the system store, so this and `ca_trusted`
+   * disagreeing is the whole of "Firefox works, Chrome doesn't". `null` where
+   * the question does not apply (not Linux, or no such browser here). */
+  ca_nss_trusted: boolean | null;
   /** The persisted "routing should be on" intent, as opposed to whether it
    * is on now. The two disagreeing is the commonest report we get. */
   routing_intent: boolean;

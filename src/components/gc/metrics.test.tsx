@@ -33,11 +33,13 @@ describe("MessagesChart tooltip", () => {
 
     // The heading names the column; it is not a fifth figure. 8/2/2/0 sum to
     // 12 here only by coincidence of the design's own sample numbers, which is
-    // exactly the confusion this asserts against.
+    // exactly the confusion this asserts against - and which the redrawn axis
+    // settles by heading the column "12:00" rather than "12".
     const tip = screen.getByText("Total messages", {
       selector: "div > span > span",
     }).closest("div[class*='absolute']") as HTMLElement;
-    expect(within(tip).getByText("12")).toBeTruthy();
+    expect(within(tip).getByText("12:00")).toBeTruthy();
+    expect(within(tip).queryByText("12")).toBeNull();
     expect(within(tip).getByText("8")).toBeTruthy();
     expect(within(tip).getAllByText("2")).toHaveLength(2);
     expect(within(tip).getByText("0")).toBeTruthy();
@@ -64,13 +66,13 @@ describe("MessagesChart accessible table", () => {
 
 /**
  * The rule the tiles enforce: a measured zero prints `0`, and a counter with no
- * reading prints `N/A`. Figma 228:89333 draws `0` / `0` / `N/A` because it is an
- * org with no traffic, not because the first two can never say `N/A` - and a
+ * reading prints `n/a`. Figma 228:89333 draws `0` / `0` / `n/a` because it is an
+ * org with no traffic, not because the first two can never say `n/a` - and a
  * screen where nothing was read says it three times.
  */
 describe("StatTiles", () => {
-  // The design's word for it, not an em dash.
-  const NA = "N/A";
+  // The design's word for it, in the design's own case, and not an em dash.
+  const NA = "n/a";
   const stats: UsageStats = {
     messages: 0,
     blockedFlagged: null,
@@ -135,6 +137,14 @@ describe("MessagesChart empty and pending states", () => {
 
   it("says nothing was sent when every bucket really is zero", () => {
     render(<MessagesChart buckets={quiet} />);
+
+    expect(screen.getByText(EMPTY)).toBeTruthy();
+  });
+
+  // What ships today: the endpoint has answered, and it answered with no
+  // buckets at all. That is still a reading of zero traffic, not a refusal.
+  it("says nothing was sent when the series came back with no buckets", () => {
+    render(<MessagesChart buckets={[]} />);
 
     expect(screen.getByText(EMPTY)).toBeTruthy();
   });

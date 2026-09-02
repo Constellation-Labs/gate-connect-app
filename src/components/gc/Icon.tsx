@@ -40,8 +40,11 @@ export type IconName =
   | "headset"
   | "bookOpenText"
   | "monitorSmartphone"
+  | "monitor"
+  | "chartColumn"
   | "idCard"
   | "user"
+  | "userRound"
   | "receipt"
   | "globe"
   | "link"
@@ -51,7 +54,18 @@ export type IconName =
   | "circleCheck"
   | "circleX"
   | "messageCircleX"
-  | "creditCard";
+  | "share2"
+  | "squareUser"
+  | "fileBadge2"
+  | "circlePower"
+  | "clipboardList"
+  | "squareCode"
+  | "arrowRight"
+  | "focus"
+  | "bellDot"
+  | "creditCard"
+  | "users"
+  | "expand";
 
 const PATHS: Record<IconName, JSX.Element> = {
   shieldCheck: (
@@ -252,6 +266,24 @@ const PATHS: Record<IconName, JSX.Element> = {
       <rect width="6" height="10" x="16" y="12" rx="2" />
     </>
   ),
+  // Lucide `ChartColumn`. The Messages card's empty state.
+  chartColumn: (
+    <>
+      <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+      <path d="M18 17V9" />
+      <path d="M13 17V5" />
+      <path d="M8 17v-3" />
+    </>
+  ),
+  // Lucide `Monitor`. The Auth flow's "Name this device" pane is drawn with a
+  // plain display, not the monitor-plus-phone pair `monitorSmartphone` draws.
+  monitor: (
+    <>
+      <rect width="20" height="14" x="2" y="3" rx="2" />
+      <path d="M8 21h8" />
+      <path d="M12 17v4" />
+    </>
+  ),
   idCard: (
     <>
       <path d="M16 10h2" />
@@ -265,6 +297,12 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
       <circle cx="12" cy="7" r="4" />
+    </>
+  ),
+  userRound: (
+    <>
+      <circle cx="12" cy="8" r="5" />
+      <path d="M20 21a8 8 0 0 0-16 0" />
     </>
   ),
   receipt: (
@@ -306,6 +344,15 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="m14.5 4-5 16" />
     </>
   ),
+  share2: (
+    <>
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <path d="m8.59 13.51 6.83 3.98" />
+      <path d="m15.41 6.51-6.82 3.98" />
+    </>
+  ),
   circleCheck: (
     <>
       <circle cx="12" cy="12" r="10" />
@@ -329,10 +376,104 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="m9 9 6 6" />
     </>
   ),
+  // Lucide `SquareUser`, `FileBadge2`, `CirclePower`, `ClipboardList` and
+  // `SquareCode` - the Settings rows for Install ID, Gate plan, Launch at
+  // login, Diagnostics report and Version (Figma `Flows / Settings`, read
+  // 2026-08-26). Each replaced a near-miss already in this set.
+  squareUser: (
+    <>
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <circle cx="12" cy="10" r="3" />
+      <path d="M7 21v-2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2" />
+    </>
+  ),
+  fileBadge2: (
+    <>
+      <path d="M13 22h5a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v3.3" />
+      <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+      <path d="m7.69 16.479 1.29 4.88a.5.5 0 0 1-.698.591l-1.843-.849a1 1 0 0 0-.879.001l-1.846.85a.5.5 0 0 1-.692-.593l1.29-4.88" />
+      <circle cx="6" cy="14" r="3" />
+    </>
+  ),
+  circlePower: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 7v4" />
+      <path d="M7.998 9.003a5 5 0 1 0 8-.005" />
+    </>
+  ),
+  clipboardList: (
+    <>
+      <rect width="8" height="4" x="8" y="2" rx="1" ry="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <path d="M12 11h4" />
+      <path d="M12 16h4" />
+      <path d="M8 11h.01" />
+      <path d="M8 16h.01" />
+    </>
+  ),
+  squareCode: (
+    <>
+      <path d="m10 9-3 3 3 3" />
+      <path d="m14 15 3-3-3-3" />
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+    </>
+  ),
+  // Lucide `BellDot`, the bell with an unread mark. The intro's last step
+  // draws this rather than the plain `bell` its Settings row uses.
+  bellDot: (
+    <>
+      <path d="M10.268 21a2 2 0 0 0 3.464 0" />
+      <path d="M11.68 2.009A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673c-.824-.85-1.678-1.731-2.21-3.348" />
+      <circle cx="18" cy="5" r="3" />
+    </>
+  ),
+  // Lucide `ArrowRight` and `Focus` - the intro's Next button carries the
+  // Button component's right arrow, and its "Show me where Gate Connect lives"
+  // carries Focus as a left icon (Figma `Flows / Onboarding`).
+  arrowRight: (
+    <>
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </>
+  ),
+  focus: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+      <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+      <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+      <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+    </>
+  ),
   creditCard: (
     <>
       <rect width="20" height="14" x="2" y="5" rx="2" />
       <path d="M2 10h20" />
+    </>
+  ),
+  // Lucide `Users`, `Expand` and `ChevronDown` - the tray popover's footer
+  // draws Users beside the organization name, its header button carries
+  // Expand, and the collapsed "Not installed" section carries the chevron
+  // (Figma `Flows / Tray`, read 2026-08-28).
+  users: (
+    <>
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </>
+  ),
+  expand: (
+    <>
+      <path d="m21 21-6-6" />
+      <path d="M16.2 21H21v-4.8" />
+      <path d="M7.8 21H3v-4.8" />
+      <path d="m3 21 6-6" />
+      <path d="M16.2 3H21v4.8" />
+      <path d="m21 3-6 6" />
+      <path d="M7.8 3H3v4.8" />
+      <path d="m3 3 6 6" />
     </>
   ),
 };

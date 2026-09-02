@@ -3,9 +3,11 @@ import {
   getAccount,
   oauthBeginLogin,
   oauthListOrgs,
+  oauthSignOut,
   oauthStatus,
   proxyEnable,
   saveAccount,
+  setDeviceName,
   setOrg,
 } from "./api";
 import type { Account, OAuthStatus, Org, ProxyState } from "./api";
@@ -33,7 +35,12 @@ export type SetupStage =
   | { kind: "loading" }
   /** No usable credential. `reauth` when an account exists but its session died. */
   | { kind: "welcome"; reauth: boolean }
+  /** The key route, entered from the welcome pane on purpose. */
+  | { kind: "api-key" }
   | { kind: "org-picker" }
+  /** Signed in with an organization, and this machine has never been named.
+   * Drawn between connecting and choosing apps, and both routes pass through it. */
+  | { kind: "name-device" }
   /** Signed in, and the confirmation has not been dismissed yet. */
   | { kind: "connected" }
   /** Signed in and confirmed, but the diagnostic-data question has never been
@@ -50,19 +57,26 @@ export interface Setup {
   /** Organizations for the picker; null until they have been read. */
   orgs: Org[] | null;
   selectedOrgId: string | undefined;
-  apiKeyOpen: boolean;
   apiKey: string;
   gateway: string;
+  /** The draft in the naming pane's field. */
+  deviceNameDraft: string;
 
   signIn: () => Promise<void>;
-  toggleApiKey: () => void;
+  openApiKey: () => void;
+  closeApiKey: () => void;
   setApiKey: (next: string) => void;
   setGateway: (next: string) => void;
   connectWithApiKey: () => Promise<void>;
   loadOrgs: () => Promise<void>;
   selectOrg: (id: string) => void;
   confirmOrg: () => Promise<void>;
-  useApiKeyInstead: () => void;
+  setDeviceNameDraft: (next: string) => void;
+  nameDevice: () => Promise<void>;
+  skipNaming: () => void;
+  /** Drops the session and returns to sign-in. The Auth flow's "Use a different
+   *  account", and the only way out of an account with no organization. */
+  signOut: () => Promise<void>;
   turnOnRouting: () => Promise<void>;
   finish: () => void;
 }
@@ -74,6 +88,7 @@ export function useSetup({
   onSession,
   onProxy,
   diagnosticsAnswered,
+  deviceNamed,
 }: {
   /** Whether the first read of account and OAuth state has come back. Without
    *  it, a null account on launch is indistinguishable from no account, and the
@@ -88,24 +103,44 @@ export function useSetup({
    * preference read is in flight - not "unanswered", which would flash the step at
    * someone who answered it months ago. */
   diagnosticsAnswered?: boolean;
+  /** Whether this machine carries a name of its own. `undefined` while the
+   * preference read is in flight - the same distinction `diagnosticsAnswered`
+   * makes, and for the same reason: "not yet known" must not render as "never
+   * named" and flash the pane at someone who named it months ago. */
+  deviceNamed?: boolean;
 }): Setup {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [orgs, setOrgs] = useState<Org[] | null>(null);
   const [selectedOrgId, setSelectedOrgId] = useState<string | undefined>(undefined);
-  const [apiKeyOpen, setApiKeyOpen] = useState(false);
+  const [keyPaneOpen, setKeyPaneOpen] = useState(false);
   const [apiKey, setApiKeyValue] = useState("");
-  const [gateway, setGatewayValue] = useState(DEFAULT_GATEWAY_BASE_URL);
+  const [deviceNameDraft, setDeviceNameDraft] = useState("");
+  // The picker's explicit choice, null until the user makes one.
+  //
+  // The effective gateway is *derived* rather than seeded into state, because the
+  // account lands a beat after mount and a `useState` initialiser would freeze
+  // the build default before it arrives. That is how re-signing in came to
+  // rewrite a staging or local install's account with the production URL: the
+  // picker showed production, `signIn` persisted it, and `OAuthConfig::from_build_env`
+  // then resolved its pool from the *new* host - so a build carrying only one
+  // pool's credentials failed with "OAuth is not configured in this build"
+  // before the browser ever opened. `useSettingsActions.upgradeToOAuth` avoids
+  // `signIn` for this exact reason; the hazard belongs fixed here instead.
+  const [gatewayChoice, setGatewayChoice] = useState<string | null>(null);
+  const gateway = gatewayChoice ?? account?.gateway_base_url ?? DEFAULT_GATEWAY_BASE_URL;
   // The two pieces of stage that cannot be derived.
   //
   // `confirmationSeen`: "signed in" is true the moment the org lands, so without
   // it the confirmation pane would never show.
   //
-  // `keyFormForced`: the org-picker dead end (signed in, no organization) hands
-  // the user to the key form, and derivation alone would keep returning them to
-  // the picker they were trying to leave.
+  // `namingDone`: skipping leaves `device_name` null, which is exactly the state
+  // that puts the pane on screen, so declining has to be remembered or the step
+  // cannot be declined at all. A successful save sets it too, since the
+  // preference re-read that flips `deviceNamed` lands a beat later and the pane
+  // must not linger in between.
   const [confirmationSeen, setConfirmationSeen] = useState(false);
-  const [keyFormForced, setKeyFormForced] = useState(false);
+  const [namingDone, setNamingDone] = useState(false);
 
   // Whether a signed-out state has been observed in this session. Without it the
   // confirmation pane greets everyone who was *already* signed in at launch,
@@ -127,14 +162,19 @@ export function useSetup({
 
   const stage: SetupStage = ((): SetupStage => {
     if (!loaded) return { kind: "loading" };
-    // Asked for the key form on purpose: they are signed in, so nothing has
-    // expired and the reauth copy would be a lie.
-    if (keyFormForced) return { kind: "welcome", reauth: false };
     if (needsOrg(account, oauth)) return { kind: "org-picker" };
     if (!signedIn) {
+      // Asked for the key route on purpose, so it outranks the sign-in choice.
+      if (keyPaneOpen) return { kind: "api-key" };
       // Reauth only for an OAuth account, matching the popover: an API-key
       // account that lost its key never had a session to expire.
       return { kind: "welcome", reauth: account?.auth_mode === "oauth" };
+    }
+    // Name the machine before the apps are chosen, the order the key pane's own
+    // copy promises. Guarded on `sawSignedOut` for the reason the confirmation
+    // is: a returning user whose machine follows the hostname settled that.
+    if (sawSignedOut.current && deviceNamed === false && !namingDone) {
+      return { kind: "name-device" };
     }
     // Confirm a sign-in that happened here; never greet a returning user.
     if (sawSignedOut.current && !confirmationSeen) return { kind: "connected" };
@@ -193,7 +233,7 @@ export function useSetup({
       await reread();
       track("signed_in");
       setApiKeyValue("");
-      setKeyFormForced(false);
+      setKeyPaneOpen(false);
     } catch (err) {
       setError(err);
       trackError(err, "sign_in");
@@ -243,12 +283,57 @@ export function useSetup({
     }
   }, [orgs, selectedOrgId, busy, reread]);
 
-  /** The org picker's dead end: no organization and no admin to ask. Hands the
-   *  user straight to the key form rather than making them find it again. */
-  const useApiKeyInstead = useCallback(() => {
-    setApiKeyOpen(true);
-    setKeyFormForced(true);
-  }, []);
+  /** Save the name and leave the step. */
+  const nameDevice = useCallback(async () => {
+    const name = deviceNameDraft.trim();
+    if (!name || busy) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await setDeviceName(name);
+      setDeviceNameDraft("");
+      setNamingDone(true);
+    } catch (err) {
+      setError(err);
+      trackError(err, "generic");
+    } finally {
+      setBusy(false);
+    }
+  }, [deviceNameDraft, busy]);
+
+  const skipNaming = useCallback(() => setNamingDone(true), []);
+
+  /**
+   * "Use a different account", and the org dead end's only way out.
+   *
+   * `oauthSignOut` alone would leave an API-key account signed in, so the key is
+   * dropped as well - by rewriting the account with the gateway and no key,
+   * which is the call `signIn` already makes before the browser flow. Clearing
+   * the account outright would take the chosen gateway with it and silently
+   * repoint a staging install at production.
+   */
+  const signOut = useCallback(async () => {
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await oauthSignOut().catch(() => {});
+      await saveAccount(gateway, null);
+      setOrgs(null);
+      setSelectedOrgId(undefined);
+      setApiKeyValue("");
+      setDeviceNameDraft("");
+      setKeyPaneOpen(false);
+      setNamingDone(false);
+      setConfirmationSeen(false);
+      await reread();
+    } catch (err) {
+      setError(err);
+      trackError(err, "sign_out");
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, gateway, reread]);
 
   /**
    * Finish the job the confirmation copy promises. Routing off at this point
@@ -276,18 +361,22 @@ export function useSetup({
     error,
     orgs,
     selectedOrgId,
-    apiKeyOpen,
     apiKey,
     gateway,
+    deviceNameDraft,
     signIn,
-    toggleApiKey: () => setApiKeyOpen((v) => !v),
+    openApiKey: () => setKeyPaneOpen(true),
+    closeApiKey: () => setKeyPaneOpen(false),
     setApiKey: setApiKeyValue,
-    setGateway: setGatewayValue,
+    setGateway: setGatewayChoice,
     connectWithApiKey,
     loadOrgs,
     selectOrg: setSelectedOrgId,
     confirmOrg,
-    useApiKeyInstead,
+    setDeviceNameDraft,
+    nameDevice,
+    skipNaming,
+    signOut,
     turnOnRouting,
     finish,
   };
