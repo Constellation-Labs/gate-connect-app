@@ -142,16 +142,57 @@ deliberate reversal of an earlier "no dashboard" rule.
   popover screens until they are retired. Don't delete them, and don't
   reach for them in new UI either.
 
+## Running the app locally
+
+Use **`pnpm app:local`**, not `pnpm app`.
+
+`tauri dev` rebuilds the Rust binary on every change, and macOS scopes a
+keychain item's ACL to the binary that created it. So each rebuild is an
+executable the login keychain has never seen, and the OS re-prompts for
+permission to read the stored Gate key. "Always Allow" fixes exactly one
+build; the next `cargo run` invalidates it, and answering needs the login
+password.
+
+Dismissing the prompt is worse than answering it. An unreadable key reads
+as an unusable account, and the app then falls back to the built-in
+default gateway and **rewrites `account.json`** on the way. A developer
+pointed at staging who denies the prompt is silently moved back to the
+production URL, with nothing on screen saying so.
+
+`pnpm app:local` sets `GATE_CONNECT_TEST_SECRETS`, the seam in
+`crates/core/src/keychain.rs` that backs secrets with files instead of the
+OS store, so the keychain is never touched and the prompt cannot appear.
+It also pins `VITE_GATE_DEFAULT_BASE_URL`, so the fallback above lands on
+staging rather than production. It defaults to staging; pass a URL to
+point somewhere else:
+
+```
+pnpm app:local                       # staging
+pnpm app:local http://localhost:3000 # a gateway you are running yourself
+```
+
+The key is entered once and persists across rebuilds. It is a plaintext
+file under `~/.gate-connect-dev/secrets`, outside the repo so no `git add`
+can reach it, which is a real reduction in protection and the reason this
+is a dev script rather than the default. **Use a staging key here, never a
+production one.** `GATE_CONNECT_TEST_SECRETS` is unset in shipped builds,
+so released copies always use the real keychain.
+
 ## Migration status
 
 `plans/new-app-ui-figma.md` is the working plan: what is built, what is
 still open, and the values sampled from Figma. Read it before starting UI
 work.
 
-Both shells exist in one build. `gcNewUi(true)` in devtools switches to
-the new window UI and reloads; `gcNewUi(false)` returns to the popover,
-which is still the shipping default. The new shell is currently
-**read-only** - its switches are inert until routing actions are wired
-through drift review and certificate trust.
+Both shells exist in one build, and **the new window UI is the default**.
+`gcNewUi(false)` in devtools returns to the popover, or `VITE_NEW_UI=0` at
+build time; see `src/lib/newUi.ts`, which is the authority. This file said
+the popover was still the shipping default until 2026-09-01, which was
+wrong and is the kind of error that decides whether a change is treated as
+user-facing: anything landing in the new shell ships to production users.
+
+The new shell's routing actions are still inert until they are wired
+through drift review and certificate trust, which is why the popover
+remains reachable at all.
 
 NOTE: never use "—"
