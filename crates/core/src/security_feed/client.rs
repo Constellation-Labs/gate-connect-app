@@ -109,6 +109,11 @@ impl Feed {
         // at all until now - so a feed that was Live and starved looked exactly
         // like one that never connected, a distinction only the gateway's own
         // logs could make. It has to be answerable from the client.
+        //
+        // Answerable on a build whose gateway is not production, that is:
+        // `logging::enabled` is false there by policy, so these lines are a
+        // staging and dev diagnostic. Diagnosing the production case still needs
+        // the gateway's logs.
         crate::logging::log(
             crate::logging::Level::Info,
             &format!("security feed: state -> {next:?}"),
@@ -157,6 +162,10 @@ where
 {
     let sink: Arc<dyn Fn(Update) + Send + Sync> = Arc::new(sink);
     let mut attempt: u32 = 0;
+    // At most one `mark_session_rejected` for the life of the task. Returning on
+    // a refusal used to guarantee that by construction; holding open does not,
+    // and the flag is not idempotent in effect - see the refusal arm below.
+    let mut marked_rejected = false;
     // Survives across connections so a reconnect resumes where the last one
     // stopped, rather than waiting for the server to re-send an id.
     let mut last_id: Option<String> = None;
@@ -173,7 +182,19 @@ where
                 // pane's own "Try again", and the org-switch reset - a no-op
                 // against a task that had already exited. Still no retry cadence;
                 // wait for the signal that a credential changed.
-                crate::oauth::mark_session_rejected();
+                // Once only. `mark_session_rejected` makes `oauth::live_session`
+                // report `None` until new tokens are stored, which is the whole
+                // app dropping to the sign-in prompt. Marking on *every* refusal
+                // turns a persistently refused stream into a sign-in loop: the
+                // user signs in, the flag clears, this loop reconnects within
+                // 30s, is refused, marks again, and they are bounced straight
+                // back out. That is the invariant three lines up ("a feed
+                // failure must never sign the user out") failing in the one way
+                // it is written down to prevent.
+                if !marked_rejected {
+                    marked_rejected = true;
+                    crate::oauth::mark_session_rejected();
+                }
                 feed.set_state(FeedState::Offline, &*sink);
                 attempt = 0;
                 wait(&feed, REJECTED_HOLD).await;
@@ -206,8 +227,17 @@ where
     feed.set_state(FeedState::Offline, &*sink);
 }
 
-/// Sleep, unless the user asks for a retry first.
+/// Sleep, unless the user asks for a retry first, or the loop has been stopped.
+///
+/// The `running` check is what makes `stop` prompt. `Feed::stop` wakes waiters
+/// with `notify_waiters`, which - unlike `retry_now`'s `notify_one` - stores no
+/// permit, so a stop landing before the `notified()` future is first polled is
+/// missed entirely. With `REJECTED_HOLD` that gap costs an hour rather than a
+/// backoff step, and a test that stops the feed and joins the task pays it.
 async fn wait(feed: &Feed, delay: Duration) {
+    if !feed.running.load(Ordering::SeqCst) {
+        return;
+    }
     let wake = feed.wake.clone();
     tokio::select! {
         _ = tokio::time::sleep(delay) => {}
