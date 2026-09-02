@@ -106,9 +106,18 @@ pub struct SecurityEvent {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hello {
-    /// Whether `Last-Event-ID` will be honoured on reconnect. False on a
-    /// deployment with no shared store, where there is no replay buffer to
-    /// resume from; the client backfills through `/v1/me/tool-events` instead.
+    /// Whether `Last-Event-ID` will be honoured on reconnect. False on every
+    /// deployment today: `SecurityEventBus::supportsRecovery` is a constant
+    /// `false` because Redis pub/sub keeps no backlog and nothing reads the
+    /// header yet.
+    ///
+    /// **And nothing backfills what a `false` means we missed.** The contract
+    /// says this sends the client to `/v1/me/tool-events`, but that route
+    /// refuses a request naming no tool ("this route reports on one tool at a
+    /// time"), so no single call answers "what did I miss, across every tool".
+    /// A gap - a disconnect, a gateway deploy, an app restart - is therefore
+    /// permanent in the Security pane. Recorded here rather than left as the
+    /// sentence that used to describe a backfill nobody wrote.
     #[serde(default)]
     pub recovery: bool,
     #[serde(default)]
@@ -126,13 +135,13 @@ pub enum Update {
 /// Bounded set of event ids already delivered.
 ///
 /// Needed whichever recovery path runs: a `Last-Event-ID` replay and a
-/// `tool-events` backfill both overlap the live stream on purpose, because an
-/// exclusive boundary that is off by one loses an event and a user cannot tell
+/// `tool-events` backfill would each overlap the live stream on purpose, because
+/// an exclusive boundary that is off by one loses an event and a user cannot tell
 /// that happened. Overlapping and deduping is the direction whose failure mode is
-/// visible.
+/// visible. Today it guards the live stream alone: neither recovery path exists.
 ///
-/// **Not persisted across a restart.** A restart backfills a bounded window
-/// anyway, and a file to keep consistent with the selected org buys nothing.
+/// **Not persisted across a restart.** Nothing backfills after one either, so a
+/// restart starts the pane empty - see `Hello::recovery`.
 #[derive(Debug)]
 pub struct Dedupe {
     seen: HashSet<String>,

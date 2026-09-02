@@ -19,6 +19,14 @@ use super::{
 };
 use crate::gateway_api::FailureCode;
 
+/// How long to hold after the gateway refuses the credential.
+///
+/// A backstop, not a retry cadence: a refusal is fixed by a new session rather
+/// than by asking again, and [`Feed::retry_now`] is what a recovery signals
+/// with. The hour is so that a signal which never arrives still costs one
+/// request, instead of leaving the feed dead until the app restarts.
+const REJECTED_HOLD: Duration = Duration::from_secs(3600);
+
 /// Shared handle: what the feed is doing, and what it has seen.
 ///
 /// The window is told about events as they arrive, but a window opened *after*
@@ -97,6 +105,14 @@ impl Feed {
         }
         *cur = next;
         drop(cur);
+        // Every transition passes through here, and this module wrote no log line
+        // at all until now - so a feed that was Live and starved looked exactly
+        // like one that never connected, a distinction only the gateway's own
+        // logs could make. It has to be answerable from the client.
+        crate::logging::log(
+            crate::logging::Level::Info,
+            &format!("security feed: state -> {next:?}"),
+        );
         sink(Update::State(next));
     }
 
@@ -112,6 +128,13 @@ impl Feed {
                 recent.pop_front();
             }
         }
+        crate::logging::log(
+            crate::logging::Level::Info,
+            &format!(
+                "security feed: delivered id={} {:?} req={}",
+                ev.id, ev.action, ev.request_id
+            ),
+        );
         sink(Update::Event(Box::new(ev)));
     }
 }
@@ -140,11 +163,19 @@ where
     while feed.running.load(Ordering::SeqCst) {
         match connect_once(&feed, &*sink, &mut last_id, &mut retry_floor_ms).await {
             Outcome::Rejected => {
-                // The gateway refused this credential. Retrying cannot fix it and
-                // would burn the shared per-IP throttle bucket doing so.
+                // The gateway refused this credential. Retrying on a timer cannot
+                // fix it and would burn the shared per-IP throttle bucket doing
+                // so - but *returning* killed the task for the life of the
+                // process, which left the recovery `mark_session_rejected` exists
+                // to start with no feed to bring back, and made `retry_now` - the
+                // pane's own "Try again", and the org-switch reset - a no-op
+                // against a task that had already exited. Still no retry cadence;
+                // wait for the signal that a credential changed.
                 crate::oauth::mark_session_rejected();
                 feed.set_state(FeedState::Offline, &*sink);
-                return;
+                attempt = 0;
+                wait(&feed, REJECTED_HOLD).await;
+                continue;
             }
             Outcome::NotReady => {
                 // No account, no org, or no live session. Not a failure and not
@@ -239,13 +270,27 @@ async fn connect_once(
 
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(_) => return Outcome::Disconnected,
+        Err(e) => {
+            crate::logging::log(
+                crate::logging::Level::Warn,
+                &format!("security feed: connect failed: {e}"),
+            );
+            return Outcome::Disconnected;
+        }
     };
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        crate::logging::log(
+            crate::logging::Level::Warn,
+            &format!("security feed: gateway refused the stream ({status})"),
+        );
         return Outcome::Rejected;
     }
     if !status.is_success() {
+        crate::logging::log(
+            crate::logging::Level::Warn,
+            &format!("security feed: gateway answered {status}"),
+        );
         return Outcome::Disconnected;
     }
 
