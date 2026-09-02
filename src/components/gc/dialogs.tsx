@@ -602,24 +602,6 @@ export function ModelPickerDialog({
   /** Seeded from the stored set so Cancel is a real cancel. */
   const [draft, setDraft] = useState<string[]>(selectedIds);
 
-  /**
-   * Chosen models the catalogue no longer offers (AG-592).
-   *
-   * They have to be listed, or the set contains something the user cannot reach:
-   * a model absent from the catalogue renders no row, so there is no checkbox to
-   * clear and no way out except abandoning the whole selection. Shown at the top,
-   * marked, and removable - which is the recovery the ticket asks for.
-   */
-  const missing = useMemo(() => {
-    const servable = new Set(models.map((m) => m.id));
-    // Derived from the DRAFT, not from what is stored: clearing one has to make
-    // the row go, and deriving from the stored set left it on screen still
-    // marked enabled while the footer count disagreed. Its absence afterwards is
-    // also what satisfies "an unavailable model cannot be selected" - there is no
-    // row left to re-check.
-    return draft.filter((id) => !servable.has(id));
-  }, [models, draft]);
-
   const vendors = useMemo(
     () => [...new Set(models.map((m) => m.vendor))].sort((a, b) => a.localeCompare(b)),
     [models],
@@ -643,6 +625,38 @@ export function ModelPickerDialog({
   // and not about the current search.
   const usable = useMemo(() => models.filter((m) => compatibility(m, needs).ok), [models, needs]);
   const setAside = models.length - usable.length;
+
+  /**
+   * Chosen models with no row to clear them from (AG-592).
+   *
+   * They have to be listed, or the set contains something the user cannot reach:
+   * a model that renders no row has no checkbox to clear and no way out except
+   * abandoning the whole selection. Shown at the top, marked, and removable,
+   * which is the recovery the ticket asks for.
+   *
+   * **Two ways to have no row, not one.** Originally this meant a model the
+   * catalogue had dropped. AG-590's compatibility filter added a second: a model
+   * still in the catalogue that this app cannot be served with is filtered out
+   * of `usable`, so it is equally unreachable while it stays in the draft,
+   * counted by "Unselect all" and written straight back on Save. That is the
+   * same trap, reintroduced through a different door, so both take the same
+   * exit.
+   *
+   * Keyed on what is reachable rather than on catalogue membership. Under "Show
+   * anyway" an incompatible model does have a row, so it drops out of here and
+   * is cleared inline like any other. Search and the vendor filter are
+   * deliberately not considered: narrowing the view must not make a chosen model
+   * look unavailable.
+   */
+  const missing = useMemo(() => {
+    const reachable = new Set((showAll ? models : usable).map((m) => m.id));
+    // Derived from the DRAFT, not from what is stored: clearing one has to make
+    // the row go, and deriving from the stored set left it on screen still
+    // marked enabled while the footer count disagreed. Its absence afterwards is
+    // also what satisfies "an unavailable model cannot be selected" - there is no
+    // row left to re-check.
+    return draft.filter((id) => !reachable.has(id));
+  }, [models, usable, showAll, draft]);
 
   // The reason to name, when there is one shared reason worth naming. Two
   // different causes in one sentence would explain neither.
@@ -707,7 +721,7 @@ export function ModelPickerDialog({
           // real border rather than a primary outline, and tightens its
           // radius against the looser one the other rows carry.
           selected
-            ? "rounded-base border-base-border bg-gray-50"
+            ? "rounded-md border-base-border bg-gray-50"
             : "rounded-lg border-transparent hover:bg-gray-50"
         }`}
       >
@@ -724,14 +738,14 @@ export function ModelPickerDialog({
           // list stopped being when AG-590 made it a set.
           <span
             aria-hidden
-            className="flex size-5 shrink-0 items-center justify-center rounded-base border border-base-primary"
+            className="flex size-5 shrink-0 items-center justify-center rounded-sm border border-base-primary"
           >
             <Icon name="check" size={14} className="text-base-primary" />
           </span>
         ) : (
           <span
             aria-hidden
-            className="size-5 shrink-0 rounded-base border border-base-input"
+            className="size-5 shrink-0 rounded-sm border border-base-input"
           />
         )}
       </button>
@@ -872,7 +886,7 @@ export function ModelPickerDialog({
               <button
                 type="button"
                 onClick={() => setDraft([])}
-                className="-my-1 rounded-base px-2 py-1 text-sm font-medium leading-5 text-base-primary hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                className="-my-1 rounded-md px-2 py-1 text-sm font-medium leading-5 text-base-primary hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
                 Unselect all ({draft.length})
               </button>
@@ -892,7 +906,7 @@ export function ModelPickerDialog({
               <button
                 type="button"
                 onClick={() => setShowAll((v) => !v)}
-                className="rounded-base font-medium text-base-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                className="rounded-sm font-medium text-base-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
                 {showAll ? "Hide them" : "Show anyway"}
               </button>
@@ -909,7 +923,7 @@ export function ModelPickerDialog({
                       role="checkbox"
                       aria-checked
                       onClick={() => setDraft((d) => d.filter((x) => x !== id))}
-                      className="flex w-full items-center gap-3 rounded-base border border-amber-300 bg-amber-50 px-3 py-2 text-left"
+                      className="flex w-full items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-left"
                     >
                       <Icon
                         name="triangleAlert"

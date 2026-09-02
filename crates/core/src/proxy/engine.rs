@@ -1232,6 +1232,16 @@ pub(crate) fn apply_rewrite<T>(
             super::UPSTREAM_URL_HEADER,
             HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
         );
+        // The model header goes too. It is not a label: its own contract says it
+        // CHANGES WHAT THE GATEWAY SERVES, and it is sent only when the user put
+        // this tool on a Gate model. Leaving it on a forwarded request states
+        // both "Gate serves this, bill the org" and "send this to my own
+        // provider under my own key" at once, and the body's model would be
+        // rewritten to a Gate id the tool's own provider has never heard of.
+        // Unreachable before the serve rewrite existed, because the request hung
+        // instead of falling back; reachable now on any path Gate does not
+        // serve, such as `count_tokens`.
+        headers.remove(super::GATE_MODEL_HEADER);
     } else {
         // REMOVED, not merely left unwritten: a caller cannot smuggle BYOK back
         // in on a served rewrite, which would both escape the serve routing and

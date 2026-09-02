@@ -992,15 +992,6 @@ export function NewUiApp() {
   });
 
   /**
-   * A tool's config was rewritten. If that app is open it is still on its old
-   * route until it restarts, so offer to close it - but only when something was
-   * actually written, which is why `setAppRouted` reports back.
-   *
-   * Scoped to `slug`, and it has to be: the probe used to ask about every tool,
-   * so flipping Codex offered to close a running `claude` that nothing had
-   * reconfigured, and the confirm behind that offer would have killed it.
-   */
-  /**
    * Open a link, and show it in the existing error banner if it fails.
    *
    * Ten call sites open external URLs, and a rejected `openUrl` used to be
@@ -1015,6 +1006,15 @@ export function NewUiApp() {
     });
   }, []);
 
+  /**
+   * A tool's config was rewritten. If that app is open it is still on its old
+   * route until it restarts, so offer to close it - but only when something was
+   * actually written, which is why `setAppRouted` reports back.
+   *
+   * Scoped to `slug`, and it has to be: the probe used to ask about every tool,
+   * so flipping Codex offered to close a running `claude` that nothing had
+   * reconfigured, and the confirm behind that offer would have killed it.
+   */
   const routeApp = useCallback(
     async (slug: string, next: boolean, force = false) => {
       setActionError(null);

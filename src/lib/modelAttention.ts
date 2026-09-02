@@ -125,7 +125,7 @@ export function modelAttention({
       cause: "requests-failing",
       models: choice.modelIds,
       message:
-        "Every recent request from this app has failed while Gate has been serving it. The model may not work with this app. Switch back to App default to use the app's own model again, or choose a different Gate model.",
+        "The last few requests from this app have failed while Gate has been serving it. The model may not work with this app. Switch back to App default to use the app's own model again, or choose a different Gate model.",
     };
   }
 

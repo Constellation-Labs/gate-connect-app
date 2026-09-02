@@ -599,8 +599,6 @@ function InfoRow({
   /** Omitted for a row about a set, where no one mark could stand for it. */
   icon?: ReactNode;
   children: ReactNode;
-  /** Omitted when there is nothing to do here, which removes the button rather
-   *  than leaving a dead one on screen. */
   /** A list because the credits row carries two once a billing destination
    *  exists. Rightmost is the primary one, which is the order the eye lands in.
    *  An empty list draws nothing, which is how an absent destination removes

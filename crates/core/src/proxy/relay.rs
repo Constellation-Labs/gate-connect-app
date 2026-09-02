@@ -162,7 +162,7 @@ fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
 // can't drift; this module just references them.
 use super::{
     inject_gate_credential, GATE_AUTHORIZATION_HEADER, GATE_CLIENT_HEADER, GATE_INSTALL_ID_HEADER,
-    GATE_KEY_HEADER, GATE_ORG_HEADER, UPSTREAM_URL_HEADER,
+    GATE_KEY_HEADER, GATE_MODEL_HEADER, GATE_ORG_HEADER, UPSTREAM_URL_HEADER,
 };
 
 /// Everything a relay connection needs, shared across all requests.
@@ -586,6 +586,16 @@ async fn proxy(
                         format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
                     )
                 })?;
+                // The model header goes too. It is not a label: its own contract says it
+                // CHANGES WHAT THE GATEWAY SERVES, and it is sent only when the user put
+                // this tool on a Gate model. Leaving it on a forwarded request states
+                // both "Gate serves this, bill the org" and "send this to my own
+                // provider under my own key" at once, and the body's model would be
+                // rewritten to a Gate id the tool's own provider has never heard of.
+                // Unreachable before the serve rewrite existed, because the request hung
+                // instead of falling back; reachable now on any path Gate does not
+                // serve, such as `count_tokens`.
+                headers.remove(GATE_MODEL_HEADER);
                 format!("{}{}", state.gateway_base, routed.path_and_query)
             } else {
                 headers.remove(UPSTREAM_URL_HEADER);

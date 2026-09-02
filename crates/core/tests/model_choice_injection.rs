@@ -404,6 +404,19 @@ mod the_rewrite_applies_the_serve_route {
             .expect("building the request")
     }
 
+    /// A path Gate does NOT serve, so the rewrite must fall back to forwarding.
+    /// `count_tokens` is the everyday example: Claude Code sends it on a normal
+    /// turn, and `serve_path` has no entry for it.
+    fn unservable_request() -> Request<()> {
+        Request::builder()
+            .method("POST")
+            .uri("https://api.anthropic.com/v1/messages/count_tokens")
+            .header("user-agent", "claude-cli/1.0.0")
+            .header("authorization", "Bearer anthropic-user-key")
+            .body(())
+            .expect("building the request")
+    }
+
     fn gateway() -> Uri {
         "https://gateway-staging.constellationgate.ai"
             .parse()
@@ -442,6 +455,52 @@ mod the_rewrite_applies_the_serve_route {
         assert!(req.headers().get("x-gate-upstream-url").is_none());
         assert!(req.headers().get("authorization").is_none());
         assert_eq!(req.headers().get("x-gate-model").unwrap(), "openai/gpt-4o");
+    }
+
+    /// A request Gate cannot serve is forwarded, and must not also claim to be
+    /// served.
+    ///
+    /// The model header is not a label: its own doc says it CHANGES WHAT THE
+    /// GATEWAY SERVES and is sent only when the user put this tool on a Gate
+    /// model. Leaving it on a forwarded request states both "Gate serves this,
+    /// bill the org" and "send this to my own provider under my own key", and
+    /// the body's model would be rewritten to a Gate id the tool's own provider
+    /// has never heard of.
+    ///
+    /// Unreachable before the serve rewrite existed, because such a request hung
+    /// rather than falling back, so this pins new surface rather than an old
+    /// hole.
+    #[test]
+    fn an_unservable_path_is_forwarded_without_claiming_to_be_served() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tmp = TempHome::set();
+        preferences::set_tool_model(
+            "claude-code",
+            preferences::ModelSource::Gate,
+            vec!["openai/gpt-5-6-terra".to_string()],
+            true,
+        )
+        .expect("store the choice");
+
+        let mut req = unservable_request();
+        apply_rewrite_for_tests(
+            &mut req,
+            &gateway(),
+            "https://api.anthropic.com",
+            "sk-gw-test",
+        )
+        .expect("rewrite");
+
+        // Forwarded: the upstream hint is present and the tool's own credential
+        // survives, because its provider is the one answering.
+        assert!(req.headers().get("x-gate-upstream-url").is_some());
+        assert!(req.headers().get("authorization").is_some());
+
+        // And it does not also ask Gate to serve a model.
+        assert!(
+            req.headers().get("x-gate-model").is_none(),
+            "a forwarded request must not carry the serve header"
+        );
     }
 
     #[test]

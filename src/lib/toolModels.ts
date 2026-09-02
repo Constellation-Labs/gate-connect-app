@@ -7,6 +7,7 @@ import {
   type ToolModels,
 } from "./api";
 import { toFailure, type ActivityFailure } from "./activity";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /**
  * Which Gate model each app runs on (AG-588).
@@ -418,7 +419,7 @@ export function formatCredits(credits: Credits | null): string | null {
  * but a timer here would spend the gateway's address-keyed rate limit on a
  * number that only matters when someone is looking at it.
  *
- * Re-read when the window becomes visible, which is that same argument followed
+ * Re-read when the window regains focus, which is that same argument followed
  * through. The balance moves while the user is elsewhere - running the very tool
  * this pane is about - so a figure read once when the pane opened is stale by
  * the time they come back to check what it cost. It showed `$9.99 available`
@@ -462,11 +463,33 @@ export function useCredits(
 
   useEffect(() => {
     if (!enabled) return;
-    const onVisible = () => {
-      if (!document.hidden) reload();
+    // Window FOCUS, not `visibilitychange`. The motivating case is alt-tabbing
+    // to the tool that spends the credits and back, and that never hides the
+    // document: `visibilitychange` fires on minimise and full occlusion only, so
+    // it missed the exact scenario this exists for and the pane kept showing the
+    // balance from before the spending. `onFocusChanged` is the primitive that
+    // matches, and `useWindowReopen` and `App` already use it for the same
+    // reason.
+    let blurred = false;
+    let cancelled = false;
+    const pending = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) {
+        blurred = true;
+        return;
+      }
+      // Only on a real return. Without the blur latch the initial focus event
+      // would re-read a balance the mount has just read.
+      if (blurred) {
+        blurred = false;
+        reload();
+      }
+    });
+    return () => {
+      cancelled = true;
+      void pending.then((unlisten) => {
+        if (cancelled) unlisten();
+      });
     };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [enabled, reload]);
 
   return { credits, failure, reload };
