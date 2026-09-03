@@ -377,7 +377,7 @@ function ModelSelection({
 
   return (
     <Card className="p-4">
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">
+      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
         Model selection
       </h2>
       <p className="mt-1 text-sm leading-5 text-neutral-600">
@@ -658,7 +658,7 @@ function RecentActivity({
 }) {
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">
+      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
         Recent activity
       </h2>
 
@@ -677,25 +677,25 @@ function RecentActivity({
             : "No recent messages"}
         </EmptyNote>
       ) : (
-        <table className="mt-4 w-full">
+        <table className="mt-5 w-full">
           <thead>
             <tr className="text-base-xs text-base-muted-foreground">
-              <th scope="col" className="pb-2 text-left font-normal">
+              <th scope="col" className="pb-3 text-left font-normal">
                 Time
               </th>
               {/* One column, not two: the design merged status into security, so a
                 failed request reads ERROR and every other row reads what the
                 guardrails did. */}
-              <th scope="col" className="pb-2 text-left font-normal">
+              <th scope="col" className="pb-3 text-left font-normal">
                 Security
               </th>
-              <th scope="col" className="w-1/4 pb-2 text-left font-normal">
+              <th scope="col" className="w-1/4 pb-3 text-left font-normal">
                 Model
               </th>
-              <th scope="col" className="pb-2 text-left font-normal">
+              <th scope="col" className="pb-3 text-left font-normal">
                 Message
               </th>
-              <th scope="col" className="w-20 pb-2 text-right font-normal">
+              <th scope="col" className="w-20 pb-3 text-right font-normal">
                 Action
               </th>
             </tr>

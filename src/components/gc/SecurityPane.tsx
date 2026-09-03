@@ -72,7 +72,7 @@ function Th({ children, className = "" }: { children: ReactNode; className?: str
   return (
     <th
       scope="col"
-      className={`pb-2 text-left text-base-xs font-medium text-base-muted-foreground ${className}`}
+      className={`pb-3 text-left text-base-xs font-medium text-base-muted-foreground ${className}`}
     >
       {children}
     </th>
