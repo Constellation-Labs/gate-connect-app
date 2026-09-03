@@ -1433,6 +1433,66 @@ fn restore_after_repair(window: &tauri::Window) {
     });
 }
 
+/// The main window's floor, in logical pixels.
+///
+/// Duplicated from `tauri.conf.json`'s `minWidth`/`minHeight` on purpose: the
+/// config is what macOS, Windows and X11 enforce, and this is the only thing a
+/// Wayland session enforces. The two have to be changed together.
+#[cfg(target_os = "linux")]
+const MAIN_MIN_SIZE: (f64, f64) = (1024.0, 720.0);
+
+/// Hold the main window at its configured minimum, because on Wayland nothing
+/// else will.
+///
+/// tao asks for a minimum with `gtk_window_set_geometry_hints` and
+/// `GDK_HINT_MIN_SIZE` (`tao-0.35.3/src/platform_impl/linux/util.rs:58`), which
+/// is the X11 `WM_NORMAL_HINTS` mechanism. GTK never translates those hints into
+/// the compositor's `xdg_toplevel.set_min_size`, so under Wayland the config's
+/// floor is advisory and a drag goes straight through it - the window shrinks
+/// until the 256px rail and the content pane are sharing 300px. X11, macOS and
+/// Windows honour the config and never reach this function.
+///
+/// Converges rather than loops: the clamp only fires *below* the floor, and the
+/// resize it asks for is *at* the floor, which does not fire it again. The
+/// snap-back is visible mid-drag on Wayland, and that is the whole trade - the
+/// compositor owns interactive resize, so the choice is a snap or no floor.
+#[cfg(target_os = "linux")]
+fn clamp_to_minimum(window: &tauri::Window) {
+    // The decoration repair drives this window through a maximise deliberately
+    // and restores a size of its own afterwards; clamping mid-repair would be
+    // two things fighting over the same geometry.
+    if DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
+        return;
+    }
+    // Maximised and fullscreen bounds belong to the compositor, and both are
+    // larger than the floor anyway.
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    if scale <= 0.0 {
+        return;
+    }
+    let (width, height) = (size.width as f64 / scale, size.height as f64 / scale);
+    let (min_width, min_height) = MAIN_MIN_SIZE;
+    // A pixel of tolerance, because a logical size that has been through
+    // physical pixels at a fractional scale factor comes back a hair under the
+    // number it went in as, and clamping on that would resize a window nobody
+    // touched.
+    if width >= min_width - 1.0 && height >= min_height - 1.0 {
+        return;
+    }
+    let _ = window.set_size(tauri::LogicalSize::new(
+        width.max(min_width),
+        height.max(min_height),
+    ));
+}
+
 /// Re-check [`restore_after_repair`] on a timer, for the case where the
 /// configure is the last event the window sees.
 ///
@@ -3082,7 +3142,13 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             if window.label() == "main" {
                 match event {
-                    WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
+                    WindowEvent::Resized(_) => {
+                        restore_after_repair(window);
+                        // After the repair, not before: it is the one thing
+                        // allowed to move this window through odd geometry.
+                        clamp_to_minimum(window);
+                    }
+                    WindowEvent::Focused(true) => {
                         restore_after_repair(window);
                     }
                     _ => {}
