@@ -28,22 +28,31 @@ intended for *some* identifiers and not others, what separates them?
 
 ---
 
-## 2. Is the component library retired, and what is the source of truth now?
+## 2. Does the topnav menu have Quit, or Contact support?
 
-**What we see.** The Components page (`113:16762`) resolves with **zero
-children**. `113:16794`, `272:3150` and `451:7795` are gone, and the Button set
-(`685:20855`) cannot be opened. Several of our code comments cite those nodes as
-their source.
+**Found first, so this question could be asked at all.** We had this down as
+"the component library has been deleted", because the old Components page
+(`113:16762`) resolves with zero children. That was wrong: it moved into
+**Banners** (`744:37738`), **Menus** (`744:37691`) and **Sidenav**
+(`408:15625`). Only the `Button` set (`685:20855`) is still unreachable for us.
+Good news, and it immediately produced a real conflict.
 
-**Why it matters.** Our standing rule is that where a component set and an
-instance disagree, the set wins. That tiebreak is now unusable, so every value
-we take is measured off whichever instance we happen to open - and instances
-disagree with each other (see questions 3 and 4). It also means our comments
-point at nodes nobody can look up.
+**What we see.** The `topnav/menu` **component** (`744:37692`) draws three rows
+- Visit dashboard, **Contact support**, Read Gate docs - and no Quit. The
+**instance** in the Overview flow (`116:27225`) draws four rows including Quit.
+Both are 224px wide; the component is 114px tall for three rows, the instance
+146px for four.
 
-**What we need.** Was the page emptied on purpose? If the flow frames are now
-the source of truth, we will say so in writing and stop citing component nodes.
-If a new library exists elsewhere, we would like the link.
+**Why it matters.** The rule we work to says the component wins over an
+instance, which would mean removing Quit and adding Contact support. We have
+done the opposite: we ship Quit, because the flow frame added it, and we omit
+Contact support, because the support URL 404s and a menu entry that opens a
+broken page is worse than an absent one. So we are currently following the
+instance over the component and would rather that were a decision than an
+accident.
+
+**What we need.** Which of the two is current? And separately: is Contact
+support meant to ship before there is an address for it to open?
 
 ---
 
@@ -202,6 +211,41 @@ Neither changes much on screen, but both make the file ambiguous to measure.
 
 **What we need.** Are these intentional? If not, rebinding them in the file
 would let us keep measuring node by node without second-guessing.
+
+---
+
+## 12. Does the chart tooltip head with "12" or "12:00"?
+
+**What we see.** The `chart/tooltip` component (`744:37709`) heads with a bare
+**"12"**. The redrawn chart axis (`706:*`) labels its ticks `HH:00`.
+
+**Why it matters.** We render the tooltip heading through the same formatter as
+the axis, so it reads "12:00". That was a deliberate call - one bucket phrased
+two ways is worse than either - but the tooltip component is a newer node than
+the axis, so the file's most recent word on it is the bare hour.
+
+**What we need.** Should the tooltip match the axis at `HH:00`, or is the bare
+hour intended there?
+
+---
+
+## 13. Is the Redacted chart series violet or purple?
+
+**What we see.** Two nodes, two colours, for the same series.
+
+| Node | Colour |
+| --- | --- |
+| Legend swatch `706:10096` | `violet/500` #8b5cf6 |
+| Tooltip component `744:37728` | `purple/500` #a855f7 |
+
+**Why it matters.** We ship violet/500, matching the legend. There is a
+standing note in our own code warning that violet and purple are easy to
+confuse here and not to "correct" one to the other by eye, so we have left it
+alone rather than follow the newer node.
+
+**What we need.** One colour for the series. While you are there: the Blocked
+swatch is `red/400` in both nodes and we had it at `red/500`, which we have now
+fixed - worth confirming red/400 is right.
 
 ---
 

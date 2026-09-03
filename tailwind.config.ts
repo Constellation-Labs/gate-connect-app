@@ -193,9 +193,19 @@ export default {
         // Levels are the design's own and are not uniform: 400, 500, 400, 500.
         chart: {
           messages: "#60a5fa", // tailwind blue/400
-          blocked: "#ef4444", // tailwind red/500
+          blocked: "#f87171", // tailwind red/400
+          // Two independent nodes agree on red/400: the legend swatch
+          // (706:10090) and the tooltip component (744:37718). This was
+          // red/500, one step too saturated.
           flagged: "#fbbf24", // tailwind amber/400
           redacted: "#8b5cf6", // tailwind violet/500
+          // The file disagrees with itself here and this stays put until a
+          // person says otherwise: the legend swatch (706:10096) draws
+          // violet/500, which is this value, while the newer tooltip
+          // component (744:37728) draws purple/500 #a855f7. The note above
+          // about violet-not-purple is about the REDACT pill (violet/200) and
+          // warns against flipping this by eye, so it is raised with design
+          // instead. See `docs/figma-questions-for-design.md`.
         },
 
         // ── Gate Connect popover palette (Claude Design handoff). ──

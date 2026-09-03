@@ -338,7 +338,7 @@ export function MessagesChart({
         {SERIES.map(({ key, label, className }) => (
           <li key={key} className="flex items-center gap-2">
             <span aria-hidden className={`size-3 rounded-xs ${className}`} />
-            <span className="text-base-xs text-base-foreground">{label}</span>
+            <span className="text-base-xs leading-4 tracking-label-12 text-base-foreground">{label}</span>
           </li>
         ))}
       </ul>
@@ -380,7 +380,7 @@ function PendingChart() {
         {SERIES.map(({ key, label, className }) => (
           <li key={key} className="flex items-center gap-2">
             <span aria-hidden className={`size-3 rounded-xs ${className}`} />
-            <span className="text-base-xs text-base-foreground">{label}</span>
+            <span className="text-base-xs leading-4 tracking-label-12 text-base-foreground">{label}</span>
           </li>
         ))}
       </ul>
@@ -431,9 +431,9 @@ function ChartTooltip({
           <div key={key} className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
               <span className={`size-3 rounded-xs ${className}`} />
-              <span className="text-base-xs leading-4 text-base-foreground">{label}</span>
+              <span className="text-base-xs leading-4 tracking-label-12 text-base-foreground">{label}</span>
             </span>
-            <span className="text-base-xs font-medium leading-4 text-base-foreground">
+            <span className="text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
               {bucket[key].toLocaleString()}
             </span>
           </div>

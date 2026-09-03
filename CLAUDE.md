@@ -34,11 +34,15 @@ right."
 ### Surface
 
 **A 1024x720 desktop window**, not a 360px popover. Chrome is a 48px
-topbar; navigation is a persistent 250px sidebar; content is a pane that
+topbar; navigation is a persistent 256px sidebar; content is a pane that
 scrolls independently. Window controls belong to the operating system, so
 the topbar only reserves space for them. Secondary flows are centred
 dialogs, not stacked panels; their width is per dialog - the file draws
-480, 512, 544 and 600, and `Modal`'s `width` prop is typed to those four.
+480, 512, **536**, 544 and 600, and `Modal`'s `width` prop is typed to those
+five. The 536 is the quit confirmations (`694:33002`, `694:33340`) and it is
+measured: they are the one pair that is *not* centred, sitting where a 512
+centred in 1024 would start and ending ~24px past its mirror. A scan that
+filters for centred frames will report no 536 anywhere and be wrong.
 
 Theme: **light only**. Dark mode is not on the roadmap for the first
 release.
@@ -55,6 +59,21 @@ frame draws the thing. Buttons are the worked example: the `Button`
 component says radius 8 on a `base.input` line, and every pane instance
 draws radius 4 on a `base.border` one, so panes get 4. Dialogs draw 8, and
 get 8. Say which you took and why.
+
+**The component library lives in three canvases, not the old page.**
+`113:16762` really is empty, and concluding from that the library was deleted
+is wrong: it moved to **Banners** (`744:37738` - `nav/topbar`, the update and
+routing banners, the alert rows), **Menus** (`744:37691` - `topnav/menu`,
+`chart/tooltip`) and **Sidenav** (`408:15625` - the rail, `Switch`,
+`sidebar-menu-item`, `status-label`, the logo). Look there before deciding a
+thing is undrawn. The `Button` set (`685:20855`) is still on a page MCP
+refuses to open, which is why the button questions below are settled from
+instances.
+
+**Where the file contradicts itself in ways no rule settles**, the open
+questions are collected in `docs/figma-questions-for-design.md` rather than
+decided here. Do not resolve one of those by eye; the evidence for each is in
+`docs/review-figma-*.md`.
 
 Two copy exceptions are decided and stay decided, both because the drawn
 words describe something the action does not do. Do not "fix" either back
@@ -84,27 +103,58 @@ one-to-one so any value can be traced back without guessing.
   `base.foreground` on body and headings, `base.primary-foreground
   #f9fafb` on a filled primary button, `base.destructive-foreground
   #fef2f2` on a filled destructive one. Never `text-white` on a button.
-- **Buttons have exactly two sizes**, from the `Button` component set:
+- **Buttons draw two sizes here, and the file draws a third.**
   `default` (h36, 10/12 padding) and `sm` (h32, 8/12). All carry a moulded
   elevation - `shadow-base-btn`, `-btn-sm`, `-btn-primary`,
   `-btn-destructive` - never a flat `shadow-base-2xs`, and a filled primary
   also takes the white/black 8% vertical gradient over `base.primary`.
+  The third is **h24** with 4/10 padding, drawn on `banner/update`'s dismiss
+  (`744:37756`, 61x24) and the table View buttons (`334:805` and the newest
+  `661:*`). `banners.tsx` already matches it, so the app is inconsistent with
+  itself until someone names it; raised with design.
   Radius and edge follow the surface: **panes** draw `rounded-control`
   (4px) on a `base.border` line, **dialogs** draw `rounded-md` (8px) on a
-  `base.input` one.
-- **Row icons are `base.foreground`**, not a grey. A 20px glyph at
-  `neutral-500` beside a `#030712` label reads as disabled.
-- **Radii** come from `tailwind.config.ts`'s own scale, not from Tailwind's:
-  `rounded-sm` (6px) on controls and nav items, `rounded-md` (8px) on cards,
-  rows and buttons, `rounded-2xl` (**16px**) on dialogs. The 16px is measured -
-  every dialog frame in Settings, Overview and App carries it - and it replaces
-  the 12px this file used to call locked.
+  `base.input` one. That rule is confirmed on the Overview dialogs
+  (`694:32469/70`, `694:33509/18`) and the Gate-model confirmation
+  (`130:48311/2`), and contradicted by the Settings dialogs - 4px on all six -
+  and the model picker's own footer, which draws 4px on a `base.border` line.
+  One shared style cannot serve both, so the rule stands and those two
+  surfaces render a step rounder than drawn. Also raised.
+- **Row icons are `base.foreground` on the app rows**, not a grey. A 20px
+  glyph at `neutral-500` beside a `#030712` label reads as disabled, and
+  `AppPane`'s row frames resolve `base/card` + `base/border` + `base/foreground`
+  (`683:20439`) at 36px around a 20px glyph.
+  **It is a per-surface rule, not a global one.** The Overview policy and
+  savings tables draw their row glyphs at `base/muted-foreground` #6b7280
+  (`116:26721`), deliberately quieter than the label beside them. Resolve the
+  node before applying either half of this.
+- **Radii** come from `tailwind.config.ts`'s own scale, not from Tailwind's,
+  which redefines Tailwind's own `sm` (2px -> **6px**), `lg` and `xl`. So
+  `rounded-sm` is 6px, and reaching for it because you want 2px is a mistake
+  this repo has made repeatedly.
+  `rounded-md` (8px) on cards and rows, `rounded-2xl` (**16px**) on dialogs.
+  The 16px is measured - every dialog frame in Settings, Overview and App
+  carries it - and it replaces the 12px this file used to call locked.
+  **Controls measure 4px, not 6px**, wherever the file actually draws one:
+  menu rows (`744:37693`), the topbar icon button (`127:46660`), the picker's
+  selected row and its "Unselect all". Measured exceptions worth knowing:
+  the picker checkbox is **1.667px** (`665:19094`) so it takes `rounded-xs`;
+  the Overview action pills are 2px while the feed badges are 4px, which is
+  two components, not a drift; and the tray's footer icon button is 8px where
+  the topbar's identical-looking one is 4px, so `OutlineIconButton` takes its
+  radius from the call site.
 - **Ground is `base.background #f9fafb`**, cards and chrome are white. Not
   `gray-100`: the window frames fill `#F9FAFB`, and the darker grey read as
   the single most obviously wrong thing on screen.
 - **Geist + Geist Mono.** Mono is for identifiers (URLs, hosts, keys,
   model ids, install ids, versions, status pill labels, the sidebar
   eyebrow), never for body copy.
+  **This one is contested and unresolved.** The model picker draws its model
+  ids in Geist Medium *sans* (`665:18400`, `665:19064`), and Settings draws
+  four more identifiers sans: six drawn sans, none drawn mono. The app is
+  still all-mono and nothing has been flipped, because it would change a lot
+  of screens on one reading of a few frames. Raised with design; until it
+  comes back, keep mono and do not "fix" a call site either way.
 - Destructive actions are filled `red-600`. There are only ever a couple
   per screen; if a third appears, question it.
 
@@ -165,6 +215,32 @@ deliberate reversal of an earlier "no dashboard" rule.
 
 ## Implementation notes that bite
 
+- **Figma `letterSpacing` is a PERCENTAGE, not pixels.** `heading/20` at -1%
+  is -0.2px, `heading/16` at -1% is -0.16px, `mono/eyebrow` at 8% is 0.96px
+  at 12px and 1.12px at 14px. Convert before comparing, and add the step to
+  `letterSpacing` under the Figma variable's own name rather than reusing a
+  numerically equal one - `label-12` and `button-xs` are both -0.12px and are
+  deliberately separate. Note the file uses `label/14` at BOTH 0% and -1%.
+- **A text node's HEIGHT tells you its size**, which is faster than resolving
+  every node: 36px tall is 32px type, 28 is 24, 24 is 16, 20 is 14, 16 is 12.
+- **There are two layers of colour variable, so a `text-neutral-*` is not
+  automatically wrong.** The file exposes the raw `tailwind colors/*` ramps
+  (`neutral/500` #737373, `neutral/600` #525252, `green/600`, `red/400` …)
+  *and* the `base/*` semantics. Some nodes genuinely use the raw ramp:
+  `116:30213`, the app header's status line, really does resolve
+  `neutral/500` for the qualifier after the dash. Others do not:
+  `116:30215`, the On label beside it, resolves `base/foreground`, so its
+  `neutral-600` was wrong. **Resolve the node before changing an ink**, and
+  where the variable set is ambiguous - two neutrals on one node - render it
+  and sample the pixels. That settled the wordmark ("Connect" is
+  `neutral/600`, sampled (82,82,82)) and the feed badge radius.
+- **The window minimum is enforced twice, and has to be.** `minWidth`/
+  `minHeight` in `tauri.conf.json` is what macOS, Windows and X11 honour.
+  Wayland ignores it: tao asks with `gtk_window_set_geometry_hints` and
+  `GDK_HINT_MIN_SIZE`, which is the X11 `WM_NORMAL_HINTS` mechanism, and GTK
+  never translates it into `xdg_toplevel.set_min_size`. So `lib.rs` clamps on
+  `Resized` as well, Linux only. Change `MAIN_MIN_SIZE` and the config
+  together.
 - **Never use `bg-blue-*` or `text-blue-*`.** `tailwind.config.ts`
   redefines Tailwind's `blue` as an OKLCH ramp for the old ink system, so
   those classes render the wrong colour. Use `base.primary`,

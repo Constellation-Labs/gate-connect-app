@@ -51,8 +51,14 @@ export interface Saving {
  * padding and an 8px gap. Text sits at the matching 900.
  *
  * **Violet, not purple.** The drawn REDACT fill is `#ddd6fe`, which is violet/200;
- * purple/200 is `#e9d5ff`. The same mistake was in `chart.redacted`. Nothing else
- * in this palette is violet, so it is easy to "correct" back by eye - don't.
+ * purple/200 is `#e9d5ff`. Nothing else in this palette is violet, so it is easy
+ * to "correct" back by eye - don't.
+ *
+ * This note used to add "the same mistake was in `chart.redacted`", which
+ * conflated two different elements. The chart series is its own question: the
+ * legend swatch (`706:10096`) draws violet/500 and the newer tooltip component
+ * (`744:37728`) draws purple/500, so the file disagrees with itself there and
+ * `chart.redacted` stays as it is pending design. This pill is not affected.
  */
 const ACTION_STYLES: Record<PolicyAction, string> = {
   block: "bg-red-200 text-red-900",
