@@ -208,11 +208,13 @@ export function EmptyNote({
     <div className={`flex flex-col items-center gap-3 py-6 ${className}`}>
       <span
         aria-hidden
-        className="flex size-9 items-center justify-center rounded-sm border border-base-border text-base-muted-foreground"
+        className="flex size-9 items-center justify-center rounded-control border border-base-border text-base-muted-foreground"
       >
         <Icon name={icon} size={20} />
       </span>
-      <p className="text-center text-sm leading-5 text-base-muted-foreground">{children}</p>
+      <p className="text-center text-base font-medium leading-6 tracking-heading-16 text-base-muted-foreground">
+        {children}
+      </p>
     </div>
   );
 }
@@ -239,7 +241,7 @@ export function Pill({
   return (
     <span
       title={title}
-      className={`inline-block rounded-xs px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
+      className={`inline-block rounded-control px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
     >
       {children}
     </span>

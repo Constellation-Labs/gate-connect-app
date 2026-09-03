@@ -506,7 +506,7 @@ export function DiagnosticsDialog({
     >
       {/* `mono/body-14` (`363:9120`), not the 12/16 this rendered: the report is
        * the one screen a user reads a wall of text on. */}
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-sm leading-5 text-neutral-700">
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-sm leading-5 text-base-foreground">
         {report}
       </pre>
     </Modal>

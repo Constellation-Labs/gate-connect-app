@@ -315,8 +315,8 @@ function NotInstalledSection({
         <span className="font-mono text-sm font-medium uppercase leading-5 tracking-[1.12px]">
           Not installed
         </span>
-        <span className="flex items-center gap-1">
-          <span className="font-mono text-base-xs font-normal leading-4">{apps.length}</span>
+        <span className="flex items-center gap-3">
+          <span className="font-mono text-sm font-normal leading-5">{apps.length}</span>
           <Icon
             name="chevronDown"
             size={20}
@@ -384,7 +384,7 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
   return (
     <div
       role="menu"
-      className="absolute bottom-12 right-4 z-10 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-lg"
+      className="absolute bottom-12 right-4 z-10 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-md"
     >
       {external.map(({ action, icon, label }) => (
         <button
@@ -392,10 +392,10 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
           type="button"
           role="menuitem"
           onClick={() => onSelect(action)}
-          className="flex h-8 w-full items-center justify-between rounded-sm px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           <span className="flex items-center gap-2">
-            <Icon name={icon} size={16} />
+            <Icon name={icon} size={14} />
             <span className="text-base-xs font-medium leading-4">{label}</span>
           </span>
           <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
@@ -405,9 +405,9 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
         type="button"
         role="menuitem"
         onClick={() => onSelect("quit")}
-        className="flex h-8 w-full items-center gap-2 rounded-sm px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
-        <Icon name="logOut" size={16} />
+        <Icon name="logOut" size={14} />
         <span className="text-base-xs font-medium leading-4">Quit Gate Connect</span>
       </button>
     </div>

@@ -577,7 +577,7 @@ export function ModalField({
               ? // Drawn with no fill and no shadow at 60%: it is the value being
                 // replaced, not a field. `143:67746`.
                 "border-base-input bg-transparent text-base-foreground opacity-60"
-              : "border-base-input bg-base-card text-base-foreground shadow-base-xs"
+              : "border-base-input bg-base-background text-base-foreground shadow-base-xs"
           } ${mono ? "font-mono" : ""} ${onChange && value ? "pr-9" : "pr-3"}`}
         />
         {onChange && value && (
@@ -621,7 +621,7 @@ export function ModalSteps({
               aria-hidden
               // 36px, as `177:73957` draws it - the text group starts at 48,
               // which is the tile plus this row's 12px gap.
-              className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-sm font-medium text-neutral-700"
+              className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-base font-medium leading-6 text-base-foreground"
             >
               {i + 1}
             </span>
@@ -629,7 +629,7 @@ export function ModalSteps({
               <span className="block text-sm font-medium leading-5 text-base-foreground">
                 {step.title}
               </span>
-              <span className="block text-sm leading-5 text-neutral-600">
+              <span className="block text-base-xs leading-4 text-base-muted-foreground">
                 {step.description}
               </span>
             </span>
