@@ -371,10 +371,24 @@ export default {
         // `text-xs/leading-normal/medium` is -1% at 12px.
         "button-sm": "-0.28px",
         "button-xs": "-0.12px",
-        // `heading/20`: Geist Medium 20/28 at -1% - pane titles and captions.
-        // The 28px line-height is the token export's `xl`, which is also
-        // Tailwind's own default, so call sites must not override it.
+        // `heading/20`: Geist Medium 20/**24** at -1% - pane titles and captions.
+        // This said 20/28, and the variable itself says lineHeight 24: every
+        // drawn pane title is a 24px-tall text node ("Overview" 116:26488,
+        // "Claude Desktop" 116:30212). The old note told call sites NOT to
+        // override the 28, which is how three of the four panes drifted to it -
+        // they need `leading-6`, and `SettingsPane` always had it.
         heading: "-0.2px",
+        // `heading/24`: Geist Medium 24/28 at -1% - the stat-tile figure
+        // (116:26516), the only step that uses it.
+        "heading-24": "-0.24px",
+        // `label/12` and `label/14`, both at -1%. Numerically `label-12` is the
+        // same -0.12px as `button-xs` above; kept apart because this group is
+        // named to mirror the Figma variables one-to-one, and a rail label is
+        // not a button label. Note the file uses `label/14` at BOTH 0% and -1%:
+        // the tray master-card title (744:38097) draws it untracked, the footer
+        // and CLI card (744:38190, 735:37344) at -1%.
+        "label-12": "-0.12px",
+        "label-14": "-0.14px",
         // `heading/16`: Geist Medium 16/24 at -1% - the Overview card headings
         // (`card/policies` 116:26707 and its siblings draw their titles 24px
         // tall). Absolute in Figma like the rest of this group, so -1% of 16px.

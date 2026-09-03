@@ -153,7 +153,7 @@ export function Tray({
       )}
 
       <footer className="relative flex h-14 shrink-0 items-center justify-between border-t border-base-border bg-base-card px-4">
-        <span className="flex items-center gap-2 text-sm font-medium leading-5 text-base-foreground">
+        <span className="flex items-center gap-2 text-sm font-medium leading-5 tracking-label-14 text-base-foreground">
           <Icon name="users" size={20} />
           <span className="truncate">{orgName}</span>
         </span>
@@ -199,7 +199,7 @@ function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
       <StatusTile tone={tone} icon={icon} size={36} />
       <div className="flex min-w-0 flex-col gap-0.5">
         <h1 className="text-sm font-medium leading-5 text-base-foreground">{title}</h1>
-        <p className="text-base-xs leading-4 text-base-muted-foreground">
+        <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
           {on ? "On" : "Off"} · {routed} of {apps.length} tools routing
         </p>
       </div>
@@ -223,7 +223,7 @@ function TrayGroup({
         <div className="flex items-baseline justify-between gap-2">
           {/* `mono/eyebrow` at the tray's drawn 14px (738:37554), against the
            * rail's 12. Tracking is the same 8%. */}
-          <h2 className="truncate font-mono text-sm font-medium uppercase leading-5 tracking-[1.12px] text-base-muted-foreground">
+          <h2 className="truncate font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-base-muted-foreground">
             {group.label}
           </h2>
           <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
@@ -238,7 +238,7 @@ function TrayGroup({
             <span className="flex min-w-0 flex-1 items-center gap-3">
               <AppTile name={app.name} logo={app.logo} />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-base-xs font-medium leading-4 text-base-foreground">
+                <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
                   {app.name}
                 </span>
                 <StatusLine app={app} />
@@ -280,7 +280,7 @@ function AppTile({ name, logo }: { name: string; logo?: ReactNode }) {
       className="flex size-8 shrink-0 items-center justify-center rounded-control border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
       style={{
         backgroundImage:
-          "linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(0,0,0,0.24) 100%)",
+          "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(0,0,0,0.28) 100%)",
       }}
     >
       {logo ?? name.charAt(0)}
@@ -312,7 +312,7 @@ function NotInstalledSection({
         aria-expanded={open}
         className="flex w-full items-baseline justify-between gap-2 rounded-sm text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
-        <span className="font-mono text-sm font-medium uppercase leading-5 tracking-[1.12px]">
+        <span className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14">
           Not installed
         </span>
         <span className="flex items-center gap-3">
@@ -330,7 +330,7 @@ function NotInstalledSection({
             <li key={app.slug} className="flex items-center gap-3 p-2">
               <AppTile name={app.name} logo={app.logo} />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-base-xs font-medium leading-4 text-base-foreground">
+                <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
                   {app.name}
                 </span>
                 <span className="truncate text-base-2xs font-medium leading-4 text-base-muted-foreground">
@@ -354,9 +354,9 @@ function CliCard({
   cli: { on: boolean; busy?: boolean; onToggle: (next: boolean) => void };
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border border-base-border bg-base-card p-3 shadow-base-xs">
+    <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border border-base-border bg-base-card py-3 pl-3 pr-2">
       <div className="flex min-w-0 flex-col gap-0.5">
-        <p className="text-sm font-medium leading-5 text-base-foreground">Command-line tools</p>
+        <p className="text-sm font-medium leading-5 tracking-label-14 text-base-foreground">Command-line tools</p>
         <p className="text-base-xs leading-4 text-base-muted-foreground">
           Sets HTTPS_PROXY for your whole shell, so OpenCode and other terminal tools route too.
         </p>
@@ -396,7 +396,7 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
         >
           <span className="flex items-center gap-2">
             <Icon name={icon} size={14} />
-            <span className="text-base-xs font-medium leading-4">{label}</span>
+            <span className="text-base-xs font-medium leading-4 tracking-label-12">{label}</span>
           </span>
           <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
         </button>

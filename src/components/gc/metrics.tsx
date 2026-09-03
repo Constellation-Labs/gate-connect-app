@@ -174,7 +174,7 @@ function Stat({
           // resize under the user when the reading lands.
           <Skeleton className="my-1 h-6 w-16" />
         ) : (
-          <span className="text-2xl font-medium leading-7 text-base-foreground">{value}</span>
+          <span className="text-2xl font-medium leading-7 tracking-heading-24 text-base-foreground">{value}</span>
         )}
         {delta && (
           <span className="text-sm leading-5 text-green-600">{delta}</span>
