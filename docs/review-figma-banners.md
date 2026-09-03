@@ -259,3 +259,214 @@ All classes I assert or recommend were run through the project's own tailwind
 build and confirmed to emit CSS: `tracking-label-14`, `tracking-label-12`,
 `tracking-button-xs`, `tracking-heading-16`, `rounded-control`, `rounded-md`,
 `text-base-xs`, `shadow-base-btn-sm`, `shadow-base-xs`, `text-green-700`.
+
+---
+
+# Mismatches
+
+Ordered by how visible each is. Every colour marked MEASURED was read off the
+**exported SVG's own `stroke` attribute**, which carries the resolved value -
+not inferred from a variable list.
+
+### M1. Alert card radius is **8px**, code draws 4px
+
+- Node: `744:37775` -> `rounded-[8px]`. Visually confirmed in a 1:1 render.
+- Code: `banners.tsx:155` `rounded-control` (4px).
+- Fix: `rounded-control` -> `rounded-md`.
+- **MEASURED, high.** This is a card, and CLAUDE.md:98 puts cards and rows on
+  `rounded-md` anyway - the 4px was the pane-*button* rule applied to a card.
+
+### M2. Alert dismiss X is `base/foreground`, code draws `neutral-500`
+
+- Node: `744:37786` Icon/X -> `stroke="#030712"` = `base/foreground`.
+  The render shows it as the same dark ink as the title.
+- Code: `banners.tsx:170` `text-neutral-500` (#737373).
+- Fix: `text-neutral-500` -> `text-base-foreground`; the existing
+  `hover:text-base-foreground` then becomes redundant and can go.
+- **MEASURED, high.** Also exactly the failure CLAUDE.md:95-96 names: "A 20px
+  glyph at `neutral-500` beside a `#030712` label reads as disabled." This is
+  a 20px glyph at `neutral-500` beside a `#030712` label.
+
+### M3. Next chevron is `base/foreground`, code draws `neutral-600`
+
+- Node: `744:37777` Icon/ChevronRight -> `stroke="#030712"`.
+- Code: `banners.tsx:192` `text-neutral-600` (#525252).
+- Fix: `text-neutral-600` -> `text-base-foreground`.
+- **MEASURED, high.** See M4 before applying - the two chevrons are *not*
+  drawn the same, so this is the enabled colour only.
+
+### M4. The prev chevron is drawn **disabled**; the code draws both alike
+
+- Node: `744:37788` Icon/ChevronLeft -> `stroke="#6B7280"`
+  (`base/muted-foreground`) **and** `opacity="0.5"` on its `<g>`. The render
+  shows the left puck visibly greyer than the right.
+- Code: `banners.tsx:186-198` `PageButton` renders prev and next identically,
+  and `paging` (`banners.tsx:152`) is `{ onPrev, onNext }` with no notion of
+  position, so the component cannot know it is at an end.
+- **The measurement is certain; the reading is INFERRED.** Most likely the
+  component is posed at the first of several apps, so prev is disabled. It
+  could also be a designer's leftover - it is the only place on this canvas
+  where a paired control is drawn asymmetrically.
+- **Do not restyle blind.** Either raise it with design, or implement it
+  properly: `paging` grows `canPrev`/`canNext`, and a disabled puck takes
+  `text-base-muted-foreground opacity-50` plus `disabled`. That is an API
+  change, not a class swap, so it wants a decision first.
+
+### M5. `banner/routing` status-summary is missing its -0.14px tracking
+
+- Node: `744:37763` carries `tracking-[-0.14px]` on the wrapper, so it applies
+  to both the state word and the count (`label/14` and `copy/14`, both -1%).
+- Code: `banners.tsx:106` `<p className="text-sm leading-5">` - no tracking.
+- Fix: add `tracking-label-14` to that `<p>`.
+- **MEASURED, high.** Note the *heading* at `banners.tsx:100` is correctly
+  untracked: `744:37762` is `heading/14`, which is 0%. Do not "fix" that one.
+
+### M6. Alert body is missing its -0.12px tracking
+
+- Node: `744:37783` -> `tracking-[-0.12px]` (`copy/12` at -1%).
+- Code: `banners.tsx:160` `text-base-xs leading-4 text-gray-600`.
+- Fix: add `tracking-label-12`.
+- **MEASURED, high.**
+
+### M7. "Update available" is missing its -0.14px tracking
+
+- Node: `744:37753`'s sans span -> `tracking-[-0.14px]`. The mono `- v0.5.0`
+  run (`744:37754`, `mono/body-14`) is untracked.
+- Code: `banners.tsx:46` `<span className="font-medium">Update available</span>`
+  - no tracking, and none on the parent either.
+- Fix: `tracking-label-14` **on that span only**, not on the `<p>` at
+  `banners.tsx:45` - putting it on the paragraph would wrongly track the mono
+  version string too.
+- **MEASURED, high.**
+
+### M8. Green status tile glyph is `green-700`, code draws `green-600`
+
+See C2. `base.tsx:61` `text-green-600` -> `text-green-700`. Amber stays 600
+(confirmed twice). **MEASURED, medium-high.** The `red` tone at `base.tsx:65`
+is admittedly invented and unaffected either way.
+
+### M9. `OutlineIconButton`'s glyph is `base/primary`, code draws `base/foreground`
+
+- Nodes: `744:37748` Icon/Ellipsis and `744:37749` Icon/Minimize2 **both**
+  export `stroke="#203DE2"` = `base/primary`.
+- Code: `Topbar.tsx:132` `text-base-foreground` (#030712).
+- Fix: `text-base-foreground` -> `text-base-primary`.
+- **MEASURED, high**, and corroborated across the section: the `xs` Button's
+  label (`744:37756`) is `base/primary` too. An outline button in this file
+  carries primary ink, not body ink.
+- **Blast radius:** `OutlineIconButton` is exported and also used by the tray
+  popover's footer, so this lands on two surfaces. Worth checking the tray's
+  own frame before applying rather than assuming.
+
+### M10. `OutlineIconButton`'s bottom inset alpha is 0.06, code has 0.04
+
+- Node: `744:37749` (the **Default** state) ->
+  `inset 0 -4px 4px 0 rgba(0,0,0,0.06)`.
+- Code: `Topbar.tsx:132` `inset_0_-4px_4px_0_rgba(0,0,0,0.04)`.
+- Fix: 0.04 -> 0.06. Everything else in that shadow triple already matches.
+- **MEASURED, low impact.**
+- **Read the spec off `744:37749`, not `744:37748`.** The first toolbar button
+  is the **Pressed** variant (`685:20979`): `opacity 0.6`, a `neutral/50`
+  #fafafa fill, a `0.98px` border, and non-uniform scaling (Figma emits
+  `h-[39.2px]` inside a 32px frame with a `15.68x16` glyph). It is a state
+  demo, not a spec. The code correctly renders the Default state.
+
+### M11. Two stale "the components were deleted" comments remain
+
+- `banners.tsx:11-13`: "Those component frames lived on the Components page,
+  which the file has since emptied; the live sources are the banner instances
+  inside the flow frames." All five banner components are on `744:37738`.
+- `base.tsx:49-50`: "Sampled from the `113:*` banner components, which the file
+  has since deleted along with the rest of the Components page."
+- Comment-only, but these are the notes that sent the last two audits to the
+  wrong nodes, and M8 is a direct consequence (`base.tsx:53` reasons about the
+  green tile from an amber *instance* because it believed no component existed).
+- `Topbar.tsx` already had the equivalent comment corrected during this audit.
+
+### M12 (documentation). CLAUDE.md:87 undercounts the button sizes
+
+The set has at least four: `default` (h36), `sm` (h32), `xs` (h24,
+`685:20937`) and `icon` (32x32, `685:20933` default / `685:20979` pressed).
+See Q1 for the recommended wording. **MEASURED.**
+
+### Explicitly not findings
+
+- The `w-8` reserve against the drawn 60px `window-controls` - deliberate, the
+  traffic lights are the OS's. The drawn dots are `#F87171` / `#FACC15` /
+  `#4ADE80` (red/yellow/green-400) plus an 8%-opacity element; none of it
+  ships, correctly.
+- The dropped Minimize2 button. Worth noting the ordering: the component draws
+  **Ellipsis at x=932 and Minimize2 at x=976**, so dropping the second one
+  moves the surviving ellipsis 44px right. That is what `Topbar.tsx:63-67`
+  describes and it is right.
+- Chevron overhang. The component is internally inconsistent (Figma emits
+  `left-[-10px]` and `left-[714px]` against a 726 card, so -10 left and -8
+  right; the absolute frame coordinates read -9 / -9). The code's symmetric
+  `-left-2.5` / `-right-2.5` is the correct read of a 1-2px drafting wobble.
+- `Topbar.tsx:72` `tracking-[-0.16px]` is an arbitrary value where
+  `tracking-heading-16` is the same number. Cosmetic only; the rendered result
+  is identical.
+- `banner/update` is `py-[12px]` in Figma against the code's fixed `h-12`.
+  16px + 20px line + 12px = 44, and the frame is 48 with a 12px-inset
+  24px button; the fixed height reaches the same place.
+
+---
+
+# Copy differences
+
+1. **"Routing" vs "Routed"** - `744:37764` against `banners.tsx:112`. See C1.
+   Component and every flow instance disagree; this needs design, not a code
+   change. **Not one of the two decided exceptions**, and not already in
+   `docs/figma-questions-for-design.md`, so it is a new question.
+2. **The alert body's "off" is a Medium run** inside a Regular sentence
+   (`744:37783` splits it into three spans: `Routing is set to ` / **`off`** /
+   `. Reconnect to restore protection.`). `AlertBanner`'s `body` prop
+   (`banners.tsx:141`) is a plain `string`, so the emphasis cannot be
+   expressed. Typographic, not copy; low value, and fixing it means widening
+   the prop to `ReactNode`. Mention, do not act.
+3. Everything else matches character for character, apostrophes included:
+   "Gate Connect is protecting you", "Gate Connect is partly routing your
+   apps", "Codex isn't protected", "Routing is set to off. Reconnect to
+   restore protection.", "Reconnect to restore protection", "This app's config
+   changed outside Gate, so its traffic isn't routed.", "Update available",
+   "Update", "Partly routed".
+
+Nothing here duplicates the five questions already in
+`docs/figma-questions-for-design.md`. **Question 4 in that file - "Is there a
+third button size? Is 24px a size, or a stretched instance?" - is now
+answered**, and its premise that "only the `Button` set (`685:20855`) is still
+unreachable for us" can be softened: the set node itself will not resolve, but
+Figma reports each instance's **variant name** in the component-description
+payload, which is how `Size=xs` was established. That technique settles the
+question without ever opening the set.
+
+---
+
+# Could not determine
+
+1. **Whether `dot-matrix-light` ever carried artwork.** `744:37751` is an
+   empty frame, and both it and the flow instance `228:85974` render as a
+   perfectly flat gradient (I sampled a 140x40 region of each: the component
+   varies by ±1/255 dither, the instance not at all). So the layer is named
+   for a pattern that is not in the file anywhere I can see. I cannot tell
+   whether a raster was stripped or never existed. **The code's overlay -
+   `rgba(255,255,255,0.16)` 1px dots at an 8px pitch, `banners.tsx:41-43` - is
+   therefore unsourced.** It is subtle and defensible; it is also the one
+   shipped visual on this canvas with nothing behind it. Flag to design rather
+   than delete.
+2. **The `Button` set's full variant matrix.** `get_metadata` on `685:20855`
+   fails with "This is an invalid node selection" - the set is not on a
+   reachable page. Everything in Q1 comes from the instance `744:37756` plus
+   the variant name Figma reports for it. I could not read the `xs` frame
+   directly, nor confirm whether `xs` has Ghost/Destructive/Primary siblings
+   or only Outline.
+3. **`BaseSwitch` against `408:14252`.** I read the component's off state -
+   36x20 track at `custom/outline #a3a3a380`, a 2px transparent ring, 2px
+   inset, 16px thumb at `base/background #f9fafb` with `shadow/lg`
+   (`0 10px 15px -3px` + `0 4px 6px -4px`, both at 8%) - but the Switch is a
+   shared component from another section and is out of this audit's scope.
+   `base.tsx:121-128` already claims 36x20/16/2 off the set, which agrees.
+4. **Hover and focus treatments.** The canvas draws Default and (for the
+   topbar button) Pressed. No hover or focus-visible state is drawn for any
+   banner control, so every `hover:` and `focus-visible:` class in
+   `banners.tsx` is invention. Not a mismatch - just unverifiable here.

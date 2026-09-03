@@ -79,17 +79,18 @@ footer's `base/border` line deliberate, given every other dialog button sits on
 
 ---
 
-## 4. Is there a third button size?
+## 4. ANSWERED - there are at least four button sizes
 
-**What we see.** A 24px-tall button with 4/10 padding, in `334:805` and in the
-five newest `661:*` nodes - the table "View" buttons.
+Left here for the record rather than deleted, because it changes what we build
+to. We asked whether a 24px button was real. It is, and it is named: Figma
+reports `744:37756` as **`Variant=Outline, State=Default, Size=xs`**
+(`685:20937`), and the set publishes `height/h-6: 24`. So the set has at least
+`default`, `sm`, `xs` and `icon`, and our "exactly two sizes" rule was wrong.
+`banners.tsx` already matched `xs` on every property.
 
-**Why it matters.** We build to exactly two sizes, 36px and 32px. One surface
-(the app banners) already matches the 24px shape, so the app is inconsistent
-with itself. If 24px is real we will name it as a third size; if not, those
-frames want the 32px one.
-
-**What we need.** Is 24px a size, or a stretched instance?
+No question for you here. We settled it by reading each instance's variant
+name, which works even though the set node itself (`685:20855`) will not open
+for us - if that page could be shared it would save us guessing in future.
 
 ---
 
@@ -214,7 +215,37 @@ would let us keep measuring node by node without second-guessing.
 
 ---
 
-## 12. Does the chart tooltip head with "12" or "12:00"?
+## 12. "Routing" or "Routed" in the status banner?
+
+**What we see.** The `banner/routing` **component** (`744:37758`) reads
+**"Routing"**. Every routed frame on Flows/Overview reads **"Routed · 4 of 4
+Apps"**, and that is what we ship.
+
+**Why it matters.** Same shape as question 2: the component and the instances
+disagree, and we are following the instances. It is one word on the banner that
+sits above every screen, so we would rather it were deliberate.
+
+**What we need.** Which word?
+
+---
+
+## 13. Is there meant to be a dot pattern behind the update banner?
+
+**What we see.** The banner's `dot-matrix-light` layer (in `744:37750`) is an
+**empty frame**. We rendered both the component and the flow instance
+(`228:85974`) at 1:1 and sampled them: a flat gradient, no periodic pixels.
+
+**Why it matters.** We draw a dot overlay there - 16% white on an 8px pitch -
+and we cannot find a source for it. The gradient underneath it is confirmed
+correct. Either the pattern was intended and is not rendering in the file, or
+we invented it.
+
+**What we need.** Should the dots be there? If yes we will keep ours and you
+may want to restore the layer; if no we will remove them.
+
+---
+
+## 14. Does the chart tooltip head with "12" or "12:00"?
 
 **What we see.** The `chart/tooltip` component (`744:37709`) heads with a bare
 **"12"**. The redrawn chart axis (`706:*`) labels its ticks `HH:00`.
@@ -229,7 +260,7 @@ hour intended there?
 
 ---
 
-## 13. Is the Redacted chart series violet or purple?
+## 15. Is the Redacted chart series violet or purple?
 
 **What we see.** Two nodes, two colours, for the same series.
 

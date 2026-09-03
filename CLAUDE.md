@@ -103,23 +103,30 @@ one-to-one so any value can be traced back without guessing.
   `base.foreground` on body and headings, `base.primary-foreground
   #f9fafb` on a filled primary button, `base.destructive-foreground
   #fef2f2` on a filled destructive one. Never `text-white` on a button.
-- **Buttons draw two sizes here, and the file draws a third.**
-  `default` (h36, 10/12 padding) and `sm` (h32, 8/12). All carry a moulded
-  elevation - `shadow-base-btn`, `-btn-sm`, `-btn-primary`,
-  `-btn-destructive` - never a flat `shadow-base-2xs`, and a filled primary
-  also takes the white/black 8% vertical gradient over `base.primary`.
-  The third is **h24** with 4/10 padding, drawn on `banner/update`'s dismiss
-  (`744:37756`, 61x24) and the table View buttons (`334:805` and the newest
-  `661:*`). `banners.tsx` already matches it, so the app is inconsistent with
-  itself until someone names it; raised with design.
-  Radius and edge follow the surface: **panes** draw `rounded-control`
-  (4px) on a `base.border` line, **dialogs** draw `rounded-md` (8px) on a
-  `base.input` one. That rule is confirmed on the Overview dialogs
-  (`694:32469/70`, `694:33509/18`) and the Gate-model confirmation
-  (`130:48311/2`), and contradicted by the Settings dialogs - 4px on all six -
-  and the model picker's own footer, which draws 4px on a `base.border` line.
-  One shared style cannot serve both, so the rule stands and those two
-  surfaces render a step rounder than drawn. Also raised.
+- **The `Button` set has at least four sizes, not two.** `default` (h36,
+  10/12), `sm` (h32, 8/12), **`xs`** (h24, 4/10) and **`icon`** (square).
+  All carry a moulded elevation - `shadow-base-btn`, `-btn-sm`,
+  `-btn-primary`, `-btn-destructive` - never a flat `shadow-base-2xs`, and a
+  filled primary also takes the white/black 8% vertical gradient over
+  `base.primary`.
+  This file said "exactly two" for months. The set node (`685:20855`) will
+  not resolve over MCP, which is why: but **Figma reports each instance's
+  variant NAME**, so `744:37756` comes back as `Variant=Outline,
+  State=Default, Size=xs` (`685:20937`) and the set publishes
+  `height/h-6: 24`. That is how to identify a variant when the set itself is
+  unreachable. `xs` is drawn on `banner/update`'s dismiss and the table View
+  buttons; `banners.tsx` already matched it exactly on every property.
+  **Radius follows the VARIANT, not the surface** - which is why one shared
+  component kept being wrong for somebody. Measured: `icon` is 4px
+  (`127:46660`, the topbar), `sm` is 8px (`694:34124`, the tray footer), `xs`
+  is 4px, all three on a `base.input` line, and both icon glyphs export
+  `#203DE2` `base.primary`. So `OutlineIconButton` takes its radius from the
+  call site. The older pane/dialog phrasing - panes 4px on `base.border`,
+  dialogs 8px on `base.input` - still describes most instances and is
+  confirmed on the Overview dialogs (`694:32469/70`, `694:33509/18`) and the
+  Gate-model confirmation (`130:48311/2`); it is contradicted by the Settings
+  dialogs (4px on all six) and the picker footer (4px on `base.border`).
+  Those two are raised with design rather than chased.
 - **Row icons are `base.foreground` on the app rows**, not a grey. A 20px
   glyph at `neutral-500` beside a `#030712` label reads as disabled, and
   `AppPane`'s row frames resolve `base/card` + `base/border` + `base/foreground`

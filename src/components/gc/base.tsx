@@ -46,19 +46,20 @@ export function Card({
  * banner. One shape, two palettes: a vertical 50 -> 200 gradient, a 300 border
  * and a 600 icon, all on Tailwind's default ramps.
  *
- * Sampled from the `113:*` banner components, which the file has since deleted
- * along with the rest of the Components page; the live sources are the banner
- * instances inside the flow frames.
+ * Measured off the live **Banners** canvas (`744:37738`). An earlier note here
+ * said the components had been deleted with the old Components page and read
+ * the steps off flow instances instead - only `113:16762` is empty.
  *
- * The icon step is 600, not 700: the ShieldBan inside the Overview frame's
- * routing banner reads `tailwind colors/amber/600` #D97706, which is also the
- * amber `tailwind.config.ts` records as the design's own.
+ * **The step is per tone, which is why believing the components were gone cost
+ * something.** Amber really is 600 (`tailwind colors/amber/600` #D97706, the
+ * value the config records as the design's own), and 600 was generalised from
+ * it to green. The green component draws **green/700** #15803D.
  *
  * Tone classes are spelled out rather than interpolated - Tailwind only sees
  * literal class names at build time.
  */
 const TILE_TONES = {
-  green: "from-green-50 to-green-200 border-green-300 text-green-600",
+  green: "from-green-50 to-green-200 border-green-300 text-green-700",
   amber: "from-amber-50 to-amber-200 border-amber-300 text-amber-600",
   // Not in the Figma, which draws no failure state. Follows the same 50 -> 200
   // gradient, 300 border, 600 icon pattern as the two that are.
