@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use gate_connect_core::security_feed::client::{run, Feed};
 use gate_connect_core::security_feed::{FeedState, Update};
-use gate_connect_core::{account, keychain};
+use gate_connect_core::{account, keychain, oauth};
 
 /// Serializes these tests against each other: the account lives behind the
 /// process-global `GATE_CONNECT_TEST_HOME` seam, so two running at once would
@@ -313,6 +313,63 @@ async fn a_401_holds_the_loop_open_for_a_recovery_signal() {
     assert!(
         heads.lock().unwrap().len() >= 2,
         "the loop must survive a refusal so a recovery signal can revive it"
+    );
+
+    feed.stop();
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+}
+
+#[tokio::test]
+async fn a_second_refusal_does_not_record_the_rejection_again() {
+    let _g = LOCK.lock().await;
+    let _data = TempDataDir::set();
+    with_key_account();
+    let heads = mock_status("401 Unauthorized");
+    // The flag is process-global and sticky, and the other 401 tests set it, so
+    // start from a known false rather than inheriting whatever ran first.
+    oauth::clear().expect("clear any recorded rejection");
+    assert!(!oauth::session_rejected());
+
+    let feed = Arc::new(Feed::new());
+    let driver = feed.clone();
+    let task = tokio::spawn(async move {
+        run(driver, |_| {}).await;
+    });
+
+    // The first refusal records the rejection. That record is what makes
+    // `oauth::live_session` report `None`, which is the whole app dropping to
+    // the sign-in prompt.
+    wait_until(Duration::from_secs(10), oauth::session_rejected).await;
+    assert!(
+        oauth::session_rejected(),
+        "the first refusal must still record the rejection"
+    );
+
+    // The user recovers, which clears the record. Both public paths that clear
+    // it do so as a side effect of writing the keychain - signing back in
+    // (`oauth::store`) and signing out (`oauth::clear`) - and the property under
+    // test does not care which one got us here, only that the record is gone.
+    oauth::clear().expect("clear the recorded rejection");
+    assert!(!oauth::session_rejected());
+
+    // Now the feed is refused a second time, on a credential the user has just
+    // sorted out. It must not record the rejection again: doing so signs them
+    // straight back out, and because this loop retries within 30s they could
+    // never stay signed in.
+    feed.retry_now();
+    wait_until(Duration::from_secs(10), || heads.lock().unwrap().len() >= 2).await;
+    assert!(
+        heads.lock().unwrap().len() >= 2,
+        "expected a second attempt to be refused, saw {}",
+        heads.lock().unwrap().len()
+    );
+    // The head is recorded before the client has read the response, so give the
+    // marking path room: it would fire within microseconds of the 401.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !oauth::session_rejected(),
+        "a second refusal must not re-record the rejection - a feed failure \
+         must never sign the user out"
     );
 
     feed.stop();

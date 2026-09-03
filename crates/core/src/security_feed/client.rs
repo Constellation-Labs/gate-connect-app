@@ -133,6 +133,15 @@ impl Feed {
                 recent.pop_front();
             }
         }
+        // Written synchronously, on purpose. This is one file append per
+        // delivered event, inside the stream loop, and the notification
+        // `Grouper` exists because bursts of 30+ arrive at once - so whether it
+        // belongs behind `spawn_blocking` is a fair question. Measured at ~22us
+        // per line, a 30-event burst costs ~0.65ms of a worker that is otherwise
+        // parked on a socket, and none of it runs on a production-pointed build.
+        // `spawn_blocking` would trade that for losing line order, which a stamp
+        // with second resolution cannot reconstruct - and the order is the
+        // diagnostic.
         crate::logging::log(
             crate::logging::Level::Info,
             &format!(
