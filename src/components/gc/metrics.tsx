@@ -174,7 +174,7 @@ function Stat({
           // resize under the user when the reading lands.
           <Skeleton className="my-1 h-6 w-16" />
         ) : (
-          <span className="text-2xl font-semibold leading-8 text-base-foreground">{value}</span>
+          <span className="text-2xl font-semibold leading-7 text-base-foreground">{value}</span>
         )}
         {delta && (
           <span className="text-base-xs font-medium text-green-600">{delta}</span>
@@ -222,7 +222,7 @@ export function MessagesChart({
   const empty = !pending && !unavailable && highest === 0;
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">Messages</h2>
+      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Messages</h2>
 
       {pending ? (
         <PendingChart />
@@ -248,7 +248,7 @@ export function MessagesChart({
           to be - the table is the accessible path to the same figures. */}
       <div
         aria-hidden
-        className="relative mt-4 flex h-28 items-end justify-between gap-1"
+        className="relative mt-5 flex h-28 items-end justify-between gap-1"
         onMouseLeave={() => setHovered(null)}
       >
         {buckets.map((bucket, i) => (
@@ -358,7 +358,7 @@ export function MessagesChart({
 function PendingChart() {
   return (
     <>
-      <div aria-hidden className="mt-4 flex h-28 items-end justify-between gap-1">
+      <div aria-hidden className="mt-5 flex h-28 items-end justify-between gap-1">
         {PENDING_HOURS.map((hour) => (
           <Skeleton key={hour} className="h-full w-5" />
         ))}

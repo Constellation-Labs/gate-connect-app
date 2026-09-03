@@ -375,6 +375,10 @@ export default {
         // The 28px line-height is the token export's `xl`, which is also
         // Tailwind's own default, so call sites must not override it.
         heading: "-0.2px",
+        // `heading/16`: Geist Medium 16/24 at -1% - the Overview card headings
+        // (`card/policies` 116:26707 and its siblings draw their titles 24px
+        // tall). Absolute in Figma like the rest of this group, so -1% of 16px.
+        "heading-16": "-0.16px",
       },
       fontSize: {
         // The popover's type ramp, in rem against a 16px root.

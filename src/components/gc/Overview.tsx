@@ -160,7 +160,7 @@ function PolicyTable({
     // every `line` in the frame measuring 688 inside the 720 card, so the table
     // sits in its own gutter rather than reaching the border.
     <Card busy={pending}>
-      <h2 className="px-4 pt-4 text-sm font-medium leading-5 text-base-foreground">Policies</h2>
+      <h2 className="px-4 pt-4 text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Policies</h2>
 
       {pending ? (
         <PendingRows columns={3} />
@@ -174,16 +174,16 @@ function PolicyTable({
         </EmptyNote>
       ) : (
         <div className="px-4">
-        <table className="mt-4 w-full">
+        <table className="mt-5 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-2 text-left font-normal">
+            <th scope="col" className="pb-3 text-left font-normal">
               Policy type
             </th>
-            <th scope="col" className="pb-2 text-right font-normal">
+            <th scope="col" className="pb-3 text-right font-normal">
               Action
             </th>
-            <th scope="col" className="w-24 pb-2 text-right font-normal">
+            <th scope="col" className="w-24 pb-3 text-right font-normal">
               Status
             </th>
           </tr>
@@ -193,7 +193,7 @@ function PolicyTable({
             <tr key={policy.id} className="border-t border-base-border">
               <td className="py-3">
                 <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
-                  <Icon name={policy.icon} size={16} className="text-neutral-500" />
+                  <Icon name={policy.icon} size={20} className="text-base-muted-foreground" />
                   {policy.name}
                 </span>
               </td>
@@ -245,7 +245,7 @@ function SavingsTable({
     // butting the heading against the top edge. Padding sits on the contents,
     // not here - see `PolicyTable`.
     <Card id={SAVINGS_SECTION_ID} className="scroll-mt-6" busy={pending}>
-      <h2 className="px-4 pt-4 text-sm font-medium leading-5 text-base-foreground">Token savings</h2>
+      <h2 className="px-4 pt-4 text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Token savings</h2>
 
       {pending ? (
         <PendingRows columns={2} />
@@ -256,13 +256,13 @@ function SavingsTable({
         </EmptyNote>
       ) : (
       <div className="px-4">
-      <table className="mt-4 w-full">
+      <table className="mt-5 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-2 text-left font-normal">
+            <th scope="col" className="pb-3 text-left font-normal">
               Savings type
             </th>
-            <th scope="col" className="w-24 pb-2 text-right font-normal">
+            <th scope="col" className="w-24 pb-3 text-right font-normal">
               Status
             </th>
           </tr>
@@ -272,7 +272,7 @@ function SavingsTable({
             <tr key={saving.id} className="border-t border-base-border">
               <td className="py-3">
                 <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
-                  <Icon name={saving.icon} size={16} className="text-neutral-500" />
+                  <Icon name={saving.icon} size={20} className="text-base-muted-foreground" />
                   {saving.name}
                 </span>
               </td>
@@ -303,7 +303,7 @@ function PendingRows({ columns }: { columns: 2 | 3 }) {
     // `px-4` on the wrapper, not on the bordered rows: the frame draws these
     // dividers inset at 688 inside the 720 card, so the border must stop where
     // the real rows' does.
-    <div className="mt-4 flex flex-col gap-3 px-4">
+    <div className="mt-5 flex flex-col gap-3 px-4">
       {[0, 1, 2].map((i) => (
         <div key={i} className="flex items-center justify-between gap-3 border-t border-base-border pt-3">
           <Skeleton className="h-4 w-40" />
@@ -319,7 +319,7 @@ function StatusPill({ on }: { on: boolean }) {
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${
-        on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-neutral-600"
+        on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-base-foreground"
       }`}
     >
       {/* The drawn glyph is circleCheck at 12px in green/800, one step lighter
