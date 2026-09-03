@@ -108,7 +108,7 @@ const KNOWN_PROVIDERS: &[KnownProvider] = &[
         id: "openrouter",
         endpoint: "https://openrouter.ai/api/v1",
     },
-    // OpenCode Zen - opencode.ai/zen/v1/{chat/completions,messages,models}
+    // OpenCode Zen - opencode.ai/zen/v1/{chat/completions,responses,messages,models}
     KnownProvider {
         id: "opencode",
         endpoint: "https://opencode.ai/zen/v1",
