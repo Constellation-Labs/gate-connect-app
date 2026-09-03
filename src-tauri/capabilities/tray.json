@@ -1,11 +1,19 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "tray",
-  "description": "The tray popover's own capability set. It is not on the `default` capability because it needs three permissions and none of the rest: granting a window autostart, updater and process:restart it never calls is a wider surface than the popover has any use for. Kept narrow deliberately, and the three are exactly what the popover's code calls: `listen` for the live security-event feed (AG-578) and the proxy-state event, its cleanup `unlisten`, and `hide` for dismissing itself. A window absent from every capability can still invoke application commands, so the popover rendered data and looked healthy while every push it subscribed to was refused: the feed's events never arrived and dismissal silently failed.",
+  "description": "The tray popover's own capability set. It is not on the `default` capability because it needs a handful of permissions and none of the rest: granting a window autostart, updater and process:restart it never calls is a wider surface than the popover has any use for. Kept narrow deliberately, and these are what the popover's code actually calls: `listen` for the live security-event feed (AG-578) and the proxy-state event, its cleanup `unlisten`, `hide` for dismissing itself, `opener:allow-open-url` for the menu's Dashboard and Docs items, and `app:allow-version` because `main.tsx` is one entry shared by every window and runs `initAnalytics` in all of them. A window absent from every capability can still invoke application commands, so the popover rendered data and looked healthy while every push it subscribed to was refused: the feed's events never arrived and dismissal silently failed. The opener scope is the two hosts the popover links to rather than `default`'s any-subdomain wildcard, and carries the trailing `/*` that pattern proved necessary.",
   "windows": ["tray"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
-    "core:window:allow-hide"
+    "core:window:allow-hide",
+    "core:app:allow-version",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://app.constellationgate.ai/*" },
+        { "url": "https://docs.constellationgate.ai/*" }
+      ]
+    }
   ]
 }
