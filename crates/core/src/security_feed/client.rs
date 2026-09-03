@@ -19,6 +19,14 @@ use super::{
 };
 use crate::gateway_api::FailureCode;
 
+/// How long to hold after the gateway refuses the credential.
+///
+/// A backstop, not a retry cadence: a refusal is fixed by a new session rather
+/// than by asking again, and [`Feed::retry_now`] is what a recovery signals
+/// with. The hour is so that a signal which never arrives still costs one
+/// request, instead of leaving the feed dead until the app restarts.
+const REJECTED_HOLD: Duration = Duration::from_secs(3600);
+
 /// Shared handle: what the feed is doing, and what it has seen.
 ///
 /// The window is told about events as they arrive, but a window opened *after*
@@ -97,6 +105,19 @@ impl Feed {
         }
         *cur = next;
         drop(cur);
+        // Every transition passes through here, and this module wrote no log line
+        // at all until now - so a feed that was Live and starved looked exactly
+        // like one that never connected, a distinction only the gateway's own
+        // logs could make. It has to be answerable from the client.
+        //
+        // Answerable on a build whose gateway is not production, that is:
+        // `logging::enabled` is false there by policy, so these lines are a
+        // staging and dev diagnostic. Diagnosing the production case still needs
+        // the gateway's logs.
+        crate::logging::log(
+            crate::logging::Level::Info,
+            &format!("security feed: state -> {next:?}"),
+        );
         sink(Update::State(next));
     }
 
@@ -112,6 +133,22 @@ impl Feed {
                 recent.pop_front();
             }
         }
+        // Written synchronously, on purpose. This is one file append per
+        // delivered event, inside the stream loop, and the notification
+        // `Grouper` exists because bursts of 30+ arrive at once - so whether it
+        // belongs behind `spawn_blocking` is a fair question. Measured at ~22us
+        // per line, a 30-event burst costs ~0.65ms of a worker that is otherwise
+        // parked on a socket, and none of it runs on a production-pointed build.
+        // `spawn_blocking` would trade that for losing line order, which a stamp
+        // with second resolution cannot reconstruct - and the order is the
+        // diagnostic.
+        crate::logging::log(
+            crate::logging::Level::Info,
+            &format!(
+                "security feed: delivered id={} {:?} req={}",
+                ev.id, ev.action, ev.request_id
+            ),
+        );
         sink(Update::Event(Box::new(ev)));
     }
 }
@@ -121,17 +158,23 @@ impl Feed {
 /// `sink` carries updates to whoever is driving this; `crates/core` has no
 /// `tauri` dependency, so the transport to the window is the caller's business.
 ///
-/// The loop never returns on a transport failure. It returns on `stop`, and on
-/// one other thing: a definite 401. That distinction is the `SessionProbe`
-/// discipline from [`crate::org`] - **a feed failure must never sign the user
-/// out**, so only a credential the gateway actually refused ends the loop, and
-/// an unreachable gateway is retried forever.
+/// The loop returns on `stop`, and on nothing else. A definite 401 is still the
+/// one outcome treated differently from every other failure - it holds rather
+/// than retrying on a timer - but it holds *alive*, so the recovery that
+/// [`crate::oauth::mark_session_rejected`] starts has a feed to bring back. That
+/// distinction is the `SessionProbe` discipline from [`crate::org`] - **a feed
+/// failure must never sign the user out** - and an unreachable gateway is
+/// retried forever.
 pub async fn run<F>(feed: Arc<Feed>, sink: F)
 where
     F: Fn(Update) + Send + Sync + 'static,
 {
     let sink: Arc<dyn Fn(Update) + Send + Sync> = Arc::new(sink);
     let mut attempt: u32 = 0;
+    // At most one `mark_session_rejected` for the life of the task. Returning on
+    // a refusal used to guarantee that by construction; holding open does not,
+    // and the flag is not idempotent in effect - see the refusal arm below.
+    let mut marked_rejected = false;
     // Survives across connections so a reconnect resumes where the last one
     // stopped, rather than waiting for the server to re-send an id.
     let mut last_id: Option<String> = None;
@@ -140,11 +183,31 @@ where
     while feed.running.load(Ordering::SeqCst) {
         match connect_once(&feed, &*sink, &mut last_id, &mut retry_floor_ms).await {
             Outcome::Rejected => {
-                // The gateway refused this credential. Retrying cannot fix it and
-                // would burn the shared per-IP throttle bucket doing so.
-                crate::oauth::mark_session_rejected();
+                // The gateway refused this credential. Retrying on a timer cannot
+                // fix it and would burn the shared per-IP throttle bucket doing
+                // so - but *returning* killed the task for the life of the
+                // process, which left the recovery `mark_session_rejected` exists
+                // to start with no feed to bring back, and made `retry_now` - the
+                // pane's own "Try again", and the org-switch reset - a no-op
+                // against a task that had already exited. Still no retry cadence;
+                // wait for the signal that a credential changed.
+                // Once only. `mark_session_rejected` makes `oauth::live_session`
+                // report `None` until new tokens are stored, which is the whole
+                // app dropping to the sign-in prompt. Marking on *every* refusal
+                // turns a persistently refused stream into a sign-in loop: the
+                // user signs in, the flag clears, this loop reconnects within
+                // 30s, is refused, marks again, and they are bounced straight
+                // back out. That is the invariant three lines up ("a feed
+                // failure must never sign the user out") failing in the one way
+                // it is written down to prevent.
+                if !marked_rejected {
+                    marked_rejected = true;
+                    crate::oauth::mark_session_rejected();
+                }
                 feed.set_state(FeedState::Offline, &*sink);
-                return;
+                attempt = 0;
+                wait(&feed, REJECTED_HOLD).await;
+                continue;
             }
             Outcome::NotReady => {
                 // No account, no org, or no live session. Not a failure and not
@@ -173,8 +236,17 @@ where
     feed.set_state(FeedState::Offline, &*sink);
 }
 
-/// Sleep, unless the user asks for a retry first.
+/// Sleep, unless the user asks for a retry first, or the loop has been stopped.
+///
+/// The `running` check is what makes `stop` prompt. `Feed::stop` wakes waiters
+/// with `notify_waiters`, which - unlike `retry_now`'s `notify_one` - stores no
+/// permit, so a stop landing before the `notified()` future is first polled is
+/// missed entirely. With `REJECTED_HOLD` that gap costs an hour rather than a
+/// backoff step, and a test that stops the feed and joins the task pays it.
 async fn wait(feed: &Feed, delay: Duration) {
+    if !feed.running.load(Ordering::SeqCst) {
+        return;
+    }
     let wake = feed.wake.clone();
     tokio::select! {
         _ = tokio::time::sleep(delay) => {}
@@ -239,13 +311,27 @@ async fn connect_once(
 
     let resp = match req.send().await {
         Ok(r) => r,
-        Err(_) => return Outcome::Disconnected,
+        Err(e) => {
+            crate::logging::log(
+                crate::logging::Level::Warn,
+                &format!("security feed: connect failed: {e}"),
+            );
+            return Outcome::Disconnected;
+        }
     };
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        crate::logging::log(
+            crate::logging::Level::Warn,
+            &format!("security feed: gateway refused the stream ({status})"),
+        );
         return Outcome::Rejected;
     }
     if !status.is_success() {
+        crate::logging::log(
+            crate::logging::Level::Warn,
+            &format!("security feed: gateway answered {status}"),
+        );
         return Outcome::Disconnected;
     }
 
