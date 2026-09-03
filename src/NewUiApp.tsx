@@ -152,18 +152,8 @@ import {
 } from "./lib/analytics";
 import { secretStoreName, trustPromptHint, usePlatform } from "./lib/platform";
 
-/**
- * How often the window re-reads what is installed.
- *
- * Nothing on the backend watches for a tool appearing - there is no event to
- * listen for - so detection is the one reading that has to be pulled. Five
- * seconds is short enough that installing a tool in a terminal and switching
- * back shows it already there, and the reading it costs is two local calls.
- */
-const DETECT_POLL_MS = 5000;
-
-/** A whole reading, for deciding whether a poll changed anything. Compared by
- * value because the identity never matches: every poll builds fresh objects. */
+/** A whole reading, for deciding whether a re-read changed anything. Compared by
+ * value because the identity never matches: every read builds fresh objects. */
 function detectionSignature(reading: unknown): string {
   return JSON.stringify(reading);
 }
@@ -245,20 +235,21 @@ export function NewUiApp() {
     { kind: "ok"; at: Date } | { kind: "failed" } | null
   >(null);
   /**
-   * What detection last put on screen, so a poll can tell a changed machine from
-   * an unchanged one and leave the unchanged one entirely alone.
+   * What detection last put on screen, so a re-read can tell a changed machine
+   * from an unchanged one and leave the unchanged one entirely alone.
    *
-   * Written from an effect on the state itself rather than by the poll, because
-   * the poll is not the only writer: a toggle re-reads both through `useRouting`,
+   * Written from an effect on the state itself rather than by `redetect`, because
+   * that is not the only writer: a toggle re-reads both through `useRouting`,
    * and a ref updated in only one of those places would report a change that had
    * already been drawn.
    */
   const rendered = useRef({ tools: "", proxy: "" });
   /**
-   * Whether a poll is still in flight, so a tick can drop itself rather than
-   * stack on the one before it.
+   * Whether a re-read is still in flight, so the next one drops itself rather
+   * than stacking on the one before it.
    *
-   * The interval fires on a clock, not on the previous read finishing, and
+   * `tools-changed` fires when the filesystem moves, not when the previous read
+   * finished - a burst of writes is debounced but not serialised against us - and
    * `redetect` is not always cheap: on Windows `proxy_status` shells out to
    * `certutil` for the CA-trust reading. On a host where that call hangs until
    * it is killed, every tick used to add another one, so the machine ended up
@@ -654,7 +645,7 @@ export function NewUiApp() {
     if (px) setProxy(px);
     // The engine coming up or going down changes every verdict, since the relay
     // health check is shared - so this follows the snapshot rather than waiting
-    // for the next poll.
+    // for something else to ask.
     void refreshVerdicts();
     // A master-on runs `restore_all`, which is what clears or shortens the
     // snapshots - so the notice has to be re-read on the same event that
@@ -665,14 +656,16 @@ export function NewUiApp() {
   /**
    * Re-read what is installed, without the routing sweep.
    *
-   * The polled half of {@link refresh}. `list_tools` walks config files and
-   * `proxy_status` reads state already in memory, so both can run on a timer; the
-   * sweep cannot, because it probes the relay and the gateway.
+   * The cheap half of {@link refresh}, and what `tools-changed` and the
+   * visibility edge both call. `list_tools` walks config files and `proxy_status`
+   * reads state already in memory; the sweep is left out because it probes the
+   * relay and the gateway, which is not something a filesystem event should be
+   * able to trigger at whatever rate a package manager writes.
    *
    * A reading that matches what is on screen is dropped rather than re-set. Both
-   * of these feed every memo below, and committing an equal-but-new object every
-   * five seconds would rebuild the families, the settings sections and the
-   * routing callbacks for no change at all.
+   * of these feed every memo below, and committing an equal-but-new object would
+   * rebuild the families, the settings sections and the routing callbacks for no
+   * change at all.
    */
   const redetect = useCallback(async () => {
     if (redetecting.current) return;
@@ -682,9 +675,9 @@ export function NewUiApp() {
         listTools().catch(() => null),
         proxyStatus().catch(() => null),
       ]);
-      // Written on every poll, not only on a change: this timestamp is the empty
+      // Written on every read, not only on a change: this timestamp is the empty
       // card's evidence that something is still looking, and letting it go stale
-      // while the polling continued would misdate a scan that did happen.
+      // while the reads continued would misdate a scan that did happen.
       setScan(t ? { kind: "ok", at: new Date() } : { kind: "failed" });
       let changed = false;
       // A failed read commits nothing, so it also reports nothing as changed -
@@ -725,24 +718,26 @@ export function NewUiApp() {
     };
   }, [tools, proxy]);
 
-  // Detection is the one reading the window cannot be told about: the backend
-  // emits nothing when a tool is installed, so a window left open used to show a
-  // list that had stopped being true. It polls instead, which is what the manual
-  // refresh control in the "Protected apps" eyebrow used to stand in for.
+  // Detection used to be the one reading the window could not be told about, so
+  // this polled `list_tools` every five seconds. It is told now: the backend
+  // watches the tool config files and binaries and emits `tools-changed` when
+  // one moves (`core/src/tool_watch.rs`), which is the same shape as
+  // `proxy-state-changed` below and costs nothing while nothing happens.
+  //
+  // The visibility read stays, and is not a poll. It covers what a filesystem
+  // watch cannot see - a launcher installed somewhere on `$PATH` has no
+  // directory to arm - and what a watch that failed to start would miss
+  // entirely.
   useEffect(() => {
-    const id = window.setInterval(() => {
-      // A hidden window is not looked at, and polling one only spends I/O.
-      if (document.hidden) return;
+    const unlisten = listen("tools-changed", () => {
       void redetect();
-    }, DETECT_POLL_MS);
-    // Ticks are skipped while hidden, so coming back reads immediately rather
-    // than showing a list that could be as old as the window was away.
+    });
     const onVisible = () => {
       if (!document.hidden) void redetect();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      window.clearInterval(id);
+      void unlisten.then((off) => off()).catch(() => {});
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [redetect]);

@@ -126,6 +126,17 @@ impl Integration for Hermes {
         env_file_path().ok().map(|p| p.display().to_string())
     }
 
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // `launcher_on_path` has no path to watch - a `$PATH` entry is not a
+        // location - so a Hermes somewhere unusual is the one install this
+        // cannot report. The window's read on focus is what covers it.
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(launcher_paths().unwrap_or_default());
+        paths.extend(crate::env::hermes_config_dir());
+        paths.extend(crate::env::hermes_config_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
         if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);

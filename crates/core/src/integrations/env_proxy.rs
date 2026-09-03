@@ -42,6 +42,7 @@
 //! something else decides the wire.
 
 use anyhow::Result;
+use std::path::PathBuf;
 
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
@@ -70,6 +71,13 @@ impl Integration for EnvProxy {
 
     /// "Installed" means the platform can export at all. There is no binary to
     /// look for: the capability is the OS, not a tool.
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // Empty, and a real answer: this channel writes machine-wide settings
+        // rather than a file, and its status comes from the engine - which
+        // emits `proxy-state-changed` on its own.
+        Vec::new()
+    }
+
     fn detect(&self) -> Result<bool> {
         Ok(supported())
     }

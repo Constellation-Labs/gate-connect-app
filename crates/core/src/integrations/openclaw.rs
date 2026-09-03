@@ -176,6 +176,13 @@ impl Integration for OpenClaw {
         settings_path().ok().map(|p| p.display().to_string())
     }
 
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(env::openclaw_config_dir());
+        paths.extend(settings_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
         if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);

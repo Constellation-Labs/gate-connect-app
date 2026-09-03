@@ -41,11 +41,7 @@ import {
   ReviewConfigDialog,
 } from "./components/gc/dialogs";
 
-/** Same cadence and reasoning as `NewUiApp`: detection has no event to listen
- * for, so it is pulled, and five seconds costs two local calls. */
-const DETECT_POLL_MS = 5000;
-
-/** A whole reading, compared by value: every poll builds fresh objects. */
+/** A whole reading, compared by value: every read builds fresh objects. */
 const detectionSignature = (reading: unknown): string => JSON.stringify(reading);
 
 /**
@@ -72,10 +68,10 @@ export function TrayApp() {
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
   const platform = usePlatform();
 
-  /** What the last poll put on screen, so an unchanged reading is dropped
-   * rather than re-rendering the whole popover every five seconds. */
+  /** What the last read put on screen, so an unchanged reading is dropped
+   * rather than re-rendering the whole popover for it. */
   const rendered = useRef({ tools: "", proxy: "" });
-  const polling = useRef(false);
+  const rereading = useRef(false);
 
   useEffect(() => {
     rendered.current = {
@@ -101,11 +97,12 @@ export function TrayApp() {
     void refreshVerdicts();
   }, [refreshVerdicts]);
 
-  /** The polled variant: drop an in-flight tick rather than stack on it, and
-   * drop an unchanged reading rather than commit it. */
+  /** The `tools-changed` variant: drop a re-read that is already in flight
+   * rather than stack on it, and drop an unchanged reading rather than commit
+   * it. */
   const redetect = useCallback(async () => {
-    if (polling.current) return;
-    polling.current = true;
+    if (rereading.current) return;
+    rereading.current = true;
     try {
       const [t, px] = await Promise.all([
         listTools().catch(() => null),
@@ -122,7 +119,7 @@ export function TrayApp() {
       }
       if (changed) void refreshVerdicts();
     } finally {
-      polling.current = false;
+      rereading.current = false;
     }
   }, [refreshVerdicts]);
 
@@ -143,19 +140,23 @@ export function TrayApp() {
     })();
   }, [refreshVerdicts]);
 
-  // A hidden popover is not looked at; ticks skipped while hidden are made up
-  // on the visibility edge, so reopening reads immediately.
+  // Told rather than polled, same as the window shell: the backend watches the
+  // tool config files and emits `tools-changed` (`core/src/tool_watch.rs`). This
+  // mattered more here than there - a popover the tray icon opens and closes all
+  // day was running a config-file walk every five seconds behind it.
+  //
+  // The visibility read stays and is not a poll: reopening reads immediately,
+  // which also covers the installs no watch can see (a launcher on `$PATH`).
   useEffect(() => {
-    const id = window.setInterval(() => {
-      if (document.hidden) return;
+    const unlisten = listen("tools-changed", () => {
       void redetect();
-    }, DETECT_POLL_MS);
+    });
     const onVisible = () => {
       if (!document.hidden) void redetect();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      window.clearInterval(id);
+      void unlisten.then((off) => off()).catch(() => {});
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [redetect]);
@@ -218,6 +219,48 @@ export function TrayApp() {
     [providers, tools, proxy],
   );
 
+  // The live security-event feed (AG-578). Keyed on the org so a switch does not
+  // leave the previous org's count on screen, matching the window shell.
+  const securityFeed = useSecurityFeed(
+    account !== null,
+    account ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}` : "",
+  );
+
+  /**
+   * Blocked and flagged requests per app, counted off the feed's own buffer -
+   * the alert half of the drawn activity line.
+   *
+   * Keyed on the event's `tool`, the only attribution the feed carries, so an
+   * unattributed event is counted against nobody rather than against a guessed
+   * slug. The chat domains are therefore permanently without one, which is why
+   * `alerts` is optional rather than defaulted: their rows keep the two-line
+   * shape instead of claiming a quiet day over traffic Gate cannot see.
+   *
+   * Null is "no reading", and a row draws nothing for it. Three ways to get
+   * there and they are one thing to the reader: the feed could not be read, it
+   * has not answered yet, or there is no account for it to run under - and in
+   * that last case `loading` never clears, because the hook's seed returns
+   * early, which is why the account is checked here too.
+   *
+   * The buffer is what this popover has seen (200 events), the same depth the
+   * window's Security events pane lists.
+   */
+  const alertCounts = useMemo<Map<string, number> | null>(() => {
+    if (account === null || securityFeed.loading || securityFeed.unavailable) {
+      return null;
+    }
+    const counts = new Map<string, number>();
+    for (const e of securityFeed.events) {
+      if (e.tool) counts.set(e.tool, (counts.get(e.tool) ?? 0) + 1);
+    }
+    return counts;
+  }, [account, securityFeed.events, securityFeed.loading, securityFeed.unavailable]);
+
+  /** A feed that is actually running has not answered yet, which is the one case
+   *  worth holding a place for. */
+  const alertsPending =
+    account !== null && securityFeed.loading && !securityFeed.unavailable;
+
   const apps = useMemo<SidebarApp[]>(
     () =>
       tools
@@ -231,8 +274,20 @@ export function TrayApp() {
           on: t.status.kind === "connected" || t.status.kind === "drifted",
           logo: brandMarkFor(t.slug),
           busy: routingBusy,
+          alerts: alertCounts
+            ? { kind: "count", count: alertCounts.get(t.slug) ?? 0 }
+            : alertsPending
+              ? { kind: "pending" }
+              : undefined,
         })),
-    [tools, verdicts, routing.writeFailures, routingBusy],
+    [
+      tools,
+      verdicts,
+      routing.writeFailures,
+      routingBusy,
+      alertCounts,
+      alertsPending,
+    ],
   );
 
   // The rail's grouping, verbatim from `NewUiApp.sidebarGroups`: vendor
@@ -277,13 +332,6 @@ export function TrayApp() {
     }
     return grouped;
   }, [groups, apps, routingBusy]);
-
-  // The live security-event feed (AG-578). Keyed on the org so a switch does not
-  // leave the previous org's count on screen, matching the window shell.
-  const securityFeed = useSecurityFeed(
-    account !== null,
-    account ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}` : "",
-  );
 
   const notInstalled = useMemo<TrayNotInstalledApp[]>(
     () =>

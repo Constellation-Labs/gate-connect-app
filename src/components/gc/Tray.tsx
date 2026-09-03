@@ -1,6 +1,6 @@
 import type { FeedState } from "../../lib/api";
 import type { ReactNode } from "react";
-import { BaseSwitch, StatusTile } from "./base";
+import { BaseSwitch, Skeleton, StatusTile } from "./base";
 import { GateAiLogoMark } from "./GateAiLogoMark";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
@@ -29,13 +29,18 @@ import type { SidebarGroup } from "./Sidebar";
  *   that act live on the rows, and the engine's own control stays in the full
  *   app. If the invisible switch was reserved space rather than a decision,
  *   that is the designer's to say.
- * - **Rows carry no activity line.** The frames draw "345 messages · 23
- *   alerts" under each status, but no per-tool reading exists (the activity
- *   endpoint is org-scoped and rate-limited per address; see `lib/activity`),
- *   and the drawn "No recent messages" fallback is itself a measurement claim
- *   this surface cannot make. The design draws the two-line row too (the
- *   compact `Other tools` rows in `Connect/routing`), which is the shape
- *   every row takes here until a reading exists.
+ * - **Rows draw the alert half of the activity line, not the message half.**
+ *   The frames draw "345 messages · 23 alerts" under each status. The alerts
+ *   are real now - the live feed (AG-578) attributes each blocked or flagged
+ *   request to a tool slug, and the tray already listens to it for the
+ *   security card - so that half is drawn. The messages half still has no
+ *   per-tool reading behind it: `GET /v1/me/activity` answers for one tool at
+ *   a time and sits in a throttle bucket keyed on the source address, so a
+ *   read per row on every popover open is exactly what `lib/activity` refuses
+ *   to spend, and the drawn "No recent messages" fallback is a measurement
+ *   claim this surface cannot make. Rows that have no alert reading either -
+ *   the chat domains, permanently - keep the two-line shape the design also
+ *   draws (the compact `Other tools` rows in `Connect/routing`).
  * - **The master card's off state is inferred** - only "Partially routed" and
  *   "Gate is protecting you" are drawn - following the status vocabulary:
  *   "Not protected" in amber, with the drawn "On/Off · N of M tools routing"
@@ -242,6 +247,7 @@ function TrayGroup({
                   {app.name}
                 </span>
                 <StatusLine app={app} />
+                {app.alerts && <ActivityLine alerts={app.alerts} />}
               </span>
             </span>
             <BaseSwitch
@@ -268,6 +274,33 @@ function StatusLine({ app }: { app: SidebarGroup["apps"][number] }) {
     <span className="truncate text-base-2xs font-medium leading-4">
       <span className={status.className}>{status.label}</span>
       {suffix && <span className="text-base-muted-foreground"> - {suffix}</span>}
+    </span>
+  );
+}
+
+/**
+ * The drawn activity line, minus a message count nothing can measure yet - see
+ * the deviation note above.
+ *
+ * Grey, on the status line's own ramp. A blocked request is Gate doing its job,
+ * not this app failing, so a fault colour here would put a second amber phrase
+ * under the one line on the row entitled to report a fault. A measured zero says
+ * so in words: the frames draw digits ("23 alerts") but their own empty-state
+ * copy is a phrase ("No recent messages"), and a bare `0` under a status line
+ * reads as a figure that failed to arrive rather than as an answer.
+ */
+function ActivityLine({ alerts }: { alerts: NonNullable<SidebarGroup["apps"][number]["alerts"]> }) {
+  return (
+    <span className="truncate text-base-2xs leading-4 text-base-muted-foreground">
+      {alerts.kind === "pending" ? (
+        <Skeleton className="h-3 w-16" />
+      ) : alerts.count === 0 ? (
+        "No alerts"
+      ) : alerts.count === 1 ? (
+        "1 alert"
+      ) : (
+        `${alerts.count.toLocaleString()} alerts`
+      )}
     </span>
   );
 }

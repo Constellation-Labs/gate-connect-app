@@ -44,6 +44,9 @@ pub mod routing;
 pub mod routing_health;
 pub mod security_feed;
 pub mod startup;
+/// The filesystem watch behind `tools-changed`, which is what replaced both
+/// shells' 5s detection poll.
+pub mod tool_watch;
 
 pub mod integrations {
     pub mod claude_code;
