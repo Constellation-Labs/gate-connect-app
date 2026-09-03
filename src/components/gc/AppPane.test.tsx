@@ -22,6 +22,8 @@ const entry: ActivityEntry = {
   provider: "anthropic",
   title: "Update our data-model.md",
   reference: "824bd2c0-4123",
+  category: "pii",
+  categoryIcon: "userRound",
 };
 
 /**
@@ -200,28 +202,44 @@ describe("AppPane recent activity", () => {
     expect(within(card("Recent activity")).queryByRole("button", { name: "View" })).toBeNull();
   });
 
-  it("renders the message, its reference, and the vendor beside the model", () => {
+  it("draws the columns the frame draws, and not the prompt", () => {
     render(pane({ activity: [entry] }));
     const feed = card("Recent activity");
 
-    expect(within(feed).getByText("Update our data-model.md")).toBeTruthy();
-    expect(within(feed).getByText("824bd2c0-4123")).toBeTruthy();
+    // `table/recent-activity` on `Flows / App` draws these five, in this order,
+    // across all three frames that carry the card.
+    for (const name of ["Time", "Type", "Security", "Model", "Action"]) {
+      expect(within(feed).getByRole("columnheader", { name })).toBeTruthy();
+    }
+    // No Message column: the frame has none, so the prompt and its reference are
+    // not on this surface even though the feed still carries both.
+    expect(within(feed).queryByRole("columnheader", { name: "Message" })).toBeNull();
+    expect(within(feed).queryByText("Update our data-model.md")).toBeNull();
+    expect(within(feed).queryByText("824bd2c0-4123")).toBeNull();
+  });
+
+  it("names the guardrail category as the gateway spelled it", () => {
+    render(pane({ activity: [entry] }));
+    const feed = card("Recent activity");
+
+    expect(within(feed).getByText("pii")).toBeTruthy();
     expect(within(feed).getByText("claude-opus-4")).toBeTruthy();
     expect(within(feed).getByTitle("anthropic")).toBeTruthy();
     // The monogram is decorative, so the provider has to be named in text too -
     // otherwise the one-letter glyph is all a screen reader gets.
     expect(within(feed).getByText("anthropic")).toBeTruthy();
-    expect(within(feed).getByRole("columnheader", { name: "Message" })).toBeTruthy();
   });
 
-  it("shows the reference alone when there is no message to show", () => {
-    // Null covers three cases the row does not distinguish - no session, a
-    // placeholder name, and a row this caller may not see into.
-    render(pane({ activity: [{ ...entry, title: null }] }));
+  it("withholds the category rather than inventing one", () => {
+    // Same split the Security cell makes: the gateway named no category, or the
+    // row is not this caller's to see into. Both draw the dash.
+    render(pane({ activity: [{ ...entry, category: null, categoryIcon: null }] }));
     const feed = card("Recent activity");
 
-    expect(within(feed).queryByText("Update our data-model.md")).toBeNull();
-    expect(within(feed).getByText("824bd2c0-4123")).toBeTruthy();
+    expect(within(feed).queryByText("pii")).toBeNull();
+    expect(
+      within(feed).getByTitle("No guardrail category recorded, or not your request"),
+    ).toBeTruthy();
   });
 
   it("offers Load more only when there is another page", () => {

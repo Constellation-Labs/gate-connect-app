@@ -210,14 +210,19 @@ export function toFailure(e: unknown): ActivityFailure {
 
 /** Icons the design puts on each policy row, keyed by the endpoint's row id. */
 const POLICY_ICONS: Record<string, IconName> = {
-  "prompt-injection": "shieldBan",
-  "pii-phi": "idCard",
+  // The glyphs the frames draw on these rows: `Icon / ShieldAlert`,
+  // `Icon / UserRound`, `Icon / KeyRound` - counted 21 times each across
+  // `Flows / Overview` and again on `Flows / App`. `key` is already
+  // Lucide's key-round, so only the first two moved.
+  "prompt-injection": "shieldAlert",
+  "pii-phi": "userRound",
   credentials: "key",
 };
 
 const SAVINGS_ICONS: Record<string, IconName> = {
   compression: "layers",
-  caching: "cube",
+  // `Icon / Database`, not a cube.
+  caching: "database",
 };
 
 /**

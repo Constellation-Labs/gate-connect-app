@@ -380,7 +380,7 @@ function ModelSelection({
       <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
         Model selection
       </h2>
-      <p className="mt-1 text-sm leading-5 text-neutral-600">
+      <p className="mt-1 text-sm leading-5 text-base-muted-foreground">
         Choose whether {appName} or Gate selects the AI model for requests
       </p>
 
@@ -400,7 +400,7 @@ function ModelSelection({
               selected={choice === "app"}
               disabled={choice === null || busy}
               onSelect={() => onChoose("app")}
-              icon={<Icon name="cube" size={16} />}
+              icon={<Icon name="cube" size={20} />}
               title="App default"
               description="Use the model configured in your app"
             />
@@ -408,7 +408,7 @@ function ModelSelection({
               selected={gateActive}
               disabled={choice === null || busy}
               onSelect={() => onChoose("gate")}
-              icon={<Icon name="layers" size={16} />}
+              icon={<Icon name="layers" size={20} />}
               title="Gate model"
               // Names the chosen model once there is one, rather than the
               // generic line the frame draws.
@@ -505,7 +505,7 @@ function ModelSelection({
 
       <div className="mt-2 flex flex-col gap-2">
         <InfoRow
-          icon={<Icon name="creditCard" size={16} />}
+          icon={<Icon name="creditCard" size={20} />}
           actions={[
             // AG-592 asks for Manage billing "when available to the account".
             // Availability is answered by the gateway naming a destination: no
@@ -568,7 +568,7 @@ function ModelOption({
     >
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
+        className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border text-base-foreground"
       >
         {icon}
       </span>
@@ -618,7 +618,7 @@ function InfoRow({
     >
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
+        className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border text-base-foreground"
       >
         {icon}
       </span>
@@ -680,22 +680,28 @@ function RecentActivity({
         <table className="mt-5 w-full">
           <thead>
             <tr className="text-base-xs text-base-muted-foreground">
-              <th scope="col" className="pb-3 text-left font-normal">
+              {/* Column shares taken off `table/recent-activity`, whose body cells
+                sit at 0/148/288/408 and whose Action button starts at 620 inside
+                688 - so 148, 140, 120, 212 and 68 wide once each 16px gutter is
+                counted in, which is the 21.5/20.5/17.5/30.5/10 below. Shares
+                rather than pixel counts, so they hold at both window sizes. */}
+              <th scope="col" className="w-[21.5%] pb-3 text-left font-normal">
                 Time
+              </th>
+              {/* The frame's second column, drawn with a 20px glyph beside it. */}
+              <th scope="col" className="w-[20.5%] pb-3 text-left font-normal">
+                Type
               </th>
               {/* One column, not two: the design merged status into security, so a
                 failed request reads ERROR and every other row reads what the
                 guardrails did. */}
-              <th scope="col" className="pb-3 text-left font-normal">
+              <th scope="col" className="w-[17.5%] pb-3 text-left font-normal">
                 Security
               </th>
-              <th scope="col" className="w-1/4 pb-3 text-left font-normal">
+              <th scope="col" className="w-[30.5%] pb-3 text-left font-normal">
                 Model
               </th>
-              <th scope="col" className="pb-3 text-left font-normal">
-                Message
-              </th>
-              <th scope="col" className="w-20 pb-3 text-right font-normal">
+              <th scope="col" className="w-[10%] pb-3 text-right font-normal">
                 Action
               </th>
             </tr>
@@ -703,10 +709,36 @@ function RecentActivity({
           <tbody>
             {activity.map((entry) => (
               <tr key={entry.id} className="border-t border-base-border">
-                <td className="whitespace-nowrap py-3 pr-4 text-sm leading-5 text-base-foreground">
+                <td className="whitespace-nowrap py-[1.125rem] pr-4 text-sm leading-5 text-base-foreground">
                   {entry.time}
                 </td>
-                <td className="py-3 pr-4">
+                {/* Type. The frame draws a 20px glyph 8px from the label, both at
+                  `base/foreground` - the downloaded asset's own stroke is
+                  #030712, and the glyph takes it from this span. Spelled as the
+                  gateway spelled it, like `SecurityPane` does with the same
+                  field: a display vocabulary for values only the gateway knows
+                  would be invented here. */}
+                <td className="py-[1.125rem] pr-4">
+                  {entry.category ? (
+                    <span className="flex items-center gap-2 text-sm leading-5 text-base-foreground">
+                      {entry.categoryIcon && (
+                        <Icon name={entry.categoryIcon} size={20} />
+                      )}
+                      <span className="truncate">{entry.category}</span>
+                    </span>
+                  ) : (
+                    // The same withholding the Security cell draws, for the same
+                    // reason: the gateway named no category, or this row is not
+                    // this caller's to see into.
+                    <span
+                      className="text-sm leading-5 text-base-muted-foreground"
+                      title="No guardrail category recorded, or not your request"
+                    >
+                      &#8212;
+                    </span>
+                  )}
+                </td>
+                <td className="py-[1.125rem] pr-4">
                   {/* Error outranks the guardrail verdict, which is the design's
                     call and the defensible one: a request that did not complete
                     is the thing the reader needs first. It does cost information -
@@ -747,17 +779,14 @@ function RecentActivity({
                     </span>
                   )}
                 </td>
-                <td className="py-3 pr-4">
+                <td className="min-w-0 py-[1.125rem] pr-4">
                   {/* Truncated, not `nowrap`. A model id is unbounded - the
                     canonical ones run to `anthropic/claude-opus-4-5-20260514` -
                     and an un-truncated cell makes that string the table's minimum
-                    width. Time and Action are already fixed and Message is
-                    collapsed to `max-w-0`, so Model was the only column left that
-                    could push the floor past the card; at the window's 760px
-                    minimum the table would overflow and scroll the whole pane
-                    body sideways, chart and header with it. The width cap lives on
-                    the `th` as a share of the table rather than a pixel count, so
-                    it holds at both window sizes. */}
+                    width. Every column now carries a share of the table, so the
+                    id cannot push the floor past the card at the window's 1024px
+                    minimum. The cap lives on the `th` as a share rather than a
+                    pixel count, so it holds at every size above that. */}
                   <span className="flex items-center gap-2">
                     <VendorMark provider={entry.provider} />
                     <span className="truncate text-sm leading-5 text-base-foreground">
@@ -765,21 +794,7 @@ function RecentActivity({
                     </span>
                   </span>
                 </td>
-                <td className="min-w-0 max-w-0 py-3 pr-4">
-                  {/* `max-w-0` with `truncate` is what makes the ellipsis actually
-                    appear: a table cell sizes to its content otherwise, and the
-                    design truncates this column rather than letting a prompt push
-                    the Action button off the card. */}
-                  {entry.title && (
-                    <p className="truncate text-sm leading-5 text-base-foreground">
-                      {entry.title}
-                    </p>
-                  )}
-                  <p className="truncate font-mono text-base-2xs leading-4 text-base-muted-foreground">
-                    {entry.reference}
-                  </p>
-                </td>
-                <td className="py-3 text-right">
+                <td className="py-[1.125rem] text-right">
                   {entry.onView ? (
                     <button
                       type="button"
