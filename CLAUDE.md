@@ -75,14 +75,32 @@ questions are collected in `docs/figma-questions-for-design.md` rather than
 decided here. Do not resolve one of those by eye; the evidence for each is in
 `docs/review-figma-*.md`.
 
-Two copy exceptions are decided and stay decided, both because the drawn
-words describe something the action does not do. Do not "fix" either back
+Two copy exceptions are decided and stay decided. Do not "fix" either back
 to match its frame:
 
-- **Replace API key** labels its field `New API key`, not the drawn `New
-  device name`.
+- **Replace API key** labels its field `New API key`. **This is not a
+  deviation - it is what the file draws**, and the entry used to say
+  otherwise. The dialog is drawn twice, as one dialog in two states: the
+  EMPTY state (`177:74332`) labels the field `New API key`, which is exactly
+  what ships, and only the FILLED state (`177:74640`) says `New device
+  name` - with `sk-gw-216c63…`, a key, typed into it. The section label above
+  the pair (`191:80083`, "Settings / Update device name") carries the same
+  slip: the designer duplicated the rename-device section and relabelled part
+  of it.
+  **The "newest node wins" tiebreak points the wrong way here** - `177:74640`
+  is the newer id and it is the one with the slip - so an agent applying that
+  rule mechanically would "correct" the code into calling an API key field a
+  device name. That is why this stays written down.
 - **Disconnect Gate?** says the session ends and configs are kept, not the
-  drawn sentence about the keychain, which describes Reset.
+  drawn sentence about the keychain, which describes Reset. Verified: the
+  frame (`164:73502`) really does say "your API key is removed from the
+  keychain", and step 3 of the Reset dialog (`177:73975`) says nearly the
+  same words, which is the evidence it was pasted from there. This one IS a
+  deviation from the drawn copy, and it stays.
+  The dialog also carries a hidden alternate subtitle (`143:70624`, "Your
+  next requests will use Constellation Gate PAYG credits") - deliberately
+  off, and about billing rather than the keychain. Worth knowing before
+  anyone rewrites this copy; not a third exception.
 
 If you find a third of these, raise it rather than deciding it.
 
