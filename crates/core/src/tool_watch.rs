@@ -101,6 +101,50 @@ pub fn is_relevant(changed: &Path, targets: &[PathBuf]) -> bool {
         .any(|t| changed == t || changed.starts_with(t) || t.starts_with(changed))
 }
 
+/// Every target, in each spelling the OS may report it under: as declared, and
+/// fully resolved.
+///
+/// **macOS is why, and it cost a CI run to find.** FSEvents reports canonical
+/// paths - `/private/var/...` for anything under the `/var` symlink,
+/// `/private/tmp` for `/tmp` - and notify's fsevent backend canonicalises the
+/// directory it registers, so events arrive spelled differently from the path
+/// they were asked for. [`is_relevant`] is prefix arithmetic, and two spellings
+/// of one file share no prefix, so **every** event was dropped as a neighbour's
+/// business and the watch reported nothing at all. Linux hid it completely:
+/// inotify reports paths exactly as registered, and `/tmp` is not a symlink
+/// there.
+///
+/// Precomputed rather than canonicalising each event, which would put a
+/// `realpath` syscall on the path of every write in a busy armed directory - a
+/// package upgrade in `/usr/bin` is thousands of them - and would block on a
+/// stale network mount while holding the burst.
+///
+/// A target whose resolved form is identical adds nothing, which is the common
+/// case: nobody's `~/.codex` is a symlink.
+fn spellings(targets: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = targets.to_vec();
+    for target in targets {
+        // Resolved through the deepest directory that exists, because a path
+        // that is not there yet cannot be canonicalised - and not existing yet
+        // is the normal state of these.
+        let Some(dir) = arm_dir(target) else { continue };
+        let Ok(real) = dir.canonicalize() else {
+            continue;
+        };
+        if real == dir {
+            continue;
+        }
+        let resolved = match target.strip_prefix(&dir) {
+            Ok(suffix) => real.join(suffix),
+            Err(_) => continue,
+        };
+        if !out.contains(&resolved) {
+            out.push(resolved);
+        }
+    }
+    out
+}
+
 /// Start watching, for the life of the process.
 ///
 /// No handle comes back on purpose, mirroring the engine's observers
@@ -156,15 +200,18 @@ fn watch_targets(targets: Vec<PathBuf>, on_change: impl Fn() + Send + 'static) -
         .name("gate-tool-watch".into())
         .spawn(move || {
             let mut arms = arms;
+            // Both spellings, because an event may name a path we watched under
+            // its resolved form - see `spellings`.
+            let mut names = spellings(&targets);
             loop {
                 // Block until something happens, then keep draining until the
                 // burst goes quiet. A `Disconnected` here means the watcher was
                 // dropped, which ends the thread with it.
                 let Ok(first) = rx.recv() else { return };
-                let mut relevant = is_relevant(&first, &targets);
+                let mut relevant = is_relevant(&first, &names);
                 loop {
                     match rx.recv_timeout(QUIET) {
-                        Ok(path) => relevant |= is_relevant(&path, &targets),
+                        Ok(path) => relevant |= is_relevant(&path, &names),
                         Err(RecvTimeoutError::Timeout) => break,
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
@@ -173,8 +220,10 @@ fn watch_targets(targets: Vec<PathBuf>, on_change: impl Fn() + Send + 'static) -
                     continue;
                 }
                 // Before reporting: a directory that appeared during the burst
-                // is armed now, so the *next* change inside it is heard.
+                // is armed now, so the *next* change inside it is heard - and
+                // re-spelled with it, in case what appeared is itself a link.
                 let _ = arm(&watcher, &targets, &mut arms);
+                names = spellings(&targets);
                 on_change();
             }
         })
@@ -291,14 +340,57 @@ mod tests {
         }
     }
 
+    /// The macOS failure, reproduced on any OS.
+    ///
+    /// A symlinked ancestor is what `/var/folders/...` (macOS `TMPDIR`, under
+    /// the `/var` -> `/private/var` link) is, and FSEvents reports the resolved
+    /// spelling. Without both spellings in the match list every event is dropped
+    /// as a neighbour's business and the watch reports nothing - which is exactly
+    /// what CI saw, and what Linux cannot see on its own, `/tmp` being a real
+    /// directory there.
+    ///
+    /// Unix only, and not for want of trying on Windows: creating a link there
+    /// needs either a privilege or a junction, and `ReadDirectoryChangesW`
+    /// reports paths as registered anyway, so the case this covers cannot arise
+    /// on that platform. A test that compiled there would pass vacuously.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_ancestor_is_matched_under_both_spellings() {
+        let root = scratch("spell");
+        let real = root.join("real");
+        let link = root.join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let target = link.join("dot-tool/config.toml");
+        let names = spellings(&[target.clone()]);
+
+        assert!(names.contains(&target), "the declared spelling is kept");
+        assert!(
+            names.contains(&real.join("dot-tool/config.toml")),
+            "the resolved spelling is added: {names:?}",
+        );
+        // Which is what makes an event named the resolved way land.
+        assert!(is_relevant(&real.join("dot-tool"), &names));
+    }
+
+    #[test]
+    fn an_unlinked_target_gains_no_second_spelling() {
+        let root = scratch("nolink");
+        let target = root.join("dot-tool/config.toml");
+        // The common case, and it must not double every entry: nobody's
+        // `~/.codex` is a symlink.
+        assert_eq!(spellings(&[target.clone()]), vec![target]);
+    }
+
     /// The mechanism end to end, including the re-arm: a config file created
     /// under a directory that did not exist when the watch started.
     ///
-    /// Slow by nature - FSEvents coalesces on a ~1s latency and inotify has to
-    /// deliver two bursts through a 400ms debounce - so it waits generously
-    /// rather than assuming a cadence. It asserts *at least one* call, never a
-    /// count: how many bursts the OS reports for one write is the OS's business,
-    /// and pinning it is how a watch test becomes flaky.
+    /// Slow by nature - FSEvents coalesces on its own latency and every burst
+    /// still has to clear the 400ms debounce - so it waits generously rather
+    /// than assuming a cadence. It asserts *at least one* call, never a count:
+    /// how many bursts the OS reports for one write is the OS's business, and
+    /// pinning it is how a watch test becomes flaky.
     #[test]
     fn reports_a_config_file_appearing_under_a_new_directory() {
         let root = scratch("e2e");
@@ -310,23 +402,40 @@ mod tests {
         })
         .unwrap();
 
+        // Let the backend's stream come up before touching anything. `watch`
+        // returning is not the same as the OS delivering: FSEvents starts a
+        // stream on its own run loop, and a write in that window is simply not
+        // reported. It costs nothing in production - the watch starts at launch,
+        // hours before anyone installs a tool - and it is the difference between
+        // a test that means something and one that races.
+        std::thread::sleep(Duration::from_millis(500));
+
         // Two steps on purpose: the directory is what the watch has to re-arm
         // on, and the file inside it is what it can only hear about afterwards.
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(&target, "[gate]\n").unwrap();
 
-        // Waited out rather than nudged. Writing again while waiting is what an
-        // earlier version of this test did, and it never finished: each write
-        // restarted the debounce, so the burst it was waiting for could not go
-        // quiet until the test gave up.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // Re-touched on a 2s cadence, not waited out in silence: if the first
+        // burst was missed anyway there has to be a second, and 2s leaves 1.6s
+        // of quiet for the debounce to close. An earlier version wrote every
+        // 200ms and never finished at all - each write restarted the debounce,
+        // so the burst it was waiting for could not go quiet until it gave up.
+        let deadline = Instant::now() + Duration::from_secs(12);
+        let mut nudged = Instant::now();
         while calls.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
+            if nudged.elapsed() >= Duration::from_secs(2) {
+                std::fs::write(&target, "[gate]\n").unwrap();
+                nudged = Instant::now();
+            }
         }
 
         assert!(
             calls.load(Ordering::SeqCst) > 0,
-            "the watch reported nothing for a file created under a watched target",
+            "the watch reported nothing for a file created under a watched target.\n\
+             target: {target:?}\narmed: {armed:?}\nspellings: {names:?}",
+            armed = arm_dir(&target),
+            names = spellings(&[target.clone()]),
         );
     }
 }
