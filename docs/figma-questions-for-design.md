@@ -1,0 +1,221 @@
+# Questions for design, from the Figma audit
+
+Every question below came out of comparing the file against the shipped app,
+page by page. Each one is something the code cannot decide for itself: either
+the file disagrees with itself, or it disagrees with the app and we need to know
+which is right.
+
+Node ids are given so each can be opened directly. Evidence for all of it is in
+`docs/review-figma-*.md`.
+
+---
+
+## 1. Are identifiers mono or sans?
+
+**What we see.** The model picker draws model ids in **Geist Medium sans**
+(`665:18400`, `665:19064`). On Settings, four more identifiers are drawn sans
+too. That is six identifiers drawn sans and none drawn mono.
+
+**Why it matters.** The app renders every identifier in Geist Mono - model ids,
+URLs, hosts, keys, install ids, versions. It is a deliberate rule ("mono is a
+signal, not a vibe") and it is load-bearing: mono is how a user tells a
+machine-readable value from prose. If the file means sans, that rule goes and a
+lot of screens change at once.
+
+**What we need.** Is sans the intention for identifiers, or are these frames
+using the default face because the mono style was not applied? If sans is
+intended for *some* identifiers and not others, what separates them?
+
+---
+
+## 2. Is the component library retired, and what is the source of truth now?
+
+**What we see.** The Components page (`113:16762`) resolves with **zero
+children**. `113:16794`, `272:3150` and `451:7795` are gone, and the Button set
+(`685:20855`) cannot be opened. Several of our code comments cite those nodes as
+their source.
+
+**Why it matters.** Our standing rule is that where a component set and an
+instance disagree, the set wins. That tiebreak is now unusable, so every value
+we take is measured off whichever instance we happen to open - and instances
+disagree with each other (see questions 3 and 4). It also means our comments
+point at nodes nobody can look up.
+
+**What we need.** Was the page emptied on purpose? If the flow frames are now
+the source of truth, we will say so in writing and stop citing component nodes.
+If a new library exists elsewhere, we would like the link.
+
+---
+
+## 3. Dialog buttons: 4px or 8px?
+
+**What we see.** Both, in roughly equal measure.
+
+| Where | Radius | Border |
+| --- | --- | --- |
+| Overview dialogs, four instances (`694:32469`, `694:32470`, `694:33509`, `694:33518`) | 8px | `base/input` |
+| Gate-model confirmation (`130:48311`, `130:48312`) | 8px | `base/input` |
+| Settings dialogs, all six instances | 4px | `base/input` |
+| Model picker footer (`665:19135`), three buttons | 4px | `base/border` |
+
+**Why it matters.** One button component serves all of these. We currently draw
+8px on a `base/input` line in dialogs and 4px on a `base/border` line in panes,
+which matches the Overview and confirmation frames exactly and contradicts
+Settings and the picker footer. We cannot satisfy both, so today the Settings
+dialogs and the picker footer render one step rounder than drawn.
+
+**What we need.** Which is canonical for a dialog button? And is the picker
+footer's `base/border` line deliberate, given every other dialog button sits on
+`base/input`?
+
+---
+
+## 4. Is there a third button size?
+
+**What we see.** A 24px-tall button with 4/10 padding, in `334:805` and in the
+five newest `661:*` nodes - the table "View" buttons.
+
+**Why it matters.** We build to exactly two sizes, 36px and 32px. One surface
+(the app banners) already matches the 24px shape, so the app is inconsistent
+with itself. If 24px is real we will name it as a third size; if not, those
+frames want the 32px one.
+
+**What we need.** Is 24px a size, or a stretched instance?
+
+---
+
+## 5. Is the 536px dialog width intended?
+
+**What we see.** The two quit confirmations (`694:33002`, `694:33340`) are
+536px wide. Every other dialog is 480, 512, 544 or 600.
+
+**Why it matters.** 536 reads like an edge that got dragged rather than a
+number that was chosen: the left edge sits exactly where a **512** dialog
+centred in 1024 would start, and the right edge lands about 24px past the
+mirror of it. So the dialog is not centred, and 512 would be.
+
+**What we need.** Keep 536, or is this meant to be 512? We have built 536 as
+drawn either way.
+
+---
+
+## 6. Notifications: one row or three?
+
+**What we see.** `116:29086` draws a single row: "Alert me when a request is
+blocked or flagged".
+
+**Why it matters.** The app splits that into three rows - notify on blocked,
+notify on flagged, and a sound toggle - because the backend gates those
+preferences separately and one switch cannot express "blocked but not flagged".
+So the drawn sentence describes something the single control would not actually
+do.
+
+**What we need.** Should Settings show the one drawn row, or the three the
+preferences support? If one, we need to know what it writes when a user only
+wants blocked alerts.
+
+---
+
+## 7. Model picker: confirm the current copy and the count slot
+
+**What we see.** The two picker frames differ, and the app has ended up taking
+some of each.
+
+- Title: `665:18400` says "Choose a Gate model", the newer `665:19064` says
+  "Choose Gate models". The app says the older one.
+- Primary button: the frame says "Apply selections", the app says "Save
+  models".
+- The "N selected" badge (`682:20038`) is set to **opacity 0** in the newer
+  frame, and the count appears instead as a ghost button at the left of the
+  footer. The app still draws a count in the older frame's slot.
+
+**Why it matters.** The picker is the one screen where a user commits money to a
+model, so its wording matters more than most. And a hidden layer is ambiguous:
+opacity 0 usually means retired, but not always.
+
+**What we need.** Confirm the newer title, subtitle and "Apply selections", and
+confirm the "N selected" badge is retired in favour of the footer count.
+
+---
+
+## 8. Two onboarding paragraphs the file does not draw
+
+**What we see.** No frame draws step 1's paragraph about the key living in the
+OS keychain, or step 3's closing "That's all there is to it."
+
+**Why it matters.** The keychain sentence is the one place onboarding tells a
+user where their credential is kept, which is the reassurance the whole product
+turns on. We would rather not drop it silently, and we would rather not keep
+undrawn copy without someone agreeing to it.
+
+**What we need.** Keep both, keep the keychain line only, or drop both?
+
+---
+
+## 9. Apply changes: which button is the primary?
+
+**What we see.** In the Apply-changes dialog the drawn weighting puts the
+emphasis opposite to where the app puts it.
+
+**Why it matters.** This is the dialog that closes the user's running apps.
+Focus follows the primary, so as it stands a user who presses Enter twice
+closes Codex. We deliberately open destructive dialogs with focus on the safe
+button.
+
+**What we need.** Confirm which action is the primary here. If closing apps is
+the primary, we will keep the emphasis and move initial focus to the safe
+button instead.
+
+---
+
+## 10. Should the onboarding window be 1024 wide?
+
+**What we see.** The file annotates the app at **1024x720** (`App dimensions:
+1024x720px`, plus `1024px` and `720px` dimension labels on
+`Setting/dimensions`). Every frame on every page is 1024 wide.
+
+**Why it matters.** The intro window ships at 1080x720, so onboarding is 56px
+wider than everything drawn. Nothing in the file is drawn at 1080.
+
+**What we need.** Should onboarding match at 1024, or is it deliberately wider?
+
+Related, and easier: the file never states a **minimum** size. We have locked
+the main window at 1024x720 so it can never render below a drawn size. Tell us
+if you would rather it shrink further, and we will reason about the layout
+below 1024.
+
+---
+
+## 11. Two small inconsistencies to confirm or rebind
+
+Neither changes much on screen, but both make the file ambiguous to measure.
+
+- **`label/14` is used at two different trackings.** The tray master-card title
+  (`744:38097`) draws it at 0%, while the footer org name (`744:38190`) and the
+  CLI card title (`735:37344`) draw it at -1%. We have followed each node
+  literally, so one title is untracked and its neighbours are not.
+- **The tray master and CLI cards resolve an older variable layer.** They come
+  back as `base/foreground` #0a0a0a and `color/muted-foreground` #737373, while
+  the rows immediately beside them resolve #030712 and #6b7280. The difference
+  is invisible, but it means two cards on one screen are bound to different
+  token sets.
+
+**What we need.** Are these intentional? If not, rebinding them in the file
+would let us keep measuring node by node without second-guessing.
+
+---
+
+## For information: things we found and fixed without asking
+
+So the list above is not mistaken for the whole audit. All of these were
+measured off the file and the app now matches it: card heading sizes and the
+20/24 line-height, card rule insets, the pane header's icon frame and status
+line, the stat figure's weight and its delta, the feed badge's fill and radius,
+empty-state type, the tray's menu radii, shadow and glyph sizes, the CLI card's
+padding, the onboarding step art width and its footer checkbox, three
+letter-spacing steps that had no token, and the activity table's whole column
+set.
+
+Two things we corrected in ourselves rather than in the file: a checkbox we had
+made 6px where the file draws 1.667px, and a claim that no 536px frame existed,
+which was our own measuring error.
