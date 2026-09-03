@@ -154,10 +154,11 @@ function PolicyTable({
   onManage: () => void;
 }) {
   return (
-    // No padding on the card: the row dividers are meant to reach its edges, so
-    // the 16px sits on the contents instead - the heading, the cells and the
-    // footer each carry their own. A `p-4` here would inset every rule by 16px
-    // and draw a second frame inside the border.
+    // No padding on the card, because the footer's rule spans it edge to edge
+    // (`card/policies` 116:26707 draws `card/footer` at x=0, the full 720).
+    // The 16px lives on the contents instead: the row dividers are drawn INSET,
+    // every `line` in the frame measuring 688 inside the 720 card, so the table
+    // sits in its own gutter rather than reaching the border.
     <Card busy={pending}>
       <h2 className="px-4 pt-4 text-sm font-medium leading-5 text-base-foreground">Policies</h2>
 
@@ -172,16 +173,17 @@ function PolicyTable({
           {unavailable ? "Policies couldn't be read" : "No policies configured"}
         </EmptyNote>
       ) : (
+        <div className="px-4">
         <table className="mt-4 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-2 pl-4 text-left font-normal">
+            <th scope="col" className="pb-2 text-left font-normal">
               Policy type
             </th>
             <th scope="col" className="pb-2 text-right font-normal">
               Action
             </th>
-            <th scope="col" className="w-24 pb-2 pr-4 text-right font-normal">
+            <th scope="col" className="w-24 pb-2 text-right font-normal">
               Status
             </th>
           </tr>
@@ -189,7 +191,7 @@ function PolicyTable({
         <tbody>
           {policies.map((policy) => (
             <tr key={policy.id} className="border-t border-base-border">
-              <td className="py-3 pl-4">
+              <td className="py-3">
                 <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
                   <Icon name={policy.icon} size={16} className="text-neutral-500" />
                   {policy.name}
@@ -211,13 +213,14 @@ function PolicyTable({
                   </span>
                 )}
               </td>
-              <td className="py-3 pr-4 text-right">
+              <td className="py-3 text-right">
                 <StatusPill on={policy.enabled} />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+        </div>
       )}
 
       <ManageLink label="Manage policies" onClick={onManage} />
@@ -252,13 +255,14 @@ function SavingsTable({
           {unavailable ? "Token savings couldn't be read" : "No savings configured"}
         </EmptyNote>
       ) : (
+      <div className="px-4">
       <table className="mt-4 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-2 pl-4 text-left font-normal">
+            <th scope="col" className="pb-2 text-left font-normal">
               Savings type
             </th>
-            <th scope="col" className="w-24 pb-2 pr-4 text-right font-normal">
+            <th scope="col" className="w-24 pb-2 text-right font-normal">
               Status
             </th>
           </tr>
@@ -266,19 +270,20 @@ function SavingsTable({
         <tbody>
           {savings.map((saving) => (
             <tr key={saving.id} className="border-t border-base-border">
-              <td className="py-3 pl-4">
+              <td className="py-3">
                 <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
                   <Icon name={saving.icon} size={16} className="text-neutral-500" />
                   {saving.name}
                 </span>
               </td>
-              <td className="py-3 pr-4 text-right">
+              <td className="py-3 text-right">
                 <StatusPill on={saving.enabled} />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
       )}
 
       <ManageLink label="Manage savings" onClick={onManage} />
@@ -295,11 +300,12 @@ function SavingsTable({
  */
 function PendingRows({ columns }: { columns: 2 | 3 }) {
   return (
-    <div className="mt-4 flex flex-col gap-3">
+    // `px-4` on the wrapper, not on the bordered rows: the frame draws these
+    // dividers inset at 688 inside the 720 card, so the border must stop where
+    // the real rows' does.
+    <div className="mt-4 flex flex-col gap-3 px-4">
       {[0, 1, 2].map((i) => (
-        // `px-4` on the same element as `border-t`, so the rule still reaches
-        // the card's edges while the placeholders sit on the cells' gutter.
-        <div key={i} className="flex items-center justify-between gap-3 border-t border-base-border px-4 pt-3">
+        <div key={i} className="flex items-center justify-between gap-3 border-t border-base-border pt-3">
           <Skeleton className="h-4 w-40" />
           {columns === 3 && <Skeleton className="h-4 w-14" />}
           <Skeleton className="h-4 w-10" />
@@ -327,9 +333,11 @@ function StatusPill({ on }: { on: boolean }) {
 /** Right-aligned footer action under a full-width rule, per the drawn cards.
  *  Both destinations open the web dashboard.
  *
- *  The rule spans the card because the element it sits on does: `px-4` insets
- *  the button, not the border. The rows above end on their own `py-3`, so there
- *  is no second gap to add before it. */
+ *  The rule really does span the card, unlike the row dividers above it:
+ *  `card/policies` (116:26707) draws the footer as its own frame at x=0 across
+ *  the full 720, with the button's right edge 16px in and 13px of air above and
+ *  below it. So `px-4 py-3` on the element that carries `border-t`, which insets
+ *  the button without insetting the border. */
 function ManageLink({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <div className="flex justify-end border-t border-base-border px-4 py-3">
