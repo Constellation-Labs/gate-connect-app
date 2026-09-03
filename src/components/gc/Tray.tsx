@@ -64,6 +64,7 @@ export function Tray({
   cli,
   orgName,
   signedOut,
+  accountUnread,
   onToggleApp,
   onExpand,
   menuOpen,
@@ -88,6 +89,11 @@ export function Tray({
   /** No usable credential: the tray cannot route anything, so it says so and
    * hands over to the full app, where setup lives. Not drawn; inferred. */
   signedOut?: boolean;
+  /** The account could not be READ, which is a different fact from having
+   *  none and must not borrow its copy: "Sign in to get started" told a
+   *  signed-in user they had no account whenever the keychain read failed.
+   *  Not drawn - inferred from principle 6, like every other unread state. */
+  accountUnread?: boolean;
   onToggleApp: (slug: string, next: boolean) => void;
   /** The header's "Expand app": reveal the full window and dismiss the tray. */
   onExpand: () => void;
@@ -127,7 +133,9 @@ export function Tray({
         </button>
       </header>
 
-      {signedOut ? (
+      {accountUnread ? (
+        <AccountUnreadNote onExpand={onExpand} />
+      ) : signedOut ? (
         <SignedOutNote onExpand={onExpand} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 pt-4">
@@ -421,6 +429,34 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
  * "No organization" would read as broken rather than signed out. Setup lives
  * in the full window, so the card hands over rather than reproducing it.
  */
+/**
+ * The account read failed. Deliberately not `SignedOutNote`: that one tells
+ * the user to sign in, and a user whose credential is merely unreadable is
+ * already signed in - on macOS this is the dismissed-keychain-prompt case
+ * CLAUDE.md describes. Says what happened and offers the surface that can
+ * retry, rather than a sentence about setup.
+ */
+function AccountUnreadNote({ onExpand }: { onExpand: () => void }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
+      <h1 className="text-sm font-medium leading-5 text-base-foreground">
+        Your account couldn&apos;t be read
+      </h1>
+      <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
+        Gate Connect could not reach your stored credential, so it cannot tell
+        what is routed. Open the app window to try again.
+      </p>
+      <button
+        type="button"
+        onClick={onExpand}
+        className="flex h-8 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      >
+        Open Gate Connect
+      </button>
+    </div>
+  );
+}
+
 function SignedOutNote({ onExpand }: { onExpand: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
@@ -444,10 +480,17 @@ function SignedOutNote({ onExpand }: { onExpand: () => void }) {
 
 /** The security feed, at popover size.
  *
- * A count and a connection state, and a way into the pane that has the detail.
- * Deliberately not a list: at 400px a row would have to drop either the category
- * or the tool, and an event that cannot say what fired or where is not worth the
- * space - the full feed is one click away and says both.
+ * A count and a connection state, and a way into the full window. Deliberately
+ * not a list: at 400px a row would have to drop either the category or the
+ * tool, and an event that cannot say what fired or where is not worth the
+ * space.
+ *
+ * **It does not open the security pane.** `onOpen` is the header's `expand`:
+ * `reveal_popover_window` shows the main window wherever it was last left and
+ * takes no pane argument, so the user lands on whatever pane they were on. The
+ * sentence here used to say the full feed was one click away, which is one
+ * click plus finding it. Wiring it properly needs the reveal to carry a
+ * destination; until then this card promises less.
  *
  * The count is "this session", not "today". The feed buffers what it has received
  * since the app started, and calling that a daily total would be a claim about

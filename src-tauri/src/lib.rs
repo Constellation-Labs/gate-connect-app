@@ -2402,10 +2402,18 @@ fn unpin_popover() {
 
 /// Pin the popover open for the duration of a call that raises a system trust
 /// dialog. Without this, `proxy_trust_ca` is the one action in the app that
-/// hides the window it was clicked in: the OS dialog takes focus, the
+/// hides the window it was clicked in: the OS dialog takes focus, a
 /// `Focused(false)` handler hides the popover, and the copy telling the user
-/// what to click goes with it. The frontend pins before the call and unpins
-/// in its `finally`, so a cancelled dialog restores click-away dismissal too.
+/// what to click goes with it.
+///
+/// **That handler does not currently exist**, and neither does the dismissal
+/// this guards against. There is no `Focused(false)` arm anywhere in this
+/// file, so [`POPOVER_PINNED`] is written at four sites and read at none, and
+/// the tray sits over every other window until the icon is clicked again. Kept
+/// rather than deleted because the two commands are still called by the
+/// retiring `src/App.tsx` shell and because the pin is what a blur-dismiss
+/// would need on the day one lands. Whether it should is a product question,
+/// raised in `docs/figma-questions-for-design.md`.
 #[tauri::command]
 fn pin_popover() {
     POPOVER_PINNED.store(true, Ordering::Release);
@@ -2643,7 +2651,12 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
 /// Deliberately does not reposition. This is a 1024x720 window, not a tray
 /// popover: moving it out from under the user's cursor on every reveal is
 /// exactly what a window must not do.
+/// Also clears [`POPOVER_VISIBLE`]: handing over to the main window means the
+/// tray is going away, and `TrayApp` hides itself with a frontend
+/// `getCurrentWindow().hide()` that Rust never sees as a window event. Without
+/// this the flag leaked `true` past every Expand-app and every Quit.
 fn reveal_popover_window(app: &tauri::AppHandle) {
+    POPOVER_VISIBLE.store(false, Ordering::Release);
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -2830,6 +2843,19 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
 /// swallowed, so the frontend sweeps [`pending_quit_tools`] at mount and on
 /// each `quit-requested` nudge (mirrors the backend-error seam).
 fn request_quit(app: &tauri::AppHandle) {
+    // **Linux exits outright, and that is correct.** It looks like the flow
+    // being skipped on one platform, and it is not: there the engine is a
+    // DETACHED helper daemon that outlives this process (see the note at
+    // `LAUNCH_AT_LOGIN`-adjacent code, "on Linux the engine lives in a
+    // detached helper daemon", and "Linux has no exit-time safe point - the
+    // RunEvent::Exit handler is macOS/Windows-only"). Quitting the GUI there
+    // stops nothing: routing continues, no config is left aimed at a dead
+    // relay, and so there is no question to ask. Asking would be worse than
+    // silent - the "disconnect and quit" branch would tear down routing the
+    // user never needed to lose.
+    //
+    // I removed this gate once, reasoning from the docstring above and from
+    // AG-596, and it was a regression. Do not remove it again.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     app.exit(0);
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -3165,11 +3191,19 @@ pub fn run() {
             // after Gate Connect - and wire it up without a relaunch. Guarded by
             // POPOVER_VISIBLE so a refocus of an already-open window doesn't
             // re-run it; the flag is cleared at each hide site below. This is the
-            // config route, so it runs on every platform (unlike the
-            // Focused(false) dismiss below). Off-thread + best-effort so it never
+            // config route, so it runs on every platform. Off-thread + best-effort so it never
             // blocks the event loop; reconcile_enabled is idempotent and only
             // writes when a tool is newly installed.
             if let WindowEvent::Focused(true) = event {
+                // TRAY ONLY. This arm used to run for every window, and the
+                // Linux `main` branch above it does not return, so focusing the
+                // main window consumed the edge and the flag stayed true - after
+                // which every tray open skipped the reconcile below until the
+                // user happened to dismiss the tray with the icon. The flag is
+                // cleared at the tray's hide sites, so it is the tray's flag.
+                if window.label() != "tray" {
+                    return;
+                }
                 if !POPOVER_VISIBLE.swap(true, Ordering::AcqRel) {
                     std::thread::spawn(|| {
                         if let Err(e) = gate_connect_core::provider::reconcile_enabled() {

@@ -68,6 +68,12 @@ export function TrayApp() {
   const [account, setAccount] = useState<Account | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  /** The account read FAILED, which is not the same as having no account.
+   *  Collapsing the two drew "Sign in to get started" at a signed-in user
+   *  whose keychain prompt was dismissed - the exact scenario CLAUDE.md
+   *  documents - and that sentence is false. Principle 6, one level up from
+   *  a figure. */
+  const [accountUnread, setAccountUnread] = useState(false);
   const [notInstalledOpen, setNotInstalledOpen] = useState(false);
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
   const platform = usePlatform();
@@ -84,8 +90,17 @@ export function TrayApp() {
     };
   }, [tools, proxy]);
 
+  /** Whether the last sweep landed. A failed one used to be indistinguishable
+   *  from a quiet machine: the map stayed empty, every row rendered
+   *  `Not protected - Checking`, the master card read `0 of N`, and the polled
+   *  path only re-swept when the tools/proxy signature CHANGED - so on an idle
+   *  machine one failure at first load persisted until something moved. This
+   *  surface has no refresh affordance, so nothing the user could do fixed it. */
+  const verdictsRead = useRef(false);
+
   const refreshVerdicts = useCallback(async () => {
     const v = await routingVerdicts().catch(() => null);
+    verdictsRead.current = v !== null;
     if (v) setVerdicts(verdictsBySlug(v));
   }, []);
 
@@ -120,7 +135,10 @@ export function TrayApp() {
         setProxy(px);
         changed = true;
       }
-      if (changed) void refreshVerdicts();
+      // Or when the last sweep never landed: an unchanged reading is a reason
+      // to skip re-reading the tools, not a reason to leave every row saying
+      // "Checking" forever.
+      if (changed || !verdictsRead.current) void refreshVerdicts();
     } finally {
       polling.current = false;
     }
@@ -132,12 +150,15 @@ export function TrayApp() {
         listTools().catch(() => null),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
-        getAccount().catch(() => null),
+        getAccount()
+          .then((a) => ({ read: true, account: a }))
+          .catch(() => ({ read: false, account: null as Account | null })),
       ]);
       setTools(t ?? []);
       setProviders(p);
       setProxy(px);
-      setAccount(acct);
+      setAccount(acct.account);
+      setAccountUnread(!acct.read);
       void refreshVerdicts();
       setLoaded(true);
     })();
@@ -151,7 +172,13 @@ export function TrayApp() {
       void redetect();
     }, DETECT_POLL_MS);
     const onVisible = () => {
-      if (!document.hidden) void redetect();
+      if (document.hidden) {
+        // Hidden, not destroyed - so the menu would still be open over the
+        // list on the next reveal, with rows clickable beside it.
+        setMenuOpen(false);
+        return;
+      }
+      void redetect();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -167,8 +194,11 @@ export function TrayApp() {
     const unlisten = listen("proxy-state-changed", () => {
       void refresh();
       void getAccount()
-        .then(setAccount)
-        .catch(() => {});
+        .then((a) => {
+          setAccount(a);
+          setAccountUnread(false);
+        })
+        .catch(() => setAccountUnread(true));
     });
     return () => {
       void unlisten.then((off) => off());
@@ -367,7 +397,8 @@ export function TrayApp() {
           : undefined
       }
       orgName={account?.org_name ?? "No organization"}
-      signedOut={account === null}
+      signedOut={account === null && !accountUnread}
+      accountUnread={accountUnread}
       onToggleApp={toggleApp}
       onExpand={expand}
       security={
