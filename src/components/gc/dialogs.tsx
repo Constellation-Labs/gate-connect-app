@@ -721,14 +721,14 @@ export function ModelPickerDialog({
           // real border rather than a primary outline, and tightens its
           // radius against the looser one the other rows carry.
           selected
-            ? "rounded-md border-base-border bg-gray-50"
+            ? "rounded-control border-base-border bg-gray-50"
             : "rounded-lg border-transparent hover:bg-gray-50"
         }`}
       >
         <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
           {model.logo ?? <Icon name="cube" size={16} />}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-neutral-900">
+        <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-base-foreground">
           {model.id}
         </span>
         {selected ? (
@@ -738,14 +738,14 @@ export function ModelPickerDialog({
           // list stopped being when AG-590 made it a set.
           <span
             aria-hidden
-            className="flex size-5 shrink-0 items-center justify-center rounded-sm border border-base-primary"
+            className="flex size-5 shrink-0 items-center justify-center rounded-xs border border-base-primary"
           >
             <Icon name="check" size={14} className="text-base-primary" />
           </span>
         ) : (
           <span
             aria-hidden
-            className="size-5 shrink-0 rounded-sm border border-base-input"
+            className="size-5 shrink-0 rounded-xs border border-base-input"
           />
         )}
       </button>
@@ -774,6 +774,7 @@ export function ModelPickerDialog({
   return (
     <Modal
       icon="layers"
+      tile="lg"
       title="Choose a Gate model"
       subtitle={`${appName} may use any model you enable here`}
       closeButton
@@ -886,7 +887,7 @@ export function ModelPickerDialog({
               <button
                 type="button"
                 onClick={() => setDraft([])}
-                className="-my-1 rounded-md px-2 py-1 text-sm font-medium leading-5 text-base-primary hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+                className="-my-1 rounded-control px-2 py-1 text-sm font-medium leading-5 text-base-primary hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
               >
                 Unselect all ({draft.length})
               </button>
@@ -1033,6 +1034,7 @@ export function UseGateModelDialog({
   return (
     <Modal
       icon="layers"
+      tile="lg"
       title={`Use a Gate model for ${app.name}?`}
       subtitle="Your next requests will use Constellation Gate PAYG credits"
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}

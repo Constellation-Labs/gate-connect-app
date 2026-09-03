@@ -158,6 +158,7 @@ export function Tray({
           <span className="truncate">{orgName}</span>
         </span>
         <OutlineIconButton
+          radius="md"
           icon="ellipsis"
           label="More"
           onClick={onMenuToggle}

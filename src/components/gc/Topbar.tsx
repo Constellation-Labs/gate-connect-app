@@ -86,16 +86,33 @@ export function Topbar({
  * `base/input` border. Exported for the tray popover's footer, which draws the
  * same 32px ellipsis button in front of its own menu.
  */
+/**
+ * Radius follows the surface, not the component: the topbar draws 4px
+ * (`127:46660`) and the tray's footer 8px (`694:34124` default,
+ * `744:38191` pressed). One button, two surfaces, two numbers - so the call
+ * site says which, and `rounded-sm` (6px in this config) was wrong for both.
+ *
+ * A map rather than `rounded-${radius}`: an interpolated class name is
+ * invisible to Tailwind's scanner and emits no CSS at all, which is the bug
+ * six `rounded-base` uses in `dialogs.tsx` shipped as.
+ */
+const ICON_BUTTON_RADIUS = {
+  control: "rounded-control",
+  md: "rounded-md",
+} as const;
+
 export function OutlineIconButton({
   icon,
   label,
   onClick,
   expanded,
+  radius = "control",
 }: {
   icon: IconName;
   label: string;
   onClick: () => void;
   expanded?: boolean;
+  radius?: keyof typeof ICON_BUTTON_RADIUS;
 }) {
   return (
     <button
@@ -104,7 +121,7 @@ export function OutlineIconButton({
       aria-label={label}
       aria-haspopup={expanded === undefined ? undefined : "menu"}
       aria-expanded={expanded}
-      className="flex size-8 items-center justify-center rounded-sm border border-base-input bg-base-card text-base-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.06)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      className={`flex size-8 items-center justify-center ${ICON_BUTTON_RADIUS[radius]} border border-base-input bg-base-card text-base-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.04)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary`}
     >
       <Icon name={icon} size={16} />
     </button>
