@@ -16,6 +16,8 @@
         "title": "Gate Connect",
         "width": 1024,
         "height": 720,
+        "minWidth": 1024,
+        "minHeight": 720,
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
