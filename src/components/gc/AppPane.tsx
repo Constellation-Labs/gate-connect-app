@@ -185,7 +185,7 @@ export function AppPane({
       <header className="flex items-center gap-3">
         <span
           aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-sm font-medium text-white"
+          className="flex size-11 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-sm font-medium text-white"
           style={{
             backgroundImage:
               "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
@@ -194,13 +194,13 @@ export function AppPane({
           {logo ?? name.charAt(0)}
         </span>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-xl font-medium tracking-heading text-base-foreground">
+          <h1 className="truncate text-xl font-medium leading-6 tracking-heading text-base-foreground">
             {name}
           </h1>
           <AppStatusLine isProtected={isProtected} status={status} since={since} />
         </div>
         <span className="flex shrink-0 items-center gap-2">
-          <span className="text-base-xs font-medium text-neutral-600">
+          <span className="text-sm font-medium leading-5 text-base-foreground">
             {isProtected ? "On" : "Off"}
           </span>
           {/* "Route Claude Code", not "Claude Code": the sidebar row for the
@@ -274,7 +274,7 @@ function AppStatusLine({
   const detail = status ? statusDetail(status) : since;
 
   return (
-    <p className="text-base-xs font-medium leading-4">
+    <p className="text-base leading-6">
       <span className={text.className}>{text.label}</span>
       {detail && <span className="text-neutral-500"> - {detail}</span>}
     </p>

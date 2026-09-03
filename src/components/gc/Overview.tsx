@@ -100,7 +100,7 @@ export function Overview({
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-medium tracking-heading text-base-foreground">
+        <h1 className="text-xl font-medium leading-6 tracking-heading text-base-foreground">
           Overview
         </h1>
         <div className="flex items-center gap-3">
