@@ -289,7 +289,10 @@ function TrayGroup({
             </span>
             <BaseSwitch
               on={app.on}
-              label={app.name}
+              // The card's eyebrow in front of the row label, same as the
+              // rail's rows: "CLI" alone names three of these, and the heading
+              // that separates them is a sibling rather than a parent.
+              label={group.label ? `${group.label} ${app.name}` : app.name}
               busy={app.busy}
               onClick={() => onToggleApp(app.slug, !app.on)}
             />

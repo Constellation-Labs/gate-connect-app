@@ -149,7 +149,9 @@ describe("the group rows", () => {
       ],
       onToggleApp,
     });
-    screen.getByRole("switch", { name: "Codex" }).click();
+    // The card's eyebrow in front of the row label: "CLI" and its siblings name
+    // a surface, and the heading is what says whose.
+    screen.getByRole("switch", { name: "Anthropic Codex" }).click();
     expect(onToggleApp).toHaveBeenCalledWith("codex", false);
   });
 });

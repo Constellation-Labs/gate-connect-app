@@ -212,6 +212,16 @@ impl Integration for Codex {
         "Codex"
     }
 
+    /// The row label. Rows sit under a family heading that already names the
+    /// vendor, so the label separates the surfaces inside that family: "App" for
+    /// the desktop apps, "Web" for the browser tab, "CLI" for the terminal. The
+    /// sentence that says which binary this is lives with the UI copy
+    /// (`src/lib/groups.ts`); it is a description of the surface, not something
+    /// the integration knows.
+    fn row_label(&self) -> &'static str {
+        "CLI"
+    }
+
     fn upstream_provider_name(&self) -> &'static str {
         UPSTREAM_PROVIDER_NAME
     }

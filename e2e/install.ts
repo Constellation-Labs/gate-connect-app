@@ -205,7 +205,10 @@ export function installFakeTauri(state: BackendState): void {
     // Fill the field the real backend always sends, so a fixture that omits it
     // still produces a well-formed Tool rather than an undefined the UI has to
     // guess about.
-    list_tools: () => state.tools.map((t) => ({ config_location: null, ...t })),
+    // `displayName` is fixture-only: the real `list_tools` sends `row_label()`
+    // and nothing else, so it is dropped here rather than leaked into the DTO.
+    list_tools: () =>
+      state.tools.map(({ displayName: _unused, ...t }) => ({ config_location: null, ...t })),
     connect_tool: ({ slug }) => {
       const t = tool(slug);
       t.status = { kind: "connected" };
@@ -622,11 +625,15 @@ export function installFakeTauri(state: BackendState): void {
     // managed means still on Gate's values, clean-plus-stale-process means
     // waiting for a reopen, an unreadable config is its own answer.
     teardown_report: () => {
-      const bucket = (next_action: string) => (t: { slug: string; name: string }) => ({
-        slug: t.slug,
-        name: t.name,
-        next_action,
-      });
+      // The product name, not the row label: this dialog has no family heading
+      // over it, so "CLI" on its own would name nothing. Rust reads
+      // `display_name()` here where `list_tools` reads `row_label()`.
+      const bucket =
+        (next_action: string) => (t: { slug: string; name: string; displayName?: string }) => ({
+          slug: t.slug,
+          name: t.displayName ?? t.name,
+          next_action,
+        });
       const installed = state.tools.filter((t) => t.status.kind !== "not_installed");
       return {
         defaults: installed

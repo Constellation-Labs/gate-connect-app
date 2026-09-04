@@ -11,7 +11,10 @@ const useNewUi = { gc: "gc.newUi" };
 
 const CLAUDE_CODE = {
   slug: "claude-code",
-  name: "Claude Code",
+  // The surface, not the product: `integrations/claude_code.rs`. The rail's
+  // eyebrow is what says "Anthropic", which is why the switch names below
+  // carry it.
+  name: "CLI",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://gw.example/claude-code",
   status: { kind: "detected" as const },
@@ -19,7 +22,7 @@ const CLAUDE_CODE = {
 
 const CODEX = {
   slug: "codex",
-  name: "Codex",
+  name: "CLI",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://gw.example/codex",
   status: { kind: "detected" as const },
@@ -37,7 +40,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
 
     // The config is already written; this is only about the running process.
     await expect.poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool"))).toBe(
@@ -55,7 +58,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: [],
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
 
     await expect.poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool"))).toBe(
       true,
@@ -70,7 +73,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
 
     // Still nothing closed: this is the confirmation, not the action.
@@ -90,7 +93,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
     await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
     await app.page.getByRole("button", { name: "No, I will close later" }).click();
 
@@ -109,7 +112,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+    await app.page.getByRole("switch", { name: "Anthropic CLI" }).click();
     await app.page.getByRole("button", { name: "No, I will reopen later" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -127,9 +130,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude"],
     });
 
-    // Exact: "Codex" is a substring of the ChatGPT domain rows' labels too, and
-    // those route through the proxy rather than a config file.
-    await app.page.getByRole("switch", { name: "Codex", exact: true }).click();
+    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
 
     await expect
       .poll(() => app.calls().then((c) => c.some((x) => x.cmd === "connect_tool")))
@@ -144,7 +145,7 @@ test.describe("new UI running apps", () => {
       runningAgentNames: ["claude", "codex"],
     });
 
-    await app.page.getByRole("switch", { name: "Codex", exact: true }).click();
+    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toContainText("codex");
@@ -159,7 +160,7 @@ test.describe("new UI running apps", () => {
       tools: [
         {
           slug: "codex",
-          name: "Codex",
+          name: "CLI",
           upstream_provider_name: "OpenAI",
           default_upstream_url: "https://gw.example/codex",
           status: { kind: "drifted" as const, reason: "API base URL: https://api.openai.com/v1" },
@@ -167,7 +168,11 @@ test.describe("new UI running apps", () => {
       ],
     });
 
-    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+    // The Overview's drift notice, not the rail row. A drifted row renders on -
+    // that is the user's intent, which drift does not revoke - so its switch
+    // asks to turn routing OFF and never reaches the gate. Reconnecting is what
+    // asks to write the config, and the gate is on that path.
+    await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
     await app.page.getByRole("button", { name: "Keep existing config" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);

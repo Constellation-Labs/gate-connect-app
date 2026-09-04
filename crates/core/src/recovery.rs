@@ -457,7 +457,10 @@ mod tests {
     /// same way until the user signs in, which is what the step should say.
     #[test]
     fn a_deferred_entry_asks_for_a_sign_in() {
-        assert_eq!(next_step(Outcome::DeferredSignedOut, false), NextStep::SignIn);
+        assert_eq!(
+            next_step(Outcome::DeferredSignedOut, false),
+            NextStep::SignIn
+        );
     }
 
     /// The dropped outcomes are complete, so they owe nothing - the same

@@ -28,7 +28,9 @@ async function openApp(app: { page: import("@playwright/test").Page }, name: str
 
 const connectedCodex = {
   slug: "codex",
-  name: "Codex",
+  // The surface, not the product: rows are named for what they cover and the
+  // eyebrow over them says "OpenAI".
+  name: "CLI",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://gw.example/codex",
   status: { kind: "connected" as const },
@@ -68,7 +70,7 @@ test.describe("new UI routing verdict", () => {
     await expect(app.page.getByText("Not protected").first()).toBeVisible();
     await expect(app.page.getByText("Protected", { exact: true })).toHaveCount(0);
 
-    await openApp(app, "Codex");
+    await openApp(app, "CLI");
     await expect(app.page.getByText("Connection problem")).toBeVisible();
   });
 
@@ -85,7 +87,7 @@ test.describe("new UI routing verdict", () => {
 
     // Waits for the sweep to have landed before reading the switch.
     await expect(app.page.getByText("Not protected").first()).toBeVisible();
-    const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
+    const sidebarSwitch = app.page.getByRole("switch", { name: "OpenAI CLI", exact: true });
     await expect(sidebarSwitch).toHaveAttribute("aria-checked", "true");
   });
 
@@ -98,7 +100,7 @@ test.describe("new UI routing verdict", () => {
       staleAgents: 1,
     });
 
-    await openApp(app, "Codex");
+    await openApp(app, "CLI");
     await expect(app.page.getByText("Reopen required")).toBeVisible();
   });
 
@@ -118,7 +120,7 @@ test.describe("new UI routing verdict", () => {
       runningAgentNames: ["codex"],
     });
 
-    await openApp(app, "Codex");
+    await openApp(app, "CLI");
 
     // Its own upstream, because the config is Gate's and the process has not
     // picked it up - so it is still going direct.
@@ -146,7 +148,7 @@ test.describe("new UI routing verdict", () => {
     // now, and while disabled they read "Not routed" as well.
     const row = app.page
       .getByRole("listitem")
-      .filter({ has: app.page.getByRole("switch", { name: "Codex", exact: true }) });
+      .filter({ has: app.page.getByRole("switch", { name: "OpenAI CLI", exact: true }) });
     await expect(row.getByText("Not routed")).toBeVisible();
   });
 

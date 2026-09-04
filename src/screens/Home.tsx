@@ -4,7 +4,7 @@ import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
 import type { Group, GroupException } from "../lib/groups";
-import { buildGroups, groupSummary, MULTI_PROVIDER_ID } from "../lib/groups";
+import { buildGroups, groupSummary } from "../lib/groups";
 import { PopHeader } from "../components/gc/PopHeader";
 import { Switch, IconButton, ErrorNote, Button } from "../components/gc/ui";
 import { GroupPill, groupPillLabel } from "../components/GroupPill";
@@ -868,7 +868,7 @@ function FamilyRow({
   //
   // Suppressed by an exception for the same reason as before: that sentence
   // takes this slot and already names a member.
-  const roster = !exception && group.id === MULTI_PROVIDER_ID && group.members.length > 0;
+  const roster = !exception && !!group.multiProvider && group.members.length > 0;
   const secondLine = !!exception || roster;
   return (
     <div

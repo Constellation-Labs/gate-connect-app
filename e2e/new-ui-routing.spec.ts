@@ -25,7 +25,7 @@ test.describe("new UI routing", () => {
     tools: [
       {
         slug: "codex",
-        name: "Codex",
+        name: "CLI",
         upstream_provider_name: "OpenAI",
         default_upstream_url: "https://gw.example/codex",
         status: { kind: "drifted" as const, reason: "API base URL: https://api.openai.com/v1" },
@@ -43,7 +43,7 @@ test.describe("new UI routing", () => {
     const app = await boot(driftedCodex);
 
     await expect(app.page.getByText("Config drifted")).toBeVisible();
-    const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
+    const sidebarSwitch = app.page.getByRole("switch", { name: "OpenAI CLI", exact: true });
     await expect(sidebarSwitch).toHaveAttribute("aria-checked", "true");
 
     await sidebarSwitch.click();
@@ -58,16 +58,16 @@ test.describe("new UI routing", () => {
 
     // The card's switch reads off: the app is not protected. This is the path
     // that re-adopts, and the only one that reaches the review gate. Its
-    // accessible name is the notice's own ("Let Gate Connect manage Codex"),
+    // accessible name is the notice's own ("Let Gate Connect manage CLI"),
     // which is what distinguishes it from the sidebar row's switch.
     await expect(app.page.getByText("Reconnect to restore protection")).toBeVisible();
-    const cardSwitch = app.page.getByRole("switch", { name: "Let Gate Connect manage Codex" });
+    const cardSwitch = app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" });
     await expect(cardSwitch).toHaveAttribute("aria-checked", "false");
 
     await cardSwitch.click();
 
     await expect(
-      app.page.getByRole("heading", { name: "Review Codex configuration" }),
+      app.page.getByRole("heading", { name: "Review CLI configuration" }),
     ).toBeVisible();
     expect(await callsFor(app.page, "connect_tool")).toEqual([]);
 
@@ -80,7 +80,7 @@ test.describe("new UI routing", () => {
   test("declining the review leaves the config alone", async ({ boot }) => {
     const app = await boot(driftedCodex);
 
-    await app.page.getByRole("switch", { name: "Let Gate Connect manage Codex" }).click();
+    await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
     await app.page.getByRole("button", { name: "Keep existing config" }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
@@ -95,7 +95,7 @@ test.describe("new UI routing", () => {
       tools: [
         {
           slug: "claude-code",
-          name: "Claude Code",
+          name: "CLI",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
           status: { kind: "detected" },
@@ -103,7 +103,7 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+    await app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }).click();
 
     await expect(
       app.page.getByRole("heading", { name: /Trust the Gate certificate/ }),
@@ -130,7 +130,7 @@ test.describe("new UI routing", () => {
       tools: [
         {
           slug: "claude-code",
-          name: "Claude Code",
+          name: "CLI",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
           status: { kind: "detected" },
@@ -138,7 +138,7 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+    await app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }).click();
 
     await expect(
       app.page.getByText("Windows will show a security warning: that’s expected, choose Yes."),
@@ -151,7 +151,7 @@ test.describe("new UI routing", () => {
       tools: [
         {
           slug: "claude-code",
-          name: "Claude Code",
+          name: "CLI",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
           status: { kind: "connected" },
@@ -159,7 +159,7 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+    await app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }).click();
 
     await expect(app.page.getByRole("dialog")).toHaveCount(0);
     expect(await callsFor(app.page, "disconnect_tool")).toHaveLength(1);
@@ -172,7 +172,7 @@ test.describe("new UI routing", () => {
       tools: [
         {
           slug: "claude-code",
-          name: "Claude Code",
+          name: "CLI",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://gw.example/claude-code",
           status: { kind: "detected" },
@@ -180,7 +180,7 @@ test.describe("new UI routing", () => {
       ],
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code" }).click();
+    await app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }).click();
 
     await expect(app.page.getByRole("alert")).toBeVisible();
   });
@@ -213,7 +213,7 @@ test.describe("new UI drift repair", () => {
 
   const codex = {
     slug: "codex",
-    name: "Codex",
+    name: "CLI",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://gw.example/codex",
   };
@@ -241,7 +241,7 @@ test.describe("new UI drift repair", () => {
   }) => {
     const app = await boot(drifted);
 
-    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+    await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -257,7 +257,7 @@ test.describe("new UI drift repair", () => {
     // show, so the row goes rather than guessing.
     const app = await boot({ ...drifted, proxy: { running: true, ca_trusted: true, relay_base_url: null } });
 
-    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+    await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -271,13 +271,13 @@ test.describe("new UI drift repair", () => {
       failures: { connect_tool: "failed to write ~/.codex/config.toml" },
     });
 
-    const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
+    const sidebarSwitch = app.page.getByRole("switch", { name: "OpenAI CLI", exact: true });
     await sidebarSwitch.click();
 
     // The rail row keeps the phrase and drops the reason, which does not fit
     // 250px. The pane header is the surface with room for the sentence, and it
     // outlives the banner - which is the half of this that still matters.
-    await app.page.getByRole("button", { name: "Codex" }).first().click();
+    await app.page.getByRole("button", { name: "CLI" }).first().click();
     await expect(app.page.getByText("Configuration update failed")).toBeVisible();
   });
 
@@ -288,13 +288,13 @@ test.describe("new UI drift repair", () => {
       failures: { connect_tool: "failed to write ~/.codex/config.toml" },
     });
 
-    const sidebarSwitch = app.page.getByRole("switch", { name: "Codex" }).first();
+    const sidebarSwitch = app.page.getByRole("switch", { name: "OpenAI CLI", exact: true });
     await sidebarSwitch.click();
 
     // Opened before the retry, not after: with the pane closed the reason is
     // nowhere on the page and the count below would pass without the retry ever
     // having cleared anything.
-    await app.page.getByRole("button", { name: "Codex" }).first().click();
+    await app.page.getByRole("button", { name: "CLI" }).first().click();
     await expect(app.page.getByText("Configuration update failed")).toBeVisible();
 
     // Clear the injected failure, then click again - the switch is the retry.
@@ -370,10 +370,9 @@ test.describe("new UI: refreshing the inventory", () => {
   }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
-    // `exact`: the rail's ChatGPT (Codex subscription) row is drawn from the
-    // catalog whether or not any tool is installed, and its switch's name
-    // would otherwise substring-match "Codex".
-    const row = app.page.getByRole("switch", { name: "Codex", exact: true });
+    // The family in front of the surface: "CLI" alone names Claude Code and
+    // Codex both, so the switch carries its eyebrow.
+    const row = app.page.getByRole("switch", { name: "OpenAI CLI" });
     await expect(row).toHaveCount(0);
     const sweeps = await countOf(app, "routing_verdicts");
 
@@ -382,7 +381,7 @@ test.describe("new UI: refreshing the inventory", () => {
       tools: [
         {
           slug: "codex",
-          name: "Codex",
+          name: "CLI",
           upstream_provider_name: "OpenAI",
           default_upstream_url: "https://gw.example/codex",
           status: { kind: "detected" },
@@ -395,7 +394,7 @@ test.describe("new UI: refreshing the inventory", () => {
 
     await app.emit("tools-changed");
 
-    await expect(row.first()).toBeVisible();
+    await expect(row).toBeVisible();
     await expect(app.page.getByText("No apps detected")).toHaveCount(0);
     // The sweep rides a change: a tool that just appeared has no verdict yet, and
     // its row would sit on "Checking" until something unrelated repainted it.
@@ -713,7 +712,7 @@ test.describe("new UI: reviewing an interrupted restore", () => {
       entries: [
         {
           slug: "codex",
-          name: "Codex",
+          name: "CLI",
           kind: "tool" as const,
           outcome: "restored" as const,
           at_unix: 1_760_000_000,
@@ -743,7 +742,7 @@ test.describe("new UI: reviewing an interrupted restore", () => {
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByText("Codex")).toBeVisible();
+    await expect(dialog.getByText("CLI")).toBeVisible();
     // `.first()`: each stage is drawn twice per row, as the pill and as the
     // Stage line of the diagnostics list under it.
     await expect(dialog.getByText("Configuration written").first()).toBeVisible();
@@ -827,7 +826,7 @@ test.describe("new UI: the review names the file it will change", () => {
     tools: [
       {
         slug: "codex",
-        name: "Codex",
+        name: "CLI",
         upstream_provider_name: "OpenAI",
         default_upstream_url: "https://gw.example/codex",
         config_location: "/Users/someone/.codex/config.toml",
@@ -842,7 +841,7 @@ test.describe("new UI: the review names the file it will change", () => {
   test("the review names the config file", async ({ boot }) => {
     const app = await boot(driftedWithPath);
 
-    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+    await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -857,7 +856,7 @@ test.describe("new UI: the review names the file it will change", () => {
       tools: [{ ...driftedWithPath.tools[0], config_location: null }],
     });
 
-    await app.page.getByRole("switch", { name: "Codex" }).last().click();
+    await app.page.getByRole("switch", { name: "Let Gate Connect manage CLI" }).click();
 
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -880,10 +879,10 @@ test.describe("new UI sidebar rail", () => {
   test("a proxy domain is a rail row whose switch routes it", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    await app.page
-      .getByRole("switch", { name: "ChatGPT (Codex subscription)" })
-      .first()
-      .click();
+    // The ChatGPT subscription endpoint is the OpenAI family's "App" row; the
+    // Claude desktop apps are Anthropic's, which is why the eyebrow is in the
+    // name.
+    await app.page.getByRole("switch", { name: "OpenAI App" }).click();
 
     // A domain routes through the engine's flag, never a config write.
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
@@ -898,19 +897,24 @@ test.describe("new UI sidebar rail", () => {
   }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    await app.page.getByRole("button", { name: "ChatGPT (Codex subscription)" }).click();
+    // Reached through its switch, which is the one thing on the row that names
+    // its family: "App" is the OpenAI family's ChatGPT row and the Anthropic
+    // family's desktop-apps row both, and a row button's name is its own text.
+    await app.page
+      .getByRole("listitem")
+      .filter({ has: app.page.getByRole("switch", { name: "OpenAI App" }) })
+      .getByRole("button")
+      .click();
 
     await expect(
-      app.page.getByRole("heading", { name: "ChatGPT (Codex subscription)" }),
+      app.page.getByRole("heading", { name: "App" }),
     ).toBeVisible();
     // The gateway attributes requests to config tools only, so the pane says
     // why its sections are empty rather than reporting a quiet day.
     await expect(app.page.getByText(/aren't attributed to a single app/)).toBeVisible();
 
     // The pane's own switch routes the domain, same as the rail row's.
-    await app.page
-      .getByRole("switch", { name: "Route ChatGPT (Codex subscription)" })
-      .click();
+    await app.page.getByRole("switch", { name: "Route App" }).click();
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
       slug: "chatgpt",
       enabled: true,
@@ -921,27 +925,68 @@ test.describe("new UI sidebar rail", () => {
   test("a group's eyebrow counts protected rows over rows", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
 
-    // OPEN AI holds Codex (detected, off) plus the OpenAI apps, ChatGPT and
-    // ChatGPT-app-chat domains (all off). Read off this group's own eyebrow
-    // rather than by text: every group draws one, and the Anthropic group's
-    // happens to carry the same count.
+    // OpenAI holds Codex (detected, off) plus the two chat domains, ChatGPT
+    // and ChatGPT-app-chat (both off). Three, not four: the `openai` domain is
+    // api.openai.com, which rides no OpenAI tool and sits under Experimental
+    // now. Read off this group's own eyebrow rather than by text: every group
+    // draws one, and the Anthropic group's happens to carry the same count.
     const openAiEyebrow = app.page
       .getByRole("heading", { name: "OpenAI", exact: true })
       .locator("xpath=following-sibling::span");
-    await expect(openAiEyebrow).toHaveText("0 of 4");
+    await expect(openAiEyebrow).toHaveText("0 of 3");
 
-    // Routing the OpenAI apps domain with the engine up and the certificate
-    // trusted makes it the group's one protected row.
-    await app.page.getByRole("switch", { name: "OpenAI apps" }).click();
-    await expect(openAiEyebrow).toHaveText("1 of 4");
+    // Routing the ChatGPT subscription domain with the engine up and the
+    // certificate trusted makes it the group's one protected row.
+    await app.page.getByRole("switch", { name: "OpenAI App" }).click();
+    await expect(openAiEyebrow).toHaveText("1 of 3");
   });
 
-  test("the multi-provider tools share one Other tools eyebrow", async ({ boot }) => {
-    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+  test("the multi-provider tools get an eyebrow each", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      // OpenClaw beside OpenCode: with one leftover tool on the machine a
+      // private eyebrow and a shared one look the same.
+      tools: [
+        {
+          slug: "opencode",
+          name: "OpenCode",
+          upstream_provider_name: "your existing providers",
+          default_upstream_url: "https://openrouter.ai/api/v1",
+          status: { kind: "detected" },
+        },
+        {
+          slug: "openclaw",
+          name: "CLI",
+          upstream_provider_name: "your existing providers",
+          default_upstream_url: "https://openrouter.ai/api/v1",
+          status: { kind: "detected" },
+        },
+        // The environment channel, which is half of what makes Experimental a
+        // heading rather than a rename: OpenCode cannot route without it, and
+        // turning OpenCode on turns it on.
+        {
+          slug: "env-proxy",
+          name: "Terminal tools",
+          upstream_provider_name: "your existing providers",
+          default_upstream_url: "https://openrouter.ai/api/v1",
+          status: { kind: "detected" },
+        },
+      ],
+    });
 
-    await expect(app.page.getByRole("heading", { name: "Other tools" })).toBeVisible();
-    // Not one eyebrow per tool - the 2026-08-21 read drew that, and the
-    // Sidenav page reversed it.
-    await expect(app.page.getByRole("heading", { name: "OpenCode" })).toHaveCount(0);
+    // A heading per tool, which is what lets the row beneath it be named for a
+    // surface. They shared one "Other tools" eyebrow until `LEFTOVER_GROUPS`
+    // split them: the 2026-08-21 read drew the shared one, the Sidenav page
+    // reversed it, and naming the rows reversed it back.
+    await expect(app.page.getByRole("heading", { name: "OpenClaw" })).toBeVisible();
+    // OpenCode and the environment channel share the other one, which is the
+    // pairing the heading exists for.
+    const experimental = app.page
+      .getByRole("heading", { name: "Experimental" })
+      .locator("xpath=following-sibling::span");
+    await expect(experimental).toHaveText("0 of 3");
+    // "Other tools" is the catch-all for a tool no heading names. With the
+    // catalog and `LEFTOVER_GROUPS` in step, nothing reaches it.
+    await expect(app.page.getByRole("heading", { name: "Other tools" })).toHaveCount(0);
   });
 });

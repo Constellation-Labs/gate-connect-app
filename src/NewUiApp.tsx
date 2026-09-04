@@ -60,7 +60,7 @@ import { classifyError } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
-import { MULTI_PROVIDER_ID, buildGroups } from "./lib/groups";
+import { buildGroups, describeMember } from "./lib/groups";
 import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
 import type { Group } from "./lib/groups";
@@ -1094,17 +1094,19 @@ export function NewUiApp() {
 
   /**
    * The tools with no single model family, taken from `buildGroups`' own
-   * "Other tools" membership rather than a slug list of our own - so the pane
-   * and the rail can never disagree about which tools those are.
+   * `multiProvider` groups rather than a slug list of our own - so the pane and
+   * the rail can never disagree about which tools those are.
    *
-   * Today that is OpenCode, OpenClaw and Hermes. They get no model card; see
-   * `AppPane`'s `modelChoice`.
+   * Today that is OpenCode, OpenClaw, Hermes and the environment channel. They
+   * get no model card; see `AppPane`'s `modelChoice`. Four groups rather than
+   * the one "Other tools" row this used to read, which is why the test is the
+   * flag and not an id.
    */
   const multiProviderSlugs = useMemo(
     () =>
       new Set(
         groups
-          .filter((g) => g.id === MULTI_PROVIDER_ID)
+          .filter((g) => g.multiProvider)
           .flatMap((g) => g.members.map((m) => m.key)),
       ),
     [groups],
@@ -1207,9 +1209,11 @@ export function NewUiApp() {
    * 2026-08-23). Labels are the drawn vendor captions - "Anthropic" over the
    * Claude apps, "OpenAI" over Codex - taken from each family's
    * `upstream_provider_name`, falling back to the family's own name for a
-   * family with no config tool to read it from. The multi-provider tools sit
-   * under one "Other tools" eyebrow, as drawn - the 2026-08-21 read had each
-   * under its own name, and the Sidenav page reversed that. Proxy members
+   * family with no config tool to read it from. The multi-provider tools each
+   * get an eyebrow of their own now ("OpenClaw", "Hermes", "Experimental"),
+   * which is what lets their rows be named for a surface like every other row;
+   * they shared one "Other tools" eyebrow while that was the only heading
+   * `buildGroups` gave them. Proxy members
    * (the chat domains and a family's app surfaces) are rows too now: no
    * verdict covers them - the sweep is per tool - so their status derives
    * from the domain's own state. Before the catalog loads, one unlabelled
@@ -1250,7 +1254,7 @@ export function NewUiApp() {
         // "Other tools" names itself; its members' vendor field is a sentence
         // fragment ("your existing providers"), not a caption.
         id: g.id,
-        label: g.id === MULTI_PROVIDER_ID ? g.name : (vendor ?? g.name),
+        label: g.multiProvider ? g.name : (vendor ?? g.name),
         apps: members,
       });
     }
@@ -2170,6 +2174,42 @@ export function NewUiApp() {
             onKeep={() => routing.resolvePrompt(false)}
             onReplace={() => routing.resolvePrompt(true)}
           />
+        ) : routing.prompt?.kind === "opencode-env" ? (
+          // Not in the Figma: OpenCode's coupling to the environment channel has
+          // no frame, and the alternative to a dialog is a click that silently
+          // rewrites machine-wide settings.
+          //
+          // Informational in tone, not destructive: nothing is being replaced or
+          // removed, so the primary is the plain one and it says what it turns
+          // on. Focus stays on the primary for the same reason - `useFocusTrap`'s
+          // `initialFocus` is for the dialogs where the safe answer is "no".
+          <Modal
+            tone="neutral"
+            // No terminal glyph in the set; `squareCode` is the closest thing
+            // to the shell this dialog is about.
+            icon="squareCode"
+            title="Turning on OpenCode also turns on Terminal tools"
+            secondary={{
+              label: "Cancel",
+              onClick: () => routing.resolvePrompt(false),
+            }}
+            primary={{
+              label: "Turn both on",
+              onClick: () => routing.resolvePrompt(true),
+            }}
+            onDismiss={() => routing.resolvePrompt(false)}
+          >
+            {/* The drawn sentence ended "...that reads them, not OpenCode",
+                which contradicts the clause before it - the variables are how
+                Gate routes OpenCode. Cut rather than reworded, 2026-09-04, so
+                nothing is invented: what the copy is for is the breadth, and
+                naming git, curl and npm carries that on its own. */}
+            <p className="text-sm leading-5 text-neutral-600">
+              OpenCode has no gateway setting of its own, so Gate routes it with
+              your machine&apos;s proxy variables. Those apply to every command
+              line tool that reads them. That includes git, curl and npm.
+            </p>
+          </Modal>
         ) : routing.prompt?.kind === "trust" ? (
           // Not in the Figma: the new design has no certificate surface, and
           // connecting cannot proceed without one. Asking first matters because
@@ -2440,6 +2480,12 @@ export function NewUiApp() {
       ) : view.kind === "app" ? (
         <AppPane
           name={appFor(railApps, view.slug)?.name ?? view.slug}
+          // The h1 is "App" / "Web" / "CLI" here. The rail's eyebrow supplies
+          // the vendor that makes those legible and the pane has no eyebrow, so
+          // the sentence has to travel with the name. Keyed by slug rather than
+          // read off the member, so a row the ledger has not placed yet still
+          // gets its description.
+          description={describeMember(view.slug)}
           logo={brandMarkFor(view.slug)}
           // Intent, not the verdict: a drifted app is still one the user asked to
           // route, and driving this switch from the observed status is the bug

@@ -10,7 +10,8 @@ reported: `Components`, `Flows` (containing `Overview`, `Settings`, `App`),
 `Sandbox`, and `Icons`.
 
 - **Overview** - dashboard: stat tiles, Messages bar chart, Policies table,
-  Token savings table. Annotated **App dimensions: 1024x720px**.
+  Token savings table. Annotated **App dimensions: 1024x720px** - superseded by
+  `overview-dimensions` (`864:3466`), a 1280x800 frame; see the sync below.
 - **Settings** - fully transcribed below.
 - **App** - a per-app detail view, two sections (`App / Main screens` and
   `App / Select a model`). Selecting an app in the sidebar opens its own pane
@@ -1844,7 +1845,8 @@ every pane's data. The dialog is a slot for the same reason - the shell owns
 
 Nothing below is done yet, and all of it changes what ships:
 
-- `tauri.conf.json`: **DONE 2026-08-17.** 1024x720, `resizable: true`,
+- `tauri.conf.json`: **DONE 2026-08-17**, resized 2026-09-04. 1280x800 on a
+  1024x800 floor, `resizable: true`,
   `decorations: true`, `alwaysOnTop` and `skipTaskbar` off. `visible: false`
   is unchanged: the tray still owns the first show.
 - **The new UI is now the default** (`newUi.ts`); the popover is the fallback,
@@ -1852,7 +1854,7 @@ Nothing below is done yet, and all of it changes what ships:
 - **Still popover-shaped on the Rust side.** `show_popover` calls
   `anchor_under_tray`, so the window is positioned under the tray icon rather
   than where the user left it, and `set_activation_policy(Accessory)` keeps it
-  out of the dock. Both are wrong for a 1024x720 window and neither is changed
+  out of the dock. Both are wrong for a 1280x800 window and neither is changed
   yet - unverified Rust edits were not worth guessing at.
 - `src-tauri/src/lib.rs`: the transparent-window + CALayer `cornerRadius` work
   is popover-specific.
@@ -2770,6 +2772,80 @@ no activity command, so a browser run cannot reach a figure at all; teaching it
 several specs currently assert the unavailable states of. Not worth reopening
 those to cover what thirteen unit tests already pin.
 
+## Row labels are surface kinds now (2026-09-04)
+
+**What the rows are called.** Every ledger row is named for the surface it
+covers rather than for the product behind it: **App** (the desktop apps), **Web**
+(the browser tab), **CLI** (the terminal), **Proxy** where a family has one
+mechanism and nothing to split. The vendor is said once, by the heading above
+the rows, which is why the labels can be one word.
+
+- **Anthropic** - App (`anthropic`), Web (`claude-web`), CLI (`claude-code`)
+- **OpenAI** - App (`chatgpt`), Web (`chatgpt-apps`), CLI (`codex`). The
+  `openai` domain made a fourth row against a three-row spec; it left the family
+  the same day, see the entry below.
+- **OpenRouter** - Proxy (`openrouter`)
+- **OpenClaw** - CLI, **Hermes** - CLI, **Experimental** - OpenCode,
+  **Terminal tools** (`env-proxy`, unhidden for this) and **OpenAI API**
+  (`openai`)
+
+**Where the names live.** In the backend, as before: `proxy/catalog.rs` for
+domains, each integration's `row_label` for tools, `provider.rs` for the
+headings (Anthropic, not Claude). The rename is global across the UI, so the
+drift dialog now reads "CLI's config changed outside Gate" - chosen deliberately
+over a label-beside-name split, because one name per row is the thing a user can
+point at.
+
+**`row_label` is not `display_name` (2026-09-04).** The row label started on
+`Integration::display_name`, which is also what the CLI prints, what error
+contexts and log lines name, and what the quit takeover lists. Those have no
+heading to lean on, so four integrations answering "CLI" collided there: the
+takeover read "CLI and CLI still route" - two tools the user cannot tell apart
+at the moment they decide whether to close them - and `gate-connect list`
+printed three such rows. `display_name` is the product again ("Claude Code");
+`row_label` is the ledger's one-word label and defaults to `display_name`, so a
+new integration is right everywhere until it opts in. `list_tools` is the only
+reader of `row_label`, which is why every UI surface - the rail, the pane, the
+dialogs above - is unchanged. `registry.rs`'s
+`display_names_are_distinct_across_the_registry` pins the collision shut.
+
+**Where the descriptions live.** `MEMBER_DESCRIPTIONS` in `src/lib/groups.ts`,
+keyed by member slug, carried on `GroupMember.description` and rendered by the
+app pane's header between the h1 and the status line. Copy, not catalog data:
+the backend names the surface it routes, this says what that surface is to the
+reader. It is what makes a one-word label legible on a pane that has no vendor
+eyebrow. A slug with no entry gets no line.
+
+**Where the headings come from.** `LEFTOVER_GROUPS`, also in `groups.ts` - a
+frontend split of the tools the provider catalog claims for nobody, rather than
+new `provider.rs` entries. "Other tools" survives as the catch-all for a tool no
+heading claims, which in a shipped build should be none.
+
+**Open.** The Figma has no frame for any of this: the labels, the descriptions,
+the three new headings and the OpenCode dialog all arrived as copy, and the pane
+header grew a third line to hold a sentence the drawn header does not have. It
+wants a design read.
+
+**`openai` moved to Experimental (2026-09-04).** The four-rows-against-three
+problem above resolved by taking the row out of the family rather than naming it.
+api.openai.com rides no OpenAI tool - Codex resolves relay routes against the
+whole catalog rather than the enabled set, and the ChatGPT desktop app is on
+chatgpt.com - so the switch is generic host interception, and its real dependants
+are OpenClaw and Hermes, which blind-tunnel anything outside the enabled catalog.
+`provider.openai.proxy_domain_slugs` is empty now; that family switch governs
+Codex alone. `LEFTOVER_GROUPS` gained a `domainSlugs` field to carry it, named
+per heading rather than swept, because `opencode` is both a tool slug and a
+domain slug and a sweep would draw two members under one key.
+
+It is labelled **OpenAI API**, not "OpenAI apps" and not `api.openai.com`. The
+row's subject is a host, so the label names the host's role and the host itself
+goes in the description ("Anything on this machine that calls api.openai.com
+directly. Gate intercepts that host, so apps with no gateway setting of their own
+still route."). Two reasons the identifier is not the label: the popover row
+already prints `api.openai.com` in its own mono slot, so a sans label repeating
+it says it twice and sets an identifier in body type; and the window UI prints
+the host nowhere else, so the sentence is the only place it is missing.
+
 ## Design sync 2026-09-04: the twelve open questions, answered
 
 All twelve questions raised at the last Figma pass came back from design in one
@@ -2957,3 +3033,51 @@ nodes. The export was generated 2026-08-20 and those nodes are newer, so
 "match what the frame renders" points at red-400 and nothing was changed here -
 but the token export still disagrees, which is worth knowing before anyone
 samples it again.
+
+## Window size, 2026-09-04: 1280x800 on a 1024x800 floor
+
+The main window was 1024x720 on a 1024x720 floor, from the `App dimensions:
+1024x720px` annotation the first pass read. `overview-dimensions` (`864:3466`)
+supersedes it: the frame is **1280x800**, and unlike the annotation it can be
+checked, because it decomposes to the pixel.
+
+| Layer | Width | From |
+| --- | --- | --- |
+| window | 1280 | frame `864:3466` |
+| sidebar | 256 | `864:3472`, `shrink-0` |
+| content column | 1024 | `864:3473` at x=256 |
+| pane | 976 | `864:3474`, 24px padding each side |
+| chart | 944 | `864:3509`, 16px card padding each side |
+
+944 is the number that matters, and it is why the width moved. The drawn bucket
+is a 32px bar on an 8px gap (`864:3511` is 31.667 wide, the next starts at
+39.667), so 24 of them need `24x32 + 23x8 = 944` exactly. The old window left
+the pane 768px, which is 24 axis labels at `w-8` touching edge to edge with
+nothing between them - the crowding that prompted this.
+
+**The floor is 1024x800, not 1280x800.** Height cannot go below the drawn 800;
+width can, and a window between 1024 and 1280 crowds the axis by that same
+arithmetic. Raising `minWidth` to 1280 is what would make the fit unconditional,
+and it is deliberately not done here - it would forbid the 1024 width the design
+used until today, and it was not asked for. Worth deciding rather than drifting
+into.
+
+Two duplicated values, both intentional and both moved together:
+`tauri.conf.json`'s `minWidth`/`minHeight`, which macOS, Windows and X11
+enforce, and `MAIN_MIN_SIZE` in `src-tauri/src/lib.rs`, which is the only thing
+a Wayland session enforces. The comment on the constant says so; it is now
+`(1024.0, 800.0)`.
+
+The `onboarding` window is untouched at 1080x720 on a 760x560 floor. It is built
+in Rust rather than configured, it is a different surface, and nothing about the
+24-bucket chart applies to it.
+
+### Not changed: the bars are still 20px
+
+The same frame says the bar is **32px** wide on an **8px** gap.
+`metrics.tsx` draws `w-5` (20px) on `gap-1` (4px). The axis labels are already
+`w-8`, so with `justify-between` in a 944px chart the *labels* now land within a
+few tenths of a pixel of the drawn 39.667px step - which is why the width alone
+fixes the reported crowding. The bars themselves stay narrow until someone asks:
+it is a visual change to the chart rather than a window-size one, and this pass
+was about the window.

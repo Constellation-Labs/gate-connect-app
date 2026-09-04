@@ -89,8 +89,10 @@ const BRAND_BY_SLUG: Record<string, BrandName> = {
   opencode: "opencode",
   openclaw: "openclaw",
   // Proxy domains. The two Claude surfaces carry the Claude starburst, every
-  // OpenAI surface the knot - matching the drawn rail, where OpenAI apps and
-  // ChatGPT share a mark.
+  // OpenAI surface the knot - matching the drawn rail, where the API host and
+  // ChatGPT share a mark. `openai` keeps the knot under the Experimental
+  // heading it moved to: the mark says whose host it is, which is the one thing
+  // that did not change about it.
   anthropic: "claude",
   "claude-web": "claude",
   openai: "openai",
