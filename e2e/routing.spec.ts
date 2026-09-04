@@ -297,7 +297,10 @@ test.describe("family panel", () => {
     await expect(subscription).toHaveAttribute("aria-checked", "false");
     await expect(apps).toHaveAttribute("aria-checked", "false");
 
-    // Its own switch is the only thing that routes it.
+    // Its own switch is the only thing that routes it - and it stays a switch,
+    // unlike the app-chat row beside it, because this endpoint carries model
+    // calls under a subscription bearer rather than a signed-in chat session.
+    await expect(apps).toBeDisabled();
     await subscription.click();
     await expect.poll(() => app.lastCall("proxy_set_domain")).toEqual({
       slug: "chatgpt",
@@ -305,7 +308,7 @@ test.describe("family panel", () => {
     });
   });
 
-  test("the chat surface has its own switch, and the family switch never touches it", async ({
+  test("the chat surface has its own row, and no switch anything in the app will flip", async ({
     boot,
   }) => {
     // claude.ai carries the user's session cookie rather than a brokered key,
@@ -334,12 +337,13 @@ test.describe("family panel", () => {
     );
     await expect(chat).toHaveAttribute("aria-checked", "false");
 
-    // Its own switch is the only thing that routes it.
-    await chat.click();
-    await expect.poll(() => app.lastCall("proxy_set_domain")).toEqual({
-      slug: "claude-web",
-      enabled: true,
-    });
+    // And its own switch does not route it either: the app shows the row so the
+    // state of a session-cookie surface is never hidden, but does not offer
+    // turning it on as a control. `proxy domain claude-web on` is the way in.
+    await expect(chat).toBeDisabled();
+    expect(
+      (await app.calls()).filter((c) => c.cmd === "proxy_set_domain").map((c) => c.args.slug),
+    ).toEqual(["anthropic"]);
   });
 
   test("a member that fails to connect names itself and stays off", async ({ boot }) => {

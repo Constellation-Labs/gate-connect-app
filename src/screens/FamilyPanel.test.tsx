@@ -67,7 +67,10 @@ const CATALOG: ProviderState[] = [
     available: true,
     tool_slugs: ["codex"],
     domain_slugs: ["openai"],
-    chat_domain_slugs: [],
+    // Mirrors the real catalog: the Codex subscription endpoint and the
+    // ChatGPT app's chat turn both ride this field, so the family switch skips
+    // both. Only a test that passes those domains in gets the rows.
+    chat_domain_slugs: ["chatgpt", "chatgpt-apps"],
   },
 ];
 
@@ -188,16 +191,47 @@ describe("FamilyPanel is about one family", () => {
     expect(onToggleGroup).toHaveBeenCalledWith("anthropic", true);
   });
 
-  it("gives the chat surface its own row and switch under the family", () => {
+  it("gives the chat surface its own row, with a switch the app does not offer", () => {
+    // The row is here so a session-cookie surface is never intercepted
+    // invisibly - it reports its own state, and reports it under the family
+    // whose switch leaves it alone. What it does not do is let the app turn it
+    // on: the switch is inert, and `proxy domain claude-web on` is the only way
+    // in. Clicking it must reach no backend.
     const onSetDomain = vi.fn().mockResolvedValue(undefined);
     renderPanel({ domains: [makeDomain(), makeChatDomain()] }, { onSetDomain });
     expect(
       screen.getByRole("heading", { level: 2, name: "Claude Desktop chat" }),
     ).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("switch", { name: "Route Claude Desktop chat through Gate" }),
+    const chat = screen.getByRole("switch", { name: "Route Claude Desktop chat through Gate" });
+    expect((chat as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(chat);
+    expect(onSetDomain).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Codex subscription row flippable, though it rides the same field", () => {
+    // `chatgpt` sits in the provider's `chat_domain_slugs` so the family switch
+    // skips it, but it is a model endpoint reached with a subscription bearer,
+    // not a chat surface Gate reads conversations off. Locking the two chat
+    // surfaces must not take this switch with them.
+    const onSetDomain = vi.fn().mockResolvedValue(undefined);
+    renderPanel(
+      {
+        domains: [
+          makeDomain({ slug: "openai", display_name: "OpenAI apps", hosts: ["api.openai.com"] }),
+          makeChatDomain({
+            slug: "chatgpt",
+            display_name: "ChatGPT (Codex subscription)",
+            hosts: ["chatgpt.com"],
+          }),
+        ],
+        family: "openai",
+      },
+      { onSetDomain },
     );
-    expect(onSetDomain).toHaveBeenCalledWith("claude-web", true);
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Route ChatGPT (Codex subscription) through Gate" }),
+    );
+    expect(onSetDomain).toHaveBeenCalledWith("chatgpt", true);
   });
 
   it("leaves the family switch off when only the chat surface is on", () => {

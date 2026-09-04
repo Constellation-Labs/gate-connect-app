@@ -15,6 +15,19 @@ import {
 } from "../lib/platform";
 import { Icon } from "../components/gc/Icon";
 
+/** The two session-cookie chat surfaces, whose rows are shown but whose switch
+ * the app does not offer as a control: claude.ai (`claude-web`) and ChatGPT's
+ * own conversation turn (`chatgpt-apps`). The row, its pill and its explanation
+ * stay - a user who enabled one from the CLI (`proxy domain <slug> on`) must
+ * still be able to see that it is on - but the switch is inert, so the app
+ * cannot start intercepting a signed-in session.
+ *
+ * Slugs, not `GroupMember.chat`: `chatgpt` (the Codex subscription endpoint)
+ * rides the same `chat_domain_slugs` field so the family switch leaves it
+ * alone, and that row is still the user's to flip. Same pair as the backend's
+ * `STAGING_ONLY_SLUGS` (crates/core/src/proxy/config.rs). */
+const LOCKED_CHAT_SLUGS = ["claude-web", "chatgpt-apps"];
+
 /** Host only, for the mono identifier slot. */
 function hostOf(url: string | undefined): string {
   if (!url) return "";
@@ -543,6 +556,7 @@ export function GroupMembers({
                       label={`Route ${member.name} through Gate`}
                       describedBy={`member-state-${member.key}`}
                       busy={busy}
+                      disabled={LOCKED_CHAT_SLUGS.includes(member.key)}
                       onClick={() => void toggleMember(member)}
                     />
                     <span id={`member-state-${member.key}`} className="sr-only">
