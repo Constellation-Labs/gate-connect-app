@@ -1,12 +1,20 @@
 # Questions for design, from the Figma audit
 
-Every question below came out of comparing the file against the shipped app,
-page by page. Each one is something the code cannot decide for itself: either
-the file disagrees with itself, or it disagrees with the app and we need to know
-which is right.
+Every question below came out of comparing the file against the shipped app.
+Each one is something the code cannot decide for itself: either the file
+disagrees with itself, or it disagrees with the app and we need to know which
+is right.
 
-Node ids are given so each can be opened directly. Evidence for all of it is in
-`docs/review-figma-*.md`.
+Two passes are behind this. The first compared values - type, colour, spacing,
+radius - page by page (`docs/review-figma-*.md`). The second compared **states
+and sequence**: which screens exist, in what order, and whether the code can
+reach each one (`docs/review-flow-*.md`). Questions 2 and 3 come from the
+second pass and are the two largest here, because they are about whether a
+capability exists at all rather than what it looks like.
+
+Node ids are given so each can be opened directly. Question 6 is kept as
+ANSWERED rather than deleted, because closing it changed a rule we had
+written down.
 
 ---
 
@@ -28,7 +36,71 @@ intended for *some* identifiers and not others, what separates them?
 
 ---
 
-## 2. Does the topnav menu have Quit, or Contact support?
+## 2. Does OpenCode get a model card at all?
+
+**What we see.** `App / Select multiple models (Opencode)` is a three-frame
+flow, and `662:17579` renders the OpenCode pane with a **complete Model
+selection card**: the radio pair with `Gate models` selected, a two-column
+`Current Gate models` grid (`Anthropic gate/opus 5`, `Deepseek
+gate/deepseek-v4-flash`, `Moonshot gate/kimi-k3`, each with its vendor mark), a
+`3 of 14 models enabled` footer and a `Choose models` button. The two frames
+after it are the picker open and the pane with four models chosen.
+
+Notably, the sidebar in that same frame files OpenCode under `OTHER TOOLS`, so
+the design **agrees** with us that it is a multi-provider tool - and still draws
+it a model card.
+
+**Why it matters.** We withhold the card entirely for multi-provider tools.
+OpenCode, OpenClaw and Hermes route whichever of their several configured
+providers Gate covers, so "which model does this app use on Gate" has no single
+answer for them - that is the reasoning in the code, and it is why no
+`onChooseModel` is passed and no card renders. If it is wrong, all three of
+those frames are currently unreachable and a shipped capability is missing. If
+it is right, three frames want deleting.
+
+This is the largest single disagreement the audit found, and it is not
+decidable by measurement.
+
+**What we need.** Should a multi-provider tool be able to pick Gate models? If
+yes, we need to know what the choice means when the tool asks for a provider
+Gate is not serving.
+
+---
+
+## 3. Which model-picker behaviour is correct?
+
+**What we see.** Two annotations, on two different sections, specifying
+different things:
+
+- `139:66782` (single, on a Claude Desktop frame): "When the user selects a
+  model it automatically closes the modal and applies their selection."
+- `671:19288` (multi, on the OpenCode frame): "When the user selects a model
+  (multiple) the modal stays open until the user confirms their selections.
+  Then the modal will close"
+
+The frames back both up structurally: the single dialog (`665:18400`) is 536
+tall and **has no footer at all** - no Cancel, no Apply - which only works if a
+row click is itself the commit. The multi one (`665:19064`) is 588 tall, and the
+52px difference is exactly the footer row of three buttons.
+
+**Why it matters.** We ship one dialog, the multi one, to everybody. So neither
+annotation is honoured on the surface it was written on: the auto-close was
+drawn on a single-provider tool that gets the confirm footer, and the
+confirm-footer flow was drawn on OpenCode, which cannot open the picker at all
+(question 2).
+
+And the two cannot simply both be built, because AG-590 requires that the last
+enabled model not be removable without choosing another. A click that both
+applies and closes cannot stop to say "that was your last model" - it has
+already closed.
+
+**What we need.** One behaviour, or a rule for when each applies. If auto-close
+is wanted for single-provider tools, we also need to know what should happen
+when the click would leave the tool with no model.
+
+---
+
+## 4. Does the topnav menu have Quit, or Contact support?
 
 **Found first, so this question could be asked at all.** We had this down as
 "the component library has been deleted", because the old Components page
@@ -56,7 +128,7 @@ support meant to ship before there is an address for it to open?
 
 ---
 
-## 3. Dialog buttons: 4px or 8px?
+## 5. Dialog buttons: 4px or 8px?
 
 **What we see.** Both, in roughly equal measure.
 
@@ -95,7 +167,7 @@ override; worth checking while you are in there.
 
 ---
 
-## 4. ANSWERED - there are at least four button sizes
+## 6. ANSWERED - there are at least four button sizes
 
 Left here for the record rather than deleted, because it changes what we build
 to. We asked whether a 24px button was real. It is, and it is named: Figma
@@ -110,7 +182,7 @@ for us - if that page could be shared it would save us guessing in future.
 
 ---
 
-## 5. Is the 536px dialog width intended?
+## 7. Is the 536px dialog width intended?
 
 **What we see.** The two quit confirmations (`694:33002`, `694:33340`) are
 536px wide. Every other dialog is 480, 512, 544 or 600.
@@ -125,7 +197,7 @@ drawn either way.
 
 ---
 
-## 6. Notifications: one row or three?
+## 8. Notifications: one row or three?
 
 **What we see.** `116:29086` draws a single row: "Alert me when a request is
 blocked or flagged".
@@ -142,7 +214,7 @@ wants blocked alerts.
 
 ---
 
-## 7. Model picker: confirm the current copy and the count slot
+## 9. Model picker: confirm the current copy and the count slot
 
 **What we see.** The two picker frames differ, and the app has ended up taking
 some of each.
@@ -164,7 +236,7 @@ confirm the "N selected" badge is retired in favour of the footer count.
 
 ---
 
-## 8. Two onboarding paragraphs the file does not draw
+## 10. Two onboarding paragraphs the file does not draw
 
 **What we see.** No frame draws step 1's paragraph about the key living in the
 OS keychain, or step 3's closing "That's all there is to it."
@@ -185,7 +257,7 @@ is still your call whether it belongs there.
 
 ---
 
-## 9. Apply changes: which button is the primary?
+## 11. Apply changes: which button is the primary?
 
 **What we see.** In the Apply-changes dialog the drawn weighting puts the
 emphasis opposite to where the app puts it.
@@ -201,7 +273,7 @@ button instead.
 
 ---
 
-## 10. Should the onboarding window be 1024 wide?
+## 12. Should the onboarding window be 1024 wide?
 
 **What we see.** The file annotates the app at **1024x720** (`App dimensions:
 1024x720px`, plus `1024px` and `720px` dimension labels on
@@ -219,7 +291,7 @@ below 1024.
 
 ---
 
-## 11. Two small inconsistencies to confirm or rebind
+## 13. Two small inconsistencies to confirm or rebind
 
 Neither changes much on screen, but both make the file ambiguous to measure.
 
@@ -238,13 +310,13 @@ would let us keep measuring node by node without second-guessing.
 
 ---
 
-## 12. "Routing" or "Routed" in the status banner?
+## 14. "Routing" or "Routed" in the status banner?
 
 **What we see.** The `banner/routing` **component** (`744:37758`) reads
 **"Routing"**. Every routed frame on Flows/Overview reads **"Routed · 4 of 4
 Apps"**, and that is what we ship.
 
-**Why it matters.** Same shape as question 2: the component and the instances
+**Why it matters.** Same shape as question 4: the component and the instances
 disagree, and we are following the instances. It is one word on the banner that
 sits above every screen, so we would rather it were deliberate.
 
@@ -252,7 +324,7 @@ sits above every screen, so we would rather it were deliberate.
 
 ---
 
-## 13. Is there meant to be a dot pattern behind the update banner?
+## 15. Is there meant to be a dot pattern behind the update banner?
 
 **What we see.** The banner's `dot-matrix-light` layer (in `744:37750`) is an
 **empty frame**. We rendered both the component and the flow instance
@@ -268,7 +340,7 @@ may want to restore the layer; if no we will remove them.
 
 ---
 
-## 14. Does the chart tooltip head with "12" or "12:00"?
+## 16. Does the chart tooltip head with "12" or "12:00"?
 
 **What we see.** The `chart/tooltip` component (`744:37709`) heads with a bare
 **"12"**. The redrawn chart axis (`706:*`) labels its ticks `HH:00`.
@@ -283,7 +355,7 @@ hour intended there?
 
 ---
 
-## 15. Is the Redacted chart series violet or purple?
+## 17. Is the Redacted chart series violet or purple?
 
 **What we see.** Two nodes, two colours, for the same series.
 
