@@ -592,17 +592,39 @@ impl ProxyManager {
     }
 
     /// Strip our drop-in and clear the snapshot - the safe "off" state when we
-    /// can't (or shouldn't) re-honor. Also reverts any half-open client to
+    /// can't (or shouldn't) re-honor. Also reverts whatever is intercepting to
     /// pass-through.
     fn force_clean_slate(&self) -> Result<()> {
-        if let Some(mut client) = self
-            .client
-            .lock()
-            .expect("proxy client mutex poisoned")
-            .take()
-        {
+        let mut guard = self.client.lock().expect("proxy client mutex poisoned");
+        // Adopt a running daemon when this process has none of its own, like
+        // `disable_inner`. Only `self.client` was consulted before, and a fresh
+        // process always holds `None` there - which is every startup reconcile,
+        // the only caller - so the clean slate stripped the drop-in and cleared
+        // the snapshot while leaving whatever was already intercepting to carry
+        // on. With the snapshot gone, `status`'s `engine_likely_running` gate
+        // never fires again, so the app reports the proxy off while that daemon
+        // keeps injecting credentials into the user's traffic, until an `enable`
+        // replaces it or the session ends.
+        //
+        // No build skew needed to reach it: we land here whenever `enable` fails
+        // above its `connect_or_spawn`, and everything up to that point is
+        // fallible - a keyring still locked at login is enough, since
+        // `ca::load_or_create` reads the CA key out of the secret store.
+        //
+        // `connect_existing_to_stop` for the same reason `disable_inner` uses
+        // it: a daemon from another build is one we must not configure but do
+        // need to stop. Cheap when nothing is listening (the connect fails
+        // outright); the control timeout only applies when a daemon is there
+        // but unresponsive, and reconcile runs off the main thread.
+        if guard.is_none() {
+            if let Ok(client) = HelperClient::connect_existing_to_stop() {
+                *guard = Some(client);
+            }
+        }
+        if let Some(mut client) = guard.take() {
             let _ = client.set_passthrough();
         }
+        drop(guard);
         system_proxy::force_off()?;
         system_proxy::clear_snapshot()?;
         Ok(())
