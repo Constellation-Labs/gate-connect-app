@@ -47,6 +47,22 @@ function renderTray(overrides: Partial<Parameters<typeof Tray>[0]> = {}) {
 
 afterEach(cleanup);
 
+type Row = SidebarGroup["apps"][number];
+
+/** The first group with one row carrying the given figures, the other bare. */
+const withFigures = (figures: Pick<Row, "messages" | "alerts">) => [
+  {
+    ...GROUPS[0],
+    apps: [{ ...GROUPS[0].apps[0], ...figures }, GROUPS[0].apps[1]],
+  },
+];
+const withAlerts = (alerts: Row["alerts"]) => withFigures({ alerts });
+
+/** The named app's own row, so a figure cannot be matched off a neighbouring row
+ *  or off the security card. */
+const rowOf = (name: string) => screen.getByText(name).closest("li");
+const row = (name: string) => rowOf(name)?.textContent ?? "";
+
 describe("the master status card", () => {
   it("reads protecting when every row is routed", () => {
     renderTray({
@@ -228,18 +244,6 @@ describe("signed out", () => {
  * cannot attribute draws nothing at all rather than a `0` nobody measured.
  */
 describe("the row activity line", () => {
-  /** Everything the named app's row says, so a figure cannot be matched off a
-   *  neighbouring row or off the security card. */
-  const row = (name: string) =>
-    screen.getByText(name).closest("li")?.textContent ?? "";
-
-  const withAlerts = (alerts: SidebarGroup["apps"][number]["alerts"]) => [
-    {
-      ...GROUPS[0],
-      apps: [{ ...GROUPS[0].apps[0], alerts }, GROUPS[0].apps[1]],
-    },
-  ];
-
   it("draws the count under the status", () => {
     renderTray({ groups: withAlerts({ kind: "count", count: 23 }) });
 
@@ -272,5 +276,75 @@ describe("the row activity line", () => {
 
     expect(row("Claude Code")).not.toContain("alert");
     expect(document.querySelectorAll(".animate-pulse")).toHaveLength(1);
+  });
+});
+
+/**
+ * The message half of the same line, which is a *held* figure rather than a live
+ * one - it comes off the last activity reading for that tool, refreshed when the
+ * quick status is looked at. So what matters here is that it reads as an answer
+ * and discloses its age.
+ */
+describe("the row message count", () => {
+  it("draws traffic first, then the subset that fired", () => {
+    renderTray({
+      groups: withFigures({
+        messages: { kind: "count", count: 1032, measuredAt: "14:03" },
+        alerts: { kind: "count", count: 23 },
+      }),
+    });
+
+    expect(row("Claude Code")).toContain("1,032 messages");
+    expect(row("Claude Code")).toContain("23 alerts");
+    expect(row("Claude Code").indexOf("messages")).toBeLessThan(
+      row("Claude Code").indexOf("alerts"),
+    );
+  });
+
+  it("says when the figure was measured, since the row cannot print it", () => {
+    renderTray({
+      groups: withFigures({
+        messages: { kind: "count", count: 8, measuredAt: "14:03" },
+      }),
+    });
+
+    // A held number that says nothing about its age reads as a live one, which is
+    // the reading principle 6 exists to prevent. The row has no width for it, so
+    // it goes in the tooltip.
+    const line = rowOf("Claude Code")?.querySelector("[title]");
+    expect(line?.getAttribute("title")).toBe("Messages measured 14:03");
+  });
+
+  it("drops the separator when only one half has a reading", () => {
+    // The common state on a fresh install: the feed has answered and no activity
+    // reading has landed yet.
+    renderTray({ groups: withAlerts({ kind: "count", count: 2 }) });
+
+    expect(row("Claude Code")).toContain("2 alerts");
+    expect(row("Claude Code")).not.toContain("messages");
+    expect(row("Claude Code")).not.toContain("\u00b7");
+  });
+
+  it("says a measured zero in words", () => {
+    renderTray({
+      groups: withFigures({ messages: { kind: "count", count: 0, measuredAt: "14:03" } }),
+    });
+
+    expect(row("Claude Code")).toContain("No messages");
+  });
+
+  it("holds a place for a figure still being read", () => {
+    renderTray({ groups: withFigures({ messages: { kind: "pending" } }) });
+
+    expect(row("Claude Code")).not.toContain("messages");
+    expect(document.querySelectorAll(".animate-pulse")).toHaveLength(1);
+  });
+
+  it("draws no tooltip for a figure with no age to report", () => {
+    // The alert half is live by construction and has nothing to disclose, so a
+    // row showing only alerts must not carry an empty or misleading title.
+    renderTray({ groups: withAlerts({ kind: "count", count: 2 }) });
+
+    expect(rowOf("Claude Code")?.querySelector("[title]")).toBeNull();
   });
 });

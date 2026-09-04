@@ -68,7 +68,20 @@ export type InventoryState =
  */
 export type RowCount =
   /** A real reading. `0` is an answer and prints as one. */
-  | { kind: "count"; count: number }
+  | {
+      kind: "count";
+      count: number;
+      /** When the gateway computed it, as a local clock time, for a figure that
+       * can be older than the moment it is drawn.
+       *
+       * Absent means "now": a count derived from the live feed is current by
+       * construction and has nothing to disclose. A held reading does - it can be
+       * a minute old, or the last thing that landed before the network went - and
+       * a row with no room to print an age says it in a tooltip instead. An age
+       * that has to be recomputed to stay true is why this is a clock time and
+       * not a duration; `ActivityView.takenAt` gives the same reasoning. */
+      measuredAt?: string;
+    }
   /** A read that is actually running has not answered yet. */
   | { kind: "pending" };
 
@@ -95,6 +108,16 @@ export interface SidebarApp {
   logo?: ReactNode;
   /** A toggle is in flight: the switch ignores clicks but keeps focus. */
   busy?: boolean;
+  /**
+   * Requests this app sent, from the last activity reading held for it.
+   *
+   * Drawn by the **tray** row, like `alerts`. Absent where no reading has landed:
+   * `GET /v1/me/activity` answers for one tool at a time, so the tray opens on
+   * what is on disk and refreshes what has gone stale rather than asking per row
+   * per open - see `lib/toolMessages.ts`. A chat domain has none at all, its
+   * traffic being unattributed at the gateway.
+   */
+  messages?: RowCount;
   /**
    * Blocked and flagged requests attributed to this app, from the live feed.
    *

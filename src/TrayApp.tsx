@@ -10,6 +10,7 @@ import type {
 } from "./lib/api";
 import {
   getAccount,
+  getAccountKeyPrefix,
   listProviders,
   listTools,
   proxyStatus,
@@ -28,6 +29,9 @@ import { openExternal } from "./lib/openExternal";
 import { GATE_DASHBOARD_URL, GATE_DOCS_URL } from "./lib/config";
 import { trustPromptHint, usePlatform } from "./lib/platform";
 import { useSecurityFeed } from "./lib/securityFeed";
+import { useInstallations } from "./lib/activity";
+import { useToolMessages } from "./lib/toolMessages";
+import type { ToolMessagesView } from "./lib/toolMessages";
 import { Tray } from "./components/gc/Tray";
 import type { TrayMenuAction, TrayNotInstalledApp } from "./components/gc/Tray";
 import type { SidebarApp, SidebarGroup } from "./components/gc/Sidebar";
@@ -43,6 +47,29 @@ import {
 
 /** A whole reading, compared by value: every read builds fresh objects. */
 const detectionSignature = (reading: unknown): string => JSON.stringify(reading);
+
+/**
+ * One row's messages figure, or nothing.
+ *
+ * Three states and no fourth. A reading - including a measured zero, which the
+ * row says in words - carries the age the gateway computed it at, so a held
+ * number can disclose that it is held. A first read still in flight holds a
+ * place. Anything else draws nothing at all: no account, an unattributed machine,
+ * a gateway that refused, or a row whose traffic the gateway cannot attribute.
+ * A `0` for any of those would be a claim about this person's traffic that
+ * nothing measured.
+ */
+function messageFigure(
+  byTool: ToolMessagesView["byTool"],
+  pending: ToolMessagesView["pending"],
+  slug: string,
+): SidebarApp["messages"] {
+  const held = byTool.get(slug);
+  if (held) {
+    return { kind: "count", count: held.messages, measuredAt: held.measuredAt };
+  }
+  return pending.has(slug) ? { kind: "pending" } : undefined;
+}
 
 /**
  * The tray popover's shell (window label `tray`): the quick-status surface the
@@ -65,6 +92,13 @@ export function TrayApp() {
   const [loaded, setLoaded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [notInstalledOpen, setNotInstalledOpen] = useState(false);
+  /** The account's key prefix, which is what makes a replaced api key a different
+   *  credential. Read back after every account read for the reason
+   *  `activity_cache.rs` records: in api-key mode the org is whatever the gateway
+   *  resolves the *key* to, so without this a key swap to another org on the same
+   *  gateway leaves every scope string byte-identical and the previous org's
+   *  figures stay on screen under the new org's name. */
+  const [keyPrefix, setKeyPrefix] = useState<string | null>(null);
   const [actionError, setActionError] = useState<ClassifiedError | null>(null);
   const platform = usePlatform();
 
@@ -125,16 +159,18 @@ export function TrayApp() {
 
   useEffect(() => {
     void (async () => {
-      const [t, p, px, acct] = await Promise.all([
+      const [t, p, px, acct, prefix] = await Promise.all([
         listTools().catch(() => null),
         listProviders().catch(() => [] as ProviderState[]),
         proxyStatus().catch(() => null),
         getAccount().catch(() => null),
+        getAccountKeyPrefix().catch(() => null),
       ]);
       setTools(t ?? []);
       setProviders(p);
       setProxy(px);
       setAccount(acct);
+      setKeyPrefix(prefix);
       void refreshVerdicts();
       setLoaded(true);
     })();
@@ -161,12 +197,44 @@ export function TrayApp() {
     };
   }, [redetect]);
 
+  /**
+   * The session changed in the other window: an org switch, a replaced key, a
+   * gateway switch, a sign-out, a disconnect.
+   *
+   * This popover renders one account's everything - the org name in the footer,
+   * the security card's count, the per-row figures - and every one of those is
+   * keyed on `credential`, which is derived from state read here. Without this
+   * the tray kept the previous org's numbers until something unrelated woke it,
+   * and after a sign-out it kept figures for an account that could no longer read
+   * them. `signal_session_changed` in the Rust shell is the other half.
+   *
+   * Only the account is re-read: the tools, the proxy and the verdicts are not
+   * the session's, and `proxy-state-changed` and `tools-changed` already cover
+   * them.
+   */
+  useEffect(() => {
+    const unlisten = listen("session-changed", () => {
+      void getAccount()
+        .then(setAccount)
+        .catch(() => {});
+      void getAccountKeyPrefix()
+        .then(setKeyPrefix)
+        .catch(() => {});
+    });
+    return () => {
+      void unlisten.then((off) => off()).catch(() => {});
+    };
+  }, []);
+
   // The engine changes state without us asking - a CLI toggle, the other
   // window, the startup auto-enable - and the account changes under an org
   // switch made in the main window. Repaint from the event.
   useEffect(() => {
     const unlisten = listen("proxy-state-changed", () => {
       void refresh();
+      void getAccountKeyPrefix()
+        .then(setKeyPrefix)
+        .catch(() => {});
       void getAccount()
         .then(setAccount)
         .catch(() => {});
@@ -219,11 +287,50 @@ export function TrayApp() {
     [providers, tools, proxy],
   );
 
-  // The live security-event feed (AG-578). Keyed on the org so a switch does not
-  // leave the previous org's count on screen, matching the window shell.
-  const securityFeed = useSecurityFeed(
-    account !== null,
-    account ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}` : "",
+  /** Whose readings these are. Identical in shape to `NewUiApp`'s, key prefix
+   *  included: anything keyed on this must drop when the credential changes, and
+   *  a replaced api key is a changed credential even when every other field is
+   *  the same. */
+  const credential = account
+    ? `${account.auth_mode}|${account.gateway_base_url}|${account.org_id ?? ""}|${keyPrefix ?? ""}`
+    : "";
+
+  // The live security-event feed (AG-578). Keyed on the credential so a switch
+  // does not leave the previous org's count on screen, matching the window shell.
+  const securityFeed = useSecurityFeed(account !== null, credential);
+
+  /**
+   * This machine, as the gateway names it.
+   *
+   * Read here for the same reason the window reads it: a null `installId` means
+   * *org-wide*, not "this machine", so a figure fetched without one would put the
+   * whole org's traffic on this machine's rows. `resolved` is what separates "not
+   * asked yet" from "asked, and this machine is unattributed" - only the first is
+   * worth waiting for.
+   */
+  const installs = useInstallations(account !== null, credential);
+  const machineKnown = installs.resolved && installs.current !== null;
+
+  /**
+   * The messages figure per row, off the held readings and refreshed on each look.
+   *
+   * The rows are the config tools only. A chat domain's traffic arrives at the
+   * gateway unattributed on purpose, so there is no per-tool reading to ask for -
+   * the same reason its alert count is absent rather than zero.
+   */
+  const messageSlugs = useMemo(
+    () => tools.filter((t) => t.status.kind !== "not_installed").map((t) => t.slug),
+    [tools],
+  );
+  // Destructured, not held as the view object. The hook returns a fresh literal
+  // every render, so depending on it made `apps` - and `trayGroups` below it -
+  // recompute on every render. `alertCounts` above depends on `securityFeed`'s
+  // fields for exactly this reason.
+  const { byTool: messagesByTool, pending: messagesPending } = useToolMessages(
+    account !== null && machineKnown,
+    messageSlugs,
+    installs.current,
+    credential,
   );
 
   /**
@@ -274,6 +381,10 @@ export function TrayApp() {
           on: t.status.kind === "connected" || t.status.kind === "drifted",
           logo: brandMarkFor(t.slug),
           busy: routingBusy,
+          // A held figure outranks the pending state, so a look that re-reads
+          // keeps the last number on the row instead of blanking it for the
+          // length of a fetch. The skeleton is the first read only.
+          messages: messageFigure(messagesByTool, messagesPending, t.slug),
           alerts: alertCounts
             ? { kind: "count", count: alertCounts.get(t.slug) ?? 0 }
             : alertsPending
@@ -287,6 +398,8 @@ export function TrayApp() {
       routingBusy,
       alertCounts,
       alertsPending,
+      messagesByTool,
+      messagesPending,
     ],
   );
 
