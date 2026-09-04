@@ -31,6 +31,14 @@ use gate_connect_core::proxy::helper_client::{self, HelperClient};
 fn setup() {
     let tmp = std::env::temp_dir().join(format!("gate-stale-handshake-{}", std::process::id()));
     std::env::set_var("XDG_RUNTIME_DIR", &tmp);
+    // The control channel follows `GATE_CONNECT_TEST_HOME` in preference to
+    // `$XDG_RUNTIME_DIR`, so an ambient one (exported in the shell) would
+    // override the per-pid dir this test isolates itself with - and every
+    // daemon test binary, which `cargo test` runs concurrently, would land on
+    // one socket path and race. This test wants production resolution of the
+    // var it just set, so drop the seam, as `audit_e2e` does for the same
+    // reason.
+    std::env::remove_var("GATE_CONNECT_TEST_HOME");
     // `token_path()` resolves (and creates, 0700) the runtime dir for us.
     let token_path = control::token_path().expect("token path");
     std::fs::write(&token_path, "test-token").expect("write token");
@@ -39,6 +47,14 @@ fn setup() {
 /// The read-only probe: what `proxy status` does to a daemon it finds.
 fn probe() -> Result<(), String> {
     HelperClient::connect_existing()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// The stop path: what `disable` does. It must reach a daemon from another
+/// build, which it may not configure but does need to turn off.
+fn stop() -> Result<(), String> {
+    HelperClient::connect_existing_to_stop()
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
@@ -153,6 +169,20 @@ fn probe_leaves_a_stale_daemon_running_and_retire_ends_it() {
     assert!(
         !skewed_shutdown,
         "probing a build-skewed daemon must leave it running"
+    );
+
+    // `disable` must still reach a build-skewed daemon. Refusing it here left
+    // one intercepting with the snapshot cleared, which `status` then reports
+    // as stopped for good - the state `proxy disable` exists to escape.
+    let (stoppable, stop_shutdown) = run_scenario(PROTOCOL_VERSION, "", stop);
+    assert!(
+        stoppable.is_ok(),
+        "a build-skewed daemon must still be reachable to stop, got {stoppable:?}"
+    );
+    assert!(
+        !stop_shutdown,
+        "connecting to stop must not itself end the daemon: the caller decides \
+         between SetPassthrough and Shutdown"
     );
 
     // The path that does mean it still ends a stale daemon by asking, not by

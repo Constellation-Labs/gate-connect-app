@@ -36,9 +36,13 @@ pub struct HelperClient {
 
 /// Sentinel error: a daemon is listening and authenticated, but reported a
 /// different [`control::PROTOCOL_VERSION`] or [`control::BUILD_FINGERPRINT`]
-/// (typically one left over from an older build). Carried via `anyhow` and
-/// matched in [`HelperClient::connect_or_spawn`], which replaces the daemon
-/// rather than reusing it.
+/// (typically one left over from an older build), or answered something we
+/// could not parse at all.
+///
+/// Carried via `anyhow` and what [`HelperClient::connect_existing`] hands every
+/// caller for such a daemon - it no longer ends one, so the verdict travels
+/// rather than the kill. [`HelperClient::connect_or_spawn`] matches on it to
+/// replace the daemon, and [`shutdown_daemon`] to make sure it's gone.
 #[derive(Debug)]
 struct StaleDaemon;
 
@@ -120,6 +124,26 @@ impl HelperClient {
         match Self::connect_and_classify()? {
             Reached::SameBuild(client) => Ok(client),
             Reached::Stale(_) => Err(anyhow::Error::new(StaleDaemon)),
+        }
+    }
+
+    /// Connect to an already-listening daemon in order to *end* its
+    /// interception, accepting one from another build.
+    ///
+    /// [`Self::connect_existing`] refuses a build-skewed daemon because its
+    /// behavior may differ from ours - a stale catalog, a different relay rule -
+    /// which makes it unfit to *configure*. Stopping it is the one intent that
+    /// survives the skew: `SetPassthrough` and `Shutdown` mean the same thing in
+    /// every build, and a daemon we cannot reconfigure is precisely the one a
+    /// user reaching for `proxy disable` most needs turned off. Refusing here
+    /// instead left it intercepting with the snapshot cleared, which `status`
+    /// then reports as stopped for good.
+    ///
+    /// So send only requests whose meaning cannot drift between builds.
+    /// Anything build-sensitive belongs behind [`Self::connect_existing`].
+    pub fn connect_existing_to_stop() -> Result<HelperClient> {
+        match Self::connect_and_classify()? {
+            Reached::SameBuild(client) | Reached::Stale(client) => Ok(client),
         }
     }
 

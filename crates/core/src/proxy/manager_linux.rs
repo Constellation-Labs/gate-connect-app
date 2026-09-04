@@ -304,8 +304,15 @@ impl ProxyManager {
         // is exactly the state a user runs this to escape - and it is rare and
         // explicit enough to afford the control timeout when there turns out
         // to be nothing to adopt.
+        //
+        // `connect_existing_to_stop`, not `connect_existing`, for the same
+        // reason: a daemon from another build is one we must not *configure*
+        // but very much still want to stop, and refusing it here would clear
+        // the snapshot while leaving it intercepting - which `status` then
+        // reports as stopped for good, since its snapshot gate never fires
+        // again.
         if guard.is_none() {
-            if let Ok(client) = HelperClient::connect_existing() {
+            if let Ok(client) = HelperClient::connect_existing_to_stop() {
                 *guard = Some(client);
             }
         }
