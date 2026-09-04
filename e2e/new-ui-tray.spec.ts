@@ -119,4 +119,23 @@ test.describe("tray popover", () => {
 
     await expect(row.first()).toBeVisible();
   });
+
+  test("an org switch in the other window reaches the popover", async ({ boot }) => {
+    // The popover renders one account's everything - the footer's org, the
+    // security count, the per-row figures - and all of it is keyed on state read
+    // at mount. None of the account-mutating commands emitted anything, so the
+    // tray kept the previous org until something unrelated woke it. `set_org` and
+    // its siblings emit `session-changed` now; this is the listener.
+    const app = await boot({ windowLabel: "tray" });
+    await expect(app.page.getByText("Constellation Labs")).toBeVisible();
+
+    // Switched in the main window, which this popover cannot see happen.
+    await app.patch({ account: { org_name: "Side Project" } });
+    await expect(app.page.getByText("Constellation Labs")).toBeVisible();
+
+    await app.emit("session-changed");
+
+    await expect(app.page.getByText("Side Project")).toBeVisible();
+    await expect(app.page.getByText("Constellation Labs")).toHaveCount(0);
+  });
 });

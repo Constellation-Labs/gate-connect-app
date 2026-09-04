@@ -197,6 +197,35 @@ export function TrayApp() {
     };
   }, [redetect]);
 
+  /**
+   * The session changed in the other window: an org switch, a replaced key, a
+   * gateway switch, a sign-out, a disconnect.
+   *
+   * This popover renders one account's everything - the org name in the footer,
+   * the security card's count, the per-row figures - and every one of those is
+   * keyed on `credential`, which is derived from state read here. Without this
+   * the tray kept the previous org's numbers until something unrelated woke it,
+   * and after a sign-out it kept figures for an account that could no longer read
+   * them. `signal_session_changed` in the Rust shell is the other half.
+   *
+   * Only the account is re-read: the tools, the proxy and the verdicts are not
+   * the session's, and `proxy-state-changed` and `tools-changed` already cover
+   * them.
+   */
+  useEffect(() => {
+    const unlisten = listen("session-changed", () => {
+      void getAccount()
+        .then(setAccount)
+        .catch(() => {});
+      void getAccountKeyPrefix()
+        .then(setKeyPrefix)
+        .catch(() => {});
+    });
+    return () => {
+      void unlisten.then((off) => off()).catch(() => {});
+    };
+  }, []);
+
   // The engine changes state without us asking - a CLI toggle, the other
   // window, the startup auto-enable - and the account changes under an org
   // switch made in the main window. Repaint from the event.
