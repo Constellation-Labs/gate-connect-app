@@ -710,12 +710,18 @@ export function DiagnosticsPane({
   share,
   onToggleShare,
   busy,
+  error,
   onContinue,
   onSkip,
 }: {
   share: boolean;
   onToggleShare: () => void;
   busy?: boolean;
+  /** A failed write, shown HERE. Every sibling pane takes this; this one did
+   *  not, and its caller sent the failure to the shell banner instead - which
+   *  does not exist during setup. Both buttons then did nothing, forever, with
+   *  nothing on screen and no way past this step. */
+  error?: ReactNode;
   onContinue: () => void;
   /** The drawn "Skip data sharing" link: records sharing off and finishes. */
   onSkip: () => void;
@@ -748,6 +754,8 @@ export function DiagnosticsPane({
           <BaseSwitch on={share} label="Diagnostic data sharing" onClick={onToggleShare} />
         </span>
       </div>
+
+      {error && <SetupError>{error}</SetupError>}
 
       <div className="flex flex-col gap-2">
         <PrimaryButton onClick={onContinue} busy={busy}>

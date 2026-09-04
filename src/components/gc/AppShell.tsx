@@ -99,7 +99,11 @@ export function AppShell({
         totalCount={routing.totalCount}
       />
 
-      {notice}
+      {/* Above the modal scrim (`Modal` is z-20). A failed rename or key
+        * replacement is reported here and nowhere else, and under the scrim
+        * its dismiss button sat beneath a full-window overlay - readable,
+        * unclickable. */}
+      {notice && <div className="relative z-30">{notice}</div>}
 
       <div className="flex min-h-0 flex-1">
         <Sidebar

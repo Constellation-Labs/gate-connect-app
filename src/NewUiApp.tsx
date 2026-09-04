@@ -1504,7 +1504,8 @@ export function NewUiApp() {
           account?.auth_mode === "api_key"
             ? () => void switchToGateAccount()
             : undefined,
-        signInNote: settings.busy
+        // `oauthBusy`, not `busy`: only the OAuth upgrade opens a browser.
+        signInNote: settings.oauthBusy
           ? "Finish signing in on the page that opened in your browser."
           : undefined,
         // Only where there is a session to end. An API-key account never had one;
@@ -1632,37 +1633,31 @@ export function NewUiApp() {
     (a) => a.status.kind === "protected",
   ).length;
 
-  // A drifted app's sidebar switch reads on - intent, and drift means the config
-  // changed behind Gate rather than the user turning it off. So the sidebar can
-  // only turn it off, and re-adopting is this card's job. Its switch reads off
-  // because the app is not protected, and flipping it on is what reaches the
-  // review gate.
-  const drifted = useMemo(
-    () => tools.filter((t) => t.status.kind === "drifted"),
-    [tools],
+  /**
+   * The open app's own notice, for its own pane.
+   *
+   * This was a drift-only card built from `drifted[0]` - the first drifted
+   * tool ANYWHERE - and handed to whichever pane happened to be open, so with
+   * Codex drifted and Claude Desktop's pane open, Claude Desktop drew a card
+   * whose body named Codex.
+   *
+   * It also only ever fired for drift, while `notices.ts` already had the copy
+   * for master-off, needs-trust and error. The one cause `Flows / App` draws
+   * (`116:30663`, "Claude Desktop isn't protected / Routing is set to off") is
+   * master-off, and it never appeared on the pane that names the app it is
+   * about - only on Overview. Both halves are the same mistake: the pane was
+   * not asking about itself.
+   *
+   * No paging: this card is one app's, and the drawn chevrons belong to the
+   * multiple-apps variant on Overview.
+   */
+  const paneNotice = useMemo(
+    () =>
+      view.kind === "app"
+        ? (notices.find((n) => n.memberKey === view.slug) ?? null)
+        : null,
+    [notices, view],
   );
-  const driftAlert = drifted.length ? (
-    <AlertBanner
-      // The drawn drift variant (banner/alert/single-app, read 2026-08-23)
-      // titles the card with the remedy. Its body says "This app's"; the name
-      // goes there instead because this card can page between apps, and two
-      // drifted tools must not read identically. Raised with the designer.
-      title="Reconnect to restore protection"
-      body={`${drifted[0].name}'s config changed outside Gate, so its traffic isn't routed.`}
-      on={false}
-      switchLabel={drifted[0].name}
-      onToggle={() => void routeApp(drifted[0].slug, true)}
-      onDismiss={noop}
-      paging={
-        drifted.length > 1
-          ? // Paging is drawn for the multiple-apps variant. Selecting which app
-            // the card shows is not wired yet, so the controls stay inert rather
-            // than pretending to page.
-            { onPrev: noop, onNext: noop }
-          : undefined
-      }
-    />
-  ) : undefined;
 
   /**
    * The config-routed tools a quit would strand: connected or drifted, either
@@ -1708,6 +1703,15 @@ export function NewUiApp() {
   );
 
   const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;
+  /** A failed diagnostics write. Its own state because the write is not the
+   *  setup hook's, and because it used to go to `setActionError` - which
+   *  renders in `AppShell`, and `AppShell` is not on screen during setup. A
+   *  user whose preference write failed saw nothing happen, on either button,
+   *  with no way forward and no help from restarting: the stage is derived
+   *  from the stored flag, so it stayed on this step. */
+  const [diagnosticsError, setDiagnosticsError] = useState<ClassifiedError | null>(
+    null,
+  );
 
   // Before there is a usable credential there is nothing to navigate, so the
   // window is chrome plus one centred card rather than the shell with an empty
@@ -1720,7 +1724,7 @@ export function NewUiApp() {
   }
   if (setup.stage.kind !== "ready") {
     const stage = setup.stage;
-    const gatewayPicker = (
+    const gatewayPicker = !import.meta.env.DEV ? undefined : (
       <GatewayPicker
         value={setup.gateway}
         servers={GATEWAY_SERVERS}
@@ -1806,24 +1810,27 @@ export function NewUiApp() {
               )
             }
             busy={setup.busy}
+            error={diagnosticsError && <SetupNote error={diagnosticsError} />}
             onContinue={() => {
               // Records the *displayed* value, changed or not: leaving the default
               // in place is an answer, and treating it as unanswered would ask
               // again on the next launch. This is also what dismisses the step,
               // since the stage is derived from the stored flag.
               const share = prefs?.share_diagnostics ?? true;
+              setDiagnosticsError(null);
               setAnalyticsConsent(share);
               void setShareDiagnostics(share)
-                .catch((e) => setActionError(classifyError(e, "generic")))
+                .catch((e) => setDiagnosticsError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());
             }}
             onSkip={() => {
               // The drawn escape. Skipping consent is declining it: recorded as
               // off, not left unanswered, or the step would ask again next
               // launch and a skipped default-on would keep collecting.
+              setDiagnosticsError(null);
               setAnalyticsConsent(false);
               void setShareDiagnostics(false)
-                .catch((e) => setActionError(classifyError(e, "generic")))
+                .catch((e) => setDiagnosticsError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());
             }}
           />
@@ -2356,7 +2363,20 @@ export function NewUiApp() {
           }}
           alert={
             <>
-              {driftAlert}
+              {paneNotice && (
+                <AlertBanner
+                  key={paneNotice.id}
+                  title={paneNotice.title}
+                  body={paneNotice.body}
+                  switchLabel={paneNotice.switchLabel}
+                  on={false}
+                  busy={noticeBusy || routingBusy}
+                  onToggle={() => void runNoticeAction(paneNotice.action)}
+                  onDismiss={() =>
+                    setDismissedNotices((d) => [...d, paneNotice.id])
+                  }
+                />
+              )}
               {modelError && (
                 // The gateway's own sentence, not a code. A role refusal and a
                 // dead network want different things from the reader, and on a
