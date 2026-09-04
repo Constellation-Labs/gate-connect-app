@@ -1180,24 +1180,68 @@ pub(crate) fn apply_rewrite<T>(
 
     *req.uri_mut() = Uri::from_parts(parts).context("rebuilding rewritten request URI")?;
 
-    let headers = req.headers_mut();
+    // Credential first: `inject_gate_credential` is what stamps the model header
+    // (through `inject_attribution`), so asking whether this request is served
+    // before it runs would always answer no.
     let injected_oauth =
-        super::inject_gate_credential(headers, api_key, oauth_token, org_id, mode)?;
-    // Serving is the ABSENCE of this header: with it the gateway forwards under
-    // the caller's own credential (BYOK), without it the gateway resolves one of
-    // the org's provider accounts and debits its balance. Nothing else in the
-    // request says which it is.
+        super::inject_gate_credential(req.headers_mut(), api_key, oauth_token, org_id, mode)?;
+
+    // Serving is the ABSENCE of the upstream hint: with it the gateway forwards
+    // under the caller's own credential (BYOK), without it the gateway resolves
+    // one of the org's provider accounts and debits its balance. Nothing else in
+    // the request says which it is.
     //
     // Two independent things ask Gate to serve, and either is enough: the org
     // routes this domain pay-as-you-go, or the user put this tool on a Gate
     // model - read back from the header `inject_model_choice` has just stamped,
     // rather than derived a second time. See the relay's copy of this branch;
     // the two paths must agree, because a tool can reach Gate through either.
-    if mode == BillingMode::Byok && !super::serves_gate_model(headers) {
+    //
+    // The Gate-model half additionally turns on the PATH, and that is the
+    // difference between a served request and a hung one: the gateway can only
+    // answer for the routes it implements, and withholding the hint on any other
+    // leaves it with nothing to forward to and nothing to answer with, so the
+    // caller waits. PAYG is not gated that way - the org routes that domain and
+    // its forwarded path is already a shape the gateway serves. See `serve_path`.
+    let model_serve_path = if super::serves_gate_model(req.headers()) {
+        super::serve_path(req.uri().path())
+    } else {
+        None
+    };
+
+    if let Some(gateway_path) = model_serve_path {
+        // Onto the servable path, keeping the query. `/codex/responses` is
+        // answered at `/v1/responses`: the same wire format, under a route the
+        // gateway implements.
+        let query = req.uri().query().map(str::to_string);
+        let mut parts = req.uri().clone().into_parts();
+        parts.path_and_query = Some(
+            match query.as_deref() {
+                Some(q) => format!("{gateway_path}?{q}"),
+                None => gateway_path.to_string(),
+            }
+            .parse()
+            .context("rebuilding request path onto the servable gateway route")?,
+        );
+        *req.uri_mut() = Uri::from_parts(parts).context("rebuilding served request URI")?;
+    }
+
+    let headers = req.headers_mut();
+    if mode == BillingMode::Byok && model_serve_path.is_none() {
         headers.insert(
             super::UPSTREAM_URL_HEADER,
             HeaderValue::from_str(upstream_url).context("building x-gate-upstream-url header")?,
         );
+        // The model header goes too. It is not a label: its own contract says it
+        // CHANGES WHAT THE GATEWAY SERVES, and it is sent only when the user put
+        // this tool on a Gate model. Leaving it on a forwarded request states
+        // both "Gate serves this, bill the org" and "send this to my own
+        // provider under my own key" at once, and the body's model would be
+        // rewritten to a Gate id the tool's own provider has never heard of.
+        // Unreachable before the serve rewrite existed, because the request hung
+        // instead of falling back; reachable now on any path Gate does not
+        // serve, such as `count_tokens`.
+        headers.remove(super::GATE_MODEL_HEADER);
     } else {
         // REMOVED, not merely left unwritten: a caller cannot smuggle BYOK back
         // in on a served rewrite, which would both escape the serve routing and

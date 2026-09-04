@@ -68,6 +68,7 @@ import {
   GATE_DOCS_URL,
   GATE_POLICIES_URL,
   GATE_SAVINGS_URL,
+  GATE_SUPPORT_URL,
 } from "./lib/config";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
@@ -86,7 +87,7 @@ import { useToolEvents } from "./lib/toolEvents";
 import { buildNotices } from "./lib/notices";
 import type { NoticeAction } from "./lib/notices";
 import type { ActivityFailure, ActivityView } from "./lib/activity";
-import { failureNotice, sectionNotice } from "./lib/activityGaps";
+import { failureNotice, mergeNotices, sectionNotice } from "./lib/activityGaps";
 import type { GapActionKind } from "./lib/activityGaps";
 import {
   SettingsPane,
@@ -770,7 +771,12 @@ export function NewUiApp() {
       void refresh();
     });
     return () => {
-      void unlisten.then((off) => off());
+      // Swallowed on purpose. Tauri's unregisterListener throws if the listener
+      // is already gone, which happens routinely on teardown, and an uncaught
+      // rejection here is reported by the global handler as an app ERROR in the
+      // diagnostic log - a failure that never happened, sitting where someone
+      // debugging a real one will read it first.
+      void unlisten.then((off) => off()).catch(() => {});
     };
   }, [refresh]);
 
@@ -1009,6 +1015,7 @@ export function NewUiApp() {
     async (slug: string, next: boolean, force = false) => {
       setActionError(null);
       if (await routing.setAppRouted(slug, next, force)) {
+        // Only this tool's processes: its route is the only one that moved.
         await runningApps.offerAfterChange([slug]);
       }
     },
@@ -1493,7 +1500,8 @@ export function NewUiApp() {
           account?.auth_mode === "api_key"
             ? () => void switchToGateAccount()
             : undefined,
-        signInNote: settings.busy
+        // `oauthBusy`, not `busy`: only the OAuth upgrade opens a browser.
+        signInNote: settings.oauthBusy
           ? "Finish signing in on the page that opened in your browser."
           : undefined,
         // Only where there is a session to end. An API-key account never had one;
@@ -1553,11 +1561,11 @@ export function NewUiApp() {
         },
         onRetryPreferences: () => void loadPreferences(),
         onOpenDocs: () => openLink(GATE_DOCS_URL),
-        // No `onContactSupport`, so the row is omitted. `GATE_SUPPORT_URL` does
-        // exist in `lib/config.ts` - but it 404s, so there is still nothing to
-        // open, and a button that opens a broken page is worse than an absent
-        // one. The topnav's Contact support entry is dark for the same reason.
-        // See that constant for what has to change first (AG-598).
+        // No `onContactSupport`, so the row is omitted - and this is NOT the
+        // same call as the topnav's. No Settings frame draws a Support row, so
+        // there is nothing to match here; the menu entry is drawn in two
+        // places and now ships despite `GATE_SUPPORT_URL` 404ing (see
+        // `TopnavAction`). Draw one and this gets it too.
 
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
@@ -1621,37 +1629,31 @@ export function NewUiApp() {
     (a) => a.status.kind === "protected",
   ).length;
 
-  // A drifted app's sidebar switch reads on - intent, and drift means the config
-  // changed behind Gate rather than the user turning it off. So the sidebar can
-  // only turn it off, and re-adopting is this card's job. Its switch reads off
-  // because the app is not protected, and flipping it on is what reaches the
-  // review gate.
-  const drifted = useMemo(
-    () => tools.filter((t) => t.status.kind === "drifted"),
-    [tools],
+  /**
+   * The open app's own notice, for its own pane.
+   *
+   * This was a drift-only card built from `drifted[0]` - the first drifted
+   * tool ANYWHERE - and handed to whichever pane happened to be open, so with
+   * Codex drifted and Claude Desktop's pane open, Claude Desktop drew a card
+   * whose body named Codex.
+   *
+   * It also only ever fired for drift, while `notices.ts` already had the copy
+   * for master-off, needs-trust and error. The one cause `Flows / App` draws
+   * (`116:30663`, "Claude Desktop isn't protected / Routing is set to off") is
+   * master-off, and it never appeared on the pane that names the app it is
+   * about - only on Overview. Both halves are the same mistake: the pane was
+   * not asking about itself.
+   *
+   * No paging: this card is one app's, and the drawn chevrons belong to the
+   * multiple-apps variant on Overview.
+   */
+  const paneNotice = useMemo(
+    () =>
+      view.kind === "app"
+        ? (notices.find((n) => n.memberKey === view.slug) ?? null)
+        : null,
+    [notices, view],
   );
-  const driftAlert = drifted.length ? (
-    <AlertBanner
-      // The drawn drift variant (banner/alert/single-app, read 2026-08-23)
-      // titles the card with the remedy. Its body says "This app's"; the name
-      // goes there instead because this card can page between apps, and two
-      // drifted tools must not read identically. Raised with the designer.
-      title="Reconnect to restore protection"
-      body={`${drifted[0].name}'s config changed outside Gate, so its traffic isn't routed.`}
-      on={false}
-      switchLabel={drifted[0].name}
-      onToggle={() => void routeApp(drifted[0].slug, true)}
-      onDismiss={noop}
-      paging={
-        drifted.length > 1
-          ? // Paging is drawn for the multiple-apps variant. Selecting which app
-            // the card shows is not wired yet, so the controls stay inert rather
-            // than pretending to page.
-            { onPrev: noop, onNext: noop }
-          : undefined
-      }
-    />
-  ) : undefined;
 
   /**
    * The config-routed tools a quit would strand: connected or drifted, either
@@ -1676,6 +1678,9 @@ export function NewUiApp() {
     (action: TopnavAction) => {
       setMenuOpen(false);
       if (action === "dashboard") openLink(GATE_DASHBOARD_URL);
+      // Drawn in the menu and shipped even though the address 404s today; the
+      // decision and the reasoning it overruled are on `TopnavAction`.
+      else if (action === "support") openLink(GATE_SUPPORT_URL);
       // The docs entry was drawn, listed and dead: `GATE_DOCS_URL` is the same one
       // the Settings row opens.
       else if (action === "docs") openLink(GATE_DOCS_URL);
@@ -1697,6 +1702,15 @@ export function NewUiApp() {
   );
 
   const setupError = setup.error ? classifyError(setup.error, "sign_in") : null;
+  /** A failed diagnostics write. Its own state because the write is not the
+   *  setup hook's, and because it used to go to `setActionError` - which
+   *  renders in `AppShell`, and `AppShell` is not on screen during setup. A
+   *  user whose preference write failed saw nothing happen, on either button,
+   *  with no way forward and no help from restarting: the stage is derived
+   *  from the stored flag, so it stayed on this step. */
+  const [diagnosticsError, setDiagnosticsError] = useState<ClassifiedError | null>(
+    null,
+  );
 
   // Before there is a usable credential there is nothing to navigate, so the
   // window is chrome plus one centred card rather than the shell with an empty
@@ -1709,7 +1723,7 @@ export function NewUiApp() {
   }
   if (setup.stage.kind !== "ready") {
     const stage = setup.stage;
-    const gatewayPicker = (
+    const gatewayPicker = !import.meta.env.DEV ? undefined : (
       <GatewayPicker
         value={setup.gateway}
         servers={GATEWAY_SERVERS}
@@ -1795,24 +1809,27 @@ export function NewUiApp() {
               )
             }
             busy={setup.busy}
+            error={diagnosticsError && <SetupNote error={diagnosticsError} />}
             onContinue={() => {
               // Records the *displayed* value, changed or not: leaving the default
               // in place is an answer, and treating it as unanswered would ask
               // again on the next launch. This is also what dismisses the step,
               // since the stage is derived from the stored flag.
               const share = prefs?.share_diagnostics ?? true;
+              setDiagnosticsError(null);
               setAnalyticsConsent(share);
               void setShareDiagnostics(share)
-                .catch((e) => setActionError(classifyError(e, "generic")))
+                .catch((e) => setDiagnosticsError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());
             }}
             onSkip={() => {
               // The drawn escape. Skipping consent is declining it: recorded as
               // off, not left unanswered, or the step would ask again next
               // launch and a skipped default-on would keep collecting.
+              setDiagnosticsError(null);
               setAnalyticsConsent(false);
               void setShareDiagnostics(false)
-                .catch((e) => setActionError(classifyError(e, "generic")))
+                .catch((e) => setDiagnosticsError(classifyError(e, "generic")))
                 .finally(() => void loadPreferences());
             }}
           />
@@ -2031,6 +2048,9 @@ export function NewUiApp() {
               appFor(apps, view.kind === "app" ? view.slug : "")?.name ??
               "This app"
             }
+            // The slug, not the display name: compatibility is keyed on the tool
+            // the preferences use, and two apps can share a name.
+            appSlug={view.kind === "app" ? view.slug : null}
             models={gateModels.models ?? []}
             loading={gateModels.loading && gateModels.models === null}
             failure={gateModels.failure?.message ?? null}
@@ -2254,6 +2274,11 @@ export function NewUiApp() {
                     choice: openPref,
                     catalogue: gateModels.models,
                     credits: credits.credits,
+                    // The feed is the only thing that can see a Gate model the
+                    // tool cannot actually be served with: the catalogue says it
+                    // exists and the balance says it is affordable, and the
+                    // requests fail anyway.
+                    recent: toolEvents.view?.entries.slice(0, 5) ?? null,
                   })?.message ?? null,
                 // Switching to a Gate model spends PAYG credits, so it is
                 // confirmed rather than taken on a radio click. Switching back
@@ -2280,8 +2305,10 @@ export function NewUiApp() {
                     // told it is gone.
                     {
                       vendor: openModelId.split("/")[0],
-                      id: openModelId,
-                      alsoEnabled: openModelIds.length - 1,
+                      // The whole set: the card lists it rather than naming the
+                      // first and counting the rest in a heading nobody can
+                      // expand.
+                      ids: openModelIds,
                     }
                   : null,
                 onChangeModel: () =>
@@ -2297,10 +2324,19 @@ export function NewUiApp() {
                 // could not be read, which the card draws as N/A rather than as
                 // a zero balance. See principle 6.
                 credits: formatCredits(credits.credits),
-                // No billing endpoint, but the row's own glyph promises an
-                // external link, and the dashboard is where credits are actually
-                // bought.
+                // Null when unread, which the row omits rather than guessing.
+                plan: credits.credits?.plan ?? null,
+                // No dedicated credits endpoint, but the row's own glyph
+                // promises an external link, and the dashboard is where credits
+                // are actually bought.
                 onAddCredits: () => openLink(GATE_DASHBOARD_URL),
+                // AG-729 gave this a destination. Undefined when the gateway
+                // named none, which removes the control rather than drawing a
+                // dead one - the state every gateway was in before that field
+                // existed.
+                onManageBilling: credits.credits?.billingUrl
+                  ? () => openLink(credits.credits!.billingUrl!)
+                  : undefined,
               })}
           activity={toolEventRows}
           eventsPending={
@@ -2326,7 +2362,20 @@ export function NewUiApp() {
           }}
           alert={
             <>
-              {driftAlert}
+              {paneNotice && (
+                <AlertBanner
+                  key={paneNotice.id}
+                  title={paneNotice.title}
+                  body={paneNotice.body}
+                  switchLabel={paneNotice.switchLabel}
+                  on={false}
+                  busy={noticeBusy || routingBusy}
+                  onToggle={() => void runNoticeAction(paneNotice.action)}
+                  onDismiss={() =>
+                    setDismissedNotices((d) => [...d, paneNotice.id])
+                  }
+                />
+              )}
               {modelError && (
                 // The gateway's own sentence, not a code. A role refusal and a
                 // dead network want different things from the reader, and on a
@@ -2671,10 +2720,13 @@ function ActivityGaps({
   // A failed fetch outranks per-section gaps: if nothing landed there is nothing
   // to itemise, and the sections listed in the held view describe the *previous*
   // reading, not this one.
-  const notices = (
+  // Merged before the subject override: a caller that owns one read renames the
+  // notice, and renaming five identical ones first would produce five rows all
+  // headed the same thing with nothing to tell them apart.
+  const notices = mergeNotices(
     failure
       ? [failureNotice(failure)]
-      : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason))
+      : (view?.gaps ?? []).map((g) => sectionNotice(g.section, g.reason)),
   ).map((n) => (subject ? { ...n, subject } : n));
   if (notices.length === 0) return null;
 
@@ -2688,7 +2740,7 @@ function ActivityGaps({
           actually happened to their traffic. The notices below still name the
           cause and offer the action, which is the part that is actionable. */}
       {notices.map((n) => (
-        <p key={n.subject} className="text-base-xs text-base-muted-foreground">
+        <p key={`${n.subject}|${n.cause}`} className="text-base-xs text-base-muted-foreground">
           <span className="font-medium">{n.subject}:</span> {n.cause}
           {n.actions.map((a) => (
             <button

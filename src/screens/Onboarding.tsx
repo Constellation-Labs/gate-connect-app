@@ -75,7 +75,7 @@ function buildSteps(platform: Platform): Step[] {
           alt="Claude, OpenAI and Gemini connected by lines that meet at the Gate mark, which passes a response on to the app"
           width={1000}
           height={376}
-          className="mx-auto block h-auto w-full max-w-[540px]"
+          className="mx-auto block h-auto w-full"
         />
       ),
       title: "What is Gate Connect?",
@@ -94,7 +94,7 @@ function buildSteps(platform: Platform): Step[] {
           alt="The Gate Connect popover: a routing summary over the list of apps, with an Expand app button"
           width={1770}
           height={660}
-          className="mx-auto block h-auto w-full max-w-[540px]"
+          className="mx-auto block h-auto w-full"
           // Cropped mid-row in the frame, like the dashboard art below, so it
           // takes the same bottom fade rather than a hard cut edge.
           style={{
@@ -121,7 +121,7 @@ function buildSteps(platform: Platform): Step[] {
           alt="The Overview dashboard: messages, blocked and flagged counts, tokens saved, and a bar chart of message volume"
           width={1770}
           height={660}
-          className="mx-auto block h-auto w-full max-w-[540px]"
+          className="mx-auto block h-auto w-full"
           // The design crops this one mid-chart, so a square bottom edge reads
           // as a rendering bug. Same fade the popover art above takes.
           style={{
@@ -266,7 +266,7 @@ export function Onboarding() {
       }
     });
     return () => {
-      void unlisten.then((f) => f());
+      void unlisten.then((f) => f()).catch(() => {});
     };
   }, [source]);
 
@@ -402,7 +402,7 @@ export function Onboarding() {
       </div>
 
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-base-border bg-base-card px-6 py-3">
-        <label className="flex w-max cursor-pointer items-center gap-2 text-base-xs leading-4 text-neutral-600">
+        <label className="flex w-max cursor-pointer items-center gap-2 text-sm leading-5 text-base-foreground">
           <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
             <input
               type="checkbox"

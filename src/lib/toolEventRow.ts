@@ -10,6 +10,8 @@
  * instead of the adapter having to invent one.
  */
 
+import type { IconName } from "../components/gc/Icon";
+
 export type ActivityStatus = "success" | "error";
 export type ActivitySecurity = "allow" | "flagged" | "redacted" | "blocked";
 
@@ -26,6 +28,19 @@ export interface ActivityEntry {
    * blocked request as permitted.
    */
   security: ActivitySecurity | null;
+  /**
+   * Which guardrail category the row is about, as the gateway named it, or
+   * null when it named none.
+   *
+   * The frame's Type column (`table/recent-activity` on `Flows / App`) draws
+   * this beside a 20px glyph. Rendered as the gateway spelled it, the same way
+   * `SecurityPane` renders the same field: relabelling it here would invent a
+   * display vocabulary for values only the gateway knows.
+   */
+  category: string | null;
+  /** The glyph for {@link category}, chosen by the adapter the way
+   *  `Policy.icon` is. Null when there is no category to draw one for. */
+  categoryIcon: IconName | null;
   /** The model that served the request, or copy saying none was attributed. */
   model: string;
   /** Which upstream served it (`anthropic`, `openai`), for the vendor mark beside

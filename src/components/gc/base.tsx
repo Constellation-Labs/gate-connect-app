@@ -46,19 +46,20 @@ export function Card({
  * banner. One shape, two palettes: a vertical 50 -> 200 gradient, a 300 border
  * and a 600 icon, all on Tailwind's default ramps.
  *
- * Sampled from the `113:*` banner components, which the file has since deleted
- * along with the rest of the Components page; the live sources are the banner
- * instances inside the flow frames.
+ * Measured off the live **Banners** canvas (`744:37738`). An earlier note here
+ * said the components had been deleted with the old Components page and read
+ * the steps off flow instances instead - only `113:16762` is empty.
  *
- * The icon step is 600, not 700: the ShieldBan inside the Overview frame's
- * routing banner reads `tailwind colors/amber/600` #D97706, which is also the
- * amber `tailwind.config.ts` records as the design's own.
+ * **The step is per tone, which is why believing the components were gone cost
+ * something.** Amber really is 600 (`tailwind colors/amber/600` #D97706, the
+ * value the config records as the design's own), and 600 was generalised from
+ * it to green. The green component draws **green/700** #15803D.
  *
  * Tone classes are spelled out rather than interpolated - Tailwind only sees
  * literal class names at build time.
  */
 const TILE_TONES = {
-  green: "from-green-50 to-green-200 border-green-300 text-green-600",
+  green: "from-green-50 to-green-200 border-green-300 text-green-700",
   amber: "from-amber-50 to-amber-200 border-amber-300 text-amber-600",
   // Not in the Figma, which draws no failure state. Follows the same 50 -> 200
   // gradient, 300 border, 600 icon pattern as the two that are.
@@ -208,11 +209,13 @@ export function EmptyNote({
     <div className={`flex flex-col items-center gap-3 py-6 ${className}`}>
       <span
         aria-hidden
-        className="flex size-9 items-center justify-center rounded-sm border border-base-border text-base-muted-foreground"
+        className="flex size-9 items-center justify-center rounded-control border border-base-border text-base-muted-foreground"
       >
         <Icon name={icon} size={20} />
       </span>
-      <p className="text-center text-sm leading-5 text-base-muted-foreground">{children}</p>
+      <p className="text-center text-base font-medium leading-6 tracking-heading-16 text-base-muted-foreground">
+        {children}
+      </p>
     </div>
   );
 }
@@ -239,7 +242,7 @@ export function Pill({
   return (
     <span
       title={title}
-      className={`inline-block rounded-xs px-1.5 py-0.5 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
+      className={`inline-block rounded-control px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${className}`}
     >
       {children}
     </span>

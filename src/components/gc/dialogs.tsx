@@ -2,6 +2,13 @@ import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
 import { Skeleton } from "./base";
+import {
+  compatibility,
+  explain,
+  isPinned,
+  needsOf,
+  pinnedModels,
+} from "../../lib/modelCompatibility";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
 import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
 import type { PillTone } from "./Modal";
@@ -367,7 +374,15 @@ export function ApplyChangesDialog({
       icon="triangleAlert"
       title="Apply changes to running apps?"
       subtitle="Your configuration is saved. One final step makes the new route active"
-      secondary={{ label: "Yes, close affected apps", onClick: onCloseApps }}
+      // `destructive` on the SECONDARY changes nothing about how it looks -
+      // it moves initial focus onto the primary, which is the safe choice
+      // here. Without it the trap fell to the first focusable and that is
+      // this button, so Enter landed on closing the user's apps.
+      secondary={{
+        label: "Yes, close affected apps",
+        onClick: onCloseApps,
+        destructive: true,
+      }}
       primary={{ label: "No, I will reopen later", onClick: onReopenLater }}
       onDismiss={onReopenLater}
     >
@@ -499,7 +514,7 @@ export function DiagnosticsDialog({
     >
       {/* `mono/body-14` (`363:9120`), not the 12/16 this rendered: the report is
        * the one screen a user reads a wall of text on. */}
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-sm leading-5 text-neutral-700">
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-base-border bg-gray-50 p-4 font-mono text-sm leading-5 text-base-foreground">
         {report}
       </pre>
     </Modal>
@@ -518,6 +533,8 @@ export interface GateModelOption {
   vendor: string;
   /** 16px vendor mark. Falls back to a cube while the marks are unexported. */
   logo?: ReactNode;
+  /** Capabilities the gateway advertises; `modelCompatibility` reads them. */
+  tags: string[];
 }
 
 /**
@@ -544,6 +561,7 @@ export interface GateModelOption {
  */
 export function ModelPickerDialog({
   appName,
+  appSlug,
   models,
   loading,
   failure,
@@ -553,6 +571,8 @@ export function ModelPickerDialog({
 }: {
   /** Named in the subtitle, as the frame does. */
   appName: string;
+  /** Tool slug, which is what compatibility is keyed on. */
+  appSlug: string | null;
   models: GateModelOption[];
   /** The catalogue has not landed. Distinct from an empty one, which is a real
    *  answer: a gateway with no platform provider accounts offers nothing, and
@@ -573,6 +593,16 @@ export function ModelPickerDialog({
 }) {
   const [query, setQuery] = useState("");
   const [vendor, setVendor] = useState("all");
+  /**
+   * Show models this app cannot be served with (AG-590).
+   *
+   * Off by default, because offering a model that fails costs a prompt to find
+   * out and reports itself as a provider error nobody can act on. Available at
+   * all because the freeform-tool rule is empirical and will date: a model that
+   * starts working would otherwise be unreachable, with no way for the user to
+   * tell us the list is wrong.
+   */
+  const [showAll, setShowAll] = useState(false);
   /** The dialog opens on its search field: with a catalogue this long, typing is
    *  the first thing to do. */
   const searchRef = useRef<HTMLInputElement>(null);
@@ -580,65 +610,179 @@ export function ModelPickerDialog({
   /** Seeded from the stored set so Cancel is a real cancel. */
   const [draft, setDraft] = useState<string[]>(selectedIds);
 
+  const vendors = useMemo(
+    () => [...new Set(models.map((m) => m.vendor))].sort((a, b) => a.localeCompare(b)),
+    [models],
+  );
+
+  // What this app can actually be served with. Computed over the whole catalogue
+  // rather than the filtered view, so the count of what was set aside is about
+  // the app and not about the current search.
+  const needs = useMemo(() => needsOf(appSlug), [appSlug]);
   /**
-   * Chosen models the catalogue no longer offers (AG-592).
+   * Models to float to the top, in development only.
+   *
+   * A convenience for whoever is testing: reach a model known to work without
+   * scrolling the catalogue. `pinnedModels` returns nothing in a shipped build,
+   * so a released app orders the list exactly as the gateway returned it.
+   */
+  const pinned = useMemo(() => pinnedModels(appSlug), [appSlug]);
+
+  // What this app can be served with, computed over the whole catalogue rather
+  // than the filtered view, so the count of what was set aside is about the app
+  // and not about the current search.
+  const usable = useMemo(() => models.filter((m) => compatibility(m, needs).ok), [models, needs]);
+  const setAside = models.length - usable.length;
+
+  /**
+   * Chosen models with no row to clear them from (AG-592).
    *
    * They have to be listed, or the set contains something the user cannot reach:
-   * a model absent from the catalogue renders no row, so there is no checkbox to
-   * clear and no way out except abandoning the whole selection. Shown at the top,
-   * marked, and removable - which is the recovery the ticket asks for.
+   * a model that renders no row has no checkbox to clear and no way out except
+   * abandoning the whole selection. Shown at the top, marked, and removable,
+   * which is the recovery the ticket asks for.
+   *
+   * **Two ways to have no row, not one.** Originally this meant a model the
+   * catalogue had dropped. AG-590's compatibility filter added a second: a model
+   * still in the catalogue that this app cannot be served with is filtered out
+   * of `usable`, so it is equally unreachable while it stays in the draft,
+   * counted by "Unselect all" and written straight back on Save. That is the
+   * same trap, reintroduced through a different door, so both take the same
+   * exit.
+   *
+   * Keyed on what is reachable rather than on catalogue membership. Under "Show
+   * anyway" an incompatible model does have a row, so it drops out of here and
+   * is cleared inline like any other. Search and the vendor filter are
+   * deliberately not considered: narrowing the view must not make a chosen model
+   * look unavailable.
    */
   const missing = useMemo(() => {
-    const servable = new Set(models.map((m) => m.id));
+    const reachable = new Set((showAll ? models : usable).map((m) => m.id));
     // Derived from the DRAFT, not from what is stored: clearing one has to make
     // the row go, and deriving from the stored set left it on screen still
     // marked enabled while the footer count disagreed. Its absence afterwards is
     // also what satisfies "an unavailable model cannot be selected" - there is no
     // row left to re-check.
-    return draft.filter((id) => !servable.has(id));
-  }, [models, draft]);
+    return draft.filter((id) => !reachable.has(id));
+  }, [models, usable, showAll, draft]);
 
-  const vendors = useMemo(
-    () =>
-      [...new Set(models.map((m) => m.vendor))].sort((a, b) =>
-        a.localeCompare(b),
-      ),
-    [models],
-  );
+  // The reason to name, when there is one shared reason worth naming. Two
+  // different causes in one sentence would explain neither.
+  const asideReason = useMemo(() => {
+    const reasons = new Set(
+      models.map((m) => compatibility(m, needs).reason).filter((r) => r !== undefined),
+    );
+    return reasons.size === 1 ? [...reasons][0]! : null;
+  }, [models, needs]);
 
   const needle = query.trim().toLowerCase();
-  // "Current models will sort alphabetically, left to right using their
-  // provider. Example. Anthropic > DeepSeek > Moonshot" - written on the
-  // `App / Select multiple models (Opencode)` section, read 2026-08-26. By
-  // provider first, then by id so a provider's own models hold a stable order
-  // rather than falling back to whatever the gateway listed.
-  const shown = useMemo(
-    () =>
-      models
-        .filter(
-          (m) =>
-            (vendor === "all" || m.vendor === vendor) &&
-            (needle === "" ||
-              m.id.toLowerCase().includes(needle) ||
-              m.vendor.toLowerCase().includes(needle)),
-        )
-        .sort(
-          (a, b) =>
-            a.vendor.localeCompare(b.vendor) || a.id.localeCompare(b.id),
-        ),
-    [models, vendor, needle],
-  );
+  const shown = useMemo(() => {
+    const base = showAll ? models : usable;
+    const matched = base
+      .filter(
+        (m) =>
+          (vendor === "all" || m.vendor === vendor) &&
+          (needle === "" ||
+            m.id.toLowerCase().includes(needle) ||
+            m.vendor.toLowerCase().includes(needle)),
+      )
+      // "Current models will sort alphabetically, left to right using their
+      // provider. Example. Anthropic > DeepSeek > Moonshot" - written on the
+      // `App / Select multiple models (Opencode)` section, read 2026-08-26. By
+      // provider first, then by id so a provider's own models hold a stable
+      // order rather than falling back to whatever the gateway listed.
+      .sort((a, b) => a.vendor.localeCompare(b.vendor) || a.id.localeCompare(b.id));
+
+    // The dev pin list floats above that ordering rather than replacing it: a
+    // plain partition, so the alphabetical rule still holds within each group.
+    // Sorting on a boolean with `Array.sort` would not guarantee that.
+    if (pinned.length === 0) return matched;
+    const top = matched.filter((m) => isPinned(m, pinned));
+    return top.length === 0 ? matched : [...top, ...matched.filter((m) => !isPinned(m, pinned))];
+  }, [models, usable, showAll, needle, vendor, pinned]);
+
+  /**
+   * One selectable row.
+   *
+   * A function rather than a copy of the markup per call site, so a row cannot
+   * drift between them in the one control this dialog exists for.
+   *
+   * Every row is identical. The list carries no ranking of its own: what the
+   * catalogue offers is offered, and the dev pin list changes the order without
+   * changing how a row is drawn.
+   */
+  const renderRow = (model: (typeof models)[number]) => {
+    const selected = chosen.includes(model.id);
+    return (
+      <button
+        key={model.id}
+        type="button"
+        role="checkbox"
+        aria-checked={selected}
+        onClick={() => {
+          setDraft((d) =>
+            d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
+          );
+        }}
+        className={`flex h-10 shrink-0 items-center gap-2 border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+          // The frame marks the chosen row with the muted ground and a
+          // real border rather than a primary outline, and tightens its
+          // radius against the looser one the other rows carry.
+          selected
+            ? "rounded-control border-base-border bg-gray-50"
+            : "rounded-lg border-transparent hover:bg-gray-50"
+        }`}
+      >
+        <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
+          {model.logo ?? <Icon name="cube" size={16} />}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-base-foreground">
+          {model.id}
+        </span>
+        {selected ? (
+          // Square, as the frame draws it - and square is what a
+          // multi-select reads as. A round mark is the shape a radio
+          // uses for a choice that excludes the others, which this
+          // list stopped being when AG-590 made it a set.
+          <span
+            aria-hidden
+            className="flex size-5 shrink-0 items-center justify-center rounded-xs border border-base-primary"
+          >
+            <Icon name="check" size={14} className="text-base-primary" />
+          </span>
+        ) : (
+          <span
+            aria-hidden
+            className="size-5 shrink-0 rounded-xs border border-base-input"
+          />
+        )}
+      </button>
+    );
+  };
+
 
   const chosen = draft;
-  /** AG-590: the last model cannot be removed without choosing another. The
-   *  remedy the ticket names is "or return to Tool default", which is the pane's
-   *  radio, not this dialog - so here the last one simply refuses to clear, and
-   *  the footer says why. */
-  const wouldEmpty = (id: string) => chosen.length === 1 && chosen[0] === id;
+  /**
+   * AG-590's "the final model cannot be removed" is enforced on Save, not on the
+   * row.
+   *
+   * The row used to refuse to clear when it was the last one. That cannot coexist
+   * with the frame's "Unselect all", which exists precisely to empty the set, and
+   * the two ways out the ticket names - choose another, or return to App default -
+   * are both still reachable from an empty draft.
+   *
+   * What the ticket is protecting is the *saved* state: a tool whose source is
+   * Gate and whose model list is empty has nothing to be served with. Disabling
+   * Save while the draft is empty protects exactly that, and it does it at the
+   * moment the state would actually be written rather than by making a checkbox
+   * refuse the click that led there. Cancel still leaves the stored set untouched.
+   */
+  const emptyDraft = draft.length === 0;
 
   return (
     <Modal
       icon="layers"
+      tile="lg"
       title="Choose a Gate model"
       subtitle={`${appName} may use any model you enable here`}
       closeButton
@@ -651,10 +795,11 @@ export function ModelPickerDialog({
               label: "Save models",
               onClick: () => onSave(draft),
               // Gate cannot serve a model nobody enabled, so an empty set is not
-              // a saveable state. AG-590's "the final model cannot be removed"
-              // is enforced on the row itself; this is the backstop for a set
-              // that started empty.
-              disabled: draft.length === 0,
+              // a saveable state. This is where AG-590's "the final model cannot
+              // be removed" is enforced now - the row no longer refuses to clear,
+              // because that could not coexist with "Unselect all". See
+              // `emptyDraft`.
+              disabled: emptyDraft,
             }
           : undefined
       }
@@ -726,36 +871,74 @@ export function ModelPickerDialog({
 
           {/* The frame reads "Showing 10 of 14 models・400+ in Gate AI". The third
            *  clause distinguishes what this tool may use from everything Gate
-           *  offers, and nothing filters per tool yet - so the two numbers would
-           *  be the same and saying it twice would imply a filter that is not
-           *  running. Reinstate it with AG-590's per-tool filtering. */}
-          <p className="text-base-xs leading-4 text-base-muted-foreground">
-            Showing {shown.length} of {models.length} models
-          </p>
+           *  offers, and it was held back while nothing filtered per tool: the
+           *  two numbers would have been the same, and saying it twice would
+           *  imply a filter that was not running. AG-590's compatibility filter
+           *  is that filter, so it says something now - and it is the honest
+           *  frame for the count beside it, which is about this app rather than
+           *  about Gate.
+           *
+           *  Dropped again under "Show anyway", where the list IS the catalogue
+           *  and the clause would restate the number it sits next to. */}
+          <div className="flex items-start justify-between text-base-xs leading-4">
+            <p className="text-base-muted-foreground">
+              Showing {shown.length} of {showAll ? models.length : usable.length} models
+              {!showAll && setAside > 0 && `・${models.length} in Gate AI`}
+            </p>
+            {/* Figma 682:20043. It takes the slot the earlier frame drew a "3
+             *  models selected" label in, and carries the same count - so the
+             *  answer to "how many have I picked?" is still on screen, now on a
+             *  control that can act on it rather than a label restating it.
+             *
+             *  Absent at zero: "Unselect all (0)" offers to undo nothing. */}
+            {!emptyDraft && (
+              <button
+                type="button"
+                onClick={() => setDraft([])}
+                className="-my-1 rounded-control px-2 py-1 text-sm font-medium leading-5 text-base-primary hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+              >
+                Unselect all ({draft.length})
+              </button>
+            )}
+          </div>
+
+          {/* Never hidden silently. The rule that sets models aside is partly
+           *  empirical - see `modelCompatibility` - so it will date, and a user
+           *  looking for a model that is missing needs to be told it was a
+           *  decision rather than an omission, and be able to overrule it. */}
+          {setAside > 0 && (
+            <p className="flex flex-wrap items-baseline gap-x-2 text-base-xs leading-4 text-base-muted-foreground">
+              {/* The sentence follows the override. Under "Show anyway" these
+                *  rows ARE on screen, so "not shown" contradicts both the list
+                *  and the "Hide them" control beside it. The reason is worth
+                *  saying in either state: it is why they were set apart at all,
+                *  and it is the same sentence whether or not they are visible. */}
+              <span>
+                {setAside} {setAside === 1 ? "model is" : "models are"}{" "}
+                {showAll ? "shown but cannot serve this app" : "not shown"}
+                {asideReason ? `: ${explain(asideReason, appName)}` : "."}
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowAll((v) => !v)}
+                className="rounded-sm font-medium text-base-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+              >
+                {showAll ? "Hide them" : "Show anyway"}
+              </button>
+            </p>
+          )}
 
           {missing.length > 0 && (
             <ul className="flex flex-col gap-px">
               {missing.map((id) => {
-                const locked = wouldEmpty(id);
                 return (
                   <li key={id}>
                     <button
                       type="button"
                       role="checkbox"
                       aria-checked
-                      aria-disabled={locked || undefined}
-                      title={
-                        locked
-                          ? "Gate needs at least one model. Choose another first, or switch this app back to App default."
-                          : undefined
-                      }
-                      onClick={() => {
-                        if (locked) return;
-                        setDraft((d) => d.filter((x) => x !== id));
-                      }}
-                      className={`flex w-full items-center gap-3 rounded-base border border-amber-300 bg-amber-50 px-3 py-2 text-left ${
-                        locked ? "cursor-not-allowed" : ""
-                      }`}
+                      onClick={() => setDraft((d) => d.filter((x) => x !== id))}
+                      className="flex w-full items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-left"
                     >
                       <Icon
                         name="triangleAlert"
@@ -780,79 +963,50 @@ export function ModelPickerDialog({
               <p>No model matches that search.</p>
             </ModalNote>
           ) : (
-            <div
-              role="group"
-              aria-label="Gate model"
-              className="-mr-1 flex max-h-[26rem] flex-col gap-px overflow-y-auto pr-1"
-            >
-              {shown.map((model) => {
-                const selected = chosen.includes(model.id);
-                const locked = selected && wouldEmpty(model.id);
-                return (
-                  <button
-                    key={model.id}
-                    type="button"
-                    role="checkbox"
-                    aria-checked={selected}
-                    aria-disabled={locked || undefined}
-                    title={
-                      locked
-                        ? "Gate needs at least one model. Choose another first, or switch this app back to App default."
-                        : undefined
-                    }
-                    onClick={() => {
-                      if (locked) return;
-                      setDraft((d) =>
-                        d.includes(model.id)
-                          ? d.filter((x) => x !== model.id)
-                          : [...d, model.id],
-                      );
-                    }}
-                    className={`flex shrink-0 items-center gap-3 rounded-sm border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-                      selected
-                        ? "border-base-primary bg-base-card"
-                        : "border-transparent hover:bg-gray-50"
-                    } ${locked ? "cursor-not-allowed" : ""}`}
-                  >
-                    <span
-                      aria-hidden
-                      className="flex size-4 shrink-0 items-center justify-center"
-                    >
-                      {model.logo ?? <Icon name="cube" size={16} />}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-base-foreground">
-                      {model.id}
-                    </span>
-                    {selected ? (
-                      <Icon
-                        name="circleCheck"
-                        size={16}
-                        className="shrink-0 text-base-primary"
-                      />
-                    ) : (
-                      <span
-                        aria-hidden
-                        className="size-4 shrink-0 rounded-full border border-base-input"
-                      />
-                    )}
-                  </button>
-                );
-              })}
+            // The frame draws the rows inside a bordered card and scrolls them
+            // within it, so the edge of the list stays visible when it runs past
+            // the fold. The inner element scrolls, not the border, so that edge
+            // holds still while the contents move.
+            <div className="rounded-lg border border-base-border p-2">
+              <div
+                role="group"
+                aria-label="Gate model"
+                className="flex max-h-[22rem] flex-col overflow-y-auto"
+              >
+                {/* One flat list, in the order the gateway returned it, with
+                  * the dev pin list floated to the top when there is one. No
+                  * headings: the catalogue decides what is offered, and this
+                  * dialog does not second-guess it. */}
+                {shown.map(renderRow)}
+              </div>
             </div>
           )}
 
-          {/* AG-590 asks that the set be stated before confirmation, and that
-           *  the cost consequence be stated with it. */}
+          {/* AG-590 asks that the set be stated before confirmation, and that the
+           *  cost consequence be stated with it. The set is stated above - the
+           *  checked rows, and the count on "Unselect all" - so this carries the
+           *  consequence alone. It said the number a third time until the count
+           *  row gained one, and a figure repeated three ways reads as three
+           *  facts to reconcile rather than one.
+           *
+           *  An empty draft is the exception, and says what is needed instead:
+           *  it became reachable when "Unselect all" arrived, and a disabled Save
+           *  with no sentence beside it is a dead end. */}
           <ModalNote>
-            <p className="font-medium text-base-foreground">
-                {draft.length === 1
-                  ? "1 model enabled"
-                  : `${draft.length} models enabled`}
-              </p>
-              <p className="mt-1">
-                Eligible requests may use any of them and consume Gate credits.
+            {emptyDraft ? (
+              <>
+                <p className="font-medium text-base-foreground">No models enabled</p>
+                <p className="mt-1">
+                  Gate needs at least one model to serve this app. Choose one, or cancel
+                  and switch the app back to App default.
+                </p>
+              </>
+            ) : (
+              <p>
+                Eligible requests may use any model enabled here and consume Gate credits.
                 Gate never uses a model you have not enabled.
               </p>
+            )}
           </ModalNote>
         </>
       )}
@@ -894,6 +1048,7 @@ export function UseGateModelDialog({
   return (
     <Modal
       icon="layers"
+      tile="lg"
       title={`Use a Gate model for ${app.name}?`}
       subtitle="Your next requests will use Constellation Gate PAYG credits"
       secondary={{ label: "Keep App default", onClick: onKeepAppDefault }}

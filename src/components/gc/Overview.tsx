@@ -51,8 +51,14 @@ export interface Saving {
  * padding and an 8px gap. Text sits at the matching 900.
  *
  * **Violet, not purple.** The drawn REDACT fill is `#ddd6fe`, which is violet/200;
- * purple/200 is `#e9d5ff`. The same mistake was in `chart.redacted`. Nothing else
- * in this palette is violet, so it is easy to "correct" back by eye - don't.
+ * purple/200 is `#e9d5ff`. Nothing else in this palette is violet, so it is easy
+ * to "correct" back by eye - don't.
+ *
+ * This note used to add "the same mistake was in `chart.redacted`", which
+ * conflated two different elements. The chart series is its own question: the
+ * legend swatch (`706:10096`) draws violet/500 and the newer tooltip component
+ * (`744:37728`) draws purple/500, so the file disagrees with itself there and
+ * `chart.redacted` stays as it is pending design. This pill is not affected.
  */
 const ACTION_STYLES: Record<PolicyAction, string> = {
   block: "bg-red-200 text-red-900",
@@ -100,7 +106,7 @@ export function Overview({
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-medium tracking-heading text-base-foreground">
+        <h1 className="text-xl font-medium leading-6 tracking-heading text-base-foreground">
           Overview
         </h1>
         <div className="flex items-center gap-3">
@@ -154,8 +160,13 @@ function PolicyTable({
   onManage: () => void;
 }) {
   return (
-    <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">Policies</h2>
+    // No padding on the card, because the footer's rule spans it edge to edge
+    // (`card/policies` 116:26707 draws `card/footer` at x=0, the full 720).
+    // The 16px lives on the contents instead: the row dividers are drawn INSET,
+    // every `line` in the frame measuring 688 inside the 720 card, so the table
+    // sits in its own gutter rather than reaching the border.
+    <Card busy={pending}>
+      <h2 className="px-4 pt-4 text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Policies</h2>
 
       {pending ? (
         <PendingRows columns={3} />
@@ -164,20 +175,21 @@ function PolicyTable({
         // that has configured no guardrails, and a list the gateway would not
         // give us. The pane's gap notice supplies the cause and the action for
         // the second; what this must not do is report it as the first.
-        <EmptyNote icon="shieldCheck">
+        <EmptyNote icon="shieldCheck" className="px-4">
           {unavailable ? "Policies couldn't be read" : "No policies configured"}
         </EmptyNote>
       ) : (
-        <table className="mt-4 w-full">
+        <div className="px-4">
+        <table className="mt-5 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-2 text-left font-normal">
+            <th scope="col" className="pb-3 text-left font-normal">
               Policy type
             </th>
-            <th scope="col" className="pb-2 text-right font-normal">
+            <th scope="col" className="pb-3 text-right font-normal">
               Action
             </th>
-            <th scope="col" className="w-24 pb-2 text-right font-normal">
+            <th scope="col" className="w-24 pb-3 text-right font-normal">
               Status
             </th>
           </tr>
@@ -187,7 +199,7 @@ function PolicyTable({
             <tr key={policy.id} className="border-t border-base-border">
               <td className="py-3">
                 <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
-                  <Icon name={policy.icon} size={16} className="text-neutral-500" />
+                  <Icon name={policy.icon} size={20} className="text-base-muted-foreground" />
                   {policy.name}
                 </span>
               </td>
@@ -214,6 +226,7 @@ function PolicyTable({
           ))}
         </tbody>
       </table>
+        </div>
       )}
 
       <ManageLink label="Manage policies" onClick={onManage} />
@@ -235,25 +248,27 @@ function SavingsTable({
   return (
     // `scroll-mt-6` so the smooth scroll from the Tokens saved counter leaves
     // the same gutter the pane's padding gives every other card, rather than
-    // butting the heading against the top edge.
-    <Card id={SAVINGS_SECTION_ID} className="scroll-mt-6 p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">Token savings</h2>
+    // butting the heading against the top edge. Padding sits on the contents,
+    // not here - see `PolicyTable`.
+    <Card id={SAVINGS_SECTION_ID} className="scroll-mt-6" busy={pending}>
+      <h2 className="px-4 pt-4 text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Token savings</h2>
 
       {pending ? (
         <PendingRows columns={2} />
       ) : savings.length === 0 ? (
         // Same split as the policies card, for the same reason.
-        <EmptyNote icon="layers">
+        <EmptyNote icon="layers" className="px-4">
           {unavailable ? "Token savings couldn't be read" : "No savings configured"}
         </EmptyNote>
       ) : (
-      <table className="mt-4 w-full">
+      <div className="px-4">
+      <table className="mt-5 w-full">
         <thead>
           <tr className="text-base-xs text-base-muted-foreground">
-            <th scope="col" className="pb-2 text-left font-normal">
+            <th scope="col" className="pb-3 text-left font-normal">
               Savings type
             </th>
-            <th scope="col" className="w-24 pb-2 text-right font-normal">
+            <th scope="col" className="w-24 pb-3 text-right font-normal">
               Status
             </th>
           </tr>
@@ -263,7 +278,7 @@ function SavingsTable({
             <tr key={saving.id} className="border-t border-base-border">
               <td className="py-3">
                 <span className="flex items-center gap-3 text-sm leading-5 text-base-foreground">
-                  <Icon name={saving.icon} size={16} className="text-neutral-500" />
+                  <Icon name={saving.icon} size={20} className="text-base-muted-foreground" />
                   {saving.name}
                 </span>
               </td>
@@ -274,6 +289,7 @@ function SavingsTable({
           ))}
         </tbody>
       </table>
+      </div>
       )}
 
       <ManageLink label="Manage savings" onClick={onManage} />
@@ -290,7 +306,10 @@ function SavingsTable({
  */
 function PendingRows({ columns }: { columns: 2 | 3 }) {
   return (
-    <div className="mt-4 flex flex-col gap-3">
+    // `px-4` on the wrapper, not on the bordered rows: the frame draws these
+    // dividers inset at 688 inside the 720 card, so the border must stop where
+    // the real rows' does.
+    <div className="mt-5 flex flex-col gap-3 px-4">
       {[0, 1, 2].map((i) => (
         <div key={i} className="flex items-center justify-between gap-3 border-t border-base-border pt-3">
           <Skeleton className="h-4 w-40" />
@@ -306,7 +325,7 @@ function StatusPill({ on }: { on: boolean }) {
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-xs px-2 py-1 font-mono text-base-xs font-medium uppercase leading-4 tracking-label ${
-        on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-neutral-600"
+        on ? "bg-green-200 text-green-900" : "bg-neutral-100 text-base-foreground"
       }`}
     >
       {/* The drawn glyph is circleCheck at 12px in green/800, one step lighter
@@ -318,10 +337,16 @@ function StatusPill({ on }: { on: boolean }) {
 }
 
 /** Right-aligned footer action under a full-width rule, per the drawn cards.
- *  Both destinations open the web dashboard. */
+ *  Both destinations open the web dashboard.
+ *
+ *  The rule really does span the card, unlike the row dividers above it:
+ *  `card/policies` (116:26707) draws the footer as its own frame at x=0 across
+ *  the full 720, with the button's right edge 16px in and 13px of air above and
+ *  below it. So `px-4 py-3` on the element that carries `border-t`, which insets
+ *  the button without insetting the border. */
 function ManageLink({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <div className="mt-3 flex justify-end border-t border-base-border pt-3">
+    <div className="flex justify-end border-t border-base-border px-4 py-3">
       <button
         type="button"
         onClick={onClick}

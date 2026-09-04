@@ -87,6 +87,32 @@ describe("adaptEvents", () => {
     expect(view.entries[0].title).toBeNull();
   });
 
+  it("carries the security category and picks its glyph", () => {
+    // The frame's Type column. `pii` is the one spelling a fixture evidences, and
+    // it takes the `Icon / UserRound` the frames draw for PII on both surfaces.
+    const view = adaptEvents(envelope([raw({ securityCategory: "pii" })]));
+
+    expect(view.entries[0].category).toBe("pii");
+    expect(view.entries[0].categoryIcon).toBe("userRound");
+  });
+
+  it("falls back to a glyph rather than none for a category it does not know", () => {
+    // The frame puts a glyph in every Type cell, and the gateway's vocabulary is
+    // not pinned down - so an unknown category still draws one, the way
+    // `POLICY_ICONS` falls back on the Overview rows.
+    const view = adaptEvents(envelope([raw({ securityCategory: "something-new" })]));
+
+    expect(view.entries[0].category).toBe("something-new");
+    expect(view.entries[0].categoryIcon).toBe("shieldCheck");
+  });
+
+  it("leaves the category null when the gateway named none", () => {
+    const view = adaptEvents(envelope([raw({ securityCategory: null })]));
+
+    expect(view.entries[0].category).toBeNull();
+    expect(view.entries[0].categoryIcon).toBeNull();
+  });
+
   it("carries the provider for the vendor mark", () => {
     expect(adaptEvents(envelope([raw({ provider: "anthropic" })])).entries[0].provider).toBe(
       "anthropic",

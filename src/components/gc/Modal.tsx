@@ -24,7 +24,16 @@ export type ModalTone = "warning" | "success" | "danger" | "neutral";
 export interface ModalButton {
   label: string;
   onClick: () => void;
-  /** Filled red rather than filled blue. */
+  /** On the PRIMARY: filled red rather than filled blue, and focus opens on
+   *  the secondary instead.
+   *
+   *  On the SECONDARY: appearance is unchanged (its class never consults
+   *  this) and it only moves initial focus to the primary. That case exists
+   *  because `ApplyChangesDialog` draws the destructive action as the
+   *  *secondary* - the frame makes "No, I will reopen later" the filled
+   *  primary (`130:58448`, `Variant=Default`) and "Yes, close affected apps"
+   *  the outline one (`130:58447`, `Variant=Outline`) - which is the one
+   *  arrangement the primary-only rule below could not protect. */
   destructive?: boolean;
   /** Refused, not hidden: the reset dialog gates its primary behind a
    * checkbox, and a button that vanishes tells the user less than one that
@@ -171,18 +180,29 @@ export function Modal({
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const safeRef = useRef<HTMLButtonElement>(null);
+  const primaryRef = useRef<HTMLButtonElement>(null);
   // The pre-2026-08-30 rule, kept as the default so an undrawn dialog draws
   // exactly what it drew before. Every dialog the file actually draws names its
   // own tile.
   const tileSize = tile ?? (tone === "neutral" ? "md" : "lg");
 
-  // When the primary action is destructive, focus opens on the secondary
-  // button: otherwise a keyboard user who opened this with Enter destroys
-  // something by pressing Enter again.
+  // Focus opens on whichever button is NOT the destructive one: otherwise a
+  // keyboard user who opened this with Enter destroys something by pressing
+  // Enter again.
+  //
+  // Both directions, because the rule used to cover only the primary. With
+  // the destructive action as the SECONDARY - which is how the file draws
+  // apply-changes - nothing matched, so the trap fell through to
+  // `focusables[0]`, and the secondary renders first. Enter therefore landed
+  // on "Yes, close affected apps".
   useFocusTrap(
     panelRef,
     onDismiss,
-    primary?.destructive ? safeRef : initialFocus,
+    primary?.destructive
+      ? safeRef
+      : secondary?.destructive
+        ? primaryRef
+        : initialFocus,
   );
 
   return (
@@ -277,6 +297,7 @@ export function Modal({
             )}
             {primary && (
               <button
+                ref={primaryRef}
                 type="button"
                 onClick={primary.disabled ? undefined : primary.onClick}
                 aria-disabled={primary.disabled || undefined}
@@ -577,7 +598,7 @@ export function ModalField({
               ? // Drawn with no fill and no shadow at 60%: it is the value being
                 // replaced, not a field. `143:67746`.
                 "border-base-input bg-transparent text-base-foreground opacity-60"
-              : "border-base-input bg-base-card text-base-foreground shadow-base-xs"
+              : "border-base-input bg-base-background text-base-foreground shadow-base-xs"
           } ${mono ? "font-mono" : ""} ${onChange && value ? "pr-9" : "pr-3"}`}
         />
         {onChange && value && (
@@ -621,7 +642,7 @@ export function ModalSteps({
               aria-hidden
               // 36px, as `177:73957` draws it - the text group starts at 48,
               // which is the tile plus this row's 12px gap.
-              className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-sm font-medium text-neutral-700"
+              className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border bg-base-card text-base font-medium leading-6 text-base-foreground"
             >
               {i + 1}
             </span>
@@ -629,7 +650,7 @@ export function ModalSteps({
               <span className="block text-sm font-medium leading-5 text-base-foreground">
                 {step.title}
               </span>
-              <span className="block text-sm leading-5 text-neutral-600">
+              <span className="block text-base-xs leading-4 text-base-muted-foreground">
                 {step.description}
               </span>
             </span>

@@ -69,6 +69,7 @@ export function Tray({
   cli,
   orgName,
   signedOut,
+  accountUnread,
   onToggleApp,
   onExpand,
   menuOpen,
@@ -93,6 +94,11 @@ export function Tray({
   /** No usable credential: the tray cannot route anything, so it says so and
    * hands over to the full app, where setup lives. Not drawn; inferred. */
   signedOut?: boolean;
+  /** The account could not be READ, which is a different fact from having
+   *  none and must not borrow its copy: "Sign in to get started" told a
+   *  signed-in user they had no account whenever the keychain read failed.
+   *  Not drawn - inferred from principle 6, like every other unread state. */
+  accountUnread?: boolean;
   onToggleApp: (slug: string, next: boolean) => void;
   /** The header's "Expand app": reveal the full window and dismiss the tray. */
   onExpand: () => void;
@@ -132,7 +138,9 @@ export function Tray({
         </button>
       </header>
 
-      {signedOut ? (
+      {accountUnread ? (
+        <AccountUnreadNote onExpand={onExpand} />
+      ) : signedOut ? (
         <SignedOutNote onExpand={onExpand} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 pt-4">
@@ -158,11 +166,12 @@ export function Tray({
       )}
 
       <footer className="relative flex h-14 shrink-0 items-center justify-between border-t border-base-border bg-base-card px-4">
-        <span className="flex items-center gap-2 text-sm font-medium leading-5 text-base-foreground">
+        <span className="flex items-center gap-2 text-sm font-medium leading-5 tracking-label-14 text-base-foreground">
           <Icon name="users" size={20} />
           <span className="truncate">{orgName}</span>
         </span>
         <OutlineIconButton
+          radius="md"
           icon="ellipsis"
           label="More"
           onClick={onMenuToggle}
@@ -204,7 +213,7 @@ function MasterCard({ on, groups }: { on: boolean; groups: SidebarGroup[] }) {
       <StatusTile tone={tone} icon={icon} size={36} />
       <div className="flex min-w-0 flex-col gap-0.5">
         <h1 className="text-sm font-medium leading-5 text-base-foreground">{title}</h1>
-        <p className="text-base-xs leading-4 text-base-muted-foreground">
+        <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
           {on ? "On" : "Off"} · {routed} of {apps.length} tools routing
         </p>
       </div>
@@ -228,7 +237,7 @@ function TrayGroup({
         <div className="flex items-baseline justify-between gap-2">
           {/* `mono/eyebrow` at the tray's drawn 14px (738:37554), against the
            * rail's 12. Tracking is the same 8%. */}
-          <h2 className="truncate font-mono text-sm font-medium uppercase leading-5 tracking-[1.12px] text-base-muted-foreground">
+          <h2 className="truncate font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14 text-base-muted-foreground">
             {group.label}
           </h2>
           <span className="shrink-0 font-mono text-base-xs font-normal leading-4 text-base-muted-foreground">
@@ -243,7 +252,7 @@ function TrayGroup({
             <span className="flex min-w-0 flex-1 items-center gap-3">
               <AppTile name={app.name} logo={app.logo} />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-base-xs font-medium leading-4 text-base-foreground">
+                <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
                   {app.name}
                 </span>
                 <StatusLine app={app} />
@@ -347,7 +356,7 @@ function AppTile({ name, logo }: { name: string; logo?: ReactNode }) {
       className="flex size-8 shrink-0 items-center justify-center rounded-control border border-white/[0.24] bg-black text-base-2xs font-medium text-white"
       style={{
         backgroundImage:
-          "linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(0,0,0,0.24) 100%)",
+          "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(0,0,0,0.28) 100%)",
       }}
     >
       {logo ?? name.charAt(0)}
@@ -379,11 +388,11 @@ function NotInstalledSection({
         aria-expanded={open}
         className="flex w-full items-baseline justify-between gap-2 rounded-sm text-base-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
-        <span className="font-mono text-sm font-medium uppercase leading-5 tracking-[1.12px]">
+        <span className="font-mono text-sm font-medium uppercase leading-5 tracking-eyebrow-14">
           Not installed
         </span>
-        <span className="flex items-center gap-1">
-          <span className="font-mono text-base-xs font-normal leading-4">{apps.length}</span>
+        <span className="flex items-center gap-3">
+          <span className="font-mono text-sm font-normal leading-5">{apps.length}</span>
           <Icon
             name="chevronDown"
             size={20}
@@ -397,7 +406,7 @@ function NotInstalledSection({
             <li key={app.slug} className="flex items-center gap-3 p-2">
               <AppTile name={app.name} logo={app.logo} />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-base-xs font-medium leading-4 text-base-foreground">
+                <span className="truncate text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
                   {app.name}
                 </span>
                 <span className="truncate text-base-2xs font-medium leading-4 text-base-muted-foreground">
@@ -421,9 +430,9 @@ function CliCard({
   cli: { on: boolean; busy?: boolean; onToggle: (next: boolean) => void };
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border border-base-border bg-base-card p-3 shadow-base-xs">
+    <div className="flex shrink-0 items-center justify-between gap-4 rounded-md border border-base-border bg-base-card py-3 pl-3 pr-2">
       <div className="flex min-w-0 flex-col gap-0.5">
-        <p className="text-sm font-medium leading-5 text-base-foreground">Command-line tools</p>
+        <p className="text-sm font-medium leading-5 tracking-label-14 text-base-foreground">Command-line tools</p>
         <p className="text-base-xs leading-4 text-base-muted-foreground">
           Sets HTTPS_PROXY for your whole shell, so OpenCode and other terminal tools route too.
         </p>
@@ -451,7 +460,7 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
   return (
     <div
       role="menu"
-      className="absolute bottom-12 right-4 z-10 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-lg"
+      className="absolute bottom-12 right-4 z-10 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-md"
     >
       {external.map(({ action, icon, label }) => (
         <button
@@ -459,11 +468,11 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
           type="button"
           role="menuitem"
           onClick={() => onSelect(action)}
-          className="flex h-8 w-full items-center justify-between rounded-sm px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           <span className="flex items-center gap-2">
-            <Icon name={icon} size={16} />
-            <span className="text-base-xs font-medium leading-4">{label}</span>
+            <Icon name={icon} size={14} />
+            <span className="text-base-xs font-medium leading-4 tracking-label-12">{label}</span>
           </span>
           <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
         </button>
@@ -472,9 +481,9 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
         type="button"
         role="menuitem"
         onClick={() => onSelect("quit")}
-        className="flex h-8 w-full items-center gap-2 rounded-sm px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
-        <Icon name="logOut" size={16} />
+        <Icon name="logOut" size={14} />
         <span className="text-base-xs font-medium leading-4">Quit Gate Connect</span>
       </button>
     </div>
@@ -487,6 +496,34 @@ function TrayMenu({ onSelect }: { onSelect: (action: TrayMenuAction) => void }) 
  * "No organization" would read as broken rather than signed out. Setup lives
  * in the full window, so the card hands over rather than reproducing it.
  */
+/**
+ * The account read failed. Deliberately not `SignedOutNote`: that one tells
+ * the user to sign in, and a user whose credential is merely unreadable is
+ * already signed in - on macOS this is the dismissed-keychain-prompt case
+ * CLAUDE.md describes. Says what happened and offers the surface that can
+ * retry, rather than a sentence about setup.
+ */
+function AccountUnreadNote({ onExpand }: { onExpand: () => void }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
+      <h1 className="text-sm font-medium leading-5 text-base-foreground">
+        Your account couldn&apos;t be read
+      </h1>
+      <p className="text-base-xs leading-4 tracking-label-12 text-base-muted-foreground">
+        Gate Connect could not reach your stored credential, so it cannot tell
+        what is routed. Open the app window to try again.
+      </p>
+      <button
+        type="button"
+        onClick={onExpand}
+        className="flex h-8 items-center gap-2 rounded-md border border-base-input bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-base-primary shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      >
+        Open Gate Connect
+      </button>
+    </div>
+  );
+}
+
 function SignedOutNote({ onExpand }: { onExpand: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
@@ -510,10 +547,17 @@ function SignedOutNote({ onExpand }: { onExpand: () => void }) {
 
 /** The security feed, at popover size.
  *
- * A count and a connection state, and a way into the pane that has the detail.
- * Deliberately not a list: at 400px a row would have to drop either the category
- * or the tool, and an event that cannot say what fired or where is not worth the
- * space - the full feed is one click away and says both.
+ * A count and a connection state, and a way into the full window. Deliberately
+ * not a list: at 400px a row would have to drop either the category or the
+ * tool, and an event that cannot say what fired or where is not worth the
+ * space.
+ *
+ * **It does not open the security pane.** `onOpen` is the header's `expand`:
+ * `reveal_popover_window` shows the main window wherever it was last left and
+ * takes no pane argument, so the user lands on whatever pane they were on. The
+ * sentence here used to say the full feed was one click away, which is one
+ * click plus finding it. Wiring it properly needs the reveal to carry a
+ * destination; until then this card promises less.
  *
  * The count is "this session", not "today". The feed buffers what it has received
  * since the app started, and calling that a daily total would be a claim about

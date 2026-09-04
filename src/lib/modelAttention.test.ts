@@ -11,8 +11,8 @@ import type { Credits, GateModel, ToolModelChoice } from "./toolModels";
  * the normal first paint.
  */
 const CATALOGUE: GateModel[] = [
-  { id: "anthropic/claude-opus-5", vendor: "anthropic", name: "Claude Opus 5" },
-  { id: "openai/gpt-5", vendor: "openai", name: "GPT-5" },
+  { id: "anthropic/claude-opus-5", vendor: "anthropic", name: "Claude Opus 5", tags: ["tool-use"] },
+  { id: "openai/gpt-5", vendor: "openai", name: "GPT-5", tags: ["tool-use"] },
 ];
 
 const FUNDED: Credits = {
@@ -20,6 +20,7 @@ const FUNDED: Credits = {
   paygEnabled: true,
   balanceCents: 1025,
   lowBalanceThresholdCents: 500,
+  billingUrl: null,
   autoTopupArmed: false,
 };
 
@@ -124,5 +125,112 @@ describe("modelAttention", () => {
       credits: { ...FUNDED, balanceCents: null },
     });
     expect(a).toBeNull();
+  });
+
+  it("reports failing traffic, which is the only thing that sees a bad pairing", () => {
+    // The catalogue says the model exists and the balance says it is affordable,
+    // and the requests fail anyway - at a provider, for reasons only the traffic
+    // shows. This is the case that broke Codex: a Gate model it could not be
+    // served with, and an app that said nothing.
+    const a = modelAttention({
+      choice: gate("openai/gpt-5"),
+      catalogue: CATALOGUE,
+      credits: FUNDED,
+      recent: [{ status: "error" }, { status: "error" }, { status: "error" }],
+    });
+    expect(a?.cause).toBe("requests-failing");
+    expect(a?.message).toMatch(/App default/);
+  });
+
+  it("outranks the account-level causes", () => {
+    // A request that HAS failed is more certain than a reason it would, and it
+    // is what the user is actually experiencing.
+    const a = modelAttention({
+      choice: gate("openai/gpt-5"),
+      catalogue: CATALOGUE,
+      credits: { ...FUNDED, balanceCents: 0 },
+      recent: [{ status: "error" }, { status: "error" }, { status: "error" }],
+    });
+    expect(a?.cause).toBe("requests-failing");
+  });
+
+  it("fires on the transition, where the older successes predate the Gate model", () => {
+    // Found against a real gateway, not by reading the code. The user runs on the
+    // app's own model, it works, they switch to a Gate model and everything after
+    // that fails. The window still holds the successes from before the switch, so
+    // a rule of "every request in the window failed" is silent at exactly the
+    // moment the tool breaks - the one moment it had to speak.
+    const a = modelAttention({
+      choice: gate("openai/gpt-5"),
+      catalogue: CATALOGUE,
+      credits: FUNDED,
+      recent: [
+        { status: "error" },
+        { status: "error" },
+        { status: "error" },
+        { status: "success" },
+        { status: "success" },
+      ],
+    });
+    expect(a?.cause).toBe("requests-failing");
+  });
+
+  it("clears itself as soon as the tool is answering again", () => {
+    // A success at the head means Gate is serving this tool now, whatever the run
+    // behind it. Leaving the warning up would outlive the problem, and a warning
+    // that does that stops being read.
+    const a = modelAttention({
+      choice: gate("openai/gpt-5"),
+      catalogue: CATALOGUE,
+      credits: FUNDED,
+      recent: [
+        { status: "success" },
+        { status: "error" },
+        { status: "error" },
+        { status: "error" },
+      ],
+    });
+    expect(a).toBeNull();
+  });
+
+  it("stays quiet when only some requests failed", () => {
+    // A tool that is mostly working does not need an alarm, and one that cried
+    // wolf here would be ignored when it mattered.
+    const a = modelAttention({
+      choice: gate("openai/gpt-5"),
+      catalogue: CATALOGUE,
+      credits: FUNDED,
+      recent: [{ status: "error" }, { status: "success" }, { status: "error" }],
+    });
+    expect(a).toBeNull();
+  });
+
+  it("stays quiet on a single failure", () => {
+    expect(
+      modelAttention({
+        choice: gate("openai/gpt-5"),
+        catalogue: CATALOGUE,
+        credits: FUNDED,
+        recent: [{ status: "error" }],
+      }),
+    ).toBeNull();
+  });
+
+  it("says nothing about failures while the app runs its own model", () => {
+    // Whatever is failing, it is not Gate serving a model - so this module has
+    // nothing to say about it and must not claim otherwise.
+    const a = modelAttention({
+      choice: { source: "tool", modelIds: ["openai/gpt-5"] },
+      catalogue: CATALOGUE,
+      credits: FUNDED,
+      recent: [{ status: "error" }, { status: "error" }, { status: "error" }],
+    });
+    expect(a).toBeNull();
+  });
+
+  it("says nothing while the feed has not been read", () => {
+    expect(
+      modelAttention({ choice: gate("openai/gpt-5"), catalogue: CATALOGUE, credits: FUNDED, recent: null }),
+    ).toBeNull();
   });
 });

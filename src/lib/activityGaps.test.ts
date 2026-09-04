@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { toFailure } from "./activity";
-import { failureNotice, sectionNotice } from "./activityGaps";
+import { failureNotice, mergeNotices, sectionNotice } from "./activityGaps";
+import type { GapAction, GapNotice } from "./activityGaps";
 import type { FailureCode } from "./activity";
 import type { UnavailableReason } from "./activity";
 
@@ -114,5 +115,74 @@ describe("sectionNotice", () => {
     expect(sectionNotice("Blocked and flagged", "access").cause).toMatch(
       /owner or admin/i,
     );
+  });
+});
+
+describe("mergeNotices", () => {
+  const notice = (subject: string, cause: string, actions: GapAction[] = []): GapNotice => ({
+    subject,
+    cause,
+    actions,
+  });
+  const keys: GapAction = { kind: "api-keys", label: "Manage API keys" };
+  const docs: GapAction = { kind: "docs", label: "Read Gate docs" };
+  const retry: GapAction = { kind: "retry", label: "Try again" };
+
+  it("collapses one cause repeated across every section into a single notice", () => {
+    // The state that prompted this: a credential with no user attached defeats
+    // all five sections, and the Overview printed the same sentence five times
+    // with ten identical links under it.
+    const same = ["Messages", "Savings", "Tokens saved", "Hourly chart", "Blocked and flagged"].map(
+      (s) => notice(s, "The credential in use has no user attached.", [keys, docs]),
+    );
+    const merged = mergeNotices(same);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.cause).toBe("The credential in use has no user attached.");
+    expect(merged[0]!.actions).toEqual([keys, docs]);
+  });
+
+  it("attributes a reading-wide cause to the reading, not to a section", () => {
+    const same = ["Messages", "Savings"].map((s) => notice(s, "No user attached.", [keys]));
+    expect(mergeNotices(same)[0]!.subject).toBe("Activity");
+  });
+
+  it("names the sections when the cause covers only some of them", () => {
+    // Saying "Activity" here would claim the rest of the pane is broken too.
+    const merged = mergeNotices([
+      notice("Messages", "No user attached.", [keys]),
+      notice("Savings", "No user attached.", [keys]),
+      notice("Policies", "Nothing is set up for this yet.", []),
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((n) => n.subject)).toContain("Messages and Savings");
+  });
+
+  it("keeps notices apart when the same cause offers different actions", () => {
+    // Two sections that fail alike but are fixed differently are two notices.
+    // Merging them would offer an action that does nothing for one of them.
+    const merged = mergeNotices([
+      notice("Messages", "Could not be fetched.", [retry]),
+      notice("Savings", "Could not be fetched.", [keys]),
+    ]);
+    expect(merged).toHaveLength(2);
+  });
+
+  it("leaves a single notice exactly as it was", () => {
+    const one = [notice("Policies", "Nothing is set up for this yet.", [])];
+    expect(mergeNotices(one)).toEqual(one);
+  });
+
+  it("joins three or more section names readably", () => {
+    const merged = mergeNotices([
+      notice("A", "same", [keys]),
+      notice("B", "same", [keys]),
+      notice("C", "same", [keys]),
+      notice("D", "other", [keys]),
+    ]);
+    expect(merged.find((n) => n.cause === "same")!.subject).toBe("A, B and C");
+  });
+
+  it("returns nothing for nothing", () => {
+    expect(mergeNotices([])).toEqual([]);
   });
 });
