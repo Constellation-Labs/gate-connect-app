@@ -39,9 +39,21 @@ const TOKEN_NAME: &str = "proxyd.token";
 /// Resolve `$XDG_RUNTIME_DIR/gate-connect`, creating it `0700` if needed.
 /// Falls back to a `0700` dir under the system temp dir keyed on the uid when
 /// `$XDG_RUNTIME_DIR` is unset (rare; e.g. a bare `su` session).
+///
+/// The `GATE_CONNECT_TEST_HOME` seam ([`crate::env::test_runtime_dir`]) wins
+/// over both. It has to: the seam redirects the data dir but not
+/// `$XDG_RUNTIME_DIR`, so a test that seeds a routing snapshot in its throwaway
+/// home made `engine_likely_running` true and then resolved the *developer's*
+/// control socket. `status` and `disable` adopt whatever answers there, so the
+/// live daemon got reconfigured by test IPC and dropped to pass-through when the
+/// test process exited; a fingerprint mismatch (a debug test build against an
+/// installed release one - the normal case) retired it outright. `cargo test`
+/// stopping the running app's proxy is not a hazard each new test should have to
+/// remember to avoid, so the seam closes it here, at the one place every
+/// control-channel path resolves through.
 pub fn runtime_dir() -> Result<PathBuf> {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
+    let base = crate::env::test_runtime_dir()
+        .or_else(|| std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from))
         .unwrap_or_else(|| {
             // SAFETY: getuid is always safe and never fails.
             let uid = unsafe { libc::getuid() };
@@ -243,6 +255,63 @@ mod tests {
         assert_eq!(t.len(), 32);
         assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(t, random_token().unwrap());
+    }
+
+    /// The seam that keeps `cargo test` off the developer's live daemon. Without
+    /// it, any test that seeded a routing snapshot resolved the real
+    /// `$XDG_RUNTIME_DIR` and reconfigured - or retired - the running app's
+    /// proxy helper.
+    ///
+    /// Takes `path_env_lock` because both vars it moves are process-global: a
+    /// concurrent test reading either would resolve against whichever of us
+    /// wrote last. Restores them before asserting, so a failure here doesn't
+    /// leave the rest of the run pointed at a scratch dir.
+    #[test]
+    fn test_home_seam_moves_the_control_channel_off_xdg_runtime_dir() {
+        let _env = crate::env::path_env_lock();
+
+        let pid = std::process::id();
+        let real = std::env::temp_dir().join(format!("gate-real-runtime-{pid}"));
+        let seam = std::env::temp_dir().join(format!("gate-seam-home-{pid}"));
+        let prev_xdg = std::env::var_os("XDG_RUNTIME_DIR");
+        let prev_home = std::env::var_os("GATE_CONNECT_TEST_HOME");
+
+        std::env::set_var("XDG_RUNTIME_DIR", &real);
+        std::env::set_var("GATE_CONNECT_TEST_HOME", &seam);
+        let seamed = runtime_dir();
+        // Same `$XDG_RUNTIME_DIR`, seam gone: production resolution.
+        std::env::remove_var("GATE_CONNECT_TEST_HOME");
+        let unseamed = runtime_dir();
+
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
+        match prev_home {
+            Some(v) => std::env::set_var("GATE_CONNECT_TEST_HOME", v),
+            None => std::env::remove_var("GATE_CONNECT_TEST_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&seam);
+        let _ = std::fs::remove_dir_all(&real);
+
+        let seamed = seamed.expect("seamed runtime dir");
+        assert!(
+            seamed.starts_with(&seam),
+            "the seam must root the control channel under it, got {}",
+            seamed.display()
+        );
+        assert!(
+            !seamed.starts_with(&real),
+            "a seamed test must not resolve the session's real runtime dir, got {}",
+            seamed.display()
+        );
+
+        let unseamed = unseamed.expect("unseamed runtime dir");
+        assert!(
+            unseamed.starts_with(&real),
+            "production must still follow $XDG_RUNTIME_DIR, got {}",
+            unseamed.display()
+        );
     }
 
     #[test]

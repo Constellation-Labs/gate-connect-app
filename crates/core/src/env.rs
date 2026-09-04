@@ -35,6 +35,19 @@ fn test_home_override() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
+/// Test seam: base dir for the Linux proxy helper's control channel (socket,
+/// token, pidfile, singleton lock), `$GATE_CONNECT_TEST_HOME/run`.
+///
+/// Its own accessor rather than a caller of [`home`] because the real value
+/// is `$XDG_RUNTIME_DIR`, not a home-relative path: production must keep the
+/// session lifetime and `0700` guarantees that dir carries, so only the seam
+/// moves. See [`crate::proxy::control::runtime_dir`] for what reaching the real
+/// one from a test costs.
+#[cfg(target_os = "linux")]
+pub(crate) fn test_runtime_dir() -> Option<PathBuf> {
+    test_home_override().map(|home| home.join("run"))
+}
+
 /// Serializes the unit tests that redirect per-user paths for the whole process.
 ///
 /// The seam above is an environment variable, so it is process-global, while

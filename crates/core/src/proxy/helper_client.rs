@@ -58,17 +58,42 @@ pub struct Intercepting {
     pub relay_port: u16,
 }
 
+/// A daemon we reached and authenticated, classified by whether it is *this*
+/// build.
+///
+/// Returned instead of a bare client so the caller decides what a leftover
+/// deserves. Retiring one used to happen inside [`HelperClient::connect_existing`],
+/// which is also the read-only probe `status` uses: merely *asking* a daemon
+/// built from different sources how it was doing killed it, and with it the
+/// user's routing. That fires on ordinary version skew - a CLI from one build
+/// probing the installed app's daemon - so only the paths that mean to replace
+/// or stop the daemon ([`HelperClient::connect_or_spawn`], [`shutdown_daemon`])
+/// send `Shutdown` now.
+enum Reached {
+    SameBuild(HelperClient),
+    /// Authenticated, but reporting a different [`control::PROTOCOL_VERSION`]
+    /// or [`control::BUILD_FINGERPRINT`]. Unusable for real requests; still
+    /// usable for a graceful `Shutdown`, which is all a replacer wants it for.
+    Stale(HelperClient),
+}
+
 impl HelperClient {
     /// Connect to a running daemon, spawning one (`<current-exe> --proxy-helper`,
     /// detached) if none is listening yet. Performs the `Hello` token handshake.
     pub fn connect_or_spawn() -> Result<HelperClient> {
-        match Self::connect_existing() {
-            Ok(client) => return Ok(client),
+        match Self::connect_and_classify() {
+            Ok(Reached::SameBuild(client)) => return Ok(client),
             // A daemon is listening but speaks an incompatible protocol (a
-            // leftover from another build). Replace it: it was asked to shut
-            // down in `connect_existing`; give it a moment, then force-kill if
-            // it's still holding the socket, so `spawn_daemon` below isn't
-            // wedged behind its singleton flock.
+            // leftover from another build). This is the one path that wants it
+            // gone, so ask it here: cleanly first, then a moment to comply and
+            // a force-kill if it doesn't, so `spawn_daemon` below isn't wedged
+            // behind its singleton flock.
+            Ok(Reached::Stale(mut stale)) => {
+                let _ = stale.round_trip(&Request::Shutdown, CONTROL_TIMEOUT);
+                drop(stale);
+                ensure_daemon_gone();
+            }
+            // Listening but unintelligible - no client to ask nicely with.
             Err(e) if e.is::<StaleDaemon>() => ensure_daemon_gone(),
             Err(_) => {}
         }
@@ -85,8 +110,21 @@ impl HelperClient {
     }
 
     /// Connect to an already-listening daemon and authenticate, without
-    /// spawning one. Errors if none is listening or the token handshake fails.
+    /// spawning one. Errors if none is listening, the token handshake fails, or
+    /// the daemon is not this build.
+    ///
+    /// Read-only with respect to the daemon's life: a mismatched one is left
+    /// running and reported as [`StaleDaemon`], for the caller to retire or
+    /// tolerate. See [`Reached`].
     pub fn connect_existing() -> Result<HelperClient> {
+        match Self::connect_and_classify()? {
+            Reached::SameBuild(client) => Ok(client),
+            Reached::Stale(_) => Err(anyhow::Error::new(StaleDaemon)),
+        }
+    }
+
+    /// Connect and authenticate, reporting what kind of daemon answered.
+    fn connect_and_classify() -> Result<Reached> {
         let sock = control::socket_path()?;
         let stream = UnixStream::connect(&sock)
             .with_context(|| format!("connecting to {}", sock.display()))?;
@@ -105,10 +143,9 @@ impl HelperClient {
             .trim()
             .to_string();
         // We reached a listening daemon. From here, anything short of a clean,
-        // same-version Hello means it's a leftover we can't reuse - classify it
-        // as `StaleDaemon` so `connect_or_spawn` replaces it (gracefully if it
-        // still speaks the protocol, by force-kill otherwise) instead of getting
-        // wedged behind its singleton flock.
+        // same-version Hello means it's a leftover we can't reuse - a caller
+        // that wants the socket must retire it rather than get wedged behind
+        // its singleton flock.
         match client.round_trip(
             &Request::Hello {
                 token,
@@ -124,18 +161,16 @@ impl HelperClient {
             }) if version == control::PROTOCOL_VERSION
                 && fingerprint == control::BUILD_FINGERPRINT =>
             {
-                Ok(client)
+                Ok(Reached::SameBuild(client))
             }
             // Authenticated, but the daemon reports a different protocol
             // version or build fingerprint (e.g. a build predating this one).
-            // Ask it to shut down cleanly; `connect_or_spawn` force-kills if
-            // it doesn't comply.
-            Ok(Response::Hello { ok: true, .. }) => {
-                let _ = client.round_trip(&Request::Shutdown, CONTROL_TIMEOUT);
-                Err(anyhow::Error::new(StaleDaemon))
-            }
+            // Hand it back alive: it still speaks the protocol, so whoever
+            // wants it gone can `Shutdown` it gracefully.
+            Ok(Response::Hello { ok: true, .. }) => Ok(Reached::Stale(client)),
             // An unexpected reply, or a reply we couldn't even parse/read: a
-            // daemon speaking a protocol we don't understand. Replace it.
+            // daemon speaking a protocol we don't understand. Nothing to say to
+            // it, so report it as stale without a handle.
             Ok(_) | Err(_) => Err(anyhow::Error::new(StaleDaemon)),
         }
     }
@@ -228,13 +263,15 @@ impl HelperClient {
 /// has no live update the way the key / token / org do - because the daemon
 /// outlives the GUI, so nothing short of replacing it re-reads that value.
 pub fn shutdown_daemon() {
-    match HelperClient::connect_existing() {
-        Ok(mut client) => {
+    match HelperClient::connect_and_classify() {
+        // Build match is irrelevant here: the point is to end it either way,
+        // and a stale one still understands `Shutdown`.
+        Ok(Reached::SameBuild(mut client) | Reached::Stale(mut client)) => {
             let _ = client.round_trip(&Request::Shutdown, CONTROL_TIMEOUT);
         }
-        // A stale daemon was already sent `Shutdown` inside `connect_existing`,
-        // so it still needs the wait/kill below. Any other error means nothing
-        // reachable is listening - there's nothing to shut down.
+        // Listening but unintelligible - it still needs the wait/kill below.
+        // Any other error means nothing reachable is listening, so there's
+        // nothing to shut down.
         Err(e) if !e.is::<StaleDaemon>() => return,
         Err(_) => {}
     }
