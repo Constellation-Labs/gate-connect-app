@@ -21,7 +21,9 @@ test.describe("tray popover", () => {
       proxy: { running: true, ca_trusted: true },
     });
 
-    await app.page.getByRole("switch", { name: "Claude Code", exact: true }).click();
+    // The card's eyebrow in front of the row label: rows are named for the
+    // surface they cover, so "CLI" alone names Claude Code and Codex both.
+    await app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }).click();
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",
@@ -84,7 +86,9 @@ test.describe("tray popover", () => {
       },
     });
 
-    const row = app.page.getByRole("listitem").filter({ hasText: "Claude Code" });
+    const row = app.page
+      .getByRole("listitem")
+      .filter({ has: app.page.getByRole("switch", { name: "Anthropic CLI", exact: true }) });
     await expect(row).toContainText("2 alerts");
 
     // And it moves without a reopen, because the popover is listening.
@@ -96,17 +100,14 @@ test.describe("tray popover", () => {
     // The tray ran the same 5s poll behind a surface the tray icon opens and
     // closes all day. It listens now, like the window shell.
     const app = await boot({ windowLabel: "tray", tools: [] });
-    // `exact`, for the reason the rail's own spec gives: the ChatGPT (Codex
-    // subscription) row is drawn from the catalog either way and would
-    // substring-match "Codex".
-    const row = app.page.getByRole("switch", { name: "Codex", exact: true });
+    const row = app.page.getByRole("switch", { name: "OpenAI CLI", exact: true });
     await expect(row).toHaveCount(0);
 
     await app.patch({
       tools: [
         {
           slug: "codex",
-          name: "Codex",
+          name: "CLI",
           upstream_provider_name: "OpenAI",
           default_upstream_url: "https://api.openai.com/v1",
           status: { kind: "detected" as const },
@@ -117,7 +118,7 @@ test.describe("tray popover", () => {
 
     await app.emit("tools-changed");
 
-    await expect(row.first()).toBeVisible();
+    await expect(row).toBeVisible();
   });
 
   test("an org switch in the other window reaches the popover", async ({ boot }) => {

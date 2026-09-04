@@ -21,14 +21,14 @@ const useNewUi = { gc: "gc.newUi" };
 const connectedTools = [
   {
     slug: "claude-code",
-    name: "Claude Code",
+    name: "CLI",
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
     status: { kind: "connected" as const },
   },
   {
     slug: "codex",
-    name: "Codex",
+    name: "CLI",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://api.openai.com",
     status: { kind: "connected" as const },
@@ -46,7 +46,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["Claude Code", "Codex"],
+      pendingQuitTools: ["CLI", "CLI"],
     });
 
     const dialog = app.page.getByRole("dialog");
@@ -66,7 +66,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["Claude Code", "Codex"],
+      pendingQuitTools: ["CLI", "CLI"],
     });
 
     await app.page.getByRole("button", { name: "Disconnect" }).click();
@@ -85,7 +85,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["Claude Code"],
+      pendingQuitTools: ["CLI"],
     });
 
     await app.page.getByRole("radio", { name: /Quit without disconnecting/ }).click();
@@ -109,7 +109,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["Claude Code", "Codex"],
+      pendingQuitTools: ["CLI", "CLI"],
       quitLeftBehind: ["Codex"],
     });
 
@@ -131,7 +131,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["Claude Code"],
+      pendingQuitTools: ["CLI"],
     });
 
     await app.page.getByRole("button", { name: "Cancel" }).click();
