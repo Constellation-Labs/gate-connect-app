@@ -102,6 +102,17 @@ impl Integration for ClaudeCode {
         settings_path().ok().map(|p| p.display().to_string())
     }
 
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // Exactly what `detect` and `status` read: the well-known binaries, the
+        // config directory whose existence stands in for a Volta/asdf/npx
+        // install, and the settings file inside it that decides Connected from
+        // Drifted.
+        let mut paths: Vec<PathBuf> = CLAUDE_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(env::claude_code_config_dir());
+        paths.extend(settings_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
         if CLAUDE_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);

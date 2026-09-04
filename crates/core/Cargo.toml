@@ -36,6 +36,11 @@ sha2.workspace = true
 base64.workspace = true
 rand.workspace = true
 
+# `notify` watches the tool config files and binaries whose appearance changes
+# what detection answers, so the windows can be told instead of polling. See
+# `tool_watch`.
+notify.workspace = true
+
 # `sysinfo` reads the machine's hostname - the fallback `preferences::device_name`
 # resolves to when the user hasn't named this device.
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }

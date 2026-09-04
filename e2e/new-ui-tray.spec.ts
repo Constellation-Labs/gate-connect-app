@@ -57,4 +57,66 @@ test.describe("tray popover", () => {
     await app.page.getByRole("button", { name: "Open Gate Connect" }).click();
     await expect.poll(() => app.lastCall("reveal_popover")).not.toBeNull();
   });
+
+  test("a row counts the feed's events against its own tool", async ({ boot }) => {
+    // The seam the component test cannot see: that the popover reads the feed's
+    // buffer on open and attributes it per row. Two events for claude-code, one
+    // unattributed - which must be counted against nobody.
+    const event = {
+      id: "01A",
+      requestId: "req-8f3c",
+      at: "2026-08-31T14:03:00Z",
+      action: "block" as const,
+      category: "credential",
+      tool: "claude-code",
+      model: "claude-opus-4",
+      provider: "anthropic",
+    };
+    const app = await boot({
+      windowLabel: "tray",
+      securityFeed: {
+        state: "live",
+        events: [
+          event,
+          { ...event, id: "01B", requestId: "req-11aa", action: "flag" as const },
+          { ...event, id: "01C", requestId: "req-22bb", tool: null },
+        ],
+      },
+    });
+
+    const row = app.page.getByRole("listitem").filter({ hasText: "Claude Code" });
+    await expect(row).toContainText("2 alerts");
+
+    // And it moves without a reopen, because the popover is listening.
+    await app.emit("security-event", { ...event, id: "01D", requestId: "req-33cc" });
+    await expect(row).toContainText("3 alerts");
+  });
+
+  test("the popover re-reads on tools-changed rather than on a timer", async ({ boot }) => {
+    // The tray ran the same 5s poll behind a surface the tray icon opens and
+    // closes all day. It listens now, like the window shell.
+    const app = await boot({ windowLabel: "tray", tools: [] });
+    // `exact`, for the reason the rail's own spec gives: the ChatGPT (Codex
+    // subscription) row is drawn from the catalog either way and would
+    // substring-match "Codex".
+    const row = app.page.getByRole("switch", { name: "Codex", exact: true });
+    await expect(row).toHaveCount(0);
+
+    await app.patch({
+      tools: [
+        {
+          slug: "codex",
+          name: "Codex",
+          upstream_provider_name: "OpenAI",
+          default_upstream_url: "https://api.openai.com/v1",
+          status: { kind: "detected" as const },
+        },
+      ],
+    });
+    await expect(row).toHaveCount(0);
+
+    await app.emit("tools-changed");
+
+    await expect(row.first()).toBeVisible();
+  });
 });

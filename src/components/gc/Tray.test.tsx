@@ -220,3 +220,57 @@ describe("signed out", () => {
     expect(onExpand).toHaveBeenCalled();
   });
 });
+
+/**
+ * The alert half of the drawn activity line (`Tray`'s docstring records why the
+ * message half is not here). What is worth asserting is the distinction the
+ * figure exists to hold: a measured zero says so in words, and a row the feed
+ * cannot attribute draws nothing at all rather than a `0` nobody measured.
+ */
+describe("the row activity line", () => {
+  /** Everything the named app's row says, so a figure cannot be matched off a
+   *  neighbouring row or off the security card. */
+  const row = (name: string) =>
+    screen.getByText(name).closest("li")?.textContent ?? "";
+
+  const withAlerts = (alerts: SidebarGroup["apps"][number]["alerts"]) => [
+    {
+      ...GROUPS[0],
+      apps: [{ ...GROUPS[0].apps[0], alerts }, GROUPS[0].apps[1]],
+    },
+  ];
+
+  it("draws the count under the status", () => {
+    renderTray({ groups: withAlerts({ kind: "count", count: 23 }) });
+
+    expect(row("Claude Code")).toContain("Protected");
+    expect(row("Claude Code")).toContain("23 alerts");
+  });
+
+  it("says a measured zero in words, and counts one in the singular", () => {
+    renderTray({ groups: withAlerts({ kind: "count", count: 0 }) });
+    expect(row("Claude Code")).toContain("No alerts");
+
+    cleanup();
+    renderTray({ groups: withAlerts({ kind: "count", count: 1 }) });
+    expect(row("Claude Code")).toContain("1 alert");
+  });
+
+  it("draws nothing for a row the feed cannot attribute", () => {
+    // The chat-domain case, and it is permanent: the feed keys events on the
+    // tool slug and a domain's traffic arrives unattributed on purpose.
+    renderTray({ groups: withAlerts({ kind: "count", count: 23 }) });
+
+    expect(row("Claude Desktop")).toContain("Not routed");
+    expect(row("Claude Desktop")).not.toContain("alert");
+  });
+
+  it("holds a place while a feed that is running has not answered", () => {
+    // A skeleton, not a zero: neither a figure nor "none" is true while we are
+    // still asking.
+    renderTray({ groups: withAlerts({ kind: "pending" }) });
+
+    expect(row("Claude Code")).not.toContain("alert");
+    expect(document.querySelectorAll(".animate-pulse")).toHaveLength(1);
+  });
+});

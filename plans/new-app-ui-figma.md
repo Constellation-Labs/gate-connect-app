@@ -2246,26 +2246,39 @@ Detection ran on backend events only, so a tool installed while the window was
 open stayed invisible until something unrelated repainted the sidebar. The
 "Protected apps" eyebrow first gained a small refresh control for this. It has
 since been removed: the Figma draws no such control, and a control is the wrong
-answer to a reading the user has no reason to know is stale. Detection polls
-instead, on `DETECT_POLL_MS` (5s) in `NewUiApp`.
+answer to a reading the user has no reason to know is stale.
 
-What the poll reads is deliberately narrower than `refresh`. `list_tools` walks
-config files and `proxy_status` reads memory, so both are fine on a timer;
-`routing_verdicts` probes the relay *and* the gateway session, so it is not. The
-poll compares both readings against the last ones rendered - `detectionSignature`
-over a `rendered` ref, kept current by an effect on the state itself so that a
-toggle's own re-read counts as drawn - and commits nothing when they match. Every
-memo below hangs off `tools` and `proxy`, so re-setting an equal-but-new object
-every five seconds would rebuild the families, the settings sections and the
+**It has an event of its own now, and the poll is gone (2026-09-03).** The middle
+answer was a 5s `DETECT_POLL_MS` timer in both shells - twelve config-file walks a
+minute, forever, for something that happens a handful of times in a machine's
+life. `core/src/tool_watch.rs` watches the paths each integration declares
+(`Integration::watch_paths`) and emits `tools-changed`; both shells re-read on it,
+the same shape as `proxy-state-changed`. The watch arms the deepest directory that
+exists at or above each target and re-arms as the rest appear, because the
+interesting paths are the ones that do not exist yet - `~/.codex/config.toml` is
+what shows up when someone installs Codex.
+
+What a re-read covers is deliberately narrower than `refresh`. `list_tools` walks
+config files and `proxy_status` reads memory; `routing_verdicts` probes the relay
+*and* the gateway session, so a filesystem event must not be able to trigger it -
+a package manager writing in a watched directory would otherwise aim a burst of
+probes at the gateway. `redetect` compares both readings against the last ones
+rendered - `detectionSignature` over a `rendered` ref, kept current by an effect on
+the state itself so a toggle's own re-read counts as drawn - and commits nothing
+when they match. Every memo below hangs off `tools` and `proxy`, so re-setting an
+equal-but-new object would rebuild the families, the settings sections and the
 routing callbacks for no change. When either does move the sweep runs: a row that
-just appeared has no verdict and reads "Checking", and the engine coming up
-changes all of them at once.
-Hidden windows skip their ticks and read once on `visibilitychange`, so nothing is
-spent on a minimized window and coming back does not show a stale list. Two e2e
-tests pin the split: the list is re-read with nothing asking, and an unchanged
-machine does not re-run the sweep.
+just appeared has no verdict and reads "Checking", and the engine coming up changes
+all of them at once.
 
-`scan` is still written on every tick even when nothing changed: the timestamp is
+The `visibilitychange` read stays, and is not a poll. It covers what a watch cannot
+see - Hermes' launcher can sit anywhere on `$PATH`, and a `$PATH` entry has no
+directory to arm - and what a watch that failed to start would miss entirely. Three
+e2e tests pin the arrangement per shell: the list is re-read on the event and not on
+a timer, an unchanged machine does not re-run the sweep, and a tool that appears
+stays invisible until the event lands.
+
+`scan` is still written on every read even when nothing changed: the timestamp is
 the empty card's evidence that something is still looking.
 
 The inventory card keeps its own Refresh / Try again. A *failed* scan is a state a
@@ -2623,3 +2636,47 @@ complete. The Notifications row's description changed from the drawn "Alert me
 when a request is blocked or flagged" to "Alert me about routing problems",
 because the drawn sentence now belongs to the two rows that gate exactly that and
 one switch cannot honestly claim both.
+
+### The tray's activity line, half of it, 2026-09-03
+
+**The frames draw one and the build now draws half of it.** Every tray row frame
+carries "345 messages · 23 alerts" under the status line, and `Tray`'s docstring
+has recorded the whole line as unbuilt since 2026-08-28 on the grounds that no
+per-tool reading existed. Half of that is no longer true: the live feed (AG-578)
+attributes every blocked or flagged request to a tool slug, and the tray already
+listens to it for the security card. So the alert half is drawn, from
+`alertCounts` in `TrayApp`, and the message half stays out.
+
+Why the message half stays out. `GET /v1/me/activity` answers for one tool at a
+time, it sits in a 100-per-minute throttle bucket keyed on the source address
+rather than the credential, and `activity_cache.rs` holds one reading keyed by
+scope - so a read per row, on a surface the tray icon opens dozens of times a
+day, would spend a budget shared with every other Gate Connect user on the same
+egress and evict the window's held reading doing it. The drawn "No recent
+messages" fallback is a measurement claim this surface cannot make either. It
+lands when the gateway can return the per-tool breakdown inside the one reading
+the Overview already takes.
+
+**The rail draws neither, deliberately.** The counters were built on the window's
+256px rail first and moved here on 2026-09-03: the tray frames are the ones that
+draw an activity line, and the window reports the same traffic on the app pane,
+where there is room for the events themselves. `SidebarApp.alerts` lives on the
+shared row type because both surfaces build rows from one shape; only the tray
+renders it.
+
+Three states, per principle 6: a reading, including a measured `0`, which draws
+"No alerts" (the frames draw digits, but their own empty-state copy is a phrase,
+and a bare `0` under a status line reads as a figure that failed to arrive);
+in flight, which draws a `Skeleton`, and only while a feed that is actually
+running has not answered, because with no account `loading` never clears; and no
+reading at all, which draws **nothing**. That last covers an unreadable feed and,
+permanently, the chat-domain rows - the feed keys events on the tool slug and a
+domain's traffic arrives unattributed on purpose, so a `0` there would report a
+quiet day over traffic Gate cannot see.
+
+Grey, not amber: a blocked request is Gate doing its job, not the app failing,
+and `STATUS_TEXT` is the only vocabulary on that row entitled to report a fault.
+
+Covered by four cases in `Tray.test.tsx` and one in `e2e/new-ui-tray.spec.ts`,
+the latter for the seam the component test cannot see - that the popover reads the
+buffer on open, attributes it per row, and moves when an event is pushed.

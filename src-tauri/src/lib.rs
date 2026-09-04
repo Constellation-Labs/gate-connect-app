@@ -3178,6 +3178,31 @@ pub fn run() {
                 });
             });
 
+            // Detection is the one reading a window cannot be told about. A tool
+            // installed while the app is open happens entirely outside it, so
+            // both shells used to poll `list_tools` every five seconds to
+            // notice - twelve config-file walks a minute, forever, for an event
+            // that happens a handful of times in a machine's life. The OS
+            // already knows; `tool_watch` asks it and this emits.
+            //
+            // Registered on every desktop OS and not gated behind a window:
+            // `emit` reaches whichever shells are mounted, and neither the
+            // window nor the tray has to exist yet.
+            //
+            // A watch that cannot start is reported and then left alone. The
+            // shells still re-read on their visibility edge, which is what
+            // covers the paths a watch cannot see anyway - a `$PATH` install of
+            // a launcher has no directory to arm.
+            {
+                let watch_handle = app.handle().clone();
+                if let Err(e) = gate_connect_core::tool_watch::start(move || {
+                    let _ = watch_handle.emit("tools-changed", ());
+                }) {
+                    eprintln!("[gate] tool config watch failed to start: {e:#}");
+                    report_backend_error("tool_watch", format!("{e:#}"));
+                }
+            }
+
             // Launch at login defaults ON: arm the login item the first time
             // we run so routing persists across a restart out of the box. A
             // one-shot marker file records that the default has been applied,

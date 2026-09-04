@@ -314,9 +314,12 @@ test.describe("new UI drift repair", () => {
  * during setup, MANUAL REFRESH, and application changes that can affect
  * detection."
  *
- * Detection only ran on backend events, so installing a tool while this window
- * was open showed nothing until something unrelated repainted it. It was a manual
- * control first; now the window polls, and the control is gone from the eyebrow.
+ * Detection used to run on backend events that had nothing to do with tools, so
+ * installing one while this window was open showed nothing until something
+ * unrelated repainted it. It was a manual control first, then a 5s poll, and now
+ * an event of its own: the backend watches the tool config files and binaries
+ * (`core/src/tool_watch.rs`) and emits `tools-changed`. The eyebrow's control
+ * stayed gone.
  */
 test.describe("new UI: refreshing the inventory", () => {
   test.beforeEach(async ({ page }) => {
@@ -326,40 +329,55 @@ test.describe("new UI: refreshing the inventory", () => {
   const countOf = async (app: { calls: () => Promise<{ cmd: string }[]> }, cmd: string) =>
     (await app.calls()).filter((c) => c.cmd === cmd).length;
 
-  test("the tool list is re-read with nothing asking it to be", async ({ boot }) => {
+  test("the tool list is re-read when the backend says it changed", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
+    await expect.poll(() => countOf(app, "list_tools")).toBeGreaterThan(0);
 
     const before = await countOf(app, "list_tools");
-    // No click anywhere: there is no control for this any more. The timeouts in
-    // this describe block are all several polling periods, not a guess.
-    await expect
-      .poll(() => countOf(app, "list_tools"), { timeout: 20_000 })
-      .toBeGreaterThan(before);
+    // Nothing on a timer any more, so the count holds still until something
+    // says otherwise. Asserted, because "it will re-read eventually" is exactly
+    // what this stopped doing.
+    await new Promise((r) => setTimeout(r, 1_000));
+    expect(await countOf(app, "list_tools")).toBe(before);
+
+    // No click anywhere: there is no control for this in the eyebrow.
+    await app.emit("tools-changed");
+
+    await expect.poll(() => countOf(app, "list_tools")).toBeGreaterThan(before);
   });
 
-  test("a poll that finds nothing new does not re-run the routing sweep", async ({ boot }) => {
+  test("an event that finds nothing new does not re-run the routing sweep", async ({
+    boot,
+  }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true } });
     await expect.poll(() => countOf(app, "routing_verdicts")).toBeGreaterThan(0);
 
-    // The sweep probes the relay and the gateway, so it is the one reading that
-    // must not ride a timer. An unchanged machine costs the two local reads only.
+    // The sweep probes the relay and the gateway, so it is the one reading a
+    // filesystem event must not be able to trigger - a package manager writing
+    // in a watched directory would otherwise aim a burst of probes at the
+    // gateway. An unchanged machine costs the two local reads only.
     const sweeps = await countOf(app, "routing_verdicts");
-    const polls = await countOf(app, "list_tools");
-    await expect
-      .poll(() => countOf(app, "list_tools"), { timeout: 30_000 })
-      .toBeGreaterThan(polls + 1);
+    const reads = await countOf(app, "list_tools");
+    await app.emit("tools-changed");
+    await app.emit("tools-changed");
+
+    await expect.poll(() => countOf(app, "list_tools")).toBeGreaterThan(reads + 1);
     expect(await countOf(app, "routing_verdicts")).toBe(sweeps);
   });
 
-  test("a tool installed while the window was open appears on its own", async ({ boot }) => {
+  test("a tool installed while the window was open appears when the watch fires", async ({
+    boot,
+  }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [] });
 
     // `exact`: the rail's ChatGPT (Codex subscription) row is drawn from the
     // catalog whether or not any tool is installed, and its switch's name
     // would otherwise substring-match "Codex".
-    await expect(app.page.getByRole("switch", { name: "Codex", exact: true })).toHaveCount(0);
+    const row = app.page.getByRole("switch", { name: "Codex", exact: true });
+    await expect(row).toHaveCount(0);
     const sweeps = await countOf(app, "routing_verdicts");
 
+    // Installed behind the window's back, exactly as a terminal would.
     await app.patch({
       tools: [
         {
@@ -371,18 +389,17 @@ test.describe("new UI: refreshing the inventory", () => {
         },
       ],
     });
+    // Nothing until the backend says so, which is the whole difference from the
+    // poll this replaced.
+    await expect(row).toHaveCount(0);
 
-    await expect(
-      app.page.getByRole("switch", { name: "Codex", exact: true }).first(),
-    ).toBeVisible({
-      timeout: 20_000,
-    });
+    await app.emit("tools-changed");
+
+    await expect(row.first()).toBeVisible();
     await expect(app.page.getByText("No apps detected")).toHaveCount(0);
     // The sweep rides a change: a tool that just appeared has no verdict yet, and
     // its row would sit on "Checking" until something unrelated repainted it.
-    await expect
-      .poll(() => countOf(app, "routing_verdicts"), { timeout: 20_000 })
-      .toBeGreaterThan(sweeps);
+    await expect.poll(() => countOf(app, "routing_verdicts")).toBeGreaterThan(sweeps);
   });
 });
 
