@@ -67,15 +67,31 @@ support meant to ship before there is an address for it to open?
 | Settings dialogs, all six instances | 4px | `base/input` |
 | Model picker footer (`665:19135`), three buttons | 4px | `base/border` |
 
-**Why it matters.** One button component serves all of these. We currently draw
-8px on a `base/input` line in dialogs and 4px on a `base/border` line in panes,
-which matches the Overview and confirmation frames exactly and contradicts
-Settings and the picker footer. We cannot satisfy both, so today the Settings
-dialogs and the picker footer render one step rounder than drawn.
+**This is now a narrower question than we first asked.** We can read each
+instance's variant name, and it turns out these are not different buttons being
+styled differently - they are **the same variant of the same component**.
+`143:70627` (Settings, 4px) and `694:32469` (Overview, 8px) both report
+`Variant=Outline, State=Default, Size=default`, both point at master
+`685:20928`, and both draw identical padding (10/12), border (`base/input`),
+shadow and type. The **only** difference between them is the radius.
 
-**What we need.** Which is canonical for a dialog button? And is the picker
-footer's `base/border` line deliberate, given every other dialog button sits on
-`base/input`?
+Two instances of one variant cannot legitimately differ in radius. So at least
+one of them carries a **local override** - somebody nudged a corner on a
+detached copy - rather than the file expressing two rules.
+
+Counting what we can reach: `Size=default` appears at 4px nine times (the six
+Settings dialog buttons and the three in the picker footer) and at 8px six
+times (the four Overview ones and the two on the Gate-model confirmation). The
+other sizes are `icon` 4px, `xs` 4px, `sm` 8px.
+
+**What we need.** Which radius does the `Button` component actually define for
+`Size=default`? We cannot open `685:20928` over our integration to check. Once
+you tell us, the answer also tells us which instances need resetting in the
+file - and we will make the code follow the component rather than the majority.
+
+Related, same cause: the picker footer's outline button sits on `base/border`
+where every other dialog button sits on `base/input`. Likely the same kind of
+override; worth checking while you are in there.
 
 ---
 
@@ -157,6 +173,13 @@ OS keychain, or step 3's closing "That's all there is to it."
 user where their credential is kept, which is the reassurance the whole product
 turns on. We would rather not drop it silently, and we would rather not keep
 undrawn copy without someone agreeing to it.
+
+**Partly answered by the file itself.** The keychain paragraph is not
+invented copy: hidden frame `212:85283` is a **retired fifth onboarding step**
+("How to connect with Gate", eyebrow `3 of 4`, Config apps / Proxy apps), and
+its body is exactly that paragraph. So when the step was removed its content
+was folded into step 1 rather than dropped. That is a reason to keep it, but it
+is still your call whether it belongs there.
 
 **What we need.** Keep both, keep the keychain line only, or drop both?
 
@@ -274,7 +297,17 @@ standing note in our own code warning that violet and purple are easy to
 confuse here and not to "correct" one to the other by eye, so we have left it
 alone rather than follow the newer node.
 
-**What we need.** One colour for the series. While you are there: the Blocked
+**And the tiebreak now points somewhere, which it did not when we asked.**
+Since finding the component canvases, "component beats instance" is executable
+again - and `chart/tooltip` (`744:37708`) IS a component, on the Menus canvas,
+while the legend swatch lives inside a flow frame. By the rule, purple/500
+wins. We have deliberately NOT applied that, because our own code carries a
+standing warning that violet and purple are easy to confuse here and not to
+swap one for the other by eye, and because a chart series changing colour is
+the kind of thing a person should agree to.
+
+**What we need.** One colour for the series - and if it is purple, we would
+like to retire that warning at the same time. While you are there: the Blocked
 swatch is `red/400` in both nodes and we had it at `red/500`, which we have now
 fixed - worth confirming red/400 is right.
 
