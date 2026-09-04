@@ -102,6 +102,7 @@ const tools: Tool[] = [
   {
     slug: "claude-code",
     name: "Claude Code",
+    product_name: "Claude Code",
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
     config_location: null,
@@ -110,6 +111,7 @@ const tools: Tool[] = [
   {
     slug: "codex",
     name: "Codex",
+    product_name: "Codex",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://api.openai.com",
     config_location: null,
@@ -125,12 +127,21 @@ const agents: RunningAgents = {
   scanned_names: ["claude", "codex", "opencode"],
   agents: [
     {
+      slug: "claude-code",
       name: "claude",
+      can_reopen: false,
       pid: 12345,
       started_at_unix: NOW_UNIX - (2 * 3600 + 46 * 60),
       predates_routing: true,
     },
-    { name: "codex", pid: 23456, started_at_unix: NOW_UNIX - 60, predates_routing: false },
+    {
+      slug: "codex",
+      name: "codex",
+      can_reopen: false,
+      pid: 23456,
+      started_at_unix: NOW_UNIX - 60,
+      predates_routing: false,
+    },
   ],
 };
 
@@ -272,7 +283,9 @@ describe("agentLine", () => {
   it("switches to days for the process that has been up all weekend", () => {
     const line = agentLine(
       {
+        slug: "claude-code",
         name: "Claude",
+        can_reopen: false,
         pid: 9,
         started_at_unix: NOW_UNIX - (3 * 86400 + 4 * 3600),
         predates_routing: true,
@@ -284,7 +297,14 @@ describe("agentLine", () => {
 
   it("says so rather than printing an epoch when the platform withheld the start time", () => {
     const line = agentLine(
-      { name: "codex", pid: 9, started_at_unix: 0, predates_routing: false },
+      {
+        slug: "codex",
+        name: "codex",
+        can_reopen: false,
+        pid: 9,
+        started_at_unix: 0,
+        predates_routing: false,
+      },
       NOW,
     );
     expect(line).toContain("start time unavailable");

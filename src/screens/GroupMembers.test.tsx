@@ -17,6 +17,8 @@ function tool(slug: string, name: string, status: Tool["status"]): Tool {
   return {
     slug,
     name,
+    // The flat-list name; the rail's one-word label is `name`.
+    product_name: name,
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
     config_location: null,

@@ -56,7 +56,12 @@ fn validate_api_key(key: &str, required_prefix: &str) -> Result<(), String> {
 #[derive(Serialize)]
 struct ToolDto {
     slug: String,
+    /// The ledger row's label, under a heading that already names the vendor -
+    /// one word, and two tools can share it.
     name: String,
+    /// The product name, for a reader that is a flat list rather than a grouped
+    /// ledger. Distinct across the registry, which `name` is not.
+    product_name: String,
     upstream_provider_name: String,
     default_upstream_url: String,
     /// The file Gate rewrites for this tool, for the copy that says what is
@@ -112,6 +117,12 @@ fn list_tools() -> Vec<ToolDto> {
             // of a tool's name - the CLI, the logs, the quit takeover - wants
             // `display_name`, which is why the two are separate.
             name: integ.row_label().to_string(),
+            // And the product name beside it, for the readers that are a flat
+            // list rather than a grouped ledger: the reopen flow's dialogs, its
+            // banner and the tray card. `registry` has a test asserting display
+            // names are distinct precisely because such a list cannot tell two
+            // "CLI"s apart.
+            product_name: integ.display_name().to_string(),
             upstream_provider_name: integ.upstream_provider_name().to_string(),
             default_upstream_url: integ.default_upstream_url().to_string(),
             config_location: integ.config_location(),
@@ -1778,6 +1789,19 @@ fn agent_name_of(process: &sysinfo::Process) -> String {
     name.strip_suffix(".exe").unwrap_or(&name).to_string()
 }
 
+/// Which tool a running process belongs to, by the same normalisation the walk
+/// filtered on ([`agent_name_of`]). `None` for a process no slug claims, which
+/// cannot happen for a process the walk yielded and is handled rather than
+/// asserted: the table is the only thing keeping the two in step.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_slug_of(process: &sysinfo::Process) -> Option<&'static str> {
+    let name = agent_name_of(process);
+    AGENT_PROCESSES
+        .iter()
+        .find(|(_, n)| *n == name)
+        .map(|(slug, _)| *slug)
+}
+
 /// Count running agent processes without touching them. Lets the frontend
 /// skip the "close running agents" routing takeover when there is nothing to
 /// close.
@@ -2592,9 +2616,31 @@ fn teardown_report() -> TeardownReportDto {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[derive(Serialize)]
 struct RunningAgent {
+    /// The tool this process belongs to, from [`AGENT_PROCESSES`]. Carried so a
+    /// caller that offered to close a set of tools can tie each process back to
+    /// the row it was offered under - the reopen flow tracks a tool through
+    /// close, reopen and verification, and a process name is not a key: `claude`
+    /// and `Claude` are one slug and two different programs.
+    slug: String,
     /// Process name as the OS spells it, original case - "Claude" is the
     /// desktop app, "claude" the CLI, and which one is running matters.
     name: String,
+    /// Can Gate Connect launch this tool again itself, once it has been closed?
+    ///
+    /// **False for every tool in the registry**, and this is a fact about them
+    /// rather than a feature nobody wrote yet. All six are terminal programs:
+    /// they run inside a shell session Gate does not own, with a working
+    /// directory, arguments and a conversation this process cannot see, and
+    /// nothing that walks the process table can recover them. Spawning a fresh
+    /// terminal would not be reopening the tool - it would be starting a
+    /// different one, somewhere else, and dropping the session the user was
+    /// asked to save.
+    ///
+    /// It is reported rather than assumed because the flow that reads it has to
+    /// say which tools it will reopen and which the user must, and that sentence
+    /// should come from the backend that knows. A GUI tool - one launchable by
+    /// bundle id, shortcut or `.desktop` entry - is where this turns true.
+    can_reopen: bool,
     pid: u32,
     /// Process start, Unix seconds. 0 when the platform wouldn't say.
     started_at_unix: u64,
@@ -2657,8 +2703,11 @@ fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
     let mut agents = Vec::new();
     for_each_agent_process(&names, |process| {
         let started_at_unix = process.start_time();
+        let slug = agent_slug_of(process).unwrap_or_default();
         agents.push(RunningAgent {
+            slug: slug.to_string(),
             name: process.name().to_string_lossy().to_string(),
+            can_reopen: false,
             pid: process.pid().as_u32(),
             started_at_unix,
             // No usable bound degrades to "everything predates routing", the

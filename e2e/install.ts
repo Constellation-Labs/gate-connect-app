@@ -101,6 +101,20 @@ export function installFakeTauri(state: BackendState): void {
     );
   }
 
+  /** Rust's `display_name` per slug, for the surfaces that list tools rather
+      than rail rows. A fixture's own `displayName` wins over it. */
+  const PRODUCT_NAMES: Record<string, string> = {
+    "claude-code": "Claude Code",
+    codex: "Codex",
+    opencode: "OpenCode",
+  };
+
+  /** Rust's `agent_slug_of`: which tool a process belongs to, matched on the
+      same lowercased name the walk filtered by. */
+  function agentSlugOf(name: string): string {
+    return AGENT_PROCESSES.find(([, n]) => n === name.toLowerCase())?.[0] ?? "";
+  }
+
   /** What the verdict layer calls the Gate route: the account's own gateway URL,
       or the same fallback the backend uses when it cannot read one. */
   function gateRoute(): string {
@@ -208,7 +222,14 @@ export function installFakeTauri(state: BackendState): void {
     // `displayName` is fixture-only: the real `list_tools` sends `row_label()`
     // and nothing else, so it is dropped here rather than leaked into the DTO.
     list_tools: () =>
-      state.tools.map(({ displayName: _unused, ...t }) => ({ config_location: null, ...t })),
+      state.tools.map(({ displayName, ...t }) => ({
+        config_location: null,
+        // Rust sends both: `name` is the ledger's row label and `product_name`
+        // the registry's distinct display name. The fixtures already carry the
+        // latter as `displayName`, so it is renamed here rather than doubled.
+        product_name: displayName ?? PRODUCT_NAMES[t.slug] ?? t.name,
+        ...t,
+      })),
     connect_tool: ({ slug }) => {
       const t = tool(slug);
       t.status = { kind: "connected" };
@@ -481,10 +502,19 @@ export function installFakeTauri(state: BackendState): void {
         scanned_names: names,
         agents: state.runningAgentNames
           .map((name, i) => ({
+            slug: agentSlugOf(name),
             name,
+            // False for every tool, as in Rust: all six are terminal programs
+            // Gate cannot relaunch. A spec that wants the other branch has to
+            // change this deliberately.
+            can_reopen: false,
             pid: 100 + i,
             started_at_unix: 1_700_000_000,
-            predates_routing: true,
+            // Whether a process predates the last routing change. `staleAgents`
+            // is the switch the specs already use for that, and reading it here
+            // is what lets a reopened tool look reopened: close a tool, drop the
+            // staleness, and the scan reports a fresh process.
+            predates_routing: state.staleAgents > 0,
           }))
           .filter((a) => names.includes(a.name.toLowerCase())),
       };

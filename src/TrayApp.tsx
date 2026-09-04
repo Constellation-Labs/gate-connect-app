@@ -23,6 +23,7 @@ import {
 } from "./lib/api";
 import { useRouting } from "./lib/useRouting";
 import { useRunningApps } from "./lib/useRunningApps";
+import { allVerified } from "./lib/reopen";
 import { classifyError } from "./lib/errors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
 import { buildGroups } from "./lib/groups";
@@ -45,6 +46,7 @@ import {
   ApplyChangesDialog,
   ChangeReadyDialog,
   CloseAppsDialog,
+  ReopenProgressDialog,
   ReviewConfigDialog,
 } from "./components/gc/dialogs";
 
@@ -320,6 +322,7 @@ export function TrayApp() {
 
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),
+    nameFor: (slug) => tools.find((t) => t.slug === slug)?.product_name,
   });
 
   /** Same follow-up as the window shell: a config write that actually landed
@@ -559,6 +562,27 @@ export function TrayApp() {
     [],
   );
 
+  /** The tools the sweep says are applied and not picked up. Names for the card,
+   *  slugs for the action, from the one reading so the two cannot disagree. */
+  const reopenPending = useMemo(
+    () =>
+      [...verdicts.values()]
+        .filter((v) => v.reason === "reopen_required")
+        .map((v) => ({
+          slug: v.slug,
+          name: tools.find((t) => t.slug === v.slug)?.product_name ?? v.slug,
+        })),
+    [verdicts, tools],
+  );
+  const reopenNames = useMemo(
+    () => reopenPending.map((t) => t.name),
+    [reopenPending],
+  );
+  const reopenSlugs = useMemo(
+    () => reopenPending.map((t) => t.slug),
+    [reopenPending],
+  );
+
   /** What is still outstanding, providers and tools together: the user does not
    * care which snapshot an entry came from. */
   const recoveryNames = useMemo(
@@ -645,6 +669,18 @@ export function TrayApp() {
             }
           : undefined
       }
+      reopen={
+        reopenNames.length > 0
+          ? {
+              names: reopenNames,
+              // One action, on every waiting tool at once: the popover lists
+              // names, not rows, and a per-tool control would need the width
+              // the window has and this does not.
+              onReopen: () =>
+                void runningApps.offerAfterChange(reopenSlugs),
+            }
+          : undefined
+      }
       menuOpen={menuOpen}
       onMenuToggle={() => setMenuOpen((v) => !v)}
       onMenuSelect={onMenuSelect}
@@ -699,26 +735,51 @@ export function TrayApp() {
             </Modal>
           ) : runningApps.stage?.kind === "offer" ? (
             <ApplyChangesDialog
-              apps={runningApps.stage.apps.map((name) => ({ name }))}
+              tools={runningApps.stage.tools}
               onCloseApps={runningApps.goToConfirm}
               onReopenLater={runningApps.dismiss}
             />
           ) : runningApps.stage?.kind === "confirm" ? (
             <CloseAppsDialog
-              apps={runningApps.stage.apps.map((name) => ({ name }))}
+              tools={runningApps.stage.tools}
               onGoBack={runningApps.goBack}
               onCloseApps={() => void runningApps.closeApps()}
             />
-          ) : runningApps.stage?.kind === "done" ? (
-            <ChangeReadyDialog
-              app={{
-                name:
-                  runningApps.stage.apps.length === 1
-                    ? runningApps.stage.apps[0]
-                    : "The affected apps",
-              }}
-              onDone={runningApps.dismiss}
-            />
+          ) : runningApps.stage?.kind === "work" ? (
+            // The all-clear as drawn; anything else is the per-tool account,
+            // which lives in the window. The popover states the outcome and
+            // hands over rather than drawing a shorter second version of it -
+            // the same division `RecoveryCard` makes one card up.
+            allVerified(runningApps.stage.tools) ? (
+              <ChangeReadyDialog
+                app={{
+                  name:
+                    runningApps.stage.tools.length === 1
+                      ? runningApps.stage.tools[0].name
+                      : "The affected apps",
+                }}
+                onDone={runningApps.dismiss}
+              />
+            ) : (
+              <ReopenProgressDialog
+                tools={runningApps.stage.tools}
+                onAction={(slug, action) => {
+                  if (action === "retry_verification") {
+                    void runningApps.checkNow();
+                    return;
+                  }
+                  if (action === "reopen_tool") {
+                    void runningApps.offerAfterChange([slug]);
+                    return;
+                  }
+                  // Retrying a write, reading the diagnostics and reaching
+                  // support are all window-sized. Expanding keeps one account of
+                  // the operation rather than starting a second one here.
+                  expand();
+                }}
+                onDone={runningApps.dismiss}
+              />
+            )
           ) : null}
         </>
       }

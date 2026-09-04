@@ -53,6 +53,8 @@ import { useRouting, FamilyCascadeError } from "./lib/useRouting";
 import { useSettingsActions } from "./lib/useSettingsActions";
 import { useSetup } from "./lib/useSetup";
 import { useRunningApps } from "./lib/useRunningApps";
+import type { ReopenAction, ReopenTool } from "./lib/reopen";
+import { allVerified } from "./lib/reopen";
 import { useUpdate } from "./lib/useUpdate";
 import type { UpdateState } from "./lib/useUpdate";
 import { useWindowReopen } from "./lib/useWindowReopen";
@@ -60,7 +62,7 @@ import { classifyError } from "./lib/errors";
 import type { ErrorContext } from "./lib/errors";
 import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
-import { buildGroups, describeMember } from "./lib/groups";
+import { buildGroups, describeMember, proxyReopenAdvice } from "./lib/groups";
 import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { recoveryRows, unresolved } from "./lib/recovery";
 import type { Group } from "./lib/groups";
@@ -98,10 +100,12 @@ import {
   buildSettingsSections,
 } from "./components/gc/SettingsPane";
 import type { DialogOrganization } from "./components/gc/dialogs";
+import type { DialogReopenTool } from "./components/gc/dialogs";
 import {
   ApplyChangesDialog,
   ChangeReadyDialog,
   CloseAppsDialog,
+  ReopenProgressDialog,
   ModelPickerDialog,
   QuitDialog,
   QuitLeftBehindDialog,
@@ -139,8 +143,10 @@ import {
   AlertBanner,
   ErrorBanner,
   ErrorDetails,
+  PaneNote,
   RecoveryBanner,
   ReopenAlert,
+  ReopenBanner,
 } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type {
@@ -1019,8 +1025,17 @@ export function NewUiApp() {
     if (outstanding > 0) setTeardown(report);
   }, []);
 
+  /** The tool's product name for a slug. The rail's `name` is a surface kind
+   *  ("CLI") that reads as a name only under its vendor heading, and every
+   *  surface of the reopen flow is a flat list. */
+  const toolName = useCallback(
+    (slug: string) => tools.find((t) => t.slug === slug)?.product_name,
+    [tools],
+  );
+
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),
+    nameFor: toolName,
   });
 
   /**
@@ -1820,6 +1835,95 @@ export function NewUiApp() {
     [notices, view],
   );
   /**
+   * One row of the reopen flow, acted on alone.
+   *
+   * Every branch takes the slug it was given and nothing else: AG-566 AC 10 is
+   * explicit that retrying one tool must not repeat the change for another, and
+   * the only call here that touches more than one row - the re-check - reads
+   * rather than writes.
+   *
+   * `retry_application` turns routing back **on** for the tool. The only way a
+   * row reaches `config_failed` is a sweep that found Gate's values gone from a
+   * config the user asked to route, so re-applying is what the button means; it
+   * goes through the ordinary drift review rather than forcing, because a
+   * config Gate did not write is still not ours to replace. `use_tool_defaults`
+   * is the other half of that choice, and with it the tool's own settings come
+   * back - Gate keeps a snapshot and restores it, which is what this app does
+   * and what its dialogs say.
+   */
+  const onReopenAction = useCallback(
+    (slug: string, action: ReopenAction) => {
+      switch (action) {
+        case "reopen_tool":
+          // The process is the thing in the way, and closing it is a
+          // destructive act that gets its own confirmation - so this restarts
+          // the conversation for this tool rather than signalling anything.
+          void runningApps.offerAfterChange([slug]);
+          return;
+        case "retry_verification":
+          void runningApps.checkNow();
+          return;
+        case "retry_application":
+        case "use_tool_defaults": {
+          const routed = action === "retry_application";
+          runningApps.markStage(slug, "applying");
+          void routing.setAppRouted(slug, routed).then((changed) => {
+            if (!changed) {
+              runningApps.markStage(slug, "config_failed");
+              return;
+            }
+            void runningApps.checkNow();
+          });
+          return;
+        }
+        case "view_diagnostics":
+          void openDiagnostics();
+          return;
+        case "contact_support":
+          openLink(GATE_SUPPORT_URL);
+          return;
+      }
+    },
+    [runningApps, routing, openDiagnostics, openLink],
+  );
+
+  /**
+   * Every tool the sweep says is applied but not picked up, for the shell
+   * banner. AG-566 AC 3 asks for the invitation on Overview as well as on tool
+   * detail, and the banner slot is what every pane shares.
+   *
+   * Dismissible for the session. The rail still reads "Not protected - Reopen
+   * required" on each affected row, so hiding this drops the invitation rather
+   * than the fact.
+   */
+  const [reopenHidden, setReopenHidden] = useState(false);
+  const reopenPending = useMemo(
+    () =>
+      [...verdicts.values()]
+        .filter((v) => v.reason === "reopen_required")
+        // Not the tool whose pane is open: `ReopenAlert` is already sitting on
+        // it with the same two routes and the same button, and one fact drawn
+        // twice on one screen reads as two problems.
+        .filter((v) => !(view.kind === "app" && view.slug === v.slug))
+        .map((v) => ({ slug: v.slug, name: toolName(v.slug) ?? v.slug })),
+    [verdicts, toolName, view],
+  );
+
+  /**
+   * The standing note a proxy-routed row carries on Linux.
+   *
+   * Not a verdict and not drawn like one: `reopen_required` is measured per tool
+   * from a process older than the last routing change, and nothing here is
+   * measured at all - Gate cannot see these apps. `groups.ts` carries the copy
+   * and the argument for why this is one platform's problem rather than three.
+   */
+  const proxyAdvice = useMemo(() => {
+    if (view.kind !== "app") return undefined;
+    const member = groups.flatMap((g) => g.members).find((m) => m.key === view.slug);
+    return member ? proxyReopenAdvice(member.kind, platform) : undefined;
+  }, [view, groups, platform]);
+
+  /**
    * The open app's reopen card, when its verdict says a process is holding older
    * settings.
    *
@@ -2129,6 +2233,15 @@ export function NewUiApp() {
             onReviewDetails={summary ? () => setDetailsOpen(true) : undefined}
             onFinishLater={() => setRecoveryHidden(true)}
           />
+        ) : reopenPending.length > 0 && !reopenHidden ? (
+          // Last of the three: an unfinished operation and a failure both
+          // outrank a change that landed and is waiting on the user to open a
+          // window they were told about.
+          <ReopenBanner
+            tools={reopenPending}
+            onReopen={(slug) => void runningApps.offerAfterChange([slug])}
+            onDismiss={() => setReopenHidden(true)}
+          />
         ) : undefined
       }
       onToggleApp={toggleRailApp}
@@ -2269,21 +2382,33 @@ export function NewUiApp() {
           </Modal>
         ) : runningApps.stage?.kind === "offer" ? (
           <ApplyChangesDialog
-            apps={runningApps.stage.apps.map((name) => ({ name }))}
+            tools={reopenSubjects(runningApps.stage.tools)}
             onCloseApps={runningApps.goToConfirm}
             onReopenLater={runningApps.dismiss}
           />
         ) : runningApps.stage?.kind === "confirm" ? (
           <CloseAppsDialog
-            apps={runningApps.stage.apps.map((name) => ({ name }))}
+            tools={reopenSubjects(runningApps.stage.tools)}
             onGoBack={runningApps.goBack}
             onCloseApps={() => void runningApps.closeApps()}
           />
-        ) : runningApps.stage?.kind === "done" ? (
-          <ChangeReadyDialog
-            app={{ name: closedLabel(runningApps.stage.apps) }}
-            onDone={runningApps.dismiss}
-          />
+        ) : runningApps.stage?.kind === "work" ? (
+          // The all-clear keeps the frame the design drew for it; anything else
+          // gets the account of what happened, which no frame draws.
+          allVerified(runningApps.stage.tools) ? (
+            <ChangeReadyDialog
+              app={{
+                name: closedLabel(runningApps.stage.tools.map((t) => t.name)),
+              }}
+              onDone={runningApps.dismiss}
+            />
+          ) : (
+            <ReopenProgressDialog
+              tools={reopenSubjects(runningApps.stage.tools)}
+              onAction={onReopenAction}
+              onDone={runningApps.dismiss}
+            />
+          )
         ) : modelOverlay?.kind === "picker" ? (
           <ModelPickerDialog
             // A real catalogue now, read from the gateway. Still empty on a
@@ -2625,6 +2750,9 @@ export function NewUiApp() {
           alert={
             <>
               {reopenAlert}
+              {proxyAdvice && (
+                <PaneNote title={proxyAdvice.title} body={proxyAdvice.body} />
+              )}
               {paneNotice && (
                 <AlertBanner
                   key={paneNotice.id}
@@ -2813,6 +2941,14 @@ const EMPTY_STATS: UsageStats = {
 /** The file Gate rewrites for one tool, for the drift review's copy. */
 function configLocationFor(tools: Tool[], slug: string): string | null {
   return tools.find((t) => t.slug === slug)?.config_location ?? null;
+}
+
+/** The flow's rows, with the product marks the shell holds. The model itself is
+ *  `lib/reopen`'s and travels unchanged - the dialogs, the banner and the tray
+ *  all draw the same tools, and a second copy of a row is how two surfaces come
+ *  to disagree about one. */
+function reopenSubjects(tools: ReopenTool[]): DialogReopenTool[] {
+  return tools.map((tool) => ({ ...tool, icon: brandMarkFor(tool.slug) }));
 }
 
 function appFor(apps: SidebarApp[], slug: string): SidebarApp | undefined {

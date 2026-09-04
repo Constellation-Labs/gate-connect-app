@@ -83,7 +83,10 @@ test.describe("new UI running apps", () => {
     await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
 
     await expect.poll(() => app.lastCall("close_running_agents")).not.toBeNull();
-    await expect(app.page.getByRole("heading", { name: "Change is ready" })).toBeVisible();
+    // Closed is not applied: Gate cannot reopen a terminal tool, so the account
+    // says whose move it is rather than claiming the route is live.
+    await expect(app.page.getByRole("heading", { name: "What happened" })).toBeVisible();
+    await expect(app.page.getByRole("dialog")).toContainText("Waiting for you to reopen");
   });
 
   test("backing out of the confirmation closes nothing", async ({ boot }) => {
@@ -147,9 +150,161 @@ test.describe("new UI running apps", () => {
 
     await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
 
+    // The product name, not the rail's row label: both tools are a "CLI" there,
+    // and a flat list of two CLIs names neither.
     const dialog = app.page.getByRole("dialog");
-    await expect(dialog).toContainText("codex");
-    await expect(dialog).not.toContainText("claude");
+    await expect(dialog).toContainText("Codex");
+    await expect(dialog).not.toContainText("Claude Code");
+  });
+
+  test("names the route in use and the route asked for", async ({ boot }) => {
+    // "Reopen required" without the pair does not say what reopening would
+    // change, which is the whole reason this step exists rather than a sentence.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      runningAgentNames: ["codex"],
+      staleAgents: 1,
+    });
+
+    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toContainText("In use:");
+    await expect(dialog).toContainText("Requested:");
+    // Who reopens it, read off the backend rather than written into the copy.
+    await expect(dialog).toContainText("you reopen it");
+  });
+
+  test("the confirmation asks for a save it cannot check itself", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      runningAgentNames: ["codex"],
+    });
+
+    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
+    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toContainText("Save your work before continuing");
+    await expect(dialog).toContainText("cannot tell whether");
+    await expect(dialog).toContainText("You reopen Codex yourself");
+  });
+
+  test("a tool that comes back is verified before it reads as routing", async ({ boot }) => {
+    // AG-566 AC 8: it is the reopen that gets checked. The tool is closed, then
+    // launched again, and only then does the account call it applied.
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CODEX],
+      runningAgentNames: ["codex"],
+    });
+
+    await app.page.getByRole("switch", { name: "OpenAI CLI" }).click();
+    await app.page.getByRole("button", { name: "Yes, close affected apps" }).click();
+    await app.page.getByRole("button", { name: /^Yes, close apps$/ }).click();
+    await expect(app.page.getByRole("dialog")).toContainText("Waiting for you to reopen");
+
+    // The user opens it again.
+    await app.patch({ runningAgentNames: ["codex"] });
+
+    await expect(app.page.getByRole("heading", { name: "Change is ready" })).toBeVisible({
+      timeout: 15_000,
+    });
+  });
+
+  /**
+   * AG-566 AC 3: the invitation belongs on Overview too, not only on the pane
+   * of the tool it is about. The pane's own card covers that tool, so the
+   * banner names the ones whose panes are not open.
+   */
+  test("Overview offers the reopen without opening the tool", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...CODEX, status: { kind: "connected" as const } }],
+      staleAgents: 1,
+      runningAgentNames: ["codex"],
+    });
+
+    const banner = app.page.getByRole("status").filter({ hasText: "Reopen to finish" });
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("Codex");
+
+    await banner.getByRole("button", { name: "Reopen tool" }).click();
+
+    await expect(
+      app.page.getByRole("heading", { name: "Apply changes to running apps" }),
+    ).toBeVisible();
+    await expect.poll(() => app.lastCall("running_agents")).toMatchObject({
+      only: ["codex"],
+    });
+  });
+
+  /**
+   * The other half of "a running tool keeps its old route", for the surfaces
+   * Gate routes through the system proxy rather than through a config file.
+   *
+   * Linux only, and that is the substance: Windows refreshes WinINET after its
+   * registry write and macOS's auto-proxy URL applies to new connections, so on
+   * those two the line would be wrong rather than merely cautious. Gate cannot
+   * see these apps at all, so it is drawn as advice and says so.
+   */
+  test("a proxy-routed row warns about open apps on Linux, and only there", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      platform: "linux",
+      proxy: { running: true, ca_trusted: true },
+    });
+
+    // The Anthropic family's "App" row: Claude Desktop and Cowork, routed by
+    // domain rather than by a config file of their own.
+    await app.page.getByRole("button", { name: "App" }).first().click();
+
+    await expect(
+      app.page.getByText("Apps already open may need reopening"),
+    ).toBeVisible();
+    await expect(app.page.getByText(/advice rather than a reading/)).toBeVisible();
+  });
+
+  for (const platform of ["macos", "windows"] as const) {
+    test(`${platform} says nothing about reopening a proxy-routed app`, async ({
+      boot,
+    }) => {
+      const app = await boot({
+        platform,
+        proxy: { running: true, ca_trusted: true },
+      });
+
+      await app.page.getByRole("button", { name: "App" }).first().click();
+
+      await expect(
+        app.page.getByText("Apps already open may need reopening"),
+      ).toHaveCount(0);
+    });
+  }
+
+  test("a config-routed tool gets the measured verdict, not the advice", async ({
+    boot,
+  }) => {
+    // It has a file to re-read and a sweep that says whether it did. Advice
+    // beside a reading would invite the reader to weigh a guess against a
+    // measurement.
+    const app = await boot({
+      platform: "linux",
+      proxy: { running: true, ca_trusted: true },
+      tools: [{ ...CODEX, status: { kind: "connected" as const } }],
+      staleAgents: 1,
+      runningAgentNames: ["codex"],
+    });
+
+    await app.page.getByRole("button", { name: "CLI" }).first().click();
+
+    await expect(app.page.getByText(/Reopen .* to finish/)).toBeVisible();
+    await expect(
+      app.page.getByText("Apps already open may need reopening"),
+    ).toHaveCount(0);
   });
 
   test("a declined review never reaches the sequence", async ({ boot }) => {

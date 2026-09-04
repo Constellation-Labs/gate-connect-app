@@ -59,6 +59,43 @@ test.describe("tray popover", () => {
     await expect.poll(() => app.lastCall("resume_restore")).not.toBeNull();
   });
 
+  /**
+   * AG-566 AC 3: "Reopen to finish" belongs on tool detail, Overview *and* the
+   * tray. Same division as the recovery card - the tray carries the fact and
+   * the one action, and the per-tool routes stay in the window.
+   */
+  test("a tool waiting to be reopened is offered from the tray", async ({ boot }) => {
+    const app = await boot({
+      windowLabel: "tray",
+      proxy: { running: true, ca_trusted: true },
+      tools: [
+        {
+          slug: "codex",
+          name: "CLI",
+          upstream_provider_name: "OpenAI",
+          default_upstream_url: "https://gw.example/codex",
+          status: { kind: "connected" as const },
+        },
+      ],
+      staleAgents: 1,
+      runningAgentNames: ["codex"],
+    });
+
+    await expect(app.page.getByText("Reopen to finish")).toBeVisible();
+    await expect(app.page.getByText(/Codex is on the route it started with/)).toBeVisible();
+
+    await app.page.getByRole("button", { name: "Reopen tool" }).click();
+
+    // Scoped to the tools actually waiting, and it asks before it signals
+    // anything.
+    await expect.poll(() => app.lastCall("running_agents")).toMatchObject({
+      only: ["codex"],
+    });
+    await expect(
+      app.page.getByRole("heading", { name: "Apply changes to running apps" }),
+    ).toBeVisible();
+  });
+
   test("the tray sends the per-tool account to the window", async ({ boot }) => {
     const app = await boot({
       windowLabel: "tray",

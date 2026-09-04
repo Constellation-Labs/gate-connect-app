@@ -10,7 +10,13 @@ export type Status =
 
 export interface Tool {
   slug: string;
+  /** The ledger row's label, under a heading that already names the vendor:
+   *  one word ("CLI", "App"), and two tools can share it. */
   name: string;
+  /** The product name ("Claude Code"), for a reader that is a flat list rather
+   *  than a grouped ledger - the reopen dialogs, their banner, the tray card.
+   *  Distinct across the registry, which {@link Tool.name} is not. */
+  product_name: string;
   upstream_provider_name: string;
   default_upstream_url: string;
   /** The file Gate rewrites for this tool, so the confirmation can say what is
@@ -447,9 +453,22 @@ export const routingVerdicts = () => invoke<Verdict[]>("routing_verdicts");
  * holds prompts, paths and occasionally a key, and this list is built to be
  * pasted into a support thread. */
 export interface RunningAgent {
+  /** The tool this process belongs to. A process name is not a key - `claude`
+   * and `Claude` are one slug and two programs - so anything tracking a tool
+   * through close and reopen keys on this. Empty only for a process no slug
+   * claims, which the scan cannot produce. */
+  slug: string;
   /** Process name as the OS spells it, original case. "Claude" is the desktop
    * app, "claude" the CLI. */
   name: string;
+  /** Can Gate Connect launch this tool again itself once it is closed?
+   *
+   * **False for every tool today**, and it is reported rather than assumed
+   * because the flow that reads it has to tell the user which tools it will
+   * reopen and which they must. Every tool in the registry is a terminal
+   * program whose shell session, working directory and conversation this
+   * process cannot see; a GUI tool is where it turns true. */
+  can_reopen: boolean;
   pid: number;
   /** Process start, Unix seconds. 0 when the platform wouldn't say. */
   started_at_unix: number;

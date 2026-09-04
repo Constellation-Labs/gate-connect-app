@@ -35,6 +35,7 @@ import {
 const tool = (slug: string, status: Status): Tool => ({
   slug,
   name: slug,
+  product_name: slug,
   upstream_provider_name: "Anthropic",
   default_upstream_url: `https://gw.example/${slug}`,
   config_location: null,
