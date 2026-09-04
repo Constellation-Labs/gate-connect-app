@@ -116,7 +116,12 @@ export function Tray({
   dialog?: ReactNode;
 }) {
   return (
-    <div className="flex h-screen w-full flex-col bg-base-background">
+    // `tabular-nums` on the root, not per figure. "Always use tabular nums on
+    // numbers" is design's standing rule (2026-09-04): the point is that a
+    // column of counts, percentages and currency lines up, and Geist's
+    // proportional digits do not. Set once here so no figure added later can
+    // miss it - the same argument the `label/copy` tracking tokens make.
+    <div className="flex h-screen w-full flex-col bg-base-background tabular-nums">
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-base-border bg-base-card px-4">
         <span className="flex items-center gap-2.5">
           <GateAiLogoMark height={27} />

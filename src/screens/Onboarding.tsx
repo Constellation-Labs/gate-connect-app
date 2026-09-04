@@ -298,7 +298,12 @@ export function Onboarding() {
   const tutorialTotal = steps.length - 1;
 
   return (
-    <div className="flex h-full flex-col bg-base-background text-base-foreground">
+    // `tabular-nums` on the root, not per figure. "Always use tabular nums on
+    // numbers" is design's standing rule (2026-09-04): the point is that a
+    // column of counts, percentages and currency lines up, and Geist's
+    // proportional digits do not. Set once here so no figure added later can
+    // miss it - the same argument the `label/copy` tracking tokens make.
+    <div className="flex h-full flex-col bg-base-background text-base-foreground tabular-nums">
       <IntroTopbar />
       <IntroProgress step={index + 1} total={steps.length} />
 
@@ -327,7 +332,7 @@ export function Onboarding() {
               <div className="h-px w-full bg-base-input" aria-hidden />
               {/* `copy/16`, and the closing sentence in Medium - the design
                * sets it apart because it is the only instruction on the frame. */}
-              <div className="space-y-6 text-pretty text-base leading-6 tracking-heading text-base-foreground">
+              <div className="space-y-6 text-pretty text-base leading-6 text-base-foreground">
                 {step.body.map((p, i) => (
                   <p key={p.slice(0, 24)}>
                     {i === step.body.length - 1 ? (

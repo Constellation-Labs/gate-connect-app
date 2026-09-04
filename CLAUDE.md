@@ -38,11 +38,15 @@ topbar; navigation is a persistent 256px sidebar; content is a pane that
 scrolls independently. Window controls belong to the operating system, so
 the topbar only reserves space for them. Secondary flows are centred
 dialogs, not stacked panels; their width is per dialog - the file draws
-480, 512, **536**, 544 and 600, and `Modal`'s `width` prop is typed to those
-five. The 536 is the quit confirmations (`694:33002`, `694:33340`) and it is
-measured: they are the one pair that is *not* centred, sitting where a 512
-centred in 1024 would start and ending ~24px past its mirror. A scan that
-filters for centred frames will report no 536 anywhere and be wrong.
+480, 512, 544 and 600, and `Modal`'s `width` prop is typed to those four.
+**There is no 536**, though the quit-confirmation frames (`694:33002`,
+`694:33340`) draw one. The measurement that found it is right and worth keeping:
+they are the one pair that is not centred, sitting where a 512 centred in 1024
+would start and ending ~24px past its mirror. Asked whether that was chosen or
+dragged, design answered on 2026-09-04 that "dialogs should all be centered" -
+so they are off-centre 512s, and the width was an artefact of the drag. This
+supersedes the entry that used to warn against exactly this conclusion; the
+warning was sound about the frame and wrong about the intent.
 
 Theme: **light only**. Dark mode is not on the roadmap for the first
 release.
@@ -58,7 +62,10 @@ what a designer checks against. Reach for the component set only where no
 frame draws the thing. Buttons are the worked example: the `Button`
 component says radius 8 on a `base.input` line, and every pane instance
 draws radius 4 on a `base.border` one, so panes get 4. Dialogs draw 8, and
-get 8. Say which you took and why.
+get 8. Say which you took and why. This one is still only settled by the
+frames: asked on 2026-09-04 for the `Button` component's own value, design
+answered about *card* radius instead (8 outer, 4 inner - see Radii below),
+so the pane-4 / dialog-8 reading above stands unchanged.
 
 **The component library lives in three canvases, not the old page.**
 `113:16762` really is empty, and concluding from that the library was deleted
@@ -168,18 +175,45 @@ one-to-one so any value can be traced back without guessing.
   two components, not a drift; and the tray's footer icon button is 8px where
   the topbar's identical-looking one is 4px, so `OutlineIconButton` takes its
   radius from the call site.
+- **A card nested in a card drops to 4px.** Outer cards are 8px everywhere in
+  the file, without exception - design counted them on 2026-09-04: Overview 67,
+  Settings 65, App 41, Sandbox 51, all 8. The only 4px cards are *inner* ones,
+  and the worked example is the model picker: the list is an 8px card and the
+  model rows inside it are `rounded-control`, as are the three rows in the App
+  pane's model stack. **There is no 10px card**; `rounded-lg` is not a card
+  radius, and the picker's unchosen rows drawing it is the frame contradicting
+  this rule rather than an exception to it.
 - **Ground is `base.background #f9fafb`**, cards and chrome are white. Not
   `gray-100`: the window frames fill `#F9FAFB`, and the darker grey read as
   the single most obviously wrong thing on screen.
-- **Geist + Geist Mono.** Mono is for identifiers (URLs, hosts, keys,
-  model ids, install ids, versions, status pill labels, the sidebar
-  eyebrow), never for body copy.
-  **This one is contested and unresolved.** The model picker draws its model
-  ids in Geist Medium *sans* (`665:18400`, `665:19064`), and Settings draws
-  four more identifiers sans: six drawn sans, none drawn mono. The app is
-  still all-mono and nothing has been flipped, because it would change a lot
-  of screens on one reading of a few frames. Raised with design; until it
-  comes back, keep mono and do not "fix" a call site either way.
+- **Geist + Geist Mono.** Mono is reserved for **eyebrows and pill labels**,
+  and nothing else.
+  **This was contested and is now settled**, design 2026-09-04: identifier
+  *values* are sans. The frames had already said so - the model picker draws
+  its ids in Geist Medium sans (`665:18400`, `665:19064`) and Settings draws
+  four more sans, six drawn sans and none mono - and the entry above used to
+  say "keep mono until it comes back". It came back: sans. So URLs, hosts,
+  keys, model ids, install ids, versions, config paths and activity references
+  are sans.
+  Machine output is not an identifier and keeps mono: the diagnostics report's
+  `<pre>`, for which the file names its own `mono/body-14` style, and a raw
+  backend error string under a Details disclosure. The sidebar and tray
+  **eyebrow counters** keep it too - they are sampled off the frame at Geist
+  Mono Regular, they sit on the eyebrow's own line, and the answer was about
+  identifier values. That last one is worth confirming.
+- **Always use tabular nums on numbers.** Design's standing instruction, given
+  because Figma cannot express it: a column of counts, percentages and currency
+  has to line up and Geist's proportional digits do not. Set once as
+  `tabular-nums` on each new-UI root (`AppShell`, `Tray`, `Onboarding`) rather
+  than per figure, so a number added later cannot miss it.
+- **Type carries its own tracking.** `label/copy-12` and `-14` are -1%,
+  `label/copy-16` is -2%, and those values live in the `fontSize` tuples for
+  `text-base-xs`, `text-sm` and `text-base`: size and tracking are one text
+  style, and splitting them is what let `label/14` render at both 0% and -1%.
+  The named `tracking-label-12` / `-14` tokens are the same values and stay.
+  **`heading/16` is a different style at -1%**, so card and section headings
+  keep `tracking-heading-16` and the -2% default is for `copy/16`. The lockup
+  is neither, and keeps its measured literal.
 - Destructive actions are filled `red-600`. There are only ever a couple
   per screen; if a third appears, question it.
 
@@ -216,8 +250,9 @@ deliberate reversal of an earlier "no dashboard" rule.
    Protected / Not protected / Config drifted / Not routed, coloured green
    or amber, with any qualifier ("2m ago", "Off") in grey after a dash.
 
-4. **Mono earns its place.** Geist Mono only where identity or precision
-   matters. Body copy and labels are sans. Mono is a signal, not a vibe.
+4. **Mono earns its place.** Geist Mono marks an eyebrow or a pill label,
+   and that is all. Identifiers, numbers, body copy and labels are sans -
+   numbers with tabular figures. Mono is a signal, not a vibe.
 
 5. **Destructive things get a dialog, and the dialog defaults to safe.**
    Config replacement, disconnecting, closing running apps and resetting

@@ -265,7 +265,6 @@ function TextField({
   value,
   onChange,
   placeholder,
-  mono,
   type = "text",
   clearable,
   maxLength,
@@ -274,7 +273,6 @@ function TextField({
   value: string;
   onChange: (next: string) => void;
   placeholder?: string;
-  mono?: boolean;
   type?: "text" | "password";
   /** Draws the frame's trailing clear button once there is something to clear. */
   clearable?: boolean;
@@ -296,8 +294,8 @@ function TextField({
           maxLength={maxLength}
           onChange={(e) => onChange(e.target.value)}
           className={`h-11 w-full rounded-md border border-base-input bg-base-background px-3 text-sm text-base-foreground shadow-base-xs placeholder:text-base-muted-foreground focus:border-base-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-            mono ? "font-mono" : ""
-          } ${clearable && value ? "pr-10" : ""}`}
+            clearable && value ? "pr-10" : ""
+          }`}
         />
         {clearable && value && (
           <button
@@ -338,7 +336,7 @@ export interface GatewayChoice {
  * The environment picker, for people working on Gate itself.
  *
  * Footer-quiet on purpose, the same call `screens/FirstRun.tsx` makes: the
- * sign-in decision stays a two-option screen, and the gateway is a line of mono
+ * sign-in decision stays a two-option screen, and the gateway is one quiet line
  * under it with one small control. Collapsed until asked for, because for
  * everybody else the answer is already right.
  */
@@ -358,7 +356,7 @@ export function GatewayPicker({
   if (!open) {
     return (
       <div className="flex items-baseline justify-center gap-2 text-center">
-        <span className="font-mono text-base-xs text-base-muted-foreground">{value}</span>
+        <span className="text-base-xs text-base-muted-foreground">{value}</span>
         <button
           type="button"
           onClick={() => onOpenChange(true)}
@@ -373,7 +371,7 @@ export function GatewayPicker({
   return (
     <div className="flex flex-col gap-2 border-t border-base-border pt-4">
       <div className="flex items-center justify-between">
-        <span className="font-mono text-base-xs font-medium uppercase tracking-[0.08em] text-base-muted-foreground">
+        <span className="font-mono text-base-xs font-medium uppercase tracking-eyebrow text-base-muted-foreground">
           Gateway server
         </span>
         <button
@@ -499,7 +497,6 @@ export function ApiKeyPane({
           value={apiKey}
           onChange={onApiKeyChange}
           placeholder="Enter or paste your API key"
-          mono
           type="password"
         />
         <PrimaryButton onClick={onConnect} busy={busy} disabled={!apiKey.trim()} arrow>

@@ -486,7 +486,7 @@ function InventoryState({
       </p>
       {state.kind === "none" && (
         // The scan time is what makes "none" an answer rather than a shrug.
-        <p className="font-mono text-base-2xs leading-4 text-base-muted-foreground">
+        <p className="text-base-2xs leading-4 text-base-muted-foreground">
           Checked {state.scannedAt}
         </p>
       )}

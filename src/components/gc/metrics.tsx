@@ -292,7 +292,7 @@ export function MessagesChart({
         {buckets.map((bucket) => (
           <span
             key={bucket.id}
-            className="w-8 text-center font-mono text-base-2xs text-base-muted-foreground"
+            className="w-8 text-center text-base-2xs text-base-muted-foreground"
           >
             {hourTick(bucket.label)}
           </span>
@@ -370,7 +370,7 @@ function PendingChart() {
             // The tick box is the loaded axis's, not this frame's: a narrower
             // placeholder would let the axis jump sideways the moment the
             // reading lands, which is the one thing a placeholder must not do.
-            className="w-8 text-center font-mono text-base-2xs text-base-muted-foreground"
+            className="w-8 text-center text-base-2xs text-base-muted-foreground"
           >
             {hour}
           </span>

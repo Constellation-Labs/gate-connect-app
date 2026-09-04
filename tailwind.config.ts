@@ -442,11 +442,47 @@ export default {
 
         // New app UI. In rem for the same reason as the ramp above: px would
         // opt these out of `useTextScale` entirely.
+        //
+        // These three carry their tracking in the tuple, because the design's
+        // `label/N` and `copy/N` are *text styles*: size and tracking are one
+        // thing, and splitting them is what produced the slip design reported
+        // on 2026-09-04 (`label/14` drawn at both 0% and -1% - a call site had
+        // simply forgotten the second half). Bound to the size it cannot be
+        // forgotten. Values are design's own: 12 and 14 at -1%, 16 at -2%,
+        // absolute in px like every entry in `letterSpacing` above.
+        //
+        // The named `tracking-label-12` / `-14` tokens up there are the same
+        // two values and stay: they mirror the Figma variables one-to-one,
+        // which is this file's convention, and a call site that says which
+        // style it is drawing is not worse for saying so. These tuples are the
+        // floor under them, not a replacement.
+        //
+        // A call site that needs *different* tracking still overrides, because
+        // Tailwind emits `letterSpacing` utilities after `fontSize` ones
+        // (checked against built CSS, not assumed). That is what keeps
+        // `tracking-eyebrow` and `tracking-label` winning on the eyebrows and
+        // pills that also draw at 12px, and `tracking-heading-16` winning on
+        // the card and section headings: `heading/16` is -1%, a different style
+        // from the `copy/16` this `base` default is set for.
         "base-2xs": "0.625rem", // 10px - app row status line
-        "base-xs": "0.75rem", // 12px - label/12 and the mono eyebrow
+        "base-xs": ["0.75rem", { letterSpacing: "-0.12px" }], // 12px - label/copy-12
         // `heading/32`, the intro's welcome title. Between Tailwind's own 3xl
         // (30px) and 4xl (36px), so it needs a stop of its own.
         "base-3xl": "2rem", // 32px - heading/32
+
+        // `label/copy-14` and `label/copy-16`, which are Tailwind's own `sm` and
+        // `base` steps - so the tracking has to be attached by redefining them
+        // rather than by adding a stop. Both keep Tailwind's default
+        // line-height, so nothing about existing leading moves; the only new
+        // declaration is `letter-spacing`.
+        //
+        // Safe to redefine because neither class reaches the popover: the
+        // popover screens (`App.tsx`, `screens/Home.tsx`, `gc/ui.tsx`) size
+        // themselves entirely off the `gc-*` ramp above, and `text-sm` /
+        // `text-base` appear only in the new window UI, the new tray and
+        // onboarding. Verified by grep on 2026-09-04.
+        sm: ["0.875rem", { lineHeight: "1.25rem", letterSpacing: "-0.14px" }],
+        base: ["1rem", { lineHeight: "1.5rem", letterSpacing: "-0.32px" }],
       },
     },
   },

@@ -61,23 +61,23 @@ const TONE_STYLES: Record<ModalTone, string> = {
 /**
  * The widths the file draws. Not a size scale invented here: 480 is the
  * Settings form and confirm dialogs (`143:67735`, `143:70617`), 512 the
- * organization and model confirmations (`130:55314`, `134:61659`, `130:48278`),
- * 536 the quit confirmation (`694:33002`, `694:33340`), 544 the reset dialog
- * alone (`177:74223`), and 600 everything that carries a subject card, a
- * report, a model list or the quit chooser.
+ * organization and model confirmations (`130:55314`, `134:61659`, `130:48278`)
+ * and the quit confirmation, 544 the reset dialog alone (`177:74223`), and 600
+ * everything that carries a subject card, a report, a model list or the quit
+ * chooser.
  *
- * 536 is the odd one and is drawn rather than derived: both frames sit with
- * their left edge at 255.64, which is exactly where a *512* dialog centred in
- * 1024 would start, and their right edge 24px past centre. That reads like a
- * stretched edge rather than a chosen number, so it is worth a designer
- * question - but the file says 536 and the file wins.
+ * There is no 536. The quit confirmation frames (`694:33002`, `694:33340`) draw
+ * one, but both sit with their left edge at 255.64 - exactly where a *512*
+ * centred in 1024 starts - with their right edge 24px past centre, which is a
+ * dragged edge rather than a chosen number. Design settled it on 2026-09-04:
+ * "dialogs should all be centered", so the frames are off-centre 512s and this
+ * union has four entries rather than five.
  */
-export type ModalWidth = 480 | 512 | 536 | 544 | 600;
+export type ModalWidth = 480 | 512 | 544 | 600;
 
 const WIDTH_STYLES: Record<ModalWidth, string> = {
   480: "w-[480px]",
   512: "w-[512px]",
-  536: "w-[536px]",
   544: "w-[544px]",
   600: "w-[600px]",
 };
@@ -100,7 +100,7 @@ const WIDTH_STYLES: Record<ModalWidth, string> = {
 const TILE_SIZES = {
   /** 480px Settings dialogs: rename, replace key, disconnect. */
   sm: { box: "size-8 rounded-sm", glyph: 16 as const },
-  /** The 536px quit dialogs, which draw the same 32px box on a 20px glyph
+  /** The quit dialogs, which draw the same 32px box on a 20px glyph
    * (`694:33004`). Same box as `sm`, one step up on the glyph, which is the
    * clearest case there is of the glyph not tracking the box. */
   sm20: { box: "size-8 rounded-sm", glyph: 20 as const },
@@ -345,8 +345,8 @@ export function ModalSubject({
   /**
    * `subject` names a thing and describes it: bold name over grey detail, used
    * for the drifted app and the running process. `identity` inverts that for
-   * the model row, where the vendor is the quiet label and the mono model id is
-   * the thing being named.
+   * the model row, where the vendor is the quiet label and the model id is the
+   * thing being named.
    */
   variant?: "subject" | "identity";
   pill?: { label: string; tone: PillTone };
@@ -374,7 +374,7 @@ export function ModalSubject({
           <p
             className={
               identity
-                ? "truncate font-mono text-sm leading-5 text-base-foreground"
+                ? "truncate text-sm leading-5 text-base-foreground"
                 : "truncate text-sm leading-5 text-neutral-600"
             }
           >
@@ -558,7 +558,6 @@ export function ModalField({
   value,
   onChange,
   readOnly,
-  mono,
   placeholder,
   inputRef,
   maxLength,
@@ -568,8 +567,6 @@ export function ModalField({
   /** Omitted for the read-only current-value field. */
   onChange?: (next: string) => void;
   readOnly?: boolean;
-  /** Keys and ids render mono; device names do not. */
-  mono?: boolean;
   placeholder?: string;
   inputRef?: RefObject<HTMLInputElement>;
   /** Stops a paste the backend would only truncate. */
@@ -599,7 +596,7 @@ export function ModalField({
                 // replaced, not a field. `143:67746`.
                 "border-base-input bg-transparent text-base-foreground opacity-60"
               : "border-base-input bg-base-background text-base-foreground shadow-base-xs"
-          } ${mono ? "font-mono" : ""} ${onChange && value ? "pr-9" : "pr-3"}`}
+          } ${onChange && value ? "pr-9" : "pr-3"}`}
         />
         {onChange && value && (
           <button

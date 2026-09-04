@@ -96,7 +96,7 @@ export function adaptPreferences(raw: ToolModels): ToolModelsView {
 
 /** One model the gateway offers. */
 export interface GateModel {
-  /** Canonical id, e.g. `anthropic/claude-opus-5`. An identifier: rendered mono. */
+  /** Canonical id, e.g. `anthropic/claude-opus-5`. */
   id: string;
   /** Provider namespace, e.g. `anthropic`. Drives the vendor line and the mark. */
   vendor: string;

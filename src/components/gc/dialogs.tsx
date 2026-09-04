@@ -333,7 +333,7 @@ export function ReviewConfigDialog({
           </p>
           {/* Mono, like every other identifier in this UI. `break-all` because a
               home-directory path overflows the 600px dialog on any real machine. */}
-          <p className="mt-1 break-all font-mono text-base-xs">
+          <p className="mt-1 break-all text-base-xs">
             {configLocation}
           </p>
         </ModalNote>
@@ -521,12 +521,47 @@ export function DiagnosticsDialog({
   );
 }
 
+/**
+ * The row's selection mark, which is the visible half of the mode (design,
+ * 2026-09-04).
+ *
+ * Multiple draws the frame's square checkbox: square is what a multi-select
+ * reads as, and an unchecked box is the affordance that says the row is one of
+ * several being assembled. Single draws a circle-check on the highlighted model
+ * and *nothing* on the others - there is no box to tick when clicking a row
+ * moves the highlight, and an empty one would promise a set the app cannot hold.
+ */
+function ModelPickerMark({
+  multiple,
+  selected,
+}: {
+  multiple: boolean;
+  selected: boolean;
+}) {
+  if (!multiple) {
+    return selected ? (
+      <Icon name="circleCheck" size={20} className="shrink-0 text-base-primary" />
+    ) : (
+      <span aria-hidden className="size-5 shrink-0" />
+    );
+  }
+  return selected ? (
+    <span
+      aria-hidden
+      className="flex size-5 shrink-0 items-center justify-center rounded-xs border border-base-primary"
+    >
+      <Icon name="check" size={14} className="text-base-primary" />
+    </span>
+  ) : (
+    <span aria-hidden className="size-5 shrink-0 rounded-xs border border-base-input" />
+  );
+}
+
 /** One selectable Gate model. */
 export interface GateModelOption {
-  /** Canonical id, e.g. `anthropic/claude-opus-5`. Rendered mono - it is an
-   *  identifier, which CLAUDE.md names explicitly. The Figma draws these in the
-   *  UI face, which reads as a slip rather than a decision since every other
-   *  identifier in the design is mono. */
+  /** Canonical id, e.g. `anthropic/claude-opus-5`. Rendered sans: the frames
+   *  draw every identifier in the UI face, and design confirmed on 2026-09-04
+   *  that this is deliberate - mono is reserved for eyebrows and pill labels. */
   id: string;
   /** Who makes the model, for the glyph, the provider filter and grouping in the
    *  reader's head. */
@@ -553,11 +588,23 @@ export interface GateModelOption {
  * a fabricated catalogue in front of the user, which is the same argument the
  * zeroed metrics make.
  *
- * **Multi-select is the design** (AG-589, settled): a checkbox per model, with a
- * footer stating how many are enabled. 139:66117 draws the radios of the
- * single-model era, so a reader diffing against that frame is looking at the
- * older state rather than a divergence - everything around the control still
- * comes from it.
+ * **Two selection modes**, and they behave differently on purpose (design,
+ * 2026-09-04). `multiple` draws a checkbox per model and waits: nothing is
+ * written until `Apply selections`, and that button refuses until the draft is
+ * a different set from what is already applied. Single-select draws no
+ * checkboxes and no footer buttons at all - a circle-check marks the
+ * highlighted model, clicking another moves the highlight and applies
+ * immediately, closing the dialog.
+ *
+ * That also settles which of the file's two contradictory annotations holds:
+ * auto-apply is the single case, confirmation the multiple one. AG-589 settled
+ * multi-select as the design and 139:66117 draws the radios of the single-model
+ * era, so a reader diffing against that frame is looking at the older state of
+ * the *multiple* mode rather than at this one - everything around the control
+ * still comes from it.
+ *
+ * `multiple={false}` has no call site yet: nothing in the backend says which
+ * tools are single-model, since `model_ids` is a list for every tool.
  */
 export function ModelPickerDialog({
   appName,
@@ -566,6 +613,7 @@ export function ModelPickerDialog({
   loading,
   failure,
   selectedIds,
+  multiple = true,
   onSave,
   onDismiss,
 }: {
@@ -584,6 +632,13 @@ export function ModelPickerDialog({
   failure?: string | null;
   /** Already-chosen ids, in the user's order. */
   selectedIds: string[];
+  /**
+   * Whether this app may run on several models at once.
+   *
+   * Drives the interaction, not just the glyph - see the component doc.
+   * Defaults to the multiple case, which is what every tool does today.
+   */
+  multiple?: boolean;
   /** The whole set, applied on Save. A set is not a sequence of independent
    *  clicks - AG-590 requires the final model not be removable without choosing
    *  another - so it is confirmed once rather than written per toggle, and
@@ -717,45 +772,27 @@ export function ModelPickerDialog({
       <button
         key={model.id}
         type="button"
-        role="checkbox"
+        role={multiple ? "checkbox" : "radio"}
         aria-checked={selected}
-        onClick={() => {
-          setDraft((d) =>
-            d.includes(model.id) ? d.filter((x) => x !== model.id) : [...d, model.id],
-          );
-        }}
-        className={`flex h-10 shrink-0 items-center gap-2 border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
-          // The frame marks the chosen row with the muted ground and a
-          // real border rather than a primary outline, and tightens its
-          // radius against the looser one the other rows carry.
+        onClick={() => choose(model.id)}
+        className={`flex h-10 shrink-0 items-center gap-2 rounded-control border p-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary ${
+          // The frame marks the chosen row with the muted ground and a real
+          // border rather than a primary outline. It also drew the unchosen rows
+          // at a looser radius; design's card rule of 2026-09-04 overrides that,
+          // since these rows are inner cards and inner cards are 4px. The ground
+          // and the border still carry the selection on their own.
           selected
-            ? "rounded-control border-base-border bg-gray-50"
-            : "rounded-lg border-transparent hover:bg-gray-50"
+            ? "border-base-border bg-gray-50"
+            : "border-transparent hover:bg-gray-50"
         }`}
       >
         <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
           {model.logo ?? <Icon name="cube" size={16} />}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-base-foreground">
+        <span className="min-w-0 flex-1 truncate text-sm leading-5 text-base-foreground">
           {model.id}
         </span>
-        {selected ? (
-          // Square, as the frame draws it - and square is what a
-          // multi-select reads as. A round mark is the shape a radio
-          // uses for a choice that excludes the others, which this
-          // list stopped being when AG-590 made it a set.
-          <span
-            aria-hidden
-            className="flex size-5 shrink-0 items-center justify-center rounded-xs border border-base-primary"
-          >
-            <Icon name="check" size={14} className="text-base-primary" />
-          </span>
-        ) : (
-          <span
-            aria-hidden
-            className="size-5 shrink-0 rounded-xs border border-base-input"
-          />
-        )}
+        <ModelPickerMark multiple={multiple} selected={selected} />
       </button>
     );
   };
@@ -779,27 +816,53 @@ export function ModelPickerDialog({
    */
   const emptyDraft = draft.length === 0;
 
+  /**
+   * Whether the draft is a different set from the one already applied.
+   *
+   * `Apply selections` refuses until it is (design, 2026-09-04: "if they open
+   * the modal after selections are applied, then the apply button is
+   * disabled"). Compared as a set rather than a sequence because order is the
+   * user's, not the selection's - reordering the same models is not a change to
+   * write.
+   */
+  const changed = useMemo(() => {
+    if (draft.length !== selectedIds.length) return true;
+    const applied = new Set(selectedIds);
+    return draft.some((id) => !applied.has(id));
+  }, [draft, selectedIds]);
+
+  /** One row's click. Single-select is the whole interaction: it replaces the
+   *  set and closes, so there is nothing left for a footer to confirm. */
+  const choose = (id: string) => {
+    if (!multiple) {
+      onSave([id]);
+      return;
+    }
+    setDraft((d) => (d.includes(id) ? d.filter((x) => x !== id) : [...d, id]));
+  };
+
   return (
     <Modal
       icon="layers"
       tile="lg"
-      title="Choose a Gate model"
-      subtitle={`${appName} may use any model you enable here`}
+      title={multiple ? "Choose Gate models" : "Choose a Gate model"}
+      subtitle={`${appName} will be able to use these models`}
       closeButton
       secondary={
-        !loading && !failure ? { label: "Cancel", onClick: onDismiss } : undefined
+        multiple && !loading && !failure
+          ? { label: "Cancel", onClick: onDismiss }
+          : undefined
       }
       primary={
-        !loading && !failure
+        multiple && !loading && !failure
           ? {
-              label: "Save models",
+              label: "Apply selections",
               onClick: () => onSave(draft),
               // Gate cannot serve a model nobody enabled, so an empty set is not
               // a saveable state. This is where AG-590's "the final model cannot
-              // be removed" is enforced now - the row no longer refuses to clear,
-              // because that could not coexist with "Unselect all". See
-              // `emptyDraft`.
-              disabled: emptyDraft,
+              // be removed" is enforced - see `emptyDraft`. `changed` is the
+              // other half: an untouched dialog has nothing to apply.
+              disabled: emptyDraft || !changed,
             }
           : undefined
       }
@@ -885,21 +948,13 @@ export function ModelPickerDialog({
               Showing {shown.length} of {showAll ? models.length : usable.length} models
               {!showAll && setAside > 0 && `・${models.length} in Gate AI`}
             </p>
-            {/* Figma 682:20043. It takes the slot the earlier frame drew a "3
-             *  models selected" label in, and carries the same count - so the
-             *  answer to "how many have I picked?" is still on screen, now on a
-             *  control that can act on it rather than a label restating it.
-             *
-             *  Absent at zero: "Unselect all (0)" offers to undo nothing. */}
-            {!emptyDraft && (
-              <button
-                type="button"
-                onClick={() => setDraft([])}
-                className="-my-1 rounded-control px-2 py-1 text-sm font-medium leading-5 text-base-primary hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
-              >
-                Unselect all ({draft.length})
-              </button>
-            )}
+            {/* `Unselect all` used to sit here (Figma 682:20043). Design
+             *  removed it on 2026-09-04: there is no select-all to mirror it, the
+             *  list is short enough that clearing by hand is not a chore, and
+             *  Cancel already starts the selection over because nothing is
+             *  written until the primary. The count it carried is not lost - the
+             *  checked rows state the set, and the footer states the
+             *  consequence. */}
           </div>
 
           {/* Never hidden silently. The rule that sets models aside is partly
@@ -931,6 +986,26 @@ export function ModelPickerDialog({
           {missing.length > 0 && (
             <ul className="flex flex-col gap-px">
               {missing.map((id) => {
+                if (!multiple) {
+                  return (
+                    <li
+                      key={id}
+                      className="flex w-full items-center gap-3 rounded-control border border-amber-300 bg-amber-50 px-3 py-2"
+                    >
+                      <Icon
+                        name="triangleAlert"
+                        size={16}
+                        className="shrink-0 text-amber-700"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm leading-5 text-amber-900">
+                        {id}
+                      </span>
+                      <span className="shrink-0 text-base-2xs uppercase leading-4 tracking-label text-amber-800">
+                        Unavailable
+                      </span>
+                    </li>
+                  );
+                }
                 return (
                   <li key={id}>
                     <button
@@ -938,14 +1013,14 @@ export function ModelPickerDialog({
                       role="checkbox"
                       aria-checked
                       onClick={() => setDraft((d) => d.filter((x) => x !== id))}
-                      className="flex w-full items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-left"
+                      className="flex w-full items-center gap-3 rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-left"
                     >
                       <Icon
                         name="triangleAlert"
                         size={16}
                         className="shrink-0 text-amber-700"
                       />
-                      <span className="min-w-0 flex-1 truncate font-mono text-sm leading-5 text-amber-900">
+                      <span className="min-w-0 flex-1 truncate text-sm leading-5 text-amber-900">
                         {id}
                       </span>
                       <span className="shrink-0 text-base-2xs uppercase leading-4 tracking-label text-amber-800">
@@ -967,9 +1042,9 @@ export function ModelPickerDialog({
             // within it, so the edge of the list stays visible when it runs past
             // the fold. The inner element scrolls, not the border, so that edge
             // holds still while the contents move.
-            <div className="rounded-lg border border-base-border p-2">
+            <div className="rounded-md border border-base-border p-2">
               <div
-                role="group"
+                role={multiple ? "group" : "radiogroup"}
                 aria-label="Gate model"
                 className="flex max-h-[22rem] flex-col overflow-y-auto"
               >
@@ -992,22 +1067,24 @@ export function ModelPickerDialog({
            *  An empty draft is the exception, and says what is needed instead:
            *  it became reachable when "Unselect all" arrived, and a disabled Save
            *  with no sentence beside it is a dead end. */}
-          <ModalNote>
-            {emptyDraft ? (
-              <>
-                <p className="font-medium text-base-foreground">No models enabled</p>
-                <p className="mt-1">
-                  Gate needs at least one model to serve this app. Choose one, or cancel
-                  and switch the app back to App default.
+          {multiple && (
+            <ModalNote>
+              {emptyDraft ? (
+                <>
+                  <p className="font-medium text-base-foreground">No models enabled</p>
+                  <p className="mt-1">
+                    Gate needs at least one model to serve this app. Choose one, or cancel
+                    and switch the app back to App default.
+                  </p>
+                </>
+              ) : (
+                <p>
+                  Eligible requests may use any model enabled here and consume Gate credits.
+                  Gate never uses a model you have not enabled.
                 </p>
-              </>
-            ) : (
-              <p>
-                Eligible requests may use any model enabled here and consume Gate credits.
-                Gate never uses a model you have not enabled.
-              </p>
-            )}
-          </ModalNote>
+              )}
+            </ModalNote>
+          )}
         </>
       )}
     </Modal>
@@ -1075,7 +1152,7 @@ export function UseGateModelDialog({
             {modelIds.map((id) => (
               <li
                 key={id}
-                className="truncate font-mono text-sm leading-5 text-base-foreground"
+                className="truncate text-sm leading-5 text-base-foreground"
               >
                 {id}
               </li>
@@ -1205,13 +1282,11 @@ export function ReplaceApiKeyDialog({
         label="Current API key"
         value={currentKeyMasked}
         readOnly
-        mono
       />
       <ModalField
         label="New API key"
         value={newKey}
         onChange={onNewKeyChange}
-        mono
         placeholder="sk-gw..."
         inputRef={field}
       />
@@ -1681,7 +1756,7 @@ export function QuitSafeToCloseDialog({
       tone="success"
       icon="circleCheck"
       tile="sm20"
-      width={536}
+      width={512}
       title="Safe to close Gate Connect"
       secondary={{ label: "Cancel", onClick: onCancel, disabled: busy }}
       primary={{

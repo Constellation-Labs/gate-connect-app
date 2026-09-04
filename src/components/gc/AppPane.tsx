@@ -31,7 +31,7 @@ export interface GateModel {
   /** Model vendor, e.g. "anthropic". */
   vendor: string;
   /**
-   * Every enabled model, in the user's order, rendered mono.
+   * Every enabled model, in the user's order.
    *
    * The whole set, not the first of it. Figma 228:89517 draws this card with a
    * single model row, and following that drew a heading reading "Current Gate
@@ -484,14 +484,14 @@ function ModelSelection({
                     <p className="text-base-2xs leading-4 text-base-muted-foreground">
                       {gateModel.vendor}
                     </p>
-                    <p className="font-mono text-sm leading-5 text-base-foreground">
+                    <p className="text-sm leading-5 text-base-foreground">
                       {gateModel.ids[0]}
                     </p>
                   </>
                 ) : (
                   <ul className="flex flex-col gap-1">
                     {gateModel.ids.map((id) => (
-                      <li key={id} className="truncate font-mono text-sm leading-5 text-base-foreground">
+                      <li key={id} className="truncate text-sm leading-5 text-base-foreground">
                         {id}
                       </li>
                     ))}
@@ -560,7 +560,7 @@ function ModelOption({
       aria-checked={selected}
       disabled={disabled}
       onClick={onSelect}
-      className={`flex items-center gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-60 ${
+      className={`flex items-center gap-3 rounded-control border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-60 ${
         selected
           ? "border-base-primary bg-base-card"
           : "border-base-border bg-base-card enabled:hover:bg-gray-50"
@@ -614,7 +614,7 @@ function InfoRow({
   // the source, so nothing is left to dim.
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-base-border p-3"
+    <div className="flex items-center gap-3 rounded-control border border-base-border p-3"
     >
       <span
         aria-hidden

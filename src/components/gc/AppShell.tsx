@@ -80,7 +80,12 @@ export function AppShell({
   return (
     // `relative` anchors the dialog scrim, which covers the window including
     // its chrome - the design dims the topbar and banners along with the pane.
-    <div className="relative flex h-full w-full flex-col overflow-hidden bg-base-card">
+    // `tabular-nums` on the root, not per figure. "Always use tabular nums on
+    // numbers" is design's standing rule (2026-09-04): the point is that a
+    // column of counts, percentages and currency lines up, and Geist's
+    // proportional digits do not. Set once here so no figure added later can
+    // miss it - the same argument the `label/copy` tracking tokens make.
+    <div className="relative flex h-full w-full flex-col overflow-hidden bg-base-card tabular-nums">
       <Topbar
         menuOpen={menuOpen}
         onMenuToggle={onMenuToggle}
