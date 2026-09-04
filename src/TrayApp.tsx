@@ -60,14 +60,15 @@ const detectionSignature = (reading: unknown): string => JSON.stringify(reading)
  * nothing measured.
  */
 function messageFigure(
-  view: ToolMessagesView,
+  byTool: ToolMessagesView["byTool"],
+  pending: ToolMessagesView["pending"],
   slug: string,
 ): SidebarApp["messages"] {
-  const held = view.byTool.get(slug);
+  const held = byTool.get(slug);
   if (held) {
     return { kind: "count", count: held.messages, measuredAt: held.measuredAt };
   }
-  return view.pending.has(slug) ? { kind: "pending" } : undefined;
+  return pending.has(slug) ? { kind: "pending" } : undefined;
 }
 
 /**
@@ -292,7 +293,11 @@ export function TrayApp() {
     () => tools.filter((t) => t.status.kind !== "not_installed").map((t) => t.slug),
     [tools],
   );
-  const toolMessages = useToolMessages(
+  // Destructured, not held as the view object. The hook returns a fresh literal
+  // every render, so depending on it made `apps` - and `trayGroups` below it -
+  // recompute on every render. `alertCounts` above depends on `securityFeed`'s
+  // fields for exactly this reason.
+  const { byTool: messagesByTool, pending: messagesPending } = useToolMessages(
     account !== null && machineKnown,
     messageSlugs,
     installs.current,
@@ -350,7 +355,7 @@ export function TrayApp() {
           // A held figure outranks the pending state, so a look that re-reads
           // keeps the last number on the row instead of blanking it for the
           // length of a fetch. The skeleton is the first read only.
-          messages: messageFigure(toolMessages, t.slug),
+          messages: messageFigure(messagesByTool, messagesPending, t.slug),
           alerts: alertCounts
             ? { kind: "count", count: alertCounts.get(t.slug) ?? 0 }
             : alertsPending
@@ -364,7 +369,8 @@ export function TrayApp() {
       routingBusy,
       alertCounts,
       alertsPending,
-      toolMessages,
+      messagesByTool,
+      messagesPending,
     ],
   );
 

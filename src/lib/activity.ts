@@ -126,6 +126,17 @@ export interface ActivityView {
    *  because a held reading can outlive the day it was taken on, and "updated
    *  14:03" under yesterday's figures reads as this afternoon. */
   takenAt: string;
+  /**
+   * The same instant as a number, for deciding how old this reading is.
+   *
+   * `takenAt` is formatted for display and cannot be compared; `NaN` when the
+   * gateway sent a `generatedAt` that is not a date. Exists because
+   * `activity.rs` and `activity_cache.rs` both justify handing back raw bodies
+   * on the grounds that the *caller* can judge staleness from `generatedAt` -
+   * and a caller holding a body it did not fetch (the tray, off the per-tool
+   * cache) has no other clock to judge it by.
+   */
+  takenAtMs: number;
   /** Sections that could not be answered, for the pane's alert slot. */
   gaps: { section: string; reason: UnavailableReason }[];
   /** Which sections have no reading behind them, for the surfaces that draw
@@ -270,6 +281,26 @@ function toRows<T extends { id: string; name: string; icon: IconName; enabled: b
   );
 }
 
+/**
+ * One raw body, adapted, or `null` when it is not a reading at all.
+ *
+ * The parse belongs here rather than at each call site: this module is the single
+ * place that knows the payload's shape, and a second `JSON.parse(...) as
+ * RawOverview` elsewhere is a second place for the shape to be asserted without
+ * being checked - `JSON.parse` returns `any`, so such a cast verifies nothing.
+ * Callers that hold a body they did not fetch themselves (the tray's per-tool
+ * cache read) use this.
+ */
+export function parseOverview(text: string): ActivityView | null {
+  try {
+    return adapt(JSON.parse(text) as RawOverview);
+  } catch {
+    // A body that will not parse is not a reading. There is nothing to repair and
+    // nothing to report: the caller has the same nothing it had before.
+    return null;
+  }
+}
+
 export function adapt(raw: RawOverview): ActivityView {
   const c = raw.counters;
   const gaps: ActivityView["gaps"] = [];
@@ -285,7 +316,8 @@ export function adapt(raw: RawOverview): ActivityView {
 
   const saved = c.tokensSaved;
   const amount = saved.amount ?? 0;
-  const takenAt = clockTime(new Date(raw.generatedAt));
+  const generatedAt = new Date(raw.generatedAt);
+  const takenAt = clockTime(generatedAt);
   return {
     orgName: raw.org.name,
     stats: {
@@ -315,6 +347,7 @@ export function adapt(raw: RawOverview): ActivityView {
     savings: toRows<Saving>(raw.tokenSavings.rows, SAVINGS_ICONS, "layers", () => ({})),
     period: `Last 24 hours · updated ${takenAt}`,
     takenAt,
+    takenAtMs: generatedAt.getTime(),
     gaps,
     missing: {
       chart: raw.requestsByHour.state !== "ok",

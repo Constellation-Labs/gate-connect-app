@@ -50,27 +50,67 @@ use crate::registry::ToolId;
 /// slot was protecting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CacheFile {
-    /// Gateway, credential kind, org and installation filter, joined. Compared
-    /// whole; the parts are never read back out.
+    /// Gateway, credential kind and org, joined. Compared whole; the parts are
+    /// never read back out.
     scope: String,
-    /// Tool slug -> the `/v1/me/activity` response for it, verbatim. The
-    /// org-wide reading (no `tool` filter) is held under [`ORG_WIDE`].
+    /// `<installation>|<tool>` -> the `/v1/me/activity` response for it,
+    /// verbatim. Either half may be empty, meaning unfiltered: `|` is the
+    /// Overview's own org-wide reading, `install-7|codex` is one tool on one
+    /// machine.
+    ///
+    /// **The installation is a key rather than part of the scope, and that is a
+    /// fix.** It was in the scope, which meant the Overview (org-wide, so no
+    /// filter) and the tray (this machine) computed *different* scopes for the
+    /// same account - and since the file holds one scope, each one's store wiped
+    /// the other's readings. Both webviews mount at start-up, so it ping-ponged:
+    /// the tray opened on a file the Overview had just emptied, and AG-576's
+    /// held Overview reading was thrown away by every popover.
     ///
     /// Each body carries its own `generatedAt`, so the age of a reading needs no
     /// second timestamp here that could disagree with it - which is also what
     /// lets a caller decide for itself whether an entry is too old to use.
     ///
-    /// A file written by the previous single-slot shape has no `tools` and fails
-    /// to parse, which every caller already handles as a miss - and the next
-    /// store replaces it. Deliberately *not* `#[serde(default)]`: a half-written
-    /// entry loading as an empty map would be indistinguishable from a scope that
-    /// genuinely holds nothing, and `a_mangled_file_reads_as_no_cache` pins that.
-    tools: BTreeMap<String, String>,
+    /// A file written by the previous single-slot shape has no `readings` and
+    /// fails to parse, which every caller already handles as a miss - and the
+    /// next store replaces it. Deliberately *not* `#[serde(default)]`: a
+    /// half-written entry loading as an empty map would be indistinguishable from
+    /// a scope that genuinely holds nothing, and
+    /// `a_mangled_file_reads_as_no_cache` pins that.
+    readings: BTreeMap<String, String>,
 }
 
-/// The key the reading with no `tool` filter is held under - the Overview's own.
-/// The empty string cannot collide with a slug.
-const ORG_WIDE: &str = "";
+/// Serialises the read-modify-write in [`store`].
+///
+/// One process, two webviews: the window and the tray both store, and
+/// `activity_overview` dispatches through `spawn_blocking`, so two of these
+/// genuinely interleave on different threads. Without this, two stores that read
+/// the same file lose one insert - not corruption, since the write itself is
+/// atomic, but a reading the caller believes it saved and a look that has to ask
+/// for it again.
+static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What an empty half of a key means: no filter. Cannot collide with a slug or
+/// an installation id.
+const UNFILTERED: &str = "";
+
+/// `<installation>|<tool>`, either half possibly [`UNFILTERED`].
+fn key(install_id: Option<&str>, tool: Option<ToolId>) -> String {
+    format!(
+        "{}|{}",
+        install_id.unwrap_or(UNFILTERED),
+        tool.map(ToolId::slug).unwrap_or(UNFILTERED)
+    )
+}
+
+/// The installation half of a key.
+fn key_install(k: &str) -> &str {
+    k.split_once('|').map(|(i, _)| i).unwrap_or(UNFILTERED)
+}
+
+/// The tool half of a key.
+fn key_tool(k: &str) -> &str {
+    k.split_once('|').map(|(_, t)| t).unwrap_or(UNFILTERED)
+}
 
 fn config_path() -> Result<PathBuf> {
     Ok(env::app_support_dir()?.join("activity-cache.json"))
@@ -81,7 +121,7 @@ fn config_path() -> Result<PathBuf> {
 /// Returns `None` when there is no account, which is also when there is nothing
 /// worth caching - a signed-out client has no reading to hold and no identity to
 /// hold it under.
-fn scope(install_id: Option<&str>) -> Option<String> {
+fn scope() -> Option<String> {
     let account = account::load().ok().flatten()?;
     let mode = match account.auth_mode {
         AuthMode::OAuth => "oauth",
@@ -101,24 +141,20 @@ fn scope(install_id: Option<&str>) -> Option<String> {
     // trade for the same guarantee.
     let org = account::org_id_for_injection();
     let key = account::api_key_prefix().ok().flatten().unwrap_or_default();
-    // The tool used to be part of this string. It is the map key now, which keeps
-    // the property that mattered: Codex opened right after Claude Code must not
-    // draw Claude Code's numbers under Codex's name while the network answers.
-    // Two entries under two keys cannot be confused for each other; one entry
-    // under a scope that ignored the tool could.
+    // The tool and the installation used to be part of this string. They are the
+    // map key now, which keeps the property that mattered - Codex opened right
+    // after Claude Code must not draw Claude Code's numbers under Codex's name -
+    // while letting readings that differ only by filter coexist instead of
+    // evicting each other. Two entries under two keys cannot be confused for one
+    // another; one entry under a scope that ignored a filter could.
+    //
+    // What stays in the scope is the *account*: gateway, credential kind, org and
+    // key prefix. That is the boundary a reading may never cross, and a scope
+    // change still replaces the whole file.
     Some(format!(
-        "{}|{}|{}|{}|{}",
-        account.gateway_base_url,
-        mode,
-        org,
-        key,
-        install_id.unwrap_or("")
+        "{}|{}|{}|{}",
+        account.gateway_base_url, mode, org, key
     ))
-}
-
-/// The map key for a tool filter, or [`ORG_WIDE`] for none.
-fn key(tool: Option<ToolId>) -> String {
-    tool.map(ToolId::slug).unwrap_or(ORG_WIDE).to_owned()
 }
 
 /// The file, if it holds this scope. `None` covers every failure and a scope
@@ -133,19 +169,40 @@ fn held(scope: &str) -> Option<CacheFile> {
 /// Hold a reading that just landed. Best effort: a cache that cannot be written
 /// is not a failed fetch, and the caller has the real answer in hand either way.
 pub fn store(install_id: Option<&str>, tool: Option<ToolId>, body: &str) {
-    let Some(scope) = scope(install_id) else {
+    let Some(scope) = scope() else {
         return;
     };
+    // Held for the duration of the read-modify-write, not just the write: two
+    // threads that both read this file before either writes lose one insert.
+    let _lock = STORE_LOCK.lock();
     // Merged into whatever this scope already holds, so one tool's read does not
     // evict the others - the whole point of the map. A file from another scope is
-    // replaced rather than merged into: its counts belong to an org the user has
-    // left.
+    // replaced rather than merged into: its readings belong to an org the user
+    // has left.
     let mut entry = held(&scope).unwrap_or_else(|| CacheFile {
         scope: scope.clone(),
-        tools: BTreeMap::new(),
+        readings: BTreeMap::new(),
     });
     entry.scope = scope;
-    entry.tools.insert(key(tool), body.to_owned());
+    // Other installations go. This is the one dimension deliberately *not* kept:
+    // the picker's other machines are a browsing affordance, not the thing the
+    // user came for, and holding every machine an org has ever shown would grow
+    // this file for as long as the app is installed - which is the objection the
+    // single slot was written for. Unfiltered readings stay through it: they are
+    // the Overview's own and belong to no machine.
+    //
+    // Only a store that *names* a machine evicts. An unfiltered store says
+    // nothing about which machine is current, so it must not evict any - the
+    // first cut of this let the Overview's org-wide store wipe every row the tray
+    // had just filled, which is the same bug the key was introduced to remove.
+    if let Some(mine) = install_id {
+        entry
+            .readings
+            .retain(|k, _| key_install(k) == UNFILTERED || key_install(k) == mine);
+    }
+    entry
+        .readings
+        .insert(key(install_id, tool), body.to_owned());
     let Ok(path) = config_path() else {
         return;
     };
@@ -163,8 +220,8 @@ pub fn store(install_id: Option<&str>, tool: Option<ToolId>, body: &str) {
 /// no file, unreadable, unparseable, a different org - means the same thing to
 /// the caller, which is that it has to wait for the network like it always did.
 pub fn load(install_id: Option<&str>, tool: Option<ToolId>) -> Option<String> {
-    let want = scope(install_id)?;
-    held(&want)?.tools.remove(&key(tool))
+    let want = scope()?;
+    held(&want)?.readings.remove(&key(install_id, tool))
 }
 
 /// Every per-tool reading held for this scope, keyed by slug.
@@ -173,18 +230,24 @@ pub fn load(install_id: Option<&str>, tool: Option<ToolId>) -> Option<String> {
 /// figure on each app row and a call per row - even a local one - is a file parse
 /// per row for a file that already holds them all.
 ///
-/// The org-wide entry is left out. It is the Overview's reading, it is not
-/// attributable to any row, and a caller iterating rows would have to know to
-/// skip a key that looks like every other one.
+/// Only this installation's readings, and only the tool-filtered ones. An
+/// unfiltered reading is the Overview's, attributable to no row, and a caller
+/// iterating rows would have to know to skip a key that looks like every other
+/// one. Another machine's reading is not this machine's traffic at all.
 pub fn load_tools(install_id: Option<&str>) -> BTreeMap<String, String> {
-    let Some(want) = scope(install_id) else {
+    let Some(want) = scope() else {
         return BTreeMap::new();
     };
-    let Some(mut entry) = held(&want) else {
+    let Some(entry) = held(&want) else {
         return BTreeMap::new();
     };
-    entry.tools.remove(ORG_WIDE);
-    entry.tools
+    let mine = install_id.unwrap_or(UNFILTERED);
+    entry
+        .readings
+        .into_iter()
+        .filter(|(k, _)| key_install(k) == mine && key_tool(k) != UNFILTERED)
+        .map(|(k, body)| (key_tool(&k).to_owned(), body))
+        .collect()
 }
 
 /// Forget the held reading. Called when the account goes away: a disconnect or a
@@ -206,43 +269,56 @@ mod tests {
     /// never handed to another. Exercised on the struct rather than through the
     /// filesystem, because the scope string is the part that decides it.
     ///
-    /// The tool is no longer in that string - it is the map key - so the two
-    /// halves are now asserted separately: the scope guards the org and the
-    /// machine, `each_tool_keeps_its_own_entry` guards the tool.
+    /// Neither the tool nor the installation is in that string any more - both are
+    /// the map key - so the halves are asserted separately: the scope guards the
+    /// account, `the_installation_filter_is_part_of_the_key` and
+    /// `each_tool_keeps_its_own_entry` guard the filters.
     #[test]
     fn a_reading_is_only_returned_for_its_own_scope() {
-        let mut tools = BTreeMap::new();
-        tools.insert("claude-code".to_owned(), r#"{"counters":{}}"#.to_owned());
+        let mut readings = BTreeMap::new();
+        readings.insert(
+            "install-7|claude-code".to_owned(),
+            r#"{"counters":{}}"#.to_owned(),
+        );
         let entry = CacheFile {
-            scope: "https://gw.example|oauth|org-a|install-7".into(),
-            tools,
+            scope: "https://gw.example|oauth|org-a|".into(),
+            readings,
         };
-        let for_scope =
-            |want: &str| (entry.scope == want).then(|| entry.tools.get("claude-code").cloned());
+        let for_scope = |want: &str| {
+            (entry.scope == want).then(|| entry.readings.get("install-7|claude-code").cloned())
+        };
         assert_eq!(
-            for_scope("https://gw.example|oauth|org-a|install-7"),
+            for_scope("https://gw.example|oauth|org-a|"),
             Some(Some(r#"{"counters":{}}"#.to_owned()))
         );
         assert_eq!(
-            for_scope("https://gw.example|oauth|org-b|install-7"),
+            for_scope("https://gw.example|oauth|org-b|"),
             None,
             "another org's reading must not be replayed"
         );
-        assert_eq!(
-            for_scope("https://gw.example|oauth|org-a|install-9"),
-            None,
-            "another machine's reading must not be replayed"
-        );
     }
 
-    /// An installation filter changes what the gateway answers, so it has to
-    /// change the scope too - otherwise selecting one machine would show the
-    /// org-wide figures it just replaced.
+    /// An installation filter changes what the gateway answers, so a reading held
+    /// for one must never answer for another. The key carries that now, which is
+    /// what lets filtered and unfiltered readings coexist in one file instead of
+    /// evicting each other on every store.
     #[test]
-    fn the_installation_filter_is_part_of_the_scope() {
-        let org_wide = "https://gw.example|oauth|org-a|";
-        let one_machine = "https://gw.example|oauth|org-a|install-7";
-        assert_ne!(org_wide, one_machine);
+    fn the_installation_filter_is_part_of_the_key() {
+        assert_eq!(key(None, None), "|");
+        assert_eq!(key(Some("install-7"), None), "install-7|");
+        assert_eq!(key(None, Some(ToolId::Codex)), "|codex");
+        assert_eq!(
+            key(Some("install-7"), Some(ToolId::Codex)),
+            "install-7|codex"
+        );
+        assert_ne!(
+            key(None, Some(ToolId::Codex)),
+            key(Some("install-7"), Some(ToolId::Codex))
+        );
+        assert_eq!(key_install("install-7|codex"), "install-7");
+        assert_eq!(key_tool("install-7|codex"), "codex");
+        assert_eq!(key_install("|codex"), UNFILTERED);
+        assert_eq!(key_tool("install-7|"), UNFILTERED);
     }
 
     /// The same property for the tool dimension, which the map key carries now
@@ -253,23 +329,30 @@ mod tests {
     fn each_tool_keeps_its_own_entry() {
         let mut file = CacheFile {
             scope: "s".into(),
-            tools: BTreeMap::new(),
+            readings: BTreeMap::new(),
         };
-        file.tools
-            .insert(key(Some(ToolId::ClaudeCode)), "cc".into());
-        file.tools.insert(key(Some(ToolId::Codex)), "cx".into());
-        file.tools.insert(key(None), "org".into());
+        let mine = Some("install-7");
+        file.readings
+            .insert(key(mine, Some(ToolId::ClaudeCode)), "cc".into());
+        file.readings
+            .insert(key(mine, Some(ToolId::Codex)), "cx".into());
+        file.readings.insert(key(None, None), "org".into());
 
         assert_eq!(
-            file.tools.get("claude-code").map(String::as_str),
+            file.readings
+                .get("install-7|claude-code")
+                .map(String::as_str),
             Some("cc")
         );
-        assert_eq!(file.tools.get("codex").map(String::as_str), Some("cx"));
         assert_eq!(
-            file.tools.get(ORG_WIDE).map(String::as_str),
+            file.readings.get("install-7|codex").map(String::as_str),
+            Some("cx")
+        );
+        assert_eq!(
+            file.readings.get("|").map(String::as_str),
             Some("org"),
-            "the unfiltered reading has a key of its own, and the empty string \
-             cannot collide with a slug",
+            "an unfiltered reading has a key of its own, and an empty half cannot \
+             collide with a slug or an installation id",
         );
     }
 
@@ -298,9 +381,9 @@ mod tests {
         std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
 
         account::save("https://gw.example", Some("sk-gw-aaaaaaaaaaaa1111")).unwrap();
-        let first = scope(None).expect("an account exists");
+        let first = scope().expect("an account exists");
         account::save("https://gw.example", Some("sk-gw-bbbbbbbbbbbb2222")).unwrap();
-        let second = scope(None).expect("an account exists");
+        let second = scope().expect("an account exists");
 
         // Restore rather than clear: an ambient value belongs to whoever set it.
         let restore = |k: &str, v: Option<std::ffi::OsString>| match v {
@@ -333,18 +416,28 @@ mod tests {
         std::env::set_var("GATE_CONNECT_TEST_SECRETS", home.join("secrets"));
         account::save("https://gw.example", Some("sk-gw-aaaaaaaaaaaa1111")).unwrap();
 
-        store(None, Some(ToolId::ClaudeCode), r#"{"tool":"cc"}"#);
-        store(None, Some(ToolId::Codex), r#"{"tool":"cx"}"#);
+        // One machine's per-tool readings, and the Overview's own org-wide one.
+        // The tray writes the first kind, the Overview the second, and before the
+        // installation became part of the key each store wiped the other's.
+        store(
+            Some("install-7"),
+            Some(ToolId::ClaudeCode),
+            r#"{"tool":"cc"}"#,
+        );
+        store(Some("install-7"), Some(ToolId::Codex), r#"{"tool":"cx"}"#);
         store(None, None, r#"{"tool":"org"}"#);
 
-        let cc = load(None, Some(ToolId::ClaudeCode));
-        let cx = load(None, Some(ToolId::Codex));
+        let cc = load(Some("install-7"), Some(ToolId::ClaudeCode));
+        let cx = load(Some("install-7"), Some(ToolId::Codex));
         let org = load(None, None);
-        let rows = load_tools(None);
-        // A different machine is a different scope, so the file is replaced -
-        // which must not leave the org-wide slot answering for it either.
-        store(Some("install-7"), Some(ToolId::Codex), r#"{"tool":"cx-7"}"#);
-        let after_scope_change = load(None, Some(ToolId::ClaudeCode));
+        let rows = load_tools(Some("install-7"));
+        let other_machine = load_tools(None);
+        // Browsing another machine in the picker. Its readings are not this
+        // machine's traffic, so they replace them - but the Overview's own
+        // reading belongs to no machine and has to survive.
+        store(Some("install-9"), Some(ToolId::Codex), r#"{"tool":"cx-9"}"#);
+        let after_other_machine = load(Some("install-7"), Some(ToolId::ClaudeCode));
+        let org_after = load(None, None);
 
         let restore = |k: &str, v: Option<std::ffi::OsString>| match v {
             Some(v) => std::env::set_var(k, v),
@@ -360,16 +453,31 @@ mod tests {
             Some(r#"{"tool":"cx"}"#),
             "the second tool's store must not have evicted the first"
         );
-        assert_eq!(org.as_deref(), Some(r#"{"tool":"org"}"#));
+        assert_eq!(
+            org.as_deref(),
+            Some(r#"{"tool":"org"}"#),
+            "the Overview's org-wide store must not have evicted the rows - this is \
+             the regression that made the tray open on an empty file"
+        );
         assert_eq!(
             rows.keys().map(String::as_str).collect::<Vec<_>>(),
             vec!["claude-code", "codex"],
-            "the org-wide reading is not a row and must not be handed out as one"
+            "one machine's tool-filtered readings, and nothing else: an \
+             unfiltered reading is no row's"
+        );
+        assert!(
+            other_machine.is_empty(),
+            "readings are handed out for the machine asked about, not any machine"
         );
         assert_eq!(
-            after_scope_change, None,
-            "a scope change drops the file rather than merging another machine's \
-             readings into it"
+            after_other_machine, None,
+            "another machine's store evicts this one's rows rather than \
+             accumulating every machine the picker has ever shown"
+        );
+        assert_eq!(
+            org_after.as_deref(),
+            Some(r#"{"tool":"org"}"#),
+            "and it still leaves the reading that belongs to no machine"
         );
     }
 
@@ -384,19 +492,19 @@ mod tests {
 
     #[test]
     fn an_entry_survives_a_round_trip() {
-        let mut tools = BTreeMap::new();
-        tools.insert(
-            "claude-code".to_owned(),
+        let mut readings = BTreeMap::new();
+        readings.insert(
+            "install-7|claude-code".to_owned(),
             r#"{"generatedAt":"2026-08-18T09:00:00Z"}"#.to_owned(),
         );
         let entry = CacheFile {
             scope: "s".into(),
-            tools,
+            readings,
         };
         let raw = serde_json::to_string(&entry).expect("serialize");
         let back: CacheFile = serde_json::from_str(&raw).expect("deserialize");
         assert_eq!(back.scope, entry.scope);
-        assert_eq!(back.tools, entry.tools);
+        assert_eq!(back.readings, entry.readings);
     }
 
     /// A file the previous shape wrote. It has no `tools`, so it does not load -

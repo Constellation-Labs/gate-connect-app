@@ -2639,13 +2639,13 @@ one switch cannot honestly claim both.
 
 ### The tray's activity line, 2026-09-03
 
-**The frames draw one and the build now draws half of it.** Every tray row frame
+**The frames draw one and the build drew half of it first.** Every tray row frame
 carries "345 messages · 23 alerts" under the status line, and `Tray`'s docstring
-has recorded the whole line as unbuilt since 2026-08-28 on the grounds that no
-per-tool reading existed. Half of that is no longer true: the live feed (AG-578)
-attributes every blocked or flagged request to a tool slug, and the tray already
-listens to it for the security card. So the alert half is drawn, from
-`alertCounts` in `TrayApp`, and the message half stays out.
+had recorded the whole line as unbuilt since 2026-08-28 on the grounds that no
+per-tool reading existed. The alerts went first, from `alertCounts` in `TrayApp`:
+the live feed (AG-578) attributes every blocked or flagged request to a tool slug,
+and the tray already listens to it for the security card. The message half landed
+a day later, below.
 
 **The message half followed on 2026-09-04**, and the note above is why it took a
 second pass: `GET /v1/me/activity` answers for one tool at a time, inside a

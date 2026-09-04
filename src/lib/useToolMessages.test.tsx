@@ -23,9 +23,9 @@ const disk = activityCachedToolOverviews as unknown as ReturnType<typeof vi.fn>;
 
 /** An overview body with one messages figure in it. `messages: null` is the
  *  gateway declining that section, which must not read as zero. */
-function body(messages: number | null) {
+function body(messages: number | null, generatedAt = "2026-09-04T09:00:00.000Z") {
   return JSON.stringify({
-    generatedAt: "2026-09-04T09:00:00.000Z",
+    generatedAt,
     window: { from: "2026-09-03T09:00:00.000Z", to: "2026-09-04T09:00:00.000Z" },
     org: { orgId: "org-1", name: "Constellation Labs" },
     counters: {
@@ -175,7 +175,7 @@ describe("useToolMessages", () => {
     expect(disk).not.toHaveBeenCalled();
   });
 
-  it("drops figures when the credential changes", async () => {
+  it("drops figures when the credential changes, and re-reads for the new one", async () => {
     disk.mockResolvedValue({ "claude-code": body(1032) });
     net.mockImplementation(() => new Promise<string>(() => {}));
     const h = harness();
@@ -185,20 +185,116 @@ describe("useToolMessages", () => {
     // One org's traffic must never sit on screen under another org's name - the
     // rule every reading in this app follows.
     disk.mockResolvedValue({});
+    const readsBefore = disk.mock.calls.length;
     h.rerender({ credential: "cred-b" });
+    await flush();
+
+    expect(h.last().byTool.has("claude-code")).toBe(false);
+    // And the new scope is actually read. An earlier version of this test passed
+    // without this line while `credential` was missing from `refresh`'s deps: the
+    // figures were cleared and then nothing re-read them, so the rows sat blank
+    // until the popover was reopened.
+    expect(disk.mock.calls.length).toBeGreaterThan(readsBefore);
+  });
+
+  it("never applies an answer issued for a scope the user has left", async () => {
+    // The race the epoch guard exists for. One request is in flight when the
+    // credential changes; it resolves into a hook that has already cleared.
+    //
+    // Every pass's resolver is captured separately on purpose: the replacement
+    // pass calls the same mock, so a single `release` variable would be
+    // overwritten and the test would end up releasing the *new* request and
+    // proving nothing. That is exactly how the first version of this test passed
+    // against the bug.
+    const releases: ((v: string) => void)[] = [];
+    net.mockImplementation(() => new Promise<string>((r) => releases.push(r)));
+    const h = harness({ slugs: ["claude-code"] });
+    await flush();
+    expect(releases).toHaveLength(1);
+
+    h.rerender({ slugs: ["claude-code"], credential: "cred-b" });
+    await flush();
+    // The old scope's answer, arriving late.
+    releases[0](body(999));
+    await flush();
+
+    expect(h.last().byTool.has("claude-code")).toBe(false);
+
+    // And it did not suppress the new scope's own read either: that request is
+    // live, and its answer is the one that lands. Before the guard, the late
+    // answer stamped `readAt` and the correct read was skipped for the whole TTL.
+    expect(releases.length).toBeGreaterThan(1);
+    releases[releases.length - 1](body(4));
+    await flush();
+    expect(h.last().byTool.get("claude-code")?.messages).toBe(4);
+  });
+
+  it("drops a held figure when the read stops working", async () => {
+    // A sign-out leaves `account.json` in place, so this hook stays enabled and
+    // every fetch 401s. A number held from before that must not stay on screen
+    // under an account that can no longer read it.
+    //
+    // The held reading is fresh so the first look leaves it alone - otherwise the
+    // mount's own fetch replaces it and the test proves nothing about holding.
+    const justNow = new Date(Date.now() - 1_000).toISOString();
+    disk.mockResolvedValue({ "claude-code": body(1032, justNow) });
+    const h = harness({ slugs: ["claude-code"] });
+    await flush();
+    expect(h.last().byTool.get("claude-code")?.messages).toBe(1032);
+
+    net.mockRejectedValue("401 invalid_key");
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + STALE_MS + 1);
+    act(() => {
+      h.last().refresh();
+    });
     await flush();
 
     expect(h.last().byTool.has("claude-code")).toBe(false);
   });
 
-  it("carries the reading's own age, not the time it was drawn", async () => {
-    disk.mockResolvedValue({ "claude-code": body(12) });
+  it("holds a place for a row it has no figure for yet", async () => {
+    net.mockImplementation(() => new Promise<string>(() => {}));
     const h = harness({ slugs: ["claude-code"] });
     await flush();
 
-    // Whatever the local formatting, it is derived from the body's `generatedAt`
-    // and not from `Date.now()` - which is what lets a row disclose that its
-    // figure is held rather than live.
-    expect(h.last().byTool.get("claude-code")?.measuredAt).toBeTruthy();
+    // Not a zero and not `N/A`: neither is true while we are still asking.
+    expect(h.last().pending.has("claude-code")).toBe(true);
+  });
+
+  it("spares a launch-and-peek when the held reading is fresh enough", async () => {
+    // `readAt` is per-session, so without seeding it from the body's own age the
+    // first look after every restart re-asks for all N rows - even for readings
+    // that landed seconds ago.
+    const justNow = new Date(Date.now() - 1_000).toISOString();
+    disk.mockResolvedValue({ "claude-code": body(50, justNow) });
+    const h = harness({ slugs: ["claude-code"] });
+    await flush();
+
+    expect(h.last().byTool.get("claude-code")?.messages).toBe(50);
+    expect(net).not.toHaveBeenCalled();
+  });
+
+  it("carries the reading's own age, not the time it was drawn", async () => {
+    const anHourAgo = new Date(Date.UTC(2026, 8, 4, 9, 0, 0)).toISOString();
+    disk.mockResolvedValue({ "claude-code": body(12, anHourAgo) });
+    net.mockImplementation(() => new Promise<string>(() => {}));
+    const h = harness({ slugs: ["claude-code"] });
+    await flush();
+
+    // The body's `generatedAt`, to the millisecond - not `Date.now()`. A
+    // `toBeTruthy()` here would pass the exact regression this forbids, which is
+    // what the first version of this test did.
+    expect(h.last().byTool.get("claude-code")?.measuredAtMs).toBe(Date.parse(anHourAgo));
+  });
+
+  it("has no figure for a body whose age is not a date", async () => {
+    // A figure that cannot say when it was measured has no business claiming an
+    // age, and "measured Invalid Date" in a tooltip is worse than nothing.
+    disk.mockResolvedValue({ "claude-code": body(12, "not-a-date") });
+    net.mockImplementation(() => new Promise<string>(() => {}));
+    const h = harness({ slugs: ["claude-code"] });
+    await flush();
+
+    expect(h.last().byTool.has("claude-code")).toBe(false);
   });
 });

@@ -118,7 +118,9 @@ pub fn cached_overview_json(install_id: Option<&str>, tool: Option<ToolId>) -> O
 ///
 /// Raw bodies, like the rest of this module - `src/lib/activity.ts` stays the only
 /// place that knows the payload's shape, which is also what lets the *caller*
-/// decide what "stale" means from each body's own `generatedAt`.
+/// decide what "stale" means from each body's own `generatedAt` - which
+/// `lib/activity.ts` surfaces as `ActivityView.takenAtMs` for exactly that, the
+/// tray being a caller that holds readings it did not fetch itself.
 pub fn cached_tool_overviews_json(
     install_id: Option<&str>,
 ) -> std::collections::BTreeMap<String, String> {

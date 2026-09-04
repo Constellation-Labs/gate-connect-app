@@ -332,4 +332,19 @@ describe("the row message count", () => {
 
     expect(row("Claude Code")).toContain("No messages");
   });
+
+  it("holds a place for a figure still being read", () => {
+    renderTray({ groups: withFigures({ messages: { kind: "pending" } }) });
+
+    expect(row("Claude Code")).not.toContain("messages");
+    expect(document.querySelectorAll(".animate-pulse")).toHaveLength(1);
+  });
+
+  it("draws no tooltip for a figure with no age to report", () => {
+    // The alert half is live by construction and has nothing to disclose, so a
+    // row showing only alerts must not carry an empty or misleading title.
+    renderTray({ groups: withAlerts({ kind: "count", count: 2 }) });
+
+    expect(rowOf("Claude Code")?.querySelector("[title]")).toBeNull();
+  });
 });

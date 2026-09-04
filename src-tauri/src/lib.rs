@@ -510,6 +510,15 @@ async fn oauth_status() -> Result<OAuthStatusDto, String> {
 async fn oauth_sign_out() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))?;
+        // The held activity readings belong to the org just signed out of, and
+        // signing out is not a disconnect: `account.json` keeps the gateway and
+        // the org, so `activity_cache`'s scope stays byte-identical and every
+        // reading in it would still match and still be served. `account::clear`
+        // covers the disconnect path; this covers the one that leaves the account
+        // file in place. Best effort and after the credential, on the same
+        // reasoning as there: a cache that will not delete must not be the reason
+        // a sign-out reports failure.
+        let _ = gate_connect_core::activity_cache::clear();
         // Revert a running engine to the legacy header immediately (empty
         // token == fall back to the API key, if one is present).
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
