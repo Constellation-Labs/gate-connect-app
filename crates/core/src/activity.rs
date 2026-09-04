@@ -109,6 +109,22 @@ pub fn cached_overview_json(install_id: Option<&str>, tool: Option<ToolId>) -> O
     crate::activity_cache::load(install_id.filter(|s| !s.is_empty()), tool)
 }
 
+/// Every held per-tool reading for this installation scope, keyed by slug.
+///
+/// One disk read for a surface that draws a figure on every row. The tray's quick
+/// status is that surface: it opens on what is on disk and refreshes only what has
+/// gone stale, because `/v1/me/activity` answers for one tool at a time and a
+/// read per row per open is the fan-out its throttle bucket cannot take.
+///
+/// Raw bodies, like the rest of this module - `src/lib/activity.ts` stays the only
+/// place that knows the payload's shape, which is also what lets the *caller*
+/// decide what "stale" means from each body's own `generatedAt`.
+pub fn cached_tool_overviews_json(
+    install_id: Option<&str>,
+) -> std::collections::BTreeMap<String, String> {
+    crate::activity_cache::load_tools(install_id.filter(|s| !s.is_empty()))
+}
+
 /// Fetch one page of a tool's recent requests, as raw JSON (AG-574).
 ///
 /// `tool` is a [`ToolId`] rather than a string so the closed set of slugs is

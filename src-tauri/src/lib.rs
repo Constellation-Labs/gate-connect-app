@@ -654,6 +654,27 @@ async fn activity_cached_overview(
     .map_err(|e| format!("cached activity join error: {e}"))
 }
 
+/// Every held per-tool reading for this installation scope, keyed by slug.
+///
+/// The tray's quick status draws a figure on every app row, and `/v1/me/activity`
+/// answers for one tool at a time - so the popover opens on what is already on
+/// disk and refreshes only what has gone stale. One file read rather than one per
+/// row, because the file holds them all.
+///
+/// Never an error, for the same reason [`activity_cached_overview`] is not: an
+/// empty map covers no cache, an unreadable one, and a scope that holds nothing,
+/// and all three mean the caller waits for the network.
+#[tauri::command]
+async fn activity_cached_tool_overviews(
+    install_id: Option<String>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::cached_tool_overviews_json(install_id.as_deref())
+    })
+    .await
+    .map_err(|e| format!("cached tool activity join error: {e}"))
+}
+
 /// One page of a tool's recent requests, for the app pane's feed (AG-574).
 ///
 /// `tool` is required here, unlike on the overview: the feed is always about one
@@ -2929,6 +2950,7 @@ pub fn run() {
                     activity_overview,
                     activity_installations,
                     activity_cached_overview,
+                    activity_cached_tool_overviews,
                     activity_tool_events,
                     tool_model_preferences,
                     set_tool_model,
@@ -3003,6 +3025,7 @@ pub fn run() {
                     activity_overview,
                     activity_installations,
                     activity_cached_overview,
+                    activity_cached_tool_overviews,
                     activity_tool_events,
                     tool_model_preferences,
                     set_tool_model,
