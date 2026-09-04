@@ -29,7 +29,16 @@ export type ToolStatus =
 
 export interface ToolFixture {
   slug: string;
+  /** The row label - "CLI", "App", "Web" - which is what `list_tools` sends,
+      because every row sits under a family heading that already names the
+      vendor. Not the product name; see `displayName`. */
   name: string;
+  /** The product name, for the one reader that wants it: `teardown_report`,
+      whose dialog has no family heading to lean on, so "CLI" alone would say
+      nothing there. Mirrors the split in `lib.rs` - `list_tools` sends
+      `row_label()`, `teardown_report` sends `display_name()`. Defaults to
+      `name` where the two are the same word. */
+  displayName?: string;
   upstream_provider_name: string;
   default_upstream_url: string;
   /** The file Gate rewrites for this tool. Optional: absent and null both mean
@@ -177,10 +186,27 @@ export interface BackendState {
     providers: { slug: string; name: string }[];
     tools: { slug: string; name: string }[];
   };
-  /** Slugs `resume_restore` should FAIL to finish, so they stay outstanding. */
+  /** Slugs `resume_restore` and `retry_restore_entry` should FAIL to finish, so
+      they stay outstanding. */
   pendingResumeKeeps: string[];
-  /** The read-only account of the last restore, or null when there is nothing to
-      explain. Drives whether the recovery notice offers Review details. */
+  /** The clock the recovery summary dates its readings against, Unix seconds.
+      Fixed rather than `Date.now()` so a spec asserting on "4m ago" is not
+      racing the wall clock; a spec that wants a specific age sets the reading's
+      own timestamp relative to this. */
+  nowUnix: number;
+  /** Slugs whose per-entry retry should report an error as well as leaving the
+      entry outstanding. `pendingResumeKeeps` alone models the quieter case - an
+      attempt that did not take, with nothing to say about it - which is what a
+      domain-only provider with no engine up produces. */
+  retryErrors: string[];
+  /** Slugs the per-entry retry has been asked about, oldest first. The order is
+      the assertion: AG-570 requires a resume to work through the entries one at
+      a time so it can report progress, and a single batch call cannot. */
+  retryCalls: string[];
+  /** What the last restore did, entry by entry, or null when nothing recorded an
+      attempt. Read by `recovery_summary`, which joins it with the snapshots
+      above: an entry in a snapshot and not here is one the operation never
+      reached, and reads as `pending`. */
   restoreJournal: {
     updated_unix: number;
     requested_routing_on: boolean;
@@ -259,6 +285,7 @@ const CLAUDE_CODE: ToolFixture = {
   // the surfaces inside it - App / Web / CLI. The product name is `display_name`,
   // which is what the quit takeover's `pendingQuitTools` carries.
   name: "CLI",
+  displayName: "Claude Code",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",
   config_location: null,
@@ -268,6 +295,7 @@ const CLAUDE_CODE: ToolFixture = {
 const CODEX: ToolFixture = {
   slug: "codex",
   name: "CLI",
+  displayName: "Codex",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://api.openai.com/v1",
   config_location: null,
@@ -474,6 +502,9 @@ export function defaultState(): BackendState {
     backendErrors: [],
     pendingRestore: { providers: [], tools: [] },
     pendingResumeKeeps: [],
+    retryErrors: [],
+    retryCalls: [],
+    nowUnix: 1_772_800_000,
     restoreJournal: null,
     toolModels: {
       choices: {},

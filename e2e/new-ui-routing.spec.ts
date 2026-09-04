@@ -568,13 +568,77 @@ test.describe("new UI: an interrupted restore", () => {
     await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
   });
 
-  test("Resume finishes the job and the notice goes", async ({ boot }) => {
+  /**
+   * Resume works through the entries one at a time.
+   *
+   * Not `resume_restore`: AG-570 asks a resume to show progress for each tool,
+   * and a single batch call can only report what is left once the whole thing is
+   * over. `restore_one`'s semantics are the batch's narrowed to one slug, so
+   * this still repeats no completed write.
+   */
+  test("Resume finishes the job entry by entry and the notice goes", async ({ boot }) => {
     const app = await boot(interrupted);
 
     await app.page.getByRole("button", { name: "Resume now" }).click();
 
-    await expect.poll(() => app.lastCall("resume_restore")).not.toBeNull();
+    await expect
+      .poll(async () => (await app.state()).retryCalls)
+      .toEqual(["openai", "opencode"]);
     await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
+  });
+
+  /** The per-tool rows AG-570 asks the summary for: every tool the operation
+   *  touched, with its stage, its last check and what it still needs. */
+  test("the notice accounts for each tool it is waiting on", async ({ boot }) => {
+    const app = await boot(interrupted);
+    const banner = app.page.getByRole("status");
+
+    await banner.getByRole("button", { name: /Show tools/ }).click();
+
+    // The row's own name cell, not the summary sentence above it that also
+    // lists the tools it is waiting on.
+    await expect(
+      banner.getByRole("listitem").filter({ hasText: "OpenCode" }),
+    ).toBeVisible();
+    // Seeded, never attempted: the interruption's own signature.
+    await expect(banner.getByText("Not started").first()).toBeVisible();
+    // The three readings a stage cannot carry, on the row.
+    await expect(banner.getByText(/Last verified:/).first()).toBeVisible();
+  });
+
+  /** One row's Retry, which is the AC's "repeats only the failed or unverified
+   *  stage for the selected tool". The other entry is left alone. */
+  test("a row's Retry asks about that entry only", async ({ boot }) => {
+    const app = await boot(interrupted);
+    const banner = app.page.getByRole("status");
+    await banner.getByRole("button", { name: /Show tools/ }).click();
+
+    // The row for OpenCode, not the whole-notice Resume.
+    await banner
+      .getByRole("listitem")
+      .filter({ hasText: "OpenCode" })
+      .getByRole("button", { name: "Retry" })
+      .click();
+
+    await expect.poll(async () => (await app.state()).retryCalls).toEqual(["opencode"]);
+  });
+
+  /** A resume that came back offers the close-and-reopen conversation, scoped to
+   *  what it actually rewrote. */
+  test("a completed resume offers to close the tools it just rewrote", async ({ boot }) => {
+    const app = await boot({
+      ...interrupted,
+      runningAgents: 1,
+      staleAgents: 1,
+      runningAgentNames: ["opencode"],
+    });
+
+    await app.page.getByRole("button", { name: "Resume now" }).click();
+
+    await expect(app.page.getByRole("dialog")).toBeVisible();
+    await expect.poll(() => app.lastCall("running_agents")).toMatchObject({
+      only: ["openai", "opencode"],
+    });
   });
 
   /**
@@ -582,7 +646,11 @@ test.describe("new UI: an interrupted restore", () => {
    * other, so the notice stays and names only what is left.
    */
   test("a partial resume keeps the notice, naming only what is left", async ({ boot }) => {
-    const app = await boot({ ...interrupted, pendingResumeKeeps: ["opencode"] });
+    const app = await boot({
+      ...interrupted,
+      pendingResumeKeeps: ["opencode"],
+      retryErrors: ["opencode"],
+    });
 
     await app.page.getByRole("button", { name: "Resume now" }).click();
 
@@ -600,6 +668,7 @@ test.describe("new UI: an interrupted restore", () => {
 
     await expect(app.page.getByText("Routing didn’t finish coming back")).toHaveCount(0);
     expect(await app.lastCall("resume_restore")).toBeNull();
+    expect(await app.lastCall("retry_restore_entry")).toBeNull();
     // Still recorded on disk, which is what makes the notice come back later.
     expect((await app.state()).pendingRestore.providers).toHaveLength(1);
   });
@@ -674,11 +743,36 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     const dialog = app.page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText("CLI")).toBeVisible();
-    await expect(dialog.getByText("Done")).toBeVisible();
-    await expect(dialog.getByText("Failed")).toBeVisible();
+    // `.first()`: each stage is drawn twice per row, as the pill and as the
+    // Stage line of the diagnostics list under it.
+    await expect(dialog.getByText("Configuration written").first()).toBeVisible();
+    await expect(dialog.getByText("Write failed").first()).toBeVisible();
     // The interruption is the case this exists for: an entry never attempted must
-    // read as not reached, not as fine and not as failed.
-    await expect(dialog.getByText("Not reached")).toBeVisible();
+    // read as not started, not as fine and not as failed.
+    await expect(dialog.getByText("Not started").first()).toBeVisible();
+    // The operation itself, which AG-570 asks be named along with its update
+    // time and what it was trying to achieve.
+    await expect(dialog.getByText(/Turning routing back on/)).toBeVisible();
+    await expect(dialog.getByText(/of 3 stages completed/)).toBeVisible();
+  });
+
+  /** The rest of what the AC asks the review for: the failure's *category*, the
+   *  last check that concluded, and the process state. Per tool. */
+  test("it shows a category, a last check and a process state per tool", async ({
+    boot,
+  }) => {
+    const app = await boot(withJournal);
+
+    await app.page.getByRole("button", { name: "Review details" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    // Categories, not error strings.
+    await expect(dialog.getByText(/Failures by category/)).toBeVisible();
+    await expect(dialog.getByText("Configuration write").first()).toBeVisible();
+    await expect(dialog.getByText("Last verified route").first()).toBeVisible();
+    await expect(dialog.getByText("Last check").first()).toBeVisible();
+    await expect(dialog.getByText("Not running").first()).toBeVisible();
+    await expect(dialog.getByText("Next action").first()).toBeVisible();
   });
 
   test("reviewing changes nothing", async ({ boot }) => {
@@ -693,13 +787,24 @@ test.describe("new UI: reviewing an interrupted restore", () => {
     await expect(app.page.getByText("Routing didn’t finish coming back")).toBeVisible();
   });
 
-  test("no journal, no Review details button", async ({ boot }) => {
-    // An interruption before the journal was written leaves the snapshots but no
-    // explanation. A button onto an empty dialog is worse than no button.
+  /**
+   * An interruption before the journal was written leaves the snapshots but no
+   * record of an attempt. The review still opens, and says exactly that: the
+   * entries are seeded from the snapshots as never started, which is a real
+   * answer rather than an empty dialog. It used to be hidden here, when the
+   * dialog had nothing but journal entries to show.
+   */
+  test("without a journal the review says nothing was started", async ({ boot }) => {
     const app = await boot({ ...withJournal, restoreJournal: null });
 
     await expect(app.page.getByText("Routing didn’t finish coming back")).toBeVisible();
-    await expect(app.page.getByRole("button", { name: "Review details" })).toHaveCount(0);
+    await app.page.getByRole("button", { name: "Review details" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("OpenCode")).toBeVisible();
+    await expect(dialog.getByText("Not started").first()).toBeVisible();
+    // No journal, no update time. Unknown rather than 1970.
+    await expect(dialog.getByText(/last updated/)).toHaveCount(0);
   });
 });
 

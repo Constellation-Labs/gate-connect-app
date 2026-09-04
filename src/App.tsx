@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, OAuthStatus, ProviderState, ProxyState, Tool } from "./lib/api";
+import type {
+  Account,
+  OAuthStatus,
+  ProviderState,
+  ProxyState,
+  Tool,
+  Verdict,
+} from "./lib/api";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -29,6 +36,7 @@ import {
   pinPopover,
   openOnboardingWindow,
   routedClientsStale,
+  routingVerdicts,
   runningAgentsCount,
   staleAgentsCount,
   pendingQuitTools,
@@ -56,6 +64,7 @@ import {
   type ClassifiedError,
 } from "./lib/errors";
 import { buildGroups, cascadeTargets } from "./lib/groups";
+import { verdictsBySlug } from "./lib/verdict";
 import { isSignedIn, needsOrg } from "./lib/session";
 import { useTextScale } from "./lib/useTextScale";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
@@ -330,6 +339,28 @@ export function App() {
   // `announce` separates the two callers: the backend's startup nudge is a
   // state *change* worth a banner and an analytics event, whereas reopening the
   // popover is just the user looking, and must stay silent.
+  /**
+   * The routing sweep, on this shell too.
+   *
+   * The popover used to read a row's state off its config file: connected plus a
+   * running engine meant routing. AG-570 rules that out - "routing is verified
+   * after every Gate Connect or device restart", and "a saved preference or
+   * completed file write does not produce On or Off without verification" - and
+   * the popover is the shipping default, so it is the surface the requirement is
+   * actually about.
+   *
+   * Its own state rather than a shared one: the two shells are separate webviews
+   * with no state between them, and the sweep is cheap enough to run per shell
+   * (one relay probe, one session probe, one process walk) but not cheap enough
+   * to run per render - hence a callback the load path and the routing nudge
+   * both call, and nothing else.
+   */
+  const [verdicts, setVerdicts] = useState<Map<string, Verdict>>(new Map());
+  const refreshVerdicts = useCallback(async () => {
+    const v = await routingVerdicts().catch(() => null);
+    if (v) setVerdicts(verdictsBySlug(v));
+  }, []);
+
   const refreshState = useCallback(async (announce: boolean) => {
     const px = await proxyStatus().catch(() => null);
     const toolList = await listTools().catch(() => []);
@@ -343,13 +374,16 @@ export function App() {
     setTools(toolList);
     setProviders(provs);
     if (stale) setStaleAgentsHint(true);
+    // After the snapshot: the engine coming up or going down changes every
+    // verdict, since the relay health check is shared.
+    void refreshVerdicts();
     if (announce && px?.running) {
       if (agents > 0) setChangeNotice("on");
       // The backend only emits this nudge after its startup auto-enable, so
       // routing coming up here is a restored session, not a user toggle.
       track("proxy_enabled", { source: "restored" });
     }
-  }, []);
+  }, [refreshVerdicts]);
 
   useEffect(() => {
     let alive = true;
@@ -403,6 +437,11 @@ export function App() {
       setTools(toolList);
       setProviders(provs);
       if (stale) setStaleAgentsHint(true);
+      // The first sweep of the launch. AG-570's "routing is verified after every
+      // Gate Connect or device restart" is this line on this shell: without it
+      // the ledger opens on the config's word, which is the claim the AC
+      // forbids.
+      void refreshVerdicts();
       if (px?.running && agents > 0) setChangeNotice("on");
       let resolved: Screen;
       if (isSignedIn(acct, oauthState)) {
@@ -749,8 +788,13 @@ export function App() {
     } catch {
       /* non-macOS: no proxy subsystem */
     }
+    // A write landed, so the ledger's own claim about what is routing is stale.
+    // Re-swept here rather than left to the next nudge: the row the user just
+    // switched on would otherwise sit at "Not verified" until something else
+    // happened, which reads as the switch not having worked.
+    void refreshVerdicts();
     return running;
-  }, []);
+  }, [refreshVerdicts]);
 
   // `takeover: true` (the home-screen toggle) surfaces the result as the
   // full-popover routing notice; the Routing screen's toggle keeps its
@@ -905,6 +949,7 @@ export function App() {
       const group = buildGroups(providers, tools, proxy?.domains ?? [], {
         proxyOn: proxy?.running ?? false,
         caTrusted: proxy?.ca_trusted ?? false,
+        verdicts,
       }).find((g) => g.id === id);
       if (!group) return;
       const wasRunning = proxy?.running ?? false;
@@ -1121,6 +1166,7 @@ export function App() {
   const groups = buildGroups(providers, tools, visibleDomains, {
     proxyOn,
     caTrusted: proxy?.ca_trusted ?? false,
+    verdicts,
   });
   // The family whose panel is open, re-resolved from the ledger on every render
   // so a toggle inside the panel repaints it. `undefined` when the family
@@ -1250,6 +1296,7 @@ export function App() {
         providers={providers}
         tools={tools}
         domains={visibleDomains}
+        verdicts={verdicts}
         busy={proxyBusy}
         error={providerError}
         changeNotice={changeNotice}

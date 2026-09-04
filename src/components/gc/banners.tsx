@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import type { RecoveryNextStep } from "../../lib/api";
+import type { RecoveryRow } from "../../lib/recovery";
 import { BaseSwitch, StatusTile } from "./base";
 import { Icon } from "./Icon";
 
@@ -140,6 +142,69 @@ export function RoutingBanner({
  * pages between them, so it also takes prev/next controls that straddle the
  * card's edges.
  */
+/**
+ * A tool whose config is right and whose running process has not picked it up.
+ *
+ * The pane's version of the sidebar's "Not protected - Reopen required": the row
+ * has 250px and prints the phrase, and this has the width for the part that
+ * matters, which is *which route the traffic is on right now*. AG-570 asks for
+ * the route in use, the requested route, and the action, and the first two are
+ * the whole reason this is a card rather than a sentence - "reopen required"
+ * without them does not say what reopening would change.
+ *
+ * No switch, unlike `AlertBanner`. Nothing here is a setting: the configuration
+ * already says what the user asked for, and the only thing left is a process
+ * that has to end. Offering a switch would invite them to toggle routing to fix
+ * a problem toggling routing causes.
+ */
+export function ReopenAlert({
+  name,
+  routeInUse,
+  requestedRoute,
+  onReopen,
+}: {
+  name: string;
+  /** Where the traffic is going now. Omitted when the backend could not say,
+   *  and the card degrades to naming the action rather than inventing a route -
+   *  a guessed endpoint here would be a claim about the user's traffic. */
+  routeInUse?: string | null;
+  requestedRoute?: string | null;
+  onReopen: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-6 rounded-control border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
+      <div className="flex min-w-0 flex-1 items-center gap-4">
+        <StatusTile tone="amber" icon="refresh" size={36} />
+        <div className="min-w-0">
+          <p className="text-sm font-medium leading-5 text-base-foreground">
+            Reopen {name} to apply its route
+          </p>
+          <p className="text-base-xs leading-4 text-gray-600">
+            It was already running when its configuration changed, so it is still
+            using the route it started with.
+          </p>
+          {routeInUse && requestedRoute && (
+            // Mono, because both are endpoints - identity, not prose.
+            <p className="mt-1 text-base-xs leading-4 text-gray-600">
+              In use: <span className="font-mono text-base-foreground">{routeInUse}</span>
+              {" · "}
+              Requested:{" "}
+              <span className="font-mono text-base-foreground">{requestedRoute}</span>
+            </p>
+          )}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onReopen}
+        className="shrink-0 rounded-control border border-base-border bg-base-card px-3 py-2 text-base-xs font-medium leading-4 text-base-foreground shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      >
+        Reopen tool
+      </button>
+    </div>
+  );
+}
+
 export function AlertBanner({
   title,
   body,
@@ -320,8 +385,11 @@ export function ErrorBanner({
  */
 export function RecoveryBanner({
   names,
+  rows,
+  progress,
   busy,
   onResume,
+  onAction,
   onReviewDetails,
   onFinishLater,
 }: {
@@ -329,57 +397,181 @@ export function RecoveryBanner({
    * care which snapshot an entry came from. Never empty; the shell omits the
    * banner instead. */
   names: string[];
+  /** Every tool the interrupted operation touched, resolved and unresolved
+   * alike. Omitted while the summary is still loading, and the per-tool section
+   * is omitted with it: a row list that renders before the readings land would
+   * show every tool as "Never checked", which is a claim.
+   *
+   * The resolved ones are listed too, on purpose. AG-570 asks the summary to
+   * account for every tool, and "Codex: configuration written, routing" is the
+   * half of the picture that tells the user what they are *not* being asked to
+   * fix. */
+  rows?: RecoveryRow[];
+  /** Which slug is being worked on right now, and what has been attempted this
+   * pass. The notice drives the entries one at a time so it can say so - a
+   * single "Resuming…" over the whole set cannot answer "which tool is it on",
+   * which is the question a user watching a stuck resume actually has. */
+  progress?: { active: string | null; done: string[] };
   busy?: boolean;
   onResume: () => void;
-  /** Opens the read-only account of what the restore did. Omitted when there is no
-   * journal to show - a restore interrupted before it wrote one leaves the
+  /** Act on one row. The step is passed back rather than resolved here because
+   * only one of the three - `retry` - belongs to this notice; the shell decides
+   * where the other two go. Absent leaves the rows read-only. */
+  onAction?: (slug: string, step: RecoveryNextStep) => void;
+  /** Opens the read-only account of what the operation did. Omitted when there is
+   * no journal to show - an operation interrupted before it wrote one leaves the
    * snapshots but no explanation, and a button onto an empty dialog is worse than
    * no button. */
   onReviewDetails?: () => void;
   onFinishLater: () => void;
 }) {
   const many = names.length > 1;
+  const [open, setOpen] = useState(false);
   return (
     <div
       role="status"
-      className="flex w-full items-start gap-3 border-b border-amber-200 bg-amber-50 px-4 py-3"
+      className="w-full border-b border-amber-200 bg-amber-50 px-4 py-3"
     >
-      <StatusTile tone="amber" icon="refresh" />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium leading-5 text-amber-900">
-          Routing didn’t finish coming back
-        </p>
-        <p className="text-base-xs leading-4 text-amber-900/80">
-          {names.join(", ")} {many ? "are" : "is"} still waiting. Gate recorded what
-          was left, so resuming picks up where it stopped.
-        </p>
-      </div>
-      {onReviewDetails && (
+      <div className="flex w-full items-start gap-3">
+        <StatusTile tone="amber" icon="refresh" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium leading-5 text-amber-900">
+            Routing didn’t finish coming back
+          </p>
+          <p className="text-base-xs leading-4 text-amber-900/80">
+            {names.join(", ")} {many ? "are" : "is"} still waiting. Gate recorded what
+            was left, so resuming picks up where it stopped.
+          </p>
+        </div>
+        {rows && rows.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            className="flex shrink-0 items-center gap-1 rounded-sm px-2 py-1 text-base-xs font-medium text-amber-900 transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+          >
+            {open ? "Hide tools" : `Show tools (${rows.length})`}
+            <Icon name={open ? "chevronDown" : "chevronRight"} size={14} />
+          </button>
+        )}
+        {onReviewDetails && (
+          <button
+            type="button"
+            onClick={onReviewDetails}
+            className="shrink-0 rounded-sm px-2 py-1 text-base-xs font-medium text-amber-900 underline decoration-amber-300 transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+          >
+            Review details
+          </button>
+        )}
         <button
           type="button"
-          onClick={onReviewDetails}
-          className="shrink-0 rounded-sm px-2 py-1 text-base-xs font-medium text-amber-900 underline decoration-amber-300 transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+          onClick={onResume}
+          disabled={busy}
+          className="shrink-0 rounded-sm border border-amber-300 bg-base-card px-2 py-1 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Review details
+          {busy ? "Resuming…" : "Resume now"}
+        </button>
+        <button
+          type="button"
+          onClick={onFinishLater}
+          disabled={busy}
+          aria-label="Finish later"
+          className="shrink-0 text-amber-900/70 transition-colors hover:text-amber-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:opacity-50"
+        >
+          <Icon name="x" size={16} />
+        </button>
+      </div>
+
+      {open && rows && (
+        <ul className="mt-3 flex flex-col gap-1 border-t border-amber-200 pt-2">
+          {rows.map((row) => (
+            <RecoveryRowLine
+              key={`${row.kind}:${row.slug}`}
+              row={row}
+              progress={progress}
+              busy={busy}
+              onAction={onAction}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One tool inside the notice: what its write reached, what the last check saw,
+ * and the one thing left to do about it.
+ *
+ * The progress words outrank the recorded stage while a resume is running, and
+ * only then. A row that has just been attempted says so from `progress.done`
+ * rather than from its stage, because the stage the caller is holding was read
+ * before the attempt - re-reading the summary between every entry would make the
+ * whole list flicker to catch one line up.
+ */
+function RecoveryRowLine({
+  row,
+  progress,
+  busy,
+  onAction,
+}: {
+  row: RecoveryRow;
+  progress?: { active: string | null; done: string[] };
+  busy?: boolean;
+  onAction?: (slug: string, step: RecoveryNextStep) => void;
+}) {
+  const active = progress?.active === row.slug;
+  const attempted = progress?.done.includes(row.slug) ?? false;
+  const stage = active
+    ? "Working on it now…"
+    : attempted
+      ? "Just attempted"
+      : row.stageLine;
+  return (
+    <li className="flex items-start gap-2 py-1">
+      <span className="mt-0.5 shrink-0">
+        <Icon
+          name={active ? "refresh" : row.stageComplete ? "circleCheck" : "info"}
+          size={14}
+          className={
+            active
+              ? "animate-spin text-amber-700"
+              : row.stageComplete
+                ? "text-green-700"
+                : "text-amber-700"
+          }
+        />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          <span className="text-base-xs font-medium leading-4 text-amber-900">
+            {row.name}
+          </span>
+          <span className="text-base-xs leading-4 text-amber-900/80">{stage}</span>
+        </span>
+        {/* The three readings the stage cannot carry. Printed on one line
+         * because they are read together - a stale process under a written
+         * config is the case where "the write worked" and "it is not routing"
+         * are both true, and splitting them across lines hides the pairing. */}
+        <span className="block text-base-xs leading-4 text-amber-900/70">
+          Last verified: {row.lastVerified ?? "no reading yet"} · Check:{" "}
+          {row.checkResult} · {row.runningState}
+        </span>
+      </span>
+      {row.action && onAction && (
+        <button
+          type="button"
+          onClick={() => onAction(row.slug, row.nextStep)}
+          // Sign-in is a different screen, so the row names the step and offers
+          // no control for it rather than a button that leaves the flow. Retry
+          // and reopen both act.
+          disabled={busy || row.nextStep === "sign_in"}
+          title={row.nextStep === "sign_in" ? `${row.action} to finish this one` : undefined}
+          className="shrink-0 rounded-sm border border-amber-300 bg-base-card px-2 py-0.5 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {row.action}
         </button>
       )}
-      <button
-        type="button"
-        onClick={onResume}
-        disabled={busy}
-        className="shrink-0 rounded-sm border border-amber-300 bg-base-card px-2 py-1 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {busy ? "Resuming…" : "Resume now"}
-      </button>
-      <button
-        type="button"
-        onClick={onFinishLater}
-        disabled={busy}
-        aria-label="Finish later"
-        className="shrink-0 text-amber-900/70 transition-colors hover:text-amber-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:opacity-50"
-      >
-        <Icon name="x" size={16} />
-      </button>
-    </div>
+    </li>
   );
 }

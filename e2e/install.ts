@@ -101,6 +101,101 @@ export function installFakeTauri(state: BackendState): void {
     );
   }
 
+  /** What the verdict layer calls the Gate route: the account's own gateway URL,
+      or the same fallback the backend uses when it cannot read one. */
+  function gateRoute(): string {
+    return state.account?.gateway_base_url ?? "Constellation Gate";
+  }
+
+  /** Rust's `recovery_summary`, assembled from the same four sources: the
+      journal (what the write reached), the snapshots (what is still owed), the
+      verdict log (what the last check saw) and the process table.
+
+      The verdict half is derived from `routing_verdicts` rather than stubbed per
+      slug, so a spec cannot set up a summary the real backend could never
+      produce - the same rule the verdict handler above follows. */
+  function recoverySummary() {
+    const journal = state.restoreJournal;
+    const pending = [
+      ...state.pendingRestore.providers.map((e) => ({ ...e, kind: "provider" as const })),
+      ...state.pendingRestore.tools.map((e) => ({ ...e, kind: "tool" as const })),
+    ];
+    if (!journal && pending.length === 0) return null;
+    const verdicts = commands.routing_verdicts({}) as {
+      slug: string;
+      state: string;
+      reason: string | null;
+    }[];
+    const rows = [
+      ...(journal?.entries.map((e) => ({
+        slug: e.slug,
+        name: e.name,
+        kind: e.kind,
+        stage: e.outcome,
+        at: e.at_unix,
+      })) ?? []),
+      // Pending entries the journal never mentioned, seeded `pending` - what
+      // `JournalWriter::reopen` does, for the same reason.
+      ...pending
+        .filter((p) => !journal?.entries.some((e) => e.slug === p.slug))
+        .map((p) => ({
+          slug: p.slug,
+          name: p.name,
+          kind: p.kind,
+          stage: "pending" as const,
+          at: 0,
+        })),
+    ];
+    const complete = ["restored", "not_installed", "unknown"];
+    return {
+      operation: "restore",
+      updated_unix: journal?.updated_unix ?? 0,
+      requested_routing_on: journal?.requested_routing_on ?? true,
+      tools: rows.map((row) => {
+        const verdict = verdicts.find((v) => v.slug === row.slug) ?? null;
+        const reopenPending = verdict?.reason === "reopen_required";
+        const stageComplete = complete.includes(row.stage);
+        return {
+          slug: row.slug,
+          name: row.name,
+          kind: row.kind,
+          stage: row.stage,
+          stage_complete: stageComplete,
+          error_category:
+            row.stage === "write_failed"
+              ? "write"
+              : row.stage === "deferred_signed_out"
+                ? "account"
+                : row.stage === "not_installed"
+                  ? "not_installed"
+                  : row.stage === "unknown"
+                    ? "unknown"
+                    : "none",
+          stage_at_unix: row.at,
+          last_verified_state:
+            verdict?.state === "on" || verdict?.state === "off" ? verdict.state : null,
+          last_verified_unix:
+            verdict?.state === "on" || verdict?.state === "off" ? state.nowUnix : 0,
+          check_state: verdict?.state ?? null,
+          check_reason: verdict?.reason ?? null,
+          check_at_unix: verdict ? state.nowUnix : 0,
+          running: state.runningAgentNames.length > 0,
+          reopen_pending: reopenPending,
+          // `recovery::next_step`, including its ordering: an unfinished write
+          // outranks a stale process, because there is nothing on disk yet for
+          // a reopen to pick up.
+          next_step: !stageComplete
+            ? row.stage === "deferred_signed_out"
+              ? "sign_in"
+              : "retry"
+            : reopenPending
+              ? "reopen_tool"
+              : "none",
+        };
+      }),
+    };
+  }
+
   const commands: Record<string, (args: Record<string, any>) => unknown> = {
     // ---- platform / app
     app_platform: () => state.platform,
@@ -110,7 +205,10 @@ export function installFakeTauri(state: BackendState): void {
     // Fill the field the real backend always sends, so a fixture that omits it
     // still produces a well-formed Tool rather than an undefined the UI has to
     // guess about.
-    list_tools: () => state.tools.map((t) => ({ config_location: null, ...t })),
+    // `displayName` is fixture-only: the real `list_tools` sends `row_label()`
+    // and nothing else, so it is dropped here rather than leaked into the DTO.
+    list_tools: () =>
+      state.tools.map(({ displayName: _unused, ...t }) => ({ config_location: null, ...t })),
     connect_tool: ({ slug }) => {
       const t = tool(slug);
       t.status = { kind: "connected" };
@@ -397,6 +495,8 @@ export function installFakeTauri(state: BackendState): void {
     // stands in for relay reachability, and `staleAgents` for a process that
     // predates the last routing change. Derived rather than stubbed per-slug so
     // a spec cannot set up a verdict that the real backend could never produce.
+    // The Gate route as the verdict names it: the account's own gateway URL, or
+    // the fallback the backend uses when it cannot be read.
     routing_verdicts: () =>
       state.tools.map((t) => {
         const attention = (reason: string, next_action: string) => ({
@@ -404,9 +504,31 @@ export function installFakeTauri(state: BackendState): void {
           state: "needs_attention",
           reason,
           next_action,
+          // Only the reopen verdict carries the pair, and which way round it is
+          // depends on which change the process missed - a managed config means
+          // the tool is still going direct. Mirrors `routing_verdicts_now`.
+          route_in_use:
+            reason === "reopen_required"
+              ? t.status.kind === "connected"
+                ? t.default_upstream_url
+                : gateRoute()
+              : null,
+          requested_route:
+            reason === "reopen_required"
+              ? t.status.kind === "connected"
+                ? gateRoute()
+                : t.default_upstream_url
+              : null,
         });
-        if (t.status.kind === "not_installed")
-          return { slug: t.slug, state: "not_installed", reason: null, next_action: null };
+        const plain = (verdictState: string) => ({
+          slug: t.slug,
+          state: verdictState,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        });
+        if (t.status.kind === "not_installed") return plain("not_installed");
         if (t.status.kind === "error")
           return attention("verification_failed", "retry_check");
         if (t.status.kind === "drifted")
@@ -414,10 +536,10 @@ export function installFakeTauri(state: BackendState): void {
         if (t.status.kind === "detected")
           return state.staleAgents > 0
             ? attention("reopen_required", "reopen_tool")
-            : { slug: t.slug, state: "off", reason: null, next_action: null };
+            : plain("off");
         if (!state.proxy.running) return attention("connection_problem", "reconnect");
         if (state.staleAgents > 0) return attention("reopen_required", "reopen_tool");
-        return { slug: t.slug, state: "on", reason: null, next_action: null };
+        return plain("on");
       }),
     close_running_agents: ({ only }) => {
       const names = agentNamesFor(only as string[] | null | undefined);
@@ -467,11 +589,65 @@ export function installFakeTauri(state: BackendState): void {
       providers: [...state.pendingRestore.providers],
       tools: [...state.pendingRestore.tools],
     }),
-    restore_journal: () =>
-      state.restoreJournal && {
-        ...state.restoreJournal,
-        entries: state.restoreJournal.entries.map((e) => ({ ...e })),
-      },
+    recovery_summary: () => recoverySummary(),
+    retry_restore_entry: ({ slug }) => {
+      state.retryCalls.push(slug as string);
+      const stuck = state.pendingResumeKeeps.includes(slug as string);
+      if (!stuck) {
+        // Mirrors `restore_one`: the slug leaves its snapshot only once it is
+        // actually back, and the journal records what happened to it.
+        state.pendingRestore = {
+          providers: state.pendingRestore.providers.filter((e) => e.slug !== slug),
+          tools: state.pendingRestore.tools.filter((e) => e.slug !== slug),
+        };
+        if (state.restoreJournal) {
+          for (const entry of state.restoreJournal.entries) {
+            if (entry.slug === slug) entry.outcome = "restored";
+          }
+        }
+      } else if (state.restoreJournal && state.retryErrors.includes(slug as string)) {
+        for (const entry of state.restoreJournal.entries) {
+          if (entry.slug === slug) entry.outcome = "write_failed";
+        }
+      }
+      return {
+        error: state.retryErrors.includes(slug as string)
+          ? `writing ${slug} failed`
+          : null,
+        pending: {
+          providers: [...state.pendingRestore.providers],
+          tools: [...state.pendingRestore.tools],
+        },
+      };
+    },
+    // Read back from the tools' own state, never from what a teardown believed
+    // it wrote - the whole point of the report. Same bucket rules as Rust:
+    // managed means still on Gate's values, clean-plus-stale-process means
+    // waiting for a reopen, an unreadable config is its own answer.
+    teardown_report: () => {
+      // The product name, not the row label: this dialog has no family heading
+      // over it, so "CLI" on its own would name nothing. Rust reads
+      // `display_name()` here where `list_tools` reads `row_label()`.
+      const bucket =
+        (next_action: string) => (t: { slug: string; name: string; displayName?: string }) => ({
+          slug: t.slug,
+          name: t.displayName ?? t.name,
+          next_action,
+        });
+      const installed = state.tools.filter((t) => t.status.kind !== "not_installed");
+      return {
+        defaults: installed
+          .filter((t) => t.status.kind === "detected" && state.staleAgents === 0)
+          .map(bucket("none")),
+        still_gate: installed
+          .filter((t) => t.status.kind === "connected" || t.status.kind === "drifted")
+          .map(bucket("retry_disconnect")),
+        awaiting_reopen: installed
+          .filter((t) => t.status.kind === "detected" && state.staleAgents > 0)
+          .map(bucket("reopen_tool")),
+        failed: installed.filter((t) => t.status.kind === "error").map(bucket("retry_check")),
+      };
+    },
     resume_restore: () => {
       // Mirrors restore_all: entries that fail stay recorded, the rest clear.
       const keep = (e: { slug: string }) => state.pendingResumeKeeps.includes(e.slug);

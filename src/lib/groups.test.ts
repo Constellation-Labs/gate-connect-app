@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderState, ProxyDomain, Tool } from "./api";
+import type { ProviderState, ProxyDomain, Tool, Verdict } from "./api";
 import type { Group, GroupMember } from "./groups";
 import { buildGroups, groupSummary, MULTI_PROVIDER_ID, cascadeTargets } from "./groups";
 
@@ -74,6 +74,30 @@ function chatDomain(overrides: Partial<ProxyDomain> = {}): ProxyDomain {
 }
 
 const ON = { proxyOn: true, caTrusted: true };
+
+/** A sweep that says these slugs are routing.
+ *
+ * Every test that expects a config tool to read `routed` has to supply one now:
+ * AG-570 forbids a completed file write from producing On by itself, so the
+ * ledger takes the verdict and a member with none does not count. The helper is
+ * the shape a caller actually passes - `verdictsBySlug`'s output. */
+function sweep(...on: string[]): { verdicts: Map<string, Verdict> } {
+  return {
+    verdicts: new Map(
+      on.map((slug) => [
+        slug,
+        {
+          slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+    ),
+  };
+}
 
 describe("buildGroups", () => {
   it("groups by the catalog, not by the tool's display prose", () => {
@@ -444,7 +468,7 @@ describe("groupSummary", () => {
       CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
       [],
-      ON,
+      { ...ON, ...sweep("claude-code") },
     );
     expect(groupSummary(clean)).toEqual({
       count: "1 of 1 routing",
@@ -487,15 +511,67 @@ describe("intent versus flow", () => {
     });
   });
 
-  it("still reports a tool as routing when the master is on", () => {
+  it("still reports a tool as routing when the master is on and the sweep agrees", () => {
+    const [group] = buildGroups(
+      CATALOG,
+      [tool("claude-code", "Claude Code", { kind: "connected" })],
+      [],
+      { ...ON, ...sweep("claude-code") },
+    );
+    expect(group.members[0].routed).toBe(true);
+    expect(group.members[0].attention).toBeNull();
+  });
+
+  /** The AG-570 rule, on the surface it is actually about: the popover's ledger
+   *  used to read this state as routing, which is a claim about the user's
+   *  traffic made from a file Gate itself wrote. */
+  it("does not call a connected tool routed until a check says so", () => {
     const [group] = buildGroups(
       CATALOG,
       [tool("claude-code", "Claude Code", { kind: "connected" })],
       [],
       ON,
     );
-    expect(group.members[0].routed).toBe(true);
-    expect(group.members[0].attention).toBeNull();
+    const m = group.members[0];
+    // Intent is unchanged - the switch still reads on, because the user did ask
+    // for this - and reality withholds.
+    expect(m.desired).toBe(true);
+    expect(m.routed).toBe(false);
+    expect(m.attention).toBe("unverified");
+    expect(groupSummary(group)).toEqual({
+      count: "0 of 1 routing",
+      exception: "Claude Code not verified",
+      kind: "unverified",
+    });
+  });
+
+  /** A sweep that concluded the tool is *not* routing is the same answer as a
+   *  sweep that could not conclude, as far as this ledger goes: one value, and
+   *  the reason lives in the window shell that has room for it. */
+  it("treats a needs-attention verdict as unverified rather than as routing", () => {
+    const [group] = buildGroups(
+      CATALOG,
+      [tool("claude-code", "Claude Code", { kind: "connected" })],
+      [],
+      {
+        ...ON,
+        verdicts: new Map([
+          [
+            "claude-code",
+            {
+              slug: "claude-code",
+              state: "needs_attention" as const,
+              reason: "reopen_required" as const,
+              next_action: "reopen_tool" as const,
+              route_in_use: "https://api.anthropic.com",
+              requested_route: "https://gateway.example.com",
+            },
+          ],
+        ]),
+      },
+    );
+    expect(group.members[0].routed).toBe(false);
+    expect(group.members[0].attention).toBe("unverified");
   });
 });
 

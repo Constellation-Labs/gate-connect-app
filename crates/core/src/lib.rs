@@ -47,6 +47,9 @@ pub mod startup;
 /// The filesystem watch behind `tools-changed`, which is what replaced both
 /// shells' 5s detection poll.
 pub mod tool_watch;
+/// What the last sweep of [`routing_health`] concluded per tool, kept across
+/// launches so the recovery summary can report a reading it did not take itself.
+pub mod verdict_log;
 
 pub mod integrations {
     pub mod claude_code;

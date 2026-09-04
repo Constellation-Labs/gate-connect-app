@@ -425,6 +425,13 @@ export interface Verdict {
   state: "not_installed" | "on" | "off" | "needs_attention";
   reason: VerdictReason | null;
   next_action: VerdictNextAction | null;
+  /** Where the traffic is going now, and where the config on disk asks it to go.
+   *  Both set only when `reason` is `reopen_required` - the one verdict where a
+   *  running process and its own config file disagree, which is exactly what
+   *  makes the pair worth printing. Which way round they are depends on which
+   *  change the process missed, so neither is a fixed "Gate" slot. */
+  route_in_use: string | null;
+  requested_route: string | null;
 }
 
 /** What every config-routed tool is actually doing: config state, plus a
@@ -687,9 +694,10 @@ export const setFlaggedEventNotifications = (enabled: boolean) =>
 export const setSecurityNotificationSound = (enabled: boolean) =>
   invoke<void>("set_security_notification_sound", { enabled });
 
-/** What a restore did to one entry on its last attempt. Closed set, mirroring
- * `recovery::Outcome`, and every member comes from the restore's own control flow
- * rather than from matching an error message. */
+/** What a restore did to one entry on its last attempt - the *stage* a
+ * {@link RecoveryTool} reports. Closed set, mirroring `recovery::Outcome`, and
+ * every member comes from the restore's own control flow rather than from
+ * matching an error message. */
 export type RestoreOutcome =
   | "pending"
   | "restored"
@@ -698,27 +706,123 @@ export type RestoreOutcome =
   | "unknown"
   | "deferred_signed_out";
 
-export interface RestoreRecord {
+
+/** What one interrupted entry still needs. Mirrors `recovery::NextStep`, and is
+ *  deliberately not {@link VerdictNextAction}: that set answers "this tool is not
+ *  routing, what now" and assumes the write that configured it finished. These
+ *  answer "this restore did not finish, what now", and `retry` is the difference -
+ *  nothing in the verdict layer knows a write was interrupted. */
+export type RecoveryNextStep = "none" | "retry" | "sign_in" | "reopen_tool";
+
+/** One tool in the recovery summary.
+ *
+ *  Four readings, kept apart because they legitimately disagree and each
+ *  disagreement means something different: the stage is what the *write*
+ *  reached, `last_verified_*` is the last route a check actually established,
+ *  `check_*` is the most recent check whatever it concluded, and
+ *  `running`/`reopen_pending` is the process, which no file can answer.
+ *
+ *  Flattening them would be the bug: a tool whose write finished, whose last
+ *  check said `on`, and whose process predates the write is not routing, and
+ *  only the four together say so. */
+export interface RecoveryTool {
   slug: string;
   name: string;
   kind: "provider" | "tool";
-  outcome: RestoreOutcome;
-  /** Unix seconds; 0 when the clock could not be read, which the UI shows as
-   * unknown rather than as 1970. */
-  at_unix: number;
+  /** The journal's outcome, or `pending` for an entry the journal never reached. */
+  stage: RestoreOutcome;
+  /** Whether the write is done with, so a count of stages needs no re-derivation
+   *  of which outcomes are settled. */
+  stage_complete: boolean;
+  /** What kind of failure the stage was, when it was one. `none` for a stage
+   *  that has not failed - including `pending`, where nothing was attempted. */
+  error_category: "none" | "write" | "not_installed" | "unknown" | "account";
+  stage_at_unix: number;
+  /** The last check that established a route, which survives a later failed
+   *  verification - so it can be older than `check_at_unix`. Null when no check
+   *  has ever concluded for this tool. */
+  last_verified_state: "on" | "off" | null;
+  last_verified_unix: number;
+  check_state: "not_installed" | "on" | "off" | "needs_attention" | null;
+  check_reason: VerdictReason | null;
+  check_at_unix: number;
+  running: boolean;
+  /** A process is running that predates the last routing change. */
+  reopen_pending: boolean;
+  next_step: RecoveryNextStep;
 }
 
-/** The last restore, entry by entry. Explanation only - the snapshots behind
- * {@link pendingRestore} are what a resume actually works from. */
-export interface RestoreJournal {
+/** The interrupted operation, and every tool it touched. */
+export interface RecoverySummary {
+  /** Which operation this describes. One value today, carried rather than
+   *  assumed so a later operation's summary cannot be read as this one. */
+  operation: "restore";
+  /** When the journal was last written. 0 when there is none, which the UI
+   *  renders as unknown rather than as 1970. */
   updated_unix: number;
   requested_routing_on: boolean;
-  entries: RestoreRecord[];
+  tools: RecoveryTool[];
 }
 
-/** What the last restore did, or null when there is nothing to explain: a restore
- * that completed clears its journal. */
-export const restoreJournal = () => invoke<RestoreJournal | null>("restore_journal");
+/** The whole state of an interrupted routing operation, per tool: the journal,
+ *  the snapshots, the persisted verdict log and the process table, joined.
+ *
+ *  Null when there is nothing to recover, which is the normal case. Read-only -
+ *  it writes nothing and reopens nothing, so the review it feeds cannot change
+ *  what it is reviewing. */
+export const recoverySummary = () =>
+  invoke<RecoverySummary | null>("recovery_summary");
+
+/** What one per-tool retry did, plus what is still outstanding. */
+export interface RetryRestore {
+  /** The retry's own failure, or null. In the payload rather than thrown so the
+   *  caller still gets `pending`: a retry changes what is outstanding for the
+   *  other entries too, and a caller left holding a stale list redraws wrong. */
+  error: string | null;
+  pending: PendingRestore;
+}
+
+/** Retry one recorded entry, leaving every other entry's recorded work alone.
+ *
+ *  The per-tool half of the recovery: {@link resumeRestore} re-attempts
+ *  everything, this re-attempts one slug. It is also what makes per-tool
+ *  progress possible - a caller driving the entries one at a time can say which
+ *  one it is working on. */
+export const retryRestoreEntry = (slug: string) =>
+  invoke<RetryRestore>("retry_restore_entry", { slug });
+
+/** One tool in a teardown report. */
+export interface TeardownTool {
+  slug: string;
+  name: string;
+  next_action: "none" | "retry_disconnect" | "reopen_tool" | "retry_check";
+}
+
+/** Where every installed tool stands after a teardown - routing off, disconnect,
+ *  sign-out or reset.
+ *
+ *  **Read back, not recorded.** The buckets come from re-reading each tool's own
+ *  config, never from what the teardown believed it wrote: a sweep that returns
+ *  success having written nothing is the failure this report exists to catch. So
+ *  a tool the sweep named as failed can appear under `defaults` if its config
+ *  reads clean now, and that is right - the question is where the tools point. */
+export interface TeardownReport {
+  /** Back on their own settings, verified by reading the config. */
+  defaults: TeardownTool[];
+  /** Still carrying Gate's values: the teardown did not put these back. */
+  still_gate: TeardownTool[];
+  /** Clean on disk, but running a process that predates the change - so still
+   *  routing through Gate until it is reopened. */
+  awaiting_reopen: TeardownTool[];
+  /** Could not be read, so nothing about them is known. Not `defaults`: an
+   *  unreadable config is ignorance, not a clean result. */
+  failed: TeardownTool[];
+}
+
+/** Where the tools stand after a teardown, so an operation that could not put
+ *  every tool back can say which ones. Read-only and cheap enough to call when
+ *  the dialog opens: one status read per integration plus one process walk. */
+export const teardownReport = () => invoke<TeardownReport>("teardown_report");
 
 /** A backend failure buffered for the analytics seam. `context` names the
  * operation that failed (validated frontend-side against the known set);

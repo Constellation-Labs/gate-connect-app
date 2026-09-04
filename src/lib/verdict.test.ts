@@ -8,6 +8,8 @@ function verdict(overrides: Partial<Verdict> = {}): Verdict {
     state: "on",
     reason: null,
     next_action: null,
+    route_in_use: null,
+    requested_route: null,
     ...overrides,
   };
 }

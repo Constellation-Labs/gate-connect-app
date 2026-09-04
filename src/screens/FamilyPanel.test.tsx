@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
-import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ProviderState, Tool, ProxyDomain, Verdict } from "../lib/api";
 import { buildGroups, type Group } from "../lib/groups";
 import { FamilyPanel } from "./FamilyPanel";
 
@@ -75,6 +75,31 @@ const CATALOG: ProviderState[] = [
   },
 ];
 
+/** A sweep that confirms every connected tool.
+ *
+ * These suites are about the ledger's layout and copy, not about verification:
+ * AG-570 stops a config file alone from producing `routed`, so a test that wants
+ * a routing row now has to say the check agreed. `lib/groups.test.ts` covers the
+ * rule itself.
+ */
+function sweep(tools: Tool[]): Map<string, Verdict> {
+  return new Map(
+    tools
+      .filter((t) => t.status.kind === "connected")
+      .map((t) => [
+        t.slug,
+        {
+          slug: t.slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+  );
+}
+
 /** Renders the panel for one family, the way App does: it resolves the group out
  * of the same ledger Home renders and hands over that one. `family` picks which,
  * defaulting to the first, so a test can prove the others are absent. */
@@ -88,7 +113,14 @@ function renderPanel(
   } = {},
   props: Partial<React.ComponentProps<typeof FamilyPanel>> = {},
 ) {
-  const groups = buildGroups(CATALOG, tools, domains, { proxyOn, caTrusted });
+  const groups = buildGroups(CATALOG, tools, domains, {
+    proxyOn,
+    caTrusted,
+    // With the engine down the sweep never returns `on` - it reports a
+    // connection problem - so a fixture that claimed both would be a machine
+    // that cannot exist.
+    verdicts: proxyOn ? sweep(tools) : new Map(),
+  });
   const group: Group = (family ? groups.find((g) => g.id === family) : groups[0])!;
   render(
     <FamilyPanel

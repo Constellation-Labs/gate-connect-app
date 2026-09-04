@@ -12,7 +12,8 @@ import type {
   ProxyState,
   ProviderState,
   PendingRestore,
-  RestoreJournal,
+  RecoverySummary,
+  TeardownReport,
   Tool,
   Verdict,
 } from "./lib/api";
@@ -38,7 +39,9 @@ import {
   quitApp,
   pendingRestore,
   resumeRestore,
-  restoreJournal,
+  recoverySummary,
+  retryRestoreEntry,
+  teardownReport,
   getPreferences,
   setBlockedEventNotifications,
   setFlaggedEventNotifications,
@@ -59,6 +62,7 @@ import { forwardBackendErrors } from "./lib/backendErrors";
 import type { ClassifiedError } from "./lib/errors";
 import { buildGroups, describeMember } from "./lib/groups";
 import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
+import { recoveryRows, unresolved } from "./lib/recovery";
 import type { Group } from "./lib/groups";
 import { openExternal } from "./lib/openExternal";
 import {
@@ -120,6 +124,7 @@ import {
   CollectedDataDialog,
   DiagnosticsDialog,
   RestoreDetailsDialog,
+  TeardownReportDialog,
   DisconnectGateDialog,
   OAuthOfferDialog,
   RenameDeviceDialog,
@@ -135,6 +140,7 @@ import {
   ErrorBanner,
   ErrorDetails,
   RecoveryBanner,
+  ReopenAlert,
 } from "./components/gc/banners";
 import { Modal } from "./components/gc/Modal";
 import type {
@@ -622,15 +628,17 @@ export function NewUiApp() {
   }, []);
 
   const loadPending = useCallback(async () => {
-    const [p, j] = await Promise.all([
+    const [p, s] = await Promise.all([
       pendingRestore().catch(() => null),
-      restoreJournal().catch(() => null),
+      recoverySummary().catch(() => null),
     ]);
     if (p) setPending(p);
-    // Read alongside the pending state, not lazily on click: the banner decides
-    // whether to offer Review details at all, and it can only do that if it knows
-    // whether a journal exists.
-    setJournal(j);
+    // Read alongside the pending state, not lazily on click, for two reasons: the
+    // notice decides whether to offer Review details at all, and it can only do
+    // that if it knows whether there is anything to review; and its per-tool rows
+    // are part of the notice itself, so fetching them on expand would leave the
+    // Show tools control claiming a count it has not read.
+    setSummary(s);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -867,10 +875,27 @@ export function NewUiApp() {
    * notice returns on the next launch until the work actually finishes - which is
    * the persistence the recovery action is supposed to have. */
   const [recoveryHidden, setRecoveryHidden] = useState(false);
-  /** The read-only account of the last restore. Null when there is nothing to
-   * explain; a restore that completed clears it. */
-  const [journal, setJournal] = useState<RestoreJournal | null>(null);
-  const [journalOpen, setJournalOpen] = useState(false);
+  /** The whole state of the interrupted operation: what the write reached per
+   * tool, what the last checks saw, and what each one still needs. Null when
+   * there is nothing to recover, which is the normal case. */
+  const [summary, setSummary] = useState<RecoverySummary | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  /**
+   * Which entry a resume is on, and what it has attempted this pass.
+   *
+   * The resume drives the entries one at a time (see {@link resumeNow}) so it can
+   * answer "which tool is it working on", which a single spinner over the whole
+   * set cannot. Cleared when the pass ends: the recorded stages take over from
+   * there, and leaving "just attempted" on a row would make the next render claim
+   * an attempt that belongs to a previous resume.
+   */
+  const [resumeProgress, setResumeProgress] = useState<{
+    active: string | null;
+    done: string[];
+  } | null>(null);
+  /** Where the tools stand after a teardown - routing off, sign-out or reset.
+   * Null unless one just ran and left something outstanding. */
+  const [teardown, setTeardown] = useState<TeardownReport | null>(null);
 
   /**
    * Backend failures buffer Rust-side because they can predate this webview - the
@@ -983,6 +1008,17 @@ export function NewUiApp() {
   });
   const routingBusy = routing.busy;
 
+  /** Where the tools stand after a teardown, raised only when something is
+   * actually outstanding: a clean routing-off has nothing to report, and a
+   * dialog saying so would be a dialog about nothing. */
+  const reportTeardown = useCallback(async () => {
+    const report = await teardownReport().catch(() => null);
+    if (!report) return;
+    const outstanding =
+      report.still_gate.length + report.awaiting_reopen.length + report.failed.length;
+    if (outstanding > 0) setTeardown(report);
+  }, []);
+
   const runningApps = useRunningApps({
     onError: (e) => setActionError(classifyError(e, "close_agents")),
   });
@@ -1035,9 +1071,14 @@ export function NewUiApp() {
       setActionError(null);
       if (await routing.setMasterRouted(next)) {
         await runningApps.offerAfterChange();
+        // Routing off is a teardown: it sweeps every tool back to its own
+        // settings and the sweep is best-effort per tool. AG-570 requires the
+        // result to name what it could not put back, so the configs are read
+        // back and anything outstanding is reported.
+        if (!next) await reportTeardown();
       }
     },
-    [routing, runningApps],
+    [routing, runningApps, reportTeardown],
   );
 
   const groups = useMemo<Group[]>(
@@ -1261,31 +1302,146 @@ export function NewUiApp() {
     return { kind: "none", scannedAt: scan.at.toLocaleTimeString() };
   }, [apps.length, scan]);
 
-  /** Finish what the interrupted restore left. `restore_all` retries only the
-   * recorded entries, so this repeats no completed write; the command hands back
-   * what is still outstanding rather than a bare success. */
+  /**
+   * Retry one recorded entry, leaving every other entry's recorded work alone.
+   *
+   * The failure is reported and the pending state is still taken from the reply:
+   * a retry changes what is outstanding for the *other* entries too - one may
+   * have completed in another window - so a caller that dropped the reply on
+   * error would redraw the notice from a stale list.
+   */
+  const retryEntry = useCallback(async (slug: string): Promise<boolean> => {
+    const { error, pending: left } = await retryRestoreEntry(slug);
+    setPending(left);
+    // Deliberately not raised as a banner. The error banner outranks the
+    // recovery notice - a failure that just happened beats a recorded one - and
+    // that ordering is right for a failure the notice cannot express, but wrong
+    // for this one: it would replace the notice with a message, taking the retry
+    // button away at the exact moment the user wants it again. The row reports
+    // it instead, as a stage and a category, which is the vocabulary AG-570 asks
+    // for anyway. The raw message still reaches the backend-error buffer, so it
+    // is not lost to telemetry or to the next drain.
+    return error === null;
+  }, []);
+
+  /**
+   * Finish what the interrupted operation left, one entry at a time.
+   *
+   * Entry by entry rather than through `resume_restore`, and the reason is the
+   * progress: AG-570 asks a resume to show progress for each tool, and a single
+   * batch call can only report what is left when the whole thing is over.
+   * `restore_one` has the batch's own semantics narrowed to one slug - a slug
+   * leaves its snapshot only once it is actually back - so this repeats no
+   * completed write and reopens no verified tool, exactly as before.
+   *
+   * The close-and-reopen offer follows, scoped to the entries that came back:
+   * their configs were just rewritten, and a tool that was running through all
+   * of it is still on the route it started with. Scoped, not global, for the
+   * reason `runningAgents`'s own docs give - offering to close Claude when the
+   * resume touched Codex names processes the change never went near.
+   */
   const resumeNow = useCallback(async () => {
+    const queue = summary ? unresolved(summary) : [];
+    // Nothing to drive: fall back to the batch, which is also what a summary
+    // that could not be read leaves us with.
+    if (queue.length === 0) {
+      setResuming(true);
+      setActionError(null);
+      try {
+        setPending(await resumeRestore());
+        await refresh();
+      } catch (e) {
+        setActionError(classifyError(e, "provider_restore"));
+      } finally {
+        setResuming(false);
+      }
+      return;
+    }
     setResuming(true);
     setActionError(null);
+    const done: string[] = [];
+    const restored: string[] = [];
     try {
-      setPending(await resumeRestore());
-      // The retry may have changed what is routing, so re-read the rest too.
+      for (const entry of queue) {
+        // Only an unfinished write is this button's business. A stale process or
+        // a missing account is a real answer with its own action on the row, and
+        // retrying the write would not move either.
+        if (entry.next_step !== "retry") continue;
+        setResumeProgress({ active: entry.slug, done: [...done] });
+        // A rejected command - not a recorded failure - is the case the notice
+        // genuinely cannot express, so that one does reach the banner.
+        const ok = await retryEntry(entry.slug).catch((e) => {
+          setActionError(classifyError(e, "provider_restore"));
+          return false;
+        });
+        done.push(entry.slug);
+        if (ok) restored.push(entry.slug);
+      }
+      setResumeProgress({ active: null, done });
       await refresh();
-    } catch (e) {
-      setActionError(classifyError(e, "provider_restore"));
+      if (restored.length > 0) await runningApps.offerAfterChange(restored);
     } finally {
       setResuming(false);
+      setResumeProgress(null);
     }
-  }, [refresh]);
+  }, [summary, retryEntry, refresh, runningApps]);
 
-  /** What is still outstanding, providers and tools together: the user does not
-   * care which snapshot an entry came from. */
-  const recoveryNames = useMemo(
-    () =>
-      [...(pending?.providers ?? []), ...(pending?.tools ?? [])].map(
-        (e) => e.name,
-      ),
-    [pending],
+  /** One row's Retry, outside a whole-pass resume. */
+  const retryOne = useCallback(
+    async (slug: string) => {
+      setResuming(true);
+      setResumeProgress({ active: slug, done: [] });
+      setActionError(null);
+      try {
+        const ok = await retryEntry(slug).catch((e) => {
+          setActionError(classifyError(e, "provider_restore"));
+          return false;
+        });
+        setResumeProgress({ active: null, done: [slug] });
+        await refresh();
+        if (ok) await runningApps.offerAfterChange([slug]);
+      } finally {
+        setResuming(false);
+        setResumeProgress(null);
+      }
+    },
+    [retryEntry, refresh, runningApps],
+  );
+
+
+  /**
+   * What is still outstanding, providers and tools together: the user does not
+   * care which snapshot an entry came from.
+   *
+   * The snapshots are not the whole answer. A tool whose write finished but whose
+   * process predates it has left the snapshot and is *not* routing, and AG-570 is
+   * explicit that the notice goes away only once each affected tool reaches a
+   * verified result - so the summary's own unresolved set is unioned in. Names,
+   * deduplicated: the two sources overlap by design.
+   */
+  const recoveryNames = useMemo(() => {
+    const names = [
+      ...(pending?.providers ?? []),
+      ...(pending?.tools ?? []),
+    ].map((e) => e.name);
+    for (const tool of summary ? unresolved(summary) : []) {
+      if (!names.includes(tool.name)) names.push(tool.name);
+    }
+    return names;
+  }, [pending, summary]);
+
+  /**
+   * The notice's per-tool rows, against one clock.
+   *
+   * Recomputed when the summary changes rather than on a timer: the ages on these
+   * rows are read while the user is looking at a notice they just opened, and a
+   * ticking "4m ago" would be redrawing the whole list to keep a number honest
+   * that nobody is watching. The review dialog takes its own `new Date()` for the
+   * same reason - it is read once, on open.
+   */
+  const recoveryRowList = useMemo(
+    () => (summary ? recoveryRows(summary, new Date()) : undefined),
+    [summary],
   );
 
   const noop = useCallback(() => {}, []);
@@ -1327,6 +1483,11 @@ export function NewUiApp() {
     onDeviceName: setDevice,
     onSession,
     onProxy: setProxy,
+    // Sign-out and reset are the other two teardowns. Reset puts the tools back
+    // and can fail doing it; sign-out deliberately leaves the configs alone,
+    // which is exactly the case worth reporting - the session those configs
+    // authenticate with has just ended.
+    onTeardown: () => void reportTeardown(),
     onError: (e) => setActionError(classifyError(e, "generic")),
   });
 
@@ -1658,6 +1819,30 @@ export function NewUiApp() {
         : null,
     [notices, view],
   );
+  /**
+   * The open app's reopen card, when its verdict says a process is holding older
+   * settings.
+   *
+   * Driven by the verdict rather than by the config, because that is the only
+   * thing that knows: `Tool.status` says the file is right, and the file being
+   * right is exactly the state this describes. The two routes come from the same
+   * verdict, so the card cannot name a route the sweep did not establish.
+   */
+  const reopenAlert = useMemo(() => {
+    if (view.kind !== "app") return undefined;
+    const verdict = verdicts.get(view.slug);
+    if (verdict?.reason !== "reopen_required") return undefined;
+    const app = appFor(apps, view.slug);
+    if (!app) return undefined;
+    return (
+      <ReopenAlert
+        name={app.name}
+        routeInUse={verdict.route_in_use}
+        requestedRoute={verdict.requested_route}
+        onReopen={() => void runningApps.offerAfterChange([view.slug])}
+      />
+    );
+  }, [view, verdicts, apps, runningApps]);
 
   /**
    * The config-routed tools a quit would strand: connected or drifted, either
@@ -1846,6 +2031,18 @@ export function NewUiApp() {
             onDone={setup.finish}
           />
         )}
+        {/* The teardown report outlives the screen change that produced it.
+          * Disconnect and reset both end the session, so the shell drops to
+          * these panes the moment they land - and the report is about the
+          * operation the user just performed, not about the screen they are on.
+          * Rendered inside the layout rather than beside it because `Modal`
+          * positions itself over whatever is behind it. */}
+        {teardown && (
+          <TeardownReportDialog
+            report={teardown}
+            onClose={() => setTeardown(null)}
+          />
+        )}
       </SetupLayout>
     );
   }
@@ -1917,9 +2114,19 @@ export function NewUiApp() {
           // recorded one that can still be resumed.
           <RecoveryBanner
             names={recoveryNames}
+            rows={recoveryRowList}
+            progress={resumeProgress ?? undefined}
             busy={resuming}
             onResume={() => void resumeNow()}
-            onReviewDetails={journal ? () => setJournalOpen(true) : undefined}
+            onAction={(slug, step) => {
+              // Retry is this notice's own action; a reopen hands over to the
+              // close-apps conversation, which is the only thing that can act on
+              // a running process. Sign-in is neither - it is a different screen -
+              // so the row names it and offers no control.
+              if (step === "retry") void retryOne(slug);
+              if (step === "reopen_tool") void runningApps.offerAfterChange([slug]);
+            }}
+            onReviewDetails={summary ? () => setDetailsOpen(true) : undefined}
             onFinishLater={() => setRecoveryHidden(true)}
           />
         ) : undefined
@@ -2136,10 +2343,19 @@ export function NewUiApp() {
               void saveModel("gate", ids, true);
             }}
           />
-        ) : journalOpen && journal ? (
+        ) : detailsOpen && summary ? (
           <RestoreDetailsDialog
-            journal={journal}
-            onClose={() => setJournalOpen(false)}
+            summary={summary}
+            now={new Date()}
+            onClose={() => setDetailsOpen(false)}
+          />
+        ) : teardown ? (
+          // After the review, before the incidental dialogs: a teardown that
+          // left tools behind is the newest thing that happened, and the user
+          // asked for the operation that produced it.
+          <TeardownReportDialog
+            report={teardown}
+            onClose={() => setTeardown(null)}
           />
         ) : collectedDataOpen ? (
           <CollectedDataDialog onClose={() => setCollectedDataOpen(false)} />
@@ -2408,6 +2624,7 @@ export function NewUiApp() {
           }}
           alert={
             <>
+              {reopenAlert}
               {paneNotice && (
                 <AlertBanner
                   key={paneNotice.id}

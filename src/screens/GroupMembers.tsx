@@ -63,6 +63,13 @@ function explain(member: GroupMember, platform: Platform, group: Group): string 
       ? `${member.name} is switched on, but routing is off, so nothing is going through Gate yet.`
       : `${member.name}’s config points at Gate, but routing is off, so it can’t reach the gateway.`;
   }
+  if (member.attention === "unverified") {
+    // Says what is *not* known, not what is wrong. Gate has the configuration it
+    // wants and cannot confirm the traffic is following it, and the honest
+    // sentence for that is the absence of a reading - inventing a cause here
+    // would send the user to fix whichever one we guessed.
+    return `${member.name}’s config points at Gate, but Gate hasn’t been able to confirm its traffic is routing.`;
+  }
   if (member.kind === "proxy") {
     if (member.attention === "needs-trust") {
       return `${member.name} is switched on, but the local certificate isn’t trusted yet, so its traffic isn’t routing.`;

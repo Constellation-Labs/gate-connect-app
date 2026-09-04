@@ -177,3 +177,65 @@ fn a_corrupt_journal_reads_as_absent() {
     // And the restore still runs.
     provider::restore_all().expect("a corrupt journal must not break a restore");
 }
+
+/// The per-tool retry keeps what the other entries already recorded.
+///
+/// This is the difference between `restore_one` and `restore_all`, and the thing
+/// AG-570 asks for: retrying one tool must not re-enter the entries that came
+/// back, and must not reset their journal records to `Pending` either. Asserted
+/// on the record rather than on the snapshot because the snapshot cannot show
+/// the distinction - a completed entry is simply absent from it.
+#[test]
+fn a_per_tool_retry_leaves_the_other_entries_recorded() {
+    let _lock = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+    connect_opencode();
+
+    provider::snapshot_and_disable_everything().expect("master off");
+    provider::restore_all().expect("restore is best-effort and must not error");
+
+    // Some provider entry the restore reached and failed on (no account). Its
+    // record is the completed work the retry below must not disturb.
+    let journal = recovery::load().expect("journal");
+    let other = journal
+        .entries
+        .iter()
+        .find(|e| e.slug != "opencode")
+        .expect("the provider pass recorded something")
+        .clone();
+
+    provider::restore_one("opencode").expect("a signed-out retry is not an error");
+
+    let after = recovery::load().expect("the journal survives a per-entry retry");
+    let retried = after
+        .entries
+        .iter()
+        .find(|e| e.slug == "opencode")
+        .expect("the retried entry is still recorded");
+    // Still signed out, so still deferred - and still outstanding, which is what
+    // keeps the notice on screen.
+    assert_eq!(retried.outcome, Outcome::DeferredSignedOut);
+    let kept = after
+        .entries
+        .iter()
+        .find(|e| e.slug == other.slug)
+        .expect("the other entry is still in the journal");
+    assert_eq!(
+        kept.outcome, other.outcome,
+        "a retry of one entry must not re-attempt or re-record another"
+    );
+}
+
+/// A slug in neither snapshot is a no-op, not an error. Two windows can offer the
+/// same retry, and the second one arrives to find the work already done.
+#[test]
+fn retrying_something_nothing_owes_is_a_no_op() {
+    let _lock = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::set();
+
+    provider::restore_one("opencode").expect("nothing owed, nothing to do");
+    assert!(
+        recovery::load().is_none(),
+        "a no-op retry must not invent a journal to explain"
+    );
+}

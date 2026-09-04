@@ -1,4 +1,4 @@
-import type { ProviderState, ProxyDomain, Tool } from "./api";
+import type { ProviderState, ProxyDomain, Tool, Verdict } from "./api";
 
 /**
  * Home's ledger groups everything routable by the model family it belongs to
@@ -136,7 +136,27 @@ export function describeMember(key: string): string | undefined {
   return MEMBER_DESCRIPTIONS[key];
 }
 
-export type MemberAttention = "error" | "drifted" | "needs-trust" | "master-off" | null;
+export type MemberAttention =
+  | "error"
+  | "drifted"
+  | "needs-trust"
+  | "master-off"
+  /**
+   * Nothing is known to be wrong, and nothing could be confirmed either.
+   *
+   * The ledger used to read `routed` off the tool's config: connected file plus
+   * running engine meant routing. AG-570 rules that out - "a saved preference or
+   * completed file write does not produce On or Off without verification" - so
+   * `routed` now comes from the verdict sweep, and this is what a row says while
+   * the sweep has not answered or could not conclude.
+   *
+   * One value rather than the verdict layer's five reasons, on purpose. The five
+   * are drawn in the window shell, which has the width for "Not protected -
+   * Reopen required"; this ledger is 360px and its job here is to stop claiming
+   * a route it cannot support. Precision about *why* lives one shell up.
+   */
+  | "unverified"
+  | null;
 
 export interface GroupMember {
   /** Tool slug or domain slug - unique within a group. */
@@ -227,28 +247,46 @@ export interface Group {
   cascadeDesired: number;
 }
 
-function memberFromTool(tool: Tool, { proxyOn }: { proxyOn: boolean }): GroupMember {
+function memberFromTool(
+  tool: Tool,
+  { proxyOn, verdicts }: { proxyOn: boolean; verdicts?: Map<string, Verdict> },
+): GroupMember {
   const connected = tool.status.kind === "connected";
+  const verdict = verdicts?.get(tool.slug);
+  // Verified, or not claimed. A config tool points at the loopback relay, and a
+  // file naming that relay is not evidence anything is using it: the relay may
+  // be down, the session may be dead server-side, or the process may predate the
+  // write. So the sweep decides, and an unanswered sweep decides "no".
+  //
+  // `verdicts` is optional because a caller that has not run the sweep is a real
+  // state (the first render), not a caller opting out - and the fallback is the
+  // conservative one either way. What it must never fall back to is the config,
+  // which is the claim AG-570 forbids.
+  const routed = verdict ? verdict.state === "on" : false;
   return {
     key: tool.slug,
     kind: "config",
     name: tool.name,
     description: describeMember(tool.slug),
-    // A config tool points at the loopback relay. With the master off that
-    // relay is dead, so the tool is broken, not routed - the same reasoning
-    // that already gated proxy members. Master-off disconnects tools now, but
-    // the sweep is best-effort per tool, so a tool that fails to disconnect
-    // must not keep reporting itself as routing.
-    routed: connected && proxyOn,
+    routed,
+    // Intent, which is the config: this is the switch's half of the split, and
+    // `lib/groups.ts`'s own header documents what happens when the two are
+    // conflated. Unchanged by any of the above on purpose.
     desired: connected,
     attention:
       tool.status.kind === "error"
         ? "error"
         : tool.status.kind === "drifted"
           ? "drifted"
-          : connected && !proxyOn
+          : // Master-off outranks the sweep's own vocabulary because it is the
+            // better sentence for the same fact: the sweep would report a dead
+            // relay as a connection problem, and "routing is off" is what the
+            // user needs to hear.
+            connected && !proxyOn
             ? "master-off"
-            : null,
+            : connected && !routed
+              ? "unverified"
+              : null,
     tool,
   };
 }
@@ -296,7 +334,13 @@ export function buildGroups(
   providers: ProviderState[],
   tools: Tool[],
   domains: ProxyDomain[],
-  opts: { proxyOn: boolean; caTrusted: boolean },
+  opts: {
+    proxyOn: boolean;
+    caTrusted: boolean;
+    /** The routing sweep, by slug. Omit only when it has not answered yet: a
+     *  member with no verdict does not count as routing. */
+    verdicts?: Map<string, Verdict>;
+  },
 ): Group[] {
   const installed = tools.filter((t) => t.status.kind !== "not_installed");
   const routable = domains.filter((d) => d.supported);
@@ -438,7 +482,12 @@ export function buildGroups(
  * what this ledger is for, and it was losing the row to the switch beside it:
  * intent is one saturated indigo object, so reality has to speak in more than
  * one place to hold its own. */
-export type GroupException = "error" | "needs-trust" | "master-off" | "drifted";
+export type GroupException =
+  | "error"
+  | "needs-trust"
+  | "master-off"
+  | "drifted"
+  | "unverified";
 
 /** "2 of 4 routing", plus whatever needs a human, named rather than counted
  * away: the row is a summary, but an exception should never hide inside it. */
@@ -477,6 +526,20 @@ export function groupSummary(group: Group): {
           ? `${drifted[0].name} set up elsewhere`
           : `${drifted.length} set up elsewhere`,
       kind: "drifted",
+    };
+  }
+  const unverified = group.members.filter((m) => m.attention === "unverified");
+  if (unverified.length > 0) {
+    // Last of the exceptions: every branch above names something known to be
+    // wrong, and this one names the absence of an answer. A row that could
+    // report a real fault must do that instead.
+    return {
+      count,
+      exception:
+        unverified.length === 1
+          ? `${unverified[0].name} not verified`
+          : `${unverified.length} not verified`,
+      kind: "unverified",
     };
   }
   return { count, exception: null, kind: null };

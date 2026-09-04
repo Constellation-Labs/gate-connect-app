@@ -12,10 +12,15 @@
 //! would be missing for every case it exists to serve. Restores are rare and hold
 //! a handful of entries, so a small write per entry is affordable.
 //!
-//! Scope: the restore path only. Master-off, quit and reset are not journalled -
-//! `snapshot_and_disable_everything` reports its failures to its caller instead
-//! (see the quit flow), and journalling them would mean instrumenting three more
-//! code paths for a summary nothing renders yet.
+//! Scope: the restore path only. Master-off, quit, sign-out and reset are not
+//! journalled. They tear routing *down*, and what the user needs from a teardown
+//! is which tools are on their own settings now - a question better answered by
+//! reading the configs back than by trusting a record of what we wrote. That is
+//! `teardown_report` in the app layer, and it is the same O1 rule
+//! `docs/routing-architecture.md` states for the environment channel: verify the
+//! effective config, never our own write. A restore is the other way round - it
+//! is the *attempt* that is interesting, because an interrupted one leaves no
+//! trace on disk to read - which is why this file exists at all.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -77,6 +82,103 @@ impl Outcome {
             self,
             Outcome::Pending | Outcome::WriteFailed | Outcome::DeferredSignedOut
         )
+    }
+
+    /// Whether the entry's write is done with. The stage half of the recovery
+    /// summary: a completed stage is one nothing will attempt again, which
+    /// includes the two dropped outcomes as well as the restored one.
+    pub const fn is_complete(self) -> bool {
+        matches!(
+            self,
+            Outcome::Restored | Outcome::NotInstalled | Outcome::Unknown
+        )
+    }
+
+    /// What *kind* of thing went wrong, for a summary that groups rather than
+    /// prints one sentence per entry.
+    ///
+    /// Derived from the outcome, which is itself derived from the restore's
+    /// control flow, so the category cannot drift from the attempt the way a
+    /// parsed error message would. `Pending` has no category: nothing was tried,
+    /// so nothing failed.
+    pub const fn category(self) -> &'static str {
+        match self {
+            Outcome::Pending | Outcome::Restored => "none",
+            Outcome::WriteFailed => "write",
+            Outcome::NotInstalled => "not_installed",
+            Outcome::Unknown => "unknown",
+            Outcome::DeferredSignedOut => "account",
+        }
+    }
+
+    /// The wire word for this outcome. Matches the `snake_case` serde rename
+    /// above, so a DTO that carries the stage as a string and a journal read
+    /// straight off disk cannot disagree about what to call it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Pending => "pending",
+            Outcome::Restored => "restored",
+            Outcome::WriteFailed => "write_failed",
+            Outcome::NotInstalled => "not_installed",
+            Outcome::Unknown => "unknown",
+            Outcome::DeferredSignedOut => "deferred_signed_out",
+        }
+    }
+}
+
+/// The one thing to do about an entry, as the recovery summary offers it.
+///
+/// Deliberately not [`crate::routing_health::NextAction`]: that set answers "this
+/// tool is not routing, what now", and its five members all assume the operation
+/// that configured the tool finished. These answer "this restore did not finish,
+/// what now", and the difference is `Retry` - resuming an interrupted write is
+/// not one of the five, because nothing in the verdict layer knows a write was
+/// interrupted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NextStep {
+    /// Nothing outstanding, and nothing stale.
+    None,
+    /// The write is unfinished: retry this entry.
+    Retry,
+    /// The write cannot be attempted without an account.
+    SignIn,
+    /// The write landed but the running process predates it.
+    ReopenTool,
+}
+
+impl NextStep {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            NextStep::None => "none",
+            NextStep::Retry => "retry",
+            NextStep::SignIn => "sign_in",
+            NextStep::ReopenTool => "reopen_tool",
+        }
+    }
+}
+
+/// What one entry still needs, from its stage and what the last check saw.
+///
+/// Ordering is the content, and it is the opposite of the verdict layer's: there
+/// an unfinished config outranks a stale process because the write is the thing
+/// in the way, and here it does too - a `Pending` entry has nothing on disk for a
+/// reopen to pick up, so offering "Reopen tool" would send the user to restart a
+/// tool into the same route it already has.
+///
+/// `reopen_pending` is only consulted once the write is done, for that reason.
+pub const fn next_step(outcome: Outcome, reopen_pending: bool) -> NextStep {
+    match outcome {
+        Outcome::Pending | Outcome::WriteFailed => NextStep::Retry,
+        Outcome::DeferredSignedOut => NextStep::SignIn,
+        // Settled: restored, or dropped because there is nothing to restore. Only
+        // a process holding pre-change settings is left to report.
+        Outcome::Restored | Outcome::NotInstalled | Outcome::Unknown => {
+            if reopen_pending {
+                NextStep::ReopenTool
+            } else {
+                NextStep::None
+            }
+        }
     }
 }
 
@@ -170,6 +272,34 @@ pub struct JournalWriter {
 }
 
 impl JournalWriter {
+    /// Continue the journal already on disk, to record the retry of one entry.
+    ///
+    /// A retry is not a new operation: the other entries' recorded outcomes are
+    /// the completed work a per-tool retry exists to *keep*, so seeding a fresh
+    /// journal here would throw away exactly what makes the retry worth having.
+    ///
+    /// The entry is seeded `Pending` when the file is missing or does not mention
+    /// it - a journal lost to a crash, or a snapshot written by a build that
+    /// predates journalling. The snapshots are the state a resume works from, so
+    /// the retry has to run either way; this just gives it somewhere to report.
+    pub fn reopen(slug: &str, name: &str, kind: EntryKind) -> Self {
+        let mut journal = load().unwrap_or(RestoreJournal {
+            updated_unix: now_unix(),
+            requested_routing_on: true,
+            entries: Vec::new(),
+        });
+        if !journal.entries.iter().any(|e| e.slug == slug) {
+            journal.entries.push(EntryRecord {
+                slug: slug.to_string(),
+                name: name.to_string(),
+                kind,
+                outcome: Outcome::Pending,
+                at_unix: now_unix(),
+            });
+        }
+        Self { journal }
+    }
+
     /// Start a journal for a restore that intends to turn routing on, seeding every
     /// known entry as `Pending`. The seed is the point: an operation interrupted
     /// before it reached entry three has to leave those entries visibly untouched.
@@ -305,5 +435,68 @@ mod tests {
         let journal: RestoreJournal = serde_json::from_str("{}").expect("empty object parses");
         assert_eq!(journal, RestoreJournal::default());
         assert!(journal.entries.is_empty());
+    }
+
+    /// The ordering `next_step` encodes: an unfinished write outranks a stale
+    /// process, because there is nothing on disk yet for a reopen to pick up.
+    #[test]
+    fn an_unfinished_write_is_retried_before_anything_is_reopened() {
+        assert_eq!(next_step(Outcome::Pending, true), NextStep::Retry);
+        assert_eq!(next_step(Outcome::WriteFailed, true), NextStep::Retry);
+    }
+
+    /// A finished write plus a process that predates it is the one case that
+    /// asks for a reopen.
+    #[test]
+    fn a_restored_entry_with_a_stale_process_asks_for_a_reopen() {
+        assert_eq!(next_step(Outcome::Restored, true), NextStep::ReopenTool);
+        assert_eq!(next_step(Outcome::Restored, false), NextStep::None);
+    }
+
+    /// A missing account is not a failure to retry: retrying it would fail the
+    /// same way until the user signs in, which is what the step should say.
+    #[test]
+    fn a_deferred_entry_asks_for_a_sign_in() {
+        assert_eq!(
+            next_step(Outcome::DeferredSignedOut, false),
+            NextStep::SignIn
+        );
+    }
+
+    /// The dropped outcomes are complete, so they owe nothing - the same
+    /// distinction `is_outstanding` makes, applied to the stage half.
+    #[test]
+    fn dropped_entries_are_complete_and_owe_nothing() {
+        assert!(Outcome::NotInstalled.is_complete());
+        assert!(Outcome::Unknown.is_complete());
+        assert!(!Outcome::Pending.is_complete());
+        assert_eq!(next_step(Outcome::NotInstalled, false), NextStep::None);
+    }
+
+    /// The wire word and the serde rename are the same string, so a stage read
+    /// off disk and a stage carried on a DTO cannot disagree.
+    #[test]
+    fn the_stage_word_matches_what_serde_writes() {
+        for outcome in [
+            Outcome::Pending,
+            Outcome::Restored,
+            Outcome::WriteFailed,
+            Outcome::NotInstalled,
+            Outcome::Unknown,
+            Outcome::DeferredSignedOut,
+        ] {
+            let json = serde_json::to_string(&outcome).expect("serializes");
+            assert_eq!(json, format!("\"{}\"", outcome.as_str()));
+        }
+    }
+
+    /// Categories exist so a summary can group failures. `Pending` has none:
+    /// nothing was attempted, so nothing failed.
+    #[test]
+    fn only_a_failed_attempt_carries_a_category() {
+        assert_eq!(Outcome::Pending.category(), "none");
+        assert_eq!(Outcome::Restored.category(), "none");
+        assert_eq!(Outcome::WriteFailed.category(), "write");
+        assert_eq!(Outcome::DeferredSignedOut.category(), "account");
     }
 }

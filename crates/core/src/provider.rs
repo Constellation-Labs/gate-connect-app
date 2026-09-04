@@ -1020,6 +1020,141 @@ fn restore_swept_tools(journal: &mut recovery::JournalWriter) -> Result<()> {
     }
 }
 
+/// Retry exactly one recorded entry, leaving every other entry's recorded work
+/// alone.
+///
+/// [`restore_all`] is the batch: it walks both snapshots and re-attempts
+/// everything in them. That is the right shape for "resume this operation", and
+/// the wrong shape for two things the recovery summary needs. One is a retry of a
+/// single failing tool, which must not re-enter the providers that already came
+/// back. The other is progress: a caller that wants to say which tool it is
+/// working on can only do that if it drives the entries itself.
+///
+/// The semantics are [`restore_all`]'s, narrowed to one slug and not otherwise
+/// reinterpreted:
+///
+/// - **The snapshot is still the state.** The slug leaves its snapshot only once
+///   it is actually back, so an unsuccessful retry is a no-op on disk and the
+///   next one tries again.
+/// - **[`Applied::NotYet`] is not a failure.** A domain-only provider with no
+///   engine up yet stays recorded and stays `Pending`, exactly as the batch
+///   leaves it. Nothing is journalled about an attempt that did not happen.
+/// - **The skip list outlives a partial restore** and clears with the last
+///   provider, because a later retry needs to know which members to leave off.
+/// - **A slug in neither snapshot is `Ok`**, not an error: two windows can offer
+///   the same retry, and the second one arrives to find the work already done.
+///
+/// Errors are the retry's own: a failed write returns `Err` *and* records
+/// `WriteFailed`, so the caller can report the failure rather than infer it from
+/// an unchanged pending list.
+pub fn restore_one(slug: &str) -> Result<()> {
+    let _guard = master_flow_guard();
+    let providers = load_snapshot(PROVIDER_SNAPSHOT)?;
+    if providers.iter().any(|s| s == slug) {
+        return restore_one_provider(slug, providers);
+    }
+    let tools = load_snapshot(SWEPT_TOOLS_SNAPSHOT)?;
+    if tools.iter().any(|s| s == slug) {
+        return restore_one_tool(slug, tools);
+    }
+    Ok(())
+}
+
+/// [`restore_one`] for a provider slug, with the queue it was found in.
+fn restore_one_provider(slug: &str, queued: Vec<String>) -> Result<()> {
+    let name = find(slug)
+        .map(|p| p.display_name.to_string())
+        .unwrap_or_else(|| slug.to_string());
+    let mut journal = recovery::JournalWriter::reopen(slug, &name, recovery::EntryKind::Provider);
+    let skip = load_snapshot(RESTORE_SKIP_MEMBERS)?;
+    let outcome = match enable_skipping(slug, &skip) {
+        Ok((Applied::Enabled, state)) if state.enabled => Ok(true),
+        // Nothing to do yet. Left `Pending` and left in the snapshot, per the
+        // batch's own reasoning: the engine simply is not up.
+        Ok(_) => Ok(false),
+        Err(e) => Err(e),
+    };
+    let restored = match outcome {
+        Ok(restored) => {
+            if restored {
+                journal.record(slug, recovery::Outcome::Restored);
+            }
+            journal.finish();
+            restored
+        }
+        Err(e) => {
+            journal.record(slug, recovery::Outcome::WriteFailed);
+            journal.finish();
+            return Err(e).with_context(|| format!("retrying provider {slug:?}"));
+        }
+    };
+    if !restored {
+        return Ok(());
+    }
+    let remaining: Vec<String> = queued.into_iter().filter(|s| s != slug).collect();
+    if remaining.is_empty() {
+        clear_snapshot(PROVIDER_SNAPSHOT)?;
+        // Held until the provider queue empties, for the reason `restore_all`
+        // gives: a partial restore gets retried, and the retry needs to know what
+        // to leave alone.
+        clear_snapshot(RESTORE_SKIP_MEMBERS)?;
+        return Ok(());
+    }
+    save_snapshot(PROVIDER_SNAPSHOT, &remaining)
+}
+
+/// [`restore_one`] for a swept tool slug, with the queue it was found in.
+///
+/// Mirrors [`restore_swept_tools`]'s per-entry branches - unknown slug, gone from
+/// the machine, signed out, write failed - because they are the same four
+/// conditions and a second reading of them would be a second set of outcomes.
+fn restore_one_tool(slug: &str, queued: Vec<String>) -> Result<()> {
+    let integ = ToolId::from_slug(slug).and_then(registry::find);
+    let name = integ
+        .as_ref()
+        .map(|i| i.display_name().to_string())
+        .unwrap_or_else(|| slug.to_string());
+    let mut journal = recovery::JournalWriter::reopen(slug, &name, recovery::EntryKind::Tool);
+    let drop_from_snapshot = |journal: recovery::JournalWriter| -> Result<()> {
+        journal.finish();
+        let remaining: Vec<String> = queued.iter().filter(|s| *s != slug).cloned().collect();
+        if remaining.is_empty() {
+            clear_snapshot(SWEPT_TOOLS_SNAPSHOT)
+        } else {
+            save_snapshot(SWEPT_TOOLS_SNAPSHOT, &remaining)
+        }
+    };
+    let Some(integ) = integ else {
+        journal.record(slug, recovery::Outcome::Unknown);
+        return drop_from_snapshot(journal);
+    };
+    if !integ.detect().unwrap_or(false) {
+        journal.record(slug, recovery::Outcome::NotInstalled);
+        return drop_from_snapshot(journal);
+    }
+    let Some(account) = account::load()? else {
+        // Left in the snapshot for a later signed-in retry, and recorded as
+        // deferred rather than failed: there is nothing wrong with this tool.
+        journal.record(slug, recovery::Outcome::DeferredSignedOut);
+        journal.finish();
+        return Ok(());
+    };
+    let input = ConnectInput {
+        gateway_base_url: account.gateway_base_url.clone(),
+        upstream_url: integ.default_upstream_url().to_string(),
+        billing_mode: account.billing_mode,
+        relay_base_url: crate::proxy::relay_base_url(),
+        engine_proxy_url: crate::proxy::engine_proxy_url(),
+    };
+    if let Err(e) = integ.connect(&input) {
+        journal.record(slug, recovery::Outcome::WriteFailed);
+        journal.finish();
+        return Err(e).with_context(|| format!("retrying tool {slug:?}"));
+    }
+    journal.record(slug, recovery::Outcome::Restored);
+    drop_from_snapshot(journal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

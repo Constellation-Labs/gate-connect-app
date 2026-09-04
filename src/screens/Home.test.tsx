@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import type { Mock } from "vitest";
 import type { Platform } from "../lib/platform";
-import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ProviderState, Tool, ProxyDomain, Verdict } from "../lib/api";
 import { launchAtLoginStatus } from "../lib/api";
 import { Home } from "./Home";
 
@@ -82,6 +82,31 @@ const CATALOG: ProviderState[] = [
   },
 ];
 
+/** A sweep that confirms every connected tool.
+ *
+ * These suites are about the ledger's layout and copy, not about verification:
+ * AG-570 stops a config file alone from producing `routed`, so a test that wants
+ * a routing row now has to say the check agreed. `lib/groups.test.ts` covers the
+ * rule itself.
+ */
+function sweep(tools: Tool[]): Map<string, Verdict> {
+  return new Map(
+    tools
+      .filter((t) => t.status.kind === "connected")
+      .map((t) => [
+        t.slug,
+        {
+          slug: t.slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+  );
+}
+
 function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, platform: Platform = "macos") {
   (usePlatform as Mock).mockReturnValue(platform);
   // Returned so a test can reach the sr-only live region, which has no role
@@ -96,6 +121,9 @@ function renderHome(props: Partial<React.ComponentProps<typeof Home>> = {}, plat
       providers={CATALOG}
       tools={[]}
       domains={[]}
+      // Gated on the same flag for the reason `FamilyPanel.test` states: the
+      // sweep cannot report `on` while the engine it probes is down.
+      verdicts={props.proxyOn === false ? new Map() : sweep(props.tools ?? [])}
       busy={false}
       error={null}
       changeNotice={null}

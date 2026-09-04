@@ -10,7 +10,14 @@ import {
   pinnedModels,
 } from "../../lib/modelCompatibility";
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
-import type { RestoreJournal, RestoreOutcome } from "../../lib/api";
+import type { RecoverySummary, TeardownReport } from "../../lib/api";
+import type { RecoveryRow } from "../../lib/recovery";
+import {
+  operationLine,
+  recoveryRows,
+  stageCounts,
+  TEARDOWN_ACTION_LABEL,
+} from "../../lib/recovery";
 import type { PillTone } from "./Modal";
 import {
   Modal,
@@ -1525,94 +1532,219 @@ export function CollectedDataLists({
   );
 }
 
-/** What each outcome means, in the user's words rather than the enum's. */
-const RESTORE_OUTCOME_TEXT: Record<
-  RestoreOutcome,
-  { label: string; detail: string; tone: PillTone }
-> = {
-  pending: {
-    label: "Not reached",
-    detail: "Gate stopped before getting to this one.",
-    tone: "amber",
-  },
-  restored: {
-    label: "Done",
-    detail: "Configuration written. Whether it is routing is shown on its row.",
-    tone: "green",
-  },
-  write_failed: {
-    label: "Failed",
-    detail:
-      "Gate could not write the configuration. Resuming tries this one again.",
-    tone: "amber",
-  },
-  not_installed: {
-    label: "Skipped",
-    detail: "No longer installed, so there was nothing to restore.",
-    tone: "neutral",
-  },
-  unknown: {
-    label: "Skipped",
-    detail: "Gate does not recognise this one any more.",
-    tone: "neutral",
-  },
-  deferred_signed_out: {
-    label: "Waiting",
-    detail: "Nothing was attempted: there is no account to point it at yet.",
-    tone: "amber",
-  },
-};
-
 /**
- * What the last restore did, entry by entry.
+ * What the interrupted operation did, tool by tool.
  *
  * **Read-only, and deliberately so.** AG-570 requires that reviewing details "does
  * not change state" - so the only action closes it, and nothing here can be
- * clicked into a retry. Resuming is the banner's job.
+ * clicked into a retry. Resuming and retrying are the notice's job, one surface
+ * up, which is also where the buttons are.
  *
- * There are no credentials, paths or request content in a journal entry: it holds
- * slugs, display names, an outcome from a closed set, and a timestamp. That is what
- * makes it safe to show in full.
+ * What it shows, per the same AC: the stages that completed and the ones still
+ * pending, the *category* of each failure rather than an error string, the last
+ * check that concluded for each tool, and enough per-tool diagnostics to hand to
+ * someone else - the write's stage and age, the last verified route, the most
+ * recent check, and whether a process is holding older settings.
+ *
+ * Nothing here is sensitive: slugs, display names, four closed vocabularies and
+ * timestamps. No paths, no URLs, no credentials, no request content. That is what
+ * makes it safe to show in full, and it is a property of the DTO rather than of
+ * this component - see `recovery_summary`'s own docs.
  *
  * **Provisional layout.** The Figma draws no details view (AG-569 is To Do).
  */
 export function RestoreDetailsDialog({
-  journal,
+  summary,
+  now,
   onClose,
 }: {
-  journal: RestoreJournal;
+  summary: RecoverySummary;
+  /** One clock for the whole dialog, passed in so two rows cannot disagree
+   *  about what "4m ago" means. */
+  now: Date;
   onClose: () => void;
 }) {
-  const done = journal.entries.filter((e) => e.outcome === "restored").length;
+  const rows = recoveryRows(summary, now);
+  const counts = stageCounts(summary);
+  const failures = rows.filter((r) => r.errorCategory.length > 0);
   return (
     <Modal
       tone="neutral"
       icon="info"
       title="What happened to routing"
+      subtitle={operationLine(summary, now)}
+      primary={{ label: "Close", onClick: onClose }}
+      onDismiss={onClose}
+      width={600}
+    >
+      {rows.length === 0 ? (
+        <ModalNote>Nothing was recorded for this attempt.</ModalNote>
+      ) : (
+        <>
+          <ModalNote>
+            <p className="font-medium text-base-foreground">
+              {counts.complete} of {counts.total} stages completed
+              {counts.pending > 0 ? `, ${counts.pending} still pending` : ""}
+            </p>
+            {failures.length > 0 && (
+              // Categories, not messages. The restore branches on these
+              // conditions itself, so the grouping cannot drift from the
+              // attempt the way a parsed error string would.
+              <p className="mt-1">
+                Failures by category:{" "}
+                {[...new Set(failures.map((r) => r.errorCategory))].join(", ")}.
+              </p>
+            )}
+          </ModalNote>
+          {rows.map((row) => (
+            <RecoveryDetailRow key={`${row.kind}:${row.slug}`} row={row} />
+          ))}
+        </>
+      )}
+    </Modal>
+  );
+}
+
+/** One tool's four readings, laid out as a definition list so the labels stay
+ *  legible when a value wraps. Not `ModalSubject`: that row truncates its
+ *  description to one line, which is right for naming a subject and wrong for a
+ *  diagnostic block. */
+function RecoveryDetailRow({ row }: { row: RecoveryRow }) {
+  return (
+    <div className="rounded-md border border-base-border p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="truncate text-sm font-medium leading-5 text-base-foreground">
+          {row.name}
+        </p>
+        <span
+          className={`shrink-0 rounded-sm px-1.5 py-0.5 font-mono text-base-2xs leading-4 ${
+            row.stageComplete
+              ? "bg-green-100 text-green-900"
+              : "bg-amber-100 text-amber-900"
+          }`}
+        >
+          {row.stage}
+        </span>
+      </div>
+      <p className="mt-1 text-sm leading-5 text-neutral-600">{row.stageDetail}</p>
+      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-base-xs leading-4">
+        <dt className="text-base-muted-foreground">Stage</dt>
+        <dd className="text-base-foreground">{row.stageLine}</dd>
+        {row.errorCategory && (
+          <>
+            <dt className="text-base-muted-foreground">Failure</dt>
+            <dd className="text-base-foreground">{row.errorCategory}</dd>
+          </>
+        )}
+        <dt className="text-base-muted-foreground">Last verified route</dt>
+        <dd className="text-base-foreground">{row.lastVerified ?? "No reading yet"}</dd>
+        <dt className="text-base-muted-foreground">Last check</dt>
+        <dd className="text-base-foreground">{row.checkResult}</dd>
+        <dt className="text-base-muted-foreground">Process</dt>
+        <dd className="text-base-foreground">{row.runningState}</dd>
+        <dt className="text-base-muted-foreground">Next action</dt>
+        <dd className="text-base-foreground">{row.action ?? "Nothing to do"}</dd>
+      </dl>
+    </div>
+  );
+}
+
+/**
+ * Where every tool stands after a teardown - routing off, disconnect, sign-out
+ * or reset.
+ *
+ * AG-570 asks for this whenever such an operation "cannot write defaults for
+ * every tool": the tools that are back on their own settings, the ones still
+ * carrying Gate's, the ones waiting to be reopened, the ones that could not be
+ * read, and what to do about each. The four buckets are the answer, and they are
+ * *read back* from the configs rather than assembled from what the teardown
+ * believed it wrote - a sweep that reports success having written nothing is the
+ * failure this dialog exists to catch.
+ *
+ * Read-only for the same reason the review above is: it reports a teardown that
+ * has already happened. The actions it names live on the rows that own them.
+ */
+export function TeardownReportDialog({
+  report,
+  onClose,
+}: {
+  report: TeardownReport;
+  onClose: () => void;
+}) {
+  const outstanding =
+    report.still_gate.length + report.awaiting_reopen.length + report.failed.length;
+  const sections: {
+    key: keyof TeardownReport;
+    title: string;
+    detail: string;
+    tone: PillTone;
+  }[] = [
+    {
+      key: "still_gate",
+      title: "Still using Gate’s values",
+      detail: "The teardown could not put these back. Their config still points at Gate.",
+      tone: "amber",
+    },
+    {
+      key: "awaiting_reopen",
+      title: "Waiting to be reopened",
+      detail:
+        "Back on their own settings on disk, but a running process is still using the route it started with.",
+      tone: "amber",
+    },
+    {
+      key: "failed",
+      title: "Could not be checked",
+      detail:
+        "Gate could not read these configs, so nothing about them is known - which is not the same as clean.",
+      tone: "amber",
+    },
+    {
+      key: "defaults",
+      title: "Back on their own settings",
+      detail: "Verified by reading the config, not by trusting the write.",
+      tone: "green",
+    },
+  ];
+  return (
+    <Modal
+      tone={outstanding > 0 ? "warning" : "success"}
+      icon={outstanding > 0 ? "triangleAlert" : "circleCheck"}
+      title={outstanding > 0 ? "Some tools were left as they were" : "Every tool is back on its own settings"}
       subtitle={
-        journal.requested_routing_on
-          ? `Gate was turning routing back on. ${done} of ${journal.entries.length} finished.`
-          : `Gate was turning routing off. ${done} of ${journal.entries.length} finished.`
+        outstanding > 0
+          ? `${outstanding} of ${outstanding + report.defaults.length} tools still need something.`
+          : "Nothing is left pointing at Gate."
       }
       primary={{ label: "Close", onClick: onClose }}
       onDismiss={onClose}
+      width={544}
     >
-      {journal.entries.length === 0 ? (
-        <ModalNote>Nothing was recorded for this attempt.</ModalNote>
-      ) : (
-        journal.entries.map((entry) => {
-          const text = RESTORE_OUTCOME_TEXT[entry.outcome];
-          return (
-            <ModalSubject
-              key={`${entry.kind}:${entry.slug}`}
-              icon="cube"
-              title={entry.name}
-              description={text.detail}
-              pill={{ label: text.label, tone: text.tone }}
-            />
-          );
-        })
-      )}
+      {sections
+        .filter((section) => report[section.key].length > 0)
+        .map((section) => (
+          <div key={section.key} className="flex flex-col gap-2">
+            <p className="text-base-xs font-medium leading-4 text-base-muted-foreground">
+              {section.title}
+            </p>
+            {report[section.key].map((tool) => (
+              <ModalSubject
+                key={tool.slug}
+                icon="cube"
+                title={tool.name}
+                description={section.detail}
+                pill={
+                  tool.next_action === "none"
+                    ? { label: "Done", tone: section.tone }
+                    : {
+                        label: TEARDOWN_ACTION_LABEL[tool.next_action],
+                        tone: section.tone,
+                      }
+                }
+              />
+            ))}
+          </div>
+        ))}
     </Modal>
   );
 }

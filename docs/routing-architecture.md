@@ -302,7 +302,13 @@ how the user learns. Worth revisiting if it reads badly in practice.
    a property of routing rather than a tool). Remaining: it is untested against
    a real macOS or Windows session.
 5. **Verify the effective config, not our own write** - the general fix for the
-   O1 class across relay integrations.
+   O1 class across relay integrations. Unchanged as stated: `status` still reads
+   the file Gate wrote, at the path Gate chose. What *has* changed is that no UI
+   now claims a route from that reading alone - `routing_health` decides, and
+   `verdict_log` records what it decided (AG-570). That narrows the blast radius
+   of this item without closing it: a harness pointed elsewhere by a
+   higher-precedence config still reads as `Managed` here, and the sweep's own
+   evidence (relay reachable, session valid, process fresh) would all agree.
 6. **The OpenRouter ALB fix is mock-tested only**; it asserts our side of the
    contract, not Gate's reassembly.
 7. O3: Zen provider IDs.
@@ -318,6 +324,10 @@ crates/core/src/proxy/
   manager*.rs         enable/disable/crash/reconcile orchestration
   ca_bundle.rs        platform roots + our CA, for tools that replace the store
   relay.rs            loopback reverse proxy for base-URL integrations
+crates/core/src/
+  routing_health.rs   the per-tool verdict: what a tool is *doing*
+  verdict_log.rs      what the last sweep concluded, kept across launches
+  recovery.rs         what an interrupted restore did, entry by entry
 crates/core/src/integrations/
   dotenv.rs           shared managed .env edits (never clobbers a user value)
 crates/core/tests/proxy_e2e.rs   engine + exported-env end-to-end
