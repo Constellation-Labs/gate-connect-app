@@ -1,6 +1,6 @@
 //! Tauri shell. The Rust surface here is small on purpose: every command
 //! delegates to `gate-connect-core` so the CLI and the GUI exercise the
-//! same code path. Beyond commands, this file sets up a normal 1024x720 window
+//! same code path. Beyond commands, this file sets up a normal 1280x800 window
 //! plus a tray icon that toggles it, and a close button that hides rather than
 //! quits so the tray always has something to bring back.
 //!
@@ -1499,7 +1499,7 @@ fn restore_after_repair(window: &tauri::Window) {
 /// config is what macOS, Windows and X11 enforce, and this is the only thing a
 /// Wayland session enforces. The two have to be changed together.
 #[cfg(target_os = "linux")]
-const MAIN_MIN_SIZE: (f64, f64) = (1024.0, 720.0);
+const MAIN_MIN_SIZE: (f64, f64) = (1024.0, 800.0);
 
 /// Hold the main window at its configured minimum, because on Wayland nothing
 /// else will.
@@ -2730,7 +2730,7 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
 /// onboarding flow calls this from its "locate Gate Connect" button and on
 /// close, so the handoff always ends at the app.
 ///
-/// Deliberately does not reposition. This is a 1024x720 window, not a tray
+/// Deliberately does not reposition. This is a 1280x800 window, not a tray
 /// popover: moving it out from under the user's cursor on every reveal is
 /// exactly what a window must not do.
 /// Also clears [`POPOVER_VISIBLE`]: handing over to the main window means the
@@ -3961,7 +3961,7 @@ pub fn run() {
                 // Centre on the primary display. Window position is not
                 // persisted across launches, so every launch is a first launch
                 // as far as placement goes; centring is the sane default for a
-                // 1024x720 window. Within a session, hide/show keeps whatever
+                // 1280x800 window. Within a session, hide/show keeps whatever
                 // position the user chose.
                 let _ = window.center();
                 // Before the show, not after: the point is for the *first* map

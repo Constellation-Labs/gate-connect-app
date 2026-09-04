@@ -33,9 +33,21 @@ right."
 
 ### Surface
 
-**A 1024x720 desktop window**, not a 360px popover. Chrome is a 48px
+**A 1280x800 desktop window**, not a 360px popover. Chrome is a 48px
 topbar; navigation is a persistent 256px sidebar; content is a pane that
-scrolls independently. Window controls belong to the operating system, so
+scrolls independently. The size is measured, not chosen: `overview-dimensions`
+(`864:3466`) is a 1280x800 frame, and it decomposes exactly - 256 sidebar plus a
+1024 content column, itself 24px of padding around a 976px pane, itself 16px of
+card padding around a 944px chart. That last number is the reason for the width:
+944 is what 24 hourly buckets need at the drawn 32px bar on an 8px gap
+(24x32 + 23x8 = 944). The old 1024x720 left the pane 768px, which is 24 labels
+touching edge to edge with nothing between them.
+The floor is 1024x**800**: height cannot go below the drawn 800, width can, and
+a window narrower than 1280 crowds the chart's axis by exactly the arithmetic
+above. `MAIN_MIN_SIZE` in `src-tauri/src/lib.rs` duplicates the floor because it
+is the only thing a Wayland session enforces; the two move together.
+
+Window controls belong to the operating system, so
 the topbar only reserves space for them. Secondary flows are centred
 dialogs, not stacked panels; their width is per dialog - the file draws
 480, 512, 544 and 600, and `Modal`'s `width` prop is typed to those four.
