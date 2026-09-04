@@ -106,9 +106,16 @@ pub struct SecurityEvent {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hello {
-    /// Whether `Last-Event-ID` will be honoured on reconnect. False on a
-    /// deployment with no shared store, where there is no replay buffer to
-    /// resume from; the client backfills through `/v1/me/tool-events` instead.
+    /// Whether `Last-Event-ID` will be honoured on reconnect. False on every
+    /// deployment today: `SecurityEventBus::supportsRecovery` is a constant
+    /// `false` because Redis pub/sub keeps no backlog and nothing reads the
+    /// header yet.
+    ///
+    /// A `false` is what sends the client to `GET /v1/me/security-events` to
+    /// catch up - see `client::backfill`. It is NOT `/v1/me/tool-events`, which
+    /// the contract used to name and which cannot answer the question: that
+    /// route reports on one tool at a time, so no single call covers "what did I
+    /// miss, across every tool" (Constellation-Labs/gate#990).
     #[serde(default)]
     pub recovery: bool,
     #[serde(default)]
@@ -125,14 +132,19 @@ pub enum Update {
 
 /// Bounded set of event ids already delivered.
 ///
-/// Needed whichever recovery path runs: a `Last-Event-ID` replay and a
-/// `tool-events` backfill both overlap the live stream on purpose, because an
+/// Needed whichever recovery path runs: the history backfill overlaps the live
+/// stream on purpose, and a `Last-Event-ID` replay would too, because an
 /// exclusive boundary that is off by one loses an event and a user cannot tell
 /// that happened. Overlapping and deduping is the direction whose failure mode is
 /// visible.
 ///
-/// **Not persisted across a restart.** A restart backfills a bounded window
-/// anyway, and a file to keep consistent with the selected org buys nothing.
+/// This guards the live stream, keyed on `id`. The backfill needs a second guard
+/// keyed on `request_id`, because the server cannot mint the same id twice for
+/// one request - see `Feed::merge_history`.
+///
+/// **Not persisted across a restart**, and it no longer needs to be: the
+/// backfill re-fetches the window on the next connect, so a restart costs a
+/// round-trip rather than the history.
 #[derive(Debug)]
 pub struct Dedupe {
     seen: HashSet<String>,
@@ -238,6 +250,36 @@ pub fn endpoint() -> String {
         "{}/v1/me/security-events/stream",
         base.trim_end_matches('/')
     )
+}
+
+/// The history route, for catching up on what the stream cannot replay
+/// (Constellation-Labs/gate#990).
+///
+/// Derived from the stream's URL by dropping the trailing segment, so the
+/// account's base URL and the test seam are honoured in exactly one place. A
+/// seam pointed at something that does not end in `/stream` gets the same URL
+/// for both, which is what a mock server wants anyway.
+pub fn history_endpoint() -> String {
+    let stream = endpoint();
+    stream
+        .strip_suffix("/stream")
+        .map(str::to_string)
+        .unwrap_or(stream)
+}
+
+/// One page of history from `GET /v1/me/security-events`.
+///
+/// `window` is deliberately not read: the client asks with a `since` it derived
+/// from its own buffer and does not need the server's echo of it. `truncated`
+/// is, because a partial catch-up that presents as a complete one is the thing
+/// this whole route exists to stop.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    #[serde(default)]
+    pub events: Vec<SecurityEvent>,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// The credential headers this account should send, resolved fresh.

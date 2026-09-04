@@ -9,9 +9,11 @@
 //! failing silently (AC6).
 //!
 //! The one behaviour worth stating plainly, because getting it wrong logs the
-//! user out of a working app: **only a definite 401 ends the loop.** Everything
-//! else retries. `org.rs`'s `SessionProbe` makes the same distinction and
-//! `docs/ag-572-activity-api-contract.md` §11 requires it of every consumer.
+//! user out of a working app: **nothing but `stop` ends the loop.** A definite
+//! 401 is the only thing that stops retrying on a timer, and it holds *alive*
+//! rather than returning, so a recovery signal has a feed to bring back.
+//! Everything else retries. `org.rs`'s `SessionProbe` makes the same distinction
+//! and `docs/ag-572-activity-api-contract.md` §11 requires it of every consumer.
 //!
 //! Each test runs its own loopback mock, but the account lives behind the
 //! process-global `GATE_CONNECT_TEST_HOME` seam plus an in-memory keychain, so a
@@ -27,7 +29,7 @@ use std::time::Duration;
 
 use gate_connect_core::security_feed::client::{run, Feed};
 use gate_connect_core::security_feed::{FeedState, Update};
-use gate_connect_core::{account, keychain};
+use gate_connect_core::{account, keychain, oauth};
 
 /// Serializes these tests against each other: the account lives behind the
 /// process-global `GATE_CONNECT_TEST_HOME` seam, so two running at once would
@@ -99,6 +101,76 @@ fn drain_request_head(stream: &mut TcpStream) -> String {
 /// stops answering, which the client sees as a connection failure and retries -
 /// exactly what a stopped gateway looks like.
 fn mock_stream(bodies: Vec<&'static str>) -> Arc<Mutex<Vec<String>>> {
+    mock_stream_with_history(bodies, r#"{"events":[],"truncated":false}"#).0
+}
+
+/// As [`mock_stream`], and also answers the history route the backfill calls.
+///
+/// **Both routes live on one port**, because the client derives the history URL
+/// from the stream's - so the mock has to tell them apart or a backfill request
+/// would consume the next scripted stream body and shift every connection after
+/// it. It branches on the request target, and records the two kinds separately
+/// so head-counting assertions keep counting connections rather than requests.
+///
+/// Returns `(stream heads, history heads)`.
+#[allow(clippy::type_complexity)]
+fn mock_stream_with_history(
+    bodies: Vec<&'static str>,
+    history: &'static str,
+) -> (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+    let url = format!(
+        "http://{}/v1/me/security-events/stream",
+        listener.local_addr().expect("mock addr")
+    );
+    let heads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let history_heads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = heads.clone();
+    let history_sink = history_heads.clone();
+    thread::spawn(move || {
+        let mut scripted = bodies.into_iter();
+        while let Ok((mut stream, _)) = listener.accept() {
+            let head = drain_request_head(&mut stream);
+            let wants_stream = head
+                .lines()
+                .next()
+                .map(|line| line.contains("/security-events/stream"))
+                .unwrap_or(false);
+            if wants_stream {
+                sink.lock().unwrap().push(head);
+                // Out of script: stop answering, which the client sees as a
+                // connection failure and retries - what a stopped gateway looks
+                // like.
+                let Some(body) = scripted.next() else {
+                    return;
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                     Cache-Control: no-cache\r\nConnection: close\r\n\r\n{body}"
+                );
+                stream.write_all(response.as_bytes()).ok();
+                stream.flush().ok();
+                // Closing ends the stream, which the client treats as a
+                // disconnect and reconnects from - the rolling-deploy case.
+            } else {
+                history_sink.lock().unwrap().push(head);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{history}",
+                    history.len()
+                );
+                stream.write_all(response.as_bytes()).ok();
+                stream.flush().ok();
+            }
+        }
+    });
+    std::env::set_var("GATE_CONNECT_TEST_SECURITY_EVENTS_ENDPOINT", url);
+    (heads, history_heads)
+}
+
+/// Answer every connection with one status and no stream, recording the request
+/// heads so a test can count how many times the client came back.
+fn mock_status(status_line: &'static str) -> Arc<Mutex<Vec<String>>> {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
     let url = format!(
         "http://{}/v1/me/security-events/stream",
@@ -107,42 +179,25 @@ fn mock_stream(bodies: Vec<&'static str>) -> Arc<Mutex<Vec<String>>> {
     let heads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = heads.clone();
     thread::spawn(move || {
-        for body in bodies {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
+        while let Ok((mut stream, _)) = listener.accept() {
             let head = drain_request_head(&mut stream);
             sink.lock().unwrap().push(head);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                 Cache-Control: no-cache\r\nConnection: close\r\n\r\n{body}"
-            );
-            stream.write_all(response.as_bytes()).ok();
-            stream.flush().ok();
-            // Closing ends the stream, which the client treats as a disconnect
-            // and reconnects from - the rolling-deploy case.
-        }
-    });
-    std::env::set_var("GATE_CONNECT_TEST_SECURITY_EVENTS_ENDPOINT", url);
-    heads
-}
-
-/// Answer every connection with one status and no stream.
-fn mock_status(status_line: &'static str) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
-    let url = format!(
-        "http://{}/v1/me/security-events/stream",
-        listener.local_addr().expect("mock addr")
-    );
-    thread::spawn(move || {
-        while let Ok((mut stream, _)) = listener.accept() {
-            drain_request_head(&mut stream);
             let response =
                 format!("HTTP/1.1 {status_line}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             stream.write_all(response.as_bytes()).ok();
         }
     });
     std::env::set_var("GATE_CONNECT_TEST_SECURITY_EVENTS_ENDPOINT", url);
+    heads
+}
+
+/// Poll `done` until it holds or the deadline passes. For the tests that watch
+/// the loop from outside instead of driving it through `collect`.
+async fn wait_until(deadline: Duration, done: impl Fn() -> bool) {
+    let started = std::time::Instant::now();
+    while started.elapsed() < deadline && !done() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// Drive the feed until `want` updates have arrived or the deadline passes, then
@@ -257,28 +312,107 @@ async fn a_replayed_event_after_reconnect_is_not_delivered_twice() {
 }
 
 #[tokio::test]
-async fn a_401_ends_the_loop_rather_than_retrying() {
+async fn a_401_holds_the_loop_open_for_a_recovery_signal() {
     let _g = LOCK.lock().await;
     let _data = TempDataDir::set();
     with_key_account();
-    mock_status("401 Unauthorized");
+    let heads = mock_status("401 Unauthorized");
 
     let feed = Arc::new(Feed::new());
     let driver = feed.clone();
-    // Deliberately not driven through `collect`: the property under test is that
-    // the loop returns *on its own*, and a helper that stops it cannot tell that
-    // apart from a loop that was still retrying when we gave up on it.
+    // Deliberately not driven through `collect`: the properties under test are
+    // what the loop does *while* it is refused, and a helper that stops it can
+    // observe neither of them.
     let task = tokio::spawn(async move {
         run(driver, |_| {}).await;
     });
 
-    let finished = tokio::time::timeout(Duration::from_secs(10), task).await;
-    assert!(
-        finished.is_ok(),
-        "a refused credential must end the loop; retrying cannot fix it and \
-         spends a throttle bucket shared across the whole office"
-    );
+    // The refusal lands.
+    wait_until(Duration::from_secs(10), || {
+        !heads.lock().unwrap().is_empty()
+    })
+    .await;
+    assert_eq!(heads.lock().unwrap().len(), 1, "expected one attempt");
     assert_eq!(feed.state(), FeedState::Offline);
+
+    // No retry cadence: retrying cannot fix a refused credential and spends a
+    // throttle bucket shared across the whole office.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        heads.lock().unwrap().len(),
+        1,
+        "a refused credential must not be retried on a timer"
+    );
+
+    // But the loop is still there to hear a recovery. Returning was the bug: it
+    // left `retry_now` - the pane's own "Try again", and the org-switch reset -
+    // pushing against a task that had already exited.
+    feed.retry_now();
+    wait_until(Duration::from_secs(10), || heads.lock().unwrap().len() >= 2).await;
+    assert!(
+        heads.lock().unwrap().len() >= 2,
+        "the loop must survive a refusal so a recovery signal can revive it"
+    );
+
+    feed.stop();
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+}
+
+#[tokio::test]
+async fn a_second_refusal_does_not_record_the_rejection_again() {
+    let _g = LOCK.lock().await;
+    let _data = TempDataDir::set();
+    with_key_account();
+    let heads = mock_status("401 Unauthorized");
+    // The flag is process-global and sticky, and the other 401 tests set it, so
+    // start from a known false rather than inheriting whatever ran first.
+    oauth::clear().expect("clear any recorded rejection");
+    assert!(!oauth::session_rejected());
+
+    let feed = Arc::new(Feed::new());
+    let driver = feed.clone();
+    let task = tokio::spawn(async move {
+        run(driver, |_| {}).await;
+    });
+
+    // The first refusal records the rejection. That record is what makes
+    // `oauth::live_session` report `None`, which is the whole app dropping to
+    // the sign-in prompt.
+    wait_until(Duration::from_secs(10), oauth::session_rejected).await;
+    assert!(
+        oauth::session_rejected(),
+        "the first refusal must still record the rejection"
+    );
+
+    // The user recovers, which clears the record. Both public paths that clear
+    // it do so as a side effect of writing the keychain - signing back in
+    // (`oauth::store`) and signing out (`oauth::clear`) - and the property under
+    // test does not care which one got us here, only that the record is gone.
+    oauth::clear().expect("clear the recorded rejection");
+    assert!(!oauth::session_rejected());
+
+    // Now the feed is refused a second time, on a credential the user has just
+    // sorted out. It must not record the rejection again: doing so signs them
+    // straight back out, and because this loop retries within 30s they could
+    // never stay signed in.
+    feed.retry_now();
+    wait_until(Duration::from_secs(10), || heads.lock().unwrap().len() >= 2).await;
+    assert!(
+        heads.lock().unwrap().len() >= 2,
+        "expected a second attempt to be refused, saw {}",
+        heads.lock().unwrap().len()
+    );
+    // The head is recorded before the client has read the response, so give the
+    // marking path room: it would fire within microseconds of the 401.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !oauth::session_rejected(),
+        "a second refusal must not re-record the rejection - a feed failure \
+         must never sign the user out"
+    );
+
+    feed.stop();
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
 }
 
 #[tokio::test]
@@ -356,7 +490,7 @@ async fn no_account_rests_at_offline_without_hammering() {
     let _data = TempDataDir::set();
     keychain::use_in_memory_backend();
     // Deliberately no account saved.
-    mock_status("200 OK");
+    let _heads = mock_status("200 OK");
 
     let feed = Arc::new(Feed::new());
     let updates = collect(feed, 1, Duration::from_secs(4)).await;
@@ -365,5 +499,75 @@ async fn no_account_rests_at_offline_without_hammering() {
     assert!(
         states.iter().all(|s| *s == FeedState::Offline),
         "with nothing to connect with the feed rests at Offline; got {states:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_stream_that_cannot_replay_backfills_the_gap() {
+    // AC5 by the only route that can serve it. `recovery: false` is what every
+    // deployment reports, and it used to mean the gap was simply lost: the
+    // contract named `/v1/me/tool-events`, which reports on one tool at a time
+    // and cannot answer "what did I miss across every tool"
+    // (Constellation-Labs/gate#990).
+    let _g = LOCK.lock().await;
+    let _data = TempDataDir::set();
+    with_key_account();
+    let (_heads, history_heads) = mock_stream_with_history(
+        vec!["event: hello\ndata: {\"recovery\":false}\n\n"],
+        concat!(
+            r#"{"events":[{"id":"hist-1","requestId":"r9","at":"2026-09-02T13:00:00.000Z","#,
+            r#""action":"flag","category":"credential","tool":"claude-code"}],"truncated":false}"#
+        ),
+    );
+
+    let feed = Arc::new(Feed::new());
+    let updates = collect(feed, 2, Duration::from_secs(10)).await;
+
+    assert_eq!(
+        event_ids(&updates),
+        vec!["hist-1"],
+        "an event the stream never pushed has to arrive by backfill, got {:?}",
+        event_ids(&updates)
+    );
+    assert_eq!(
+        history_heads.lock().unwrap().len(),
+        1,
+        "exactly one catch-up per connection"
+    );
+}
+
+#[tokio::test]
+async fn a_backfilled_event_already_on_screen_is_not_delivered_twice() {
+    // The half of AC5 that says "without duplicates", across the seam where it
+    // is hardest: the server cannot mint the same id for one request twice, so
+    // the live `01A` and the backfilled `hist-1` are the SAME request under
+    // different ids. Deduping on id alone would show the user two rows.
+    let _g = LOCK.lock().await;
+    let _data = TempDataDir::set();
+    with_key_account();
+    let (_heads, _history) = mock_stream_with_history(
+        vec![
+            // First connection can replay, so it takes no backfill.
+            concat!(
+                "event: hello\ndata: {\"recovery\":true}\n\n",
+                "event: security-event\nid: 01A\n",
+                "data: {\"requestId\":\"r1\",\"at\":\"2026-09-02T13:00:00.000Z\",\"action\":\"block\"}\n\n",
+            ),
+            // The reconnect cannot, so it does.
+            "event: hello\ndata: {\"recovery\":false}\n\n",
+        ],
+        concat!(
+            r#"{"events":[{"id":"hist-1","requestId":"r1","at":"2026-09-02T13:00:00.000Z","action":"block"},"#,
+            r#"{"id":"hist-2","requestId":"r2","at":"2026-09-02T13:01:00.000Z","action":"flag"}],"truncated":false}"#
+        ),
+    );
+
+    let feed = Arc::new(Feed::new());
+    let updates = collect(feed, 5, Duration::from_secs(20)).await;
+
+    assert_eq!(
+        event_ids(&updates),
+        vec!["01A", "hist-2"],
+        "r1 was already on screen as 01A, so only r2 is new"
     );
 }

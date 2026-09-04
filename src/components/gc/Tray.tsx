@@ -1,12 +1,12 @@
 import type { FeedState } from "../../lib/api";
 import type { ReactNode } from "react";
-import { BaseSwitch, StatusTile } from "./base";
+import { BaseSwitch, Skeleton, StatusTile } from "./base";
 import { GateAiLogoMark } from "./GateAiLogoMark";
 import { Icon } from "./Icon";
 import type { IconName } from "./Icon";
 import { OutlineIconButton } from "./Topbar";
 import { STATUS_TEXT, statusDetail } from "./Sidebar";
-import type { SidebarGroup } from "./Sidebar";
+import type { RowCount, SidebarGroup } from "./Sidebar";
 
 /**
  * The tray popover (Figma `Flows / Tray` 694:34005, read 2026-08-28): a
@@ -29,13 +29,18 @@ import type { SidebarGroup } from "./Sidebar";
  *   that act live on the rows, and the engine's own control stays in the full
  *   app. If the invisible switch was reserved space rather than a decision,
  *   that is the designer's to say.
- * - **Rows carry no activity line.** The frames draw "345 messages · 23
- *   alerts" under each status, but no per-tool reading exists (the activity
- *   endpoint is org-scoped and rate-limited per address; see `lib/activity`),
- *   and the drawn "No recent messages" fallback is itself a measurement claim
- *   this surface cannot make. The design draws the two-line row too (the
- *   compact `Other tools` rows in `Connect/routing`), which is the shape
- *   every row takes here until a reading exists.
+ * - **Rows draw the whole activity line, but its halves come from different
+ *   places.** The frames draw "345 messages · 23 alerts" under each status. The
+ *   alerts are live: the feed (AG-578) attributes each blocked or flagged
+ *   request to a tool slug, and the tray already listens to it for the security
+ *   card. The messages are *held*: `GET /v1/me/activity` answers for one tool at
+ *   a time inside a throttle bucket keyed on the source address, so a read per
+ *   row per open is the one fan-out that budget cannot take - `lib/toolMessages`
+ *   opens on the readings already on disk and refreshes what has gone stale
+ *   instead. A held figure discloses its age in the line's tooltip, the row
+ *   having no width to print it. Rows the gateway cannot attribute - the chat
+ *   domains, permanently - keep the two-line shape the design also draws (the
+ *   compact `Other tools` rows in `Connect/routing`).
  * - **The master card's off state is inferred** - only "Partially routed" and
  *   "Gate is protecting you" are drawn - following the status vocabulary:
  *   "Not protected" in amber, with the drawn "On/Off · N of M tools routing"
@@ -251,6 +256,9 @@ function TrayGroup({
                   {app.name}
                 </span>
                 <StatusLine app={app} />
+                {(app.messages || app.alerts) && (
+                  <ActivityLine messages={app.messages} alerts={app.alerts} />
+                )}
               </span>
             </span>
             <BaseSwitch
@@ -279,6 +287,65 @@ function StatusLine({ app }: { app: SidebarGroup["apps"][number] }) {
       {suffix && <span className="text-base-muted-foreground"> - {suffix}</span>}
     </span>
   );
+}
+
+/**
+ * The drawn activity line: "345 messages · 23 alerts", traffic first and then the
+ * subset of it that fired something.
+ *
+ * Grey, on the status line's own ramp. A blocked request is Gate doing its job,
+ * not this app failing, so a fault colour here would put a second amber phrase
+ * under the one line on the row entitled to report a fault. A measured zero says
+ * so in words: the frames draw digits but their own empty-state copy is a phrase
+ * ("No recent messages"), and a bare `0` under a status line reads as a figure
+ * that failed to arrive rather than as an answer.
+ *
+ * Either half can be absent, and an absent half takes its separator with it - a
+ * row never draws a dangling dot for a figure it does not have. The message half
+ * is missing until a reading lands; a chat domain's row has neither, permanently.
+ *
+ * **The age is on the line, not in it.** A held figure can be a minute old and the
+ * row has no width for "measured 14:03", so `measuredAt` becomes the line's
+ * tooltip. Saying nothing at all would let a stale number read as a live one,
+ * which is the failure mode principle 6 exists to prevent; printing it would cost
+ * the figures their room.
+ */
+function ActivityLine({
+  messages,
+  alerts,
+}: {
+  messages?: RowCount;
+  alerts?: RowCount;
+}) {
+  const half = (count: RowCount, label: (n: number) => string) =>
+    count.kind === "pending" ? (
+      <Skeleton className="h-3 w-16" />
+    ) : (
+      <span className="truncate">{label(count.count)}</span>
+    );
+  const measuredAt = messages?.kind === "count" ? messages.measuredAt : undefined;
+  return (
+    <span
+      title={measuredAt && `Messages measured ${measuredAt}`}
+      className="flex min-w-0 items-center gap-1 text-base-2xs leading-4 text-base-muted-foreground"
+    >
+      {messages && half(messages, messagesLabel)}
+      {messages && alerts && <span aria-hidden>·</span>}
+      {alerts && half(alerts, alertsLabel)}
+    </span>
+  );
+}
+
+/** Thousands separated: a four-figure message count is ordinary, and `1032` at
+ *  `base-2xs` is not scannable. */
+function messagesLabel(count: number): string {
+  if (count === 0) return "No messages";
+  return count === 1 ? "1 message" : `${count.toLocaleString()} messages`;
+}
+
+function alertsLabel(count: number): string {
+  if (count === 0) return "No alerts";
+  return count === 1 ? "1 alert" : `${count.toLocaleString()} alerts`;
 }
 
 /** The 32px `logo-wrapper` tile, treatment shared with the rail's `AppRow`. */

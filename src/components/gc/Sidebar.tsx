@@ -56,6 +56,35 @@ export type InventoryState =
   /** The scan could not complete. Says so rather than showing an empty shelf. */
   | { kind: "failed" };
 
+/**
+ * One figure on an app row: a reading, or the fact that one has not landed yet.
+ *
+ * The third case is the absence of the field altogether, and it is the important
+ * one. A figure on screen is something Gate measured, so a row with nothing
+ * behind a counter draws nothing rather than a `0` standing in for the answer
+ * nobody gave - which on a list of app rows would read as a quiet day over
+ * traffic Gate cannot see. Principle 6. The field below says what its own
+ * absence covers.
+ */
+export type RowCount =
+  /** A real reading. `0` is an answer and prints as one. */
+  | {
+      kind: "count";
+      count: number;
+      /** When the gateway computed it, as a local clock time, for a figure that
+       * can be older than the moment it is drawn.
+       *
+       * Absent means "now": a count derived from the live feed is current by
+       * construction and has nothing to disclose. A held reading does - it can be
+       * a minute old, or the last thing that landed before the network went - and
+       * a row with no room to print an age says it in a tooltip instead. An age
+       * that has to be recomputed to stay true is why this is a clock time and
+       * not a duration; `ActivityView.takenAt` gives the same reasoning. */
+      measuredAt?: string;
+    }
+  /** A read that is actually running has not answered yet. */
+  | { kind: "pending" };
+
 export interface SidebarApp {
   slug: string;
   name: string;
@@ -79,6 +108,32 @@ export interface SidebarApp {
   logo?: ReactNode;
   /** A toggle is in flight: the switch ignores clicks but keeps focus. */
   busy?: boolean;
+  /**
+   * Requests this app sent, from the last activity reading held for it.
+   *
+   * Drawn by the **tray** row, like `alerts`. Absent where no reading has landed:
+   * `GET /v1/me/activity` answers for one tool at a time, so the tray opens on
+   * what is on disk and refreshes what has gone stale rather than asking per row
+   * per open - see `lib/toolMessages.ts`. A chat domain has none at all, its
+   * traffic being unattributed at the gateway.
+   */
+  messages?: RowCount;
+  /**
+   * Blocked and flagged requests attributed to this app, from the live feed.
+   *
+   * Drawn by the **tray** row, not by the rail: the tray frames are the ones
+   * that carry an activity line under the status (`Tray`'s docstring records
+   * what they draw), and the 1024px window reports the same traffic on the app
+   * pane, where there is room for the events themselves. It lives on the shared
+   * row type because the two surfaces build their rows from one shape.
+   *
+   * Absent where the feed has no attribution to give: it keys events on the tool
+   * slug, and a chat domain's traffic arrives unattributed on purpose -
+   * `NewUiApp`'s `openDomain` note has the reason - so those rows have no
+   * reading, permanently. An unreadable feed is the same case, and the Security
+   * events pane is the surface that says so.
+   */
+  alerts?: RowCount;
 }
 
 /**

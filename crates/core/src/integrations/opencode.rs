@@ -229,6 +229,15 @@ impl Integration for OpenCode {
         settings_path().ok().map(|p| p.display().to_string())
     }
 
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        // The sidecar under app support is deliberately absent: it changes
+        // because `connect` wrote it, and that path already refreshes.
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(env::opencode_config_dir());
+        paths.extend(settings_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
         if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);

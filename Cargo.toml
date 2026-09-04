@@ -98,3 +98,10 @@ reqwest = { version = "0.13", default-features = false, features = [
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
+# Backs `tool_watch`, the filesystem watch behind the `tools-changed` event: a
+# tool installed while a window is open is the one reading the frontend cannot
+# be told about, and this replaces the 5s detection poll both shells used to
+# run. Native backend per OS (inotify / FSEvents / ReadDirectoryChangesW);
+# default features, which is the fsevent backend on macOS and std channels
+# everywhere - no crossbeam, no async runtime.
+notify = "8"

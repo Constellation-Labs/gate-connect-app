@@ -145,6 +145,19 @@ export const activityCachedOverview = (installId?: string, tool?: string) =>
     invoke<string | null>("activity_cached_overview", { installId, tool }),
   );
 
+/** Every held per-tool activity reading for this installation scope, as raw JSON
+ *  text keyed by tool slug.
+ *
+ * One disk read for a surface that draws a figure on every row - the tray's quick
+ * status. `/v1/me/activity` answers for one tool at a time, so a read per row per
+ * open is the fan-out its throttle bucket cannot take; the popover opens on this
+ * and refreshes only what has gone stale.
+ *
+ * Empty covers no cache, an unreadable one and a scope that holds nothing. All
+ * three mean the same thing: wait for the network. */
+export const activityCachedToolOverviews = (installId?: string) =>
+  invoke<Record<string, string>>("activity_cached_tool_overviews", { installId });
+
 /** The installations this account has sent traffic from, as raw JSON text.
  * Derived from traffic, so it is empty until something has been attributed. */
 export const activityInstallations = () => invoke<string>("activity_installations");

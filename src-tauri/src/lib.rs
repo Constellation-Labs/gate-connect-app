@@ -337,7 +337,7 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
     }
     // Off the main thread: keychain write plus up to three tool-config
     // rewrites, none of which should block the UI thread.
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         account::save(&base_url, key.as_deref()).map_err(|e| format!("{e:#}"))?;
         // A rotated key is hot-swapped into the running proxy engine below;
         // the relay injects it live per request, so no tool config embeds it.
@@ -359,13 +359,18 @@ async fn save_account(base_url: String, api_key: Option<String>) -> Result<(), S
         Ok(())
     })
     .await
-    .map_err(|e| format!("save join error: {e}"))?
+    .map_err(|e| format!("save join error: {e}"))?;
+    // What changed: the key, the gateway, or both.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 #[tauri::command]
 async fn clear_account() -> Result<(), String> {
     // Off the main thread: per-tool config I/O that shouldn't freeze the UI.
-    tauri::async_runtime::spawn_blocking(|| {
+    let done = tauri::async_runtime::spawn_blocking(|| {
         // Disconnect managed tools first: clearing the account while their
         // configs still embed the key would leave them routing to the gateway
         // with a dead credential on disk. A failure aborts the sign-out.
@@ -373,7 +378,12 @@ async fn clear_account() -> Result<(), String> {
         account::clear().map_err(|e| format!("{e:#}"))
     })
     .await
-    .map_err(|e| format!("sign-out join error: {e}"))?
+    .map_err(|e| format!("sign-out join error: {e}"))?;
+    // What changed: the account is gone.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 /// Dev-mode gateway switch: repoint the account at another environment and
@@ -400,7 +410,7 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
         return Err("base url is missing a host".into());
     }
     // Off the main thread: per-tool config I/O plus keychain delete.
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         registry::disconnect_all_managed().map_err(|e| format!("{e:#}"))?;
         // Before the account moves, so the engine can never be up against an
         // account it wasn't started from. A failure aborts the switch: routing
@@ -413,7 +423,12 @@ async fn switch_gateway(base_url: String) -> Result<(), String> {
         account::switch_gateway(&base_url).map_err(|e| format!("{e:#}"))
     })
     .await
-    .map_err(|e| format!("switch join error: {e}"))?
+    .map_err(|e| format!("switch join error: {e}"))?;
+    // What changed: another gateway, and the key with it.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 // ---- OAuth (Cognito) ----
@@ -508,8 +523,17 @@ async fn oauth_status() -> Result<OAuthStatusDto, String> {
 /// key-entry form; choosing the legacy path is an explicit key save.
 #[tauri::command]
 async fn oauth_sign_out() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    let done = tauri::async_runtime::spawn_blocking(|| {
         gate_connect_core::oauth::clear().map_err(|e| format!("{e:#}"))?;
+        // The held activity readings belong to the org just signed out of, and
+        // signing out is not a disconnect: `account.json` keeps the gateway and
+        // the org, so `activity_cache`'s scope stays byte-identical and every
+        // reading in it would still match and still be served. `account::clear`
+        // covers the disconnect path; this covers the one that leaves the account
+        // file in place. Best effort and after the credential, on the same
+        // reasoning as there: a cache that will not delete must not be the reason
+        // a sign-out reports failure.
+        let _ = gate_connect_core::activity_cache::clear();
         // Revert a running engine to the legacy header immediately (empty
         // token == fall back to the API key, if one is present).
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -517,14 +541,19 @@ async fn oauth_sign_out() -> Result<(), String> {
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("oauth sign-out join error: {e}"))?
+    .map_err(|e| format!("oauth sign-out join error: {e}"))?;
+    // What changed: the OAuth session is gone, and `account.json` is not.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 /// Explicitly set the auth mode. Used when a user chooses the legacy pasted-key
 /// path from the sign-in screen; OAuth sign-in sets it implicitly.
 #[tauri::command]
 async fn set_auth_mode(oauth: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         let mode = if oauth {
             gate_connect_core::account::AuthMode::OAuth
         } else {
@@ -533,7 +562,12 @@ async fn set_auth_mode(oauth: bool) -> Result<(), String> {
         gate_connect_core::account::set_auth_mode(mode).map_err(|e| format!("{e:#}"))
     })
     .await
-    .map_err(|e| format!("set auth mode join error: {e}"))?
+    .map_err(|e| format!("set auth mode join error: {e}"))?;
+    // What changed: which credential the gateway is given.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 /// Switch who pays the upstream provider.
@@ -652,6 +686,27 @@ async fn activity_cached_overview(
     })
     .await
     .map_err(|e| format!("cached activity join error: {e}"))
+}
+
+/// Every held per-tool reading for this installation scope, keyed by slug.
+///
+/// The tray's quick status draws a figure on every app row, and `/v1/me/activity`
+/// answers for one tool at a time - so the popover opens on what is already on
+/// disk and refreshes only what has gone stale. One file read rather than one per
+/// row, because the file holds them all.
+///
+/// Never an error, for the same reason [`activity_cached_overview`] is not: an
+/// empty map covers no cache, an unreadable one, and a scope that holds nothing,
+/// and all three mean the caller waits for the network.
+#[tauri::command]
+async fn activity_cached_tool_overviews(
+    install_id: Option<String>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gate_connect_core::activity::cached_tool_overviews_json(install_id.as_deref())
+    })
+    .await
+    .map_err(|e| format!("cached tool activity join error: {e}"))
 }
 
 /// One page of a tool's recent requests, for the app pane's feed (AG-574).
@@ -896,14 +951,19 @@ async fn oauth_list_orgs() -> Result<Vec<gate_connect_core::org::Org>, String> {
 /// `X-Gate-Org-Id` takes effect live (no restart).
 #[tauri::command]
 async fn set_org(org_id: String, org_name: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let done = tauri::async_runtime::spawn_blocking(move || {
         gate_connect_core::account::set_org(&org_id, &org_name).map_err(|e| format!("{e:#}"))?;
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         gate_connect_core::proxy::manager().refresh_org(&org_id);
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("set org join error: {e}"))?
+    .map_err(|e| format!("set org join error: {e}"))?;
+    // What changed: another org, so every figure on screen belongs to the previous one.
+    if done.is_ok() {
+        signal_session_changed();
+    }
+    done
 }
 
 /// OS identifier ("macos" / "windows" / "linux") so the UI can tailor
@@ -1578,6 +1638,28 @@ fn report_backend_error(context: &'static str, message: String) {
     }
     if let Some(handle) = APP_HANDLE.get() {
         let _ = handle.emit("backend-error-pending", ());
+    }
+}
+
+/// Tell every mounted window that the signed-in session moved.
+///
+/// The account is the scope of nearly everything on screen: the org name, the
+/// activity figures, the security feed's buffer, the installation list. Each
+/// shell keys its readings on a credential string built from the account, and
+/// drops them when it changes - but only the window that *made* the change knew,
+/// because none of the mutating commands emitted anything. So the tray kept the
+/// previous org's counts and header until something unrelated woke it, and a
+/// sign-out left figures on screen for an account that could no longer read them.
+///
+/// Emitted after the change has landed, never before: a window that re-read on
+/// the way in would read the state being replaced.
+///
+/// Not to be confused with [`signal_session_dead`] and its
+/// `session-signin-required`, which says the gateway *refused* a session the user
+/// did not change. This one says the user changed it on purpose.
+fn signal_session_changed() {
+    if let Some(handle) = APP_HANDLE.get() {
+        let _ = handle.emit("session-changed", ());
     }
 }
 
@@ -3028,6 +3110,7 @@ pub fn run() {
                     activity_overview,
                     activity_installations,
                     activity_cached_overview,
+                    activity_cached_tool_overviews,
                     activity_tool_events,
                     tool_model_preferences,
                     set_tool_model,
@@ -3102,6 +3185,7 @@ pub fn run() {
                     activity_overview,
                     activity_installations,
                     activity_cached_overview,
+                    activity_cached_tool_overviews,
                     activity_tool_events,
                     tool_model_preferences,
                     set_tool_model,
@@ -3290,6 +3374,31 @@ pub fn run() {
                     recheck_gate_session(&handle);
                 });
             });
+
+            // Detection is the one reading a window cannot be told about. A tool
+            // installed while the app is open happens entirely outside it, so
+            // both shells used to poll `list_tools` every five seconds to
+            // notice - twelve config-file walks a minute, forever, for an event
+            // that happens a handful of times in a machine's life. The OS
+            // already knows; `tool_watch` asks it and this emits.
+            //
+            // Registered on every desktop OS and not gated behind a window:
+            // `emit` reaches whichever shells are mounted, and neither the
+            // window nor the tray has to exist yet.
+            //
+            // A watch that cannot start is reported and then left alone. The
+            // shells still re-read on their visibility edge, which is what
+            // covers the paths a watch cannot see anyway - a `$PATH` install of
+            // a launcher has no directory to arm.
+            {
+                let watch_handle = app.handle().clone();
+                if let Err(e) = gate_connect_core::tool_watch::start(move || {
+                    let _ = watch_handle.emit("tools-changed", ());
+                }) {
+                    eprintln!("[gate] tool config watch failed to start: {e:#}");
+                    report_backend_error("tool_watch", format!("{e:#}"));
+                }
+            }
 
             // Launch at login defaults ON: arm the login item the first time
             // we run so routing persists across a restart out of the box. A

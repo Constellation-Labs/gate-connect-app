@@ -224,6 +224,13 @@ impl Integration for Codex {
         config_path().ok().map(|p| p.display().to_string())
     }
 
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = CLI_BIN_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(env::codex_config_dir());
+        paths.extend(config_path());
+        paths
+    }
+
     fn detect(&self) -> Result<bool> {
         if CLI_BIN_PATHS.iter().any(|p| Path::new(p).exists()) {
             return Ok(true);

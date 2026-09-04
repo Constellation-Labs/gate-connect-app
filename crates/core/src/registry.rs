@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::fmt;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolId {
@@ -145,6 +146,33 @@ pub trait Integration: Send + Sync {
     fn config_location(&self) -> Option<String> {
         None
     }
+
+    /// Filesystem paths whose appearance, change or removal could change what
+    /// [`detect`](Integration::detect) or [`status`](Integration::status)
+    /// answers: the binaries that prove the tool is installed, and the config
+    /// file that says whether Gate wrote it.
+    ///
+    /// Read by [`crate::tool_watch`], which arms the deepest directory that
+    /// exists at or above each one and re-arms as the rest appear. **Paths that
+    /// do not exist yet are the point** - a tool being installed is precisely
+    /// the change nothing else in the app can report.
+    ///
+    /// Required rather than defaulted, deliberately. An integration that
+    /// answered `vec![]` by inheritance would go unwatched, and the symptom -
+    /// a tool that stays "Not installed" until the user happens to focus the
+    /// window - looks like a detection bug rather than a missing declaration.
+    /// Returning an empty vec is still a real answer: the environment channel's
+    /// status comes from the engine, which emits its own event.
+    ///
+    /// Two things belong out of the list. Anything Gate itself writes and then
+    /// re-reads - the app-support sidecars - because those change on an action
+    /// the window already refreshes after, so watching them would run a second
+    /// pass over every connect. And `$PATH` lookups, which are not paths.
+    ///
+    /// A path that cannot be resolved is dropped rather than propagated: a
+    /// machine with no home directory has nothing to watch, and the caller wants
+    /// whatever can be had.
+    fn watch_paths(&self) -> Vec<PathBuf>;
 
     /// Is the underlying tool installed on this machine?
     fn detect(&self) -> Result<bool>;

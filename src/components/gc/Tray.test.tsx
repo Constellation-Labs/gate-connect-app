@@ -47,6 +47,22 @@ function renderTray(overrides: Partial<Parameters<typeof Tray>[0]> = {}) {
 
 afterEach(cleanup);
 
+type Row = SidebarGroup["apps"][number];
+
+/** The first group with one row carrying the given figures, the other bare. */
+const withFigures = (figures: Pick<Row, "messages" | "alerts">) => [
+  {
+    ...GROUPS[0],
+    apps: [{ ...GROUPS[0].apps[0], ...figures }, GROUPS[0].apps[1]],
+  },
+];
+const withAlerts = (alerts: Row["alerts"]) => withFigures({ alerts });
+
+/** The named app's own row, so a figure cannot be matched off a neighbouring row
+ *  or off the security card. */
+const rowOf = (name: string) => screen.getByText(name).closest("li");
+const row = (name: string) => rowOf(name)?.textContent ?? "";
+
 describe("the master status card", () => {
   it("reads protecting when every row is routed", () => {
     renderTray({
@@ -218,5 +234,117 @@ describe("signed out", () => {
     expect(screen.queryByRole("switch")).toBeNull();
     screen.getByRole("button", { name: "Open Gate Connect" }).click();
     expect(onExpand).toHaveBeenCalled();
+  });
+});
+
+/**
+ * The alert half of the drawn activity line (`Tray`'s docstring records why the
+ * message half is not here). What is worth asserting is the distinction the
+ * figure exists to hold: a measured zero says so in words, and a row the feed
+ * cannot attribute draws nothing at all rather than a `0` nobody measured.
+ */
+describe("the row activity line", () => {
+  it("draws the count under the status", () => {
+    renderTray({ groups: withAlerts({ kind: "count", count: 23 }) });
+
+    expect(row("Claude Code")).toContain("Protected");
+    expect(row("Claude Code")).toContain("23 alerts");
+  });
+
+  it("says a measured zero in words, and counts one in the singular", () => {
+    renderTray({ groups: withAlerts({ kind: "count", count: 0 }) });
+    expect(row("Claude Code")).toContain("No alerts");
+
+    cleanup();
+    renderTray({ groups: withAlerts({ kind: "count", count: 1 }) });
+    expect(row("Claude Code")).toContain("1 alert");
+  });
+
+  it("draws nothing for a row the feed cannot attribute", () => {
+    // The chat-domain case, and it is permanent: the feed keys events on the
+    // tool slug and a domain's traffic arrives unattributed on purpose.
+    renderTray({ groups: withAlerts({ kind: "count", count: 23 }) });
+
+    expect(row("Claude Desktop")).toContain("Not routed");
+    expect(row("Claude Desktop")).not.toContain("alert");
+  });
+
+  it("holds a place while a feed that is running has not answered", () => {
+    // A skeleton, not a zero: neither a figure nor "none" is true while we are
+    // still asking.
+    renderTray({ groups: withAlerts({ kind: "pending" }) });
+
+    expect(row("Claude Code")).not.toContain("alert");
+    expect(document.querySelectorAll(".animate-pulse")).toHaveLength(1);
+  });
+});
+
+/**
+ * The message half of the same line, which is a *held* figure rather than a live
+ * one - it comes off the last activity reading for that tool, refreshed when the
+ * quick status is looked at. So what matters here is that it reads as an answer
+ * and discloses its age.
+ */
+describe("the row message count", () => {
+  it("draws traffic first, then the subset that fired", () => {
+    renderTray({
+      groups: withFigures({
+        messages: { kind: "count", count: 1032, measuredAt: "14:03" },
+        alerts: { kind: "count", count: 23 },
+      }),
+    });
+
+    expect(row("Claude Code")).toContain("1,032 messages");
+    expect(row("Claude Code")).toContain("23 alerts");
+    expect(row("Claude Code").indexOf("messages")).toBeLessThan(
+      row("Claude Code").indexOf("alerts"),
+    );
+  });
+
+  it("says when the figure was measured, since the row cannot print it", () => {
+    renderTray({
+      groups: withFigures({
+        messages: { kind: "count", count: 8, measuredAt: "14:03" },
+      }),
+    });
+
+    // A held number that says nothing about its age reads as a live one, which is
+    // the reading principle 6 exists to prevent. The row has no width for it, so
+    // it goes in the tooltip.
+    const line = rowOf("Claude Code")?.querySelector("[title]");
+    expect(line?.getAttribute("title")).toBe("Messages measured 14:03");
+  });
+
+  it("drops the separator when only one half has a reading", () => {
+    // The common state on a fresh install: the feed has answered and no activity
+    // reading has landed yet.
+    renderTray({ groups: withAlerts({ kind: "count", count: 2 }) });
+
+    expect(row("Claude Code")).toContain("2 alerts");
+    expect(row("Claude Code")).not.toContain("messages");
+    expect(row("Claude Code")).not.toContain("\u00b7");
+  });
+
+  it("says a measured zero in words", () => {
+    renderTray({
+      groups: withFigures({ messages: { kind: "count", count: 0, measuredAt: "14:03" } }),
+    });
+
+    expect(row("Claude Code")).toContain("No messages");
+  });
+
+  it("holds a place for a figure still being read", () => {
+    renderTray({ groups: withFigures({ messages: { kind: "pending" } }) });
+
+    expect(row("Claude Code")).not.toContain("messages");
+    expect(document.querySelectorAll(".animate-pulse")).toHaveLength(1);
+  });
+
+  it("draws no tooltip for a figure with no age to report", () => {
+    // The alert half is live by construction and has nothing to disclose, so a
+    // row showing only alerts must not carry an empty or misleading title.
+    renderTray({ groups: withAlerts({ kind: "count", count: 2 }) });
+
+    expect(rowOf("Claude Code")?.querySelector("[title]")).toBeNull();
   });
 });
