@@ -30,9 +30,27 @@ signal, not a vibe") and it is load-bearing: mono is how a user tells a
 machine-readable value from prose. If the file means sans, that rule goes and a
 lot of screens change at once.
 
-**What we need.** Is sans the intention for identifiers, or are these frames
-using the default face because the mono style was not applied? If sans is
-intended for *some* identifiers and not others, what separates them?
+**We asked whether these were slips. They are not - the file is consistent.**
+We resolved four identifier classes node by node and every one is sans:
+
+| Drawn value | Node | Style |
+| --- | --- | --- |
+| model ids | `665:18400`, `665:19064` | Geist Medium, sans |
+| an API key | `143:68381` (`sk-gw-661b17…`) | `copy/14`, Geist Regular |
+| a version | `116:30083` (`v0.1.4`) | `copy/14`, Geist Regular |
+| four more Settings identifiers | see `docs/review-figma-settings.md` | sans |
+
+Zero identifier *values* are drawn mono anywhere we have looked. Mono is used,
+and used deliberately, but only for **eyebrows** (`mono/eyebrow`) and **status
+pill labels** (`mono/label-12`) - which is exactly half of what our rule
+claims.
+
+So this is no longer "did the mono style get missed": the file has a position
+and holds it consistently. It is now a decision about whether to adopt it.
+
+**What we need.** Confirm that identifier *values* are meant to be sans, with
+mono reserved for eyebrows and pill labels. If so we will rewrite the rule and
+the change is large but mechanical.
 
 ---
 
@@ -123,8 +141,23 @@ broken page is worse than an absent one. So we are currently following the
 instance over the component and would rather that were a decision than an
 accident.
 
-**What we need.** Which of the two is current? And separately: is Contact
-support meant to ship before there is an address for it to open?
+**Largely answered, by how the file is wired.** `topnav/menu` has **no
+instances anywhere**. Every menu in the file - `116:27225` on Overview and
+`744:38192` on the Tray page - is a detached `frame`, not an `instance` of
+`744:37692`. (The metadata does distinguish the two: the Banners canvas is full
+of real `<instance>` nodes.)
+
+So the component is not the source of anything. Nothing is linked to it,
+which is why it never gained Quit when the flow copies did, and why
+"component beats instance" cannot arbitrate here - there is no instance
+relationship to arbitrate. The copies are what is being maintained, and the
+code follows them. That part is settled.
+
+**What we need.** Only the smaller half now: is Contact support meant to ship
+before there is an address for it to open? (We omit it because
+`GATE_SUPPORT_URL` 404s - AG-598.) And if `744:37692` is meant to be the
+library component, it needs relinking, or deleting so it stops looking
+authoritative.
 
 ---
 
@@ -257,19 +290,25 @@ is still your call whether it belongs there.
 
 ---
 
-## 11. Apply changes: which button is the primary?
+## 11. WITHDRAWN - the file and the code already agree
 
-**What we see.** In the Apply-changes dialog the drawn weighting puts the
-emphasis opposite to where the app puts it.
+Left in place because we asked it and the answer corrects us, not you.
 
-**Why it matters.** This is the dialog that closes the user's running apps.
-Focus follows the primary, so as it stands a user who presses Enter twice
-closes Codex. We deliberately open destructive dialogs with focus on the safe
-button.
+We reported that the Apply-changes dialog's drawn weighting was the opposite of
+the app's. It is not. `130:58448` is `Variant=Default` - the filled primary,
+`base/primary` with the gradient - and its label is **"No, I will reopen
+later"**. `130:58447` is `Variant=Outline` and reads **"Yes, close affected
+apps"**. So the file makes the *safe* action the primary, which is a deliberate
+inversion of the usual arrangement, and the code has done exactly that all
+along, with a comment saying so.
 
-**What we need.** Confirm which action is the primary here. If closing apps is
-the primary, we will keep the emphasis and move initial focus to the safe
-button instead.
+The real defect was ours and is fixed: our focus rule only redirected away from
+a destructive **primary**, so a destructive **secondary** matched nothing and
+focus fell to the first button in the panel - which is the secondary. Enter
+therefore landed on "Yes, close affected apps". The rule now covers both
+arrangements.
+
+**Nothing needed from you.**
 
 ---
 

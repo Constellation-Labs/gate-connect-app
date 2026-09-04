@@ -374,7 +374,15 @@ export function ApplyChangesDialog({
       icon="triangleAlert"
       title="Apply changes to running apps?"
       subtitle="Your configuration is saved. One final step makes the new route active"
-      secondary={{ label: "Yes, close affected apps", onClick: onCloseApps }}
+      // `destructive` on the SECONDARY changes nothing about how it looks -
+      // it moves initial focus onto the primary, which is the safe choice
+      // here. Without it the trap fell to the first focusable and that is
+      // this button, so Enter landed on closing the user's apps.
+      secondary={{
+        label: "Yes, close affected apps",
+        onClick: onCloseApps,
+        destructive: true,
+      }}
       primary={{ label: "No, I will reopen later", onClick: onReopenLater }}
       onDismiss={onReopenLater}
     >
