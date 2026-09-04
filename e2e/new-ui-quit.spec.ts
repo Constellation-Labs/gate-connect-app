@@ -46,7 +46,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["CLI", "CLI"],
+      pendingQuitTools: ["Claude Code", "Codex"],
     });
 
     const dialog = app.page.getByRole("dialog");
@@ -66,7 +66,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["CLI", "CLI"],
+      pendingQuitTools: ["Claude Code", "Codex"],
     });
 
     await app.page.getByRole("button", { name: "Disconnect" }).click();
@@ -85,7 +85,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["CLI"],
+      pendingQuitTools: ["Claude Code"],
     });
 
     await app.page.getByRole("radio", { name: /Quit without disconnecting/ }).click();
@@ -109,7 +109,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["CLI", "CLI"],
+      pendingQuitTools: ["Claude Code", "Codex"],
       quitLeftBehind: ["Codex"],
     });
 
@@ -131,7 +131,7 @@ test.describe("new UI quit", () => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },
       tools: connectedTools,
-      pendingQuitTools: ["CLI"],
+      pendingQuitTools: ["Claude Code"],
     });
 
     await app.page.getByRole("button", { name: "Cancel" }).click();

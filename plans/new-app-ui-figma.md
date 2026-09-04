@@ -2737,11 +2737,24 @@ the rows, which is why the labels can be one word.
   (`openai`)
 
 **Where the names live.** In the backend, as before: `proxy/catalog.rs` for
-domains, each integration's `display_name` for tools, `provider.rs` for the
-headings (Anthropic, not Claude). The rename is global, so the drift dialog now
-reads "CLI's config changed outside Gate" - chosen deliberately over a
-label-beside-name split, because one name per row is the thing a user can point
-at.
+domains, each integration's `row_label` for tools, `provider.rs` for the
+headings (Anthropic, not Claude). The rename is global across the UI, so the
+drift dialog now reads "CLI's config changed outside Gate" - chosen deliberately
+over a label-beside-name split, because one name per row is the thing a user can
+point at.
+
+**`row_label` is not `display_name` (2026-09-04).** The row label started on
+`Integration::display_name`, which is also what the CLI prints, what error
+contexts and log lines name, and what the quit takeover lists. Those have no
+heading to lean on, so four integrations answering "CLI" collided there: the
+takeover read "CLI and CLI still route" - two tools the user cannot tell apart
+at the moment they decide whether to close them - and `gate-connect list`
+printed three such rows. `display_name` is the product again ("Claude Code");
+`row_label` is the ledger's one-word label and defaults to `display_name`, so a
+new integration is right everywhere until it opts in. `list_tools` is the only
+reader of `row_label`, which is why every UI surface - the rail, the pane, the
+dialogs above - is unchanged. `registry.rs`'s
+`display_names_are_distinct_across_the_registry` pins the collision shut.
 
 **Where the descriptions live.** `MEMBER_DESCRIPTIONS` in `src/lib/groups.ts`,
 keyed by member slug, carried on `GroupMember.description` and rendered by the

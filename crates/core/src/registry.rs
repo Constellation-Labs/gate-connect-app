@@ -96,7 +96,28 @@ impl fmt::Display for Status {
 
 pub trait Integration: Send + Sync {
     fn id(&self) -> ToolId;
+
+    /// What this tool is called where nothing else names it: the CLI's output,
+    /// log lines, error contexts, the quit takeover's list of what still routes.
+    /// The product - "Claude Code", not "CLI".
+    ///
+    /// Distinct from [`Integration::row_label`] on purpose. This one was doing
+    /// both jobs and the surfaces above have no heading to lean on, so a row
+    /// label reaching them collides: two connected terminal tools rendered a
+    /// takeover reading "CLI and CLI still route", and `gate-connect list`
+    /// printed three rows a reader cannot tell apart.
     fn display_name(&self) -> &'static str;
+
+    /// The ledger row's label, under a family heading that already names the
+    /// vendor - which is what lets it be one word ("CLI", "App", "Web").
+    ///
+    /// Defaults to the product name, and the default is the point: a surface
+    /// kind is only legible inside the rail's grouping, so an integration that
+    /// has not thought about this gets the name that is right everywhere. Only
+    /// `list_tools` reads it; everything else wants `display_name`.
+    fn row_label(&self) -> &'static str {
+        self.display_name()
+    }
 
     /// Human-readable name of the upstream model provider this tool talks
     /// to natively (e.g. "Anthropic" for Claude Code, "OpenAI" for Codex).
@@ -327,6 +348,33 @@ mod tests {
         let hidden = hidden_in_ui_slugs();
         for slug in ["claude-code", "codex"] {
             assert!(!hidden.contains(&slug), "{slug} must remain in the ledger");
+        }
+    }
+
+    /// Display names are what a flat list is read by, so no two may match.
+    ///
+    /// The regression this pins: `display_name` was made the ledger's row label
+    /// ("CLI"), which is legible under a heading naming the vendor and nowhere
+    /// else. Four integrations then answered "CLI", and the surfaces with no
+    /// heading rendered them identically - the quit takeover said "CLI and CLI
+    /// still route", naming two tools the user cannot tell apart at the moment
+    /// they decide whether to close them, and `gate-connect list` printed three
+    /// such rows. Row labels collide by design and live on `row_label`.
+    #[test]
+    fn display_names_are_distinct_across_the_registry() {
+        let mut seen: Vec<(&str, &str)> = Vec::new();
+        for integ in registry() {
+            let name = integ.display_name();
+            if let Some((other, _)) = seen.iter().find(|(_, n)| *n == name) {
+                panic!(
+                    "{} and {} both call themselves {name:?}; a flat list - the quit \
+                     takeover, `gate-connect list` - cannot tell them apart. A one-word \
+                     surface label belongs on `row_label`.",
+                    other,
+                    integ.id().slug()
+                );
+            }
+            seen.push((integ.id().slug(), name));
         }
     }
 

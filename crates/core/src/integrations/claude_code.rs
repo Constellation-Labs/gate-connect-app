@@ -86,15 +86,17 @@ impl Integration for ClaudeCode {
         ToolId::ClaudeCode
     }
 
-    /// The row label, not the product name.
-    ///
-    /// Rows sit under a family heading that already names the vendor, so the
-    /// label separates the surfaces inside that family: "App" for the desktop
-    /// apps, "Web" for the browser tab, "CLI" for the terminal. The sentence
-    /// that says which binary this is lives with the UI copy
+    fn display_name(&self) -> &'static str {
+        "Claude Code"
+    }
+
+    /// The row label. Rows sit under a family heading that already names the
+    /// vendor, so the label separates the surfaces inside that family: "App" for
+    /// the desktop apps, "Web" for the browser tab, "CLI" for the terminal. The
+    /// sentence that says which binary this is lives with the UI copy
     /// (`src/lib/groups.ts`); it is a description of the surface, not something
     /// the integration knows.
-    fn display_name(&self) -> &'static str {
+    fn row_label(&self) -> &'static str {
         "CLI"
     }
 

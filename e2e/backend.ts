@@ -247,9 +247,10 @@ export interface BackendState {
 
 const CLAUDE_CODE: ToolFixture = {
   slug: "claude-code",
-  // "CLI", not "Claude Code": `integrations/claude_code.rs`'s display_name.
-  // Every row sits under a family heading that already names the vendor, so the
-  // label separates the surfaces inside it - App / Web / CLI.
+  // "CLI", not "Claude Code": `list_tools` sends `row_label`, and every row sits
+  // under a family heading that already names the vendor, so the label separates
+  // the surfaces inside it - App / Web / CLI. The product name is `display_name`,
+  // which is what the quit takeover's `pendingQuitTools` carries.
   name: "CLI",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",

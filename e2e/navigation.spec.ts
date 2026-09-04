@@ -34,7 +34,7 @@ test.describe("navigation", () => {
   });
 
   test("a takeover owns Escape - it cancels the quit, it doesn't navigate", async ({ boot }) => {
-    const app = await boot({ pendingQuitTools: ["CLI"] });
+    const app = await boot({ pendingQuitTools: ["Claude Code"] });
     await expect(app.page.getByRole("heading", { name: "Quit Gate Connect?" })).toBeVisible();
 
     await app.page.keyboard.press("Escape");
