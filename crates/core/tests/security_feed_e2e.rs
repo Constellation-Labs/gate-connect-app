@@ -101,32 +101,71 @@ fn drain_request_head(stream: &mut TcpStream) -> String {
 /// stops answering, which the client sees as a connection failure and retries -
 /// exactly what a stopped gateway looks like.
 fn mock_stream(bodies: Vec<&'static str>) -> Arc<Mutex<Vec<String>>> {
+    mock_stream_with_history(bodies, r#"{"events":[],"truncated":false}"#).0
+}
+
+/// As [`mock_stream`], and also answers the history route the backfill calls.
+///
+/// **Both routes live on one port**, because the client derives the history URL
+/// from the stream's - so the mock has to tell them apart or a backfill request
+/// would consume the next scripted stream body and shift every connection after
+/// it. It branches on the request target, and records the two kinds separately
+/// so head-counting assertions keep counting connections rather than requests.
+///
+/// Returns `(stream heads, history heads)`.
+#[allow(clippy::type_complexity)]
+fn mock_stream_with_history(
+    bodies: Vec<&'static str>,
+    history: &'static str,
+) -> (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
     let url = format!(
         "http://{}/v1/me/security-events/stream",
         listener.local_addr().expect("mock addr")
     );
     let heads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let history_heads: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = heads.clone();
+    let history_sink = history_heads.clone();
     thread::spawn(move || {
-        for body in bodies {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
+        let mut scripted = bodies.into_iter();
+        while let Ok((mut stream, _)) = listener.accept() {
             let head = drain_request_head(&mut stream);
-            sink.lock().unwrap().push(head);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                 Cache-Control: no-cache\r\nConnection: close\r\n\r\n{body}"
-            );
-            stream.write_all(response.as_bytes()).ok();
-            stream.flush().ok();
-            // Closing ends the stream, which the client treats as a disconnect
-            // and reconnects from - the rolling-deploy case.
+            let wants_stream = head
+                .lines()
+                .next()
+                .map(|line| line.contains("/security-events/stream"))
+                .unwrap_or(false);
+            if wants_stream {
+                sink.lock().unwrap().push(head);
+                // Out of script: stop answering, which the client sees as a
+                // connection failure and retries - what a stopped gateway looks
+                // like.
+                let Some(body) = scripted.next() else {
+                    return;
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                     Cache-Control: no-cache\r\nConnection: close\r\n\r\n{body}"
+                );
+                stream.write_all(response.as_bytes()).ok();
+                stream.flush().ok();
+                // Closing ends the stream, which the client treats as a
+                // disconnect and reconnects from - the rolling-deploy case.
+            } else {
+                history_sink.lock().unwrap().push(head);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{history}",
+                    history.len()
+                );
+                stream.write_all(response.as_bytes()).ok();
+                stream.flush().ok();
+            }
         }
     });
     std::env::set_var("GATE_CONNECT_TEST_SECURITY_EVENTS_ENDPOINT", url);
-    heads
+    (heads, history_heads)
 }
 
 /// Answer every connection with one status and no stream, recording the request
@@ -460,5 +499,75 @@ async fn no_account_rests_at_offline_without_hammering() {
     assert!(
         states.iter().all(|s| *s == FeedState::Offline),
         "with nothing to connect with the feed rests at Offline; got {states:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_stream_that_cannot_replay_backfills_the_gap() {
+    // AC5 by the only route that can serve it. `recovery: false` is what every
+    // deployment reports, and it used to mean the gap was simply lost: the
+    // contract named `/v1/me/tool-events`, which reports on one tool at a time
+    // and cannot answer "what did I miss across every tool"
+    // (Constellation-Labs/gate#990).
+    let _g = LOCK.lock().await;
+    let _data = TempDataDir::set();
+    with_key_account();
+    let (_heads, history_heads) = mock_stream_with_history(
+        vec!["event: hello\ndata: {\"recovery\":false}\n\n"],
+        concat!(
+            r#"{"events":[{"id":"hist-1","requestId":"r9","at":"2026-09-02T13:00:00.000Z","#,
+            r#""action":"flag","category":"credential","tool":"claude-code"}],"truncated":false}"#
+        ),
+    );
+
+    let feed = Arc::new(Feed::new());
+    let updates = collect(feed, 2, Duration::from_secs(10)).await;
+
+    assert_eq!(
+        event_ids(&updates),
+        vec!["hist-1"],
+        "an event the stream never pushed has to arrive by backfill, got {:?}",
+        event_ids(&updates)
+    );
+    assert_eq!(
+        history_heads.lock().unwrap().len(),
+        1,
+        "exactly one catch-up per connection"
+    );
+}
+
+#[tokio::test]
+async fn a_backfilled_event_already_on_screen_is_not_delivered_twice() {
+    // The half of AC5 that says "without duplicates", across the seam where it
+    // is hardest: the server cannot mint the same id for one request twice, so
+    // the live `01A` and the backfilled `hist-1` are the SAME request under
+    // different ids. Deduping on id alone would show the user two rows.
+    let _g = LOCK.lock().await;
+    let _data = TempDataDir::set();
+    with_key_account();
+    let (_heads, _history) = mock_stream_with_history(
+        vec![
+            // First connection can replay, so it takes no backfill.
+            concat!(
+                "event: hello\ndata: {\"recovery\":true}\n\n",
+                "event: security-event\nid: 01A\n",
+                "data: {\"requestId\":\"r1\",\"at\":\"2026-09-02T13:00:00.000Z\",\"action\":\"block\"}\n\n",
+            ),
+            // The reconnect cannot, so it does.
+            "event: hello\ndata: {\"recovery\":false}\n\n",
+        ],
+        concat!(
+            r#"{"events":[{"id":"hist-1","requestId":"r1","at":"2026-09-02T13:00:00.000Z","action":"block"},"#,
+            r#"{"id":"hist-2","requestId":"r2","at":"2026-09-02T13:01:00.000Z","action":"flag"}],"truncated":false}"#
+        ),
+    );
+
+    let feed = Arc::new(Feed::new());
+    let updates = collect(feed, 5, Duration::from_secs(20)).await;
+
+    assert_eq!(
+        event_ids(&updates),
+        vec!["01A", "hist-2"],
+        "r1 was already on screen as 01A, so only r2 is new"
     );
 }
