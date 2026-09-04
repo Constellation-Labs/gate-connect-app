@@ -10,7 +10,8 @@ reported: `Components`, `Flows` (containing `Overview`, `Settings`, `App`),
 `Sandbox`, and `Icons`.
 
 - **Overview** - dashboard: stat tiles, Messages bar chart, Policies table,
-  Token savings table. Annotated **App dimensions: 1024x720px**.
+  Token savings table. Annotated **App dimensions: 1024x720px** - superseded by
+  `overview-dimensions` (`864:3466`), a 1280x800 frame; see the sync below.
 - **Settings** - fully transcribed below.
 - **App** - a per-app detail view, two sections (`App / Main screens` and
   `App / Select a model`). Selecting an app in the sidebar opens its own pane
@@ -1844,7 +1845,8 @@ every pane's data. The dialog is a slot for the same reason - the shell owns
 
 Nothing below is done yet, and all of it changes what ships:
 
-- `tauri.conf.json`: **DONE 2026-08-17.** 1024x720, `resizable: true`,
+- `tauri.conf.json`: **DONE 2026-08-17**, resized 2026-09-04. 1280x800 on a
+  1024x800 floor, `resizable: true`,
   `decorations: true`, `alwaysOnTop` and `skipTaskbar` off. `visible: false`
   is unchanged: the tray still owns the first show.
 - **The new UI is now the default** (`newUi.ts`); the popover is the fallback,
@@ -1852,7 +1854,7 @@ Nothing below is done yet, and all of it changes what ships:
 - **Still popover-shaped on the Rust side.** `show_popover` calls
   `anchor_under_tray`, so the window is positioned under the tray icon rather
   than where the user left it, and `set_activation_policy(Accessory)` keeps it
-  out of the dock. Both are wrong for a 1024x720 window and neither is changed
+  out of the dock. Both are wrong for a 1280x800 window and neither is changed
   yet - unverified Rust edits were not worth guessing at.
 - `src-tauri/src/lib.rs`: the transparent-window + CALayer `cornerRadius` work
   is popover-specific.
@@ -2980,3 +2982,51 @@ nodes. The export was generated 2026-08-20 and those nodes are newer, so
 "match what the frame renders" points at red-400 and nothing was changed here -
 but the token export still disagrees, which is worth knowing before anyone
 samples it again.
+
+## Window size, 2026-09-04: 1280x800 on a 1024x800 floor
+
+The main window was 1024x720 on a 1024x720 floor, from the `App dimensions:
+1024x720px` annotation the first pass read. `overview-dimensions` (`864:3466`)
+supersedes it: the frame is **1280x800**, and unlike the annotation it can be
+checked, because it decomposes to the pixel.
+
+| Layer | Width | From |
+| --- | --- | --- |
+| window | 1280 | frame `864:3466` |
+| sidebar | 256 | `864:3472`, `shrink-0` |
+| content column | 1024 | `864:3473` at x=256 |
+| pane | 976 | `864:3474`, 24px padding each side |
+| chart | 944 | `864:3509`, 16px card padding each side |
+
+944 is the number that matters, and it is why the width moved. The drawn bucket
+is a 32px bar on an 8px gap (`864:3511` is 31.667 wide, the next starts at
+39.667), so 24 of them need `24x32 + 23x8 = 944` exactly. The old window left
+the pane 768px, which is 24 axis labels at `w-8` touching edge to edge with
+nothing between them - the crowding that prompted this.
+
+**The floor is 1024x800, not 1280x800.** Height cannot go below the drawn 800;
+width can, and a window between 1024 and 1280 crowds the axis by that same
+arithmetic. Raising `minWidth` to 1280 is what would make the fit unconditional,
+and it is deliberately not done here - it would forbid the 1024 width the design
+used until today, and it was not asked for. Worth deciding rather than drifting
+into.
+
+Two duplicated values, both intentional and both moved together:
+`tauri.conf.json`'s `minWidth`/`minHeight`, which macOS, Windows and X11
+enforce, and `MAIN_MIN_SIZE` in `src-tauri/src/lib.rs`, which is the only thing
+a Wayland session enforces. The comment on the constant says so; it is now
+`(1024.0, 800.0)`.
+
+The `onboarding` window is untouched at 1080x720 on a 760x560 floor. It is built
+in Rust rather than configured, it is a different surface, and nothing about the
+24-bucket chart applies to it.
+
+### Not changed: the bars are still 20px
+
+The same frame says the bar is **32px** wide on an **8px** gap.
+`metrics.tsx` draws `w-5` (20px) on `gap-1` (4px). The axis labels are already
+`w-8`, so with `justify-between` in a 944px chart the *labels* now land within a
+few tenths of a pixel of the drawn 39.667px step - which is why the width alone
+fixes the reported crowding. The bars themselves stay narrow until someone asks:
+it is a visual change to the chart rather than a window-size one, and this pass
+was about the window.
