@@ -68,7 +68,12 @@ pub fn providers() -> Vec<Provider> {
     vec![
         Provider {
             slug: "anthropic",
-            display_name: "Claude",
+            // The vendor, not the product. Its rows are named for the surface
+            // they cover now ("App", "Web", "CLI"), so the heading is the only
+            // thing left saying whose traffic this is - and "Claude" over a row
+            // reading "CLI" leaves a user guessing between Claude Code and
+            // claude.ai.
+            display_name: "Anthropic",
             subtitle: "Claude Code + Claude Desktop",
             tool_ids: &[ToolId::ClaudeCode],
             // Only the api.anthropic.com domain. The `claude-web` chat domain is
@@ -92,7 +97,27 @@ pub fn providers() -> Vec<Provider> {
             display_name: "OpenAI",
             subtitle: "Codex + OpenAI API",
             tool_ids: &[ToolId::Codex],
-            proxy_domain_slugs: &["openai"],
+            // Empty, and the `openai` domain's absence is the point.
+            //
+            // That entry is api.openai.com, and nothing in this family rides its
+            // switch. Codex is config-routed: in API-key mode it points at the
+            // relay, which resolves routes against the WHOLE catalog
+            // (`relay.rs` builds from `default_domains()`, not the enabled set),
+            // so Codex routes whether that switch is on or off. The ChatGPT
+            // desktop app talks to chatgpt.com, which is the `chatgpt` entry
+            // below. What the switch actually governs is MITM interception of
+            // api.openai.com for any system-proxy-honouring client - generic
+            // traffic, no OpenAI tool Gate configures.
+            //
+            // Its real dependants are the multi-provider harnesses: OpenClaw and
+            // Hermes blind-tunnel anything outside the enabled catalog, so this
+            // switch is what lets Gate see their OpenAI calls. It sits under
+            // Experimental with them now (`LEFTOVER_GROUPS` in
+            // `src/lib/groups.ts`), which is where its dependants are.
+            //
+            // Consequence worth stating: this family's switch now governs Codex
+            // alone. That is what it was already doing in effect.
+            proxy_domain_slugs: &[],
             // Same split as Claude above: a domain listed here gets a ledger row
             // under OpenAI and a switch of its own, and the family switch's
             // cascade never reaches it, because what these carry is the user's
@@ -1094,11 +1119,22 @@ mod tests {
     }
 
     #[test]
-    fn openai_provider_maps_to_codex_and_openai_domain() {
+    fn openai_provider_governs_codex_and_no_domain_at_all() {
+        // The `openai` domain used to hang here. It is api.openai.com, and no
+        // OpenAI tool Gate configures rides its switch: Codex routes through the
+        // relay, which resolves against the whole catalog rather than the
+        // enabled set, and the ChatGPT desktop app talks to chatgpt.com. What
+        // the switch governs is generic interception of that host, whose real
+        // dependants are the multi-provider harnesses - so the row moved to
+        // Experimental with them.
         let p = find("openai").expect("openai provider present");
         assert_eq!(p.display_name, "OpenAI");
         assert!(p.tool_ids.contains(&ToolId::Codex));
-        assert_eq!(p.proxy_domain_slugs, &["openai"]);
+        assert!(
+            p.proxy_domain_slugs.is_empty(),
+            "a domain here rejoins the family cascade, got {:?}",
+            p.proxy_domain_slugs
+        );
     }
 
     #[test]
@@ -1114,13 +1150,12 @@ mod tests {
         let p = find("openai").expect("openai provider present");
         assert!(!p.proxy_domain_slugs.contains(&"chatgpt"));
         assert!(!p.proxy_domain_slugs.contains(&"chatgpt-apps"));
-        assert_eq!(p.proxy_domain_slugs, &["openai"]);
     }
 
     #[test]
     fn anthropic_provider_maps_to_claude_code_and_anthropic_domain() {
         let p = find("anthropic").expect("anthropic provider present");
-        assert_eq!(p.display_name, "Claude");
+        assert_eq!(p.display_name, "Anthropic");
         assert!(p.tool_ids.contains(&ToolId::ClaudeCode));
         assert_eq!(p.proxy_domain_slugs, &["anthropic"]);
     }

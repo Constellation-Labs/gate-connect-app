@@ -331,17 +331,25 @@ mod tests {
     }
 
     /// The environment channel is registered like anything else, so sign-out and
-    /// the master-off sweep reach it. It is hidden for a different reason than
-    /// the harnesses: not "unvalidated", but "no correct home in a ledger that
-    /// groups by model family" - it is a mechanism, not a tool.
+    /// the master-off sweep reach it - and it is listed now.
+    ///
+    /// It was hidden because a ledger grouped by model family had no honest row
+    /// for a mechanism spanning every family. Experimental is that row: the
+    /// channel sits beside OpenCode, which cannot route without it, and turning
+    /// OpenCode on turns this on. A switch that flips something invisible is the
+    /// thing being fixed, so the listing is pinned rather than left to drift.
     #[test]
-    fn the_environment_channel_is_registered_and_hidden() {
+    fn the_environment_channel_is_registered_and_listed() {
         let slugs: Vec<&str> = registry().iter().map(|i| i.id().slug()).collect();
         assert!(
             slugs.contains(&"env-proxy"),
             "env-proxy must be registered so cleanup reaches it, got {slugs:?}"
         );
-        assert!(hidden_in_ui_slugs().contains(&"env-proxy"));
+        assert!(
+            !hidden_in_ui_slugs().contains(&"env-proxy"),
+            "env-proxy is the Terminal tools row; hiding it makes the OpenCode \
+             prompt promise something the user cannot see"
+        );
         assert_eq!(ToolId::from_slug("env-proxy"), Some(ToolId::EnvProxy));
     }
 }

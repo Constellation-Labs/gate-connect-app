@@ -68,7 +68,9 @@ use std::path::{Path, PathBuf};
 use crate::integrations::dotenv;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
-const DISPLAY_NAME: &str = "Hermes";
+/// The row label. Hermes is its own family on the ledger, so the heading
+/// says "Hermes" and this says which of its surfaces the row is.
+const DISPLAY_NAME: &str = "CLI";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";

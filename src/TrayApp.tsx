@@ -22,7 +22,7 @@ import { useRouting } from "./lib/useRouting";
 import { useRunningApps } from "./lib/useRunningApps";
 import { classifyError } from "./lib/errors";
 import type { ClassifiedError, ErrorContext } from "./lib/errors";
-import { MULTI_PROVIDER_ID, buildGroups } from "./lib/groups";
+import { buildGroups } from "./lib/groups";
 import type { Group } from "./lib/groups";
 import { proxyMemberStatus, verdictStatus, verdictsBySlug } from "./lib/verdict";
 import { openExternal } from "./lib/openExternal";
@@ -436,7 +436,7 @@ export function TrayApp() {
       if (members.length === 0) continue;
       grouped.push({
         id: g.id,
-        label: g.id === MULTI_PROVIDER_ID ? g.name : (vendor ?? g.name),
+        label: g.multiProvider ? g.name : (vendor ?? g.name),
         apps: members,
       });
     }

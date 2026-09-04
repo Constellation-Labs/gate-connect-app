@@ -15,15 +15,23 @@ pub fn default_domains() -> Vec<ProxyDomain> {
     vec![
         ProxyDomain {
             slug: "anthropic".into(),
-            // Named for what its SWITCH covers, not for the vendor: the
-            // entry is the system-proxy route for the desktop apps, and its
-            // switch is theirs alone. Claude Code reaches the same host, but
-            // through its own configured proxy URL, whose route selector makes
-            // the engine apply this entry whatever the switch says (see
-            // `claude_code_route_domain`) - so a vendor name here would read as
-            // a promise this switch does not make. The host line carries
-            // api.anthropic.com.
-            display_name: "Claude Desktop / Cowork".into(),
+            // Named for the SURFACE it covers, not for the vendor. Every row
+            // sits under a family heading that already says "Anthropic", so the
+            // label's whole job is to separate the desktop apps from the browser
+            // tab and the terminal - "App", "Web", "CLI". The sentence that
+            // spells each one out lives with the UI copy (`src/lib/groups.ts`),
+            // because it is a description of the surface rather than a fact the
+            // catalog knows.
+            //
+            // The old vendor-shaped name was wrong for a second reason worth
+            // keeping: this entry is the system-proxy route for the desktop
+            // apps, and its switch is theirs alone. Claude Code reaches the same
+            // host, but through its own configured proxy URL, whose route
+            // selector makes the engine apply this entry whatever the switch
+            // says (see `claude_code_route_domain`) - so a vendor name here
+            // would read as a promise this switch does not make. The host line
+            // carries api.anthropic.com.
+            display_name: "App".into(),
             // Inference for Claude Code, Claude Desktop, and Cowork all goes
             // to api.anthropic.com /v1/messages (OAuth bearer or API key),
             // confirmed against a real Cowork generation. a-api.anthropic.com
@@ -80,7 +88,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // the conversation history server-side. Gate recognises it as the
             // `claude-web-chat` surface and treats it as inspection + audit, not
             // as key-brokered routing: there is no API key involved at all.
-            display_name: "Claude Desktop chat".into(),
+            display_name: "Web".into(),
             hosts: vec!["claude.ai".into()],
             // The `/api` MUST ride in the upstream URL, not the forwarded path,
             // for the same reason it does on OpenRouter below: Gate's ALB routes
@@ -144,10 +152,37 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         },
         ProxyDomain {
             slug: "openai".into(),
-            // "apps", not the vendor name: covers any system-proxy-honoring
-            // client of api.openai.com, and must not read as including Codex
-            // (config-routed; its embedded agent ignores the system proxy).
-            display_name: "OpenAI apps".into(),
+            // "OpenAI API", not "OpenAI apps" and not the vendor name: this is
+            // the API HOST, and what the row is about is which host Gate
+            // intercepts. It must not read as including Codex (config-routed;
+            // its embedded agent ignores the system proxy) or the ChatGPT
+            // desktop app (on chatgpt.com).
+            //
+            // The host itself is deliberately NOT in the label. The popover row
+            // already prints `api.openai.com` in its own mono identifier slot -
+            // duplicating it in a sans label would say it twice there and break
+            // the rule that identifiers are mono. It goes in the row's
+            // description instead (`MEMBER_DESCRIPTIONS` in
+            // `src/lib/groups.ts`), which is a full line in the window UI, where
+            // the host appears nowhere else.
+            //
+            // Not in the OpenAI family at all any more, and not on its
+            // surface-kind naming. This is the generic API host: nothing OpenAI
+            // ships rides its switch. Codex is config-routed through the relay,
+            // which resolves against the whole catalog rather than the enabled
+            // set, so it routes whatever this says; the ChatGPT desktop app is
+            // on chatgpt.com and is the `chatgpt` entry below. What flipping
+            // this does is intercept api.openai.com for any system-proxy-
+            // honouring client - which in practice means the multi-provider
+            // harnesses, since OpenClaw and Hermes blind-tunnel anything outside
+            // the enabled catalog. So the row sits under Experimental with them
+            // (`LEFTOVER_GROUPS` in `src/lib/groups.ts`), and `provider.rs` no
+            // longer lists this slug.
+            //
+            // Not on the family's surface-kind scheme ("App" there means the
+            // ChatGPT desktop app) because it is not in that family and not a
+            // product surface at all - it is a host.
+            display_name: "OpenAI API".into(),
             // The OpenAI API host. Catches OpenAI-compatible clients that
             // honor the macOS system proxy and hit /v1/. Note: the Codex
             // desktop app's model calls come from its embedded Rust agent,
@@ -174,7 +209,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         },
         ProxyDomain {
             slug: "chatgpt-apps".into(),
-            display_name: "ChatGPT app chat + Codex tools".into(),
+            display_name: "Web".into(),
             // Codex Desktop's TOOL traffic, which is a separate route from the
             // `chatgpt` entry below even though both name chatgpt.com.
             //
@@ -272,7 +307,7 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         },
         ProxyDomain {
             slug: "chatgpt".into(),
-            display_name: "ChatGPT (Codex subscription)".into(),
+            display_name: "App".into(),
             // The Responses API a ChatGPT-subscription login talks to:
             // chatgpt.com/backend-api/codex/responses, bearer = the user's
             // ChatGPT OAuth token, passed through. TWO clients arrive here by
@@ -314,7 +349,13 @@ pub fn default_domains() -> Vec<ProxyDomain> {
         },
         ProxyDomain {
             slug: "openrouter".into(),
-            display_name: "OpenRouter apps".into(),
+            display_name: "Proxy".into(),
+            // "Proxy", not a vendor name: this family has exactly one row and
+            // the heading over it already reads "OpenRouter", so the label says
+            // by what mechanism it routes. OpenRouter has no Gate Connect
+            // integration and no chat surface, so unlike the families above
+            // there is no App/Web/CLI split to make.
+            //
             // OpenRouter's API lives at openrouter.ai/api/v1/* (OpenAI-shaped
             // chat/completions). Opt-in like OpenAI; intercepts OpenRouter
             // clients that honor the system proxy.
