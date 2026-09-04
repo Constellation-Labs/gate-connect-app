@@ -900,8 +900,14 @@ export function ModelPickerDialog({
            *  decision rather than an omission, and be able to overrule it. */}
           {setAside > 0 && (
             <p className="flex flex-wrap items-baseline gap-x-2 text-base-xs leading-4 text-base-muted-foreground">
+              {/* The sentence follows the override. Under "Show anyway" these
+                *  rows ARE on screen, so "not shown" contradicts both the list
+                *  and the "Hide them" control beside it. The reason is worth
+                *  saying in either state: it is why they were set apart at all,
+                *  and it is the same sentence whether or not they are visible. */}
               <span>
-                {setAside} {setAside === 1 ? "model is" : "models are"} not shown
+                {setAside} {setAside === 1 ? "model is" : "models are"}{" "}
+                {showAll ? "shown but cannot serve this app" : "not shown"}
                 {asideReason ? `: ${explain(asideReason, appName)}` : "."}
               </span>
               <button
@@ -981,7 +987,7 @@ export function ModelPickerDialog({
           <ModalNote>
             {emptyDraft ? (
               <>
-                <p className="font-medium text-neutral-900">No models enabled</p>
+                <p className="font-medium text-base-foreground">No models enabled</p>
                 <p className="mt-1">
                   Gate needs at least one model to serve this app. Choose one, or cancel
                   and switch the app back to App default.

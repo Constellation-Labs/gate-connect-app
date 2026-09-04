@@ -806,6 +806,12 @@ test.describe("new UI model picker compatibility", () => {
 
     await expect(dialog.getByRole("checkbox")).toHaveCount(4);
     await expect(dialog.getByRole("checkbox", { name: "openai/gpt-4o" })).toBeVisible();
+
+    // The sentence follows the override. Saying "not shown" here would
+    // contradict both the rows on screen and the "Hide them" control beside it,
+    // and nothing asserted this state before, which is how it drifted.
+    await expect(dialog.getByText(/not shown/)).toHaveCount(0);
+    await expect(dialog.getByText(/cannot serve this app/)).toBeVisible();
   });
 
     });
