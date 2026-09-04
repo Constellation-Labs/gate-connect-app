@@ -28,19 +28,25 @@ import type { IconName } from "./Icon";
  */
 
 /**
- * The design draws a fourth entry, Contact support, and it is not here.
+ * All four drawn entries, in the drawn order: dashboard, support, docs, quit
+ * (`116:27225`, and the `topnav/menu` component `744:37692` draws the first
+ * three).
  *
- * `GATE_SUPPORT_URL` does exist in `lib/config.ts`, and it 404s - so there is
- * still nothing to open. An entry that cannot do anything is worse than an
- * absent one, because the user cannot tell "not built" from "broken", and one
- * that opens a broken page is worse again. `SettingsPane` omits its Support row
- * for the same reason. Add both back together once there is a real address; see
- * that constant for what has to change (AG-598).
+ * **Contact support ships before its URL works, by decision (2026-09-04).**
+ * It was omitted on the argument that an entry opening a 404 is worse than an
+ * absent one, since the user cannot tell "not built" from "broken". Overruled:
+ * the entry is drawn in both the component and the flow, and the address is
+ * being fixed. `GATE_SUPPORT_URL` still points at a page that 404s today, so
+ * do not treat a report of that as this being unfinished (AG-598).
+ *
+ * `SettingsPane` keeps its Support row omitted, and that is not the same
+ * decision: no Settings frame draws one.
  */
-export type TopnavAction = "dashboard" | "docs" | "quit";
+export type TopnavAction = "dashboard" | "support" | "docs" | "quit";
 
 const MENU_ITEMS: { action: TopnavAction; icon: IconName; label: string }[] = [
   { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
+  { action: "support", icon: "headset", label: "Contact support" },
   { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
 ];
 

@@ -118,7 +118,7 @@ when the click would leave the tool with no model.
 
 ---
 
-## 4. Does the topnav menu have Quit, or Contact support?
+## 4. ANSWERED - the menu has both, and the component is unlinked
 
 **Found first, so this question could be asked at all.** We had this down as
 "the component library has been deleted", because the old Components page
@@ -153,11 +153,22 @@ which is why it never gained Quit when the flow copies did, and why
 relationship to arbitrate. The copies are what is being maintained, and the
 code follows them. That part is settled.
 
-**What we need.** Only the smaller half now: is Contact support meant to ship
-before there is an address for it to open? (We omit it because
-`GATE_SUPPORT_URL` 404s - AG-598.) And if `744:37692` is meant to be the
-library component, it needs relinking, or deleting so it stops looking
-authoritative.
+**Answered 2026-09-04 on both halves.**
+
+**Quit stays**, because the component is not the source of anything (above).
+
+**Contact support now ships**, URL notwithstanding. It is drawn in the
+component and in the flow copy (`116:27225`, four items), and it is in the menu
+pointing at `GATE_SUPPORT_URL` even though that address 404s today. The
+argument it overruled - that an entry opening a broken page is worse than an
+absent one, since the user cannot tell "not built" from "broken" - is recorded
+on `TopnavAction` so it is not re-litigated.
+
+`SettingsPane` keeps its Support row omitted, which is a different call: no
+Settings frame draws one.
+
+Still open, as housekeeping: if `744:37692` is meant to be the library
+component it needs relinking, or deleting so it stops looking authoritative.
 
 ---
 
@@ -312,7 +323,7 @@ arrangements.
 
 ---
 
-## 12. Should the onboarding window be 1024 wide?
+## 12. ANSWERED - 1080 is the intended onboarding width
 
 **What we see.** The file annotates the app at **1024x720** (`App dimensions:
 1024x720px`, plus `1024px` and `720px` dimension labels on
@@ -321,12 +332,15 @@ arrangements.
 **Why it matters.** The intro window ships at 1080x720, so onboarding is 56px
 wider than everything drawn. Nothing in the file is drawn at 1080.
 
-**What we need.** Should onboarding match at 1024, or is it deliberately wider?
+**Answered 2026-09-04: 1080 is right.** The intro window is deliberately wider
+than the 1024 every flow frame is drawn at, and `lib.rs`'s 1080x720 stays as it
+is. Recorded because it looks exactly like drift and an audit will find it
+again.
 
-Related, and easier: the file never states a **minimum** size. We have locked
-the main window at 1024x720 so it can never render below a drawn size. Tell us
-if you would rather it shrink further, and we will reason about the layout
-below 1024.
+Still open, and smaller: the file never states a **minimum** size. We have
+locked the main window at 1024x720 so it can never render below a drawn size.
+Tell us if you would rather it shrink further and we will reason about the
+layout below 1024.
 
 ---
 
@@ -363,7 +377,7 @@ sits above every screen, so we would rather it were deliberate.
 
 ---
 
-## 15. Is there meant to be a dot pattern behind the update banner?
+## 15. ANSWERED - the dot pattern is real
 
 **What we see.** The banner's `dot-matrix-light` layer (in `744:37750`) is an
 **empty frame**. We rendered both the component and the flow instance
@@ -374,8 +388,14 @@ and we cannot find a source for it. The gradient underneath it is confirmed
 correct. Either the pattern was intended and is not rendering in the file, or
 we invented it.
 
-**What we need.** Should the dots be there? If yes we will keep ours and you
-may want to restore the layer; if no we will remove them.
+**Answered 2026-09-04: the pattern is visible in Figma, so our dots stay.**
+
+Worth recording how we got this wrong, because the file cannot be used to check
+it: `dot-matrix-light` reads as an **empty frame** over the API, and rendering
+both the component and the instance at 1:1 and sampling the pixels finds a flat
+gradient with no periodic variation. Whatever carries the pattern does not
+survive the export. Noted in `banners.tsx` too, so the next audit does not
+delete the dots on the same evidence.
 
 ---
 

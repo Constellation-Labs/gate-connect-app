@@ -24,6 +24,15 @@ import { Icon } from "./Icon";
  * over solid 900, replacing the old vertical pair. The design's dot matrix is
  * approximated here as a CSS radial-gradient rather than shipping the Figma
  * raster.
+ *
+ * **The dots are correct - do not remove them.** `dot-matrix-light` reads as
+ * an EMPTY frame over MCP, and rendering both the component and the instance
+ * (`228:85974`) at 1:1 and sampling the pixels finds a flat gradient with no
+ * periodic variation. An audit on 2026-09-03 concluded on that evidence that
+ * the pattern might be ours alone. It is not: the designer confirmed the
+ * pattern is visible in Figma (2026-09-04). Whatever carries it does not
+ * survive the export, so the file cannot be used to check this one - which is
+ * exactly why it is written down here.
  */
 export function UpdateBanner({
   version,

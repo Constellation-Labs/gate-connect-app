@@ -68,6 +68,7 @@ import {
   GATE_DOCS_URL,
   GATE_POLICIES_URL,
   GATE_SAVINGS_URL,
+  GATE_SUPPORT_URL,
 } from "./lib/config";
 import { hasSeenTour, markTourSeen } from "./lib/tour";
 import { hasSeenOAuthOffer, markOAuthOfferSeen } from "./lib/oauthOffer";
@@ -1565,11 +1566,11 @@ export function NewUiApp() {
         },
         onRetryPreferences: () => void loadPreferences(),
         onOpenDocs: () => openLink(GATE_DOCS_URL),
-        // No `onContactSupport`, so the row is omitted. `GATE_SUPPORT_URL` does
-        // exist in `lib/config.ts` - but it 404s, so there is still nothing to
-        // open, and a button that opens a broken page is worse than an absent
-        // one. The topnav's Contact support entry is dark for the same reason.
-        // See that constant for what has to change first (AG-598).
+        // No `onContactSupport`, so the row is omitted - and this is NOT the
+        // same call as the topnav's. No Settings frame draws a Support row, so
+        // there is nothing to match here; the menu entry is drawn in two
+        // places and now ships despite `GATE_SUPPORT_URL` 404ing (see
+        // `TopnavAction`). Draw one and this gets it too.
 
         // The tutorial is its own window, already built and wired.
         onReplayTutorial: () => void openOnboardingWindow("settings"),
@@ -1682,6 +1683,9 @@ export function NewUiApp() {
     (action: TopnavAction) => {
       setMenuOpen(false);
       if (action === "dashboard") openLink(GATE_DASHBOARD_URL);
+      // Drawn in the menu and shipped even though the address 404s today; the
+      // decision and the reasoning it overruled are on `TopnavAction`.
+      else if (action === "support") openLink(GATE_SUPPORT_URL);
       // The docs entry was drawn, listed and dead: `GATE_DOCS_URL` is the same one
       // the Settings row opens.
       else if (action === "docs") openLink(GATE_DOCS_URL);
