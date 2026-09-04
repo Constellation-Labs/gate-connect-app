@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { activityToolEvents } from "./api";
 import { toFailure, type ActivityFailure } from "./activity";
 import type { ActivityEntry } from "./toolEventRow";
+import type { IconName } from "../components/gc/Icon";
 
 /**
  * Adapter between `GET /v1/me/tool-events` and the app pane's activity feed
@@ -100,6 +101,30 @@ function eventTime(at: string): string {
   return `${date}, ${time}`;
 }
 
+/**
+ * Glyphs for the guardrail categories, keyed by what the gateway sends.
+ *
+ * The same trio the frames draw - `Icon / ShieldAlert`, `Icon / UserRound`,
+ * `Icon / KeyRound` - and the same glyphs `POLICY_ICONS` puts on the Overview
+ * policy rows, because it is one taxonomy read on two surfaces. Both the
+ * gateway's own spellings and the policy row ids are keyed, since the two
+ * vocabularies have not been reconciled and only `pii` is evidenced in a
+ * fixture.
+ *
+ * Anything unrecognised falls back rather than drawing nothing: the frame puts
+ * a glyph in every Type cell, and a ragged column reads worse than a generic
+ * shield. Same fallback `POLICY_ICONS` uses.
+ */
+const CATEGORY_ICONS: Record<string, IconName> = {
+  pii: "userRound",
+  "pii-phi": "userRound",
+  injection: "shieldAlert",
+  "prompt-injection": "shieldAlert",
+  credentials: "key",
+};
+
+const CATEGORY_FALLBACK: IconName = "shieldCheck";
+
 /** One row, formatted. */
 function toEntry(raw: RawEvent): ActivityEntry {
   return {
@@ -109,6 +134,10 @@ function toEntry(raw: RawEvent): ActivityEntry {
     // `allow` is the honest default *only* when the gateway answered. A null
     // action is unknown to us and renders as a dash, not as a verdict.
     security: raw.securityAction ? SECURITY[raw.securityAction] : null,
+    category: raw.securityCategory,
+    categoryIcon: raw.securityCategory
+      ? (CATEGORY_ICONS[raw.securityCategory] ?? CATEGORY_FALLBACK)
+      : null,
     model: raw.model ?? NO_MODEL,
     provider: raw.provider,
     title: raw.conversationTitle,

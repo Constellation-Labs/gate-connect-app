@@ -2769,3 +2769,191 @@ no activity command, so a browser run cannot reach a figure at all; teaching it
 `activity_overview` would also start answering the *window's* Overview, which
 several specs currently assert the unavailable states of. Not worth reopening
 those to cover what thirteen unit tests already pin.
+
+## Design sync 2026-09-04: the twelve open questions, answered
+
+All twelve questions raised at the last Figma pass came back from design in one
+sitting. Six changed the code, three were already right, three closed with no
+work. What each resolved to, and where it landed:
+
+| # | Question | Answer | Code |
+| --- | --- | --- | --- |
+| 1 | Mono or sans for identifiers? | **Sans.** Mono is reserved for eyebrows and pill labels, nothing else. Plus a standing rule Figma cannot express: *"always use tabular nums on numbers"*. | Changed |
+| - | *(this is the question `#208` left open as "contested and unresolved", with instructions to keep mono until it came back. It came back.)* | | |
+| 2 | OpenCode's model card | Multi-select is real, and the picker now has a **single-select mode** too. | Changed |
+| 3 | Picker auto-close or confirm? | Both, split by mode - see below. | Changed |
+| 4 | `size=default` radius | Answered for **cards**: 8px outer, 4px inner. The `Button` component's own value was not answered. | Changed (cards) |
+| 5 | 536px quit dialogs | *"dialogs should all be centered"* - so 536 was a dragged edge, not a width. | Changed |
+| 6 | Notifications: one row or three? | Ignore the question; the three-row split stays. | No change |
+| 7 | Picker copy | New title, subtitle and `Apply selections`; no unselect-all; **Apply refuses until a selection actually changes**. | Changed |
+| 8 | Two undrawn onboarding paragraphs | Closed without an answer; both stay. | No change |
+| 9 | Tray tracking slips | `label/copy-12` and `-14` are **-1%**, `label/copy-16` is **-2%**. `heading/16` is a different style and stays -1%. | Changed |
+| 10 | "Routing" or "Routed"? | Banner "partly routing", pill "Partly routed", nav rows "Not routed". | Already correct |
+| 11 | Tooltip heading | `HH:00`. | Already correct |
+| 12 | Redacted swatch | violet-500, not purple-500. Confirmed three ways in the token export. | Already correct |
+
+### 1 - identifiers are sans, and numbers are tabular
+
+This reverses the rule CLAUDE.md had carried since the first pass. The four
+identifier classes the question named are drawn in the UI face on every frame,
+and design confirmed that is deliberate: mono marks an eyebrow or a pill label
+and nothing else. `font-mono` came off the config path, the picker's model rows,
+the model list in `UseGateModelDialog`, the `identity` row's id, the App pane's
+model id and activity reference, the sidebar's scan time, the update banner's
+version, the chart's axis ticks, and the two key/URL input fields (whose `mono`
+prop is gone rather than left unused).
+
+Two things kept it, and neither is an identifier: the diagnostics report's
+`<pre>`, for which the file names its own `mono/body-14` style, and the raw
+backend error string under a Details disclosure. Both are machine output.
+
+The sidebar and tray **eyebrow counters** also kept it. The comment on
+`Sidebar.tsx` records them as sampled off the frame at Geist Mono Regular on
+2026-08-23, they sit on the eyebrow's own line, and "the file wins" applies -
+so flipping them on an inference about a rule aimed at identifier *values* was
+not this pass's call. Raise it if design disagrees; they get tabular figures
+either way, which is what the alignment argument actually wanted.
+
+`tabular-nums` is set once per new-UI root - `AppShell`, `Tray`, `Onboarding` -
+rather than on each figure. "Always" is what was asked for, and a root class is
+the only version of it a later figure cannot miss.
+
+**Landed on top of `#208`.** Matheus's model-selection work (`c630e9c`) went in
+while these answers were being applied, and it reworks the same picker. Its
+implementation is the base - compatibility filtering, the dev pin list, AG-590
+enforced on the primary rather than on the row - and design's answers are
+layered onto it. Where the two disagreed, the answer won and the reason is in
+the section below.
+
+### 2, 3 and 7 - the picker has two modes now
+
+`ModelPickerDialog` takes `multiple`, defaulting to `true` because that is what
+every tool does today. It is not a glyph switch; the two modes are different
+interactions, which is also what settles question 3's contradiction:
+
+- **Multiple** draws the frame's square checkbox per row and keeps `Cancel` /
+  `Apply selections`. The primary is now refused until the draft is a different
+  *set* from the one already applied - design, unprompted: *"if they open the
+  modal after selections are applied, then the apply button is disabled"*.
+  Compared as a set, not a sequence: reordering the same models is not a change
+  to write. That sits alongside `#208`'s empty-draft refusal, which is where
+  AG-590's "the final model cannot be removed" now lives; both guard the
+  primary, so the row itself stays freely clearable.
+- **Single** draws a circle-check on the highlighted model and nothing on the
+  others, has no button row at all, and applies on the click - the new
+  selection highlights, the old one un-highlights, the dialog closes. Neither
+  guard applies: single-select cannot reach an empty set, and every click writes
+  exactly one model.
+
+Copy is design's: title `Choose Gate models` / `Choose a Gate model` by mode,
+subtitle `<App> will be able to use these models` in both, primary `Apply
+selections`.
+
+**`Unselect all` is gone**, and that one is design removing its own control:
+*"there isn't a select all option ... they can always cancel and start over, as
+the selects are only applied with the button"*. `#208` had added it from Figma
+682:20043 and hung the draft count on it, so three of its e2e cases and the
+count row went with it - the checked rows state the set now, and the footer
+states the consequence. Note the reason `#208` gave for moving AG-590 off the
+row ("that cannot coexist with Unselect all") is moot as a result; the
+placement stands anyway, because the primary is where the write happens.
+
+**`multiple={false}` has no call site yet.** Nothing in the backend model says
+which tools are single-model: `model_ids` is a list for every tool. Wiring it up
+waits on the multi-model question with Matheus.
+
+### 4 - a card inside a card drops to 4px
+
+Design counted every card in the file: Overview 67, Settings 65, App 41, Sandbox
+51, all 8px. The only 4px nodes are three inner frames in the App page's model
+stack, which is exactly `ModelChoiceRow` x2 and `CurrentModelRow` - all three
+were drawing `rounded-lg` (10px), a radius the design scale does not contain.
+
+The picker's list is the worked example design actually cited, so it is an 8px
+card now (it drew 10px) and its rows are 4px. `#208` had read the frame as
+drawing the *chosen* row at 4px and the others looser, and commented it that
+way; the rule overrides that, since these rows are inner cards. The selection
+still reads - it carries the muted ground and a real border - it just no longer
+changes shape.
+
+One `rounded-lg` survives, on the App pane's amber drift note. It is a note
+rather than a card and design's answer did not reach it; flagged, not changed.
+
+The question as asked was about the `Button` component set (685:20928) and did
+not get an answer, so the pane-4 / dialog-8 button rule stands on the frames as
+before.
+
+### 5 - there is no 536
+
+Both quit-confirmation frames sit with their left edge at 255.64, which is
+exactly where a 512 centred in 1024 starts, with the right edge 24px past
+centre. *"Dialogs should all be centered"* settles it: they are off-centre 512s,
+and `ModalWidth` is back to the four widths CLAUDE.md always claimed it had.
+Every dialog was already centred in markup, so nothing moved but the width.
+
+`#208` had gone the other way, documenting 536 as measured and warning that "a
+scan that filters for centred frames will report no 536 anywhere and be wrong".
+The measurement was right; it was the inference about intent that design
+overturned. Worth keeping both halves in CLAUDE.md so the next reader does not
+re-derive the frame and re-add the width.
+
+### 9 - tracking belongs to the size
+
+The reported slip was `label/14` drawn at both 0% and -1%, which is what happens
+when a text style is split across a size class and a separate `tracking-*` that
+a call site can forget. So the three values live in the `fontSize` tuples now -
+`text-base-xs`, `text-sm` and `text-base` carry -0.12px, -0.14px and -0.32px -
+and cannot be forgotten. Tailwind emits `letterSpacing` utilities after
+`fontSize` ones, so `tracking-eyebrow` and `tracking-label` still win on the
+eyebrows and pills that draw at those sizes; verified against built CSS rather
+than assumed.
+
+Safe to redefine Tailwind's own `sm` and `base` because neither reaches the
+popover: `App.tsx`, `screens/Home.tsx` and `gc/ui.tsx` size themselves entirely
+off the `gc-*` ramp. Both keep Tailwind's default line-height, so no leading
+moved.
+
+`#208` had answered the same report the other way, adding named
+`tracking-label-12` / `-14` tokens and using them at 27 call sites. Both stay:
+the named tokens mirror the Figma variables one-to-one, which is this file's
+convention, and the tuples are the floor under them rather than a replacement.
+They agree on 12 and 14 to the value.
+
+**`heading/16` is a separate style at -1%, and that is the correction to make
+here.** `#208` verified it off the frames (`card/policies` 116:26707 and
+siblings draw their titles 24px tall) and put `tracking-heading-16` on the
+Settings and Overview card headings. Design's -2% answer named `label/copy-16`,
+not `heading/16`, so both hold and the headings keep their override - the -2%
+default is for `copy/16` body text. The one call site design's answer governs
+directly is the onboarding block already commented `copy/16`, which lost its
+`tracking-heading` (that was `heading/20`'s -1% on 16px text, a mismatch
+predating the question).
+
+This was checked against Figma before deciding, and the check was
+**inconclusive**: MCP exposes only the `Design docs` page now, whose token
+export carries no `letterSpacing` at all - `label/N`, `copy/N`, `heading/N` and
+`mono/eyebrow` are text styles rather than variables in those collections, and
+the Flows pages remain invisible to MCP. The resolution above rests on `#208`'s
+frame reads plus the fact that design named only `label/copy`. Worth one line of
+confirmation.
+
+The three wordmarks keep their measured `tracking-[-0.16px]` literal. The lockup
+is 16px semibold at -1% and is neither `label/copy-16` nor a heading, so letting
+the new `text-base` default take it to -2% would have been a change on no
+evidence. The tray's two hardcoded `tracking-[1.12px]` runs became
+`tracking-eyebrow-14`, the same value under its own name, which is the other
+half of what question 9 reported.
+
+### What the Figma check did settle
+
+The `Design docs` page independently confirms **question 12**: `--color-chart-4`
+is `--tw-violet-500`, `tokens.json` gives `chart.4` as `#8b5cf6`, and `design.md`
+spells out "4 - Redacted: violet-500 (#8b5cf6)". Three agreeing sources, so
+`#208`'s note parking this one as unresolved can be closed.
+
+It also flags something for later: the same export gives **chart 2 (Blocked) as
+red-500 `#ef4444`**, while `#208` moved it to red-400 `#f87171` on two frame
+nodes. The export was generated 2026-08-20 and those nodes are newer, so
+"match what the frame renders" points at red-400 and nothing was changed here -
+but the token export still disagrees, which is worth knowing before anyone
+samples it again.

@@ -1493,6 +1493,66 @@ fn restore_after_repair(window: &tauri::Window) {
     });
 }
 
+/// The main window's floor, in logical pixels.
+///
+/// Duplicated from `tauri.conf.json`'s `minWidth`/`minHeight` on purpose: the
+/// config is what macOS, Windows and X11 enforce, and this is the only thing a
+/// Wayland session enforces. The two have to be changed together.
+#[cfg(target_os = "linux")]
+const MAIN_MIN_SIZE: (f64, f64) = (1024.0, 720.0);
+
+/// Hold the main window at its configured minimum, because on Wayland nothing
+/// else will.
+///
+/// tao asks for a minimum with `gtk_window_set_geometry_hints` and
+/// `GDK_HINT_MIN_SIZE` (`tao-0.35.3/src/platform_impl/linux/util.rs:58`), which
+/// is the X11 `WM_NORMAL_HINTS` mechanism. GTK never translates those hints into
+/// the compositor's `xdg_toplevel.set_min_size`, so under Wayland the config's
+/// floor is advisory and a drag goes straight through it - the window shrinks
+/// until the 256px rail and the content pane are sharing 300px. X11, macOS and
+/// Windows honour the config and never reach this function.
+///
+/// Converges rather than loops: the clamp only fires *below* the floor, and the
+/// resize it asks for is *at* the floor, which does not fire it again. The
+/// snap-back is visible mid-drag on Wayland, and that is the whole trade - the
+/// compositor owns interactive resize, so the choice is a snap or no floor.
+#[cfg(target_os = "linux")]
+fn clamp_to_minimum(window: &tauri::Window) {
+    // The decoration repair drives this window through a maximise deliberately
+    // and restores a size of its own afterwards; clamping mid-repair would be
+    // two things fighting over the same geometry.
+    if DECOR_RESTORE_PENDING.load(Ordering::Acquire) {
+        return;
+    }
+    // Maximised and fullscreen bounds belong to the compositor, and both are
+    // larger than the floor anyway.
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    if scale <= 0.0 {
+        return;
+    }
+    let (width, height) = (size.width as f64 / scale, size.height as f64 / scale);
+    let (min_width, min_height) = MAIN_MIN_SIZE;
+    // A pixel of tolerance, because a logical size that has been through
+    // physical pixels at a fractional scale factor comes back a hair under the
+    // number it went in as, and clamping on that would resize a window nobody
+    // touched.
+    if width >= min_width - 1.0 && height >= min_height - 1.0 {
+        return;
+    }
+    let _ = window.set_size(tauri::LogicalSize::new(
+        width.max(min_width),
+        height.max(min_height),
+    ));
+}
+
 /// Re-check [`restore_after_repair`] on a timer, for the case where the
 /// configure is the last event the window sees.
 ///
@@ -2579,6 +2639,19 @@ struct RunningAgentsDto {
 /// `(async)` for the same reason as [`diagnostics`]: this walks the whole
 /// process table, and a sync command would do that on the main thread - the
 /// GTK loop on Linux - with the popover frozen until it returns.
+/// `only` narrows the scan to the processes belonging to those tool slugs.
+///
+/// Omitted means every agent, which is right for a master toggle: it changed
+/// the route for all of them, and all of them are stale until they restart. It
+/// is wrong for a single tool - offering to close Claude because someone
+/// switched Codex names processes the change did not touch, and asks to kill
+/// work for no reason.
+///
+/// A slug with no process to look for contributes nothing rather than widening
+/// the scan back to everything. `agent_process_name` covers the three tools this
+/// scan knows; OpenClaw and Hermes have none, and a filter that silently fell
+/// back to "all" for them would reintroduce exactly this bug for the tools it
+/// least applies to.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command(async)]
 fn running_agents(only: Option<Vec<String>>) -> RunningAgentsDto {
@@ -2746,10 +2819,18 @@ fn unpin_popover() {
 
 /// Pin the popover open for the duration of a call that raises a system trust
 /// dialog. Without this, `proxy_trust_ca` is the one action in the app that
-/// hides the window it was clicked in: the OS dialog takes focus, the
+/// hides the window it was clicked in: the OS dialog takes focus, a
 /// `Focused(false)` handler hides the popover, and the copy telling the user
-/// what to click goes with it. The frontend pins before the call and unpins
-/// in its `finally`, so a cancelled dialog restores click-away dismissal too.
+/// what to click goes with it.
+///
+/// **That handler does not currently exist**, and neither does the dismissal
+/// this guards against. There is no `Focused(false)` arm anywhere in this
+/// file, so [`POPOVER_PINNED`] is written at four sites and read at none, and
+/// the tray sits over every other window until the icon is clicked again. Kept
+/// rather than deleted because the two commands are still called by the
+/// retiring `src/App.tsx` shell and because the pin is what a blur-dismiss
+/// would need on the day one lands. Whether it should is a product question,
+/// raised in `docs/figma-questions-for-design.md`.
 #[tauri::command]
 fn pin_popover() {
     POPOVER_PINNED.store(true, Ordering::Release);
@@ -2987,7 +3068,12 @@ fn open_cf_challenge_window(app: &tauri::AppHandle) {
 /// Deliberately does not reposition. This is a 1024x720 window, not a tray
 /// popover: moving it out from under the user's cursor on every reveal is
 /// exactly what a window must not do.
+/// Also clears [`POPOVER_VISIBLE`]: handing over to the main window means the
+/// tray is going away, and `TrayApp` hides itself with a frontend
+/// `getCurrentWindow().hide()` that Rust never sees as a window event. Without
+/// this the flag leaked `true` past every Expand-app and every Quit.
 fn reveal_popover_window(app: &tauri::AppHandle) {
+    POPOVER_VISIBLE.store(false, Ordering::Release);
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -3174,6 +3260,19 @@ fn anchor_at_cursor(window: &tauri::WebviewWindow, cursor: PhysicalPosition<f64>
 /// swallowed, so the frontend sweeps [`pending_quit_tools`] at mount and on
 /// each `quit-requested` nudge (mirrors the backend-error seam).
 fn request_quit(app: &tauri::AppHandle) {
+    // **Linux exits outright, and that is correct.** It looks like the flow
+    // being skipped on one platform, and it is not: there the engine is a
+    // DETACHED helper daemon that outlives this process (see the note at
+    // `LAUNCH_AT_LOGIN`-adjacent code, "on Linux the engine lives in a
+    // detached helper daemon", and "Linux has no exit-time safe point - the
+    // RunEvent::Exit handler is macOS/Windows-only"). Quitting the GUI there
+    // stops nothing: routing continues, no config is left aimed at a dead
+    // relay, and so there is no question to ask. Asking would be worse than
+    // silent - the "disconnect and quit" branch would tear down routing the
+    // user never needed to lose.
+    //
+    // I removed this gate once, reasoning from the docstring above and from
+    // AG-596, and it was a regression. Do not remove it again.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     app.exit(0);
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -3490,7 +3589,13 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             if window.label() == "main" {
                 match event {
-                    WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
+                    WindowEvent::Resized(_) => {
+                        restore_after_repair(window);
+                        // After the repair, not before: it is the one thing
+                        // allowed to move this window through odd geometry.
+                        clamp_to_minimum(window);
+                    }
+                    WindowEvent::Focused(true) => {
                         restore_after_repair(window);
                     }
                     _ => {}
@@ -3507,11 +3612,19 @@ pub fn run() {
             // after Gate Connect - and wire it up without a relaunch. Guarded by
             // POPOVER_VISIBLE so a refocus of an already-open window doesn't
             // re-run it; the flag is cleared at each hide site below. This is the
-            // config route, so it runs on every platform (unlike the
-            // Focused(false) dismiss below). Off-thread + best-effort so it never
+            // config route, so it runs on every platform. Off-thread + best-effort so it never
             // blocks the event loop; reconcile_enabled is idempotent and only
             // writes when a tool is newly installed.
             if let WindowEvent::Focused(true) = event {
+                // TRAY ONLY. This arm used to run for every window, and the
+                // Linux `main` branch above it does not return, so focusing the
+                // main window consumed the edge and the flag stayed true - after
+                // which every tray open skipped the reconcile below until the
+                // user happened to dismiss the tray with the icon. The flag is
+                // cleared at the tray's hide sites, so it is the tray's flag.
+                if window.label() != "tray" {
+                    return;
+                }
                 if !POPOVER_VISIBLE.swap(true, Ordering::AcqRel) {
                     std::thread::spawn(|| {
                         if let Err(e) = gate_connect_core::provider::reconcile_enabled() {

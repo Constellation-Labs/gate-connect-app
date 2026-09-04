@@ -10,9 +10,12 @@ import { Icon } from "./Icon";
  * `banner/alert/*`). Update and routing banners are full-bleed 1024px strips
  * with a hairline bottom border; the alert is an inset card.
  *
- * Those component frames lived on the Components page, which the file has since
- * emptied; the live sources are the banner instances inside the flow frames,
- * which is where the 2026-08-28 re-validation read them.
+ * The component frames are live on the **Banners** canvas (`744:37738`) -
+ * `banner/update` `744:37750`, `banner/routing` `744:37758`,
+ * `banner/partly-routing` `744:37766`, the alert rows `744:37774` and
+ * `744:37789`. An earlier note here said the Components page had been emptied
+ * and these were gone; only the OLD page (`113:16762`) is empty, and believing
+ * otherwise is what put a generalised icon step in `StatusTile`.
  *
  * All presentational - the shell owns dismissal and retry state.
  */
@@ -23,6 +26,15 @@ import { Icon } from "./Icon";
  * over solid 900, replacing the old vertical pair. The design's dot matrix is
  * approximated here as a CSS radial-gradient rather than shipping the Figma
  * raster.
+ *
+ * **The dots are correct - do not remove them.** `dot-matrix-light` reads as
+ * an EMPTY frame over MCP, and rendering both the component and the instance
+ * (`228:85974`) at 1:1 and sampling the pixels finds a flat gradient with no
+ * periodic variation. An audit on 2026-09-03 concluded on that evidence that
+ * the pattern might be ours alone. It is not: the designer confirmed the
+ * pattern is visible in Figma (2026-09-04). Whatever carries it does not
+ * survive the export, so the file cannot be used to check this one - which is
+ * exactly why it is written down here.
  */
 export function UpdateBanner({
   version,
@@ -45,7 +57,7 @@ export function UpdateBanner({
         }}
       />
       <p className="relative text-sm leading-5 text-white [text-shadow:0_1px_0_rgba(0,0,0,0.05)]">
-        <span className="font-medium">Update available</span>{" "}
+        <span className="font-medium tracking-label-14">Update available</span>{" "}
         {/* One mono run at 400, dash included, matching the design's single
          * `- v0.5.0` text node. */}
         <span className="font-mono">- {version}</span>
@@ -105,7 +117,7 @@ export function RoutingBanner({
             : "Gate Connect is partly routing your apps"}
         </p>
       </div>
-      <p className="text-sm leading-5">
+      <p className="text-sm leading-5 tracking-label-14">
         <span
           className={`font-medium ${allProtected ? "text-green-600" : "text-amber-600"}`}
         >
@@ -217,12 +229,12 @@ export function AlertBanner({
   paging?: { onPrev: () => void; onNext: () => void };
 }) {
   return (
-    <div className="relative flex items-center gap-6 rounded-control border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
+    <div className="relative flex items-center gap-6 rounded-md border border-amber-300 bg-amber-50 py-4 pl-4 pr-5">
       <div className="flex min-w-0 flex-1 items-center gap-4">
         <StatusTile tone="amber" icon="triangleAlert" size={36} />
         <div className="min-w-0">
           <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
-          <p className="text-base-xs leading-4 text-gray-600">{body}</p>
+          <p className="text-base-xs leading-4 tracking-label-12 text-gray-600">{body}</p>
         </div>
       </div>
 
@@ -232,7 +244,7 @@ export function AlertBanner({
           type="button"
           onClick={onDismiss}
           aria-label="Dismiss alert"
-          className="text-neutral-500 transition-colors hover:text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className="text-base-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           <Icon name="x" size={20} />
         </button>

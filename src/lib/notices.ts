@@ -34,6 +34,11 @@ export type NoticeAction =
 export interface RoutingNotice {
   /** Stable across refreshes so a dismissal sticks to the right notice. */
   id: string;
+  /** The member this is about, so a surface scoped to ONE app can pick its
+   *  own. The app pane used to build its own drift-only card from the first
+   *  drifted tool anywhere, which meant Claude Desktop's pane could draw a
+   *  card whose body named Codex. */
+  memberKey: string;
   title: string;
   body: string;
   /** Accessible name for the switch, which the title does not supply. */
@@ -47,6 +52,7 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
     case "master-off":
       return {
         id: `master-off:${member.key}`,
+        memberKey: member.key,
         // The drawn copy (banner/alert/single-app, read 2026-08-23). "Routing"
         // is the master: the app is switched on and routing is not, which is
         // exactly the divergence this notice exists to explain.
@@ -58,6 +64,7 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
     case "needs-trust":
       return {
         id: `needs-trust:${member.key}`,
+        memberKey: member.key,
         title: `${name} needs the Gate certificate`,
         body: "Gate cannot read this app's traffic until its certificate is trusted on this machine.",
         switchLabel: `Trust the certificate so ${name} can route`,
@@ -76,6 +83,7 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
       return member.tool
         ? {
             id: `drifted:${member.key}`,
+            memberKey: member.key,
             title: "Reconnect to restore protection",
             body: `${name}'s config changed outside Gate, so its traffic isn't routed.`,
             switchLabel: `Let Gate Connect manage ${name}`,
@@ -86,6 +94,7 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
       return member.tool
         ? {
             id: `error:${member.key}`,
+            memberKey: member.key,
             title: `${name} could not be checked`,
             body:
               member.tool.status.kind === "error"

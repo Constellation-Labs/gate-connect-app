@@ -9,11 +9,14 @@ import type { JSX } from "react";
 
 export type IconName =
   | "shieldCheck"
+  | "shieldAlert"
+  | "database"
   | "layers"
   | "settings"
   | "chevronRight"
   | "caretRight"
   | "chevronLeft"
+  | "chevronDown"
   | "cube"
   | "key"
   | "copy"
@@ -64,10 +67,26 @@ export type IconName =
   | "bellDot"
   | "creditCard"
   | "users"
-  | "expand"
-  | "chevronDown";
+  | "expand";
 
 const PATHS: Record<IconName, JSX.Element> = {
+  /** The security categories the frames draw: injection, PII/PHI, credentials
+   *  (`Icon / ShieldAlert`, `Icon / UserRound`, `Icon / KeyRound`), plus
+   *  `Icon / Database` on the caching savings row. */
+  shieldAlert: (
+    <>
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+      <path d="M12 8v4" />
+      <path d="M12 16h.01" />
+    </>
+  ),
+  database: (
+    <>
+      <ellipse cx="12" cy="5" rx="9" ry="3" />
+      <path d="M3 5V19A9 3 0 0 0 21 19V5" />
+      <path d="M3 12A9 3 0 0 0 21 12" />
+    </>
+  ),
   shieldCheck: (
     <>
       <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
@@ -88,6 +107,7 @@ const PATHS: Record<IconName, JSX.Element> = {
     </>
   ),
   chevronRight: <path d="m9 18 6-6-6-6" />,
+  chevronDown: <path d="m6 9 6 6 6-6" />,
   // Disclosure, as distinct from navigation. A chevron means "this opens
   // somewhere else" and a filled caret means "this opens in place" - the split
   // every platform's settings UI makes, and the one this app had lost by
@@ -475,7 +495,6 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="m3 3 6 6" />
     </>
   ),
-  chevronDown: <path d="m6 9 6 6 6-6" />,
 };
 
 export function Icon({

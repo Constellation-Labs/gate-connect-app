@@ -30,18 +30,27 @@ import type { ActivityEntry } from "../../lib/toolEventRow";
 export interface GateModel {
   /** Model vendor, e.g. "anthropic". */
   vendor: string;
-  /** Canonical model id, rendered mono, e.g. `anthropic/claude-opus-5`. */
-  id: string;
-  /** Vendor mark, 16px. */
-  logo?: ReactNode;
-  /** How many further models are enabled alongside this one (AG-590).
+  /**
+   * Every enabled model, in the user's order.
    *
-   *  Drives only the heading's plural. Figma 228:89517 draws this card with one
-   *  model row and one action, so the set is not enumerated here - it is listed
-   *  where it matters, in the picker and in the confirmation before anything is
-   *  billed. The plural is the minimum that keeps the heading from naming one
-   *  model when several are enabled. */
-  alsoEnabled?: number;
+   * The whole set, not the first of it. Figma 228:89517 draws this card with a
+   * single model row, and following that drew a heading reading "Current Gate
+   * models" over exactly one id - which reads as the card having lost five of
+   * them, because that is indistinguishable from what it would look like if it
+   * had. A count in the heading is not worth a list the user cannot see.
+   *
+   * Supersedes the earlier `alsoEnabled` count, which drove only the heading's
+   * plural: a number that says "and five others" without naming them answers
+   * the wrong half of the question.
+   *
+   * Listed the way the confirmation dialog lists a set (130:48278): stacked, and
+   * with no vendor mark once there is more than one, since a single glyph cannot
+   * stand for several vendors and repeating it per line would claim each id
+   * belongs to the first one's.
+   */
+  ids: string[];
+  /** Vendor mark, 16px. Drawn only for a set of one. */
+  logo?: ReactNode;
 }
 
 
@@ -63,7 +72,9 @@ export function AppPane({
   modelAttention,
   modelPending,
   credits,
+  plan,
   onAddCredits,
+  onManageBilling,
   activity,
   pending,
   eventsPending,
@@ -138,7 +149,15 @@ export function AppPane({
    *  no endpoint returns a Gate credit balance yet, and a dash reads as a value.
    *  See principle 6. */
   credits?: string | null;
+  /** The org's plan, or null when the gateway did not name one (AG-592).
+   *
+   *  Optional for the same reason as the handlers above: a tool whose card is
+   *  withheld entirely has no plan line to draw. */
+  plan?: string | null;
   onAddCredits?: () => void;
+  /** Absent when the gateway named no billing destination, which removes the
+   *  control entirely rather than drawing a dead one. */
+  onManageBilling?: () => void;
   activity: ActivityEntry[];
   /** The first reading for this tool has not landed. Draws skeletons rather than
    *  answers, per AG-576. */
@@ -166,7 +185,7 @@ export function AppPane({
       <header className="flex items-center gap-3">
         <span
           aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-sm font-medium text-white"
+          className="flex size-11 shrink-0 items-center justify-center rounded-sm border border-white/[0.24] bg-black text-sm font-medium text-white"
           style={{
             backgroundImage:
               "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(0,0,0,0.32) 100%)",
@@ -175,13 +194,13 @@ export function AppPane({
           {logo ?? name.charAt(0)}
         </span>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-xl font-medium tracking-heading text-base-foreground">
+          <h1 className="truncate text-xl font-medium leading-6 tracking-heading text-base-foreground">
             {name}
           </h1>
           <AppStatusLine isProtected={isProtected} status={status} since={since} />
         </div>
         <span className="flex shrink-0 items-center gap-2">
-          <span className="text-base-xs font-medium text-neutral-600">
+          <span className="text-sm font-medium leading-5 text-base-foreground">
             {isProtected ? "On" : "Off"}
           </span>
           {/* "Route Claude Code", not "Claude Code": the sidebar row for the
@@ -217,7 +236,9 @@ export function AppPane({
           gateModel={gateModel ?? null}
           onChangeModel={onChangeModel}
           credits={credits ?? null}
+          plan={plan ?? null}
           onAddCredits={onAddCredits}
+          onManageBilling={onManageBilling}
         />
       )}
 
@@ -253,7 +274,7 @@ function AppStatusLine({
   const detail = status ? statusDetail(status) : since;
 
   return (
-    <p className="text-base-xs font-medium leading-4">
+    <p className="text-base leading-6">
       <span className={text.className}>{text.label}</span>
       {detail && <span className="text-neutral-500"> - {detail}</span>}
     </p>
@@ -305,11 +326,15 @@ function VendorMark({ provider }: { provider: string | null }) {
  * routing: the control renders one way, and clicking it turns off the setting the
  * user was trying to turn on.
  *
- * **It does not imply that a remembered model is a live one.** The design keeps
- * "Current Gate model" visible under App default so the user can see what they
- * would be switching to. Drawing it identically in both states would conflate
- * intent with what is actually served, so under App default the row is dimmed and
- * labelled - `source` is the only thing that decides what Gate serves.
+ * **It does not imply that a remembered model is a live one.** "Current Gate
+ * model" is drawn only while Gate is the source. It once stayed visible under App
+ * default, dimmed and labelled "not in use", so the user could see what they would
+ * be switching to - but a section headed "Current" that describes nothing current
+ * has to be read twice to learn it does not apply, and it sat directly under the
+ * radio that had just said the same thing. What it was for is now carried by the
+ * Gate radio itself, which names the remembered model in its own description, so
+ * the answer to "what would I be switching to?" is on the control that switches.
+ * `source` remains the only thing that decides what Gate serves.
  *
  * There used to be a third: a `supported` flag that withheld the control for an
  * app the gateway could not identify on a request. It went with the server-side
@@ -326,7 +351,9 @@ function ModelSelection({
   gateModel,
   onChangeModel,
   credits,
+  plan,
   onAddCredits,
+  onManageBilling,
 }: {
   appName: string;
   choice: ModelChoice | null;
@@ -337,7 +364,12 @@ function ModelSelection({
   gateModel: GateModel | null;
   onChangeModel: () => void;
   credits: string | null;
+  /** The org's plan, or null when the gateway did not name one (AG-592). */
+  plan: string | null;
   onAddCredits: () => void;
+  /** Absent when the gateway named no billing destination, which removes the
+   *  control entirely rather than drawing a dead one. */
+  onManageBilling?: () => void;
 }) {
   // Under App default a chosen model is remembered, not served. Kept as one
   // named value because three places below depend on it and they must agree.
@@ -345,10 +377,10 @@ function ModelSelection({
 
   return (
     <Card className="p-4">
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">
+      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
         Model selection
       </h2>
-      <p className="mt-1 text-sm leading-5 text-neutral-600">
+      <p className="mt-1 text-sm leading-5 text-base-muted-foreground">
         Choose whether {appName} or Gate selects the AI model for requests
       </p>
 
@@ -368,7 +400,7 @@ function ModelSelection({
               selected={choice === "app"}
               disabled={choice === null || busy}
               onSelect={() => onChoose("app")}
-              icon={<Icon name="cube" size={16} />}
+              icon={<Icon name="cube" size={20} />}
               title="App default"
               description="Use the model configured in your app"
             />
@@ -376,9 +408,24 @@ function ModelSelection({
               selected={gateActive}
               disabled={choice === null || busy}
               onSelect={() => onChoose("gate")}
-              icon={<Icon name="layers" size={16} />}
+              icon={<Icon name="layers" size={20} />}
               title="Gate model"
-              description="Use a model selected in Gate AI"
+              // Names the chosen model once there is one, rather than the
+              // generic line the frame draws.
+              //
+              // A deliberate deviation, for a reason worth keeping: choosing a
+              // model from "Change model" while on App default only *remembers*
+              // it, and the sole feedback was "not in use" in small grey text on
+              // a row that otherwise looked identical. Saving a model therefore
+              // appeared to do nothing at all. Naming it here makes the save
+              // visible and points at the switch that would actually use it.
+              description={
+                !gateModel
+                  ? "Use a model selected in Gate AI"
+                  : gateModel.ids.length === 1
+                    ? `Use ${gateModel.ids[0]}`
+                    : `Use any of ${gateModel.ids.length} Gate models`
+              }
             />
           </div>
           {choice === null && (
@@ -404,47 +451,81 @@ function ModelSelection({
         </p>
       )}
 
-      {/* Visible under either choice - the design's point is that you can see
-       * what you would switch to. What changes is whether it reads as live. */}
-      <p className="mt-4 text-base-xs text-base-muted-foreground">
-        {gateModel?.alsoEnabled ? "Current Gate models" : "Current Gate model"}
-      </p>
+      {/* Only while Gate is the source. Under App default there is no current
+       * Gate model to report: the row would be a section headed "Current"
+       * describing nothing current, sitting directly beneath the radio that had
+       * just said so. What it was for - seeing what you would switch to - is
+       * carried by the Gate radio, which names the remembered model itself.
+       * Choosing one is still reachable from App default: that radio opens the
+       * picker when no model is enabled yet. */}
+      {gateActive && (
+        <>
+          <p className="mt-4 text-base-xs text-base-muted-foreground">
+            {(gateModel?.ids.length ?? 0) > 1 ? "Current Gate models" : "Current Gate model"}
+          </p>
+
+          <div className="mt-2">
+            {gateModel === null ? (
+              <EmptyNote icon="cube">
+                No Gate model chosen yet. Choose one to see what Gate would serve.
+              </EmptyNote>
+            ) : (
+              <InfoRow
+                // No mark for a set: see `GateModel.ids`.
+                icon={
+                  gateModel.ids.length === 1
+                    ? (gateModel.logo ?? <Icon name="cube" size={16} />)
+                    : undefined
+                }
+                actions={[{ label: "Change model", onClick: onChangeModel, disabled: busy }]}
+              >
+                {gateModel.ids.length === 1 ? (
+                  <>
+                    <p className="text-base-2xs leading-4 text-base-muted-foreground">
+                      {gateModel.vendor}
+                    </p>
+                    <p className="text-sm leading-5 text-base-foreground">
+                      {gateModel.ids[0]}
+                    </p>
+                  </>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {gateModel.ids.map((id) => (
+                      <li key={id} className="truncate text-sm leading-5 text-base-foreground">
+                        {id}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </InfoRow>
+            )}
+          </div>
+        </>
+      )}
 
       <div className="mt-2 flex flex-col gap-2">
-        {gateModel === null ? (
-          <EmptyNote icon="cube">
-            No Gate model chosen yet. Choose one to see what Gate would serve.
-          </EmptyNote>
-        ) : (
-          <InfoRow
-            icon={gateModel.logo ?? <Icon name="cube" size={16} />}
-            action={{
-              label: "Change model",
-              onClick: onChangeModel,
-              disabled: busy,
-            }}
-            // Dimmed under App default: it is what the user would switch to, not
-            // what their requests are being answered with.
-            muted={!gateActive}
-          >
-            <p className="text-base-2xs leading-4 text-base-muted-foreground">
-              {gateModel.vendor}
-              {!gateActive && " - not in use"}
-            </p>
-            <p className="font-mono text-sm leading-5 text-base-foreground">
-              {gateModel.id}
-            </p>
-          </InfoRow>
-        )}
-
         <InfoRow
-          icon={<Icon name="creditCard" size={16} />}
-          action={{
-            label: "Add credits",
-            onClick: onAddCredits,
-            external: true,
-          }}
+          icon={<Icon name="creditCard" size={20} />}
+          actions={[
+            // AG-592 asks for Manage billing "when available to the account".
+            // Availability is answered by the gateway naming a destination: no
+            // URL, no button. A disabled one would be a control the user has to
+            // click to learn is not for them.
+            ...(onManageBilling
+              ? [{ label: "Manage billing", onClick: onManageBilling, external: true }]
+              : []),
+            { label: "Add credits", onClick: onAddCredits, external: true },
+          ]}
         >
+          {/* AG-592 asks the tool detail to show the plan alongside the
+           *  balance. Drawn only when the gateway named one: a plan is the
+           *  thing a reader would act on, by upgrading, and naming the wrong
+           *  one sends them to change something they may already have. */}
+          {plan && (
+            <p className="text-base-2xs leading-4 text-base-muted-foreground">
+              {plan.charAt(0).toUpperCase() + plan.slice(1)} plan
+            </p>
+          )}
           <p className="text-sm leading-5 text-base-foreground">
             <span className="text-neutral-600">Gate credits: </span>
             {credits ?? "N/A"}
@@ -479,7 +560,7 @@ function ModelOption({
       aria-checked={selected}
       disabled={disabled}
       onClick={onSelect}
-      className={`flex items-center gap-3 rounded-lg border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-60 ${
+      className={`flex items-center gap-3 rounded-control border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary disabled:cursor-not-allowed disabled:opacity-60 ${
         selected
           ? "border-base-primary bg-base-card"
           : "border-base-border bg-base-card enabled:hover:bg-gray-50"
@@ -487,7 +568,7 @@ function ModelOption({
     >
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
+        className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border text-base-foreground"
       >
         {icon}
       </span>
@@ -513,36 +594,40 @@ function ModelOption({
 function InfoRow({
   icon,
   children,
-  action,
-  muted,
+  actions,
 }: {
-  icon: ReactNode;
+  /** Omitted for a row about a set, where no one mark could stand for it. */
+  icon?: ReactNode;
   children: ReactNode;
-  /** Omitted when there is nothing to do here, which removes the button rather
-   *  than leaving a dead one on screen. */
-  action?: {
+  /** A list because the credits row carries two once a billing destination
+   *  exists. Rightmost is the primary one, which is the order the eye lands in.
+   *  An empty list draws nothing, which is how an absent destination removes
+   *  its button rather than disabling it. */
+  actions?: ReadonlyArray<{
     label: string;
     onClick: () => void;
     external?: boolean;
     disabled?: boolean;
-  };
-  /** Drawn as present but not in force. Opacity rather than a grey palette so
-   *  the row reads as the same thing, dimmed - which is what it is. */
-  muted?: boolean;
+  }>;
+  // `muted` went with the row it dimmed. It existed to draw a remembered model
+  // under App default as "not in use"; that row is now shown only while Gate is
+  // the source, so nothing is left to dim.
 }) {
   return (
-    <div
-      className={`flex items-center gap-3 rounded-lg border border-base-border p-3 ${muted ? "opacity-60" : ""}`}
+    <div className="flex items-center gap-3 rounded-control border border-base-border p-3"
     >
       <span
         aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
+        className="flex size-9 shrink-0 items-center justify-center rounded-sm border border-base-border text-base-foreground"
       >
         {icon}
       </span>
       <div className="min-w-0 flex-1">{children}</div>
-      {action && (
+      {/* Base's button geometry from the Figma audit (h-8, rounded-control,
+        * the moulded shadow), applied over our list of actions. */}
+      {actions?.map((action) => (
         <button
+          key={action.label}
           type="button"
           onClick={action.onClick}
           disabled={action.disabled}
@@ -551,7 +636,7 @@ function InfoRow({
           {action.label}
           {action.external && <Icon name="squareArrowOutUpRight" size={16} />}
         </button>
-      )}
+      ))}
     </div>
   );
 }
@@ -573,7 +658,7 @@ function RecentActivity({
 }) {
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">
+      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">
         Recent activity
       </h2>
 
@@ -592,25 +677,31 @@ function RecentActivity({
             : "No recent messages"}
         </EmptyNote>
       ) : (
-        <table className="mt-4 w-full">
+        <table className="mt-5 w-full">
           <thead>
             <tr className="text-base-xs text-base-muted-foreground">
-              <th scope="col" className="pb-2 text-left font-normal">
+              {/* Column shares taken off `table/recent-activity`, whose body cells
+                sit at 0/148/288/408 and whose Action button starts at 620 inside
+                688 - so 148, 140, 120, 212 and 68 wide once each 16px gutter is
+                counted in, which is the 21.5/20.5/17.5/30.5/10 below. Shares
+                rather than pixel counts, so they hold at both window sizes. */}
+              <th scope="col" className="w-[21.5%] pb-3 text-left font-normal">
                 Time
+              </th>
+              {/* The frame's second column, drawn with a 20px glyph beside it. */}
+              <th scope="col" className="w-[20.5%] pb-3 text-left font-normal">
+                Type
               </th>
               {/* One column, not two: the design merged status into security, so a
                 failed request reads ERROR and every other row reads what the
                 guardrails did. */}
-              <th scope="col" className="pb-2 text-left font-normal">
+              <th scope="col" className="w-[17.5%] pb-3 text-left font-normal">
                 Security
               </th>
-              <th scope="col" className="w-1/4 pb-2 text-left font-normal">
+              <th scope="col" className="w-[30.5%] pb-3 text-left font-normal">
                 Model
               </th>
-              <th scope="col" className="pb-2 text-left font-normal">
-                Message
-              </th>
-              <th scope="col" className="w-20 pb-2 text-right font-normal">
+              <th scope="col" className="w-[10%] pb-3 text-right font-normal">
                 Action
               </th>
             </tr>
@@ -618,10 +709,36 @@ function RecentActivity({
           <tbody>
             {activity.map((entry) => (
               <tr key={entry.id} className="border-t border-base-border">
-                <td className="whitespace-nowrap py-3 pr-4 text-sm leading-5 text-base-foreground">
+                <td className="whitespace-nowrap py-[1.125rem] pr-4 text-sm leading-5 text-base-foreground">
                   {entry.time}
                 </td>
-                <td className="py-3 pr-4">
+                {/* Type. The frame draws a 20px glyph 8px from the label, both at
+                  `base/foreground` - the downloaded asset's own stroke is
+                  #030712, and the glyph takes it from this span. Spelled as the
+                  gateway spelled it, like `SecurityPane` does with the same
+                  field: a display vocabulary for values only the gateway knows
+                  would be invented here. */}
+                <td className="py-[1.125rem] pr-4">
+                  {entry.category ? (
+                    <span className="flex items-center gap-2 text-sm leading-5 text-base-foreground">
+                      {entry.categoryIcon && (
+                        <Icon name={entry.categoryIcon} size={20} />
+                      )}
+                      <span className="truncate">{entry.category}</span>
+                    </span>
+                  ) : (
+                    // The same withholding the Security cell draws, for the same
+                    // reason: the gateway named no category, or this row is not
+                    // this caller's to see into.
+                    <span
+                      className="text-sm leading-5 text-base-muted-foreground"
+                      title="No guardrail category recorded, or not your request"
+                    >
+                      &#8212;
+                    </span>
+                  )}
+                </td>
+                <td className="py-[1.125rem] pr-4">
                   {/* Error outranks the guardrail verdict, which is the design's
                     call and the defensible one: a request that did not complete
                     is the thing the reader needs first. It does cost information -
@@ -662,17 +779,14 @@ function RecentActivity({
                     </span>
                   )}
                 </td>
-                <td className="py-3 pr-4">
+                <td className="min-w-0 py-[1.125rem] pr-4">
                   {/* Truncated, not `nowrap`. A model id is unbounded - the
                     canonical ones run to `anthropic/claude-opus-4-5-20260514` -
                     and an un-truncated cell makes that string the table's minimum
-                    width. Time and Action are already fixed and Message is
-                    collapsed to `max-w-0`, so Model was the only column left that
-                    could push the floor past the card; at the window's 760px
-                    minimum the table would overflow and scroll the whole pane
-                    body sideways, chart and header with it. The width cap lives on
-                    the `th` as a share of the table rather than a pixel count, so
-                    it holds at both window sizes. */}
+                    width. Every column now carries a share of the table, so the
+                    id cannot push the floor past the card at the window's 1024px
+                    minimum. The cap lives on the `th` as a share rather than a
+                    pixel count, so it holds at every size above that. */}
                   <span className="flex items-center gap-2">
                     <VendorMark provider={entry.provider} />
                     <span className="truncate text-sm leading-5 text-base-foreground">
@@ -680,21 +794,7 @@ function RecentActivity({
                     </span>
                   </span>
                 </td>
-                <td className="min-w-0 max-w-0 py-3 pr-4">
-                  {/* `max-w-0` with `truncate` is what makes the ellipsis actually
-                    appear: a table cell sizes to its content otherwise, and the
-                    design truncates this column rather than letting a prompt push
-                    the Action button off the card. */}
-                  {entry.title && (
-                    <p className="truncate text-sm leading-5 text-base-foreground">
-                      {entry.title}
-                    </p>
-                  )}
-                  <p className="truncate font-mono text-base-2xs leading-4 text-base-muted-foreground">
-                    {entry.reference}
-                  </p>
-                </td>
-                <td className="py-3 text-right">
+                <td className="py-[1.125rem] text-right">
                   {entry.onView ? (
                     <button
                       type="button"

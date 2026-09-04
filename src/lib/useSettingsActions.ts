@@ -56,6 +56,13 @@ export interface SettingsActions {
   prompt: SettingsPrompt | null;
   /** An action is in flight. Dialog primaries read this to avoid a double submit. */
   busy: boolean;
+  /** The OAuth upgrade specifically, which is the only action that opens a
+   *  browser. `busy` is shared by every action in this hook, so driving the
+   *  "finish signing in in your browser" note from it told a user mid-rename,
+   *  mid-reset or mid-disconnect to go and finish signing in. Worst on a
+   *  single-org account, where `openSwitchOrg` sets `busy` with no dialog
+   *  open at all and the sentence just flashes onto the pane. */
+  oauthBusy: boolean;
   /** Draft value for the replace-key field, owned here so the dialog stays presentational. */
   newKey: string;
   setNewKey: (next: string) => void;
@@ -133,6 +140,7 @@ export function useSettingsActions({
 }): SettingsActions {
   const [prompt, setPrompt] = useState<SettingsPrompt | null>(null);
   const [busy, setBusy] = useState(false);
+  const [oauthBusy, setOauthBusy] = useState(false);
   const [newKey, setNewKey] = useState("");
   const [newDeviceName, setNewDeviceName] = useState("");
   const [copied, setCopied] = useState(false);
@@ -307,6 +315,7 @@ export function useSettingsActions({
    */
   const upgradeToOAuth = useCallback(async () => {
     setBusy(true);
+    setOauthBusy(true);
     try {
       await oauthBeginLogin();
       const [acct, oauth] = await Promise.all([
@@ -316,6 +325,7 @@ export function useSettingsActions({
       onSession({ account: acct, oauth });
     } finally {
       setBusy(false);
+      setOauthBusy(false);
     }
   }, [onSession]);
 
@@ -433,6 +443,7 @@ export function useSettingsActions({
   return {
     prompt,
     busy,
+    oauthBusy,
     newKey,
     setNewKey,
     newDeviceName,

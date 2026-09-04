@@ -508,7 +508,7 @@ export function App() {
     sweep();
     const unlisten = listen("backend-error-pending", sweep);
     return () => {
-      void unlisten.then((f) => f());
+      void unlisten.then((f) => f()).catch(() => {});
     };
   }, []);
 
@@ -560,7 +560,7 @@ export function App() {
     });
     return () => {
       alive = false;
-      void unlisten.then((f) => f());
+      void unlisten.then((f) => f()).catch(() => {});
     };
   }, [account]);
 
@@ -593,7 +593,7 @@ export function App() {
   useEffect(() => {
     const unlisten = listen(TOUR_SEEN_EVENT, () => markTourSeen());
     return () => {
-      void unlisten.then((f) => f());
+      void unlisten.then((f) => f()).catch(() => {});
     };
   }, []);
 

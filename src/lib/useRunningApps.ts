@@ -61,6 +61,10 @@ export function useRunningApps({ onError }: { onError?: (err: unknown) => void }
    */
   const offerAfterChange = useCallback(async (slugs?: string[]) => {
     try {
+      // Narrowed to what actually changed. A master toggle passes nothing and
+      // still offers everything, because it moved every tool's route; a single
+      // app's toggle moved only its own, and naming the others would ask to
+      // kill work for no reason.
       const { agents } = await runningAgents(slugs);
       if (agents.length === 0) return;
       // Process names, deduplicated: two `claude` processes are one app to the

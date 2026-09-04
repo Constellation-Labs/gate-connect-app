@@ -351,7 +351,7 @@ function OrgSwitcher({ name, onClick }: { name: string; onClick: () => void }) {
     >
       <span className="flex items-center gap-2">
         <Icon name="usersRound" size={16} />
-        <span className="text-base-xs font-medium leading-4 text-base-foreground">{name}</span>
+        <span className="text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">{name}</span>
       </span>
       <Icon name="chevronsUpDown" size={16} />
     </button>
@@ -379,7 +379,7 @@ function NavItem({
       // loses 2 to 1). Active text is `base/primary` on `base/background`,
       // which is the same #f9fafb the set's `sidebar-primary-foreground`
       // variable resolves to.
-      className={`flex w-full items-center gap-2 rounded-control p-1.5 text-base-xs font-medium leading-4 ${
+      className={`flex w-full items-center gap-2 rounded-control p-1.5 text-base-xs font-medium leading-4 tracking-label-12 ${
         active
           ? "border border-base-border bg-base-background text-base-primary shadow-base-2xs"
           : "text-base-foreground"
@@ -486,7 +486,7 @@ function InventoryState({
       </p>
       {state.kind === "none" && (
         // The scan time is what makes "none" an answer rather than a shrug.
-        <p className="font-mono text-base-2xs leading-4 text-base-muted-foreground">
+        <p className="text-base-2xs leading-4 text-base-muted-foreground">
           Checked {state.scannedAt}
         </p>
       )}
@@ -553,7 +553,7 @@ function AppRow({
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
           <span
-            className={`truncate text-base-xs font-medium leading-4 ${
+            className={`truncate text-base-xs font-medium leading-4 tracking-label-12 ${
               selected ? "text-base-primary" : "text-base-foreground group-hover:text-base-primary"
             }`}
           >
