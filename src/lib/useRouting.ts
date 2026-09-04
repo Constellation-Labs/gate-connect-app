@@ -57,6 +57,20 @@ export type RoutingPrompt =
       /** What Gate found, for the dialog's subject row. */
       existingConfig: string;
     }
+  /** Turning OpenCode on turns the shell-environment channel on with it.
+   *
+   * Not a warning bolted onto a switch: it is the only way OpenCode routes.
+   * OpenCode has no gateway setting Gate can rely on, so the proxy variables
+   * are the mechanism - and those are machine-wide, reaching git, curl and npm
+   * as much as OpenCode. That is a large enough change to ask about, which is
+   * the same reason `env_proxy.rs` made the channel declinable in the first
+   * place.
+   *
+   * Only raised when the channel is actually off. A dialog announcing a
+   * side effect that already happened is noise, and it would fire on every
+   * OpenCode toggle for the majority of users, for whom the channel is on by
+   * default. */
+  | { kind: "opencode-env" }
   | { kind: "trust" }
   /** Removing the certificate, which is not a gate on the way to something
    * else: it is the action, and it stops every routed domain. Confirmed for
@@ -67,6 +81,11 @@ export interface RoutingSnapshot {
   tools: Tool[];
   proxy: ProxyState | null;
 }
+
+/** The one tool whose switch also flips the shell-environment channel. Named
+ *  once rather than spelled inline, because the dialog copy and the action have
+ *  to be talking about the same row. */
+const OPENCODE_SLUG = "opencode";
 
 /** Thrown internally when the user declines a gate. Never surfaces: declining
  *  is an answer, not a failure, so it resolves quietly. */
@@ -231,6 +250,13 @@ export function useRouting({
       let changed = false;
       try {
         const tool = tools.find((t) => t.slug === slug);
+        // Asked before the drift gate, not after: this is a question about what
+        // else the click turns on, and the answer decides whether there is
+        // anything to review at all. Two dialogs in a row is the honest cost of
+        // a click that does two things.
+        const couplesEnvExport =
+          routed && slug === OPENCODE_SLUG && proxy !== null && !proxy.env_export_opted_in;
+        if (couplesEnvExport) await ask({ kind: "opencode-env" });
         if (routed) {
           if (!force && tool?.status.kind === "drifted") {
             await ask({
@@ -242,6 +268,15 @@ export function useRouting({
           }
           await ensureCaTrusted();
           await connectTool(slug, tool?.default_upstream_url ?? "");
+          // After the connect, which is what starts the engine. The channel
+          // exports the engine's address, so switching it on ahead of a bound
+          // port would write nothing and report success.
+          //
+          // `proxySetEnvExport` rather than `connectTool("env-proxy")`: the two
+          // reach the same `proxy::set_env_export`, but the integration's
+          // connect refuses without a live engine, and a refusal here would
+          // fail an OpenCode connect that had already succeeded.
+          if (couplesEnvExport) await proxySetEnvExport(true);
         } else {
           await disconnectTool(slug);
         }
@@ -268,7 +303,7 @@ export function useRouting({
       }
       return changed;
     },
-    [busy, tools, ask, ensureCaTrusted, settle, onError],
+    [busy, tools, proxy, ask, ensureCaTrusted, settle, onError],
   );
 
   /**

@@ -89,7 +89,7 @@ because registry values outlive a reboot where launchd variables do not.
 | OpenCode                            | relay                             | `provider.<id>.options.baseURL`                                                              | yes    |
 | OpenClaw                            | proxy engine                      | `proxy.proxyUrl` + `NODE_EXTRA_CA_CERTS`                                                     | yes    |
 | Hermes                              | proxy engine                      | four vars in `~/.hermes/.env`                                                                | yes    |
-| **Environment proxy** (`env-proxy`) | proxy engine, via the environment | nothing per-tool; the machine-wide export                                                    | hidden |
+| **Terminal tools** (`env-proxy`)     | proxy engine, via the environment | nothing per-tool; the machine-wide export                                                    | yes    |
 
 Claude Code's proxy URL includes a fixed, non-secret route selector. That lets
 the engine keep intercepting its canonical Anthropic connection when the user
@@ -233,13 +233,45 @@ the Routing card, and is absent entirely on Linux (`env_export_separable`),
 where those variables *are* the system proxy and a switch could not honour
 itself. Turning it off is a real opt-out that survives routing toggles.
 
-**The harnesses are listed.** OpenCode, OpenClaw and Hermes now appear in the
-ledger, forming the "Other tools" group that was dormant while they were
-hidden. (That group was called "Agent harnesses" until the round-15 design pass:
-it is the label on a `filter(t => !claimed.has(t.slug))`, and nobody installs a
-harness.) `hidden_in_ui` still exists and `env-proxy` still uses it; hiding is
-always a UI-boundary decision (`list_tools`), never removal from the registry,
-because the master-off sweep and `restore_swept_tools` walk it.
+It has a **row** now as well, "Terminal tools", under Experimental beside
+OpenCode. The two are there together because they share a mechanism: OpenCode
+has no gateway setting Gate can rely on, so the variables are how it routes, and
+turning OpenCode on turns the channel on with it. `useRouting`'s `opencode-env`
+prompt says so before either write, and the row is what makes that promise
+checkable. Both controls call `proxy::set_env_export`, so they cannot disagree.
+
+**The harnesses are listed, each under its own heading.** OpenCode, OpenClaw and
+Hermes appear in the ledger, and so does the environment channel. They shared one
+"Other tools" group while that was the only heading `buildGroups` gave them;
+`LEFTOVER_GROUPS` in `src/lib/groups.ts` now splits them into **OpenClaw**,
+**Hermes** and **Experimental** (OpenCode + `env-proxy`). (That shared group was
+called "Agent harnesses" until the round-15 design pass, then "Other tools": it
+is the label on a `filter(t => !claimed.has(t.slug))`, and nobody installs a
+harness. It survives as the catch-all for a tool no heading claims, which in a
+shipped build should be none.)
+
+**Experimental also holds the `openai` domain.** api.openai.com belongs to no
+OpenAI tool: Codex is config-routed through the relay, which resolves routes
+against the whole catalog (`relay.rs` builds from `default_domains()`, not the
+enabled set), so it routes whatever that switch says; the ChatGPT desktop app
+talks to chatgpt.com. What the switch governs is MITM interception of that host
+for any system-proxy-honouring client - and the clients that depend on it are
+OpenClaw and Hermes, which blind-tunnel anything outside the *enabled* catalog.
+So the row sits with them, and `provider.rs` no longer lists the slug: the OpenAI
+family switch governs Codex alone, which is what it was doing in effect already. It
+is labelled **OpenAI API** - the host's role, with `api.openai.com` itself in the
+row's description rather than the label, since the popover already prints it in a
+mono identifier slot.
+
+The split is what makes the row labels work. Rows are named for the surface they
+cover - "App" for the desktop apps, "Web" for the browser tab, "CLI" for the
+terminal, "Proxy" where a family has one mechanism and no split - and a surface
+kind is only legible under a heading that names the vendor. The sentence
+explaining each row is UI copy, in `MEMBER_DESCRIPTIONS` beside the split.
+
+`hidden_in_ui` still exists; nothing uses it now that `env-proxy` is listed.
+Hiding is always a UI-boundary decision (`list_tools`), never removal from the
+registry, because the master-off sweep and `restore_swept_tools` walk it.
 
 **They were listed ahead of the stated bar.** That bar was one end-to-end run
 against a real install, per tool, and none of the three has had one. What

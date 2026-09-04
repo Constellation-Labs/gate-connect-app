@@ -639,3 +639,108 @@ describe("useRouting: remembering a failed write", () => {
     expect(api.current!.writeFailures.has("claude-code")).toBe(false);
   });
 });
+
+describe("useRouting: OpenCode and the environment channel", () => {
+  it("asks before turning the machine-wide variables on with it", async () => {
+    // OpenCode has no gateway setting Gate can rely on, so the proxy variables
+    // are how it routes - and those reach git, curl and npm too. The click does
+    // two things, so it has to say so before it does either.
+    const { api } = harness(
+      [tool("opencode", { kind: "detected" })],
+      proxyState({ env_export_opted_in: false }),
+    );
+
+    await act(async () => {
+      void api.current!.setAppRouted("opencode", true);
+    });
+
+    expect(api.current!.prompt).toEqual({ kind: "opencode-env" });
+    expect(connectTool).not.toHaveBeenCalled();
+    expect(proxySetEnvExport).not.toHaveBeenCalled();
+  });
+
+  it("turns both on once the coupling is accepted", async () => {
+    const { api } = harness(
+      [tool("opencode", { kind: "detected" })],
+      proxyState({ env_export_opted_in: false }),
+    );
+
+    await act(async () => {
+      void api.current!.setAppRouted("opencode", true);
+    });
+    await act(async () => {
+      api.current!.resolvePrompt(true);
+    });
+
+    expect(connectTool).toHaveBeenCalledWith("opencode", "https://gw.example/opencode");
+    expect(proxySetEnvExport).toHaveBeenCalledWith(true);
+  });
+
+  it("writes nothing at all when the coupling is declined", async () => {
+    // Declining must not leave OpenCode connected against a channel the user
+    // just refused: the config write would claim a route it does not have.
+    const { api, onError } = harness(
+      [tool("opencode", { kind: "detected" })],
+      proxyState({ env_export_opted_in: false }),
+    );
+
+    await act(async () => {
+      void api.current!.setAppRouted("opencode", true);
+    });
+    await act(async () => {
+      api.current!.resolvePrompt(false);
+    });
+
+    expect(connectTool).not.toHaveBeenCalled();
+    expect(proxySetEnvExport).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet when the channel is already on", async () => {
+    // The default for most users. A dialog announcing a side effect that has
+    // already happened is noise, and it would fire on every OpenCode toggle.
+    const { api } = harness(
+      [tool("opencode", { kind: "detected" })],
+      proxyState({ env_export_opted_in: true }),
+    );
+
+    await act(async () => {
+      void api.current!.setAppRouted("opencode", true);
+    });
+
+    expect(api.current!.prompt).toBeNull();
+    expect(connectTool).toHaveBeenCalledWith("opencode", "https://gw.example/opencode");
+    expect(proxySetEnvExport).not.toHaveBeenCalled();
+  });
+
+  it("leaves every other tool's switch a one-step action", async () => {
+    const { api } = harness(
+      [tool("claude-code", { kind: "detected" })],
+      proxyState({ env_export_opted_in: false }),
+    );
+
+    await act(async () => {
+      void api.current!.setAppRouted("claude-code", true);
+    });
+
+    expect(api.current!.prompt).toBeNull();
+    expect(proxySetEnvExport).not.toHaveBeenCalled();
+  });
+
+  it("does not ask on the way off", async () => {
+    // Turning OpenCode off does not turn the channel off: other tools ride it,
+    // and the Terminal tools row is its own switch.
+    const { api } = harness(
+      [tool("opencode", { kind: "connected" })],
+      proxyState({ env_export_opted_in: false }),
+    );
+
+    await act(async () => {
+      void api.current!.setAppRouted("opencode", false);
+    });
+
+    expect(api.current!.prompt).toBeNull();
+    expect(disconnectTool).toHaveBeenCalledWith("opencode");
+    expect(proxySetEnvExport).not.toHaveBeenCalled();
+  });
+});

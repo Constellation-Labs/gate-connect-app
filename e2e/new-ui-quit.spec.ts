@@ -21,14 +21,14 @@ const useNewUi = { gc: "gc.newUi" };
 const connectedTools = [
   {
     slug: "claude-code",
-    name: "Claude Code",
+    name: "CLI",
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://api.anthropic.com",
     status: { kind: "connected" as const },
   },
   {
     slug: "codex",
-    name: "Codex",
+    name: "CLI",
     upstream_provider_name: "OpenAI",
     default_upstream_url: "https://api.openai.com",
     status: { kind: "connected" as const },

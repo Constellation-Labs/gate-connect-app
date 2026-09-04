@@ -36,8 +36,8 @@ test.describe("boot", () => {
       providers: [
         {
           slug: "anthropic",
-          display_name: "Claude",
-          subtitle: "Claude Code and the Claude apps",
+          display_name: "Anthropic",
+          subtitle: "Claude Code + Claude Desktop",
           enabled: true,
           available: true,
           tool_slugs: ["claude-code"],
@@ -48,7 +48,7 @@ test.describe("boot", () => {
       tools: [
         {
           slug: "claude-code",
-          name: "Claude Code",
+          name: "CLI",
           upstream_provider_name: "Anthropic",
           default_upstream_url: "https://api.anthropic.com",
           status: { kind: "connected" },

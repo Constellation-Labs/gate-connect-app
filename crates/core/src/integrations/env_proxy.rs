@@ -46,7 +46,12 @@ use std::path::PathBuf;
 
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
-const DISPLAY_NAME: &str = "Environment proxy";
+/// "Terminal tools", not "Environment proxy". The row is under Experimental
+/// beside OpenCode, and it is read by someone deciding whether to let Gate touch
+/// their shell - so it names the beneficiaries (git, curl, npm, every CLI that
+/// reads the variables) rather than the mechanism. The mechanism is still the
+/// module doc above, and the description beside the row says it too.
+const DISPLAY_NAME: &str = "Terminal tools";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 
@@ -137,15 +142,24 @@ impl Integration for EnvProxy {
         )
     }
 
-    /// Kept out of the *ledger*, which is not the same as kept out of the UI.
+    /// Listed now, under Experimental.
     ///
-    /// Home groups by model family; this is a mechanism spanning every family,
-    /// so it has no honest row there. It surfaces instead as a switch under the
-    /// master one in the Routing card, fed by `ProxyState.env_export_opted_in`
-    /// rather than by `list_tools` - which is the right shape, because it is a
-    /// property of routing rather than a tool alongside Claude Code.
+    /// It was hidden because Home groups by model family and this is a mechanism
+    /// spanning every family, so it had no honest row there. `src/lib/groups.ts`
+    /// no longer forces that choice: the leftovers the provider catalog claims
+    /// for nobody are split by slug, and this one lands under Experimental
+    /// beside OpenCode - which is the tool that cannot route without it.
+    ///
+    /// That pairing is the reason to show it. Turning OpenCode on turns this on
+    /// too, and a switch that flips something the user cannot see is the failure
+    /// this row removes.
+    ///
+    /// The Routing card's env-export switch stays: both write
+    /// `proxy::set_env_export`, so the row and the switch cannot disagree, and
+    /// the card is where someone looks for a property of routing rather than for
+    /// a tool.
     fn hidden_in_ui(&self) -> bool {
-        true
+        false
     }
 
     fn has_upstream_credential(&self) -> Result<bool> {

@@ -2719,6 +2719,80 @@ no activity command, so a browser run cannot reach a figure at all; teaching it
 several specs currently assert the unavailable states of. Not worth reopening
 those to cover what thirteen unit tests already pin.
 
+## Row labels are surface kinds now (2026-09-04)
+
+**What the rows are called.** Every ledger row is named for the surface it
+covers rather than for the product behind it: **App** (the desktop apps), **Web**
+(the browser tab), **CLI** (the terminal), **Proxy** where a family has one
+mechanism and nothing to split. The vendor is said once, by the heading above
+the rows, which is why the labels can be one word.
+
+- **Anthropic** - App (`anthropic`), Web (`claude-web`), CLI (`claude-code`)
+- **OpenAI** - App (`chatgpt`), Web (`chatgpt-apps`), CLI (`codex`). The
+  `openai` domain made a fourth row against a three-row spec; it left the family
+  the same day, see the entry below.
+- **OpenRouter** - Proxy (`openrouter`)
+- **OpenClaw** - CLI, **Hermes** - CLI, **Experimental** - OpenCode,
+  **Terminal tools** (`env-proxy`, unhidden for this) and **OpenAI API**
+  (`openai`)
+
+**Where the names live.** In the backend, as before: `proxy/catalog.rs` for
+domains, each integration's `row_label` for tools, `provider.rs` for the
+headings (Anthropic, not Claude). The rename is global across the UI, so the
+drift dialog now reads "CLI's config changed outside Gate" - chosen deliberately
+over a label-beside-name split, because one name per row is the thing a user can
+point at.
+
+**`row_label` is not `display_name` (2026-09-04).** The row label started on
+`Integration::display_name`, which is also what the CLI prints, what error
+contexts and log lines name, and what the quit takeover lists. Those have no
+heading to lean on, so four integrations answering "CLI" collided there: the
+takeover read "CLI and CLI still route" - two tools the user cannot tell apart
+at the moment they decide whether to close them - and `gate-connect list`
+printed three such rows. `display_name` is the product again ("Claude Code");
+`row_label` is the ledger's one-word label and defaults to `display_name`, so a
+new integration is right everywhere until it opts in. `list_tools` is the only
+reader of `row_label`, which is why every UI surface - the rail, the pane, the
+dialogs above - is unchanged. `registry.rs`'s
+`display_names_are_distinct_across_the_registry` pins the collision shut.
+
+**Where the descriptions live.** `MEMBER_DESCRIPTIONS` in `src/lib/groups.ts`,
+keyed by member slug, carried on `GroupMember.description` and rendered by the
+app pane's header between the h1 and the status line. Copy, not catalog data:
+the backend names the surface it routes, this says what that surface is to the
+reader. It is what makes a one-word label legible on a pane that has no vendor
+eyebrow. A slug with no entry gets no line.
+
+**Where the headings come from.** `LEFTOVER_GROUPS`, also in `groups.ts` - a
+frontend split of the tools the provider catalog claims for nobody, rather than
+new `provider.rs` entries. "Other tools" survives as the catch-all for a tool no
+heading claims, which in a shipped build should be none.
+
+**Open.** The Figma has no frame for any of this: the labels, the descriptions,
+the three new headings and the OpenCode dialog all arrived as copy, and the pane
+header grew a third line to hold a sentence the drawn header does not have. It
+wants a design read.
+
+**`openai` moved to Experimental (2026-09-04).** The four-rows-against-three
+problem above resolved by taking the row out of the family rather than naming it.
+api.openai.com rides no OpenAI tool - Codex resolves relay routes against the
+whole catalog rather than the enabled set, and the ChatGPT desktop app is on
+chatgpt.com - so the switch is generic host interception, and its real dependants
+are OpenClaw and Hermes, which blind-tunnel anything outside the enabled catalog.
+`provider.openai.proxy_domain_slugs` is empty now; that family switch governs
+Codex alone. `LEFTOVER_GROUPS` gained a `domainSlugs` field to carry it, named
+per heading rather than swept, because `opencode` is both a tool slug and a
+domain slug and a sweep would draw two members under one key.
+
+It is labelled **OpenAI API**, not "OpenAI apps" and not `api.openai.com`. The
+row's subject is a host, so the label names the host's role and the host itself
+goes in the description ("Anything on this machine that calls api.openai.com
+directly. Gate intercepts that host, so apps with no gateway setting of their own
+still route."). Two reasons the identifier is not the label: the popover row
+already prints `api.openai.com` in its own mono slot, so a sans label repeating
+it says it twice and sets an identifier in body type; and the window UI prints
+the host nowhere else, so the sentence is the only place it is missing.
+
 ## Design sync 2026-09-04: the twelve open questions, answered
 
 All twelve questions raised at the last Figma pass came back from design in one

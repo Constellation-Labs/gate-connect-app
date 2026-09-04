@@ -254,7 +254,11 @@ export interface BackendState {
 
 const CLAUDE_CODE: ToolFixture = {
   slug: "claude-code",
-  name: "Claude Code",
+  // "CLI", not "Claude Code": `list_tools` sends `row_label`, and every row sits
+  // under a family heading that already names the vendor, so the label separates
+  // the surfaces inside it - App / Web / CLI. The product name is `display_name`,
+  // which is what the quit takeover's `pendingQuitTools` carries.
+  name: "CLI",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",
   config_location: null,
@@ -263,7 +267,7 @@ const CLAUDE_CODE: ToolFixture = {
 
 const CODEX: ToolFixture = {
   slug: "codex",
-  name: "Codex",
+  name: "CLI",
   upstream_provider_name: "OpenAI",
   default_upstream_url: "https://api.openai.com/v1",
   config_location: null,
@@ -279,9 +283,28 @@ const OPENCODE: ToolFixture = {
   status: { kind: "detected" },
 };
 
+/** The environment channel, which `list_tools` returns now.
+ *
+ *  `integrations/env_proxy.rs` stopped reporting `hidden_in_ui` on the round
+ *  that gave the leftovers headings of their own: it lands under Experimental
+ *  beside OpenCode, which cannot route without it, and a switch that flips
+ *  something the user cannot see is what the row removes. Present here because
+ *  a fixture that omits it renders an Experimental group the real machine never
+ *  shows - one row instead of two. */
+const ENV_PROXY: ToolFixture = {
+  slug: "env-proxy",
+  name: "Terminal tools",
+  upstream_provider_name: "your existing providers",
+  default_upstream_url: "https://openrouter.ai/api/v1",
+  // "no single file names it", which is what the real backend reports for the
+  // channel: it writes the machine's proxy variables, not a config file.
+  config_location: null,
+  status: { kind: "detected" },
+};
+
 const ANTHROPIC_DOMAIN: DomainFixture = {
   slug: "anthropic",
-  display_name: "Claude apps",
+  display_name: "App",
   hosts: ["api.anthropic.com"],
   upstream_url: "https://gateway.constellationgate.ai",
   rewrite_prefixes: ["/v1"],
@@ -307,7 +330,7 @@ const ANTHROPIC_DOMAIN: DomainFixture = {
  *  spec's `merge` to render that. */
 export const CLAUDE_WEB_DOMAIN: DomainFixture = {
   slug: "claude-web",
-  display_name: "Claude Desktop chat",
+  display_name: "Web",
   hosts: ["claude.ai"],
   upstream_url: "https://claude.ai/api",
   rewrite_prefixes: ["/organizations/"],
@@ -318,7 +341,9 @@ export const CLAUDE_WEB_DOMAIN: DomainFixture = {
 
 const OPENAI_DOMAIN: DomainFixture = {
   slug: "openai",
-  display_name: "OpenAI apps",
+  // "OpenAI API": the API host, and the one row whose subject is a host
+  // rather than a product surface, so it keeps a name instead of a surface kind.
+  display_name: "OpenAI API",
   hosts: ["api.openai.com"],
   upstream_url: "https://gateway.constellationgate.ai",
   rewrite_prefixes: ["/v1"],
@@ -333,7 +358,7 @@ const OPENAI_DOMAIN: DomainFixture = {
  *  model calls need, which its `connect` used to flip unasked. */
 export const CHATGPT_DOMAIN: DomainFixture = {
   slug: "chatgpt",
-  display_name: "ChatGPT (Codex subscription)",
+  display_name: "App",
   hosts: ["chatgpt.com"],
   upstream_url: "https://chatgpt.com/backend-api",
   rewrite_prefixes: ["/codex/responses"],
@@ -352,7 +377,7 @@ export const CHATGPT_DOMAIN: DomainFixture = {
  *  pairing on the backend catalog. */
 export const CHATGPT_APPS_DOMAIN: DomainFixture = {
   slug: "chatgpt-apps",
-  display_name: "ChatGPT app chat + Codex tools",
+  display_name: "Web",
   hosts: ["chatgpt.com"],
   upstream_url: "https://chatgpt.com",
   rewrite_prefixes: ["/backend-api/f/conversation", "/backend-api/ps/mcp", "/backend-api/wham/"],
@@ -400,12 +425,15 @@ export function defaultState(): BackendState {
         { ...CHATGPT_APPS_DOMAIN },
       ],
     },
-    tools: [{ ...CLAUDE_CODE }, { ...CODEX }, { ...OPENCODE }],
+    tools: [{ ...CLAUDE_CODE }, { ...CODEX }, { ...OPENCODE }, { ...ENV_PROXY }],
     providers: [
       {
         slug: "anthropic",
-        display_name: "Claude",
-        subtitle: "Claude Code and the Claude apps",
+        // The vendor, not the product: `provider.rs`. With rows named "App" /
+        // "Web" / "CLI" the heading is the only thing left saying whose traffic
+        // this is.
+        display_name: "Anthropic",
+        subtitle: "Claude Code + Claude Desktop",
         enabled: false,
         available: true,
         tool_slugs: ["claude-code"],
@@ -415,11 +443,14 @@ export function defaultState(): BackendState {
       {
         slug: "openai",
         display_name: "OpenAI",
-        subtitle: "Codex and the OpenAI apps",
+        subtitle: "Codex + OpenAI API",
         enabled: false,
         available: true,
         tool_slugs: ["codex"],
-        domain_slugs: ["openai"],
+        // Empty, mirroring `provider.rs`: the `openai` domain is generic
+        // interception of api.openai.com, rides no OpenAI tool Gate configures,
+        // and sits under Experimental with the harnesses that depend on it.
+        domain_slugs: [],
         chat_domain_slugs: ["chatgpt", "chatgpt-apps"],
       },
     ],

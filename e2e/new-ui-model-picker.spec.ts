@@ -22,7 +22,7 @@ const useNewUi = { gc: "gc.newUi" };
 const tools = [
   {
     slug: "claude-code",
-    name: "Claude Code",
+    name: "CLI",
     upstream_provider_name: "Anthropic",
     default_upstream_url: "https://gw.example/claude-code",
     status: { kind: "connected" as const },
@@ -50,7 +50,7 @@ const base = { proxy: { running: true, ca_trusted: true }, tools };
 
 /** Open one app's pane, which is where model selection lives. */
 async function openApp(app: { page: import("@playwright/test").Page }) {
-  await app.page.getByRole("button", { name: "Claude Code" }).first().click();
+  await app.page.getByRole("button", { name: "CLI" }).first().click();
 }
 
 test.describe("new UI model picker", () => {
@@ -109,7 +109,7 @@ test.describe("new UI model picker", () => {
 
     // The billing confirmation, because this organization has never accepted it.
     await expect(
-      app.page.getByRole("heading", { name: /Use a Gate model for Claude Code\?/ }),
+      app.page.getByRole("heading", { name: /Use a Gate model for CLI\?/ }),
     ).toBeVisible();
     await app.page.getByRole("button", { name: "Use Gate credits" }).click();
 

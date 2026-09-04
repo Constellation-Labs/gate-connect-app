@@ -56,6 +56,7 @@ export interface GateModel {
 
 export function AppPane({
   name,
+  description,
   isProtected,
   status,
   since,
@@ -83,6 +84,19 @@ export function AppPane({
   alert,
 }: {
   name: string;
+  /**
+   * What this app is, in one sentence - `lib/groups.ts`' `describeMember`.
+   *
+   * The header used to be able to skip this: a row called "Claude Code" says
+   * what it is. The rows are surface kinds now ("App", "Web", "CLI"), which is
+   * legible in the rail because the eyebrow above them names the vendor, and
+   * not legible here at all - this h1 is the only "Anthropic" the pane has, and
+   * it does not say it. So the sentence comes with the name.
+   *
+   * Optional, and absent means absent: a row with no copy written for it gets
+   * no line rather than a placeholder under its own name.
+   */
+  description?: string;
   isProtected: boolean;
   /**
    * Observed status, which the header line draws in full.
@@ -197,6 +211,13 @@ export function AppPane({
           <h1 className="truncate text-xl font-medium leading-6 tracking-heading text-base-foreground">
             {name}
           </h1>
+          {/* Between the name and the status line on purpose: this is what the
+              row IS and the line below is what it is DOING, and the pane reads
+              top-down from identity to state. Not truncated - the sentence is
+              the point, and the header is the one place with room for it. */}
+          {description && (
+            <p className="text-base-xs leading-4 text-neutral-600">{description}</p>
+          )}
           <AppStatusLine isProtected={isProtected} status={status} since={since} />
         </div>
         <span className="flex shrink-0 items-center gap-2">

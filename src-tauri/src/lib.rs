@@ -107,7 +107,11 @@ fn list_tools() -> Vec<ToolDto> {
         .filter(|integ| !integ.hidden_in_ui())
         .map(|integ| ToolDto {
             slug: integ.id().to_string(),
-            name: integ.display_name().to_string(),
+            // The row label, not the product name: this feeds the ledger, whose
+            // rows sit under a heading that names the vendor. Every other reader
+            // of a tool's name - the CLI, the logs, the quit takeover - wants
+            // `display_name`, which is why the two are separate.
+            name: integ.row_label().to_string(),
             upstream_provider_name: integ.upstream_provider_name().to_string(),
             default_upstream_url: integ.default_upstream_url().to_string(),
             config_location: integ.config_location(),

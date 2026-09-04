@@ -18,7 +18,8 @@ const useNewUi = { gc: "gc.newUi" };
 
 const CLAUDE_CODE = {
   slug: "claude-code",
-  name: "Claude Code",
+  // The surface, not the product: the eyebrow over the row says "Anthropic".
+  name: "CLI",
   upstream_provider_name: "Anthropic",
   default_upstream_url: "https://api.anthropic.com",
   status: { kind: "detected" as const },
@@ -59,7 +60,7 @@ test.describe("new UI engine controls", () => {
 
     // A chat surface, which is where this matters most: it has no config file to
     // write, so the engine is the only thing that could route it.
-    await app.page.getByRole("switch", { name: "ChatGPT (Codex subscription)" }).click();
+    await app.page.getByRole("switch", { name: "OpenAI App" }).click();
 
     await expect.poll(() => app.lastCall("proxy_set_domain")).toMatchObject({
       slug: "chatgpt",
@@ -105,8 +106,8 @@ test.describe("new UI app pane", () => {
   test("the pane's own switch routes the app", async ({ boot }) => {
     const app = await boot({ proxy: { running: true, ca_trusted: true }, tools: [CLAUDE_CODE] });
 
-    await app.page.getByRole("button", { name: "Claude Code" }).first().click();
-    await app.page.getByRole("switch", { name: "Route Claude Code" }).click();
+    await app.page.getByRole("button", { name: "CLI" }).first().click();
+    await app.page.getByRole("switch", { name: "Route CLI" }).click();
 
     await expect.poll(() => app.lastCall("connect_tool")).toMatchObject({
       slug: "claude-code",
@@ -125,12 +126,12 @@ test.describe("new UI app pane", () => {
       ],
     });
 
-    await app.page.getByRole("button", { name: "Claude Code" }).first().click();
+    await app.page.getByRole("button", { name: "CLI" }).first().click();
 
     // The drift alert card inside the pane carries its own switch for the same
     // app, reading off - that one is the re-adopt path. This is the header's.
     await expect(
-      app.page.getByRole("switch", { name: "Route Claude Code" }),
+      app.page.getByRole("switch", { name: "Route CLI" }),
     ).toHaveAttribute("aria-checked", "true");
   });
 });

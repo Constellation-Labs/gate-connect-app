@@ -62,6 +62,25 @@ function pane(props: Partial<Parameters<typeof AppPane>[0]> = {}) {
   );
 }
 
+describe("AppPane header", () => {
+  it("says what the app is, because its name no longer does", () => {
+    // The h1 is a surface kind now ("CLI"), which the rail makes legible with a
+    // vendor eyebrow the pane does not have. Without the sentence this header
+    // is one word and no way to tell which terminal tool it means.
+    render(pane({ name: "CLI", description: "Claude Code in your terminal." }));
+    expect(screen.getByRole("heading", { level: 1, name: "CLI" })).toBeTruthy();
+    expect(screen.getByText("Claude Code in your terminal.")).toBeTruthy();
+  });
+
+  it("draws no line at all for a row nobody wrote copy for", () => {
+    // Absent means absent: a placeholder under a one-word heading is worse than
+    // the heading alone.
+    render(pane({ name: "OpenCode Zen / Go" }));
+    expect(screen.getByRole("heading", { level: 1, name: "OpenCode Zen / Go" })).toBeTruthy();
+    expect(screen.getByText("Protected")).toBeTruthy();
+  });
+});
+
 describe("AppPane model card", () => {
   it("draws the model card when the app has one model family", () => {
     render(pane());

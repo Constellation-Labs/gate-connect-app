@@ -69,6 +69,9 @@ use crate::integrations::dotenv;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
 const DISPLAY_NAME: &str = "Hermes";
+/// The row label. Hermes is its own family on the ledger, so the heading
+/// says "Hermes" and this says which of its surfaces the row is.
+const ROW_LABEL: &str = "CLI";
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
 const DEFAULT_UPSTREAM_URL: &str = "https://openrouter.ai/api/v1";
 const STATE_FILENAME: &str = "hermes-state.json";
@@ -112,6 +115,10 @@ impl Integration for Hermes {
 
     fn display_name(&self) -> &'static str {
         DISPLAY_NAME
+    }
+
+    fn row_label(&self) -> &'static str {
+        ROW_LABEL
     }
 
     fn upstream_provider_name(&self) -> &'static str {

@@ -326,6 +326,7 @@ export function Sidebar({
                 <AppRow
                   key={app.slug}
                   app={app}
+                  groupLabel={group.label}
                   selected={view.kind === "app" && view.slug === app.slug}
                   onSelect={onSelectApp}
                   onToggle={onToggleApp}
@@ -506,11 +507,14 @@ function InventoryState({
 
 function AppRow({
   app,
+  groupLabel,
   selected,
   onSelect,
   onToggle,
 }: {
   app: SidebarApp;
+  /** The eyebrow over this row, for the switch's accessible name alone. */
+  groupLabel: string;
   selected: boolean;
   onSelect: (slug: string) => void;
   onToggle: (slug: string, next: boolean) => void;
@@ -567,7 +571,15 @@ function AppRow({
       </button>
       <BaseSwitch
         on={app.on}
-        label={app.name}
+        // The eyebrow in front of the row label, which the visible text
+        // deliberately leaves out. Rows are named for the surface they cover
+        // now, so the rail carries three switches reading "CLI" and two each
+        // reading "App" and "Web"; on screen the eyebrow above them says which
+        // family is which, and this is how that reaches a screen reader, where
+        // the heading is a sibling rather than a parent. Empty for the
+        // unlabelled group the rail falls back to before the catalog loads, so
+        // the name stays the row's own.
+        label={groupLabel ? `${groupLabel} ${app.name}` : app.name}
         busy={app.busy}
         onClick={() => onToggle(app.slug, !app.on)}
       />
