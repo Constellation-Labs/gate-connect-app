@@ -831,12 +831,39 @@ test.describe("new UI sidebar rail", () => {
     await expect(openAiEyebrow).toHaveText("1 of 4");
   });
 
-  test("the multi-provider tools share one Other tools eyebrow", async ({ boot }) => {
-    const app = await boot({ proxy: { running: true, ca_trusted: true } });
+  test("the multi-provider tools get an eyebrow each", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      // OpenClaw beside OpenCode: with one leftover tool on the machine a
+      // private eyebrow and a shared one look the same.
+      tools: [
+        {
+          slug: "opencode",
+          name: "OpenCode",
+          upstream_provider_name: "your existing providers",
+          default_upstream_url: "https://openrouter.ai/api/v1",
+          status: { kind: "detected" },
+        },
+        {
+          slug: "openclaw",
+          name: "OpenClaw",
+          upstream_provider_name: "your existing providers",
+          default_upstream_url: "https://openrouter.ai/api/v1",
+          status: { kind: "detected" },
+        },
+      ],
+    });
 
-    await expect(app.page.getByRole("heading", { name: "Other tools" })).toBeVisible();
-    // Not one eyebrow per tool - the 2026-08-21 read drew that, and the
-    // Sidenav page reversed it.
-    await expect(app.page.getByRole("heading", { name: "OpenCode" })).toHaveCount(0);
+    // A heading per tool, which is what lets the row beneath it be named for a
+    // surface. They shared one "Other tools" eyebrow until `LEFTOVER_GROUPS`
+    // split them: the 2026-08-21 read drew the shared one, the Sidenav page
+    // reversed it, and naming the rows reversed it back.
+    await expect(app.page.getByRole("heading", { name: "OpenClaw" })).toBeVisible();
+    // OpenCode files under Experimental, with the environment channel it cannot
+    // route without.
+    await expect(app.page.getByRole("heading", { name: "Experimental" })).toBeVisible();
+    // "Other tools" is the catch-all for a tool no heading names. With the
+    // catalog and `LEFTOVER_GROUPS` in step, nothing reaches it.
+    await expect(app.page.getByRole("heading", { name: "Other tools" })).toHaveCount(0);
   });
 });
