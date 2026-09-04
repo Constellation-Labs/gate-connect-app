@@ -162,7 +162,7 @@ fn bind_relay(preferred: Option<u16>) -> Result<(std::net::TcpListener, u16)> {
 // can't drift; this module just references them.
 use super::{
     inject_gate_credential, GATE_AUTHORIZATION_HEADER, GATE_CLIENT_HEADER, GATE_INSTALL_ID_HEADER,
-    GATE_KEY_HEADER, GATE_ORG_HEADER, UPSTREAM_URL_HEADER,
+    GATE_KEY_HEADER, GATE_MODEL_HEADER, GATE_ORG_HEADER, UPSTREAM_URL_HEADER,
 };
 
 /// Everything a relay connection needs, shared across all requests.
@@ -561,13 +561,42 @@ async fn proxy(
             // rather than derived a second time - two computations of "is this
             // served?" could disagree, and the disagreement would be a request
             // billed one way and routed the other.
-            if mode == BillingMode::Byok && !super::serves_gate_model(&headers) {
+            //
+            // The Gate-model half also turns on the PATH: Gate can only answer
+            // on a route it implements, and withholding the hint on any other
+            // leaves the gateway with nothing to do and the caller waiting. PAYG
+            // is not gated that way - the org routes that domain and its
+            // forwarded path is already a shape the gateway serves. See
+            // `serve_path`.
+            let (req_path, req_query) = routed
+                .path_and_query
+                .split_once('?')
+                .map_or((routed.path_and_query.as_str(), None), |(p, q)| {
+                    (p, Some(q))
+                });
+            let model_serve_path = if super::serves_gate_model(&headers) {
+                super::serve_path(req_path)
+            } else {
+                None
+            };
+            if mode == BillingMode::Byok && model_serve_path.is_none() {
                 set_upstream_header(&mut headers, &routed.upstream_url).map_err(|e| {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("building {UPSTREAM_URL_HEADER}: {e:#}"),
                     )
                 })?;
+                // The model header goes too. It is not a label: its own contract says it
+                // CHANGES WHAT THE GATEWAY SERVES, and it is sent only when the user put
+                // this tool on a Gate model. Leaving it on a forwarded request states
+                // both "Gate serves this, bill the org" and "send this to my own
+                // provider under my own key" at once, and the body's model would be
+                // rewritten to a Gate id the tool's own provider has never heard of.
+                // Unreachable before the serve rewrite existed, because the request hung
+                // instead of falling back; reachable now on any path Gate does not
+                // serve, such as `count_tokens`.
+                headers.remove(GATE_MODEL_HEADER);
+                format!("{}{}", state.gateway_base, routed.path_and_query)
             } else {
                 headers.remove(UPSTREAM_URL_HEADER);
                 // The tool's own key goes with it - on a served request the
@@ -575,8 +604,19 @@ async fn proxy(
                 // `inject_credential` has already done this for PAYG; this
                 // covers the Gate-model case, where the org is still BYOK.
                 super::strip_client_auth(&mut headers);
+                // Onto the path that can answer, which is not always the one the
+                // tool asked on: Codex's `/codex/responses` is served at
+                // `/v1/responses`, the same wire format under a route the
+                // gateway implements. A PAYG request with no model override
+                // keeps the path it arrived on.
+                match model_serve_path {
+                    Some(gateway_path) => match req_query {
+                        Some(q) => format!("{}{gateway_path}?{q}", state.gateway_base),
+                        None => format!("{}{gateway_path}", state.gateway_base),
+                    },
+                    None => format!("{}{}", state.gateway_base, routed.path_and_query),
+                }
             }
-            format!("{}{}", state.gateway_base, routed.path_and_query)
         }
         Route::Passthrough => {
             // Strip every Gate-internal header and forward under the tool's own

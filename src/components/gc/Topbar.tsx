@@ -6,10 +6,18 @@ import type { IconName } from "./Icon";
  * Window chrome for the new app UI: a 48px strip, brand lockup centred,
  * overflow menu on the right.
  *
- * Drawn as `nav/topbar` and `topnav/menu` on the Components page, which the
- * file has since emptied - both nodes are gone. The live sources are the
- * topbar and menu instances inside the flow frames (the Overview page's
- * `116:27225` is the menu).
+ * Drawn as `nav/topbar` (`744:37739`) and `topnav/menu` (`744:37692`). Both
+ * live on the **Banners** and **Menus** component canvases - the library was
+ * not deleted, it moved off the old `113:16762` page into three sections
+ * (Banners `744:37738`, Menus `744:37691`, Sidenav `408:15625`). An earlier
+ * note here said both nodes were gone; they are not.
+ *
+ * The component and the flow instance disagree about the menu's CONTENTS:
+ * `744:37692` draws three rows - dashboard, Contact support, docs - and no
+ * Quit, while the Overview instance `116:27225` draws four including Quit
+ * (its 146px is the height: 4x32 plus 9 top and bottom). We follow the
+ * instance on Quit and omit support for the reason below. Raised with
+ * design; see `docs/figma-questions-for-design.md`.
  *
  * Two things the design draws are deliberately absent. The traffic lights are
  * the operating system's, so we only reserve the space. The Minimize2 button
@@ -20,19 +28,25 @@ import type { IconName } from "./Icon";
  */
 
 /**
- * The design draws a fourth entry, Contact support, and it is not here.
+ * All four drawn entries, in the drawn order: dashboard, support, docs, quit
+ * (`116:27225`, and the `topnav/menu` component `744:37692` draws the first
+ * three).
  *
- * `GATE_SUPPORT_URL` does exist in `lib/config.ts`, and it 404s - so there is
- * still nothing to open. An entry that cannot do anything is worse than an
- * absent one, because the user cannot tell "not built" from "broken", and one
- * that opens a broken page is worse again. `SettingsPane` omits its Support row
- * for the same reason. Add both back together once there is a real address; see
- * that constant for what has to change (AG-598).
+ * **Contact support ships before its URL works, by decision (2026-09-04).**
+ * It was omitted on the argument that an entry opening a 404 is worse than an
+ * absent one, since the user cannot tell "not built" from "broken". Overruled:
+ * the entry is drawn in both the component and the flow, and the address is
+ * being fixed. `GATE_SUPPORT_URL` still points at a page that 404s today, so
+ * do not treat a report of that as this being unfinished (AG-598).
+ *
+ * `SettingsPane` keeps its Support row omitted, and that is not the same
+ * decision: no Settings frame draws one.
  */
-export type TopnavAction = "dashboard" | "docs" | "quit";
+export type TopnavAction = "dashboard" | "support" | "docs" | "quit";
 
 const MENU_ITEMS: { action: TopnavAction; icon: IconName; label: string }[] = [
   { action: "dashboard", icon: "layoutDashboard", label: "Visit dashboard" },
+  { action: "support", icon: "headset", label: "Contact support" },
   { action: "docs", icon: "bookOpenText", label: "Read Gate docs" },
 ];
 
@@ -86,16 +100,33 @@ export function Topbar({
  * `base/input` border. Exported for the tray popover's footer, which draws the
  * same 32px ellipsis button in front of its own menu.
  */
+/**
+ * Radius follows the surface, not the component: the topbar draws 4px
+ * (`127:46660`) and the tray's footer 8px (`694:34124` default,
+ * `744:38191` pressed). One button, two surfaces, two numbers - so the call
+ * site says which, and `rounded-sm` (6px in this config) was wrong for both.
+ *
+ * A map rather than `rounded-${radius}`: an interpolated class name is
+ * invisible to Tailwind's scanner and emits no CSS at all, which is the bug
+ * six `rounded-base` uses in `dialogs.tsx` shipped as.
+ */
+const ICON_BUTTON_RADIUS = {
+  control: "rounded-control",
+  md: "rounded-md",
+} as const;
+
 export function OutlineIconButton({
   icon,
   label,
   onClick,
   expanded,
+  radius = "control",
 }: {
   icon: IconName;
   label: string;
   onClick: () => void;
   expanded?: boolean;
+  radius?: keyof typeof ICON_BUTTON_RADIUS;
 }) {
   return (
     <button
@@ -104,7 +135,7 @@ export function OutlineIconButton({
       aria-label={label}
       aria-haspopup={expanded === undefined ? undefined : "menu"}
       aria-expanded={expanded}
-      className="flex size-8 items-center justify-center rounded-sm border border-base-input bg-base-card text-base-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.06)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+      className={`flex size-8 items-center justify-center ${ICON_BUTTON_RADIUS[radius]} border border-base-input bg-base-card text-base-primary shadow-[0_1px_2px_0_rgba(0,0,0,0.05),inset_0_4px_6px_0_rgba(255,255,255,0.4),inset_0_-4px_4px_0_rgba(0,0,0,0.04)] transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary`}
     >
       <Icon name={icon} size={16} />
     </button>
@@ -117,7 +148,7 @@ export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => v
   return (
     <div
       role="menu"
-      className="absolute right-0 top-10 z-10 w-56 rounded-md border border-base-border bg-base-card p-[9px] shadow-base-lg"
+      className="absolute right-0 top-10 z-10 w-56 rounded-md border border-base-border bg-base-card p-2 shadow-base-lg"
     >
       {MENU_ITEMS.map(({ action, icon, label }) => (
         <button
@@ -125,11 +156,11 @@ export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => v
           type="button"
           role="menuitem"
           onClick={() => onSelect(action)}
-          className="flex h-8 w-full items-center justify-between rounded-sm px-1.5 text-base-foreground transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+          className="flex h-8 w-full items-center justify-between rounded-control px-1.5 text-base-foreground shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
         >
           <span className="flex items-center gap-2">
             <Icon name={icon} size={16} />
-            <span className="text-base-xs font-medium leading-4">{label}</span>
+            <span className="text-base-xs font-medium leading-4 tracking-label-12">{label}</span>
           </span>
           <Icon name="squareArrowOutUpRight" size={12} className="text-neutral-500" />
         </button>
@@ -138,10 +169,10 @@ export function TopnavMenu({ onSelect }: { onSelect: (action: TopnavAction) => v
         type="button"
         role="menuitem"
         onClick={() => onSelect(QUIT_ITEM.action)}
-        className="flex h-8 w-full items-center gap-2 rounded-sm px-1.5 text-red-600 transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+        className="flex h-8 w-full items-center gap-2 rounded-control px-1.5 text-red-600 shadow-base-2xs transition-colors hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
       >
         <Icon name={QUIT_ITEM.icon} size={16} />
-        <span className="text-base-xs font-medium leading-4">{QUIT_ITEM.label}</span>
+        <span className="text-base-xs font-medium leading-4 tracking-label-12">{QUIT_ITEM.label}</span>
       </button>
     </div>
   );

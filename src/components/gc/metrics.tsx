@@ -174,10 +174,10 @@ function Stat({
           // resize under the user when the reading lands.
           <Skeleton className="my-1 h-6 w-16" />
         ) : (
-          <span className="text-2xl font-semibold leading-8 text-base-foreground">{value}</span>
+          <span className="text-2xl font-medium leading-7 tracking-heading-24 text-base-foreground">{value}</span>
         )}
         {delta && (
-          <span className="text-base-xs font-medium text-green-600">{delta}</span>
+          <span className="text-sm leading-5 text-green-600">{delta}</span>
         )}
       </span>
     </Tag>
@@ -222,7 +222,7 @@ export function MessagesChart({
   const empty = !pending && !unavailable && highest === 0;
   return (
     <Card className="p-4" busy={pending}>
-      <h2 className="text-sm font-medium leading-5 text-base-foreground">Messages</h2>
+      <h2 className="text-base font-medium leading-6 tracking-heading-16 text-base-foreground">Messages</h2>
 
       {pending ? (
         <PendingChart />
@@ -248,7 +248,7 @@ export function MessagesChart({
           to be - the table is the accessible path to the same figures. */}
       <div
         aria-hidden
-        className="relative mt-4 flex h-28 items-end justify-between gap-1"
+        className="relative mt-5 flex h-28 items-end justify-between gap-1"
         onMouseLeave={() => setHovered(null)}
       >
         {buckets.map((bucket, i) => (
@@ -292,7 +292,7 @@ export function MessagesChart({
         {buckets.map((bucket) => (
           <span
             key={bucket.id}
-            className="w-8 text-center font-mono text-base-2xs text-base-muted-foreground"
+            className="w-8 text-center text-base-2xs text-base-muted-foreground"
           >
             {hourTick(bucket.label)}
           </span>
@@ -338,7 +338,7 @@ export function MessagesChart({
         {SERIES.map(({ key, label, className }) => (
           <li key={key} className="flex items-center gap-2">
             <span aria-hidden className={`size-3 rounded-xs ${className}`} />
-            <span className="text-base-xs text-base-foreground">{label}</span>
+            <span className="text-base-xs leading-4 tracking-label-12 text-base-foreground">{label}</span>
           </li>
         ))}
       </ul>
@@ -358,7 +358,7 @@ export function MessagesChart({
 function PendingChart() {
   return (
     <>
-      <div aria-hidden className="mt-4 flex h-28 items-end justify-between gap-1">
+      <div aria-hidden className="mt-5 flex h-28 items-end justify-between gap-1">
         {PENDING_HOURS.map((hour) => (
           <Skeleton key={hour} className="h-full w-5" />
         ))}
@@ -370,7 +370,7 @@ function PendingChart() {
             // The tick box is the loaded axis's, not this frame's: a narrower
             // placeholder would let the axis jump sideways the moment the
             // reading lands, which is the one thing a placeholder must not do.
-            className="w-8 text-center font-mono text-base-2xs text-base-muted-foreground"
+            className="w-8 text-center text-base-2xs text-base-muted-foreground"
           >
             {hour}
           </span>
@@ -380,7 +380,7 @@ function PendingChart() {
         {SERIES.map(({ key, label, className }) => (
           <li key={key} className="flex items-center gap-2">
             <span aria-hidden className={`size-3 rounded-xs ${className}`} />
-            <span className="text-base-xs text-base-foreground">{label}</span>
+            <span className="text-base-xs leading-4 tracking-label-12 text-base-foreground">{label}</span>
           </li>
         ))}
       </ul>
@@ -431,9 +431,9 @@ function ChartTooltip({
           <div key={key} className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
               <span className={`size-3 rounded-xs ${className}`} />
-              <span className="text-base-xs leading-4 text-base-foreground">{label}</span>
+              <span className="text-base-xs leading-4 tracking-label-12 text-base-foreground">{label}</span>
             </span>
-            <span className="text-base-xs font-medium leading-4 text-base-foreground">
+            <span className="text-base-xs font-medium leading-4 tracking-label-12 text-base-foreground">
               {bucket[key].toLocaleString()}
             </span>
           </div>

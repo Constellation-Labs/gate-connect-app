@@ -69,9 +69,10 @@ export interface SettingsSection {
  * the copy stays next to the screen it describes, and so "which rows exist" is
  * testable without mounting the app.
  *
- * Diagnostics is the one row the Figma does not draw. `screens/Diagnostics.tsx`
- * exists and has nowhere else to live in the new IA, so it sits under About and
- * opens the report dialog. Expect it to be redrawn.
+ * Diagnostics was the one row the Figma did not draw, and it has since been
+ * drawn: the file now carries a full Diagnostics section matching these rows
+ * word for word. `screens/Diagnostics.tsx` sits under About and opens the
+ * report dialog, which is where the frame puts it.
  *
  * **An omitted handler omits its control**, and a row left with nothing to do
  * omits itself. What is still missing a backend is device rename and plan
@@ -613,7 +614,7 @@ export function SettingsPane({ sections }: { sections: SettingsSection[] }) {
       {sections.map((section) => (
         <section key={section.id} className="flex flex-col gap-3">
           <h2
-            className={`text-base font-medium leading-6 tracking-heading ${
+            className={`text-base font-medium leading-6 tracking-heading-16 ${
               section.danger ? "text-red-600" : "text-base-foreground"
             }`}
           >

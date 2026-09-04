@@ -1,39 +1,79 @@
 //! Handshake test for the Linux proxy helper control protocol: the client must
 //! reuse a daemon that reports the same [`PROTOCOL_VERSION`] and
 //! [`BUILD_FINGERPRINT`], and detect one that reports a different version or
-//! fingerprint as stale (asking it to shut down so it can be replaced). Both
-//! are "leftover from another build" cases: a version mismatch used to make a
-//! later request fail on an unrecognized reply, a fingerprint mismatch used to
-//! keep old daemon behavior running (e.g. rejecting a catalog domain the
-//! client's build knows).
+//! fingerprint as stale. Both are "leftover from another build" cases: a version
+//! mismatch used to make a later request fail on an unrecognized reply, a
+//! fingerprint mismatch used to keep old daemon behavior running (e.g. rejecting
+//! a catalog domain the client's build knows).
+//!
+//! Detecting a stale daemon is not licence to end it, and which entry point was
+//! used decides: [`HelperClient::connect_existing`] is the read-only probe
+//! behind `proxy status`, and it must leave even a mismatched daemon running -
+//! it used to `Shutdown` one, so a status call from any differently-built binary
+//! (a test binary, a CLI skewed from the installed app) killed the live daemon
+//! and the user's routing with it. [`shutdown_daemon`] is the path that means
+//! it, and it must still retire a stale daemon gracefully rather than falling
+//! through to the force-kill.
 //!
 //! Hermetic: `$XDG_RUNTIME_DIR` is pointed at a throwaway dir and a fake daemon
-//! is stood up on the real control socket. Nothing is spawned - the test drives
-//! [`HelperClient::connect_existing`], which only talks to an already-listening
-//! socket.
+//! is stood up on the real control socket. Nothing is spawned - both entry
+//! points here only talk to an already-listening socket.
 #![cfg(target_os = "linux")]
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 
 use gate_connect_core::proxy::control::{self, Request, Response, PROTOCOL_VERSION};
-use gate_connect_core::proxy::helper_client::HelperClient;
+use gate_connect_core::proxy::helper_client::{self, HelperClient};
 
 /// Point the control channel at a throwaway runtime dir and drop in the token
 /// the client echoes back in `Hello`.
 fn setup() {
     let tmp = std::env::temp_dir().join(format!("gate-stale-handshake-{}", std::process::id()));
     std::env::set_var("XDG_RUNTIME_DIR", &tmp);
+    // The control channel follows `GATE_CONNECT_TEST_HOME` in preference to
+    // `$XDG_RUNTIME_DIR`, so an ambient one (exported in the shell) would
+    // override the per-pid dir this test isolates itself with - and every
+    // daemon test binary, which `cargo test` runs concurrently, would land on
+    // one socket path and race. This test wants production resolution of the
+    // var it just set, so drop the seam, as `audit_e2e` does for the same
+    // reason.
+    std::env::remove_var("GATE_CONNECT_TEST_HOME");
     // `token_path()` resolves (and creates, 0700) the runtime dir for us.
     let token_path = control::token_path().expect("token path");
     std::fs::write(&token_path, "test-token").expect("write token");
 }
 
+/// The read-only probe: what `proxy status` does to a daemon it finds.
+fn probe() -> Result<(), String> {
+    HelperClient::connect_existing()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// The stop path: what `disable` does. It must reach a daemon from another
+/// build, which it may not configure but does need to turn off.
+fn stop() -> Result<(), String> {
+    HelperClient::connect_existing_to_stop()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// The retire path: what a caller that wants the daemon gone does.
+fn retire() -> Result<(), String> {
+    helper_client::shutdown_daemon();
+    Ok(())
+}
+
 /// Stand up a fake daemon on the control socket that answers `Hello` with the
-/// given protocol version and build fingerprint, then drive `connect_existing`.
-/// Returns whether the client accepted the daemon (mapping any error to its
-/// message), and whether the daemon was subsequently asked to `Shutdown`.
-fn run_scenario(daemon_version: u32, daemon_fingerprint: &str) -> (Result<(), String>, bool) {
+/// given protocol version and build fingerprint, then drive `entry` against it.
+/// Returns what `entry` reported (mapping any error to its message), and whether
+/// the daemon was subsequently asked to `Shutdown`.
+fn run_scenario(
+    daemon_version: u32,
+    daemon_fingerprint: &str,
+    entry: fn() -> Result<(), String>,
+) -> (Result<(), String>, bool) {
     let sock = control::socket_path().expect("socket path");
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).expect("bind fake daemon socket");
@@ -56,8 +96,8 @@ fn run_scenario(daemon_version: u32, daemon_fingerprint: &str) -> (Result<(), St
         writeln!(writer, "{}", serde_json::to_string(&reply).unwrap()).expect("write Hello reply");
         writer.flush().unwrap();
 
-        // A stale-version client follows up with `Shutdown`; a matching one just
-        // holds the connection, so we see EOF once the test drops the client.
+        // A caller retiring us follows up with `Shutdown`; a probe just holds the
+        // connection, so we see EOF once the test drops the client.
         let mut next = String::new();
         match reader.read_line(&mut next) {
             Ok(n) if n > 0 => {
@@ -75,23 +115,25 @@ fn run_scenario(daemon_version: u32, daemon_fingerprint: &str) -> (Result<(), St
         }
     });
 
-    // `map(|_| ())` drops the returned client, closing the connection so the
-    // daemon's second read unblocks (EOF) in the matching case.
-    let outcome = HelperClient::connect_existing()
-        .map(|_| ())
-        .map_err(|e| e.to_string());
+    // Each entry point drops the client it obtained, closing the connection so
+    // the daemon's second read unblocks (EOF) when nothing follows the `Hello`.
+    let outcome = entry();
     let asked_to_shut_down = daemon.join().expect("join fake daemon");
     let _ = std::fs::remove_file(&sock);
     (outcome, asked_to_shut_down)
 }
 
+/// One test, not several: the runtime dir and the control socket inside it are
+/// process-global, and libtest would run separate `#[test]` fns as concurrent
+/// threads competing for the same socket path.
 #[test]
-fn same_version_reused_mismatch_replaced() {
+fn probe_leaves_a_stale_daemon_running_and_retire_ends_it() {
     setup();
 
     // Same version and fingerprint: the daemon is reused and never asked to
     // shut down.
-    let (reused, reused_shutdown) = run_scenario(PROTOCOL_VERSION, control::BUILD_FINGERPRINT);
+    let (reused, reused_shutdown) =
+        run_scenario(PROTOCOL_VERSION, control::BUILD_FINGERPRINT, probe);
     assert!(
         reused.is_ok(),
         "a same-build daemon should be reused, got {reused:?}"
@@ -101,29 +143,60 @@ fn same_version_reused_mismatch_replaced() {
         "a same-build daemon should not be asked to shut down"
     );
 
-    // Different version: detected as stale and asked to shut down, so it can be
-    // replaced rather than reused.
-    let (stale, stale_shutdown) = run_scenario(PROTOCOL_VERSION + 1, control::BUILD_FINGERPRINT);
+    // Different version: reported as stale, so a caller that wants the socket
+    // knows to replace it - but a probe must not be the one to end it.
+    let (stale, stale_shutdown) =
+        run_scenario(PROTOCOL_VERSION + 1, control::BUILD_FINGERPRINT, probe);
     let err = stale.expect_err("a mismatched-version daemon must not be reused");
     assert!(
         err.contains("incompatible protocol"),
         "expected a stale-daemon error, got {err:?}"
     );
     assert!(
-        stale_shutdown,
-        "a stale daemon should be asked to shut down"
+        !stale_shutdown,
+        "probing a stale daemon must leave it running: a status call from a \
+         differently-built binary would otherwise kill the live proxy"
     );
 
     // Same version but a different build fingerprint (a daemon whose Hello
     // predates fingerprints replies with the empty default): same treatment.
-    let (skewed, skewed_shutdown) = run_scenario(PROTOCOL_VERSION, "");
+    let (skewed, skewed_shutdown) = run_scenario(PROTOCOL_VERSION, "", probe);
     let err = skewed.expect_err("a mismatched-fingerprint daemon must not be reused");
     assert!(
         err.contains("incompatible protocol"),
         "expected a stale-daemon error, got {err:?}"
     );
     assert!(
-        skewed_shutdown,
-        "a build-skewed daemon should be asked to shut down"
+        !skewed_shutdown,
+        "probing a build-skewed daemon must leave it running"
+    );
+
+    // `disable` must still reach a build-skewed daemon. Refusing it here left
+    // one intercepting with the snapshot cleared, which `status` then reports
+    // as stopped for good - the state `proxy disable` exists to escape.
+    let (stoppable, stop_shutdown) = run_scenario(PROTOCOL_VERSION, "", stop);
+    assert!(
+        stoppable.is_ok(),
+        "a build-skewed daemon must still be reachable to stop, got {stoppable:?}"
+    );
+    assert!(
+        !stop_shutdown,
+        "connecting to stop must not itself end the daemon: the caller decides \
+         between SetPassthrough and Shutdown"
+    );
+
+    // The path that does mean it still ends a stale daemon by asking, not by
+    // waiting out the timeout and force-killing it.
+    let (_, retired_shutdown) = run_scenario(PROTOCOL_VERSION, "", retire);
+    assert!(
+        retired_shutdown,
+        "shutdown_daemon should ask a stale daemon to shut down"
+    );
+
+    // And a same-build one, which is the ordinary `shutdown_engine` case.
+    let (_, ended_shutdown) = run_scenario(PROTOCOL_VERSION, control::BUILD_FINGERPRINT, retire);
+    assert!(
+        ended_shutdown,
+        "shutdown_daemon should ask a same-build daemon to shut down"
     );
 }

@@ -7,6 +7,7 @@ import {
   type ToolModels,
 } from "./api";
 import { toFailure, type ActivityFailure } from "./activity";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /**
  * Which Gate model each app runs on (AG-588).
@@ -95,18 +96,73 @@ export function adaptPreferences(raw: ToolModels): ToolModelsView {
 
 /** One model the gateway offers. */
 export interface GateModel {
-  /** Canonical id, e.g. `anthropic/claude-opus-5`. An identifier: rendered mono. */
+  /** Canonical id, e.g. `anthropic/claude-opus-5`. */
   id: string;
   /** Provider namespace, e.g. `anthropic`. Drives the vendor line and the mark. */
   vendor: string;
   /** Human-readable name, falling back to the id when discovery gave none. */
   name: string;
+  /**
+   * Capabilities the gateway advertises, e.g. `tool-use`, `reasoning`, `vision`.
+   *
+   * Empty when the row carried none, which is not the same as "can do nothing":
+   * an older catalogue row simply may not say. `modelCompatibility` treats an
+   * absent tag list as unknown rather than as a denial, for that reason.
+   */
+  tags: string[];
+  /**
+   * Which wire form of tool definition this model accepts (AG-729).
+   *
+   * Answers the question `tags` cannot: `openai/gpt-4o` carries `tool-use` and
+   * still rejects Codex's freeform tools. A shape the gateway said nothing
+   * about is absent here, and absent means unknown, never "no". The whole field
+   * is absent when talking to a gateway that predates it, which
+   * `modelCompatibility` handles with a dated local fallback.
+   */
+  toolShapes?: Partial<Record<ToolShape, ToolShapeReport>>;
+}
+
+/** The wire forms a client can send tool definitions in. */
+export type ToolShape = "function" | "freeform";
+
+/** What the gateway knows about one (model, shape) pair. */
+export interface ToolShapeReport {
+  verdict: "works" | "fails" | "unknown";
+  /** ISO date of the evidence, present only for a curated verdict. */
+  checked?: string;
 }
 
 interface RawModel {
   id?: unknown;
   owned_by?: unknown;
   name?: unknown;
+  tags?: unknown;
+  tool_shapes?: unknown;
+}
+
+/**
+ * Read the tool-shape block off one catalogue row.
+ *
+ * Defensive in the same spirit as the tag filter above: a malformed field costs
+ * the field, never the model, because the id is what a preference stores and
+ * dropping the row would make a saved choice look unavailable. An unrecognised
+ * verdict string becomes `unknown` rather than being discarded, so a gateway
+ * that grows a fourth verdict degrades to "no opinion" instead of to a denial.
+ */
+function adaptToolShapes(raw: unknown): Partial<Record<ToolShape, ToolShapeReport>> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+
+  const out: Partial<Record<ToolShape, ToolShapeReport>> = {};
+  for (const shape of ["function", "freeform"] as const) {
+    const entry = (raw as Record<string, unknown>)[shape];
+    if (typeof entry !== "object" || entry === null) continue;
+    const { verdict, checked } = entry as { verdict?: unknown; checked?: unknown };
+    out[shape] = {
+      verdict: verdict === "works" || verdict === "fails" ? verdict : "unknown",
+      ...(typeof checked === "string" ? { checked } : {}),
+    };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -125,10 +181,15 @@ export function adaptModels(raw: { data?: unknown }): GateModel[] {
   const models: GateModel[] = [];
   for (const m of list) {
     if (typeof m.id !== "string" || m.id.length === 0) continue;
+    const toolShapes = adaptToolShapes(m.tool_shapes);
     models.push({
       id: m.id,
       vendor: typeof m.owned_by === "string" ? m.owned_by : m.id.split("/")[0],
       name: typeof m.name === "string" && m.name.length > 0 ? m.name : m.id,
+      // Only the string entries: a malformed row should lose a tag, not the
+      // whole model, because the id is what a preference stores.
+      tags: Array.isArray(m.tags) ? m.tags.filter((t): t is string => typeof t === "string") : [],
+      ...(toolShapes ? { toolShapes } : {}),
     });
   }
   return models;
@@ -261,6 +322,9 @@ export function useGateModels(enabled: boolean): {
       });
   }, [enabled]);
 
+  // Once per session, not once per opening: the catalogue is large and
+  // unchanging within a session (see the doc above), so re-fetching 300+ models
+  // every time the picker is raised buys nothing.
   useEffect(() => {
     if (enabled && models === null) reload();
   }, [enabled, models, reload]);
@@ -269,24 +333,62 @@ export function useGateModels(enabled: boolean): {
 
 /** What the pane needs to know about this org's ability to pay for a Gate model. */
 export interface Credits {
-  plan: string;
+  /**
+   * The org's plan, or null when the gateway did not name one.
+   *
+   * Null rather than a default. It used to fall back to "free", which puts a
+   * plan on screen that nobody reported - and "Free" is the one value a reader
+   * would act on, by going to upgrade something they may already have upgraded.
+   */
+  plan: string | null;
   paygEnabled: boolean;
   /** Whole cents, or null when it could not be read. Null is not zero - see
    *  {@link formatCredits}. */
   balanceCents: number | null;
   lowBalanceThresholdCents: number | null;
   autoTopupArmed: boolean;
+  /**
+   * Where this org manages billing, or null when the gateway named no
+   * destination (AG-592, AG-729).
+   *
+   * Null is a real answer and the one every gateway gave until now. A control
+   * pointing nowhere is worse than no control, because the user has to click it
+   * to discover that, so a null here means the action is not drawn at all
+   * rather than drawn disabled.
+   */
+  billingUrl: string | null;
 }
 
-export function adaptCredits(raw: Partial<Credits>): Credits {
+export function adaptCredits(raw: Partial<Credits> & { billing?: unknown }): Credits {
   return {
-    plan: typeof raw?.plan === "string" ? raw.plan : "free",
+    plan: typeof raw?.plan === "string" && raw.plan.length > 0 ? raw.plan : null,
     paygEnabled: raw?.paygEnabled === true,
     balanceCents: typeof raw?.balanceCents === "number" ? raw.balanceCents : null,
     lowBalanceThresholdCents:
       typeof raw?.lowBalanceThresholdCents === "number" ? raw.lowBalanceThresholdCents : null,
     autoTopupArmed: raw?.autoTopupArmed === true,
+    billingUrl: adaptBillingUrl(raw?.billing),
   };
+}
+
+/**
+ * Read the billing destination off the credits payload.
+ *
+ * Anything that is not a usable http(s) URL reads as null, which is the state
+ * the app already handles. The scheme check is not paranoia: this value is
+ * handed to the system opener, and that is not somewhere to forward an
+ * arbitrary string a response happened to contain.
+ */
+function adaptBillingUrl(billing: unknown): string | null {
+  if (typeof billing !== "object" || billing === null) return null;
+  const url = (billing as { manageUrl?: unknown }).manageUrl;
+  if (typeof url !== "string" || url.length === 0) return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -316,6 +418,15 @@ export function formatCredits(credits: Credits | null): string | null {
  * Gate model turns on spending. Not polled: it changes as requests are served,
  * but a timer here would spend the gateway's address-keyed rate limit on a
  * number that only matters when someone is looking at it.
+ *
+ * Re-read when the window regains focus, which is that same argument followed
+ * through. The balance moves while the user is elsewhere - running the very tool
+ * this pane is about - so a figure read once when the pane opened is stale by
+ * the time they come back to check what it cost. It showed `$9.99 available`
+ * after eight cents had been spent, which is not a stale number so much as a
+ * wrong one: principle 6 asks that a figure on screen be something Gate actually
+ * measured, and this is the screen someone opens to see spending. Costs nothing
+ * while the window is hidden, and one read on return.
  */
 export function useCredits(
   enabled: boolean,
@@ -349,6 +460,37 @@ export function useCredits(
   }, [credential]);
 
   useEffect(reload, [reload]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    // Window FOCUS, not `visibilitychange`. The motivating case is alt-tabbing
+    // to the tool that spends the credits and back, and that never hides the
+    // document: `visibilitychange` fires on minimise and full occlusion only, so
+    // it missed the exact scenario this exists for and the pane kept showing the
+    // balance from before the spending. `onFocusChanged` is the primitive that
+    // matches, and `useWindowReopen` and `App` already use it for the same
+    // reason.
+    let blurred = false;
+    let cancelled = false;
+    const pending = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) {
+        blurred = true;
+        return;
+      }
+      // Only on a real return. Without the blur latch the initial focus event
+      // would re-read a balance the mount has just read.
+      if (blurred) {
+        blurred = false;
+        reload();
+      }
+    });
+    return () => {
+      cancelled = true;
+      void pending.then((unlisten) => {
+        if (cancelled) unlisten();
+      });
+    };
+  }, [enabled, reload]);
 
   return { credits, failure, reload };
 }

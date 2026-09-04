@@ -944,6 +944,41 @@ pub(crate) fn serves_gate_model(headers: &HeaderMap) -> bool {
     headers.contains_key(GATE_MODEL_HEADER)
 }
 
+/// The gateway path that can serve a Gate model for this request, if any.
+///
+/// `None` means the gateway has no way to answer this request itself, so the
+/// tool must stay on its own provider however the user set the model.
+///
+/// **This is the difference between a served request and a hung one.** Serving
+/// works by withholding the upstream hint so the gateway resolves a provider of
+/// its own - but the gateway can only do that for the paths it actually
+/// implements. Send it a path it does not serve with no upstream to forward to
+/// and it holds the socket open: no response, no error, until the client gives
+/// up. Codex hit exactly that. Its request arrives as `/codex/responses`, the
+/// ChatGPT passthrough route, which means "forward this to ChatGPT" and nothing
+/// else; with the hint removed there was neither a handler nor a destination.
+///
+/// The remedy is that `/v1/responses` - the public OpenAI Responses API - *is*
+/// served, and is the same wire format Codex speaks. So a served Codex request
+/// is sent there instead of to its passthrough route. Verified against staging:
+/// `/v1/responses` with [`GATE_MODEL_HEADER`] returns a Responses body, streams
+/// the usual `response.output_text.delta` sequence, and reports `is_byok: false`.
+///
+/// Paths map to themselves when they are already servable, so Claude Code's
+/// `/v1/messages` is untouched.
+pub(crate) fn serve_path(path: &str) -> Option<&'static str> {
+    match path {
+        "/v1/messages" => Some("/v1/messages"),
+        "/v1/chat/completions" => Some("/v1/chat/completions"),
+        "/v1/responses" => Some("/v1/responses"),
+        // Codex's passthrough route, rewritten onto the servable one it matches.
+        // Both spellings appear: the relay sees the short path Codex builds from
+        // its own base URL, the engine the real one off a bare host.
+        "/codex/responses" | "/backend-api/codex/responses" => Some("/v1/responses"),
+        _ => None,
+    }
+}
+
 /// Test seam for the attribution + model-choice injection.
 ///
 /// The injection itself is `pub(crate)` because nothing outside the proxy should
@@ -969,6 +1004,50 @@ pub mod testing {
         super::serves_gate_model(headers)
     }
 
+    /// Which gateway path, if any, can serve a Gate model for `path`.
+    ///
+    /// Exposed because the mapping is the whole difference between a served
+    /// request and one that hangs, and it has to be assertable from a test that
+    /// also drives the preferences it depends on.
+    pub fn serve_path(path: &str) -> Option<&'static str> {
+        super::serve_path(path)
+    }
+
+    /// Repoint a request at the gateway exactly as the MITM engine does.
+    ///
+    /// Exposed so the serve routing can be asserted from the integration test
+    /// that already owns the preferences seam. It cannot be a unit test: the
+    /// app-support override is process-global, and a lib test that sets it races
+    /// every other test in the binary that does the same.
+    /// Concrete in the body type, and stringly in the error, on purpose: a
+    /// generic seam monomorphises in the calling crate, which then has to link
+    /// this crate's private dependencies, and an integration test cannot.
+    ///
+    /// `BillingMode::Byok` is the interesting case for these tests: it is the
+    /// mode in which serving is decided by the model header alone, which is the
+    /// behaviour the serve routing exists to get right. A PAYG org serves
+    /// regardless and would not exercise it.
+    pub fn apply_rewrite_for_tests(
+        req: &mut hyper::Request<()>,
+        gateway: &hyper::Uri,
+        upstream_url: &str,
+        api_key: &str,
+    ) -> Result<(), String> {
+        super::engine::apply_rewrite(
+            req,
+            gateway,
+            upstream_url,
+            api_key,
+            None,
+            None,
+            crate::account::BillingMode::Byok,
+        )
+        .map(|_| ())
+        .map_err(|e| format!("{e:#}"))
+    }
+
+    /// Kept under its original name so the tests that call it are untouched;
+    /// `strip_client_auth` is the merged spelling of the same job.
     pub fn strip_tool_credential_for_tests(headers: &mut HeaderMap) {
         super::strip_client_auth(headers);
     }

@@ -388,9 +388,16 @@ pub fn default_domains() -> Vec<ProxyDomain> {
             // above: a `/zen/v1/models` preflight carries no model, so the
             // gateway can't classify it and 503s. Both Zen and Go host
             // OpenAI-shaped and Anthropic-shaped endpoints under the same
-            // prefix, hence two leaves each. Do NOT widen to "/zen/".
+            // prefix, so each surface needs a leaf per shape. Zen has three:
+            // it splits the OpenAI shape across `/chat/completions` (DeepSeek
+            // and friends) and `/responses` (the GPT family), and a missing
+            // leaf is silent - `classify` calls it passthrough, so the request
+            // goes straight to opencode.ai under the user's own Zen key and
+            // never reaches Gate. Go documents only the two.
+            // Do NOT widen to "/zen/".
             rewrite_prefixes: vec![
                 "/zen/v1/chat/completions".into(),
+                "/zen/v1/responses".into(),
                 "/zen/v1/messages".into(),
                 "/zen/go/v1/chat/completions".into(),
                 "/zen/go/v1/messages".into(),

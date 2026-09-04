@@ -193,9 +193,19 @@ export default {
         // Levels are the design's own and are not uniform: 400, 500, 400, 500.
         chart: {
           messages: "#60a5fa", // tailwind blue/400
-          blocked: "#ef4444", // tailwind red/500
+          blocked: "#f87171", // tailwind red/400
+          // Two independent nodes agree on red/400: the legend swatch
+          // (706:10090) and the tooltip component (744:37718). This was
+          // red/500, one step too saturated.
           flagged: "#fbbf24", // tailwind amber/400
           redacted: "#8b5cf6", // tailwind violet/500
+          // The file disagrees with itself here and this stays put until a
+          // person says otherwise: the legend swatch (706:10096) draws
+          // violet/500, which is this value, while the newer tooltip
+          // component (744:37728) draws purple/500 #a855f7. The note above
+          // about violet-not-purple is about the REDACT pill (violet/200) and
+          // warns against flipping this by eye, so it is raised with design
+          // instead. See `docs/figma-questions-for-design.md`.
         },
 
         // ── Gate Connect popover palette (Claude Design handoff). ──
@@ -371,10 +381,28 @@ export default {
         // `text-xs/leading-normal/medium` is -1% at 12px.
         "button-sm": "-0.28px",
         "button-xs": "-0.12px",
-        // `heading/20`: Geist Medium 20/28 at -1% - pane titles and captions.
-        // The 28px line-height is the token export's `xl`, which is also
-        // Tailwind's own default, so call sites must not override it.
+        // `heading/20`: Geist Medium 20/**24** at -1% - pane titles and captions.
+        // This said 20/28, and the variable itself says lineHeight 24: every
+        // drawn pane title is a 24px-tall text node ("Overview" 116:26488,
+        // "Claude Desktop" 116:30212). The old note told call sites NOT to
+        // override the 28, which is how three of the four panes drifted to it -
+        // they need `leading-6`, and `SettingsPane` always had it.
         heading: "-0.2px",
+        // `heading/24`: Geist Medium 24/28 at -1% - the stat-tile figure
+        // (116:26516), the only step that uses it.
+        "heading-24": "-0.24px",
+        // `label/12` and `label/14`, both at -1%. Numerically `label-12` is the
+        // same -0.12px as `button-xs` above; kept apart because this group is
+        // named to mirror the Figma variables one-to-one, and a rail label is
+        // not a button label. Note the file uses `label/14` at BOTH 0% and -1%:
+        // the tray master-card title (744:38097) draws it untracked, the footer
+        // and CLI card (744:38190, 735:37344) at -1%.
+        "label-12": "-0.12px",
+        "label-14": "-0.14px",
+        // `heading/16`: Geist Medium 16/24 at -1% - the Overview card headings
+        // (`card/policies` 116:26707 and its siblings draw their titles 24px
+        // tall). Absolute in Figma like the rest of this group, so -1% of 16px.
+        "heading-16": "-0.16px",
       },
       fontSize: {
         // The popover's type ramp, in rem against a 16px root.
@@ -414,11 +442,47 @@ export default {
 
         // New app UI. In rem for the same reason as the ramp above: px would
         // opt these out of `useTextScale` entirely.
+        //
+        // These three carry their tracking in the tuple, because the design's
+        // `label/N` and `copy/N` are *text styles*: size and tracking are one
+        // thing, and splitting them is what produced the slip design reported
+        // on 2026-09-04 (`label/14` drawn at both 0% and -1% - a call site had
+        // simply forgotten the second half). Bound to the size it cannot be
+        // forgotten. Values are design's own: 12 and 14 at -1%, 16 at -2%,
+        // absolute in px like every entry in `letterSpacing` above.
+        //
+        // The named `tracking-label-12` / `-14` tokens up there are the same
+        // two values and stay: they mirror the Figma variables one-to-one,
+        // which is this file's convention, and a call site that says which
+        // style it is drawing is not worse for saying so. These tuples are the
+        // floor under them, not a replacement.
+        //
+        // A call site that needs *different* tracking still overrides, because
+        // Tailwind emits `letterSpacing` utilities after `fontSize` ones
+        // (checked against built CSS, not assumed). That is what keeps
+        // `tracking-eyebrow` and `tracking-label` winning on the eyebrows and
+        // pills that also draw at 12px, and `tracking-heading-16` winning on
+        // the card and section headings: `heading/16` is -1%, a different style
+        // from the `copy/16` this `base` default is set for.
         "base-2xs": "0.625rem", // 10px - app row status line
-        "base-xs": "0.75rem", // 12px - label/12 and the mono eyebrow
+        "base-xs": ["0.75rem", { letterSpacing: "-0.12px" }], // 12px - label/copy-12
         // `heading/32`, the intro's welcome title. Between Tailwind's own 3xl
         // (30px) and 4xl (36px), so it needs a stop of its own.
         "base-3xl": "2rem", // 32px - heading/32
+
+        // `label/copy-14` and `label/copy-16`, which are Tailwind's own `sm` and
+        // `base` steps - so the tracking has to be attached by redefining them
+        // rather than by adding a stop. Both keep Tailwind's default
+        // line-height, so nothing about existing leading moves; the only new
+        // declaration is `letter-spacing`.
+        //
+        // Safe to redefine because neither class reaches the popover: the
+        // popover screens (`App.tsx`, `screens/Home.tsx`, `gc/ui.tsx`) size
+        // themselves entirely off the `gc-*` ramp above, and `text-sm` /
+        // `text-base` appear only in the new window UI, the new tray and
+        // onboarding. Verified by grep on 2026-09-04.
+        sm: ["0.875rem", { lineHeight: "1.25rem", letterSpacing: "-0.14px" }],
+        base: ["1rem", { lineHeight: "1.5rem", letterSpacing: "-0.32px" }],
       },
     },
   },

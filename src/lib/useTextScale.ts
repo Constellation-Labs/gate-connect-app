@@ -94,7 +94,15 @@ async function growWindow(scale: TextScale): Promise<void> {
       ? Math.floor((monitor.size.height / (monitor.scaleFactor || 1)) * 0.85)
       : BASE_WINDOW.height;
     const height = Math.min(Math.round(BASE_WINDOW.height * scale), ceiling);
-    await getCurrentWindow().setSize(new LogicalSize(BASE_WINDOW.width, height));
+    // Height only. This used to pass `BASE_WINDOW.width` as well, which is the
+    // popover's 380 - so scaling text in the 1024x720 shell squeezed the window
+    // to a third of its width, under the minimum the config asks for. The scale
+    // has nothing to say about width in any case: the ramp grows downwards and
+    // the panes already reflow.
+    const window_ = getCurrentWindow();
+    const current = await window_.innerSize();
+    const factor = await window_.scaleFactor();
+    await window_.setSize(new LogicalSize(Math.round(current.width / factor), height));
   } catch {
     /* Not in Tauri, or the platform refused. CSS has already done the work. */
   }

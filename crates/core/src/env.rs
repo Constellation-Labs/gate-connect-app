@@ -35,6 +35,35 @@ fn test_home_override() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
+/// Test seam: base dir for the Linux proxy helper's control channel (socket,
+/// token, pidfile, singleton lock), `$GATE_CONNECT_TEST_HOME/run`.
+///
+/// Its own accessor rather than a caller of [`home`] because the real value
+/// is `$XDG_RUNTIME_DIR`, not a home-relative path: production must keep the
+/// session lifetime and `0700` guarantees that dir carries, so only the seam
+/// moves. See [`crate::proxy::control::runtime_dir`] for what reaching the real
+/// one from a test costs.
+#[cfg(target_os = "linux")]
+pub(crate) fn test_runtime_dir() -> Option<PathBuf> {
+    // Both data-dir seams, not just the env var: a test that redirects via
+    // `set_app_support_dir_for_tests` can seed a routing snapshot just as well,
+    // and would otherwise still resolve the session's real control socket. The
+    // guard is only as broad as the ways a test can become hermetic.
+    test_home_override()
+        .or_else(app_support_override)
+        .map(|dir| dir.join("run"))
+}
+
+/// The process-global half of the data-dir redirect, for callers that have to
+/// honor both seams. `None` in every normal build.
+#[cfg(target_os = "linux")]
+fn app_support_override() -> Option<PathBuf> {
+    APP_SUPPORT_OVERRIDE
+        .lock()
+        .expect("app-support override mutex poisoned")
+        .clone()
+}
+
 /// Serializes the unit tests that redirect per-user paths for the whole process.
 ///
 /// The seam above is an environment variable, so it is process-global, while

@@ -222,7 +222,14 @@ export interface BackendState {
     /** What `/v1/models` offers. Empty by default: a gateway with no platform
      *  provider accounts has nothing of its own, and that is the state the
      *  picker's own empty copy is written for. */
-    catalogue: { id: string; owned_by: string; name: string }[];
+    catalogue: {
+      id: string;
+      owned_by: string;
+      name: string;
+      tags?: string[];
+      /** AG-729's per-shape verdicts. Absent for a gateway that predates them. */
+      tool_shapes?: Record<string, { verdict: string; checked?: string }>;
+    }[];
   };
   /** This install's stable id, as `install_id` reports it. A fixed string rather
    *  than a generated uuid so a spec can assert on what the row shows. */

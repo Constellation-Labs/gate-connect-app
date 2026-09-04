@@ -72,7 +72,7 @@ function Th({ children, className = "" }: { children: ReactNode; className?: str
   return (
     <th
       scope="col"
-      className={`pb-2 text-left text-base-xs font-medium text-base-muted-foreground ${className}`}
+      className={`pb-3 text-left text-base-xs font-medium text-base-muted-foreground ${className}`}
     >
       {children}
     </th>
@@ -126,7 +126,7 @@ export function SecurityPane({
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-auto bg-base-background p-6">
       <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-medium tracking-heading text-base-foreground">
+        <h1 className="text-xl font-medium leading-6 tracking-heading text-base-foreground">
           Security events
         </h1>
         <div className="flex items-center gap-3">
