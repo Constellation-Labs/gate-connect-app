@@ -36,6 +36,14 @@ fn start_daemon() {
     let tmp = std::env::temp_dir().join(format!("gate-daemon-token-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::env::set_var("XDG_RUNTIME_DIR", &tmp);
+    // The control channel follows `GATE_CONNECT_TEST_HOME` in preference to
+    // `$XDG_RUNTIME_DIR`, so an ambient one (exported in the shell) would
+    // override the per-pid dir this test isolates itself with - and every
+    // daemon test binary, which `cargo test` runs concurrently, would land on
+    // one socket path and race. This test wants production resolution of the
+    // var it just set, so drop the seam, as `audit_e2e` does for the same
+    // reason.
+    std::env::remove_var("GATE_CONNECT_TEST_HOME");
 
     std::thread::spawn(|| {
         // Blocks for the rest of the process; an error here surfaces as the
