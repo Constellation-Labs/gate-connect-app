@@ -102,6 +102,40 @@ test.describe("new UI routing verdict", () => {
     await expect(app.page.getByText("Reopen required")).toBeVisible();
   });
 
+  /**
+   * AG-570's reopen requirement in full: the phrase, the two routes, and the
+   * action. The routes are the reason this is a card rather than a status line -
+   * "reopen required" on its own does not say what reopening would change.
+   */
+  test("the reopen card names the route in use, the requested route, and the action", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [connectedCodex],
+      staleAgents: 1,
+      runningAgents: 1,
+      runningAgentNames: ["codex"],
+    });
+
+    await openApp(app, "Codex");
+
+    // Its own upstream, because the config is Gate's and the process has not
+    // picked it up - so it is still going direct.
+    await expect(app.page.getByText(/In use:/)).toBeVisible();
+    await expect(app.page.getByText("https://gw.example/codex")).toBeVisible();
+    await expect(app.page.getByText("https://gateway.constellationgate.ai")).toBeVisible();
+
+    await app.page.getByRole("button", { name: "Reopen tool" }).click();
+
+    // Hands over to the close-and-reopen conversation, scoped to this tool:
+    // Gate can close a process, and only the user can reopen it.
+    await expect.poll(() => app.lastCall("running_agents")).toMatchObject({
+      only: ["codex"],
+    });
+    await expect(app.page.getByRole("dialog")).toBeVisible();
+  });
+
   test("a disconnected app reads Not routed", async ({ boot }) => {
     const app = await boot({
       proxy: { running: true, ca_trusted: true },

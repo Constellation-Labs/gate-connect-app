@@ -2053,6 +2053,19 @@ struct VerdictDto {
     state: &'static str,
     reason: Option<&'static str>,
     next_action: Option<&'static str>,
+    /// Where this tool's traffic is going *now*, and where the config on disk
+    /// asks it to go. Both `None` unless the reason is `reopen_required`, which
+    /// is the one verdict where those two answers differ: the process resolved
+    /// its route at launch and the file has changed under it since.
+    ///
+    /// Which way round they are depends on which change the process missed. A
+    /// managed config means Gate wrote the route and the tool has not picked it
+    /// up, so it is still going direct; an absent one means a disconnect landed
+    /// and the tool is still going through Gate. Deriving this from the config
+    /// state rather than from a stored intent is deliberate: intent is what the
+    /// switch says, and this line has to describe the world.
+    route_in_use: Option<String>,
+    requested_route: Option<String>,
 }
 
 /// What every config-routed tool is actually doing.
@@ -2093,30 +2106,59 @@ fn routing_verdicts_now() -> Vec<VerdictDto> {
 
     let route = gate_connect_core::proxy::probe_relay_route();
     let session = probe_session_health();
+    // One read for the whole sweep, like the two probes: every row that needs to
+    // name the Gate route names the same one.
+    let gate_route = gate_connect_core::account::load_base_url()
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "Constellation Gate".to_string());
 
-    registry::registry()
+    let mut recorded: Vec<(String, routing_health::RoutingVerdict)> = Vec::new();
+    let verdicts: Vec<VerdictDto> = registry::registry()
         .iter()
         .filter(|integ| !integ.hidden_in_ui())
         .map(|integ| {
             let status = integ.status();
             let installed = !matches!(status, Ok(gate_connect_core::Status::NotInstalled));
             let slug = integ.id().to_string();
+            let config = ConfigState::from_status(&status);
             let verdict = routing_health::verdict_for(&Evidence {
                 installed,
-                config: ConfigState::from_status(&status),
+                config,
                 route,
                 session,
                 reopen_pending: reopen_pending_for(&slug),
             });
             let reason = verdict.reason();
+            recorded.push((slug.clone(), verdict));
+            // The two routes are only ever both present or both absent: a line
+            // that named one without the other would be half a comparison.
+            let (route_in_use, requested_route) =
+                if matches!(reason, Some(routing_health::Reason::ReopenRequired)) {
+                    let own = integ.default_upstream_url().to_string();
+                    if config == ConfigState::Managed {
+                        (Some(own), Some(gate_route.clone()))
+                    } else {
+                        (Some(gate_route.clone()), Some(own))
+                    }
+                } else {
+                    (None, None)
+                };
             VerdictDto {
                 slug,
                 state: verdict.as_str(),
                 reason: reason.map(|r| r.as_str()),
                 next_action: reason.map(|r| r.next_action().as_str()),
+                route_in_use,
+                requested_route,
             }
         })
-        .collect()
+        .collect();
+    // Persisted after the sweep, not during it: the log is what lets the recovery
+    // summary report a check it did not take, and a half-written sweep would be a
+    // worse record than the previous whole one.
+    gate_connect_core::verdict_log::record_sweep(&recorded);
+    verdicts
 }
 
 /// Ask the gateway whether the stored session still works, mapped onto the
@@ -2186,14 +2228,307 @@ async fn resume_restore() -> Result<gate_connect_core::provider::PendingRestore,
     .map_err(|e| format!("resume restore join error: {e}"))?
 }
 
-/// What the last routing restore did, entry by entry.
+/// One entry of the recovery summary: what the interrupted operation did to this
+/// tool, what the last check saw, and the one thing left to do about it.
 ///
-/// Read-only, and `None` when there is nothing to explain - a restore that
-/// completed clears its journal. Never fails: a journal that cannot be read is an
-/// explanation lost, not a recovery blocked, so an unreadable one reads as absent.
+/// Four readings, deliberately kept apart rather than folded into one status
+/// word, because they can and do disagree and each disagreement means something
+/// different:
+///
+/// - `stage` is what the *write* reached, from the restore journal.
+/// - `last_verified_*` is the last route a check actually established. It
+///   survives a failed verification on purpose - that is the point of recording
+///   it - so it can be older than the check below.
+/// - `check_*` is the most recent check, whatever it concluded.
+/// - `running` / `reopen_pending` is the process, which no file can answer.
+///
+/// Flattening these was the temptation and would have been the bug: a tool whose
+/// write finished, whose last check said `on`, and whose process predates the
+/// write is *not* routing, and only the four together say so.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RecoveryToolDto {
+    slug: String,
+    name: String,
+    kind: &'static str,
+    /// The journal's outcome word, or `pending` for an entry the journal never
+    /// reached - a snapshot written before the operation started, or a journal
+    /// lost with the process that was writing it.
+    stage: &'static str,
+    /// Whether the write is done with, so a summary can count stages without
+    /// re-deriving which outcomes are settled.
+    stage_complete: bool,
+    /// What kind of failure the stage was, when it was one.
+    error_category: &'static str,
+    stage_at_unix: u64,
+    last_verified_state: Option<String>,
+    last_verified_unix: u64,
+    check_state: Option<String>,
+    check_reason: Option<String>,
+    check_at_unix: u64,
+    running: bool,
+    reopen_pending: bool,
+    next_step: &'static str,
+}
+
+/// The interrupted operation, and every tool it touched.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RecoverySummaryDto {
+    /// Which operation this describes. One value today - the restore is the only
+    /// journalled operation - and carried rather than assumed so a summary of
+    /// some later operation cannot be read as this one.
+    operation: &'static str,
+    /// When the journal was last written. 0 when there is no journal, which the
+    /// UI renders as unknown rather than as 1970.
+    updated_unix: u64,
+    /// What the operation was trying to achieve.
+    requested_routing_on: bool,
+    tools: Vec<RecoveryToolDto>,
+}
+
+/// The whole state of an interrupted routing operation, per tool.
+///
+/// Built from four sources, none of which is sufficient alone: the restore
+/// journal (what the write did), the snapshots (what is still owed), the verdict
+/// log (what the last checks saw) and the process table (what is still holding
+/// old settings). `None` when there is nothing to recover - no journal and
+/// nothing pending - which is the normal case.
+///
+/// Read-only. It writes nothing, starts nothing and reopens nothing, so the
+/// review it feeds cannot change what it is reviewing.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command(async)]
+fn recovery_summary() -> Option<RecoverySummaryDto> {
+    use gate_connect_core::recovery::{self, EntryKind, Outcome};
+
+    let journal = recovery::load();
+    let pending = gate_connect_core::provider::pending_restore().unwrap_or_default();
+    if journal.is_none() && pending.is_empty() {
+        return None;
+    }
+    let verdicts = gate_connect_core::verdict_log::load();
+
+    // Journal order first: it is the order the restore attempted, which is the
+    // order the stages make sense in. Pending entries the journal never mentioned
+    // follow, seeded `Pending` - the same thing `JournalWriter::reopen` does, for
+    // the same reason.
+    let mut rows: Vec<(String, String, EntryKind, Outcome, u64)> = journal
+        .as_ref()
+        .map(|j| {
+            j.entries
+                .iter()
+                .map(|e| {
+                    (
+                        e.slug.clone(),
+                        e.name.clone(),
+                        e.kind,
+                        e.outcome,
+                        e.at_unix,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let seen = |rows: &[(String, String, EntryKind, Outcome, u64)], slug: &str| {
+        rows.iter().any(|(s, ..)| s == slug)
+    };
+    for (entries, kind) in [
+        (&pending.providers, EntryKind::Provider),
+        (&pending.tools, EntryKind::Tool),
+    ] {
+        for entry in entries {
+            if !seen(&rows, &entry.slug) {
+                rows.push((
+                    entry.slug.clone(),
+                    entry.name.clone(),
+                    kind,
+                    Outcome::Pending,
+                    0,
+                ));
+            }
+        }
+    }
+
+    let tools = rows
+        .into_iter()
+        .map(|(slug, name, kind, outcome, at_unix)| {
+            let reopen_pending = reopen_pending_for(&slug);
+            let logged = verdicts.get(&slug);
+            RecoveryToolDto {
+                kind: match kind {
+                    EntryKind::Provider => "provider",
+                    EntryKind::Tool => "tool",
+                },
+                stage: outcome.as_str(),
+                stage_complete: outcome.is_complete(),
+                error_category: outcome.category(),
+                stage_at_unix: at_unix,
+                last_verified_state: logged.and_then(|e| e.verified_state.clone()),
+                last_verified_unix: logged.map(|e| e.verified_unix).unwrap_or(0),
+                check_state: logged.map(|e| e.state.clone()),
+                check_reason: logged.and_then(|e| e.reason.clone()),
+                check_at_unix: logged.map(|e| e.at_unix).unwrap_or(0),
+                running: agent_running_for(&slug),
+                reopen_pending,
+                next_step: recovery::next_step(outcome, reopen_pending).as_str(),
+                slug,
+                name,
+            }
+        })
+        .collect();
+
+    Some(RecoverySummaryDto {
+        operation: "restore",
+        updated_unix: journal.as_ref().map(|j| j.updated_unix).unwrap_or(0),
+        // No journal means nothing recorded an intent, and the only operation
+        // that leaves a pending snapshot behind is one that was turning routing
+        // on. Stated here rather than defaulted silently in the UI.
+        requested_routing_on: journal.as_ref().map(|j| j.requested_routing_on).unwrap_or(true),
+        tools,
+    })
+}
+
+/// Is any process for this tool running, whenever it started?
+///
+/// Distinct from [`reopen_pending_for`], which asks the narrower question of
+/// whether one *predates* the last routing change. The summary needs both: "not
+/// running" and "running with current settings" are the same verdict and
+/// different sentences, and a row that cannot tell them apart cannot explain
+/// itself.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn agent_running_for(slug: &str) -> bool {
+    let Some(wanted) = agent_process_name(slug) else {
+        return false;
+    };
+    let mut running = false;
+    for_each_agent_process(&[wanted], |_| running = true);
+    running
+}
+
+/// What one per-tool retry did, plus what is left.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct RetryRestoreDto {
+    /// The retry's own failure, or `None` when it did not fail. Carried in the
+    /// payload rather than raised as a command error so the caller still gets the
+    /// pending state below: a failed retry changes what is outstanding for every
+    /// *other* entry too - one may have completed in the same window - and a
+    /// caller left holding a stale list would redraw the summary wrong.
+    error: Option<String>,
+    pending: gate_connect_core::provider::PendingRestore,
+}
+
+/// Retry one recorded entry of an interrupted restore.
+///
+/// The per-tool half of the recovery: `resume_restore` re-attempts everything,
+/// this re-attempts one slug and leaves every other entry's recorded work in
+/// place. `provider::restore_one` carries the semantics; this is the seam that
+/// keeps it off the main thread and reports failures the way the rest of the
+/// routing surface does.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
-fn restore_journal() -> Option<gate_connect_core::recovery::RestoreJournal> {
-    gate_connect_core::recovery::load()
+async fn retry_restore_entry(slug: String) -> Result<RetryRestoreDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let error = match gate_connect_core::provider::restore_one(&slug) {
+            Ok(()) => None,
+            Err(e) => {
+                eprintln!("[gate] retrying the restore of {slug:?} failed: {e}");
+                report_backend_error("provider_restore", format!("{e:#}"));
+                Some(format!("{e:#}"))
+            }
+        };
+        Ok(RetryRestoreDto {
+            error,
+            pending: gate_connect_core::provider::pending_restore().unwrap_or_default(),
+        })
+    })
+    .await
+    .map_err(|e| format!("retry restore join error: {e}"))?
+}
+
+/// One tool in a teardown report, and the one thing left to do about it.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct TeardownToolDto {
+    slug: String,
+    name: String,
+    next_action: &'static str,
+}
+
+/// Where every installed tool stands after a teardown - routing off, disconnect,
+/// sign-out or reset.
+///
+/// **Read back, not recorded.** The buckets come from re-reading each tool's own
+/// config, never from what the teardown believed it wrote. That is the O1 rule
+/// `docs/routing-architecture.md` states for the environment channel, applied
+/// here: a sweep that returns success having written nothing is exactly the
+/// failure this report exists to catch, and a report assembled from the sweep's
+/// own return value would repeat its mistake.
+///
+/// A consequence worth stating: a tool the sweep *named* as failed can appear
+/// under `defaults` if its config reads clean now. That is right. The user asked
+/// where their tools point, and the file is the answer.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Serialize)]
+struct TeardownReportDto {
+    /// Back on their own settings, verified by reading the config.
+    defaults: Vec<TeardownToolDto>,
+    /// Still carrying Gate's values. The teardown did not put these back.
+    still_gate: Vec<TeardownToolDto>,
+    /// On their own settings on disk, but running a process that predates the
+    /// change - so still routing through Gate until it is reopened.
+    awaiting_reopen: Vec<TeardownToolDto>,
+    /// Could not be read at all, so nothing about them is known. Not `defaults`:
+    /// an unreadable config is ignorance, not a clean result - the same
+    /// distinction `routing_health::ConfigState::Unreadable` draws.
+    failed: Vec<TeardownToolDto>,
+}
+
+/// Where the tools stand after a teardown, so an operation that could not put
+/// every tool back can say which ones.
+///
+/// Read-only and cheap enough for a dialog to call on open: one status read per
+/// integration plus one process walk, the same work `routing_verdicts` does
+/// without the network probes.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command(async)]
+fn teardown_report() -> TeardownReportDto {
+    let mut report = TeardownReportDto {
+        defaults: Vec::new(),
+        still_gate: Vec::new(),
+        awaiting_reopen: Vec::new(),
+        failed: Vec::new(),
+    };
+    for integ in registry::registry() {
+        if integ.hidden_in_ui() {
+            continue;
+        }
+        let slug = integ.id().to_string();
+        let status = integ.status();
+        // Not on the machine: it has no configuration to put back, and listing it
+        // would pad a report the user reads as a to-do list.
+        if matches!(status, Ok(gate_connect_core::Status::NotInstalled)) {
+            continue;
+        }
+        let tool = |next_action: &'static str| TeardownToolDto {
+            slug: slug.clone(),
+            name: integ.display_name().to_string(),
+            next_action,
+        };
+        match status {
+            Ok(gate_connect_core::Status::Connected)
+            | Ok(gate_connect_core::Status::Drifted(_)) => {
+                report.still_gate.push(tool("retry_disconnect"))
+            }
+            Ok(_) if reopen_pending_for(&slug) => {
+                report.awaiting_reopen.push(tool("reopen_tool"))
+            }
+            Ok(_) => report.defaults.push(tool("none")),
+            Err(_) => report.failed.push(tool("retry_check")),
+        }
+    }
+    report
 }
 
 /// One running AI tool, as the diagnostics report lists it.
@@ -3051,7 +3386,9 @@ pub fn run() {
                     routing_verdicts,
                     pending_restore,
                     resume_restore,
-                    restore_journal,
+                    recovery_summary,
+                    retry_restore_entry,
+                    teardown_report,
                     running_agents_count,
                     stale_agents_count,
                     running_agents,

@@ -52,6 +52,67 @@ test.describe("new UI engine controls", () => {
     expect(await app.lastCall("proxy_trust_ca")).toBeNull();
   });
 
+  /**
+   * AG-570 AC 8: a teardown that cannot put every tool back says which ones.
+   *
+   * Read back from the configs rather than assembled from what the sweep
+   * believed it wrote - a sweep that returns success having written nothing is
+   * the failure this report exists to catch.
+   */
+  test("routing off lists the tools it could not put back", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      // Left connected by the sweep, which is what a best-effort teardown does
+      // when one tool's write fails.
+      tools: [{ ...CLAUDE_CODE, status: { kind: "connected" as const } }],
+    });
+
+    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("Some tools were left as they were")).toBeVisible();
+    await expect(dialog.getByText("Still using Gate’s values")).toBeVisible();
+    await expect(dialog.getByText("Claude Code")).toBeVisible();
+    // The next action per tool, which the AC asks for by name.
+    await expect(dialog.getByText("Retry disconnect")).toBeVisible();
+  });
+
+  test("a clean routing-off reports nothing, because there is nothing to report", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CLAUDE_CODE],
+    });
+
+    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
+
+    await expect.poll(() => app.lastCall("proxy_disable")).not.toBeNull();
+    await expect(app.page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  /** A tool that is clean on disk but still running is its own bucket: it is
+   *  not on its own settings yet, however the file reads. */
+  test("routing off separates a tool waiting to be reopened", async ({ boot }) => {
+    const app = await boot({
+      proxy: { running: true, ca_trusted: true },
+      tools: [CLAUDE_CODE],
+      staleAgents: 1,
+      runningAgents: 1,
+      runningAgentNames: ["claude"],
+    });
+
+    await app.page.getByRole("switch", { name: "Route traffic through Gate" }).click();
+
+    // The close-and-reopen offer comes first (the master toggle has always
+    // raised it); dismissing it reveals the report behind.
+    await app.page.getByRole("button", { name: /reopen later/i }).click();
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("Waiting to be reopened")).toBeVisible();
+    await expect(dialog.getByText("Reopen tool")).toBeVisible();
+  });
+
   test("a chat domain starts the engine rather than routing nothing", async ({ boot }) => {
     // `proxy_set_domain` only records the flag, so with the engine off this used
     // to write intent and route nothing, with no control anywhere to start it.

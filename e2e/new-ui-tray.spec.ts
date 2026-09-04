@@ -28,6 +28,52 @@ test.describe("tray popover", () => {
     });
   });
 
+  /**
+   * AG-570 AC 4: the recovery action stays reachable from Overview, tool detail
+   * *and* the tray. The tray gets the action, not just the fact - a surface that
+   * reported the problem and offered nothing would be the one place the user
+   * could see it and not act.
+   */
+  test("an interrupted restore is offered from the tray, not just reported", async ({
+    boot,
+  }) => {
+    const app = await boot({
+      windowLabel: "tray",
+      proxy: { running: true, ca_trusted: true },
+      pendingRestore: {
+        providers: [],
+        tools: [{ slug: "opencode", name: "OpenCode" }],
+      },
+    });
+
+    await expect(app.page.getByText("Routing didn’t finish")).toBeVisible();
+    await expect(app.page.getByText(/OpenCode is still waiting/)).toBeVisible();
+
+    await app.page.getByRole("button", { name: "Resume now" }).click();
+
+    // The batch call here, not the window's per-entry walk: a 400px popover has
+    // nowhere to put a progress list, and one that closes on focus loss must not
+    // leave a pass half driven.
+    await expect.poll(() => app.lastCall("resume_restore")).not.toBeNull();
+  });
+
+  test("the tray sends the per-tool account to the window", async ({ boot }) => {
+    const app = await boot({
+      windowLabel: "tray",
+      proxy: { running: true, ca_trusted: true },
+      pendingRestore: {
+        providers: [],
+        tools: [{ slug: "opencode", name: "OpenCode" }],
+      },
+    });
+
+    await app.page.getByRole("button", { name: "Review details" }).click();
+
+    // Reveals the window rather than drawing a second, shorter version of the
+    // same operation.
+    await expect.poll(() => app.lastCall("reveal_popover")).not.toBeNull();
+  });
+
   test("Expand app reveals the main window", async ({ boot }) => {
     const app = await boot({ windowLabel: "tray" });
 

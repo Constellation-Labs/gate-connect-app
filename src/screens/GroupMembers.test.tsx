@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
-import type { ProviderState, ProxyDomain, Tool } from "../lib/api";
+import type { ProviderState, ProxyDomain, Tool, Verdict } from "../lib/api";
 import { buildGroups } from "../lib/groups";
 import { GroupMembers } from "./GroupMembers";
 
@@ -48,12 +48,41 @@ const CATALOG: ProviderState[] = [
   },
 ];
 
+/** A sweep that confirms every connected tool.
+ *
+ * These suites are about the ledger's layout and copy, not about verification:
+ * AG-570 stops a config file alone from producing `routed`, so a test that wants
+ * a routing row now has to say the check agreed. `lib/groups.test.ts` covers the
+ * rule itself.
+ */
+function sweep(tools: Tool[]): Map<string, Verdict> {
+  return new Map(
+    tools
+      .filter((t) => t.status.kind === "connected")
+      .map((t) => [
+        t.slug,
+        {
+          slug: t.slug,
+          state: "on" as const,
+          reason: null,
+          next_action: null,
+          route_in_use: null,
+          requested_route: null,
+        },
+      ]),
+  );
+}
+
 function renderDetail(
   tools: Tool[],
   domains: ProxyDomain[] = [domain],
   props: Partial<React.ComponentProps<typeof GroupMembers>> = {},
 ) {
-  const [group] = buildGroups(CATALOG, tools, domains, { proxyOn: true, caTrusted: true });
+  const [group] = buildGroups(CATALOG, tools, domains, {
+    proxyOn: true,
+    caTrusted: true,
+    verdicts: sweep(tools),
+  });
   render(
     <GroupMembers
       group={group}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ProviderState, Tool, ProxyDomain } from "../lib/api";
+import type { ProviderState, Tool, ProxyDomain, Verdict } from "../lib/api";
 import type { ChangeNotice } from "../App";
 import type { ClassifiedError } from "../lib/errors";
 import { launchAtLoginStatus } from "../lib/api";
@@ -48,6 +48,7 @@ export function Home({
   envExportSeparable,
   envExportOn,
   onToggleEnvExport,
+  verdicts,
 }: {
   workspace: string;
   /** The gateway host on its own, separate from `workspace`: the header now
@@ -90,10 +91,22 @@ export function Home({
   envExportSeparable: boolean;
   envExportOn: boolean;
   onToggleEnvExport: () => void;
+  /** The routing sweep, by slug.
+   *
+   * Threaded in rather than fetched here because the ledger is built in three
+   * places from the same inputs and they must agree. Undefined while the sweep
+   * is in flight, which is a real state and not an opt-out: a member with no
+   * verdict does not count as routing, which is the point - AG-570 forbids a
+   * completed file write from producing On on its own. */
+  verdicts?: Map<string, Verdict>;
 }) {
   const platform = usePlatform();
   const trustStore = trustStoreName(platform);
-  const groups = buildGroups(providers, tools, domains, { proxyOn, caTrusted });
+  const groups = buildGroups(providers, tools, domains, {
+    proxyOn,
+    caTrusted,
+    verdicts,
+  });
   // The certificate only gates proxy-routed apps, so the partial state (and
   // the trust card) only exist while at least one app row is switched on.
   const anyDomainOn = domains.some((d) => d.enabled && d.supported);

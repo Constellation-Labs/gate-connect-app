@@ -75,6 +75,7 @@ export function Tray({
   onMenuToggle,
   onMenuSelect,
   security,
+  recovery,
   dialog,
 }: {
   /** The engine's observed state. Omit while the first proxy read is in
@@ -105,6 +106,22 @@ export function Tray({
    * flight, and the card is omitted with it - a count with no reading behind it
    * would be a claim, which is the same rule `master` follows one prop up. */
   security?: { state: FeedState; count: number; onOpen: () => void };
+  /** An interrupted routing operation that has not finished (AG-570).
+   *
+   * The tray gets the action, not just the fact: AC 4 requires the recovery to
+   * stay reachable from Overview, tool detail *and* the tray, and a tray that
+   * only reported it would be the one surface that says something is wrong and
+   * offers nothing. Resume is the whole-batch call here rather than the window's
+   * per-tool walk - a 400px popover has no room for a progress list, and the
+   * details it would name live in the window, which `onReview` opens.
+   *
+   * Omitted when nothing is outstanding, and the card goes with it. */
+  recovery?: {
+    names: string[];
+    busy?: boolean;
+    onResume: () => void;
+    onReview: () => void;
+  };
   /** The dialog covering the popover, if any - drift review, close-apps
    * offer. Same slot contract as `AppShell`. */
   dialog?: ReactNode;
@@ -137,6 +154,10 @@ export function Tray({
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 pt-4">
           {master && <MasterCard on={master.on} groups={groups} />}
+          {/* Above the master card's siblings and below the card itself: it is
+            * the most urgent thing on the popover, and it is also a statement
+            * about the routing the card above describes. */}
+          {recovery && <RecoveryCard recovery={recovery} />}
           {security && <SecurityCard security={security} />}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-4">
@@ -519,6 +540,61 @@ function SignedOutNote({ onExpand }: { onExpand: () => void }) {
  * since the app started, and calling that a daily total would be a claim about
  * traffic the app was not running for.
  */
+/**
+ * The interrupted-routing notice at tray width.
+ *
+ * The window's banner carries per-tool rows, a retry per row and a read-only
+ * review. None of that fits 400px, and cutting it down would produce a second,
+ * shorter account of the same operation - the thing `lib/recovery.ts` exists to
+ * prevent. So this says the one thing the tray is for (something did not
+ * finish, here is what is waiting), offers the batch resume, and sends the rest
+ * to the window.
+ */
+function RecoveryCard({
+  recovery,
+}: {
+  recovery: {
+    names: string[];
+    busy?: boolean;
+    onResume: () => void;
+    onReview: () => void;
+  };
+}) {
+  const many = recovery.names.length > 1;
+  return (
+    <div className="flex shrink-0 flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-3">
+      <div className="flex items-center gap-3">
+        <StatusTile tone="amber" icon="refresh" size={36} />
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <h2 className="text-sm font-medium leading-5 text-base-foreground">
+            Routing didn’t finish
+          </h2>
+          <p className="truncate text-base-xs leading-4 text-amber-900/80">
+            {recovery.names.join(", ")} {many ? "are" : "is"} still waiting
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={recovery.onResume}
+          disabled={recovery.busy}
+          className="flex h-8 flex-1 items-center justify-center rounded-md border border-amber-300 bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-amber-900 shadow-base-btn-sm transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {recovery.busy ? "Resuming…" : "Resume now"}
+        </button>
+        <button
+          type="button"
+          onClick={recovery.onReview}
+          className="flex h-8 items-center justify-center rounded-md px-3 text-base-xs font-medium leading-4 tracking-button-xs text-amber-900 underline decoration-amber-300 transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+        >
+          Review details
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SecurityCard({
   security,
 }: {

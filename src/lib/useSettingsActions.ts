@@ -99,6 +99,7 @@ export function useSettingsActions({
   onDeviceName,
   onSession,
   onProxy,
+  onTeardown,
   onError,
 }: {
   account: Account | null;
@@ -115,6 +116,19 @@ export function useSettingsActions({
   /** Both credentials at once, for the two actions that end the session. */
   onSession: (next: { account: Account | null; oauth: OAuthStatus | null }) => void;
   onProxy: (next: ProxyState | null) => void;
+  /**
+   * A teardown just ran, so the caller can report where the tools stand.
+   *
+   * Fired by the two actions here that end a session - sign-out and reset - and
+   * on reset's *failure* path as well as its success one: a reset that aborts
+   * because a tool could not be disconnected is precisely the case AG-570 asks
+   * to be listed, and reporting only on success would hide it.
+   *
+   * A callback rather than a value, because what to do about it is the shell's
+   * decision: the report is read back from the configs, not returned by these
+   * commands, so there is nothing here to hand over.
+   */
+  onTeardown?: () => void;
   onError: (err: unknown) => void;
 }): SettingsActions {
   const [prompt, setPrompt] = useState<SettingsPrompt | null>(null);
@@ -269,13 +283,18 @@ export function useSettingsActions({
       ]);
       onSession({ account: acct, oauth });
       setPrompt(null);
+      // The configs are kept on purpose here (this row ends the session, not the
+      // account), so every connected tool is now pointing at Gate with no
+      // session behind it. That is a state the user should be told about rather
+      // than discover from a failing tool.
+      onTeardown?.();
     } catch (err) {
       onError(err);
       trackError(err, "sign_out");
     } finally {
       setBusy(false);
     }
-  }, [busy, onSession, onError]);
+  }, [busy, onSession, onTeardown, onError]);
 
   /**
    * The OAuth offer's accept.
@@ -397,13 +416,19 @@ export function useSettingsActions({
       // that could disagree with what is on disk.
       onSession({ account: null, oauth: null });
       setPrompt(null);
+      onTeardown?.();
     } catch (err) {
       onError(err);
       trackError(err, "forget");
+      // On the failure path too, and this is the important half: `clearAccount`
+      // aborts when a tool cannot be disconnected, which leaves that tool
+      // pointing at Gate with the account still in place. The error says the
+      // reset stopped; the report says which tool stopped it.
+      onTeardown?.();
     } finally {
       setBusy(false);
     }
-  }, [prompt, busy, proxyRunning, onProxy, onSession, onError]);
+  }, [prompt, busy, proxyRunning, onProxy, onSession, onTeardown, onError]);
 
   return {
     prompt,

@@ -196,6 +196,37 @@ test.describe("new UI: the two ways back to first run", () => {
     await expect(app.page.getByRole("heading", { name: "Session expired" })).toBeVisible();
   });
 
+  /**
+   * AG-570 AC 8, on the teardown that keeps the configs on purpose.
+   *
+   * Disconnect ends the session and leaves every tool pointed at Gate - which
+   * is the row's documented behaviour, and precisely the state worth reporting:
+   * those configs now authenticate with a session that has just ended. The
+   * report is read back from the configs, so it says so without the sign-out
+   * having to return anything.
+   */
+  test("disconnect says which tools are still pointed at Gate", async ({ boot }) => {
+    const app = await boot({
+      tools: [
+        {
+          slug: "claude-code",
+          name: "Claude Code",
+          upstream_provider_name: "Anthropic",
+          default_upstream_url: "https://api.anthropic.com",
+          status: { kind: "connected" as const },
+        },
+      ],
+    });
+
+    await app.page.getByRole("button", { name: "Settings" }).click();
+    await app.page.getByRole("button", { name: "Disconnect Gate" }).click();
+    await app.page.getByRole("button", { name: "Yes, disconnect Gate" }).click();
+
+    const dialog = app.page.getByRole("dialog");
+    await expect(dialog.getByText("Still using Gate’s values")).toBeVisible();
+    await expect(dialog.getByText("Claude Code")).toBeVisible();
+  });
+
   test("an API-key account is offered reset but not disconnect", async ({ boot }) => {
     // It never had a session to end, and Replace key is its own row.
     const app = await boot({

@@ -2448,10 +2448,61 @@ Details worth keeping:
   for want of an account lands on `WriteFailed`. Pinned by a test so it stays
   visible.
 
-Still open: the recovery action lives in the shell banner, not the tray; per-tool
-"last verified route" and "check result" in the summary would need the verdict sweep
-to persist its results; and item 8's default-writing result list exists for the quit
-path only (#162), not yet for sign-out and reset.
+**4. The rest of the ticket**, in one pass. What the three PRs above left open is
+now closed, and the shape of each fix is worth recording because most of it was a
+missing *reading* rather than a missing control.
+
+- **The sweep persists itself.** `crates/core/src/verdict_log.rs` records each
+  `routing_verdicts` sweep per tool: the latest check, and separately the latest
+  check that actually established a route. The second field is the whole point -
+  it survives a failed verification, which is what lets a summary report a
+  "last verified route" that is older than its "check result". Two readings, and
+  a test that a failed check never erases the older one.
+- **`recovery_summary` joins four sources**: the journal (what the write
+  reached), the snapshots (what is still owed), the verdict log (what the checks
+  saw) and the process table (what is holding old settings). Kept as four fields
+  rather than flattened, because a tool whose write finished, whose last check
+  said `on`, and whose process predates the write is *not* routing, and only the
+  four together say so.
+- **Resume drives the entries one at a time.** `provider::restore_one` is the
+  batch narrowed to one slug, with the same rule that an entry leaves its
+  snapshot only once it is actually back. The notice walks the queue with it, so
+  it can say which tool it is on - AC 3's per-tool progress - and the same
+  primitive is AC 10's per-row Retry. A retry failure is reported on the row as a
+  stage and a category, deliberately **not** as the error banner: that banner
+  outranks the notice, so raising it would take the retry button away at the
+  moment the user wants it again.
+- **The teardown report is read back, not recorded.** `teardown_report` re-reads
+  every installed tool's config and buckets them: on their own settings, still
+  carrying Gate's, clean-but-awaiting-reopen, unreadable. Routing-off, sign-out
+  and reset all raise it (reset on its *failure* path too, which is the case
+  worth reporting). A sweep that returns success having written nothing is the
+  failure this catches, so assembling the report from the sweep's own return
+  value would have repeated its mistake. Rendered from the setup panes as well,
+  because disconnect and reset drop the shell to them as they land.
+- **The reopen card** (`ReopenAlert`) names the route in use and the route
+  requested, from the same verdict, and hands over to the close-apps
+  conversation. Without the two routes "reopen required" does not say what
+  reopening would change.
+- **The tray carries the action**, not just the fact (AC 4). It offers the batch
+  resume and sends the per-tool account to the window: a 400px popover has
+  nowhere to put a progress list, and cutting the review down would produce a
+  second, shorter account of the same operation.
+
+**And the ledger stopped reading `routed` off the config.** This is the AG-570
+line the earlier PRs did not reach: "a saved preference or completed file write
+does not produce On or Off without verification". `buildGroups` now takes the
+sweep, `memberFromTool` derives `routed` from it, and a member with no verdict
+does not count - so the popover, which is still the shipping default, verifies at
+launch, after every routing write and on every engine change rather than trusting
+a file Gate itself wrote. The new `unverified` attention is one value, not the
+verdict layer's five reasons: those are drawn in the window shell, which has the
+width for "Not protected - Reopen required", and this ledger's job at 360px is to
+stop claiming a route it cannot support.
+
+Still open on AG-570: **Use tool defaults** (AC 5) is not built - no control, no
+confirmation, no write-defaults-then-verify path - and was deliberately left out
+of this pass.
 ## Quit and teardown in the window shell (AG-596)
 
 The popover has carried the three-way quit since it shipped

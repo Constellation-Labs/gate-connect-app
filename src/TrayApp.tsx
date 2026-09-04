@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   Account,
+  PendingRestore,
   ProviderState,
   ProxyState,
   Tool,
@@ -13,8 +14,10 @@ import {
   getAccountKeyPrefix,
   listProviders,
   listTools,
+  pendingRestore,
   proxyStatus,
   requestQuit,
+  resumeRestore,
   revealMainWindow,
   routingVerdicts,
 } from "./lib/api";
@@ -88,6 +91,10 @@ export function TrayApp() {
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [proxy, setProxy] = useState<ProxyState | null>(null);
   const [verdicts, setVerdicts] = useState<Map<string, Verdict>>(new Map());
+  /** What an interrupted restore still owes. Empty in the normal case, and the
+   * card is omitted with it. */
+  const [pending, setPending] = useState<PendingRestore | null>(null);
+  const [resuming, setResuming] = useState(false);
   const [account, setAccount] = useState<Account | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -119,6 +126,19 @@ export function TrayApp() {
     if (v) setVerdicts(verdictsBySlug(v));
   }, []);
 
+  /**
+   * What an interrupted routing operation still owes (AG-570).
+   *
+   * Read here as well as in the window because the popover is a surface the
+   * recovery has to stay reachable from, and the two shells do not share state -
+   * a tray that waited for the window to tell it would say nothing on the many
+   * machines where the window is never opened.
+   */
+  const loadRecovery = useCallback(async () => {
+    const p = await pendingRestore().catch(() => null);
+    if (p) setPending(p);
+  }, []);
+
   /** Event-driven re-read: a write landed or the engine changed state, so
    * commit whatever comes back and re-sweep the verdicts. */
   const refresh = useCallback(async () => {
@@ -129,7 +149,11 @@ export function TrayApp() {
     if (t) setTools(t);
     if (px) setProxy(px);
     void refreshVerdicts();
-  }, [refreshVerdicts]);
+    // A master-on runs the restore, which is what shortens the snapshots - so
+    // the card is re-read on the same event that repaints the switches, or it
+    // lingers after the work finished.
+    void loadRecovery();
+  }, [refreshVerdicts, loadRecovery]);
 
   /** The `tools-changed` variant: drop a re-read that is already in flight
    * rather than stack on it, and drop an unchanged reading rather than commit
@@ -172,9 +196,10 @@ export function TrayApp() {
       setAccount(acct);
       setKeyPrefix(prefix);
       void refreshVerdicts();
+      void loadRecovery();
       setLoaded(true);
     })();
-  }, [refreshVerdicts]);
+  }, [refreshVerdicts, loadRecovery]);
 
   // Told rather than polled, same as the window shell: the backend watches the
   // tool config files and emits `tools-changed` (`core/src/tool_watch.rs`). This
@@ -501,6 +526,36 @@ export function TrayApp() {
     [],
   );
 
+  /** What is still outstanding, providers and tools together: the user does not
+   * care which snapshot an entry came from. */
+  const recoveryNames = useMemo(
+    () =>
+      [...(pending?.providers ?? []), ...(pending?.tools ?? [])].map((e) => e.name),
+    [pending],
+  );
+
+  /**
+   * Finish what the interrupted restore left, as one call.
+   *
+   * The batch, not the window's per-entry walk: the progress the walk exists to
+   * show has nowhere to go in a 400px card, and driving entries one at a time
+   * from a popover that closes when it loses focus would leave a pass half done
+   * with nothing on screen having said so. `restore_all`'s own retry semantics
+   * mean this repeats no completed write either way.
+   */
+  const resumeNow = useCallback(async () => {
+    setResuming(true);
+    setActionError(null);
+    try {
+      setPending(await resumeRestore());
+      await refresh();
+    } catch (e) {
+      setActionError(classifyError(e, "provider_restore"));
+    } finally {
+      setResuming(false);
+    }
+  }, [refresh]);
+
   if (!loaded) {
     // A sub-frame gap before the first read lands, same call as the window
     // shell: painting the signed-out card and replacing it a frame later is
@@ -542,6 +597,19 @@ export function TrayApp() {
               // deliberately does not try to fit.
               onOpen: expand,
             }
+      }
+      recovery={
+        recoveryNames.length > 0
+          ? {
+              names: recoveryNames,
+              busy: resuming,
+              onResume: () => void resumeNow(),
+              // The per-tool account lives in the window, so this reveals it
+              // rather than drawing a second, shorter version of the same
+              // operation at 400px.
+              onReview: expand,
+            }
+          : undefined
       }
       menuOpen={menuOpen}
       onMenuToggle={() => setMenuOpen((v) => !v)}
