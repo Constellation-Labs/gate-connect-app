@@ -131,6 +131,7 @@ fn spellings(targets: &[PathBuf]) -> Vec<PathBuf> {
         let Ok(real) = dir.canonicalize() else {
             continue;
         };
+        let real = as_reported(real);
         if real == dir {
             continue;
         }
@@ -143,6 +144,34 @@ fn spellings(targets: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// A canonical path in the form a watch backend would actually report.
+///
+/// Windows only, and it earned its place in a CI run: `canonicalize` there
+/// returns a *verbatim* path (`\\?\C:\Users\...`), which is a spelling
+/// `ReadDirectoryChangesW` never uses - it echoes the path as registered. The
+/// rest of what canonicalising does on Windows is worth keeping, though: it also
+/// expands 8.3 short names, and `TMPDIR` really does hand out `RUNNER~1` for
+/// `runneradmin`, so the long form is a name events can genuinely arrive under.
+/// Strip the prefix, keep the resolution.
+#[cfg(windows)]
+fn as_reported(path: PathBuf) -> PathBuf {
+    let Some(rest) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) else {
+        return path;
+    };
+    // Drive paths only. `\\?\UNC\server\share` with the prefix removed names a
+    // relative directory called `UNC`, which is worse than leaving it alone.
+    let mut chars = rest.chars();
+    if matches!((chars.next(), chars.next()), (Some(c), Some(':')) if c.is_ascii_alphabetic()) {
+        return PathBuf::from(rest);
+    }
+    path
+}
+
+#[cfg(not(windows))]
+fn as_reported(path: PathBuf) -> PathBuf {
+    path
 }
 
 /// Start watching, for the life of the process.
@@ -260,6 +289,19 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
+    /// A scratch root with nothing surprising in its own name: symlinks resolved
+    /// and 8.3 short names expanded.
+    ///
+    /// Both are real spellings that `spellings` exists to add - macOS `TMPDIR`
+    /// lives under `/var` -> `/private/var`, and Windows hands out `RUNNER~1`
+    /// for `runneradmin` - which is exactly why a test *about* that function has
+    /// to start from a root carrying neither. Two CI runs went on the version
+    /// that did not: they were asserting the runner's temp-directory layout, not
+    /// the code.
+    fn resolved_scratch(tag: &str) -> PathBuf {
+        as_reported(scratch(tag).canonicalize().unwrap())
+    }
+
     fn scratch(tag: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("gate-tool-watch-{}-{tag}", std::process::id()));
@@ -356,7 +398,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlinked_ancestor_is_matched_under_both_spellings() {
-        let root = scratch("spell");
+        let root = resolved_scratch("spell");
         let real = root.join("real");
         let link = root.join("link");
         std::fs::create_dir_all(&real).unwrap();
@@ -376,7 +418,7 @@ mod tests {
 
     #[test]
     fn an_unlinked_target_gains_no_second_spelling() {
-        let root = scratch("nolink");
+        let root = resolved_scratch("nolink");
         let target = root.join("dot-tool/config.toml");
         // The common case, and it must not double every entry: nobody's
         // `~/.codex` is a symlink.
