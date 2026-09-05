@@ -2502,9 +2502,96 @@ verdict layer's five reasons: those are drawn in the window shell, which has the
 width for "Not protected - Reopen required", and this ledger's job at 360px is to
 stop claiming a route it cannot support.
 
-Still open on AG-570: **Use tool defaults** (AC 5) is not built - no control, no
-confirmation, no write-defaults-then-verify path - and was deliberately left out
-of this pass.
+AG-570's **Use tool defaults** (AC 5) is built now, as one of the per-row actions
+in the reopen flow below.
+
+## Controlling when a routing change takes effect (AG-566)
+
+The close-apps conversation existed before this ticket, and it stopped at the
+close: two dialogs, a SIGTERM, and a "Change is ready" that reported what had
+been *asked for* rather than what happened. AG-566 is the rest of it.
+
+**Nothing in the registry can be reopened by Gate, and that is a fact about the
+tools rather than a feature nobody wrote.** All six - Claude Code, Codex,
+OpenCode, OpenClaw, Hermes and the environment channel - are terminal programs
+running inside a shell session this process does not own, with a working
+directory, arguments and a conversation nothing in the process table can recover.
+Spawning a terminal would not be reopening the tool; it would be starting a
+different one, somewhere else, and dropping the session the user was just asked
+to save. `RunningAgent.can_reopen` reports it (false everywhere today) rather
+than the copy assuming it, because the confirmation has to say which tools Gate
+will reopen and which the person must, and that sentence should come from the
+side that knows. A GUI tool - launchable by bundle id, shortcut or `.desktop`
+entry - is where it turns true, and the `reopening` stage is already wired for
+one.
+
+So AC 5's per-tool progress is **watch, not drive**. `useRunningApps` follows
+each tool from `closing` through `awaiting_reopen` to `verifying` and then to a
+result, off the two probes the rail already uses: `running_agents` narrowed to
+the flow's slugs, and `routing_verdicts`. Three things fell out of it:
+
+- **A closed tool is never "applied and verified".** `verdict_for` will answer
+  `on` for a tool that is not running - its config carries Gate's values, the
+  relay answers, the session is valid - and reporting that would tell the user a
+  change had landed in a program sitting closed on their machine. AC 8 says it is
+  the *reopen* that gets verified, so presence outranks the verdict:
+  `nextStage`'s `gone` branch never reads one.
+- **The account is drawn while the flow is still watching.** A tool waiting to be
+  reopened has nothing in flight, so `isResting` (terminal *or* waiting on the
+  user) is what switches the dialog from progress to the five buckets; the watch
+  keeps running under it at a slower cadence, and a reopen moves the row in
+  place. Holding the result back until the user acted would put a spinner over
+  the outcome this flow reaches most often.
+- **A check that never resolves fails.** `verifying` with no answer is a state
+  someone can watch forever, so it becomes `verification failed` after a budget
+  of ticks, and a close whose process is still there after two becomes `could not
+  close`. Both are honest readings rather than optimism.
+
+The rest, briefly: the offer step names each tool's route in use, requested
+route, running state and who reopens it (AC 1); the confirmation asks for a save
+and says plainly that Gate cannot tell whether anything is unsaved (AC 2); the
+result separates applied-and-verified, waiting for a manual reopen, could not
+close, configuration failed and verification failed (AC 9); and each unresolved
+row carries its own actions - Reopen tool, Retry application, Retry verification,
+Use tool defaults, View diagnostics, Contact support - every one of them scoped
+to a single slug (AC 10). `lib/reopen.ts` holds the vocabulary and the pure
+transitions, for the same reason `lib/recovery.ts` exists: the dialogs, the shell
+banner and the tray card all draw these rows, and a row assembled twice is a row
+that reads "Verifying" on one surface and "Reopen required" on another.
+
+**"Reopen to finish" is on all three surfaces** (AC 3): `ReopenAlert` on tool
+detail, a new `ReopenBanner` in the shell's banner slot - which is what Overview
+shares - and a tray card. The banner drops the tool whose pane is open, because
+the card is already sitting on it with the same two routes and the same button.
+
+Two smaller things this turned up. `list_tools` sent only `row_label` ("CLI"),
+which two tools share, and every surface here is a flat list - so `ToolDto` now
+carries `product_name` beside it, which is the distinctness `registry`'s own test
+asserts. And `ReopenAlert` drew its two routes in mono; identifier values are
+sans as of 2026-09-04, so they are sans now.
+
+**The proxy-routed surfaces get a note instead of a verdict, on Linux only.**
+They have no config file to re-read, so `reopen_required` never applies to them,
+but that is not the same as picking a routing change up instantly. Windows pokes
+WinINET with `INTERNET_OPTION_SETTINGS_CHANGED` after its registry write and
+macOS's auto-proxy URL is applied to new connections as it changes; Linux carries
+two channels that disagree, and `proxy/system_proxy_linux.rs` says the quiet part
+itself - "already-running processes keep their environment until relaunched -
+nothing can change that". GNOME's own keys are live, the `environment.d`
+variables are not, and which one a given app follows is not observable from here:
+`AGENT_PROCESSES` knows three CLIs and none of these. So `PROXY_REOPEN_ADVICE`
+is drawn as a neutral `PaneNote` rather than in the amber the rail uses for
+faults, and its last sentence says it is advice rather than a reading. A line
+that claimed to know would be the one routing state in this app with nothing
+behind it.
+
+**AC 7 is deliberately not implemented as written.** It says routing off writes
+the tool's defaults and does not restore user-authored values;
+`integrations/claude_code.rs` saves `previousEnv` and puts it back, `groups.ts`
+documents that, and the dialogs promise it. Confirmed as intended behaviour on
+2026-09-04: the code is right and the ticket's sentence is not. `Use tool
+defaults` therefore means the same restore the routing-off switch does.
+
 ## Quit and teardown in the window shell (AG-596)
 
 The popover has carried the three-way quit since it shipped

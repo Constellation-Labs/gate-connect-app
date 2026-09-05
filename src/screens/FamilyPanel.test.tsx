@@ -13,6 +13,8 @@ function makeTool(
   return {
     slug,
     name,
+    // The flat-list name; the rail's one-word label is `name`.
+    product_name: name,
     upstream_provider_name: upstream,
     default_upstream_url: "https://api.anthropic.com",
     config_location: null,

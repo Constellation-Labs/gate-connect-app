@@ -1,4 +1,5 @@
 import type { ProviderState, ProxyDomain, Tool, Verdict } from "./api";
+import type { Platform } from "./platform";
 
 /**
  * Home's ledger groups everything routable by the model family it belongs to
@@ -134,6 +135,46 @@ export const MEMBER_DESCRIPTIONS: Readonly<Record<string, string>> = {
 /** The sentence for one row, or nothing where no copy exists for it. */
 export function describeMember(key: string): string | undefined {
   return MEMBER_DESCRIPTIONS[key];
+}
+
+/**
+ * What a proxy-routed surface cannot promise about an app that is already open.
+ *
+ * **Linux only, and the platform gate is the substance rather than caution.**
+ * A proxy-routed app has no config file to re-read, so nothing here is the
+ * `reopen_required` verdict - that one is measured, per tool, from a process
+ * older than the last routing change. This is the other thing, and it is
+ * genuinely different per platform:
+ *
+ * - **Windows** writes `AutoConfigURL` under HKCU and then pokes WinINET with
+ *   `INTERNET_OPTION_SETTINGS_CHANGED`, precisely so running apps do not keep
+ *   the stale settings (`proxy/system_proxy_windows.rs`).
+ * - **macOS** sets the auto-proxy URL through `networksetup`, and CFNetwork and
+ *   Chromium-based apps apply it to new connections as it changes.
+ * - **Linux** has two channels and they disagree. GNOME's `org.gnome.system.proxy`
+ *   keys are re-read live by anything on GLib's proxy resolver; the
+ *   `environment.d` variables reach a process only at launch, and
+ *   `proxy/system_proxy_linux.rs` says so in as many words - "already-running
+ *   processes keep their environment until relaunched - nothing can change
+ *   that".
+ *
+ * Which of the two channels a given app uses is not something Gate can see: it
+ * cannot even list these processes (`AGENT_PROCESSES` knows three CLIs). So this
+ * is written as advice and says that it is - a line that claimed to know would
+ * be a reading with nothing behind it, which is the one thing this app does not
+ * do with a routing state.
+ */
+export const PROXY_REOPEN_ADVICE = {
+  title: "Apps already open may need reopening",
+  body: "Gate routes these through your session's proxy settings. An app that reads those when it starts, rather than watching them, keeps using whatever was in force when it launched. Gate cannot see these apps, so this is advice rather than a reading.",
+} as const;
+
+/** The advice above, where it applies: a proxy-routed row, on Linux. */
+export function proxyReopenAdvice(
+  kind: GroupMember["kind"],
+  platform: Platform,
+): typeof PROXY_REOPEN_ADVICE | undefined {
+  return kind === "proxy" && platform === "linux" ? PROXY_REOPEN_ADVICE : undefined;
 }
 
 export type MemberAttention =

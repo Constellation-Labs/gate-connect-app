@@ -336,12 +336,18 @@ export function ModalSubject({
   title,
   description,
   variant = "subject",
+  details,
   pill,
 }: {
   /** 16px mark, brand or glyph. */
   icon: ReactNode;
   title: string;
   description?: string;
+  /** A second line under the description, for a subject that has to carry more
+   *  than a sentence - the reopen step names two routes and who reopens the
+   *  tool, and none of that fits in `description`, which truncates to one line
+   *  by design. Wraps rather than truncating: it is the content of the step. */
+  details?: ReactNode;
   /**
    * `subject` names a thing and describes it: bold name over grey detail, used
    * for the drifted app and the running process. `identity` inverts that for
@@ -380,6 +386,11 @@ export function ModalSubject({
           >
             {description}
           </p>
+        )}
+        {details && (
+          <div className="mt-1 text-base-xs leading-4 text-neutral-600">
+            {details}
+          </div>
         )}
       </div>
       {pill && (

@@ -77,6 +77,7 @@ export function Tray({
   onMenuSelect,
   security,
   recovery,
+  reopen,
   dialog,
 }: {
   /** The engine's observed state. Omit while the first proxy read is in
@@ -128,6 +129,14 @@ export function Tray({
     onResume: () => void;
     onReview: () => void;
   };
+  /** Tools whose configuration is applied and whose running process has not
+   *  picked it up (AG-566 AC 3, which asks for this on tool detail, Overview
+   *  *and* the tray).
+   *
+   *  Same division as `recovery`: the tray carries the fact and the one action,
+   *  and the per-tool routes and stages stay in the window, which has the width
+   *  for them. Omitted when nothing needs reopening. */
+  reopen?: { names: string[]; onReopen: () => void };
   /** The dialog covering the popover, if any - drift review, close-apps
    * offer. Same slot contract as `AppShell`. */
   dialog?: ReactNode;
@@ -171,6 +180,9 @@ export function Tray({
             * the most urgent thing on the popover, and it is also a statement
             * about the routing the card above describes. */}
           {recovery && <RecoveryCard recovery={recovery} />}
+          {/* Below the recovery card: an operation that did not finish outranks
+            * one that finished and is waiting on the user. */}
+          {reopen && <ReopenCard reopen={reopen} />}
           {security && <SecurityCard security={security} />}
 
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-4">
@@ -643,6 +655,46 @@ function RecoveryCard({
           Review details
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The reopen notice at tray width.
+ *
+ * The window draws two routes per tool and a stage each; this says which tools
+ * are waiting and offers the one action a 400px popover can carry. "Reopen
+ * tool" here opens the same close-and-verify conversation the window uses -
+ * Gate cannot start a terminal tool itself, so what the button does is deal
+ * with the process that is in the way.
+ */
+function ReopenCard({
+  reopen,
+}: {
+  reopen: { names: string[]; onReopen: () => void };
+}) {
+  const many = reopen.names.length > 1;
+  return (
+    <div className="flex shrink-0 flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-3">
+      <div className="flex items-center gap-3">
+        <StatusTile tone="amber" icon="refresh" size={36} />
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <h2 className="text-sm font-medium leading-5 text-base-foreground">
+            Reopen to finish
+          </h2>
+          <p className="truncate text-base-xs leading-4 text-amber-900/80">
+            {reopen.names.join(", ")} {many ? "are" : "is"} on the route{" "}
+            {many ? "they" : "it"} started with
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={reopen.onReopen}
+        className="flex h-8 items-center justify-center rounded-md border border-amber-300 bg-base-card px-3 text-base-xs font-medium leading-4 tracking-button-xs text-amber-900 shadow-base-btn-sm transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+      >
+        Reopen tool
+      </button>
     </div>
   );
 }

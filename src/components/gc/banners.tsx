@@ -177,19 +177,23 @@ export function ReopenAlert({
         <StatusTile tone="amber" icon="refresh" size={36} />
         <div className="min-w-0">
           <p className="text-sm font-medium leading-5 text-base-foreground">
-            Reopen {name} to apply its route
+            Reopen {name} to finish
           </p>
           <p className="text-base-xs leading-4 text-gray-600">
             It was already running when its configuration changed, so it is still
             using the route it started with.
           </p>
           {routeInUse && requestedRoute && (
-            // Mono, because both are endpoints - identity, not prose.
-            <p className="mt-1 text-base-xs leading-4 text-gray-600">
-              In use: <span className="font-mono text-base-foreground">{routeInUse}</span>
+            // Sans, weighted rather than set in mono: identifier *values* are
+            // sans here (design, 2026-09-04), and an endpoint is an identifier
+            // rather than machine output. This card set them in mono until that
+            // question came back answered.
+            <p className="mt-1 break-all text-base-xs leading-4 text-gray-600">
+              In use:{" "}
+              <span className="font-medium text-base-foreground">{routeInUse}</span>
               {" · "}
               Requested:{" "}
-              <span className="font-mono text-base-foreground">{requestedRoute}</span>
+              <span className="font-medium text-base-foreground">{requestedRoute}</span>
             </p>
           )}
         </div>
@@ -201,6 +205,92 @@ export function ReopenAlert({
       >
         Reopen tool
       </button>
+    </div>
+  );
+}
+
+/**
+ * The shell's version of the same fact: every tool whose configuration is
+ * applied and whose running process has not picked it up.
+ *
+ * On the shell rather than in the pane because AG-566 AC 3 asks for it on
+ * Overview, and the shell's banner slot is the only thing every pane shares.
+ * The app pane keeps `ReopenAlert` beside the tool it names: that card has the
+ * width for one tool's two routes, and this has the room for a list.
+ *
+ * Dismissible for the session, like the recovery notice: the rail still carries
+ * "Not protected - Reopen required" on every affected row, so hiding this loses
+ * the invitation rather than the fact.
+ */
+export function ReopenBanner({
+  tools,
+  onReopen,
+  onDismiss,
+}: {
+  /** Never empty - the shell omits the banner instead of drawing a heading over
+   *  nothing. */
+  tools: { slug: string; name: string }[];
+  onReopen: (slug: string) => void;
+  onDismiss: () => void;
+}) {
+  const many = tools.length > 1;
+  return (
+    <div
+      role="status"
+      className="w-full border-b border-amber-200 bg-amber-50 px-4 py-3"
+    >
+      <div className="flex w-full items-start gap-3">
+        <StatusTile tone="amber" icon="refresh" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium leading-5 text-amber-900">
+            Reopen to finish
+          </p>
+          <p className="text-base-xs leading-4 text-amber-900/80">
+            {tools.map((t) => t.name).join(", ")} {many ? "are" : "is"} still using
+            the route {many ? "they" : "it"} started with. Their configuration is
+            saved; opening {many ? "them" : "it"} again applies it.
+          </p>
+        </div>
+        {tools.map((tool) => (
+          <button
+            key={tool.slug}
+            type="button"
+            onClick={() => onReopen(tool.slug)}
+            className="shrink-0 rounded-sm border border-amber-300 bg-base-card px-2 py-1 text-base-xs font-medium text-amber-900 shadow-base-2xs transition-colors hover:bg-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+          >
+            {many ? `Reopen ${tool.name}` : "Reopen tool"}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="shrink-0 text-amber-900/70 transition-colors hover:text-amber-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+        >
+          <Icon name="x" size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A quiet, standing note on a pane: something worth knowing about this surface,
+ * which is not a state and not a problem.
+ *
+ * Neutral rather than amber on purpose. `AlertBanner` and `ReopenAlert` both
+ * say something is wrong *now*, and the rail's colour vocabulary is the same
+ * one - so advice drawn in that palette would be read as a fault the user is
+ * expected to clear, and there is nothing here to clear.
+ */
+export function PaneNote({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-base-border bg-base-card p-4 shadow-base-sm">
+      <Icon name="info" size={16} className="mt-0.5 shrink-0 text-neutral-500" />
+      <div className="min-w-0">
+        <p className="text-sm font-medium leading-5 text-base-foreground">{title}</p>
+        <p className="text-base-xs leading-4 text-neutral-600">{body}</p>
+      </div>
     </div>
   );
 }

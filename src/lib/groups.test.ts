@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderState, ProxyDomain, Tool, Verdict } from "./api";
 import type { Group, GroupMember } from "./groups";
-import { buildGroups, groupSummary, MULTI_PROVIDER_ID, cascadeTargets } from "./groups";
+import {
+  buildGroups,
+  groupSummary,
+  MULTI_PROVIDER_ID,
+  cascadeTargets,
+  proxyReopenAdvice,
+  PROXY_REOPEN_ADVICE,
+} from "./groups";
 
 function tool(slug: string, name: string, status: Tool["status"], upstream = "Anthropic"): Tool {
   return {
     slug,
     name,
+    // The flat-list name; the rail's one-word label is `name`.
+    product_name: name,
     upstream_provider_name: upstream,
     default_upstream_url: "https://api.anthropic.com",
     config_location: null,
@@ -632,5 +641,34 @@ describe("cascadeTargets", () => {
     ]);
     expect(cascadeTargets(g, true)).toEqual([]);
     expect(cascadeTargets(g, false).map((m) => m.key)).toEqual(["anthropic-api"]);
+  });
+});
+
+/**
+ * The one piece of routing copy that is true on one platform and false on the
+ * other two, which is why it is a function of the platform rather than a
+ * sentence somebody could paste into a shared component.
+ */
+describe("proxyReopenAdvice", () => {
+  it("is Linux-only, because that is where the environment channel is", () => {
+    // Windows refreshes WinINET after the registry write and macOS's auto-proxy
+    // URL is applied to new connections as it changes, so on both the advice
+    // would be wrong rather than merely cautious.
+    expect(proxyReopenAdvice("proxy", "linux")).toBe(PROXY_REOPEN_ADVICE);
+    expect(proxyReopenAdvice("proxy", "macos")).toBeUndefined();
+    expect(proxyReopenAdvice("proxy", "windows")).toBeUndefined();
+    expect(proxyReopenAdvice("proxy", "unknown")).toBeUndefined();
+  });
+
+  it("says nothing on a config-routed row, on any platform", () => {
+    // Those have a file to re-read and a verdict that measures it. Advice beside
+    // a reading would invite the reader to weigh a guess against a measurement.
+    expect(proxyReopenAdvice("config", "linux")).toBeUndefined();
+  });
+
+  it("says out loud that it is not a reading", () => {
+    // Principle 6 in the other direction: this is the one routing line with
+    // nothing behind it, so it has to admit that in its own words.
+    expect(PROXY_REOPEN_ADVICE.body).toContain("advice rather than a reading");
   });
 });

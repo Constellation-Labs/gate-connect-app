@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
+import { ErrorDetails } from "./banners";
 import { Skeleton } from "./base";
 import {
   compatibility,
@@ -12,6 +13,18 @@ import {
 import { DEVICE_NAME_MAX_LENGTH } from "../../lib/api";
 import type { RecoverySummary, TeardownReport } from "../../lib/api";
 import type { RecoveryRow } from "../../lib/recovery";
+import type { ReopenAction, ReopenTool } from "../../lib/reopen";
+import {
+  actionsFor,
+  allVerified,
+  isResting,
+  isTerminal,
+  REOPEN_ACTION_LABEL,
+  REOPEN_STAGE_DETAIL,
+  REOPEN_STAGE_LABEL,
+  reopenBuckets,
+  WHY_REOPEN,
+} from "../../lib/reopen";
 import {
   operationLine,
   recoveryRows,
@@ -52,9 +65,44 @@ export interface DialogApp {
   icon?: ReactNode;
 }
 
-/** "these apps" reads wrong for one app and "Codex" reads wrong for three. */
-function appLabel(apps: DialogApp[]): string {
-  return apps.length === 1 ? apps[0].name : "these apps";
+/**
+ * A tool in the reopen flow, with the mark the shell holds for it.
+ *
+ * The reopen model itself comes from `lib/reopen`, unchanged: the dialogs, the
+ * shell banner and the tray card all draw the same rows, and a dialog-shaped
+ * copy of them is how two surfaces end up disagreeing about one tool.
+ */
+export type DialogReopenTool = ReopenTool & {
+  /** 16px product mark. Falls back to a cube while the marks are unexported. */
+  icon?: ReactNode;
+};
+
+function toolLabel(tools: DialogReopenTool[]): string {
+  return tools.length === 1 ? tools[0].name : "these apps";
+}
+
+function toolIcon(tool: DialogReopenTool): ReactNode {
+  return tool.icon ?? <Icon name="cube" size={16} />;
+}
+
+/**
+ * The two routes for one tool, when the sweep established both.
+ *
+ * Omitted rather than half-drawn: a guessed endpoint is a claim about where the
+ * user's traffic is going, made on the screen where they came to check exactly
+ * that. Sans, not mono - identifier *values* are sans here (design, 2026-09-04),
+ * and these are endpoints rather than machine output.
+ */
+function RoutePair({ tool }: { tool: DialogReopenTool }) {
+  if (!tool.routeInUse || !tool.requestedRoute) return null;
+  return (
+    <p className="break-all">
+      In use: <span className="font-medium text-base-foreground">{tool.routeInUse}</span>
+      {" · "}
+      Requested:{" "}
+      <span className="font-medium text-base-foreground">{tool.requestedRoute}</span>
+    </p>
+  );
 }
 
 function appIcon(app: DialogApp): ReactNode {
@@ -362,19 +410,29 @@ export function ReviewConfigDialog({
 }
 
 /**
+ * Step one of the reopen conversation: which running tools are still on their
+ * old route, and what happens if they are left that way.
+ *
  * Note the button weighting: the design makes "I will reopen later" the filled
  * primary and "Close affected apps" the outline secondary, which is the reverse
  * of the usual arrangement. Deliberate - the quiet option is the safe one here.
+ *
+ * Each row carries what AG-566 AC 1 asks of this step: the route the tool is
+ * using now, the route its saved configuration asks for, that it is running,
+ * and who can reopen it. The last one is read from the backend
+ * (`RunningAgent.can_reopen`) rather than written into the copy, because it is
+ * the sentence the next dialog has to keep.
  */
 export function ApplyChangesDialog({
-  apps,
+  tools,
   onCloseApps,
   onReopenLater,
 }: {
-  apps: DialogApp[];
+  tools: DialogReopenTool[];
   onCloseApps: () => void;
   onReopenLater: () => void;
 }) {
+  const mine = tools.filter((t) => t.canReopen);
   return (
     <Modal
       tone="warning"
@@ -393,35 +451,60 @@ export function ApplyChangesDialog({
       primary={{ label: "No, I will reopen later", onClick: onReopenLater }}
       onDismiss={onReopenLater}
     >
-      {apps.map((app) => (
+      {tools.map((tool) => (
         <ModalSubject
-          key={app.name}
-          icon={appIcon(app)}
-          title={app.name}
-          description="Running now. It will keep its current route until closed."
+          key={tool.slug}
+          icon={toolIcon(tool)}
+          title={tool.name}
+          description={REOPEN_STAGE_DETAIL.reopen_required}
+          details={
+            <>
+              <RoutePair tool={tool} />
+              <p>
+                {tool.canReopen
+                  ? "Gate Connect can close and reopen this one."
+                  : "Gate Connect can close it, and you reopen it."}
+              </p>
+            </>
+          }
           pill={{ label: "Open", tone: "green" }}
         />
       ))}
       <ModalNote>
-        <p>Gate Connect can close these apps, but cannot reopen them.</p>
+        <p>{WHY_REOPEN}</p>
         <p className="mt-1">
-          You can keep working and reopen {appLabel(apps)} yourself.
+          {mine.length === tools.length
+            ? "Gate Connect will close and reopen them."
+            : mine.length === 0
+              ? `Gate Connect can close these apps, but cannot reopen them. You can keep working and reopen ${toolLabel(tools)} yourself.`
+              : `Gate Connect will reopen ${joinNames(mine.map((t) => t.name))}. The rest you reopen yourself.`}
         </p>
       </ModalNote>
     </Modal>
   );
 }
 
+/**
+ * Step two: the one confirmation before anything is signalled.
+ *
+ * It says three things AG-566 AC 4 requires and the first draft of this dialog
+ * did not: that unsaved work may be lost, which tools Gate will reopen, and
+ * which the user has to. It does **not** say whether anything is actually
+ * unsaved - Gate cannot see inside an editor or a terminal session, and a
+ * dialog that guessed would be reassuring exactly when it should not be.
+ */
 export function CloseAppsDialog({
-  apps,
+  tools,
   onGoBack,
   onCloseApps,
 }: {
-  apps: DialogApp[];
+  tools: DialogReopenTool[];
   onGoBack: () => void;
   onCloseApps: () => void;
 }) {
-  const label = appLabel(apps);
+  const label = toolLabel(tools);
+  const mine = tools.filter((t) => t.canReopen);
+  const yours = tools.filter((t) => !t.canReopen);
   return (
     <Modal
       tone="warning"
@@ -436,18 +519,37 @@ export function CloseAppsDialog({
       }}
       onDismiss={onGoBack}
     >
-      {apps.map((app) => (
+      {tools.map((tool) => (
         <ModalSubject
-          key={app.name}
-          icon={appIcon(app)}
-          title={app.name}
-          description="Running now. It will keep its current route until closed."
+          key={tool.slug}
+          icon={toolIcon(tool)}
+          title={tool.name}
+          description={REOPEN_STAGE_DETAIL.reopen_required}
+          details={<RoutePair tool={tool} />}
           pill={{ label: "Open", tone: "green" }}
         />
       ))}
       <ModalNote>
-        After these apps are closed, open {label} again yourself. The new Gate
-        route will be active on launch.
+        <p className="font-medium text-base-foreground">
+          Save your work before continuing.
+        </p>
+        <p className="mt-1">
+          Closing an app can interrupt what it is doing. Gate Connect cannot tell
+          whether a document or a terminal session has anything unsaved in it, so
+          it is asking rather than checking.
+        </p>
+        <p className="mt-3">
+          {mine.length > 0 && (
+            <>Gate Connect will reopen {joinNames(mine.map((t) => t.name))}. </>
+          )}
+          {yours.length > 0 && (
+            <>
+              You reopen {joinNames(yours.map((t) => t.name))} yourself
+              {mine.length > 0 ? "" : ` - Gate Connect cannot start ${label} for you`}
+              . The new Gate route is active on launch.
+            </>
+          )}
+        </p>
       </ModalNote>
     </Modal>
   );
@@ -479,6 +581,156 @@ export function ChangeReadyDialog({
         </p>
       </ModalNote>
     </Modal>
+  );
+}
+
+/**
+ * Step three: what is happening to each tool, and then what happened.
+ *
+ * One dialog rather than two because it is one operation: the rows move from
+ * Closing to Reopen required to Verifying under the reader, and swapping the
+ * dialog out from under them at the moment the last row settles would hide the
+ * transition that explains the result.
+ *
+ * The account is separated the way AG-566 AC 9 asks (applied and verified,
+ * waiting for a manual reopen, could not be closed, configuration failed,
+ * verification failed) and only once every row has settled. Before that the
+ * rows stay in one list: a bucket that a row is about to leave is not a result.
+ *
+ * `ChangeReadyDialog` still draws the all-clear - it is the case the Figma has a
+ * frame for, and it says the one thing that outcome needs.
+ */
+export function ReopenProgressDialog({
+  tools,
+  onAction,
+  onDone,
+}: {
+  tools: DialogReopenTool[];
+  /** Act on one tool. Which action a row offers comes from `actionsFor`, and
+   *  the shell decides what each one does - only `retry_verification` belongs
+   *  to this flow, and the other four are other people's screens. */
+  onAction: (slug: string, action: ReopenAction) => void;
+  onDone: () => void;
+}) {
+  // Resting, not finished: a tool waiting to be reopened has nothing in
+  // flight, and holding the account back until the user acts would leave a
+  // spinner over the one outcome this flow reaches most often. The watch keeps
+  // running under it, so a reopen still moves the row.
+  const settled = tools.every((t) => isResting(t.stage));
+  const done = allVerified(tools);
+  const waiting = tools.filter((t) => !isResting(t.stage)).length;
+  const buckets = reopenBuckets(tools);
+  return (
+    <Modal
+      tone={settled && !done ? "warning" : settled ? "success" : "neutral"}
+      icon={settled && !done ? "triangleAlert" : settled ? "circleCheck" : "refresh"}
+      title={settled ? "What happened" : "Applying the change"}
+      subtitle={
+        settled
+          ? "Each tool, and what is left to do about it"
+          : `Gate Connect is following ${waiting === 1 ? "one tool" : `${waiting} tools`} through the change`
+      }
+      primary={{ label: settled ? "Done" : "Close", onClick: onDone }}
+      onDismiss={onDone}
+      width={544}
+    >
+      {settled ? (
+        buckets.map((bucket) => (
+          <div key={bucket.key} className="flex flex-col gap-2">
+            <p className="text-base-xs font-medium leading-4 text-base-muted-foreground">
+              {bucket.title}
+            </p>
+            <p className="text-base-xs leading-4 text-neutral-600">{bucket.blurb}</p>
+            {bucket.tools.map((tool) => (
+              <ReopenToolRow key={tool.slug} tool={tool} onAction={onAction} />
+            ))}
+          </div>
+        ))
+      ) : (
+        <div className="flex flex-col gap-2">
+          {tools.map((tool) => (
+            <ReopenToolRow key={tool.slug} tool={tool} onAction={onAction} />
+          ))}
+        </div>
+      )}
+      <ModalNote>{WHY_REOPEN}</ModalNote>
+    </Modal>
+  );
+}
+
+/**
+ * One tool inside the progress dialog: its stage, what the stage means for it,
+ * and the actions that stage offers.
+ *
+ * Every button carries the slug it belongs to. AG-566 AC 10 is explicit that
+ * retrying one tool must not repeat the change for another, and the cheapest
+ * way to guarantee that is for no control here to know about a set.
+ */
+function ReopenToolRow({
+  tool,
+  onAction,
+}: {
+  tool: DialogReopenTool;
+  onAction: (slug: string, action: ReopenAction) => void;
+}) {
+  const actions = actionsFor(tool.stage);
+  const working = !isTerminal(tool.stage);
+  const good = tool.stage === "routing" || tool.stage === "not_routed";
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-base-border p-3">
+      <div className="flex items-start gap-3">
+        <span
+          aria-hidden
+          className="flex size-10 shrink-0 items-center justify-center rounded-sm border border-base-border text-neutral-700"
+        >
+          {toolIcon(tool)}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <p className="text-sm font-medium leading-5 text-base-foreground">
+              {tool.name}
+            </p>
+            <p
+              className={`text-base-xs leading-4 ${good ? "text-green-700" : working ? "text-neutral-600" : "text-amber-700"}`}
+            >
+              {REOPEN_STAGE_LABEL[tool.stage]}
+            </p>
+          </div>
+          <p className="text-base-xs leading-4 text-neutral-600">
+            {REOPEN_STAGE_DETAIL[tool.stage]}
+          </p>
+          <div className="text-base-xs leading-4 text-neutral-600">
+            <RoutePair tool={tool} />
+          </div>
+          {tool.error && <ErrorDetails raw={tool.error} title="Details" />}
+        </div>
+        <Icon
+          name={working ? "refresh" : good ? "circleCheck" : "triangleAlert"}
+          size={16}
+          className={
+            working
+              ? "mt-0.5 shrink-0 animate-spin text-neutral-500"
+              : good
+                ? "mt-0.5 shrink-0 text-green-700"
+                : "mt-0.5 shrink-0 text-amber-600"
+          }
+        />
+      </div>
+      {actions.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {actions.map((action) => (
+            <button
+              key={action}
+              type="button"
+              onClick={() => onAction(tool.slug, action)}
+              className="rounded-md border border-base-input bg-base-card px-3 py-1.5 text-base-xs font-medium leading-4 text-base-foreground shadow-base-btn-sm transition-colors hover:bg-neutral-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-primary"
+            >
+              {REOPEN_ACTION_LABEL[action]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
