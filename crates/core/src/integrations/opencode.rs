@@ -66,6 +66,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::env;
+use crate::integrations::precedence::Override;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
 const UPSTREAM_PROVIDER_NAME: &str = "your existing providers";
@@ -339,6 +340,12 @@ impl Integration for OpenCode {
                 "some providers were edited by hand and no longer route via Gate: {}",
                 drifted.join(", ")
             )));
+        }
+        // Our redirect is in the file we are allowed to write. OpenCode merges
+        // five more layers over that one, and two of them are visible from here
+        // (AG-674).
+        if let Some(o) = overriding_layer(state.providers.keys(), &expected_base) {
+            return Ok(o.into_status());
         }
         Ok(Status::Connected)
     }
@@ -632,6 +639,101 @@ fn expected_base_url(provider_id: &str, relay_base_url: &str) -> Option<String> 
     Some(resolved.relay_base_url(relay_base_url))
 }
 
+// --- precedence -------------------------------------------------------
+
+/// A layer OpenCode merges over the file Gate writes, when it repoints one of
+/// the providers we redirect.
+///
+/// OpenCode merges its config from six sources, later winning, and scalars like
+/// `options.baseURL` are overwritten rather than combined. Lowest to highest:
+/// the remote org config, the global `opencode.json` Gate writes, the
+/// `OPENCODE_CONFIG` file, the project's `./opencode.json`, its `.opencode/`
+/// directory, and `OPENCODE_CONFIG_CONTENT` - with a managed `/etc/opencode`
+/// above all of them.
+///
+/// Two of those are reachable from a windowed process: the managed file, whose
+/// path does not move, and `OPENCODE_CONFIG_CONTENT` when it is in our own login
+/// environment. `OPENCODE_CONFIG` needs no check here because
+/// [`crate::env::opencode_config_path`] already writes there when it is set - we
+/// are that layer, not under it.
+///
+/// **The project layer stays invisible, and it is the common one.** Per-repo
+/// `opencode.json` is a documented, ordinary pattern (finding O1 in
+/// `docs/harness-integration-validation.md`), and which repo the user is in is
+/// not something this process knows. So this narrows the failure rather than
+/// closing it: what it can see it now reports, and the rest is written down
+/// instead of being quietly counted as connected.
+fn overriding_layer<'a>(
+    providers: impl Iterator<Item = &'a String>,
+    relay_base_url: &str,
+) -> Option<Override> {
+    let providers: Vec<String> = providers.cloned().collect();
+
+    let managed_path = env::opencode_managed_config_path();
+    // An unreadable managed file is not evidence of an override. It is an
+    // administrator's, we never write it, and failing `status` on somebody
+    // else's malformed JSON would replace a wrong answer with a useless one.
+    if let Some(managed) = super::json_config::load_object(&managed_path)
+        .ok()
+        .flatten()
+    {
+        if let Some(o) = override_in(
+            &managed,
+            &managed_path.display().to_string(),
+            &providers,
+            relay_base_url,
+        ) {
+            return Some(o);
+        }
+    }
+
+    let inline = std::env::var("OPENCODE_CONFIG_CONTENT").ok()?;
+    let parsed: Map<String, Value> = serde_json::from_str(&inline).ok()?;
+    override_in(
+        &parsed,
+        "the OPENCODE_CONFIG_CONTENT environment variable",
+        &providers,
+        relay_base_url,
+    )
+}
+
+/// One layer, read for the providers we redirect. Split from where the layer
+/// comes from so both sources are the same check, and so a test can supply one
+/// without writing to `/etc`.
+fn override_in(
+    layer: &Map<String, Value>,
+    source: &str,
+    providers: &[String],
+    relay_base_url: &str,
+) -> Option<Override> {
+    let block = layer.get("provider").and_then(|v| v.as_object())?;
+    for provider_id in providers {
+        let Some(base_url) = block
+            .get(provider_id)
+            .and_then(|v| v.as_object())
+            .and_then(|b| b.get("options"))
+            .and_then(|v| v.as_object())
+            .and_then(|o| o.get("baseURL"))
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        // The same value is not a conflict: a managed layer that happens to
+        // name our relay leaves the traffic exactly where we put it.
+        if expected_base_url(provider_id, relay_base_url).as_deref() == Some(base_url) {
+            continue;
+        }
+        return Some(Override::new(
+            source,
+            format!(
+                "points provider {provider_id:?} at {base_url:?}, which OpenCode merges over the \
+                 Gate redirect in its global config"
+            ),
+        ));
+    }
+    None
+}
+
 // --- file I/O ---------------------------------------------------------
 
 fn settings_path() -> Result<PathBuf> {
@@ -686,6 +788,93 @@ use super::json_config::ensure_object;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// AG-674's disagreement case for OpenCode. Our redirect is in the global
+    /// file and correct; a layer OpenCode merges over it sends `anthropic`
+    /// straight to Anthropic. Reporting that as Connected is the exact failure
+    /// finding O1 describes.
+    #[test]
+    fn a_higher_layer_repointing_a_gated_provider_is_an_override() {
+        let layer: Map<String, Value> = json!({
+            "provider": {
+                "anthropic": { "options": { "baseURL": "https://api.anthropic.com/v1" } }
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let o = override_in(
+            &layer,
+            "/etc/opencode/opencode.json",
+            &["anthropic".to_string()],
+            "http://127.0.0.1:9977",
+        )
+        .expect("a repointed provider is an override");
+        assert!(o.source.contains("/etc/opencode/opencode.json"));
+        assert!(o.to_string().contains("api.anthropic.com"));
+    }
+
+    /// A layer that names the same relay URL we wrote changes nothing, and a
+    /// layer that only touches providers we never gated is not our business.
+    #[test]
+    fn a_layer_agreeing_with_us_or_touching_other_providers_is_not_an_override() {
+        let same: Map<String, Value> = json!({
+            "provider": {
+                "anthropic": {
+                    "options": { "baseURL": "http://127.0.0.1:9977/anthropic/v1" }
+                }
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            override_in(
+                &same,
+                "/etc/opencode/opencode.json",
+                &["anthropic".to_string()],
+                "http://127.0.0.1:9977"
+            ),
+            None
+        );
+
+        let elsewhere: Map<String, Value> = json!({
+            "provider": { "llamacpp": { "options": { "baseURL": "http://localhost:8080/v1" } } }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            override_in(
+                &elsewhere,
+                "/etc/opencode/opencode.json",
+                &["anthropic".to_string()],
+                "http://127.0.0.1:9977"
+            ),
+            None
+        );
+    }
+
+    /// A layer can set other provider options without deciding the route. Only
+    /// `options.baseURL` moves the traffic, so only it counts.
+    #[test]
+    fn a_layer_setting_other_options_is_not_an_override() {
+        let layer: Map<String, Value> = json!({
+            "provider": { "anthropic": { "options": { "timeout": 60000 } } }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            override_in(
+                &layer,
+                "/etc/opencode/opencode.json",
+                &["anthropic".to_string()],
+                "http://127.0.0.1:9977"
+            ),
+            None
+        );
+    }
 
     #[test]
     fn expected_base_url_carries_the_per_provider_path() {

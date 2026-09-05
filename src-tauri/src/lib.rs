@@ -71,8 +71,18 @@ enum StatusDto {
     NotInstalled,
     Detected,
     Connected,
-    Drifted { reason: String },
-    Error { message: String },
+    Drifted {
+        reason: String,
+    },
+    /// Gate's values are on disk and something the tool ranks higher decides
+    /// where its traffic goes. `source` names that layer, because a status line
+    /// saying the route is not ours has to say where to go and look (AG-674).
+    Overridden {
+        source: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 impl From<Status> for StatusDto {
@@ -82,6 +92,7 @@ impl From<Status> for StatusDto {
             Status::Detected => StatusDto::Detected,
             Status::Connected => StatusDto::Connected,
             Status::Drifted(reason) => StatusDto::Drifted { reason },
+            Status::Overridden(source) => StatusDto::Overridden { source },
         }
     }
 }
@@ -2577,7 +2588,8 @@ fn teardown_report() -> TeardownReportDto {
         };
         match status {
             Ok(gate_connect_core::Status::Connected)
-            | Ok(gate_connect_core::Status::Drifted(_)) => {
+            | Ok(gate_connect_core::Status::Drifted(_))
+            | Ok(gate_connect_core::Status::Overridden(_)) => {
                 report.still_gate.push(tool("retry_disconnect"))
             }
             Ok(_) if reopen_pending_for(&slug) => report.awaiting_reopen.push(tool("reopen_tool")),
@@ -3280,7 +3292,10 @@ fn request_quit(app: &tauri::AppHandle) {
             let connected: Vec<String> = registry::registry()
                 .iter()
                 .filter(|integ| {
-                    matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_)))
+                    matches!(
+                        integ.status(),
+                        Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
+                    )
                 })
                 .map(|integ| integ.display_name().to_string())
                 .collect();

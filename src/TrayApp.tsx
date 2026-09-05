@@ -436,7 +436,10 @@ export function TrayApp() {
           status: verdictStatus(verdicts.get(t.slug), {
             writeFailed: routing.writeFailures.has(t.slug),
           }),
-          on: t.status.kind === "connected" || t.status.kind === "drifted",
+          on:
+            t.status.kind === "connected" ||
+            t.status.kind === "drifted" ||
+            t.status.kind === "overridden",
           logo: brandMarkFor(t.slug),
           busy: routingBusy,
           // A held figure outranks the pending state, so a look that re-reads

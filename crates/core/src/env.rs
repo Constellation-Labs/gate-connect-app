@@ -230,8 +230,37 @@ pub fn set_app_support_dir_for_tests(dir: Option<PathBuf>) {
 
 /// `~/.claude` - Claude Code's user config root. Same on all platforms;
 /// Claude Code itself reads `~/.claude/settings.json` regardless of OS.
+///
+/// `CLAUDE_CONFIG_DIR` relocates it, and Claude Code honours that at every
+/// invocation - so a Gate Connect that ignored it would edit a file the CLI
+/// never reads and then report Connected off that write (AG-674).
 pub fn claude_code_config_dir() -> Result<PathBuf> {
+    if let Some(dir) = env_path("CLAUDE_CONFIG_DIR") {
+        return Ok(dir);
+    }
     Ok(home()?.join(".claude"))
+}
+
+/// Claude Code's enterprise managed settings, the one layer that outranks
+/// everything else it loads - including the project settings and the CLI's own
+/// flags. Gate never writes it; [`crate::integrations::claude_code`] reads it to
+/// find out whether something above us decides the route.
+///
+/// Per-OS, and system-wide rather than per-user, so the test-home seam does not
+/// apply: there is no per-user copy to redirect to.
+pub fn claude_code_managed_settings_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        PathBuf::from(r"C:\ProgramData\ClaudeCode\managed-settings.json")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        PathBuf::from("/etc/claude-code/managed-settings.json")
+    }
 }
 
 /// `~/.claude/settings.json` - Claude Code's user settings. Supports an
@@ -242,7 +271,14 @@ pub fn claude_code_settings_path() -> Result<PathBuf> {
 }
 
 /// `~/.codex` - Codex CLI's user config root. Same on all platforms.
+///
+/// `CODEX_HOME` relocates it, and the Codex CLI reads that variable before
+/// anything else, so it is the directory the harness actually loads. Honoured
+/// here for the same reason as `CLAUDE_CONFIG_DIR` above (AG-674).
 pub fn codex_config_dir() -> Result<PathBuf> {
+    if let Some(dir) = env_path("CODEX_HOME") {
+        return Ok(dir);
+    }
     Ok(home()?.join(".codex"))
 }
 
@@ -303,6 +339,24 @@ pub fn opencode_config_path() -> Result<PathBuf> {
         return Ok(path);
     }
     Ok(opencode_config_dir()?.join("opencode.json"))
+}
+
+/// OpenCode's machine-wide managed config, which the docs place above every
+/// other layer including the project file. Gate never writes it;
+/// [`crate::integrations::opencode`] reads it to find out whether an
+/// administrator has already decided where the providers point.
+pub fn opencode_managed_config_path() -> PathBuf {
+    #[cfg(windows)]
+    {
+        std::env::var_os("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+            .join("opencode/opencode.json")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/etc/opencode/opencode.json")
+    }
 }
 
 /// `~/.local/share/opencode/auth.json` - OpenCode's credential store.
@@ -372,4 +426,81 @@ pub fn hermes_config_dir() -> Result<PathBuf> {
 /// `~/.hermes/config.yaml` -- Hermes's config file.
 pub fn hermes_config_path() -> Result<PathBuf> {
     Ok(hermes_config_dir()?.join("config.yaml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Set a variable for the body of `f` and put the environment back, whatever
+    /// the body does. `None` removes it, so a developer machine that happens to
+    /// export one of these does not decide the result.
+    fn with_var<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let prev = std::env::var_os(name);
+        match value {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+        let out = f();
+        match prev {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+        out
+    }
+
+    /// The path half of AG-674: a harness that reads its config from somewhere
+    /// else must be edited and read *there*. Claude Code and Codex both publish
+    /// a variable for it, and both were ignored until this - so Gate Connect
+    /// wrote a file the CLI never opened and then reported Connected off that
+    /// write.
+    #[test]
+    fn the_documented_config_dir_overrides_decide_which_file_we_touch() {
+        let _lock = path_env_lock();
+
+        with_var(
+            "CLAUDE_CONFIG_DIR",
+            Some("/tmp/gate-claude-elsewhere"),
+            || {
+                assert_eq!(
+                    claude_code_settings_path().unwrap(),
+                    PathBuf::from("/tmp/gate-claude-elsewhere/settings.json")
+                );
+            },
+        );
+        with_var("CODEX_HOME", Some("/tmp/gate-codex-elsewhere"), || {
+            assert_eq!(
+                codex_config_toml_path().unwrap(),
+                PathBuf::from("/tmp/gate-codex-elsewhere/config.toml")
+            );
+            // auth.json follows the same root, or the credential helper reads a
+            // login the CLI does not have.
+            assert_eq!(
+                codex_auth_json_path().unwrap(),
+                PathBuf::from("/tmp/gate-codex-elsewhere/auth.json")
+            );
+        });
+
+        // Unset, both fall back to the documented home-relative default.
+        with_var("CLAUDE_CONFIG_DIR", None, || {
+            assert!(claude_code_config_dir().unwrap().ends_with(".claude"));
+        });
+        with_var("CODEX_HOME", None, || {
+            assert!(codex_config_dir().unwrap().ends_with(".codex"));
+        });
+    }
+
+    /// The layer above the file we write has a fixed, machine-wide path on every
+    /// OS - which is the only reason a windowed process can read it at all.
+    #[test]
+    fn the_managed_layers_are_machine_wide_paths() {
+        assert!(claude_code_managed_settings_path().is_absolute());
+        assert!(claude_code_managed_settings_path()
+            .to_string_lossy()
+            .ends_with("managed-settings.json"));
+        assert!(opencode_managed_config_path().is_absolute());
+        assert!(opencode_managed_config_path()
+            .to_string_lossy()
+            .ends_with("opencode.json"));
+    }
 }

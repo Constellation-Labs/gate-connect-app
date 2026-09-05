@@ -87,6 +87,7 @@ const CHECK_LABEL: Record<NonNullable<RecoveryTool["check_state"]>, string> = {
 
 const CHECK_REASON_LABEL: Record<VerdictReason, string> = {
   configuration_changed: "config changed outside Gate",
+  configuration_overridden: "another config outranks Gate's",
   reopen_required: "reopen required",
   connection_problem: "connection problem",
   access_problem: "access problem",

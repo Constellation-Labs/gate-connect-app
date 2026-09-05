@@ -139,6 +139,17 @@ export function describeMember(key: string): string | undefined {
 export type MemberAttention =
   | "error"
   | "drifted"
+  /**
+   * Gate's configuration is in place and something the tool ranks higher
+   * decides where its traffic goes (AG-674).
+   *
+   * Its own value rather than `drifted`, for the reason the whole state exists:
+   * drift offers "let Gate manage this" and that repair is real, while here the
+   * file Gate manages is already correct and the conflict is somewhere this app
+   * does not write. Offering the same switch would move nothing and say the
+   * problem was ours to fix.
+   */
+  | "overridden"
   | "needs-trust"
   | "master-off"
   /**
@@ -251,7 +262,11 @@ function memberFromTool(
   tool: Tool,
   { proxyOn, verdicts }: { proxyOn: boolean; verdicts?: Map<string, Verdict> },
 ): GroupMember {
-  const connected = tool.status.kind === "connected";
+  // Intent, not flow: an overridden tool carries Gate's values in Gate's file,
+  // which is exactly what the user asked for. Reading it as not-connected would
+  // render the switch off and make clicking it turn off the setting they were
+  // trying to turn on - this module's own opening bug, one state later.
+  const connected = tool.status.kind === "connected" || tool.status.kind === "overridden";
   const verdict = verdicts?.get(tool.slug);
   // Verified, or not claimed. A config tool points at the loopback relay, and a
   // file naming that relay is not evidence anything is using it: the relay may
@@ -278,7 +293,13 @@ function memberFromTool(
         ? "error"
         : tool.status.kind === "drifted"
           ? "drifted"
-          : // Master-off outranks the sweep's own vocabulary because it is the
+          : tool.status.kind === "overridden"
+            ? // Above master-off and unverified on purpose: those describe a
+              // route that would carry this tool's traffic once something is
+              // switched on, and this one says the traffic is not on our route
+              // at all.
+              "overridden"
+            : // Master-off outranks the sweep's own vocabulary because it is the
             // better sentence for the same fact: the sweep would report a dead
             // relay as a connection problem, and "routing is off" is what the
             // user needs to hear.
@@ -487,6 +508,7 @@ export type GroupException =
   | "needs-trust"
   | "master-off"
   | "drifted"
+  | "overridden"
   | "unverified";
 
 /** "2 of 4 routing", plus whatever needs a human, named rather than counted
@@ -503,6 +525,7 @@ export function groupSummary(group: Group): {
   const count = `${group.routed} of ${group.members.length} routing`;
   const errors = group.members.filter((m) => m.attention === "error");
   const drifted = group.members.filter((m) => m.attention === "drifted");
+  const overridden = group.members.filter((m) => m.attention === "overridden");
   const untrusted = group.members.filter((m) => m.attention === "needs-trust");
   const masterOff = group.members.filter((m) => m.attention === "master-off");
   if (errors.length > 0) {
@@ -526,6 +549,19 @@ export function groupSummary(group: Group): {
           ? `${drifted[0].name} set up elsewhere`
           : `${drifted.length} set up elsewhere`,
       kind: "drifted",
+    };
+  }
+  if (overridden.length > 0) {
+    // After drift and before "not verified": it is a known fault rather than an
+    // absence of an answer, and of the two known ones drift is the fixable one,
+    // so it keeps the row when both are present.
+    return {
+      count,
+      exception:
+        overridden.length === 1
+          ? `${overridden[0].name} routed elsewhere`
+          : `${overridden.length} routed elsewhere`,
+      kind: "overridden",
     };
   }
   const unverified = group.members.filter((m) => m.attention === "unverified");
@@ -570,7 +606,11 @@ export function groupSummary(group: Group): {
 export function cascadeTargets(group: Group, on: boolean): GroupMember[] {
   return group.members.filter((m) => {
     if (m.chat) return false;
-    if (on) return !m.desired && m.attention !== "drifted";
+    // An overridden member is left out for the same reason a drifted one is:
+    // the family switch writes Gate's config, and here that config is already
+    // written and already losing. Turning it on again is a no-op the user would
+    // read as a fix.
+    if (on) return !m.desired && m.attention !== "drifted" && m.attention !== "overridden";
     return m.desired;
   });
 }

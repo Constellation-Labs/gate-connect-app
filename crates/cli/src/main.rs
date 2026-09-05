@@ -421,7 +421,9 @@ fn cmd_billing_mode(mode: Option<String>) -> Result<()> {
     // Codex is the one config integration whose file depends on the mode.
     if matches!(
         registry::find(ToolId::Codex).map(|i| i.status()),
-        Some(Ok(Status::Connected)) | Some(Ok(Status::Drifted(_)))
+        Some(Ok(Status::Connected))
+            | Some(Ok(Status::Drifted(_)))
+            | Some(Ok(Status::Overridden(_)))
     ) {
         println!(
             "note: run `gate-connect connect codex` to rewrite its provider block for this mode."

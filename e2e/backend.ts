@@ -25,6 +25,7 @@ export type ToolStatus =
   | { kind: "detected" }
   | { kind: "connected" }
   | { kind: "drifted"; reason: string }
+  | { kind: "overridden"; source: string }
   | { kind: "error"; message: string };
 
 export interface ToolFixture {

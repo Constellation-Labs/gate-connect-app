@@ -478,6 +478,40 @@ describe("groupSummary", () => {
   });
 });
 
+/**
+ * AG-674 in the ledger. The row has to say the traffic is somewhere else while
+ * the switch keeps saying what the user asked for, which is the same split this
+ * module opens with - one story later.
+ */
+describe("an overridden tool", () => {
+  it("is switched on, not routing, and named as routed elsewhere", () => {
+    const [group] = buildGroups(
+      CATALOG,
+      [
+        tool("claude-code", "Claude Code", {
+          kind: "overridden",
+          source: "/etc/claude-code/managed-settings.json sets HTTPS_PROXY",
+        }),
+      ],
+      [],
+      ON,
+    );
+    const m = group.members[0];
+    // Intent: Gate's configuration is in Gate's file, which is exactly what the
+    // switch means. Rendering it off would make the click turn off the thing the
+    // user was trying to keep on.
+    expect(m.desired).toBe(true);
+    expect(m.routed).toBe(false);
+    expect(m.attention).toBe("overridden");
+    expect(groupSummary(group)).toEqual({
+      count: "0 of 1 routing",
+      exception: "Claude Code routed elsewhere",
+      kind: "overridden",
+    });
+  });
+
+});
+
 describe("intent versus flow", () => {
   it("keeps an enabled domain switched on while the certificate blocks it", () => {
     // The round-6 P0: these were one field. `routed` false made the switch
@@ -608,6 +642,19 @@ describe("cascadeTargets", () => {
     // That decision belongs to the review dialog, not to a switch two levels up.
     const g = group([member({ attention: "drifted" })]);
     expect(cascadeTargets(g, true)).toEqual([]);
+  });
+
+  it("never re-applies a configuration something else outranks", () => {
+    // The switch writes Gate's config, and an overridden member already has it.
+    // Including it would spend a click on a no-op the user reads as a fix.
+    const g = group([member({ attention: "overridden" })]);
+    expect(cascadeTargets(g, true)).toEqual([]);
+  });
+
+  it("still turns an overridden member off", () => {
+    // Disconnecting removes our values, which is real work whoever is winning.
+    const g = group([member({ attention: "overridden", desired: true })]);
+    expect(cascadeTargets(g, false).map((m) => m.key)).toEqual(["codex"]);
   });
 
   it("still turns a drifted member off", () => {

@@ -41,6 +41,10 @@ const WRITE_FAILED_DETAIL = "Configuration update failed";
  * "Config drifted" phrase, so repeating it as a suffix would print the same
  * fact twice. */
 const REASON_SUFFIX: Record<Exclude<VerdictReason, "configuration_changed">, string> = {
+  // Deliberately not "Config drifted": the file Gate wrote is intact, and
+  // sending someone to re-apply it would be sending them to fix the one thing
+  // that is already right.
+  configuration_overridden: "Configuration overridden",
   reopen_required: "Reopen required",
   connection_problem: "Connection problem",
   access_problem: "Access problem",
@@ -52,6 +56,7 @@ const REASON_SUFFIX: Record<Exclude<VerdictReason, "configuration_changed">, str
  * the control and the ticket say the same thing. */
 export const NEXT_ACTION_LABEL: Record<VerdictNextAction, string> = {
   apply_gate_configuration: "Apply Gate configuration",
+  show_conflicting_config: "Show conflicting file",
   reopen_tool: "Reopen tool",
   reconnect: "Reconnect",
   sign_in: "Sign in",

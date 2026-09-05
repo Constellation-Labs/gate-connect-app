@@ -47,6 +47,7 @@ use toml_edit::{value, DocumentMut, Item, Table, Value};
 
 use crate::account::BillingMode;
 use crate::env;
+use crate::integrations::precedence::Override;
 use crate::primitives;
 use crate::registry::{ConnectInput, Integration, Status, ToolId};
 
@@ -371,6 +372,12 @@ impl Integration for Codex {
             )));
         }
 
+        // Everything Gate writes is in place. The last question is whether Codex
+        // reads it, which the pointer above does not settle on its own (AG-674).
+        if let Some(o) = active_profile_override(&doc, &path.display().to_string()) {
+            return Ok(o.into_status());
+        }
+
         Ok(Status::Connected)
     }
 
@@ -636,6 +643,45 @@ fn config_path() -> Result<PathBuf> {
     env::codex_config_toml_path()
 }
 
+/// The selected profile, when it points Codex at a provider that is not ours.
+///
+/// Codex resolves `model_provider` from the active profile first and only falls
+/// back to the top-level key Gate writes. So `profile = "work"` plus
+/// `[profiles.work] model_provider = "openai"` sends every request straight to
+/// OpenAI while `model_provider = "gate"` sits above it in the same file,
+/// untouched and inert - and until AG-674 that read as Connected, because we
+/// checked our own key and stopped.
+///
+/// Profiles are the user's, not ours: `connect` writes the top-level pointer and
+/// leaves the rest of the file alone. So this reports the disagreement rather
+/// than resolving it - editing somebody's profile to win an argument with them
+/// is not a repair.
+///
+/// What stays invisible here is `--profile` on the command line, which outranks
+/// the file's own `profile` key. A shell flag is not a thing this process can
+/// see, on the same terms as the project-level layers in
+/// [`crate::integrations::precedence`].
+fn active_profile_override(doc: &DocumentMut, source: &str) -> Option<Override> {
+    let profile = doc.get("profile").and_then(|i| i.as_str())?;
+    let provider = doc
+        .get("profiles")
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get(profile))
+        .and_then(|i| i.as_table_like())
+        .and_then(|t| t.get("model_provider"))
+        .and_then(|i| i.as_str())?;
+    if provider == PROVIDER_ID {
+        return None;
+    }
+    Some(Override::new(
+        source,
+        format!(
+            "selects profile {profile:?}, whose model_provider is {provider:?} - Codex reads that \
+             before the top-level pointer at {PROVIDER_ID:?}"
+        ),
+    ))
+}
+
 fn read_doc(path: &Path) -> Result<DocumentMut> {
     let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     raw.parse::<DocumentMut>()
@@ -702,6 +748,71 @@ fn upgrade_inline_to_table(item: &mut Item) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AG-674's disagreement case for Codex. Our provider block and pointer are
+    /// exactly as `connect` left them; the selected profile names a different
+    /// provider, and that is the one Codex resolves.
+    #[test]
+    fn a_profile_naming_another_provider_overrides_our_pointer() {
+        let doc: DocumentMut = r#"
+model_provider = "gate"
+profile = "work"
+
+[model_providers.gate]
+base_url = "http://127.0.0.1:9977/openai/v1"
+
+[profiles.work]
+model_provider = "openai"
+"#
+        .parse()
+        .unwrap();
+        let o = active_profile_override(&doc, "/home/u/.codex/config.toml")
+            .expect("an active profile on another provider is an override");
+        assert!(o.to_string().contains("\"work\""));
+        assert!(o.to_string().contains("\"openai\""));
+    }
+
+    /// A profile that names Gate, or one that names no provider at all and so
+    /// inherits the top-level pointer, is agreement rather than a conflict.
+    #[test]
+    fn a_profile_on_gate_or_silent_about_the_provider_is_not_an_override() {
+        let on_gate: DocumentMut = r#"
+model_provider = "gate"
+profile = "work"
+
+[profiles.work]
+model_provider = "gate"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(active_profile_override(&on_gate, "config.toml"), None);
+
+        let silent: DocumentMut = r#"
+model_provider = "gate"
+profile = "work"
+
+[profiles.work]
+model_reasoning_effort = "high"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(active_profile_override(&silent, "config.toml"), None);
+    }
+
+    /// A profile nobody selected decides nothing. Codex reads `profile` to pick
+    /// one, and a file full of unselected profiles is the normal shape.
+    #[test]
+    fn an_unselected_profile_is_not_an_override() {
+        let doc: DocumentMut = r#"
+model_provider = "gate"
+
+[profiles.work]
+model_provider = "openai"
+"#
+        .parse()
+        .unwrap();
+        assert_eq!(active_profile_override(&doc, "config.toml"), None);
+    }
 
     #[test]
     fn chatgpt_mode_base_url_carries_the_chatgpt_slug_and_codex_path() {

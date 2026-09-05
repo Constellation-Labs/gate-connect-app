@@ -81,6 +81,21 @@ pub enum Status {
     Detected,
     Connected,
     Drifted(String),
+    /// Gate's values are in the file Gate writes, and a configuration layer the
+    /// tool ranks *higher* decides where its traffic goes anyway. The payload
+    /// names the layer.
+    ///
+    /// Its own state rather than a shade of [`Status::Drifted`], because the two
+    /// ask for opposite things. Drift is our own file changed underneath us and
+    /// the repair is to write it again; an override leaves our file exactly as
+    /// we left it, and writing it a second time moves nothing. Telling a user
+    /// to "apply Gate configuration" against an override sends them to fix the
+    /// one thing that is already correct.
+    ///
+    /// And emphatically not [`Status::Connected`]: reporting a route we do not
+    /// own is the failure AG-674 exists to remove - the operator believes their
+    /// traffic is governed while it goes somewhere else.
+    Overridden(String),
 }
 
 impl fmt::Display for Status {
@@ -90,6 +105,7 @@ impl fmt::Display for Status {
             Status::Detected => f.write_str("detected"),
             Status::Connected => f.write_str("connected"),
             Status::Drifted(reason) => write!(f, "drifted: {reason}"),
+            Status::Overridden(source) => write!(f, "overridden: {source}"),
         }
     }
 }
@@ -280,7 +296,9 @@ pub fn disconnect_all_managed() -> Result<()> {
     let mut failures = Vec::new();
     for integ in registry() {
         let managed = match integ.status() {
-            Ok(Status::Connected) | Ok(Status::Drifted(_)) => true,
+            // Overridden counts: our values are on disk whatever else outranks
+            // them, so sign-out still has to take them out.
+            Ok(Status::Connected) | Ok(Status::Drifted(_)) | Ok(Status::Overridden(_)) => true,
             Ok(_) => false,
             // status() failing (e.g. unparsable config) doesn't prove the
             // tool is clean - attempt the disconnect so a config that still

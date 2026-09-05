@@ -302,13 +302,40 @@ how the user learns. Worth revisiting if it reads badly in practice.
    a property of routing rather than a tool). Remaining: it is untested against
    a real macOS or Windows session.
 5. **Verify the effective config, not our own write** - the general fix for the
-   O1 class across relay integrations. Unchanged as stated: `status` still reads
-   the file Gate wrote, at the path Gate chose. What *has* changed is that no UI
-   now claims a route from that reading alone - `routing_health` decides, and
-   `verdict_log` records what it decided (AG-570). That narrows the blast radius
-   of this item without closing it: a harness pointed elsewhere by a
-   higher-precedence config still reads as `Managed` here, and the sweep's own
-   evidence (relay reachable, session valid, process fresh) would all agree.
+   O1 class. **Mostly done (AG-674), with one hole named below.**
+
+   Two halves. The *path* half is closed: `status` now reads the file the
+   harness loads, not the one Gate picked. `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+   were being ignored - Gate Connect would edit a file the CLI never opens and
+   report `Connected` off that write - and they join `OPENCLAW_CONFIG_PATH`,
+   `HERMES_HOME` and OpenCode's `OPENCODE_CONFIG` / `OPENCODE_CONFIG_DIR` /
+   `XDG_CONFIG_HOME`, which were already honoured.
+
+   The *precedence* half has its own state rather than a green pill:
+   `Status::Overridden(source)` -> `ConfigState::Overridden` ->
+   `Reason::ConfigurationOverridden`, whose next action is
+   `ShowConflictingConfig` and not `ApplyGateConfiguration`, because re-writing a
+   file that is already correct moves nothing. What each integration checks
+   before it says `Connected`:
+
+   | Tool | Layer it can lose to | Seen? |
+   |---|---|---|
+   | Claude Code | enterprise `managed-settings.json` setting `HTTPS_PROXY` or `ANTHROPIC_BASE_URL` | yes |
+   | Claude Code | project `.claude/settings*.json`, CLI flags | **no** |
+   | Codex | the selected `profile`'s own `model_provider` | yes |
+   | Codex | `--profile` / `-c` on the command line | **no** |
+   | OpenCode | managed `/etc/opencode/opencode.json`, `OPENCODE_CONFIG_CONTENT` | yes |
+   | OpenCode | project `./opencode.json`, `.opencode/` - **finding O1 itself** | **no** |
+   | OpenClaw | nothing above its single file; the path override is honoured | n/a |
+   | Hermes | an `HTTPS_PROXY` already in the login environment, which python-dotenv will not replace | yes |
+
+   The hole is one shape, not five: **a layer chosen by the harness's working
+   directory**. Gate Connect is a windowed process and does not know which repo
+   `codex` was started in, so a per-project config is not reachable from here -
+   and O1's own case, a repo-local `opencode.json`, is exactly that. Closing it
+   needs per-tool traffic attribution in the relay, or the harness's cwd from the
+   process table, both larger than this item. Until then the app under-claims
+   rather than over-claims, which is the direction that was wrong before.
 6. **The OpenRouter ALB fix is mock-tested only**; it asserts our side of the
    contract, not Gate's reassembly.
 7. O3: Zen provider IDs.

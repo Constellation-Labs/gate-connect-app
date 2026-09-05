@@ -6,6 +6,14 @@ export type Status =
   | { kind: "detected" }
   | { kind: "connected" }
   | { kind: "drifted"; reason: string }
+  /** Gate's values are in the file Gate writes, and a configuration layer the
+   *  tool ranks higher decides where its traffic goes anyway. `source` names
+   *  that layer - a path, or the environment variable holding it.
+   *
+   *  Not a shade of `drifted`: nothing touched our file, so re-applying it moves
+   *  nothing, and emphatically not `connected`, which is the claim AG-674 exists
+   *  to stop making. */
+  | { kind: "overridden"; source: string }
   | { kind: "error"; message: string };
 
 export interface Tool {
@@ -399,10 +407,11 @@ export const runningAgentsCount = () => invoke<number>("running_agents_count");
 export const staleAgentsCount = () => invoke<number>("stale_agents_count");
 
 /** Why a tool is not verifiably routing. Closed set, mirroring
- * `routing_health::Reason` - a sixth value would need a next action and a
+ * `routing_health::Reason` - a seventh value would need a next action and a
  * recovery path to go with it. */
 export type VerdictReason =
   | "configuration_changed"
+  | "configuration_overridden"
   | "reopen_required"
   | "connection_problem"
   | "access_problem"
@@ -412,6 +421,7 @@ export type VerdictReason =
  * the backend derives it so the pair cannot drift apart. */
 export type VerdictNextAction =
   | "apply_gate_configuration"
+  | "show_conflicting_config"
   | "reopen_tool"
   | "reconnect"
   | "sign_in"
