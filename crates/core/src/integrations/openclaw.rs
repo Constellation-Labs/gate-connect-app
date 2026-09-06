@@ -814,6 +814,41 @@ mod tests {
         assert_eq!(coverage_note(OpenAiAuthMode::ApiKey), None);
     }
 
+    /// AG-674 for OpenClaw, which is the one integration where the answer is
+    /// already right and the job is to keep it that way.
+    ///
+    /// OpenClaw has one config file, and the only way for the harness to load a
+    /// different one than Gate wrote is `OPENCLAW_CONFIG_PATH`. That is honoured
+    /// in [`crate::env::openclaw_config_path`], so `status` reads whatever
+    /// OpenClaw reads: point the variable somewhere new and the file we wrote
+    /// stops being the file we report from, which is drift, not Connected. No
+    /// `Overridden` state is reachable here because no second layer exists to
+    /// lose to - and a check pretending otherwise would be inventing one.
+    #[test]
+    fn the_config_path_override_decides_which_file_status_reads() {
+        let _lock = crate::env::path_env_lock();
+        let prev = std::env::var_os("OPENCLAW_CONFIG_PATH");
+        let elsewhere = std::env::temp_dir().join(format!(
+            "gate-openclaw-elsewhere-{}/openclaw.json",
+            std::process::id()
+        ));
+        std::env::set_var("OPENCLAW_CONFIG_PATH", &elsewhere);
+        let resolved = crate::env::openclaw_config_path();
+        match prev {
+            Some(v) => std::env::set_var("OPENCLAW_CONFIG_PATH", v),
+            None => std::env::remove_var("OPENCLAW_CONFIG_PATH"),
+        }
+        assert_eq!(resolved.unwrap(), elsewhere);
+
+        // And a file with none of our values in it is never Connected, however
+        // healthy the engine behind the URL we wrote elsewhere is.
+        let ours = "http://127.0.0.1:9977";
+        assert!(matches!(
+            compute_status("", false, Some(ours), true),
+            Status::Drifted(_)
+        ));
+    }
+
     #[test]
     fn current_proxy_url_reads_the_single_key() {
         let settings = json!({ "proxy": { "proxyUrl": "http://127.0.0.1:9977" } })

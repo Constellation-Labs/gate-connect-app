@@ -421,7 +421,10 @@ fn disable_inner(slug: &str, audit: bool) -> Result<ProviderState> {
         let Some(integ) = registry::find(id) else {
             continue;
         };
-        let connected = matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_)));
+        let connected = matches!(
+            integ.status(),
+            Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
+        );
         if connected || integ.detect().unwrap_or(false) {
             integ
                 .disconnect()
@@ -521,7 +524,11 @@ pub fn reconcile_enabled() -> Result<()> {
                 Ok(Status::Drifted(_)) => {
                     relay_base_url.is_some() && integ.config_is_managed().unwrap_or(false)
                 }
-                _ => false, // NotInstalled / Connected / status error - leave as-is
+                // NotInstalled / Connected / Overridden / status error - leave
+                // as-is. Overridden belongs on this side of the line and not
+                // with drift: our values are already exactly what connect would
+                // write, so a re-apply is a no-op that would run on every pass.
+                _ => false,
             };
             if !reapply {
                 continue;
@@ -776,7 +783,10 @@ pub fn snapshot_and_disable_everything() -> Result<Vec<String>> {
     let mut disconnected = Vec::new();
     let mut failed = Vec::new();
     for integ in registry::registry() {
-        if !matches!(integ.status(), Ok(Status::Connected | Status::Drifted(_))) {
+        if !matches!(
+            integ.status(),
+            Ok(Status::Connected | Status::Drifted(_) | Status::Overridden(_))
+        ) {
             continue;
         }
         match integ.disconnect() {

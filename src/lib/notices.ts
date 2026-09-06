@@ -90,6 +90,15 @@ function noticeFor(member: GroupMember): RoutingNotice | null {
             action: { kind: "reconnect", slug: member.key },
           }
         : null;
+    case "overridden":
+      // No card, deliberately. This module's rule is at the top of the file:
+      // `AlertBanner` renders a switch, and every notice here is a switch that
+      // does real work. An override has no such action - the winning value is in
+      // a file Gate does not write, often somebody else's - so a card would
+      // either offer a reconnect that changes nothing or a switch that lies.
+      // The row's own status line carries the state ("Not protected -
+      // Configuration overridden") and the tool's status names the file.
+      return null;
     case "error":
       return member.tool
         ? {

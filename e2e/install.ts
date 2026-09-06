@@ -563,6 +563,11 @@ export function installFakeTauri(state: BackendState): void {
           return attention("verification_failed", "retry_check");
         if (t.status.kind === "drifted")
           return attention("configuration_changed", "apply_gate_configuration");
+        // Above the liveness branches below, as in `verdict_for`: the tool is
+        // not on Gate's route whatever the relay is doing, so naming a dead
+        // relay here would send the reader to fix the wrong thing.
+        if (t.status.kind === "overridden")
+          return attention("configuration_overridden", "show_conflicting_config");
         if (t.status.kind === "detected")
           return state.staleAgents > 0
             ? attention("reopen_required", "reopen_tool")
@@ -670,7 +675,15 @@ export function installFakeTauri(state: BackendState): void {
           .filter((t) => t.status.kind === "detected" && state.staleAgents === 0)
           .map(bucket("none")),
         still_gate: installed
-          .filter((t) => t.status.kind === "connected" || t.status.kind === "drifted")
+          .filter(
+            (t) =>
+              t.status.kind === "connected" ||
+              t.status.kind === "drifted" ||
+              // Gate's values are still in this tool's file whoever outranks
+              // them, so the teardown still has them to take out. Mirrors
+              // `teardown_report`.
+              t.status.kind === "overridden",
+          )
           .map(bucket("retry_disconnect")),
         awaiting_reopen: installed
           .filter((t) => t.status.kind === "detected" && state.staleAgents > 0)

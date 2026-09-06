@@ -35,6 +35,10 @@ pub enum ConfigState {
     Drifted,
     /// No Gate routing values. The tool is pointed at its own upstream.
     Absent,
+    /// Gate's values are on disk and a layer the tool ranks higher decides the
+    /// route anyway. Separate from `Drifted` because the repair is different:
+    /// nothing touched our file, so writing it again changes nothing.
+    Overridden,
     /// The config could not be read or parsed, so nothing about it is known.
     /// Distinct from `Absent`: absence is a verified state, this is ignorance.
     Unreadable,
@@ -48,6 +52,7 @@ impl ConfigState {
         match status {
             Ok(Status::Connected) => ConfigState::Managed,
             Ok(Status::Drifted(_)) => ConfigState::Drifted,
+            Ok(Status::Overridden(_)) => ConfigState::Overridden,
             Ok(Status::Detected) | Ok(Status::NotInstalled) => ConfigState::Absent,
             Err(_) => ConfigState::Unreadable,
         }
@@ -92,13 +97,21 @@ pub struct Evidence {
     pub reopen_pending: bool,
 }
 
-/// Why a tool is not verifiably routing. Closed set: these are the five reasons
-/// the product vocabulary allows, and a sixth would need a next action and a
+/// Why a tool is not verifiably routing. Closed set: these are the six reasons
+/// the product vocabulary allows, and a seventh would need a next action and a
 /// recovery path to go with it.
+///
+/// It was five until AG-674. The sixth arrived with its action and its recovery
+/// path, which is the price this comment always named: an override is fixed by
+/// editing the layer that wins, so the action points at that file and nothing
+/// Gate can do unattended is offered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
     /// Routing values are present but not Gate's.
     ConfigurationChanged,
+    /// Gate's values are in place and a higher-precedence configuration layer
+    /// decides where the traffic goes.
+    ConfigurationOverridden,
     /// The config is right; the running process has not picked it up.
     ReopenRequired,
     /// The local route is not accepting connections.
@@ -115,6 +128,12 @@ pub enum Reason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NextAction {
     ApplyGateConfiguration,
+    /// Open the layer that wins, so the person can remove the value there.
+    /// Deliberately not something Gate does for them: the winning file is
+    /// somebody else's - a repo the user shares, or a policy their
+    /// administrator set - and editing it unasked is a larger claim on the
+    /// machine than this app makes anywhere else.
+    ShowConflictingConfig,
     ReopenTool,
     Reconnect,
     SignIn,
@@ -125,6 +144,7 @@ impl Reason {
     pub const fn next_action(self) -> NextAction {
         match self {
             Reason::ConfigurationChanged => NextAction::ApplyGateConfiguration,
+            Reason::ConfigurationOverridden => NextAction::ShowConflictingConfig,
             Reason::ReopenRequired => NextAction::ReopenTool,
             Reason::ConnectionProblem => NextAction::Reconnect,
             Reason::AccessProblem => NextAction::SignIn,
@@ -135,6 +155,7 @@ impl Reason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Reason::ConfigurationChanged => "configuration_changed",
+            Reason::ConfigurationOverridden => "configuration_overridden",
             Reason::ReopenRequired => "reopen_required",
             Reason::ConnectionProblem => "connection_problem",
             Reason::AccessProblem => "access_problem",
@@ -147,6 +168,7 @@ impl NextAction {
     pub const fn as_str(self) -> &'static str {
         match self {
             NextAction::ApplyGateConfiguration => "apply_gate_configuration",
+            NextAction::ShowConflictingConfig => "show_conflicting_config",
             NextAction::ReopenTool => "reopen_tool",
             NextAction::Reconnect => "reconnect",
             NextAction::SignIn => "sign_in",
@@ -217,6 +239,15 @@ pub fn verdict_for(ev: &Evidence) -> RoutingVerdict {
     }
     if ev.config == ConfigState::Unreadable {
         return RoutingVerdict::NeedsAttention(Reason::VerificationFailed);
+    }
+    // Beside drift, and above the liveness checks for the same reason: the tool
+    // is not on Gate's route whether or not that route is healthy, and naming a
+    // dead relay to someone whose traffic never reaches it would send them to
+    // fix the wrong thing. The two never arrive together - an integration
+    // reports one config state - so this is a ranking of the checks, not of a
+    // tool that is somehow both.
+    if ev.config == ConfigState::Overridden {
+        return RoutingVerdict::NeedsAttention(Reason::ConfigurationOverridden);
     }
     if ev.config == ConfigState::Drifted {
         return RoutingVerdict::NeedsAttention(Reason::ConfigurationChanged);
@@ -407,6 +438,10 @@ mod tests {
             ConfigState::Drifted
         );
         assert_eq!(
+            ConfigState::from_status(&Ok(Status::Overridden("/etc/opencode".into()))),
+            ConfigState::Overridden
+        );
+        assert_eq!(
             ConfigState::from_status(&Ok(Status::Detected)),
             ConfigState::Absent
         );
@@ -420,6 +455,39 @@ mod tests {
         );
     }
 
+    /// The whole point of AG-674: every liveness check can pass - the relay
+    /// answers, the session is good, the process is fresh - and the tool is
+    /// still not ours to claim, because something above our file decides where
+    /// its traffic goes.
+    #[test]
+    fn an_overridden_config_is_never_on_however_healthy_the_route() {
+        let ev = Evidence {
+            config: ConfigState::Overridden,
+            ..healthy()
+        };
+        assert_eq!(
+            verdict_for(&ev),
+            RoutingVerdict::NeedsAttention(Reason::ConfigurationOverridden)
+        );
+    }
+
+    /// And it is not `Off` either. `Off` is a verified claim that the tool is
+    /// pointed at its own upstream; an override says only that the destination
+    /// is not ours to name.
+    #[test]
+    fn an_overridden_config_is_not_reported_as_deliberately_off() {
+        let ev = Evidence {
+            config: ConfigState::Overridden,
+            route: RouteHealth::Unreachable,
+            session: SessionHealth::Unknown,
+            ..healthy()
+        };
+        assert!(matches!(
+            verdict_for(&ev),
+            RoutingVerdict::NeedsAttention(Reason::ConfigurationOverridden)
+        ));
+    }
+
     /// Every reason carries exactly one action, and the pairing is what the user
     /// acts on - so it is pinned rather than left to the call site.
     #[test]
@@ -428,6 +496,10 @@ mod tests {
             (
                 Reason::ConfigurationChanged,
                 NextAction::ApplyGateConfiguration,
+            ),
+            (
+                Reason::ConfigurationOverridden,
+                NextAction::ShowConflictingConfig,
             ),
             (Reason::ReopenRequired, NextAction::ReopenTool),
             (Reason::ConnectionProblem, NextAction::Reconnect),

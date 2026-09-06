@@ -38,6 +38,7 @@ describe("verdictStatus", () => {
   });
 
   it.each<[Exclude<VerdictReason, "configuration_changed">, string]>([
+    ["configuration_overridden", "Configuration overridden"],
     ["reopen_required", "Reopen required"],
     ["connection_problem", "Connection problem"],
     ["access_problem", "Access problem"],
@@ -47,6 +48,23 @@ describe("verdictStatus", () => {
       kind: "not-protected",
       detail,
     });
+  });
+
+  /**
+   * AG-674 on the status line. An override is not drift: the file Gate wrote is
+   * intact, so the row must not read "Config drifted" and send the reader to
+   * re-apply a configuration that is already correct.
+   */
+  it("keeps an override off the Config drifted phrase", () => {
+    const status = verdictStatus(
+      verdict({
+        state: "needs_attention",
+        reason: "configuration_overridden",
+        next_action: "show_conflicting_config",
+      }),
+    );
+    expect(status).toEqual({ kind: "not-protected", detail: "Configuration overridden" });
+    expect(NEXT_ACTION_LABEL.show_conflicting_config).toBe("Show conflicting file");
   });
 
   /**

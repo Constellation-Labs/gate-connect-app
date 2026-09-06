@@ -1212,7 +1212,10 @@ export function NewUiApp() {
           }),
           // Intent, not observation: a drifted tool is still one the user asked
           // to route. See the note on SidebarApp.
-          on: t.status.kind === "connected" || t.status.kind === "drifted",
+          on:
+            t.status.kind === "connected" ||
+            t.status.kind === "drifted" ||
+            t.status.kind === "overridden",
           logo: brandMarkFor(t.slug),
           busy: routingBusy,
         })),
@@ -1961,7 +1964,13 @@ export function NewUiApp() {
     () =>
       tools
         .filter(
-          (t) => t.status.kind === "connected" || t.status.kind === "drifted",
+          (t) =>
+            t.status.kind === "connected" ||
+            t.status.kind === "drifted" ||
+            // Gate's configuration is still in this tool's file even though
+            // something outranks it, so quitting still leaves it behind - which
+            // is the whole subject of the takeover. Mirrors `request_quit`.
+            t.status.kind === "overridden",
         )
         .map((t) => t.name),
     [tools],
